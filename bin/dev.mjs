@@ -15,6 +15,7 @@ import {
   sessionDir,
 } from '../src/preferences.mjs'
 import { loadPi } from '../src/pi-runtime.mjs'
+import { createWorkExtension } from '../src/work-extension.mjs'
 
 function parseArgs(argv) {
   const options = { cwd: process.cwd(), dataHome: defaultDataHome() }
@@ -125,12 +126,17 @@ async function main() {
   }
   const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
     const runtimeResources = composeResources({ cwd, gitRoot: gitRoot(cwd), specialization })
+    const work = createWorkExtension({
+      dataHome: options.dataHome,
+      specialization: specialization.name,
+    })
     const services = await api.createAgentSessionServices({
       cwd,
       agentDir: options.dataHome,
       resourceLoaderOptions: {
         additionalSkillPaths: runtimeResources.skillPaths,
         appendSystemPrompt: [specialization.guidance],
+        extensionFactories: [{ path: 'dev:work', factory: work.factory }],
       },
     })
     const result = await api.createAgentSessionFromServices({
@@ -138,6 +144,7 @@ async function main() {
       sessionManager,
       sessionStartEvent,
     })
+    work.bindSession(result.session)
     return { ...result, services, diagnostics: services.diagnostics }
   }
   const runtime = await api.createAgentSessionRuntime(createRuntime, {
@@ -159,9 +166,21 @@ async function main() {
   }
   const mode = new api.InteractiveMode(runtime, { startupDiagnostics: runtime.diagnostics })
   const releaseRuntime = acquireRuntime(options.dataHome)
+  process.once('exit', releaseRuntime)
+  const terminate = async () => {
+    try {
+      await runtime.dispose()
+    } finally {
+      process.exit(1)
+    }
+  }
+  process.once('SIGTERM', terminate)
+  process.once('SIGINT', terminate)
+  process.once('SIGHUP', terminate)
   try {
     await mode.run()
   } finally {
+    await runtime.dispose()
     releaseRuntime()
   }
 }

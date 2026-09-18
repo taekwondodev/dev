@@ -27,3 +27,12 @@ specialization of `dev`, not the identity of the whole environment.
 
 Existing Apple-specific guidance is associated with the existing `apple-dev`
 profile. Its ownership and paths must be checked before any migration.
+
+## Background work
+
+An attempt is one owned execution of a workflow task, identified by its lead
+session, task, attempt and generation. The operational controller observes
+process facts; it does not decide workflow progression or certify artifacts.
+Pi owns conversations, and shared dev-cycle owns delegation and recovery policy.
+Read [ADR 0002](docs/adr/0002-session-owned-background-work.md) before changing
+process ownership, resource boundaries or outcome delivery.

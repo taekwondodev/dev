@@ -6,6 +6,7 @@ A personal, terminal-first development environment built on Pi, with shared work
 
 - [Project brief](docs/project-brief.md): target capabilities, specialization alternatives, efficiency goals, construction practices, starting sequence, and acceptance criteria.
 - [Evidence and references](docs/references.md): local investigation scope and upstream integration documentation.
+- [Background work](docs/background-work.md): separate Pi children, local commands, dispatch, cancellation and retained outcomes.
 
 ## Launch
 

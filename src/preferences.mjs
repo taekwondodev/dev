@@ -117,7 +117,10 @@ export function acquireRuntime(dataHome) {
   const descriptor = openSync(path, 'wx', 0o600)
   writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid })}\n`)
   closeSync(descriptor)
+  let released = false
   return () => {
+    if (released) return
+    released = true
     if (existsSync(path)) unlinkSync(path)
   }
 }
