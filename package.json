@@ -1,0 +1,20 @@
+{
+  "name": "dev-pi-environment",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "dev": "bin/dev.mjs"
+  },
+  "scripts": {
+    "start": "node bin/dev.mjs",
+    "diagnostics": "node bin/dev.mjs --diagnostics",
+    "smoke": "node scripts/smoke.mjs",
+    "setup": "node scripts/maintain.mjs setup",
+    "update": "node scripts/maintain.mjs update",
+    "rollback": "node scripts/maintain.mjs rollback"
+  }
+}
