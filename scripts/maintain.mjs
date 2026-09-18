@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { assertNoActiveRuntime, defaultDataHome, sessionDir } from '../src/preferences.mjs'
 import { resolvePiPackage } from '../src/pi-runtime.mjs'
 
-function run(command, args, cwd = process.cwd()) {
+const checkout = fileURLToPath(new URL('..', import.meta.url))
+
+function run(command, args, cwd = checkout) {
   return execFileSync(command, args, {
     cwd,
     encoding: 'utf8',
@@ -15,6 +18,16 @@ function run(command, args, cwd = process.cwd()) {
 function argument(name) {
   const index = process.argv.indexOf(name)
   return index === -1 ? undefined : process.argv[index + 1]
+}
+
+function assertPrivateDataProtected(ref) {
+  if (!existsSync(join(checkout, '.dev'))) return
+  const ignore = run('git', ['show', `${ref}:.gitignore`]).split(/\r?\n/)
+  const tracked = run('git', ['ls-tree', '-r', '--name-only', ref, '--', '.dev'])
+  if (!ignore.includes('/.dev/') || ignore.some(line => line.startsWith('!')) || tracked)
+    throw new Error(
+      'Refusing checkout: private .dev data requires an explicit /.dev/ ignore rule, no negation rules, and no tracked contents. Relocate that data explicitly before using this revision.'
+    )
 }
 
 function setup() {
@@ -49,6 +62,7 @@ function update() {
   const remote = argument('--remote') ?? 'origin'
   const branch = argument('--branch') ?? run('git', ['branch', '--show-current'])
   run('git', ['fetch', remote, branch])
+  assertPrivateDataProtected(`${remote}/${branch}`)
   run('git', ['merge', '--ff-only', `${remote}/${branch}`])
   process.stdout.write(`updated dev checkout from ${remote}/${branch}\n`)
 }
@@ -58,11 +72,13 @@ function rollback() {
   const ref = argument('--ref')
   if (!ref)
     throw new Error('Rollback requires an explicit --ref and changes only the dev checkout.')
+  const revision = run('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])
+  assertPrivateDataProtected(revision)
   if (run('git', ['status', '--porcelain']) !== '')
     throw new Error(
       'Refusing rollback: dev checkout has local changes. Preserve them explicitly before rolling back.'
     )
-  run('git', ['checkout', '--detach', ref])
+  run('git', ['checkout', '--detach', revision])
   process.stdout.write(
     `rolled dev checkout back to ${ref}; external Pi, workflow, credentials and sessions were not changed\n`
   )

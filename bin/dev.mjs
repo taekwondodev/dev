@@ -16,6 +16,7 @@ import {
 } from '../src/preferences.mjs'
 import { loadPi } from '../src/pi-runtime.mjs'
 import { createWorkExtension } from '../src/work-extension.mjs'
+import { readDispatch } from '../src/work-dispatch.mjs'
 
 function parseArgs(argv) {
   const options = { cwd: process.cwd(), dataHome: defaultDataHome() }
@@ -117,7 +118,7 @@ async function main() {
   const resources = composeResources({ cwd: options.cwd, gitRoot: root, specialization })
   if (options.diagnostics) {
     process.stdout.write(
-      `pi: ${packageInfo.version} (${packageInfo.root})\ndata home: ${options.dataHome}\nselection: ${selectedName} (${recorded ? 'conversation metadata' : selection.source})\n`
+      `pi: ${packageInfo.version} (${packageInfo.root})\ndata home: ${options.dataHome}\ndispatch: ${readDispatch().path}\nselection: ${selectedName} (${recorded ? 'conversation metadata' : selection.source})\n`
     )
     process.stdout.write(
       `SOUL.md: ${resources.soulPath}\nresource paths:\n${resourceSummary(resources)}\n`

@@ -36,3 +36,11 @@ process facts; it does not decide workflow progression or certify artifacts.
 Pi owns conversations, and shared dev-cycle owns delegation and recovery policy.
 Read [ADR 0002](docs/adr/0002-session-owned-background-work.md) before changing
 process ownership, resource boundaries or outcome delivery.
+
+## Configuration and private state
+
+The dev checkout versions its dispatch policy in `config/crew-dispatch.json`.
+Private runtime data lives in checkout-local `.dev/`, excluded from Git; explicit
+data-home overrides change private storage only. See
+[ADR 0003](docs/adr/0003-versioned-dispatch-local-runtime.md) before changing
+these paths or their migration and version-control boundaries.

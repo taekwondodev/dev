@@ -33,6 +33,7 @@ function summary(record) {
     taskId: record.owner.taskId,
     status: record.status,
     kind: record.kind,
+    worktree: record.worktree,
     model: record.model ?? 'unavailable',
     context: record.context ?? 'unavailable',
     usage: record.usage ?? 'unavailable',
@@ -46,7 +47,7 @@ function outcomeMessage(items) {
   return {
     customType: 'dev/work-outcome',
     display: true,
-    content: `Background work outcomes. These are producer observations, not verification; reconcile artifacts and honor dev-cycle checkpoints before proceeding.\n${JSON.stringify(items)}`,
+    content: `Background work outcomes. These are producer observations, not verification; reconcile artifacts and honor dev-cycle checkpoints before proceeding. Report any recorded worktree and follow its cleanup guidance.\n${JSON.stringify(items)}`,
     details: { attempts: items.map(record => record.id) },
   }
 }
@@ -280,7 +281,7 @@ export function createWorkExtension({ dataHome, specialization }) {
       name: 'work',
       label: 'Background work',
       description:
-        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId identifies the workflow task; each launch creates a distinct attempt. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; writers require a pre-created separate linked worktree. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
+        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId identifies the workflow task; each launch creates a distinct attempt. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; writers require a pre-created separate linked worktree. worktree.path records its verified root. Cleanup blocked means termination or reservation release is unconfirmed; review-required asks for evaluation, not deletion. Report retained worktrees in your handoff, verify current use and preserve or integrate changes before user-authorized removal; never force removal. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
       parameters,
       async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
         const result = await execute(input, ctx)

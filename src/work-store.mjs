@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const RETENTION_COUNT = 64
@@ -71,6 +71,11 @@ export class WorkStore {
       typeof record.owner?.taskId !== 'string' ||
       record.owner?.attemptId !== id ||
       typeof record.owner?.generation !== 'string' ||
+      (record.worktreePath !== undefined &&
+        (record.kind !== 'agent' ||
+          record.access !== 'write' ||
+          typeof record.worktreePath !== 'string' ||
+          !isAbsolute(record.worktreePath))) ||
       (record.pid !== undefined && (!Number.isSafeInteger(record.pid) || record.pid < 1)) ||
       !Number.isFinite(record.startedAt) ||
       (record.completedAt !== undefined && !Number.isFinite(record.completedAt))

@@ -11,10 +11,10 @@ import {
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 
 export function defaultDataHome() {
-  const home = process.env.HOME ?? process.env.USERPROFILE
-  return resolve(process.env.DEV_DATA_HOME ?? join(home, '.local/share/dev'))
+  return resolve(process.env.DEV_DATA_HOME ?? fileURLToPath(new URL('../.dev/', import.meta.url)))
 }
 
 function git(cwd, args) {

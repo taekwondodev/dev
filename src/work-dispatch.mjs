@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 
@@ -24,15 +24,15 @@ function validateProfile(value) {
   return value
 }
 
-export function readDispatch(dataHome) {
-  const path = join(dataHome, 'crew-dispatch.json')
+export function readDispatch() {
+  const path = fileURLToPath(new URL('../config/crew-dispatch.json', import.meta.url))
   let config
   try {
     config = JSON.parse(readFileSync(path, 'utf8'))
   } catch (error) {
-    if (error.code === 'ENOENT')
-      return { path, configured: false, rules: [], default: { harness: 'pi' } }
-    throw new Error(`Cannot read dispatch configuration: ${error.message}`, { cause: error })
+    throw new Error(`Cannot read dispatch configuration at ${path}: ${error.message}`, {
+      cause: error,
+    })
   }
   if (!config || typeof config !== 'object' || Array.isArray(config))
     throw new Error('Invalid dispatch configuration')
@@ -60,8 +60,8 @@ export function readDispatch(dataHome) {
   }
 }
 
-export function resolveDispatch(dataHome, input) {
-  const config = readDispatch(dataHome)
+export function resolveDispatch(input) {
+  const config = readDispatch()
   let selected = config.default
   if (config.rules.length > 0 && input.rule === undefined) {
     throw new Error(

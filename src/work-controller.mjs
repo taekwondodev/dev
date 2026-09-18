@@ -126,6 +126,18 @@ function requiredString(value, name) {
   return value
 }
 
+function worktreeReminder(record) {
+  if (!record.worktreePath) return undefined
+  const blocked = record.completedAt === undefined || record.observationError || record.cleanupError
+  return {
+    path: record.worktreePath,
+    cleanup: blocked ? 'blocked' : 'review-required',
+    guidance: blocked
+      ? 'Termination or reservation release is not confirmed. Do not remove this worktree.'
+      : 'Verify and integrate or preserve changes, check current worktree use, then seek authorization for removal. Dev does not delete worktrees; never force removal.',
+  }
+}
+
 export class WorkController {
   constructor({
     dataHome,
@@ -150,7 +162,7 @@ export class WorkController {
   }
 
   dispatch() {
-    return readDispatch(this.dataHome)
+    return readDispatch()
   }
 
   async writerLease(cwd, id) {
@@ -161,8 +173,9 @@ export class WorkController {
       git(cwd, ['rev-parse', '--absolute-git-dir']),
     ])
     const leadRoot = await git(this.cwd, ['rev-parse', '--show-toplevel'])
+    const worktreeRoot = realpathSync(root)
     if (
-      realpathSync(root) === realpathSync(leadRoot) ||
+      worktreeRoot === realpathSync(leadRoot) ||
       realpathSync(common) !== realpathSync(primary) ||
       realpathSync(gitDir) === realpathSync(common)
     ) {
@@ -172,10 +185,7 @@ export class WorkController {
     }
     const directory = join(this.dataHome, 'work', 'writers')
     mkdirSync(directory, { recursive: true, mode: 0o700 })
-    const path = join(
-      directory,
-      `${createHash('sha256').update(realpathSync(root)).digest('hex')}.lock`
-    )
+    const path = join(directory, `${createHash('sha256').update(worktreeRoot).digest('hex')}.lock`)
     let descriptor
     try {
       descriptor = openSync(path, 'wx', 0o600)
@@ -195,7 +205,7 @@ export class WorkController {
     } finally {
       closeSync(descriptor)
     }
-    return path
+    return { path, root: worktreeRoot }
   }
 
   assertStart(taskId, kind) {
@@ -225,7 +235,7 @@ export class WorkController {
     ) {
       throw new Error('skills must contain skill names')
     }
-    const selection = resolveDispatch(this.dataHome, input)
+    const selection = resolveDispatch(input)
     return this.start('agent', { ...input, selection })
   }
 
@@ -253,8 +263,12 @@ export class WorkController {
     let stdout
     let stderr
     try {
-      if (kind === 'agent' && input.access === 'write')
-        job.lease = await this.writerLease(cwd, record.id)
+      if (kind === 'agent' && input.access === 'write') {
+        const lease = await this.writerLease(cwd, record.id)
+        job.lease = lease.path
+        record.worktreePath = lease.root
+        this.store.save(record)
+      }
       if (this.closed || generation !== this.generation || (kind === 'agent' && this.exhausted))
         throw new Error('Work owner invalidated before launch')
       stdout = openSync(this.store.logPath(record.id, 'stdout'), 'wx', 0o600)
@@ -338,10 +352,10 @@ export class WorkController {
       }
       this.store.save(record)
       this.onChange()
-      return { ...record }
+      return { ...record, worktree: worktreeReminder(record) }
     } catch (error) {
       record.error = error.message
-      if (job.child?.pid && !job.exited) {
+      if (job.child?.pid) {
         await this.cancel(record.id, 'launch failed')
       } else {
         job.exited = true
@@ -415,7 +429,6 @@ export class WorkController {
     delete record.observationError
     record.exitCode = code
     record.signal = signal
-    record.completedAt = Date.now()
     record.status = 'failed'
     if (code === 0 && !record.error && (record.kind === 'process' || job.result))
       record.status = 'completed'
@@ -428,10 +441,13 @@ export class WorkController {
       try {
         unlinkSync(job.lease)
       } catch (error) {
-        if (error.code !== 'ENOENT')
-          record.cleanupError = `Writer lease retained: ${job.lease}: ${error.message}`
+        record.cleanupError =
+          error.code === 'ENOENT'
+            ? `Writer lease missing before release: ${job.lease}; inspect current worktree use`
+            : `Writer lease retained: ${job.lease}: ${error.message}`
       }
     }
+    record.completedAt = Date.now()
     this.active.delete(record.id)
     this.store.save(record)
     job.resolveSettled({ ...record })
@@ -557,7 +573,8 @@ export class WorkController {
             processObservation,
             recovery: 'Retained facts only; no restart authorized',
           })
-        }),
+        })
+        .map(record => Object.assign(record, { worktree: worktreeReminder(record) })),
       unavailable,
       agentsBlocked: this.exhausted,
     }
@@ -569,6 +586,7 @@ export class WorkController {
     const streams = record.kind === 'agent' ? ['result', 'stderr'] : ['stdout', 'stderr']
     return {
       ...record,
+      worktree: worktreeReminder(record),
       staleArtifact,
       evidence:
         'Process outcome, not artifact verification. Reconcile changed or unknown artifacts before accepting the result.',

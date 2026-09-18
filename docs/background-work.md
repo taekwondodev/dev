@@ -34,20 +34,23 @@ process or a child's report is not verification of the artifact.
 
 ## Dispatch
 
-Optional configuration lives at `<dev-data-home>/crew-dispatch.json`, not inside
-the project or another agent's profile. Its shape follows Firstmate ordinary
-dispatch, without its fleet, quota selection or provider substitution:
+Versioned configuration lives at `config/crew-dispatch.json` in the dev checkout,
+independently of the launch directory and private data-home overrides. A missing
+or unreadable file fails explicitly, without substituting another model policy.
+Its shape follows Firstmate ordinary dispatch, without its fleet, quota
+selection or provider substitution. This shortened example illustrates the
+shape; the versioned file is authoritative for the complete task categories:
 
 ```json
 {
   "rules": [
     {
       "when": "Independent read-only review",
-      "use": { "harness": "pi", "effort": "high" },
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" },
       "why": "Keep review separate from the lead's implementation context"
     }
   ],
-  "default": { "harness": "pi" }
+  "default": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
 }
 ```
 
@@ -56,9 +59,10 @@ zero-based rule index as a string or `"default"`. Explicit task fields override
 that selection. `model` is a concrete `provider/model-id`; `effort` must be
 supported by that model. Unsupported harnesses, malformed profiles, model
 selection failures and invalid effort fail rather than silently changing models.
-When configuration is absent the adapter is Pi. Omitted model/effort use the
-child's documented Pi defaults, not the lead's transient picker selection.
-No configuration is created automatically.
+Omitted model/effort use the child's documented Pi defaults, not the lead's
+transient picker selection. The shipped rules and default currently select
+`openai-codex/gpt-5.6-luna` without overriding effort. No separate copy is
+created in the private data home.
 
 ## Scope and ownership
 
@@ -74,6 +78,21 @@ a different repository and a worktree already leased by another dev attempt in
 the same data home. It does not create or remove worktrees and cannot constrain
 an arbitrary shell to that directory. Never use this as isolation from hostile
 code or another process operating outside this controller.
+
+Once a writer reservation succeeds, the attempt records the verified worktree
+root, even when its working directory is a subdirectory. `/work`, inspection and
+automatic outcomes expose that root with a cleanup reminder. `blocked` means
+termination or reservation release is unconfirmed; `review-required` means the
+lead must verify current use and integrate or preserve changes before considering
+user-authorized removal. Neither status authorizes deletion. Dev never removes
+the worktree, and the recorded path is not a live existence or exclusivity check.
+Older attempts without a recorded root do not invent one. The reminder follows
+attempt retention; it is not a global inventory of all worktrees.
+
+The `work` tool description teaches this protocol to the lead in every dev
+session; outcome messages repeat the relevant cleanup guidance. No per-project
+AGENTS.md or duplicate dev-cycle skill is required. This provides instructions,
+not a guarantee that every model will follow them correctly.
 
 Session/task/attempt/generation identify every observation. Interrupting the
 lead, stopping all work, navigating sessions, or shutting down invalidates the
@@ -94,6 +113,10 @@ Operational records and temporary full logs live in
 `<dev-data-home>/work/attempts/<attempt>/`. Save/read maintenance retains at most
 seven days from completion and the newest 64 completed results in that window.
 Active or unresolved attempts are excluded from that pruning.
+
+The default data home is `.dev/` inside the dev checkout, ignored by Git.
+`DEV_DATA_HOME` and `--data-home` remain explicit runtime-directory overrides;
+they do not select a different dispatch policy.
 
 Pi child conversations live separately in `<dev-data-home>/child-sessions/`, so
 `--continue` does not select a child as the lead. Conversation files, preferences,

@@ -1,0 +1,77 @@
+{
+  "rules": [
+    {
+      "when": "Indagine sul codice o diagnosi: capire un comportamento, ricostruirne la causa o la storia.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Ricerca: consultare documentazione, fonti tecniche aggiornate o fonti per una ricerca personale.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Architettura: analizzare o confrontare tipi, moduli, confini e alternative progettuali.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Pianificazione e specifiche: preparare piani, requisiti, criteri di accettazione o una suddivisione in ticket.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Implementazione di una funzionalità: aggiungere il comportamento descritto da una specifica o da un incarico approvato.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Correzione di un bug: riprodurre e correggere un difetto del comportamento esistente.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Refactoring: riorganizzare o semplificare il codice mantenendo il comportamento richiesto.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Prestazioni: analizzare un collo di bottiglia e proporre o implementare un miglioramento misurabile.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Hillclimb: confrontare iterativamente candidati rispetto a una metrica e a condizioni di arresto definite.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Prototipo o spike: realizzare un esperimento circoscritto per verificare una fattibilità o confrontare alternative.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Interfacce e lavoro visuale: progettare o modificare una UI e valutarla rispetto a schermate e feedback.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Test e verifica: scrivere o analizzare test, esercitare un artefatto e interpretare risultati di build o controlli.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Review Standards: revisione indipendente di standard di codice, architettura e qualità dei test.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Review Spec: revisione indipendente della corrispondenza tra modifica, requisiti e perimetro approvato.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Review Adversarial: revisione indipendente di assunzioni, impatti nascosti e modalità di guasto.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Documentazione e scrittura: spiegare un sistema, aggiornare guide o produrre documenti e sintesi.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Continuità e recovery: preparare un handoff, ricostruire lo stato o riconciliare risultati e artefatti di lavori precedenti.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    },
+    {
+      "when": "Manutenzione e operazioni: lavorare su configurazione, dipendenze, tooling, integrazione o preparazione di una consegna.",
+      "use": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+    }
+  ],
+  "default": { "harness": "pi", "model": "openai-codex/gpt-5.6-luna" }
+}
