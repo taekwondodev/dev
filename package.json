@@ -10,6 +10,16 @@
     "dev": "bin/dev.mjs"
   },
   "scripts": {
+    "dev": "node bin/dev.mjs",
+    "dev:general": "node bin/dev.mjs --specialization general",
+    "dev:apple": "node bin/dev.mjs --specialization apple",
+    "dev:save:general": "node bin/dev.mjs --save-specialization general",
+    "dev:save:apple": "node bin/dev.mjs --save-specialization apple",
+    "dev:diagnostics": "node bin/dev.mjs --diagnostics",
+    "dev:probe": "node bin/dev.mjs --probe-runtime",
+    "dev:continue": "node bin/dev.mjs --continue",
+    "dev:resume": "node bin/dev.mjs --resume",
+    "dev:help": "node bin/dev.mjs --help",
     "start": "node bin/dev.mjs",
     "diagnostics": "node bin/dev.mjs --diagnostics",
     "smoke": "node scripts/smoke.mjs",
