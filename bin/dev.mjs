@@ -63,9 +63,11 @@ function validateDiagnostics(services, specialization, resources, verbose = fals
     throw new Error(
       `Pi startup cannot continue for specialization "${specialization.name}":\n${errors.join('\n')}`
     )
-  const { skills } = services.resourceLoader.getSkills()
-  process.stdout.write(`specialization: ${specialization.name}\nskills loaded: ${skills.length}\n`)
   if (verbose) {
+    const { skills } = services.resourceLoader.getSkills()
+    process.stdout.write(
+      `specialization: ${specialization.name}\nskills loaded: ${skills.length}\n`
+    )
     process.stdout.write(
       `resources:\n${resourceSummary(resources)}\nskill provenance:\n${skills.map(({ name, filePath, disableModelInvocation }) => `${name} -> ${filePath}${disableModelInvocation ? ' [hidden]' : ''}`).join('\n')}\n`
     )
@@ -118,7 +120,7 @@ async function main() {
   const resources = composeResources({ cwd: options.cwd, gitRoot: root, specialization })
   if (options.diagnostics) {
     process.stdout.write(
-      `pi: ${packageInfo.version} (${packageInfo.root})\ndata home: ${options.dataHome}\ndispatch: ${readDispatch().path}\nselection: ${selectedName} (${recorded ? 'conversation metadata' : selection.source})\n`
+      `cwd: ${options.cwd}\npi: ${packageInfo.version} (${packageInfo.root})\ndata home: ${options.dataHome}\ndispatch: ${readDispatch().path}\nselection: ${selectedName} (${recorded ? 'conversation metadata' : selection.source})\n`
     )
     process.stdout.write(
       `SOUL.md: ${resources.soulPath}\nresource paths:\n${resourceSummary(resources)}\n`
@@ -137,7 +139,7 @@ async function main() {
       resourceLoaderOptions: {
         additionalSkillPaths: runtimeResources.skillPaths,
         appendSystemPrompt: [specialization.guidance],
-        extensionFactories: [{ path: 'dev:work', factory: work.factory }],
+        extensionFactories: [{ name: 'dev:work', factory: work.factory }],
       },
     })
     const result = await api.createAgentSessionFromServices({

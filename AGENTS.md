@@ -7,8 +7,16 @@ It is general-purpose, with optional specializations such as Apple development.
 
 ## Current state
 
-Only project documentation exists. Runtime configuration, extensions, installers,
-and launch behavior are not implemented.
+The checkout implements the Pi SDK launcher, selectable guidance, private runtime
+state and session-owned background work. Global Pi and the shared workflow library
+remain external dependencies.
+
+## Scope
+
+This file guides changes to the dev repository itself. Daily use belongs in
+`README.md` and `docs/COMMANDS-TERMINAL.md`; contributor setup and verification
+belong in `docs/DEVELOPMENT.md`. When dev runs in another project, preserve Pi's
+native discovery of that project's instructions instead of injecting this file.
 
 ## Development workflow
 

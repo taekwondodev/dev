@@ -1,61 +1,112 @@
 # Comandi da terminale
 
-Da eseguire nella shell, dalla cartella del progetto `dev`, non nella conversazione Pi.
+Da eseguire nella shell, non nella conversazione Pi. Per l'uso quotidiano entra nella repository su cui vuoi lavorare e usa `dev`; la cartella di installazione serve solo per setup e manutenzione.
 Per i comandi da scrivere nella TUI già aperta, vedi [Comandi durante la sessione](COMMANDS-SESSION.md).
 
+## Setup iniziale: dalla cartella di installazione
+
 ```bash
-npm run dev
+cd ~/dev
+npm ci
+npm run setup
+npm link --ignore-scripts
 ```
 
-Avvia `dev` con la TUI nativa di Pi nel progetto corrente.
+Installa le dipendenze di dev, prepara la data home e collega il comando `dev` al checkout tramite npm. Pi globale e la libreria condivisa devono già essere disponibili. Il collegamento non pubblica il pacchetto e non aggiunge dipendenze alle repository su cui lavori.
 
 ```bash
-npm run dev:general
+npm config get prefix
+command -v dev
+```
+
+Verifica il prefisso npm e la disponibilità del comando. Su macOS/Linux la directory `bin` del prefisso deve essere nel `PATH`. Se sposti il checkout, esegui nuovamente `npm link --ignore-scripts` dalla nuova posizione.
+
+## Uso quotidiano: dalla repository di lavoro
+
+```bash
+dev
+```
+
+Avvia la TUI nativa di Pi mantenendo la directory corrente. Pi carica le istruzioni del progetto e degli antenati applicabili, non quelle del checkout di dev solo perché il programma è installato lì.
+
+```bash
+dev --cwd /percorso/del/progetto
+```
+
+Seleziona esplicitamente la directory di lavoro senza doverci entrare prima. La configurazione privata resta nella data home dell'installazione di dev.
+
+```bash
+dev --specialization general
 ```
 
 Avvia una sessione temporanea con la specializzazione generale.
 
 ```bash
-npm run dev:apple
+dev --specialization apple
 ```
 
 Avvia una sessione temporanea con la specializzazione Apple.
 
 ```bash
-npm run dev:save:general
+dev --save-specialization general
 ```
 
 Salva `general` come specializzazione predefinita per il repository corrente.
 
 ```bash
-npm run dev:save:apple
+dev --save-specialization apple
 ```
 
 Salva `apple` come specializzazione predefinita per il repository corrente.
 
 ```bash
-npm run dev:diagnostics
+dev --diagnostics
 ```
 
-Mostra l’installazione globale di Pi, la data home, il percorso del dispatch e le risorse selezionate senza avviare la TUI.
+Mostra la directory di lavoro, l’installazione globale di Pi, la data home, il percorso del dispatch e le risorse selezionate senza avviare la TUI.
 
 ```bash
-npm run dev:probe
+dev --probe-runtime
 ```
 
 Verifica la creazione del runtime e della sessione Pi senza aprire la TUI.
 
 ```bash
-npm run dev:continue
+dev --continue
 ```
 
-Riprende la sessione Pi più recente del progetto corrente.
+Richiede al launcher di riprendere la sessione Pi più recente per la directory di avvio.
 
 ```bash
-npm run dev:resume -- /percorso/sessione.jsonl
+dev --resume /percorso/sessione.jsonl
 ```
 
 Riprende una sessione Pi specifica.
+
+```bash
+dev --help
+```
+
+Mostra le opzioni disponibili del launcher.
+
+## Alternative senza collegamento globale
+
+```bash
+node "$HOME/dev/bin/dev.mjs"
+```
+
+Avvia il launcher direttamente dalla repository di lavoro, mantenendo la directory corrente.
+
+```bash
+npm --prefix "$HOME/dev" start -- --cwd "$PWD"
+npm --prefix "$HOME/dev" run dev:apple -- --cwd "$PWD"
+```
+
+Usa gli alias npm esistenti indicando il progetto esplicitamente. npm esegue gli script nella cartella del pacchetto anche con `--prefix`: omettere `--cwd` seleziona il checkout di dev. `npm start` e `npm run dev` lanciati dentro `~/dev` servono quindi a lavorare su dev stesso. `npm --silent start` nasconde anche il banner di npm.
+
+## Manutenzione: dalla cartella di installazione
+
+I comandi seguenti si eseguono dentro `~/dev`. Per modificare il codice dell'ambiente, vedi [Development](DEVELOPMENT.md).
 
 ```bash
 npm run setup
@@ -82,13 +133,7 @@ npm run rollback -- --ref <revisione>
 Riporta il checkout di `dev` a una revisione specifica, rifiutando modifiche locali o sessioni attive. Se `.dev/` esiste, non accetta una revisione che smetta di ignorarla o ne tracci il contenuto: per tornare al vecchio layout occorre prima ricollocare esplicitamente i dati privati.
 
 ```bash
-npm run smoke
+npm unlink --global dev-pi-environment --ignore-scripts
 ```
 
-Esegue il controllo minimo di risoluzione dell’installazione globale di Pi e della specializzazione predefinita.
-
-```bash
-npm run dev:help
-```
-
-Mostra le opzioni disponibili del launcher.
+Rimuove il collegamento globale e il comando `dev`, senza eliminare il checkout o la sua data home privata. Non usare `npm link dev-pi-environment` nelle repository di lavoro: quello creerebbe un collegamento tra dipendenze, non il comando globale.
