@@ -8,7 +8,7 @@ import { Clock, Effect, FileSystem, Predicate, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 
 import { GenerationId, SessionId, TaskId } from './work-domain.ts'
-import { gitRoot } from './preferences.ts'
+import { gitRoot, globalPiAuthPath } from './preferences.ts'
 import { loadPi, type PiApi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getSpecialization } from './specializations.ts'
@@ -741,10 +741,11 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     catch: toChildError,
   })
   const services = yield* Effect.tryPromise({
-    try: () =>
+    try: async () =>
       loaded.api.createAgentSessionServices({
         cwd: request.cwd,
         agentDir: request.dataHome,
+        modelRuntime: await loaded.api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
         settingsManager,
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],

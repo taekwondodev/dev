@@ -132,14 +132,16 @@ they do not select a different dispatch policy.
 
 Pi child conversations live separately in `<dev-data-home>/child-sessions/`, so
 `--continue` does not select a child as the lead. Conversation files, preferences,
-credentials, worktrees and durable artifacts are outside result retention.
+worktrees and durable artifacts are outside result retention. Pi credentials are
+not part of the dev data home; global Pi and dev share `~/.pi/agent/auth.json`.
 
 Legacy JSON operational records are not imported automatically. Their presence
 blocks opening the new store without changing them. To transition explicitly,
 first stop sessions and establish the state of their processes and writer
 leases. Preserve an offline archive of the entire `work/` directory before
 choosing to start with a new operational store. Keep `child-sessions/`, lead
-conversations, preferences and credentials in place. Archived operational facts
+conversations and preferences in place; the global Pi auth file is independent.
+Archived operational facts
 remain an offline recovery reference, not live records in the new store.
 Do not archive or remove unresolved leases while a writer may still be running.
 

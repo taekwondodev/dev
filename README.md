@@ -12,7 +12,7 @@ Prerequisites: Node 22.23.2 or newer with a corrected bundled SQLite, the global
 
 Run these commands from the dev checkout, not from the project you want to edit:
 
-    cd ~/dev
+    cd ~/Developer/dev
     npm ci
     npm run setup
     npm link --ignore-scripts
@@ -24,7 +24,7 @@ Run these commands from the dev checkout, not from the project you want to edit:
     cd /path/to/your/project
     dev
 
-The launch directory is the working project. You do not need to enter `~/dev` or add a dependency to the project's `package.json`. Use `dev --cwd /path/to/your/project` to select a directory explicitly, or `dev --diagnostics` to inspect the resolved working directory, data home and resources.
+The launch directory is the working project. You do not need to enter `~/Developer/dev` or add a dependency to the project's `package.json`. Use `dev --cwd /path/to/your/project` to select a directory explicitly, or `dev --diagnostics` to inspect the resolved working directory, data home and resources.
 
 Pi discovers project instructions such as `AGENTS.md` from the working directory and its ancestors, not from the executable's location. This checkout's `AGENTS.md` describes development of dev itself; the launcher does not inject it into unrelated projects. Selected guidance from `specializations/*/SOUL.md` is appended separately, without replacing the native project instructions.
 
@@ -38,13 +38,14 @@ Use `dev --specialization apple` for a temporary Apple session, `dev --save-spec
 
 The installation, the working project and private state have separate roles:
 
-    ~/dev/                   dev code and versioned configuration
+    ~/Developer/dev/         dev code and versioned configuration
     /path/to/your/project/   working files and project instructions
-    ~/dev/.dev/              private dev settings, authentication and sessions
+    ~/Developer/dev/.dev/    private dev settings, preferences and sessions
+    ~/.pi/agent/auth.json     global Pi authentication for all Pi and dev sessions
 
-Versioned delegation rules live in `config/crew-dispatch.json`. Private data, logs and runtime locks stay in the installation's `.dev/`, excluded by `.gitignore`, even when launched from another repository. `DEV_DATA_HOME` or `--data-home` changes private storage without changing dispatch. Ignoring `.dev/` is not filesystem access control; never force-add it to Git.
+Versioned delegation rules live in `config/crew-dispatch.json`. Dev's private data, logs and runtime locks stay in the installation's `.dev/`, excluded by `.gitignore`, even when launched from another repository. Pi authentication is deliberately not duplicated there: both global Pi and `dev` use the canonical `~/.pi/agent/auth.json`. `DEV_DATA_HOME` or `--data-home` changes dev's private storage without changing dispatch or authentication. Ignoring `.dev/` is not filesystem access control; never force-add it to Git.
 
-Setup does not copy credentials or merge existing data homes. Use Pi's `/login` flow explicitly. Global Pi, the live workflow library and other profiles remain separately managed; updating or rolling back dev does not restore those dependencies or private state. Cloning dev includes dispatch policy, not authentication or conversation history.
+Setup does not copy credentials or merge existing data homes. Use Pi's `/login` flow explicitly; the credential is stored in the global Pi auth file, whose canonical directory is singular (`~/.pi/agent`, not `~/.pi/agents`). Global Pi, the live workflow library and other profiles remain separately managed; updating or rolling back dev does not restore those dependencies or private state. Cloning dev includes dispatch policy, not authentication or conversation history.
 
 ## Develop dev
 

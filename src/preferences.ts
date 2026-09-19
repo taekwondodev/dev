@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Config, Effect, FileSystem, Predicate, Schema } from 'effect'
 
@@ -70,6 +71,12 @@ export const defaultDataHome: Effect.Effect<string, PreferencesError> = Effect.g
   )
   return resolve(configured)
 })
+
+/**
+ * Pi's authentication is account-wide, unlike dev's sessions and operational
+ * state. Keep the canonical Pi directory independent from DEV_DATA_HOME.
+ */
+export const globalPiAuthPath = (): string => join(homedir(), '.pi', 'agent', 'auth.json')
 
 export const gitRoot = (cwd: string): Effect.Effect<string | undefined> =>
   runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))

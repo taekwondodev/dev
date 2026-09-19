@@ -17,17 +17,18 @@ Existing transcripts and configuration can establish migration requirements, but
 
 Use these sources when selecting integrations. Links on `main` are discovery references; record the tested revision when implementing.
 
-| Decision | Reference |
-| --- | --- |
-| Core behavior, TUI, provider selection, session operations | [Coding-agent README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md) |
-| Resource discovery and invocation semantics | [Skills](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md) |
-| Configuration scopes and defaults | [Settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md) |
-| Tools, events, structured UI, and lifecycle integration | [Extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md) |
-| Embedding versus process integration | [SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md) and [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md) |
-| Persisted sessions and recovery | [Session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md) and [compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md) |
-| Permission and isolation boundary | [Security](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/security.md) |
-| Starting point for independent workers | [Official subagent example](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent) |
-| Existing research and browser components | [Pi skills repository](https://github.com/badlogic/pi-skills) |
+| Decision                                                   | Reference                                                                                                                                                                                                               |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core behavior, TUI, provider selection, session operations | [Coding-agent README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)                                                                                                                   |
+| Resource discovery and invocation semantics                | [Skills](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md)                                                                                                                           |
+| Configuration scopes and defaults                          | [Settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md)                                                                                                                       |
+| Authentication storage and SDK model runtime               | Installed `@earendil-works/pi-coding-agent` `ModelRuntime.create({ authPath })`; canonical global path is `~/.pi/agent/auth.json`                                                                                       |
+| Tools, events, structured UI, and lifecycle integration    | [Extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)                                                                                                                   |
+| Embedding versus process integration                       | [SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md) and [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md)                                     |
+| Persisted sessions and recovery                            | [Session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md) and [compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md) |
+| Permission and isolation boundary                          | [Security](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/security.md)                                                                                                                       |
+| Starting point for independent workers                     | [Official subagent example](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent)                                                                                          |
+| Existing research and browser components                   | [Pi skills repository](https://github.com/badlogic/pi-skills)                                                                                                                                                           |
 
 An example demonstrates an approach, not production parity with the current environment. Verify cancellation, output limits, permissions, resource inheritance, and result delivery before adopting it.
 

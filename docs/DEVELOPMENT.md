@@ -9,7 +9,7 @@ Read [AGENTS.md](../AGENTS.md), [CONTEXT.md](../CONTEXT.md), and the ADRs applic
 Use the shared `dev-cycle` workflow rather than duplicating its rules here. Consult [references](references.md) when choosing Pi APIs, and verify the installed package before relying on an API shape.
 
 ```bash
-cd ~/dev
+cd ~/Developer/dev
 npm ci
 npm run lint
 npm start
@@ -27,10 +27,10 @@ Checks and setup regenerate an ignored module-resolution link to the declaration
 
 - `src/launcher.ts` is the `dev` executable and owns startup selection and the connection to native Pi services and TUI.
 - `src/pi-runtime.ts` resolves the installed global Pi SDK and its declarations.
-- `src/preferences.ts` owns private data paths and specialization preferences.
+- `src/preferences.ts` owns private data paths, the global Pi auth path and specialization preferences.
 - `src/specializations.ts` composes selected guidance and skill paths; portable guidance lives under `specializations/`, not in this repository's `AGENTS.md`.
 - `src/work-*.ts` and `src/pi-child.ts` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership, and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) for the lifecycle authority and transactional storage contract.
-- `config/crew-dispatch.json` is versioned policy; `.dev/` is private state. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
+- `config/crew-dispatch.json` is versioned policy; `.dev/` is private dev state and `~/.pi/agent/auth.json` is the shared Pi credential store. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
 
 The shared workflow library remains external and authoritative under [ADR 0001](adr/0001-shared-workflow-library-source-of-truth.md). Updating this integration does not authorize edits to other profiles, credentials or shared assets.
 

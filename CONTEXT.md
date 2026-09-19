@@ -42,7 +42,9 @@ before changing lifecycle authority, operational storage, revisions or retention
 ## Configuration and private state
 
 The dev checkout versions its dispatch policy in `config/crew-dispatch.json`.
-Private runtime data lives in checkout-local `.dev/`, excluded from Git; explicit
-data-home overrides change private storage only. See
+Private dev runtime data lives in checkout-local `.dev/`, excluded from Git;
+explicit data-home overrides change private storage only. Pi authentication is
+account-wide and lives in the canonical global `~/.pi/agent/auth.json`, shared by
+global Pi and dev. See
 [ADR 0003](docs/adr/0003-versioned-dispatch-local-runtime.md) before changing
 these paths or their migration and version-control boundaries.

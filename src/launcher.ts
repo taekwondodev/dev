@@ -7,6 +7,7 @@ import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
 import {
   acquireRuntime,
   defaultDataHome,
+  globalPiAuthPath,
   gitRoot,
   resolveSelection,
   saveSelection,
@@ -198,10 +199,11 @@ const createRuntime = (
         specialization: specialization.name,
       })
     )
-    const services = yield* fromPromise('Cannot create Pi session services', () =>
+    const services = yield* fromPromise('Cannot create Pi session services', async () =>
       api.createAgentSessionServices({
         cwd: runtimeOptions.cwd,
         agentDir: runtimeOptions.agentDir,
+        modelRuntime: await api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
           appendSystemPrompt: [specialization.guidance],

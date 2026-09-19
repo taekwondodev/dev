@@ -6,7 +6,7 @@ Per i comandi da scrivere nella TUI già aperta, vedi [Comandi durante la sessio
 ## Setup iniziale: dalla cartella di installazione
 
 ```bash
-cd ~/dev
+cd ~/Developer/dev
 npm ci
 npm run setup
 npm link --ignore-scripts
@@ -33,7 +33,7 @@ Avvia la TUI nativa di Pi mantenendo la directory corrente. Pi carica le istruzi
 dev --cwd /percorso/del/progetto
 ```
 
-Seleziona esplicitamente la directory di lavoro senza doverci entrare prima. La configurazione privata resta nella data home dell'installazione di dev.
+Seleziona esplicitamente la directory di lavoro senza doverci entrare prima. Sessioni, preferenze e dati operativi restano nella data home dell'installazione di dev; l'autenticazione Pi resta condivisa nel file globale `~/.pi/agent/auth.json`.
 
 ```bash
 dev --specialization general
@@ -63,7 +63,7 @@ Salva `apple` come specializzazione predefinita per il repository corrente.
 dev --diagnostics
 ```
 
-Mostra la directory di lavoro, l’installazione globale di Pi, la data home, il percorso del dispatch e le risorse selezionate senza avviare la TUI.
+Mostra la directory di lavoro, l’installazione globale di Pi, la data home, il percorso del dispatch e le risorse selezionate senza avviare la TUI. Non stampa né duplica credenziali: `dev` usa l'`auth.json` globale di Pi.
 
 ```bash
 dev --probe-runtime
@@ -98,21 +98,21 @@ node "$HOME/dev/src/launcher.ts"
 Avvia il launcher direttamente dalla repository di lavoro, mantenendo la directory corrente.
 
 ```bash
-npm --prefix "$HOME/dev" start -- --cwd "$PWD"
-npm --prefix "$HOME/dev" run dev:apple -- --cwd "$PWD"
+npm --prefix "$HOME/Developer/dev" start -- --cwd "$PWD"
+npm --prefix "$HOME/Developer/dev" run dev:apple -- --cwd "$PWD"
 ```
 
-Usa gli alias npm esistenti indicando il progetto esplicitamente. npm esegue gli script nella cartella del pacchetto anche con `--prefix`: omettere `--cwd` seleziona il checkout di dev. `npm start` e `npm run dev` lanciati dentro `~/dev` servono quindi a lavorare su dev stesso. `npm --silent start` nasconde anche il banner di npm.
+Usa gli alias npm esistenti indicando il progetto esplicitamente. npm esegue gli script nella cartella del pacchetto anche con `--prefix`: omettere `--cwd` seleziona il checkout di dev. `npm start` e `npm run dev` lanciati dentro `~/Developer/dev` servono quindi a lavorare su dev stesso. `npm --silent start` nasconde anche il banner di npm.
 
 ## Manutenzione: dalla cartella di installazione
 
-I comandi seguenti si eseguono dentro `~/dev`. Per modificare il codice dell'ambiente, vedi [Development](DEVELOPMENT.md).
+I comandi seguenti si eseguono dentro `~/Developer/dev`. Per modificare il codice dell'ambiente, vedi [Development](DEVELOPMENT.md).
 
 ```bash
 npm run setup
 ```
 
-Crea la data home di `dev` (per default `.dev/` nel checkout, ignorata da Git) e registra le versioni osservate di Node, Pi globale e workflow condiviso. Il dispatch resta nel file versionato `config/crew-dispatch.json`.
+Crea la data home di `dev` (per default `.dev/` nel checkout, ignorata da Git) e registra le versioni osservate di Node, Pi globale e workflow condiviso. L'autenticazione resta nel file globale `~/.pi/agent/auth.json`; il dispatch resta nel file versionato `config/crew-dispatch.json`.
 
 ```bash
 npm run setup -- --data-home /tmp/dev-data

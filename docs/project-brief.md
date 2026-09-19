@@ -4,7 +4,7 @@
 
 This is a planning baseline for a personal development environment built on Pi. It is not an implemented configuration or an approved technical architecture.
 
-The user authorized a local Git repository at `~/dev` and documentation of the intended result, efficiency opportunities, starting sequence, and construction references. Installing extensions, changing existing profiles, moving skills, publishing a repository, or retiring Hermes remains separate work requiring authorization.
+The user authorized a local Git repository at `~/Developer/dev` and documentation of the intended result, efficiency opportunities, starting sequence, and construction references. Installing extensions, changing existing profiles, moving skills, publishing a repository, or retiring Hermes remains separate work requiring authorization.
 
 ## Outcome
 

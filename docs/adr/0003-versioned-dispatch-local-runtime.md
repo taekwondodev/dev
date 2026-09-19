@@ -9,15 +9,20 @@ implementation. Resolve it relative to the installed module, never relative to
 the edited project or the runtime data home. A missing or invalid dispatch file
 must not silently replace the configured model policy.
 
-Keep local settings, credentials, sessions, logs, caches and work reservations
-inside checkout-local `.dev/`, with `/.dev/` excluded by `.gitignore`. Preserve
-`DEV_DATA_HOME` and `--data-home` as explicit private-storage overrides; neither
-changes the dispatch policy location. Children receive the resolved data home
-from the lead. Shared workflow rules remain in their existing library.
+Keep dev-local settings, preferences, sessions, logs, caches and work
+reservations inside checkout-local `.dev/`, with `/.dev/` excluded by
+`.gitignore`. Pi authentication is account-wide, so both global Pi and dev use
+the canonical `~/.pi/agent/auth.json`; it is not copied into `.dev/` or changed
+by `DEV_DATA_HOME` and `--data-home`. Those options remain explicit overrides
+for dev-private storage only. Children receive the resolved data home from the
+lead but use the same global Pi auth path. Shared workflow rules remain in
+their existing library.
 
 ## Consequences
 
 - Clones reproduce model routing but do not receive credentials or history.
+- Switching between global Pi and dev no longer requires separate auth files;
+  `/login` updates the shared canonical file.
 - Updating or rolling back code can change dispatch policy, not private data.
 - Maintenance conservatively requires the explicit `/.dev/` ignore rule, no
   negation rules and no tracked `.dev/` contents in the target revision when
