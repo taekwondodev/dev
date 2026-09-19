@@ -8,7 +8,7 @@ import { Clock, Effect, FileSystem, Predicate, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 
 import { GenerationId, SessionId, TaskId } from './work-domain.ts'
-import { gitRoot, globalPiAuthPath } from './preferences.ts'
+import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi, type PiApi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getSpecialization } from './specializations.ts'
@@ -227,7 +227,7 @@ const resolveTaskSkills = Effect.fn('resolveTaskSkills')(function* (
     try: () =>
       api.loadSkills({
         cwd: request.cwd,
-        agentDir: request.dataHome,
+        agentDir: globalPiAgentDir(),
         skillPaths: [...resources.skillPaths],
         includeDefaults: false,
       }),
@@ -728,7 +728,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   })
   const settingsManager = yield* Effect.try({
     try: () =>
-      loaded.api.SettingsManager.create(request.cwd, request.dataHome, {
+      loaded.api.SettingsManager.create(request.cwd, globalPiAgentDir(), {
         projectTrusted,
       }),
     catch: toChildError,
@@ -744,7 +744,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     try: async () =>
       loaded.api.createAgentSessionServices({
         cwd: request.cwd,
-        agentDir: request.dataHome,
+        agentDir: globalPiAgentDir(),
         modelRuntime: await loaded.api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
         settingsManager,
         resourceLoaderOptions: {

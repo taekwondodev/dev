@@ -7,6 +7,7 @@ import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
 import {
   acquireRuntime,
   defaultDataHome,
+  globalPiAgentDir,
   globalPiAuthPath,
   gitRoot,
   resolveSelection,
@@ -366,7 +367,7 @@ const run = Effect.gen(function* () {
         fromPromise('Cannot create Pi runtime', () =>
           api.createAgentSessionRuntime(createRuntimeFactory, {
             cwd: options.cwd,
-            agentDir: dataHome,
+            agentDir: globalPiAgentDir(),
             sessionManager: sessions,
           })
         ),

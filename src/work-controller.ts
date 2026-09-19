@@ -59,6 +59,7 @@ import {
 import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.ts'
 import { compactText, makeWorkStore, type WorkStore } from './work-store.ts'
 import { parseChildMessage } from './work-protocol.ts'
+import { globalPiAgentDir } from './preferences.ts'
 
 const execFilePromise = promisify(execFile)
 
@@ -954,7 +955,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               env: {
                 ...process.env,
                 DEV_DATA_HOME: self.dataHome,
-                PI_CODING_AGENT_DIR: self.dataHome,
+                PI_CODING_AGENT_DIR: globalPiAgentDir(),
               },
             }
             const spawned =
