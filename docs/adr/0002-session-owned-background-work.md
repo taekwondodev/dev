@@ -18,12 +18,12 @@ the parent sends a focused assignment over IPC. Read-only children have an
 inspection-only tool boundary; writers require a distinct verified linked
 worktree. Neither mechanism is an OS sandbox.
 
-`work-extension.mjs` owns Pi events, tools, commands and idle-boundary delivery.
-`work-controller.mjs` owns launch, attempt identity, observed process lifecycle,
-writer leases and interruption. `work-store.mjs` owns bounded operational facts
-and temporary logs. `work-dispatch.mjs` validates configuration without deciding
-natural-language rules. `work-protocol.mjs` parses child observations at the IPC
-boundary. `pi-child.mjs` owns the native child session.
+`work-extension.ts` owns Pi events, tools, commands and idle-boundary delivery.
+`work-controller.ts` owns launch, attempt identity, observed process lifecycle,
+writer leases and interruption. `work-store.ts` owns bounded operational facts
+and temporary logs. `work-dispatch.ts` validates configuration without deciding
+natural-language rules. `work-protocol.ts` parses child observations at the IPC
+boundary. `pi-child.ts` owns the native child session.
 
 Keep full conversation files outside transient result retention and outside the
 lead session directory. One producer owns each transcript, and one controller

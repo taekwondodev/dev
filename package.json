@@ -3,34 +3,51 @@
   "version": "0.1.0",
   "private": true,
   "bin": {
-    "dev": "bin/dev.mjs"
+    "dev": "src/launcher.ts"
   },
   "type": "module",
   "scripts": {
-    "dev": "node bin/dev.mjs",
-    "dev:general": "node bin/dev.mjs --specialization general",
-    "dev:apple": "node bin/dev.mjs --specialization apple",
-    "dev:save:general": "node bin/dev.mjs --save-specialization general",
-    "dev:save:apple": "node bin/dev.mjs --save-specialization apple",
-    "dev:diagnostics": "node bin/dev.mjs --diagnostics",
-    "dev:probe": "node bin/dev.mjs --probe-runtime",
-    "dev:continue": "node bin/dev.mjs --continue",
-    "dev:resume": "node bin/dev.mjs --resume",
-    "dev:help": "node bin/dev.mjs --help",
-    "start": "node bin/dev.mjs",
-    "diagnostics": "node bin/dev.mjs --diagnostics",
-    "smoke": "node scripts/smoke.mjs",
-    "setup": "node scripts/maintain.mjs setup",
-    "update": "node scripts/maintain.mjs update",
-    "rollback": "node scripts/maintain.mjs rollback",
-    "lint": "oxlint --fix .; oxfmt ."
+    "dev": "node src/launcher.ts",
+    "dev:general": "node src/launcher.ts --specialization general",
+    "dev:apple": "node src/launcher.ts --specialization apple",
+    "dev:save:general": "node src/launcher.ts --save-specialization general",
+    "dev:save:apple": "node src/launcher.ts --save-specialization apple",
+    "dev:diagnostics": "node src/launcher.ts --diagnostics",
+    "dev:probe": "node src/launcher.ts --probe-runtime",
+    "dev:continue": "node src/launcher.ts --continue",
+    "dev:resume": "node src/launcher.ts --resume",
+    "dev:help": "node src/launcher.ts --help",
+    "start": "node src/launcher.ts",
+    "diagnostics": "node src/launcher.ts --diagnostics",
+    "smoke": "node scripts/smoke.ts",
+    "setup": "node scripts/maintain.ts setup",
+    "update": "node scripts/maintain.ts update",
+    "rollback": "node scripts/maintain.ts rollback",
+    "types:pi": "node scripts/resolve-pi.ts",
+    "typecheck": "npm run types:pi && tsc --noEmit",
+    "lint:effect": "npm run types:pi && effect-tsgo diagnostics --project tsconfig.json --strict --format text",
+    "lint": "npm run typecheck && npm run lint:effect && oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.115",
+    "@effect/platform-node-shared": "4.0.0-rc.115",
+    "effect": "4.0.0-rc.115"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.45.0",
+    "@types/node": "22.20.4",
     "oxc-standard": "^1.4.0",
     "oxfmt": "^0.48.0",
-    "oxlint": "^1.83.0"
+    "oxlint": "^1.83.0",
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.115"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.23.2"
   }
 }

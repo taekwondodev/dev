@@ -109,10 +109,22 @@ introduced. Unrecognized provider failures remain failures, not quota certainty.
 
 ## Retention and recovery
 
-Operational records and temporary full logs live in
-`<dev-data-home>/work/attempts/<attempt>/`. Save/read maintenance retains at most
-seven days from completion and the newest 64 completed results in that window.
-Active or unresolved attempts are excluded from that pruning.
+Operational records live in the authoritative SQLite database
+`<dev-data-home>/work/attempts.sqlite`; temporary full logs remain in
+`<dev-data-home>/work/attempts/<attempt>/`. Session ownership is stored separately
+from the JSON payload inside the same transaction, so a corrupt payload does not
+expose another session's attempt through unavailable-record diagnostics.
+Normal operations use indexed records rather than scanning every log directory.
+Maintenance retains at most seven days from completion and the newest 64
+completed results in that window, globally. Active or unresolved attempts are
+excluded. Pending log deletion is recoverable and idempotent after reopening.
+
+The store uses native SQLite in a session-scoped worker. Node's minimum is
+22.23.2, and a separate SQLite version check rejects engines without the WAL-reset
+fix. A numerically newer Node release from a different release line can still
+contain an older SQLite. The store uses WAL NORMAL for temporary observations:
+ordinary process crashes are recoverable, but a blackout can lose recent updates.
+This tradeoff does not change the persistence of Pi conversations or source code.
 
 The default data home is `.dev/` inside the dev checkout, ignored by Git.
 `DEV_DATA_HOME` and `--data-home` remain explicit runtime-directory overrides;
@@ -121,6 +133,21 @@ they do not select a different dispatch policy.
 Pi child conversations live separately in `<dev-data-home>/child-sessions/`, so
 `--continue` does not select a child as the lead. Conversation files, preferences,
 credentials, worktrees and durable artifacts are outside result retention.
+
+Legacy JSON operational records are not imported automatically. Their presence
+blocks opening the new store without changing them. To transition explicitly,
+first stop sessions and establish the state of their processes and writer
+leases. Preserve an offline archive of the entire `work/` directory before
+choosing to start with a new operational store. Keep `child-sessions/`, lead
+conversations, preferences and credentials in place. Archived operational facts
+remain an offline recovery reference, not live records in the new store.
+Do not archive or remove unresolved leases while a writer may still be running.
+
+A corrupt or unknown-format database fails closed; it is not automatically reset
+or rebuilt from logs. Preserve the database and its WAL/SHM companions together
+for investigation while sessions are stopped. Never copy just the main database
+from a live WAL store and assume it is a complete backup. Returning to the old
+JSON-based runtime does not convert the new database or restore private state.
 
 After a crash, retained records describe observations, not a survival guarantee.
 An absent PID does not reveal an exit code; a present PID does not prove identity.

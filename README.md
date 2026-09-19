@@ -8,7 +8,7 @@ A personal, terminal-first development environment built on Pi, with shared work
 
 ### One-time setup
 
-Prerequisites: Node 22.19 or newer, the globally installed `pi` executable, and the live shared workflow library exposed at `~/.agents/skills`.
+Prerequisites: Node 22.23.2 or newer with a corrected bundled SQLite, the globally installed `pi` executable, and the live shared workflow library exposed at `~/.agents/skills`. Background work checks SQLite compatibility before opening its store; see [storage and recovery](docs/background-work.md#retention-and-recovery).
 
 Run these commands from the dev checkout, not from the project you want to edit:
 

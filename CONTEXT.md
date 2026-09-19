@@ -36,6 +36,8 @@ process facts; it does not decide workflow progression or certify artifacts.
 Pi owns conversations, and shared dev-cycle owns delegation and recovery policy.
 Read [ADR 0002](docs/adr/0002-session-owned-background-work.md) before changing
 process ownership, resource boundaries or outcome delivery.
+Read [ADR 0004](docs/adr/0004-authoritative-lifecycle-incremental-store.md)
+before changing lifecycle authority, operational storage, revisions or retention.
 
 ## Configuration and private state
 

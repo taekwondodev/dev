@@ -11,20 +11,25 @@ Use the shared `dev-cycle` workflow rather than duplicating its rules here. Cons
 ```bash
 cd ~/dev
 npm ci
+npm run lint
 npm start
 ```
 
-Installs dev-owned dependencies and starts a session whose working project is dev itself. The npm scripts run in this checkout. To investigate another project with the same launcher, use `dev` from that project or pass `--cwd` explicitly.
+Installs dev-owned dependencies, checks the checkout and starts a session whose working project is dev itself. The npm scripts run in this checkout. To investigate another project with the same launcher, use `dev` from that project or pass `--cwd` explicitly.
+
+Application and maintenance code is strict, erasable TypeScript using the pinned Effect 4 release candidate. Node's native type stripping runs the sources directly; there is no build directory or runtime loader. Keep the Node minimum in `package.json` when choosing syntax and APIs.
+
+Checks and setup regenerate an ignored module-resolution link to the declarations of the actual global Pi package. Run `npm run types:pi` explicitly after changing Pi if your editor still sees stale declarations. Missing declarations fail the check; do not install a private Pi copy or add replacement ambient types. `DEV_PI_EXECUTABLE` selects the same installation for checking and runtime use.
 
 `npm link --ignore-scripts` links the command to this checkout. Local launcher edits take effect on the next launch without reinstalling or copying the code. Setup, update, rollback and unlink commands are documented in the [maintenance section](COMMANDS-TERMINAL.md#manutenzione-dalla-cartella-di-installazione).
 
 ## Ownership
 
-- `bin/dev.mjs` owns startup selection and connects the native Pi services and TUI.
-- `src/pi-runtime.mjs` resolves the installed global Pi SDK.
-- `src/preferences.mjs` owns private data paths and specialization preferences.
-- `src/specializations.mjs` composes selected guidance and skill paths; portable guidance lives under `specializations/`, not in this repository's `AGENTS.md`.
-- `src/work-*.mjs` and `src/pi-child.mjs` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership.
+- `src/launcher.ts` is the `dev` executable and owns startup selection and the connection to native Pi services and TUI.
+- `src/pi-runtime.ts` resolves the installed global Pi SDK and its declarations.
+- `src/preferences.ts` owns private data paths and specialization preferences.
+- `src/specializations.ts` composes selected guidance and skill paths; portable guidance lives under `specializations/`, not in this repository's `AGENTS.md`.
+- `src/work-*.ts` and `src/pi-child.ts` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership, and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) for the lifecycle authority and transactional storage contract.
 - `config/crew-dispatch.json` is versioned policy; `.dev/` is private state. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
 
 The shared workflow library remains external and authoritative under [ADR 0001](adr/0001-shared-workflow-library-source-of-truth.md). Updating this integration does not authorize edits to other profiles, credentials or shared assets.
@@ -33,11 +38,12 @@ The shared workflow library remains external and authoritative under [ADR 0001](
 
 ```bash
 npm run lint
-npm exec --no -- oxlint .
 npm run smoke
 ```
 
-The lint script applies fixes and formatting across the checkout. Inspect the diff and keep unrelated formatting out of the change. Run oxlint directly as well because the script uses a semicolon between lint and formatting, so the formatter's exit status can mask a lint failure. The smoke command checks launcher diagnostics with temporary private storage; it is not evidence of a successful model response.
+`lint` checks TypeScript, dedicated Effect diagnostics in strict mode, then Oxlint, propagating each failure. It does not fix or format source. In particular, `floatingEffect` is an error at the terminal boundary, not merely an editor diagnostic. `lint:fix` and `format` are separate opt-in mutations; `format:check` checks formatting without writing. Oxlint remains unpatched. The TypeScript-only capitalization/error-constructor exceptions accommodate Effect's Schema and service factories; Effect diagnostics still check their usage.
+
+The smoke command checks launcher diagnostics with temporary private storage; it is not evidence of a successful model response.
 
 ```bash
 npm run dev:probe

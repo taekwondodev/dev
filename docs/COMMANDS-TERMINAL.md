@@ -19,7 +19,7 @@ npm config get prefix
 command -v dev
 ```
 
-Verifica il prefisso npm e la disponibilità del comando. Su macOS/Linux la directory `bin` del prefisso deve essere nel `PATH`. Se sposti il checkout, esegui nuovamente `npm link --ignore-scripts` dalla nuova posizione.
+Verifica il prefisso npm e la disponibilità del comando. Su macOS/Linux la directory `bin` del prefisso deve essere nel `PATH`. Se sposti il checkout o cambia il percorso dell'eseguibile nel pacchetto, esegui nuovamente `npm link --ignore-scripts` dal checkout.
 
 ## Uso quotidiano: dalla repository di lavoro
 
@@ -92,7 +92,7 @@ Mostra le opzioni disponibili del launcher.
 ## Alternative senza collegamento globale
 
 ```bash
-node "$HOME/dev/bin/dev.mjs"
+node "$HOME/dev/src/launcher.ts"
 ```
 
 Avvia il launcher direttamente dalla repository di lavoro, mantenendo la directory corrente.

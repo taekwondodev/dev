@@ -24,6 +24,12 @@ For development work, use `dev-cycle` from the shared library.
 Preserve that library as the single source of truth for shared workflow guidance.
 This repository owns the Pi integration, not a copy of the shared workflow rules.
 
+## Learning more about Effect
+
+Before writing Effect code, read `node_modules/effect/AGENTS.md` completely and
+follow its applicable links. Use `node_modules/effect/src` for APIs the guide
+does not cover. The installed package is the reference for this pinned release.
+
 ## Boundaries
 
 Keep existing environments, credentials, and runtime state separate and unchanged.
