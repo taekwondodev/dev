@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Config, Effect, FileSystem, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import type * as PiSessions from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
 
 export type PiApi = typeof Pi
 
@@ -84,6 +85,25 @@ export const loadPi = Effect.gen(function* () {
       return yield* new PiError({ message: `Installed Pi does not provide ${name}` })
   }
   return { api, packageInfo }
+})
+
+export const findRecentSession = Effect.fnUntraced(function* (
+  packageRoot: string,
+  cwd: string,
+  sessionsPath: string
+) {
+  const sessions: typeof PiSessions = yield* Effect.tryPromise({
+    try: () => import(pathToFileURL(join(packageRoot, 'dist/core/session-manager.js')).href),
+    catch: cause => new PiError({ message: 'Cannot load Pi recent-session discovery', cause }),
+  })
+  if (typeof sessions.findMostRecentSession !== 'function')
+    return yield* new PiError({
+      message: 'Installed Pi does not provide read-only recent-session discovery',
+    })
+  return yield* Effect.try({
+    try: () => sessions.findMostRecentSession(sessionsPath, cwd) ?? undefined,
+    catch: cause => new PiError({ message: 'Cannot find recent Pi session', cause }),
+  })
 })
 
 export const linkPiDeclarations = Effect.gen(function* () {

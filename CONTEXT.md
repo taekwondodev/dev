@@ -38,6 +38,8 @@ Read [ADR 0002](docs/adr/0002-session-owned-background-work.md) before changing
 process ownership, resource boundaries or outcome delivery.
 Read [ADR 0004](docs/adr/0004-authoritative-lifecycle-incremental-store.md)
 before changing lifecycle authority, operational storage, revisions or retention.
+Read [ADR 0005](docs/adr/0005-scoped-runtime-coordination.md) before changing
+concurrent launcher admission, conversation claims or maintenance barriers.
 
 ## Configuration and private state
 

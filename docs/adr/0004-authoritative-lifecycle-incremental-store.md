@@ -127,12 +127,11 @@ Apply private permissions after layout validation. A cleanup failure after a
 committed transaction does not roll back that commit or justify deleting the
 new attempt's logs. Keep its durable cleanup intent for an idempotent retry.
 
-The user selected no automatic legacy import. If legacy `record.json` files
-exist, refuse to open the new store and preserve the originals. Require an
-explicit offline transition rather than silently ignoring old history, resetting
-the database or inferring process cleanup. See
-[operations](../background-work.md#retention-and-recovery) for that boundary.
-No private data migration or durable supervisor is authorized by this change.
+The original decision distinguished legacy `record.json` files with a dedicated
+error and required an offline transition. That compatibility-specific distinction
+was superseded by the user's follow-up to issue #18: the current store accepts
+only its SQLite schema and managed logs, and treats any other layout as
+unsupported without importing or deleting it. No durable supervisor was added.
 
 ## Local verification
 

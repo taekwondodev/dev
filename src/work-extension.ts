@@ -496,12 +496,6 @@ export const createWorkExtension = ({
         scheduleDelivery()
       }
     })
-    pi.on('session_before_switch', () =>
-      context === undefined ? undefined : close('session navigation')
-    )
-    pi.on('session_before_fork', () =>
-      context === undefined ? undefined : close('session navigation')
-    )
     pi.on('session_before_tree', () =>
       context === undefined ? undefined : close('session navigation')
     )

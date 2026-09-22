@@ -49,7 +49,7 @@ const program = Effect.scoped(
       ['src/launcher.ts', '--diagnostics', '--data-home', dataHome],
       checkout
     )
-    if (!output.includes('pi: 0.85.1') || !output.includes('selection: general'))
+    if (!output.includes('pi: 0.87.1') || !output.includes('selection: general'))
       return yield* new SmokeError({ message: `Unexpected diagnostics:\n${output}` })
     yield* Effect.sync(() => {
       console.log(output.trim())

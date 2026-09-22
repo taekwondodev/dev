@@ -101,6 +101,10 @@ wake that invalidated owner. Cancellation does not undo edits. The controller
 observes process exit and surviving owned processes before reporting a terminal
 outcome; signal delivery alone is insufficient. Esc while the lead is running
 also interrupts related work; use `/work stop` while idle.
+Separate dev TUI sessions can run concurrently on different conversations. A
+cancelled switch or fork preview does not close the current session's work;
+confirmed shutdown still does. Conversation ownership does not widen writer
+worktree leases into an OS isolation boundary. See [ADR 0005](adr/0005-scoped-runtime-coordination.md).
 
 Subscription-exhaustion reports block new agents and automatic continuation.
 Existing local commands may finish, and their outcomes still arrive automatically
@@ -135,21 +139,14 @@ Pi child conversations live separately in `<dev-data-home>/child-sessions/`, so
 worktrees and durable artifacts are outside result retention. Pi credentials are
 not part of the dev data home; global Pi and dev share `~/.pi/agent/auth.json`.
 
-Legacy JSON operational records are not imported automatically. Their presence
-blocks opening the new store without changing them. To transition explicitly,
-first stop sessions and establish the state of their processes and writer
-leases. Preserve an offline archive of the entire `work/` directory before
-choosing to start with a new operational store. Keep `child-sessions/`, lead
-conversations and preferences in place; the global Pi auth file is independent.
-Archived operational facts
-remain an offline recovery reference, not live records in the new store.
-Do not archive or remove unresolved leases while a writer may still be running.
+The work store accepts only its current SQLite schema and managed log files.
+Older JSON records are not imported or converted; files outside the current
+layout are rejected as unsupported. The store does not delete such files.
 
 A corrupt or unknown-format database fails closed; it is not automatically reset
 or rebuilt from logs. Preserve the database and its WAL/SHM companions together
 for investigation while sessions are stopped. Never copy just the main database
-from a live WAL store and assume it is a complete backup. Returning to the old
-JSON-based runtime does not convert the new database or restore private state.
+from a live WAL store and assume it is a complete backup.
 
 After a crash, retained records describe observations, not a survival guarantee.
 An absent PID does not reveal an exit code; a present PID does not prove identity.
@@ -164,7 +161,7 @@ Changed or unknown artifacts require reconciliation before accepting a result.
 
 ## Evidence boundary
 
-The implementation targets the installed Pi 0.85.1 SDK. Issue #12 retains
+The implementation targets the installed Pi 0.86.1 SDK. Issue #12 retains
 daily-use acceptance: no new test suite, fixtures, benchmark campaign or prescribed
 manual checklist. Local execution evidence is reported with delivery; no
 reliability, efficiency or reasoning-quality improvement is inferred from the

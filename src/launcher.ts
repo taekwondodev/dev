@@ -5,7 +5,6 @@ import { Effect, Option, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
 import {
-  acquireRuntime,
   defaultDataHome,
   globalPiAgentDir,
   globalPiAuthPath,
@@ -22,9 +21,11 @@ import {
   type ComposedResources,
   type Specialization,
 } from './specializations.ts'
-import { loadPi, type PiApi } from './pi-runtime.ts'
+import { findRecentSession, loadPi, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { readDispatch } from './work-dispatch.ts'
+import { acquireRuntime } from './runtime-coordination.ts'
+import { createSessionGuard } from './session-guard.ts'
 
 export class LauncherError extends Schema.TaggedError<LauncherError>()('LauncherError', {
   message: Schema.String,
@@ -185,10 +186,13 @@ const createRuntime = (
   api: PiApi,
   dataHome: string,
   specialization: Specialization,
-  options: LaunchOptions,
+  guard: ReturnType<typeof createSessionGuard>,
   runtimeOptions: RuntimeFactoryOptions
 ): Effect.Effect<RuntimeFactoryResult, LauncherError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    yield* guard
+      .protect(runtimeOptions.sessionManager)
+      .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot claim Pi conversation')))
     const resources = yield* composeResources({
       cwd: runtimeOptions.cwd,
       gitRoot: yield* gitRoot(runtimeOptions.cwd),
@@ -208,7 +212,10 @@ const createRuntime = (
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
           appendSystemPrompt: [specialization.guidance],
-          extensionFactories: [{ name: 'dev:work', factory: work.factory }],
+          extensionFactories: [
+            { name: 'dev:session-guard', factory: guard.factory },
+            { name: 'dev:work', factory: work.factory },
+          ],
         },
       })
     )
@@ -306,18 +313,26 @@ const run = Effect.gen(function* () {
     )
       return
   }
+  const lease = yield* acquireRuntime(dataHome)
+  const guard = createSessionGuard(lease)
   const { api, packageInfo } = yield* loadPi.pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load Pi'))
   )
   const sessionsPath = yield* sessionDir(dataHome).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
   )
-  const sessions = yield* fromSync('Cannot create Pi session manager', () => {
-    if (options.resume !== undefined)
-      return api.SessionManager.open(options.resume, sessionsPath, options.cwd)
-    if (options.continueSession) return api.SessionManager.continueRecent(options.cwd, sessionsPath)
-    return api.SessionManager.create(options.cwd, sessionsPath)
-  })
+  const resumedPath =
+    options.resume ??
+    (options.continueSession
+      ? yield* findRecentSession(packageInfo.root, options.cwd, sessionsPath)
+      : undefined)
+  if (resumedPath !== undefined) yield* lease.protect({ path: resumedPath })
+  const sessions = yield* fromSync('Cannot create Pi session manager', () =>
+    resumedPath === undefined
+      ? api.SessionManager.create(options.cwd, sessionsPath)
+      : api.SessionManager.open(resumedPath, sessionsPath, options.cwd)
+  )
+  if (!options.diagnostics) yield* guard.protect(sessions)
   const recorded =
     options.resume !== undefined || options.continueSession
       ? specializationFromSession(sessions)
@@ -359,7 +374,7 @@ const run = Effect.gen(function* () {
   const context = yield* Effect.context<FileSystem.FileSystem>()
   const createRuntimeFactory: RuntimeFactory = runtimeOptions =>
     Effect.runPromiseWith(context)(
-      createRuntime(api, dataHome, specialization, options, runtimeOptions)
+      createRuntime(api, dataHome, specialization, guard, runtimeOptions)
     )
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
@@ -373,6 +388,7 @@ const run = Effect.gen(function* () {
         ),
         disposeRuntime
       )
+      yield* Effect.sync(() => guard.bind(runtime))
       yield* fromSync('Pi startup diagnostics failed', () =>
         validateDiagnostics(runtime.services, specialization, resources, options.probeRuntime)
       )
@@ -390,9 +406,6 @@ const run = Effect.gen(function* () {
         })
         return
       }
-      const lease = yield* Effect.acquireRelease(acquireRuntime(dataHome), value =>
-        value.release.pipe(Effect.orDie)
-      )
       const release = lease.release.pipe(Effect.orDie)
       yield* Effect.acquireRelease(installSignalHandlers(runtime, release), ({ remove }) =>
         Effect.sync(remove)
@@ -401,7 +414,7 @@ const run = Effect.gen(function* () {
     })
   )
   yield* sessionProgram
-})
+}).pipe(Effect.scoped)
 
 const program = run.pipe(
   Effect.catch(error =>

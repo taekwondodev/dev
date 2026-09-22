@@ -331,11 +331,10 @@ const assertManagedLayout = (root: string, databasePath: string): boolean => {
     if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) fail('unsafe-path')
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (entry.isSymbolicLink() || !entry.isDirectory() || !isAttemptId(entry.name))
-        fail(entry.name === 'record.json' ? 'legacy-format' : 'unsupported-format')
+        fail('unsupported-format')
       const directory = join(root, entry.name)
       for (const child of readdirSync(directory, { withFileTypes: true })) {
         if (child.isSymbolicLink()) fail('unsafe-path')
-        if (child.name === 'record.json') fail('legacy-format')
         if (!child.isFile() || !LOG_FILES.has(child.name)) fail('unsupported-format')
       }
     }
@@ -403,13 +402,6 @@ const canonicalCatalog = (): string => {
 const validateExistingSchema = (db: DatabaseSync): void => {
   const userVersionRow = db.prepare('PRAGMA user_version').get()
   const userVersion = numberField(userVersionRow ?? {}, 'user_version')
-  const objectCount = numberField(
-    db
-      .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
-      .get() ?? {},
-    'count'
-  )
-  if (userVersion === 0 && objectCount === 0) fail('unsupported-format')
   if (userVersion !== DATABASE_VERSION) fail('unsupported-format')
   if (schemaCatalog(db) !== canonicalCatalog()) fail('unsupported-format')
 }

@@ -92,7 +92,6 @@ const codeOf = (cause: unknown): string | undefined => {
 }
 
 const persistenceMessage = (code: string): string => {
-  if (code === 'legacy-format') return 'Legacy work records require an explicit offline transition'
   if (code === 'unsupported-format') return 'Work store format is unsupported'
   if (code === 'corrupt-database') return 'Work store database is corrupt'
   if (code === 'unsafe-path') return 'Work store path is unsafe'
@@ -203,9 +202,7 @@ const inspectLayout = async (root: string, databasePath: string): Promise<void> 
   for (const entry of entries) {
     if (entry.isSymbolicLink()) throw new StorePreparationError('unsafe-path')
     if (!entry.isDirectory() || !isAttemptId(entry.name))
-      throw new StorePreparationError(
-        entry.name === 'record.json' ? 'legacy-format' : 'unsupported-format'
-      )
+      throw new StorePreparationError('unsupported-format')
     const directory = join(root, entry.name)
     let children
     try {
@@ -215,7 +212,6 @@ const inspectLayout = async (root: string, databasePath: string): Promise<void> 
     }
     for (const child of children) {
       if (child.isSymbolicLink()) throw new StorePreparationError('unsafe-path')
-      if (child.name === 'record.json') throw new StorePreparationError('legacy-format')
       if (!child.isFile() || !LOG_FILE_NAMES.has(child.name))
         throw new StorePreparationError('unsupported-format')
     }

@@ -5,7 +5,7 @@
 The initial investigation was read-only. These are observations from the planning session, not permanent assertions about the machine:
 
 - Shared skills were exposed at `~/.agents/skills`, resolving to `~/Developer/skills/skills`.
-- The installed `@earendil-works/pi-coding-agent` package declared version `0.84.2`. Current upstream documentation was newer, so each intended API needs a local compatibility check.
+- The installed `@earendil-works/pi-coding-agent` package declares version `0.87.1`. The upgrade from `0.87.0` was verified against the published package, installed declarations, and repository checks. This patch adds model/provider support and fixes compaction, mode validation, image-only OpenAI-compatible requests, and Anthropic OAuth metadata; the relevant SDK declarations used by `dev` are unchanged, so no source compatibility change was required.
 - Calling the installed `loadSkills` and `formatSkillsForPrompt` on the shared directory produced 55 loaded skills, eight catalog entries, and no diagnostics. `dev-cycle` was absent from that catalog because its frontmatter disables model invocation. This probe checked discovery and formatting, not model behavior.
 - The Apple usage sample was the 30 most recent root sessions with source `desktop` or `cli` and more than ten messages in `~/.hermes/profiles/apple-dev/state.db`, from session `20260908_011855_4953b2` through `20260917_170745_4a0c9c`. Tool calls were deduplicated by session and call identifier. This sample excludes child work and is not a benchmark or a complete workload census.
 - Existing Apple guidance is under `~/.hermes/profiles/apple-dev/skills`. Shared eval scripts under `~/Developer/skills/skills/eval/scripts` include Hermes-specific launch and trace handling.

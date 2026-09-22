@@ -58,7 +58,7 @@ Per **avviare** un comando in background o un figlio, chiedilo al lead in lingua
 
 ## Sessione e modello: comandi nativi di Pi
 
-Questi sono i principali comandi nativi, verificati nell'installazione Pi 0.85.1; non sono aggiunte di `dev`.
+Questi sono i principali comandi nativi, verificati nell'installazione Pi 0.86.1; non sono aggiunte di `dev`.
 
 ```text
 /model

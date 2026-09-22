@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, FileSystem, Schema } from 'effect'
-import { assertNoActiveRuntime, defaultDataHome, sessionDir } from '../src/preferences.ts'
+import { defaultDataHome, sessionDir } from '../src/preferences.ts'
+import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 
 export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('MaintenanceError', {
@@ -70,6 +71,7 @@ const setup = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const dataHome = argument('--data-home') ?? (yield* defaultDataHome)
+    yield* acquireMaintenance
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
     const home = process.env.HOME ?? process.env.USERPROFILE
@@ -97,12 +99,14 @@ const setup = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =
     yield* Effect.sync(() => {
       process.stdout.write(`setup recorded dependencies in ${dataHome}\n`)
     })
-  }).pipe(Effect.mapError(error => toMaintenanceError(error, 'Setup failed')))
+  }).pipe(
+    Effect.scoped,
+    Effect.mapError(error => toMaintenanceError(error, 'Setup failed'))
+  )
 
 const update = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const dataHome = argument('--data-home') ?? (yield* defaultDataHome)
-    yield* assertNoActiveRuntime(dataHome)
+    yield* acquireMaintenance
     if ((yield* run('git', ['status', '--porcelain'])) !== '')
       return yield* new MaintenanceError({
         message:
@@ -116,12 +120,14 @@ const update = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> 
     yield* Effect.sync(() => {
       process.stdout.write(`updated dev checkout from ${remote}/${branch}\n`)
     })
-  }).pipe(Effect.mapError(error => toMaintenanceError(error, 'Update failed')))
+  }).pipe(
+    Effect.scoped,
+    Effect.mapError(error => toMaintenanceError(error, 'Update failed'))
+  )
 
 const rollback = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const dataHome = argument('--data-home') ?? (yield* defaultDataHome)
-    yield* assertNoActiveRuntime(dataHome)
+    yield* acquireMaintenance
     const ref = argument('--ref')
     if (ref === undefined)
       return yield* new MaintenanceError({
@@ -145,7 +151,10 @@ const rollback = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem
         `rolled dev checkout back to ${ref}; external Pi, workflow, credentials and sessions were not changed\n`
       )
     })
-  }).pipe(Effect.mapError(error => toMaintenanceError(error, 'Rollback failed')))
+  }).pipe(
+    Effect.scoped,
+    Effect.mapError(error => toMaintenanceError(error, 'Rollback failed'))
+  )
 
 const program = Effect.gen(function* () {
   const command = process.argv[2] ?? 'setup'

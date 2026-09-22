@@ -28,6 +28,7 @@ dev
 ```
 
 Avvia la TUI nativa di Pi mantenendo la directory corrente. Pi carica le istruzioni del progetto e degli antenati applicabili, non quelle del checkout di dev solo perché il programma è installato lì.
+Puoi aprire un'altra TUI su un repository indipendente con la stessa data home. Una conversazione già aperta da un'altra sessione dev viene rifiutata; le sessioni indipendenti restano utilizzabili.
 
 ```bash
 dev --cwd /percorso/del/progetto
@@ -76,6 +77,7 @@ dev --continue
 ```
 
 Richiede al launcher di riprendere la sessione Pi più recente per la directory di avvio.
+La scelta usa la data di modifica del file e la directory registrata nell'intestazione Pi, non la data dell'ultimo messaggio. Se la conversazione scelta è già aperta, il comando fallisce: non passa automaticamente alla successiva.
 
 ```bash
 dev --resume /percorso/sessione.jsonl
@@ -131,6 +133,8 @@ npm run rollback -- --ref <revisione>
 ```
 
 Riporta il checkout di `dev` a una revisione specifica, rifiutando modifiche locali o sessioni attive. Se `.dev/` esiste, non accetta una revisione che smetta di ignorarla o ne tracci il contenuto: per tornare al vecchio layout occorre prima ricollocare esplicitamente i dati privati.
+
+Setup, update e rollback richiedono l'esclusiva sull'installazione anche se le TUI usano `--data-home` diversi. Chiudi tutte le TUI dev prima della manutenzione. I file di coordinamento sotto `.dev/coordination/` restano sul disco dopo l'uscita; non rimuoverli durante l'uso. I vecchi `runtime.lock` non vengono più letti né cancellati: le revisioni precedenti di dev non partecipano al nuovo protocollo. Pi globale e programmi esterni a dev non partecipano a questa protezione. Dettagli e limiti: [ADR 0005](adr/0005-scoped-runtime-coordination.md).
 
 ```bash
 npm unlink --global dev-pi-environment --ignore-scripts
