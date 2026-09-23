@@ -1,4 +1,233 @@
-# Handoff: concurrent dev sessions
+# Handoff: issue #24, local implementation accepted with limits
+
+## Delivery authorization
+
+The user subsequently authorized committing all current changes, pushing main,
+closing #24, and updating #18 with closure if its completed work supports it.
+This supersedes the earlier no-commit, no-push and no-closure restrictions below.
+The push also includes the existing #18 implementation commit
+97a949f64e3625857053b751209c5ffbc95e3cc0. Published revisions and final issue states
+are recorded in the respective GitHub issue comments after remote verification.
+
+## Final user decision
+
+After the real TUI observations and successful narrow Spec follow-up, the user
+explicitly chose: "Sì: accetto questi limiti e verifico il resto nell’uso quotidiano".
+This accepts local implementation and the remaining dynamic coverage limits:
+final provider error, compaction/context edits and rare interleavings were not
+observed. Do not relabel these as tested. The local task is complete on that basis;
+no further test campaign or reviewer is running. No commit, push or issue closure
+is authorized. This decision supersedes the earlier verification pause below.
+
+## Latest manual observation
+
+After the pause below, the user requested manual instructions and supplied the
+actual TUI result. Confirmed tree navigation left /work usable, the previous
+prova-tree process was cancelled, and subsequent rapido and tardivo processes
+completed with READY_OK and LATE_OK and automatic lead summaries. This supplies
+ordinary-path behavior evidence on the post-review source, not fault-injected
+proof of rare races or final provider failures.
+
+Read-only transcript analysis independently confirmed the active branch has
+one outcome receipt for each completed attempt and none for the cancelled one:
+
+- rapido b78febfe-2861-4117-bd84-a5ccc3664de9: receipt bf561132.
+- tardivo 1ee6fcb2-24b2-4b6e-9984-f3a9d27f1e05: receipt 23f5ffc4.
+- prova-tree 1ccabf8b-33e7-4fcc-b33b-1656603e63c0: no outcome receipt.
+
+Observed leaf: 742a754e. Source:
+/Users/taekwondodev/.hermes/cache/scratch/dev24-manual.xEjzC7/sessions/2026-09-23T07-57-05-469Z_01a0cd44-ae3c-73f9-98e6-1dba0377a493.jsonl
+
+The first active branch contained no compaction/context edits and no assistant
+error stops. Those cases remain unverified; the later observation below covers
+cancellation of an in-progress tree summary. No assistant-initiated provider calls or
+interaction with the user's live TUI were used to inspect the evidence.
+
+Affected-axis re-review deleg_16173d6b completed. Adversarial dismissed both
+original publication-race findings at source level, but kept partial coverage
+because their controlled interleavings were not exercised. Spec retained the
+same runtime limits and confirmed another source defect: Esc during a cancellable
+tree summary triggered work interruption because !ctx.isIdle also includes branch
+summarization. Pi's own Esc handler only aborts the summary in that situation.
+
+The current adapter now checks the bound session.isStreaming for voluntary
+interruption instead. Installed Pi defines this as the active lead run, distinct
+from standalone tree summarization. This change passed lint, including
+TypeScript, Effect diagnostics and Oxlint, targeted formatting, smoke and
+git diff --check. The first manual result predates the Esc correction and is
+not proof of it; the following separate observation exercises that correction.
+
+The user supplied the requested cancelled-summary observation after instructions
+to quit and restart the launcher (/reload is insufficient for its statically
+imported factory). Native TUI status was "Branch summarization cancelled";
+/work then showed prova-summary, attempt 29c92939-4ebc-429e-8dd7-41fa69df9ace,
+still running, with no unavailable records and agentsBlocked false.
+
+Read-only session inspection independently found the same running snapshot in
+entry 79ae82c8, followed by outcome receipt 7826c0ef reporting completed, exit
+code 0 and stdout SUMMARY_OK for that attempt. Source:
+/Users/taekwondodev/.hermes/cache/scratch/dev24-manual.xEjzC7/sessions/2026-09-23T08-30-34-388Z_01a0cd63-5594-732d-8578-53e20235f049.jsonl
+The native cancellation status is the user's TUI observation, not an event
+invented from the JSONL. No branch_summary or compaction entry was present.
+
+Narrow independent Spec follow-up deleg_9ef8c44d completed with coverage complete
+and no findings for the Esc change and its voluntary lead-interruption regression.
+It explicitly does not claim full #24 acceptance. Its cited transcript evidence
+matches the parent's independent readback above. All reported source defects
+have now been corrected and reviewed; broader dynamic coverage remains limited.
+No reviewer is still running. Do not rerun the full review or impose a new suite
+or exhaustive interleaving campaign: the approved Testing Decisions and
+principle-prove-it-works require proportional actual-boundary observation.
+No automated behavioral check is currently running. Broader provider-error,
+compaction/context-edit and controlled race scenarios remain unobserved; the
+user explicitly accepted these limits in the final decision above. The earlier
+pause and initial review below remain historical context. No commit, push or
+issue closure is authorized.
+
+## Active task and user decision
+
+Canonical contract: https://github.com/taekwondodev/dev/issues/24
+
+The user authorized local implementation, checks and independent review, without
+commit, push or issue closure. After an automated behavioral probe was blocked,
+the user initially chose to wait, then requested manual instructions, supplied
+the observations above and explicitly accepted the residual limits. Static
+checks and SDK creation alone were never treated as sufficient acceptance.
+
+Mode: dev-cycle, medium implementation unit, locally complete with the explicit
+coverage decision above. Further development or delivery needs a new request;
+do not restart planning or repeat the manual tests just to resume context.
+
+## Repository and scope
+
+- Checkout: /Users/taekwondodev/Developer/dev
+- Branch: main, one pre-existing commit ahead of origin/main.
+- Base and current HEAD: 97a949f64e3625857053b751209c5ffbc95e3cc0.
+- This session made no commit, staged changes, push or issue closure.
+- Issue #24 was assigned to taekwondodev and the assignment was read back.
+- No schemas on disk, dependencies, dispatch settings, claims, credentials,
+  other profiles or shared workflow guidance were changed.
+
+Changed product files:
+
+- src/work-extension.ts: stable controller on confirmed session_tree; validated
+  raw-branch receipts; ready boundary drafts and late idle sends; generic final
+  error gate distinct from quota; visible delivery/cleanup errors and honest
+  cancel-all results. Inbox publication reservations fence asynchronous callbacks.
+- src/work-controller.ts: synchronous batched delivery eligibility and quota;
+  captures previous attempt IDs inside generation rotation's admission permit.
+- src/work-domain.ts: replaces internal canDeliver with batched deliveryStatus.
+- docs/background-work.md and docs/adr/0002-session-owned-background-work.md:
+  align delivery, stable owner and failure behavior with the approved contract.
+
+HANDOFF.md preserves the older #18 handoff below as historical material. Its old
+uncommitted-state claims and resume instructions do not describe this task.
+
+## Verification and review state
+
+Latest source passed npm run lint: TypeScript, strict Effect diagnostics and
+Oxlint, with no reported errors or warnings. Changed-file oxfmt --check and
+git diff --check passed. npm run smoke also passed after the final Esc correction.
+
+The existing SDK runtime probe exited 0 with "runtime probe: ok" BEFORE the
+post-review race fixes. It proves runtime creation, not outcome delivery or
+interactive behavior. Process proc_2eab564ef5fa is exited; no session-owned
+background command remains running. Its data home was reported as
+/var/folders/bh/xn2xmnl57md2whlcgb5916300000gq/T/dev-24-probe-HB9ZI3.
+The background tool did not inherit the foreground TMPDIR export; for future
+temporary work pass the explicit Hermes scratch path, never rely on that export.
+
+Repository-wide format checking already failed before changes on
+docs/agents/triage-labels.md and docs/project-brief.md. Neither was modified.
+
+Independent review batch deleg_a54dcd7e:
+
+- Standards: complete, no findings, on the pre-fix version.
+- Spec: source review found no mismatch, but coverage is partial because the
+  behavioral observation was blocked. The user declined to waive that gap.
+- Adversarial: two grounded blockers in the pre-fix adapter. An overlapping
+  inspection failure could overwrite a newer publication reservation. An idle
+  send during a later extension's settlement handler could be deferred by Pi
+  and eventually enter a branch whose generation had already been invalidated.
+
+Both findings have proposed source fixes in the current working tree, but have
+NOT received behavioral proof or an affected-axis re-review:
+
+1. Each publication state has a unique object identity. Inspections and send
+   acknowledgements capture that identity; stale callbacks cannot mutate newer
+   reservations. Failure batches reserve all entries before awaiting persistence,
+   and recording-failure is not eligible for publication.
+2. bindSession observes public session agent_start/agent_settled events. Idle
+   delivery remains blocked through extension settlement dispatch. The public
+   settled event schedules delivery only after all extension handlers; another
+   run or navigation is rechecked before sending. Shutdown removes the observer;
+   session_start restores it when reopening the same bound session after reload.
+
+Review transcripts, if still retained:
+/Users/taekwondodev/.hermes/cache/delegation/live/deleg_a54dcd7e/task-0.log
+/Users/taekwondodev/.hermes/cache/delegation/live/deleg_a54dcd7e/task-1.log
+/Users/taekwondodev/.hermes/cache/delegation/live/deleg_a54dcd7e/task-2.log
+
+## Evidence and failed approach
+
+Installed Pi is 0.87.1, Node is 26.7.0. Relevant installed sources are beneath
+node_modules/@earendil-works/pi-coding-agent/dist/core/:
+
+- agent-session.js:1078-1165 runs retry/compaction recovery before the final
+  agent_before_settle boundary. Use its outcome, not transient message errors.
+- extensions/runner.js:662-708 replaces returned entries and continue fields;
+  preserve preceding handlers' accumulated values.
+- agent-session.js:531-553 emits the public settled event after extension
+  handlers; :875-876 isIdle alone does not establish that barrier.
+- agent-session.js:1481-1519 may defer triggered sends during extension
+  settlement dispatch, or await an entire new run. Promise fulfillment is not
+  itself a transcript receipt.
+- session-manager getBranch supplies raw active-branch entries. Projected
+  messages may omit receipts after compaction/context edits.
+
+Two inline Node commands intended to observe the real Pi/work seam returned
+"Blocked by shell hook" without executing: the original command and a reduced
+version without cleanup. No behavioral output exists. Do not claim either ran,
+repeat the same blocked approach through another execution route, or infer why
+the hook blocked it. No new test suite, fixture files or model calls were made.
+
+Principles that changed choices: Make Operations Idempotent selected raw receipt
+readback; Model the Domain kept conversation lifetime, generation, quota and
+reactivation distinct; Prove It Works prevents calling source checks runtime
+proof. Shared skill procedures remain external.
+
+## Pending and next completion criterion
+
+1. On user resumption, establish a permitted observation of the existing Pi/work
+   boundary without bypassing the shell hook. Keep the approved no-new-suite,
+   no-fixture, no-benchmark and no-prescribed-manual-checklist limits. Observe
+   the actual behavior relevant to #24 and the two post-review race fixes.
+2. Rerun relevant existing checks and the runtime probe on the final source.
+3. Request only affected-axis re-review against the same base, including the
+   fixes and their regressions. Resolve Spec's runtime coverage gap explicitly.
+   The initial clean Standards result does not review subsequent adapter edits.
+4. Report measured behavior and remaining limits. No commit, push, publication
+   or issue closure is authorized.
+
+Next completion criterion: permitted execution supplies actual Pi/work behavior
+evidence for the approved contract and race fixes, and affected review blockers
+and coverage gaps are resolved. Until then, the implementation is pending, not done.
+
+## Resume Prompt
+
+Read the active #24 section at the top of HANDOFF.md in
+/Users/taekwondodev/Developer/dev. Load session-pickup, dev-cycle and
+principle-prove-it-works from the shared skills library at
+/Users/taekwondodev/Developer/skills/skills. Read GitHub issue #24, reconcile the
+live tree against base 97a949f64e3625857053b751209c5ffbc95e3cc0, and resume from
+Pending toward the behavioral-verification criterion. The user declined to waive
+that gate. Preserve the working tree; do not bypass the shell hook or commit,
+push, close the issue, add suites/fixtures or make provider calls without separate
+authorization. Load code-review and its result contract when re-review is due.
+
+---
+
+# Historical handoff: concurrent dev sessions (#18)
 
 ## Resume update (2026-09-22)
 

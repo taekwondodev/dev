@@ -256,6 +256,11 @@ export interface WorkSnapshot {
   readonly agentsBlocked: boolean
 }
 
+export interface WorkDeliveryStatus {
+  readonly eligible: readonly AttemptId[]
+  readonly agentsBlocked: boolean
+}
+
 export interface LogRequest {
   readonly id: AttemptId
   readonly stream: 'stdout' | 'stderr' | 'result'
@@ -350,7 +355,9 @@ export interface WorkOwnerService {
   readonly cancel: (id: AttemptId, reason?: string) => EffectType<AttemptView, WorkFailure>
   readonly inspect: (id: AttemptId) => EffectType<AttemptDescription, WorkFailure>
   readonly readLog: (request: LogRequest) => EffectType<LogPage, WorkFailure>
-  readonly canDeliver: (attempt: AttemptView) => EffectType<boolean, WorkFailure>
+  readonly deliveryStatus: (
+    attempts: readonly AttemptView[]
+  ) => EffectType<WorkDeliveryStatus, WorkFailure>
   readonly recordDeliveryFailure: (id: AttemptId, message: string) => EffectType<void, WorkFailure>
   readonly dispatch: EffectType<DispatchConfig, WorkFailure>
   readonly interrupt: (reason?: string) => EffectType<void, WorkFailure>

@@ -1,6 +1,6 @@
 # ADR 0005: Scoped admission for concurrent dev sessions
 
-Status: selected for issue [#18](https://github.com/taekwondodev/dev/issues/18). Locally exercised against disposable Pi sessions; not published or accepted as a release.
+Status: accepted for issue [#18](https://github.com/taekwondodev/dev/issues/18). Local evidence and compatibility limits are recorded below; this does not claim release-wide acceptance.
 
 ## Context
 

@@ -18,7 +18,8 @@ the parent sends a focused assignment over IPC. Read-only children have an
 inspection-only tool boundary; writers require a distinct verified linked
 worktree. Neither mechanism is an OS sandbox.
 
-`work-extension.ts` owns Pi events, tools, commands and idle-boundary delivery.
+`work-extension.ts` owns Pi events, tools, commands and outcome delivery at
+`agent_before_settle`, with idle delivery for late outcomes.
 `work-controller.ts` owns launch, attempt identity, observed process lifecycle,
 writer leases and interruption. `work-store.ts` owns bounded operational facts
 and temporary logs. `work-dispatch.ts` validates configuration without deciding
@@ -35,6 +36,19 @@ A generation change suppresses delivery before cancellation. Observe termination
 rather than treating successful signalling as completion. Retained facts after a
 crash neither authorize restart nor certify a PID. Artifact fingerprints report
 changes or uncertainty; they are not acceptance evidence by themselves.
+
+Issue [#24](https://github.com/taekwondodev/dev/issues/24) keeps one controller
+alive for the conversation. Confirmed tree navigation rotates its generation
+and cancels previous work; a cancelled or failed navigation does neither.
+Only confirmed session shutdown/replacement closes the controller permanently.
+Generation invalidation does not reset quota or the adapter's reactivation gate.
+
+Pi's raw active-branch entries acknowledge outcome registration, independently
+of compaction and context edits. Boundary drafts are not receipts. The transient
+inbox schedules delivery; it is not a second delivery database. A final lead-run
+error after native recovery suspends dev-originated automatic continuation until
+new user input, without stopping existing work or passive outcome registration.
+This does not veto other extensions or bypass quota and workflow checkpoints.
 
 ## Consequences
 

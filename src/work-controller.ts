@@ -45,6 +45,7 @@ import {
   type StartRequest,
   type TaskId,
   type WorkFailure,
+  type WorkDeliveryStatus,
   type WorkKind,
   type WorkOwnerService,
   type WorkSnapshot,
@@ -520,8 +521,13 @@ class WorkOwnerImpl implements WorkOwnerService {
     )
   }
 
-  canDeliver(attempt: AttemptView): Effect.Effect<boolean, WorkFailure> {
-    return Effect.sync(() => this.canDeliverUnsafe(attempt))
+  deliveryStatus(attempts: readonly AttemptView[]): Effect.Effect<WorkDeliveryStatus, WorkFailure> {
+    return Effect.sync(() => ({
+      eligible: attempts
+        .filter(attempt => this.canDeliverUnsafe(attempt))
+        .map(attempt => attempt.id),
+      agentsBlocked: this.state.exhausted,
+    }))
   }
 
   recordDeliveryFailure(id: AttemptId, message: string): Effect.Effect<void, WorkFailure> {
@@ -552,12 +558,13 @@ class WorkOwnerImpl implements WorkOwnerService {
     // oxlint-disable-next-line typescript/no-this-alias
     const self = this
     return Effect.gen(function* () {
-      yield* self.admission.withPermit(
+      const previous = yield* self.admission.withPermit(
         Effect.sync(() => {
           self.state.generation = asGenerationId(randomUUID())
+          return [...self.active.keys()]
         })
       )
-      yield* self.cancelMany([...self.active.keys()], reason)
+      yield* self.cancelMany(previous, reason)
     }).pipe(Effect.mapError(toFailure))
   }
 
@@ -1350,6 +1357,8 @@ class WorkOwnerImpl implements WorkOwnerService {
   private canDeliverUnsafe(attempt: AttemptView): boolean {
     return (
       !this.state.closed &&
+      attempt.owner.sessionId === this.sessionId &&
+      attempt.completedAt !== undefined &&
       attempt.owner.generation === this.state.generation &&
       this.latest.get(attempt.owner.taskId) === attempt.id
     )

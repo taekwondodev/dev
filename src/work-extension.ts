@@ -4,6 +4,7 @@ import { WorkOwner, makeWorkOwnerLayer } from './work-controller.ts'
 import {
   asAttemptId,
   asSessionId,
+  AttemptId as AttemptIdSchema,
   WorkError,
   type AgentStartRequest,
   type AttemptId,
@@ -43,11 +44,18 @@ const decodeInput = (input: unknown): Effect.Effect<WorkInput, WorkError> =>
     Effect.mapError(cause => new WorkError({ message: cause.message, cause }))
   )
 
-const DeliveryDetails = Schema.Struct({ attempts: Schema.Array(Schema.String) })
+const decodeDeliveryDetails = Schema.decodeUnknownResult(
+  Schema.Struct({ attempts: Schema.Array(AttemptIdSchema) })
+)
 
 type WorkSession = Pick<
   Pi.AgentSession,
-  'messages' | 'sendCustomMessage' | 'settingsManager' | 'sessionManager'
+  | 'sendCustomMessage'
+  | 'settingsManager'
+  | 'sessionManager'
+  | 'subscribe'
+  | 'isIdle'
+  | 'isStreaming'
 >
 
 interface SessionOwner {
@@ -57,6 +65,34 @@ interface SessionOwner {
 }
 
 type OwnerState = SessionOwner | { readonly _tag: 'closed'; readonly shutdown: Promise<void> }
+
+interface PendingOutcome {
+  attempt: AttemptView
+  publication: {
+    readonly state: 'ready' | 'submitted' | 'sending' | 'recording-failure' | 'failed'
+  }
+}
+
+interface PublicationReservation {
+  readonly item: PendingOutcome
+  readonly publication: PendingOutcome['publication']
+}
+
+const reserve = (
+  reservations: readonly PublicationReservation[],
+  state: PendingOutcome['publication']['state']
+): PublicationReservation[] =>
+  reservations.map(({ item }) => {
+    const publication = { state }
+    item.publication = publication
+    return { item, publication }
+  })
+
+interface DeliveryScope {
+  readonly owner: SessionOwner
+  readonly session: WorkSession
+  readonly context: Pi.ExtensionContext
+}
 
 const withOwner = <A>(
   f: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>
@@ -72,6 +108,8 @@ const summary = (record: AttemptView) => ({
   context: record.context ?? 'unavailable',
   usage: record.usage ?? 'unavailable',
   error: record.error ?? record.observationError ?? record.persistenceError,
+  deliveryError: record.deliveryError,
+  cleanupError: record.cleanupError,
   processObservation: record.processObservation,
   recovery: record.recovery,
 })
@@ -83,19 +121,17 @@ const outcomeMessage = (items: readonly AttemptView[]) => ({
   details: { attempts: items.map(record => record.id) },
 })
 
-const messageDelivered = (session: WorkSession, id: AttemptId): boolean =>
-  session.messages.some(message => {
-    if (
-      message.role !== 'custom' ||
-      !('customType' in message) ||
-      message.customType !== 'dev/work-outcome'
-    )
-      return false
-    const details = Schema.decodeUnknownResult(DeliveryDetails)(
-      'details' in message ? message.details : undefined
-    )
-    return details._tag === 'Success' && details.success.attempts.includes(id)
-  })
+const outcomeAttempts = (
+  entries: readonly (Pi.SessionEntry | Pi.SessionBoundaryDraft)[]
+): Set<AttemptId> => {
+  const ids = new Set<AttemptId>()
+  for (const entry of entries) {
+    if (entry.type !== 'custom_message' || entry.customType !== 'dev/work-outcome') continue
+    const details = decodeDeliveryDetails(entry.details)
+    if (details._tag === 'Success') for (const id of details.success.attempts) ids.add(id)
+  }
+  return ids
+}
 
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
@@ -114,8 +150,11 @@ export const createWorkExtension = ({
   let session: WorkSession | undefined
   let context: Pi.ExtensionContext | undefined
   let removeInputListener: (() => void) | undefined
-  let flushing = false
-  const pending = new Map<AttemptId, AttemptView>()
+  let removeSessionListener: (() => void) | undefined
+  let idleDeliveryReady = false
+  let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
+  let deliveryScheduled = false
+  const pending = new Map<AttemptId, PendingOutcome>()
 
   const ownerRuntime = (
     ctx: Pi.ExtensionContext
@@ -134,8 +173,13 @@ export const createWorkExtension = ({
               sessionId,
               onChange: () => scheduleStatus(),
               onOutcome: attempt => {
-                if (context?.sessionManager.getSessionId() !== sessionId) return
-                pending.set(attempt.id, attempt)
+                if (
+                  context?.sessionManager.getSessionId() !== sessionId ||
+                  sessionOwner?._tag !== 'active' ||
+                  sessionOwner.runtime !== runtime
+                )
+                  return
+                pending.set(attempt.id, { attempt, publication: { state: 'ready' } })
                 scheduleDelivery()
               },
             })
@@ -201,6 +245,7 @@ export const createWorkExtension = ({
         models,
         usage,
         snapshot.agentsBlocked ? 'subscription exhausted; agents blocked' : '',
+        reactivation === 'suspended' ? 'lead failed; automatic reactivation suspended' : '',
       ]
         .filter(Boolean)
         .join(' | ') || undefined
@@ -231,108 +276,164 @@ export const createWorkExtension = ({
     await showStatus(ctx)
   }
 
-  const flush = async (): Promise<void> => {
-    const ctx = context
-    const activeSession = session
-    const currentOwner = sessionOwner
-    if (
-      flushing ||
-      currentOwner === undefined ||
-      currentOwner._tag === 'closed' ||
-      activeSession === undefined ||
-      ctx === undefined ||
-      !ctx.isIdle() ||
-      pending.size === 0
+  const deliveryScope = (): DeliveryScope | undefined =>
+    sessionOwner?._tag === 'active' && session !== undefined && context !== undefined
+      ? { owner: sessionOwner, session, context }
+      : undefined
+
+  const isCurrent = (scope: DeliveryScope): boolean =>
+    sessionOwner === scope.owner &&
+    session === scope.session &&
+    scope.context.sessionManager.getSessionId() === scope.owner.sessionId &&
+    scope.session.sessionManager.getSessionId() === scope.owner.sessionId
+
+  const acknowledge = (scope: DeliveryScope): void => {
+    if (!isCurrent(scope) || pending.size === 0) return
+    const receipts = outcomeAttempts(scope.session.sessionManager.getBranch())
+    for (const id of receipts) pending.delete(id)
+  }
+
+  const isReserved = (scope: DeliveryScope, reservation: PublicationReservation): boolean =>
+    isCurrent(scope) &&
+    pending.get(reservation.item.attempt.id) === reservation.item &&
+    reservation.item.publication === reservation.publication
+
+  const publications = (): PublicationReservation[] =>
+    [...pending.values()].map(item => ({ item, publication: item.publication }))
+
+  const deliveryFailure = async (
+    scope: DeliveryScope,
+    reservations: readonly PublicationReservation[],
+    cause: unknown
+  ): Promise<void> => {
+    acknowledge(scope)
+    const message = cause instanceof Error ? cause.message : String(cause)
+    // Reserve the whole failure batch before suspending. A stale inspection or
+    // acknowledgement must not overwrite a newer send's reservation.
+    const failed = reserve(
+      reservations.filter(item => isReserved(scope, item)),
+      'recording-failure'
     )
-      return
-    flushing = true
-    let drain = true
-    let records: AttemptView[] = []
+    await Promise.all(
+      failed.map(async reservation => {
+        try {
+          if (!isReserved(scope, reservation)) return
+          await scope.owner.runtime.runPromise(
+            withOwner(owner => owner.recordDeliveryFailure(reservation.item.attempt.id, message))
+          )
+        } finally {
+          if (isReserved(scope, reservation)) reserve([reservation], 'failed')
+        }
+      })
+    )
+  }
+
+  // A proposed draft is checked only after its dispatch had a chance to commit.
+  const reconcileSubmitted = async (scope: DeliveryScope): Promise<void> => {
+    acknowledge(scope)
+    const submitted = publications().filter(item => item.publication.state === 'submitted')
+    if (submitted.length > 0)
+      await deliveryFailure(scope, submitted, 'Outcome not acknowledged by the owning conversation')
+  }
+
+  const inspectPending = async (scope: DeliveryScope): Promise<PublicationReservation[]> => {
+    acknowledge(scope)
+    const candidates = publications().filter(
+      item => item.publication.state === 'ready' || item.publication.state === 'failed'
+    )
     try {
-      const snapshot = await currentOwner.runtime.runPromise(withOwner(owner => owner.snapshot))
-      const current = new Map(snapshot.records.map(record => [record.id, record]))
-      for (const [id] of pending) {
-        const latest = current.get(id)
-        const deliverable =
-          latest === undefined
-            ? false
-            : await currentOwner.runtime.runPromise(withOwner(owner => owner.canDeliver(latest)))
-        if (!deliverable || messageDelivered(activeSession, id)) pending.delete(id)
-        else if (latest !== undefined) pending.set(id, latest)
-      }
-      records = [...pending.values()]
-      const outcomes = await Promise.all(
-        records.map(record =>
-          currentOwner.runtime.runPromise(withOwner(owner => owner.inspect(record.id)))
-        )
-      )
-      const isCurrent = () =>
-        sessionOwner === currentOwner &&
-        session === activeSession &&
-        context === ctx &&
-        ctx.isIdle() &&
-        ctx.sessionManager.getSessionId() === currentOwner.sessionId &&
-        activeSession.sessionManager.getSessionId() === currentOwner.sessionId
-      if (!isCurrent()) return
-      const valid: AttemptView[] = []
-      for (const outcome of outcomes) {
-        if (
-          outcome.owner.sessionId === currentOwner.sessionId &&
-          (await currentOwner.runtime.runPromise(withOwner(owner => owner.canDeliver(outcome))))
-        )
-          valid.push(outcome)
-      }
-      if (valid.length === 0 || !isCurrent()) return
-      try {
-        await activeSession.sendCustomMessage(outcomeMessage(valid), {
-          triggerTurn: !snapshot.agentsBlocked && !valid.some(record => record.deliveryError),
-          deliverAs: 'followUp',
+      await Promise.all(
+        candidates.map(async reservation => {
+          const { item } = reservation
+          const attempt = await scope.owner.runtime.runPromise(
+            withOwner(owner => owner.inspect(item.attempt.id))
+          )
+          if (isReserved(scope, reservation)) item.attempt = attempt
         })
-      } catch (cause) {
-        notifyError(cause)
-        const missing: AttemptView[] = []
-        for (const record of valid) {
-          if (
-            !messageDelivered(activeSession, record.id) &&
-            (await currentOwner.runtime.runPromise(withOwner(work => work.canDeliver(record))))
-          )
-            missing.push(record)
-        }
-        if (missing.length > 0 && isCurrent())
-          await activeSession.sendCustomMessage(outcomeMessage(missing), { triggerTurn: false })
-      }
-      for (const record of valid) {
-        if (messageDelivered(activeSession, record.id)) pending.delete(record.id)
-        else if (
-          isCurrent() &&
-          (await currentOwner.runtime.runPromise(withOwner(owner => owner.canDeliver(record))))
-        )
-          throw new Error('Outcome not acknowledged by the owning conversation')
-      }
+      )
+      return candidates
     } catch (cause) {
-      drain = false
-      for (const record of records) {
-        if (messageDelivered(activeSession, record.id)) pending.delete(record.id)
-        else if (
-          pending.has(record.id) &&
-          sessionOwner === currentOwner &&
-          ctx.sessionManager.getSessionId() === currentOwner.sessionId
-        ) {
-          const message = cause instanceof Error ? cause.message : String(cause)
-          await currentOwner.runtime.runPromise(
-            withOwner(owner => owner.recordDeliveryFailure(record.id, message))
-          )
-        }
-      }
+      await deliveryFailure(scope, candidates, cause)
       throw cause
-    } finally {
-      flushing = false
-      if (drain && pending.size > 0 && context?.isIdle()) scheduleDelivery()
     }
   }
 
+  // No asynchronous gap between this live owner check and reserving publication.
+  const selectBatch = (
+    scope: DeliveryScope,
+    candidates: readonly PublicationReservation[],
+    drafts: readonly Pi.SessionBoundaryDraft[] = []
+  ) => {
+    if (!isCurrent(scope)) return { items: [], canReactivate: false }
+    acknowledge(scope)
+    const status = scope.owner.runtime.runSync(
+      withOwner(owner => owner.deliveryStatus(candidates.map(({ item }) => item.attempt)))
+    )
+    const eligible = new Set(status.eligible)
+    const proposed = outcomeAttempts(drafts)
+    const items: PublicationReservation[] = []
+    for (const reservation of candidates) {
+      const { item } = reservation
+      const { id } = item.attempt
+      if (!isReserved(scope, reservation)) continue
+      if (!eligible.has(id)) pending.delete(id)
+      else if (proposed.has(id)) reserve([reservation], 'submitted')
+      else items.push(reservation)
+    }
+    return {
+      items,
+      canReactivate:
+        reactivation === 'ready' &&
+        !status.agentsBlocked &&
+        items.every(
+          ({ item, publication }) => publication.state === 'ready' && !item.attempt.deliveryError
+        ),
+    }
+  }
+
+  const confirmSend = async (
+    scope: DeliveryScope,
+    items: readonly PublicationReservation[],
+    cause?: unknown
+  ): Promise<void> => {
+    await deliveryFailure(
+      scope,
+      items,
+      cause ?? 'Outcome not acknowledged by the owning conversation'
+    )
+    if (cause !== undefined) notifyError(cause)
+  }
+
+  const flush = async (): Promise<void> => {
+    const scope = deliveryScope()
+    if (!idleDeliveryReady || scope === undefined || !scope.context.isIdle() || pending.size === 0)
+      return
+    const candidates = await inspectPending(scope)
+    if (!idleDeliveryReady || !isCurrent(scope) || !scope.context.isIdle()) return
+    const { items, canReactivate } = selectBatch(scope, candidates)
+    if (items.length === 0) return
+    const sending = reserve(items, 'sending')
+    // A triggered send may await the entire next lead run. Its reservation must
+    // not block that run's boundary from publishing other completed attempts.
+    void scope.session
+      .sendCustomMessage(outcomeMessage(items.map(({ item }) => item.attempt)), {
+        triggerTurn: canReactivate,
+        deliverAs: 'followUp',
+      })
+      .then(
+        () => confirmSend(scope, sending),
+        cause => confirmSend(scope, sending, cause)
+      )
+      .catch(notifyError)
+  }
+
   const scheduleDelivery = (): void => {
-    setImmediate(() => void flush().catch(notifyError))
+    if (deliveryScheduled) return
+    deliveryScheduled = true
+    setImmediate(() => {
+      deliveryScheduled = false
+      void flush().catch(notifyError)
+    })
   }
 
   const close = async (reason = 'session ended'): Promise<void> => {
@@ -340,6 +441,9 @@ export const createWorkExtension = ({
     pending.clear()
     removeInputListener?.()
     removeInputListener = undefined
+    removeSessionListener?.()
+    removeSessionListener = undefined
+    idleDeliveryReady = false
     const current = sessionOwner
     context = undefined
     const shutdown = (async () => {
@@ -396,7 +500,14 @@ export const createWorkExtension = ({
       if (input.action === 'cancel') {
         const { id } = input
         return id === undefined
-          ? owner.interrupt('explicit stop').pipe(Effect.as({ stopped: true }))
+          ? owner.interrupt('explicit stop').pipe(
+              Effect.andThen(owner.snapshot),
+              Effect.map(snapshot => ({
+                cancellationRequested: true,
+                ...snapshot,
+                records: snapshot.records.map(summary),
+              }))
+            )
           : Effect.try({
               try: () => asAttemptId(id),
               catch: cause =>
@@ -431,21 +542,41 @@ export const createWorkExtension = ({
       return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
     })
 
+  const bindSession = (value: WorkSession): void => {
+    removeSessionListener?.()
+    session = value
+    idleDeliveryReady = value.isIdle
+    removeSessionListener = value.subscribe(event => {
+      if (session !== value) return
+      if (event.type === 'agent_start') idleDeliveryReady = false
+      else if (event.type === 'agent_settled') {
+        // Unlike the extension event, this fires after ALL settlement handlers.
+        // The scheduled callback runs outside Pi's deferred-send window.
+        idleDeliveryReady = true
+        scheduleDelivery()
+      }
+    })
+  }
+
   const factory: Pi.ExtensionFactory = pi => {
     pi.on('session_start', async (_event, ctx) => {
       const previous = sessionOwner
       if (previous?._tag === 'closed') {
         await previous.shutdown
-        if (sessionOwner === previous) sessionOwner = undefined
+        if (sessionOwner === previous) {
+          sessionOwner = undefined
+          reactivation = 'awaiting-success'
+        }
       }
       const ownerSnapshot = await run(
         ctx,
         withOwner(owner => owner.snapshot)
       )
+      if (session !== undefined && removeSessionListener === undefined) bindSession(session)
       removeInputListener?.()
       if (ctx.hasUI) {
         removeInputListener = ctx.ui.onTerminalInput(data => {
-          if ((data === '\u001b' || data === '\u001b[27u') && !ctx.isIdle())
+          if ((data === '\u001b' || data === '\u001b[27u') && session?.isStreaming)
             void interrupt(ctx, 'voluntary interruption').catch(notifyError)
         })
       }
@@ -469,16 +600,50 @@ export const createWorkExtension = ({
       }
       await showStatus(ctx)
     })
-    pi.on('agent_settled', async (_event, ctx) => {
+    pi.on('agent_before_settle', async (event, ctx) => {
+      idleDeliveryReady = false
+      // Pi has already finished native retry/compaction recovery at this boundary.
+      if (event.outcome === 'error') reactivation = 'suspended'
+      else if (reactivation !== 'suspended')
+        reactivation = event.outcome === 'completed' ? 'ready' : 'awaiting-success'
+      scheduleStatus()
       if (sessionOwner?._tag !== 'active') return
       await Effect.runPromise(ownerRuntime(ctx))
+      const scope = deliveryScope()
+      if (scope === undefined) return
+      await reconcileSubmitted(scope)
+      const candidates = await inspectPending(scope)
+      const { items, canReactivate } = selectBatch(scope, candidates, event.entries)
+      if (items.length === 0) return
+      reserve(items, 'submitted')
+      return {
+        entries: [
+          ...event.entries,
+          {
+            type: 'custom_message' as const,
+            ...outcomeMessage(items.map(({ item }) => item.attempt)),
+          },
+        ],
+        continue: event.continue || (event.outcome === 'completed' && canReactivate),
+      }
+    })
+    pi.on('agent_settled', async (_event, ctx) => {
+      idleDeliveryReady = false
+      if (sessionOwner?._tag !== 'active') return
+      await Effect.runPromise(ownerRuntime(ctx))
+      const scope = deliveryScope()
+      if (scope !== undefined) await reconcileSubmitted(scope)
+    })
+    pi.on('input', event => {
+      if (event.source !== 'extension') reactivation = 'awaiting-success'
       scheduleDelivery()
     })
-    pi.on('input', () => scheduleDelivery())
     pi.on('agent_end', async event => {
       const last = event.messages.findLast(message => message.role === 'assistant')
-      if (last?.stopReason === 'aborted' && context !== undefined)
+      if (last?.stopReason === 'aborted' && context !== undefined) {
+        if (reactivation !== 'suspended') reactivation = 'awaiting-success'
         await interrupt(context, 'lead agent interrupted')
+      }
     })
     pi.on('message_end', async event => {
       if (
@@ -496,9 +661,7 @@ export const createWorkExtension = ({
         scheduleDelivery()
       }
     })
-    pi.on('session_before_tree', () =>
-      context === undefined ? undefined : close('session navigation')
-    )
+    pi.on('session_tree', (_event, ctx) => interrupt(ctx, 'session navigation'))
     pi.on('session_shutdown', event => close(event.reason))
 
     pi.registerTool({
@@ -510,7 +673,7 @@ export const createWorkExtension = ({
       async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
         const result = await run(ctx, decodeInput(input).pipe(Effect.flatMap(execute)))
         return {
-          content: [{ type: 'text', text: JSON.stringify(result ?? { stopped: true }) }],
+          content: [{ type: 'text', text: JSON.stringify(result ?? {}) }],
           details: result ?? {},
         }
       },
@@ -534,7 +697,7 @@ export const createWorkExtension = ({
           pi.sendMessage(
             {
               customType: 'dev/work-inspection',
-              content: JSON.stringify(result ?? { stopped: true }, null, 2),
+              content: JSON.stringify(result ?? {}, null, 2),
               display: true,
             },
             { triggerTurn: false }
@@ -548,9 +711,7 @@ export const createWorkExtension = ({
 
   return {
     factory,
-    bindSession(value: WorkSession) {
-      session = value
-    },
+    bindSession,
     close,
   }
 }

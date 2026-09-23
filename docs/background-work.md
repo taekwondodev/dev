@@ -28,9 +28,17 @@ An expired result is unavailable, not reconstructed from an old summary.
 The native footer retains lead model/context information; the extension status
 shows background states and active child models/context pressure. Inspection
 exposes observed child usage, with unavailable values explicitly distinguished
-from zero. Results arrive at the next idle boundary and may continue the ordinary
-workflow without another user message. Checkpoints still apply. A completed
-process or a child's report is not verification of the artifact.
+from zero. Ready results arrive at Pi's final actionable boundary
+(`agent_before_settle`); late results arrive when idle. A new eligible batch may
+continue a successful lead run without another user message. Checkpoints still
+apply. A completed process or a child's report is not verification of the artifact.
+
+Delivery is acknowledged from raw entries on the active conversation branch,
+not the projected model context. Compaction and context edits do not erase that
+receipt. A proposed boundary draft is not yet a receipt, and registration proves
+neither model consumption nor artifact verification. Failed or unconfirmed
+delivery remains visible through `/work` and inspection; retries wait for natural
+events and never start model calls just to repair delivery.
 
 ## Dispatch
 
@@ -95,9 +103,11 @@ AGENTS.md or duplicate dev-cycle skill is required. This provides instructions,
 not a guarantee that every model will follow them correctly.
 
 Session/task/attempt/generation identify every observation. Interrupting the
-lead, stopping all work, navigating sessions, or shutting down invalidates the
-owner before cancellation. Late observations remain inspectable but cannot
-wake that invalidated owner. Cancellation does not undo edits. The controller
+lead or stopping all work invalidates the current attempt generation before
+cancellation. Confirmed `/tree` navigation does the same while keeping the
+conversation's controller and `/work` usable. Cancelled or failed navigation
+preserves work. Earlier outcomes remain inspectable, but are not replayed
+automatically into the new branch. Cancellation does not undo edits. The controller
 observes process exit and surviving owned processes before reporting a terminal
 outcome; signal delivery alone is insufficient. Esc while the lead is running
 also interrupts related work; use `/work stop` while idle.
@@ -109,7 +119,15 @@ worktree leases into an OS isolation boundary. See [ADR 0005](adr/0005-scoped-ru
 Subscription-exhaustion reports block new agents and automatic continuation.
 Existing local commands may finish, and their outcomes still arrive automatically
 as conversation facts without starting another model turn. No provider switch or new retry loop is
-introduced. Unrecognized provider failures remain failures, not quota certainty.
+introduced. New user input does not clear quota protection.
+
+A final provider or transport failure, after Pi's native recovery has failed,
+suspends dev-originated automatic reactivation until a new user message. Existing
+commands and children continue; eligible outcomes are recorded passively. Tool,
+build, test and child failures are not themselves lead-run failures, and a native
+retry that succeeds does not activate this gate. The gate is separate from quota;
+neither navigating the tree nor inspecting work resets it. Other extensions'
+continuations and Pi's native retry policy remain outside this gate.
 
 ## Retention and recovery
 
@@ -161,7 +179,7 @@ Changed or unknown artifacts require reconciliation before accepting a result.
 
 ## Evidence boundary
 
-The implementation targets the installed Pi 0.86.1 SDK. Issue #12 retains
+The implementation targets the installed Pi 0.87.1 SDK. Issues #12 and #24 retain
 daily-use acceptance: no new test suite, fixtures, benchmark campaign or prescribed
 manual checklist. Local execution evidence is reported with delivery; no
 reliability, efficiency or reasoning-quality improvement is inferred from the
