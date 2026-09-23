@@ -37,28 +37,28 @@ dev --cwd /percorso/del/progetto
 Seleziona esplicitamente la directory di lavoro senza doverci entrare prima. Sessioni, preferenze e dati operativi restano nella data home dell'installazione di dev; l'autenticazione Pi resta condivisa nel file globale `~/.pi/agent/auth.json`.
 
 ```bash
-dev --specialization general
+dev --profile general
 ```
 
-Avvia una sessione temporanea con la specializzazione generale.
+Avvia una sessione temporanea con il profilo generale.
 
 ```bash
-dev --specialization apple
+dev --profile apple
 ```
 
-Avvia una sessione temporanea con la specializzazione Apple.
+Avvia una sessione temporanea con il profilo Apple.
 
 ```bash
-dev --save-specialization general
+dev --save-profile general
 ```
 
-Salva `general` come specializzazione predefinita per il repository corrente.
+Salva `general` come profilo predefinito per il repository corrente.
 
 ```bash
-dev --save-specialization apple
+dev --save-profile apple
 ```
 
-Salva `apple` come specializzazione predefinita per il repository corrente.
+Salva `apple` come profilo predefinito per il repository corrente.
 
 ```bash
 dev --diagnostics

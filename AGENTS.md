@@ -3,7 +3,7 @@
 ## Purpose
 
 `dev` is a personal, terminal-first development environment built on Pi.
-It is general-purpose, with optional specializations such as Apple development.
+It is general-purpose, with optional profiles such as Apple development.
 
 ## Current state
 
@@ -35,6 +35,11 @@ does not cover. The installed package is the reference for this pinned release.
 Keep existing environments, credentials, and runtime state separate and unchanged.
 Work in this repository must not modify other profiles or migrate shared assets
 without explicit authorization.
+
+At the time this guidance was recorded, the user had not started using `dev`.
+The user explicitly authorizes discarding dev-owned session and runtime data and
+does not want backward compatibility maintained for this project. This does not
+authorize changes to credentials, other profiles, or shared assets.
 
 ## Conditional references
 

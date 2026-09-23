@@ -141,10 +141,10 @@ export interface WorkExtension {
 
 export const createWorkExtension = ({
   dataHome,
-  specialization,
+  profile,
 }: {
   readonly dataHome: string
-  readonly specialization: string
+  readonly profile: string
 }): WorkExtension => {
   let sessionOwner: OwnerState | undefined
   let session: WorkSession | undefined
@@ -168,7 +168,7 @@ export const createWorkExtension = ({
           const runtime = ManagedRuntime.make(
             makeWorkOwnerLayer({
               dataHome,
-              specialization,
+              profile,
               cwd: ctx.cwd,
               sessionId,
               onChange: () => scheduleStatus(),

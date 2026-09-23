@@ -2,20 +2,17 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Effect, FileSystem, Schema } from 'effect'
 
-export class SpecializationError extends Schema.TaggedError<SpecializationError>()(
-  'SpecializationError',
-  {
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }
-) {}
+export class ProfileError extends Schema.TaggedError<ProfileError>()('ProfileError', {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
 
 export interface RequiredResource {
   readonly label: string
   readonly path: string
 }
 
-export interface Specialization {
+export interface Profile {
   readonly name: string
   readonly required: readonly RequiredResource[]
   readonly skillPaths: readonly string[]
@@ -39,20 +36,20 @@ export interface ComposedResources {
 export interface ComposeResourcesOptions {
   readonly cwd: string
   readonly gitRoot: string | undefined
-  readonly specialization: Specialization
+  readonly profile: Profile
 }
 
 const homeDirectory = Effect.sync(() => process.env.HOME ?? process.env.USERPROFILE).pipe(
   Effect.filterOrFail(
     (home): home is string => home !== undefined,
-    () => new SpecializationError({ message: 'HOME is required to locate shared workflow skills' })
+    () => new ProfileError({ message: 'HOME is required to locate shared workflow skills' })
   )
 )
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const generalSoul = join(projectRoot, 'specializations/general/SOUL.md')
-const appleSkillsRoot = join(projectRoot, 'specializations/apple/skills')
-const appleSoul = join(projectRoot, 'specializations/apple/SOUL.md')
+const generalSoul = join(projectRoot, 'profiles/general/SOUL.md')
+const appleSkillsRoot = join(projectRoot, 'profiles/apple/skills')
+const appleSoul = join(projectRoot, 'profiles/apple/SOUL.md')
 const appleSkillNames: readonly string[] = [
   'swiftui-pro',
   'swift-concurrency-pro',
@@ -63,10 +60,10 @@ const appleSkillNames: readonly string[] = [
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
-const toSpecializationError = (error: unknown, operation: string): SpecializationError =>
-  error instanceof SpecializationError
+const toProfileError = (error: unknown, operation: string): ProfileError =>
+  error instanceof ProfileError
     ? error
-    : new SpecializationError({ message: `${operation}: ${messageOf(error)}`, cause: error })
+    : new ProfileError({ message: `${operation}: ${messageOf(error)}`, cause: error })
 
 const definitions = homeDirectory.pipe(
   Effect.map(home => {
@@ -99,24 +96,24 @@ const definitions = homeDirectory.pipe(
   })
 )
 
-export function specializationNames(): readonly string[] {
+export function profileNames(): readonly string[] {
   return ['general', 'apple']
 }
 
-export const getSpecialization = (
+export const getProfile = (
   name: string
-): Effect.Effect<Specialization, SpecializationError, FileSystem.FileSystem> =>
+): Effect.Effect<Profile, ProfileError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const values = yield* definitions
-    let specialization: (typeof values)[keyof typeof values] | undefined
-    if (name === 'general') specialization = values.general
-    else if (name === 'apple') specialization = values.apple
-    if (specialization === undefined)
-      return yield* new SpecializationError({
-        message: `Unknown specialization "${name}". Choose one of: ${specializationNames().join(', ')}.`,
+    let profile: (typeof values)[keyof typeof values] | undefined
+    if (name === 'general') profile = values.general
+    else if (name === 'apple') profile = values.apple
+    if (profile === undefined)
+      return yield* new ProfileError({
+        message: `Unknown profile "${name}". Choose one of: ${profileNames().join(', ')}.`,
       })
-    const missing = yield* Effect.forEach(specialization.required, resource =>
+    const missing = yield* Effect.forEach(profile.required, resource =>
       fs.exists(resource.path).pipe(Effect.map(exists => (exists ? undefined : resource)))
     ).pipe(
       Effect.map(resources =>
@@ -124,14 +121,12 @@ export const getSpecialization = (
       )
     )
     if (missing.length > 0)
-      return yield* new SpecializationError({
-        message: `Specialization "${name}" is unavailable; missing ${missing.map(({ label, path }) => `${label} at ${path}`).join(', ')}. Use --specialization general or restore the resource.`,
+      return yield* new ProfileError({
+        message: `Profile "${name}" is unavailable; missing ${missing.map(({ label, path }) => `${label} at ${path}`).join(', ')}. Use --profile general or restore the resource.`,
       })
-    const guidance = yield* fs.readFileString(specialization.soulPath)
-    return { ...specialization, guidance }
-  }).pipe(
-    Effect.mapError(error => toSpecializationError(error, `Cannot load specialization "${name}"`))
-  )
+    const guidance = yield* fs.readFileString(profile.soulPath)
+    return { ...profile, guidance }
+  }).pipe(Effect.mapError(error => toProfileError(error, `Cannot load profile "${name}"`)))
 
 const projectSkillPathCandidates = (
   cwd: string,
@@ -160,12 +155,12 @@ const existingPaths = (
 
 export const composeResources = (
   options: ComposeResourcesOptions
-): Effect.Effect<ComposedResources, SpecializationError, FileSystem.FileSystem> =>
+): Effect.Effect<ComposedResources, ProfileError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const projectCandidates = projectSkillPathCandidates(options.cwd, options.gitRoot)
     const projectPaths = yield* existingPaths(fs, projectCandidates)
-    const candidates = [...projectPaths, ...options.specialization.skillPaths]
+    const candidates = [...projectPaths, ...options.profile.skillPaths]
     const canonical = yield* Effect.forEach(candidates, path =>
       fs.realPath(path).pipe(Effect.map(resolved => ({ path, resolved })))
     )
@@ -177,20 +172,16 @@ export const composeResources = (
     })
     const provenance = paths.map((path, index) => ({
       path,
-      source: index < projectPaths.length ? 'project' : options.specialization.name,
+      source: index < projectPaths.length ? 'project' : options.profile.name,
       precedence: index,
     }))
     return {
       skillPaths: paths,
       provenance,
-      guidance: options.specialization.guidance,
-      soulPath: options.specialization.soulPath,
+      guidance: options.profile.guidance,
+      soulPath: options.profile.soulPath,
     }
-  }).pipe(
-    Effect.mapError(error =>
-      toSpecializationError(error, 'Cannot compose specialization resources')
-    )
-  )
+  }).pipe(Effect.mapError(error => toProfileError(error, 'Cannot compose profile resources')))
 
 export function resourceSummary(resources: ComposedResources): string {
   return resources.provenance.map(({ source, path }) => `${source}: ${path}`).join('\n')

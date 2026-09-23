@@ -15,12 +15,12 @@ import {
 } from './preferences.ts'
 import {
   composeResources,
-  getSpecialization,
+  getProfile,
   resourceSummary,
-  specializationNames,
+  profileNames,
   type ComposedResources,
-  type Specialization,
-} from './specializations.ts'
+  type Profile,
+} from './profiles.ts'
 import { findRecentSession, loadPi, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { readDispatch } from './work-dispatch.ts'
@@ -35,8 +35,8 @@ export class LauncherError extends Schema.TaggedError<LauncherError>()('Launcher
 interface LaunchOptions {
   readonly cwd: string
   readonly dataHome?: string
-  readonly specialization?: string
-  readonly saveSpecialization?: string
+  readonly profile?: string
+  readonly saveProfile?: string
   readonly resume?: string
   readonly continueSession: boolean
   readonly diagnostics: boolean
@@ -52,8 +52,8 @@ type SessionManager = RuntimeFactoryOptions['sessionManager']
 type SessionEntry = ReturnType<SessionManager['getEntries']>[number]
 type CustomSessionEntry = Extract<SessionEntry, { type: 'custom' }>
 
-const SessionSpecializationSchema = Schema.Struct({
-  specialization: Schema.String,
+const SessionProfileSchema = Schema.Struct({
+  profile: Schema.String,
 })
 
 const messageOf = (error: unknown): string =>
@@ -91,8 +91,8 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
       const values: {
         cwd: string
         dataHome?: string
-        specialization?: string
-        saveSpecialization?: string
+        profile?: string
+        saveProfile?: string
         resume?: string
         continueSession: boolean
         diagnostics: boolean
@@ -109,10 +109,8 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         const arg = argv[index]
         if (arg === '--cwd') values.cwd = resolve(nextArgument(argv, ++index, arg))
         else if (arg === '--data-home') values.dataHome = resolve(nextArgument(argv, ++index, arg))
-        else if (arg === '--specialization')
-          values.specialization = nextArgument(argv, ++index, arg)
-        else if (arg === '--save-specialization')
-          values.saveSpecialization = nextArgument(argv, ++index, arg)
+        else if (arg === '--profile') values.profile = nextArgument(argv, ++index, arg)
+        else if (arg === '--save-profile') values.saveProfile = nextArgument(argv, ++index, arg)
         else if (arg === '--resume') values.resume = resolve(nextArgument(argv, ++index, arg))
         else if (arg === '--continue') values.continueSession = true
         else if (arg === '--diagnostics') values.diagnostics = true
@@ -133,25 +131,25 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --specialization NAME        temporary specialization (${specializationNames().join(' | ')})\n  --save-specialization NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n`
     )
   })
 
-const specializationFromSession = (sessions: SessionManager): string | undefined => {
+const profileFromSession = (sessions: SessionManager): string | undefined => {
   const entry = sessions
     .getEntries()
     .findLast(
       (candidate): candidate is CustomSessionEntry =>
-        candidate.type === 'custom' && candidate.customType === 'dev/specialization'
+        candidate.type === 'custom' && candidate.customType === 'dev/profile'
     )
   if (entry === undefined) return undefined
-  return Option.getOrUndefined(Schema.decodeUnknownOption(SessionSpecializationSchema)(entry.data))
-    ?.specialization
+  return Option.getOrUndefined(Schema.decodeUnknownOption(SessionProfileSchema)(entry.data))
+    ?.profile
 }
 
 const validateDiagnostics = (
   services: AgentSessionServices,
-  specialization: Specialization,
+  profile: Profile,
   resources: ComposedResources,
   verbose: boolean
 ): void => {
@@ -164,13 +162,11 @@ const validateDiagnostics = (
   ]
   if (errors.length > 0)
     throw new Error(
-      `Pi startup cannot continue for specialization "${specialization.name}":\n${errors.join('\n')}`
+      `Pi startup cannot continue for profile "${profile.name}":\n${errors.join('\n')}`
     )
   if (verbose) {
     const { skills } = services.resourceLoader.getSkills()
-    process.stdout.write(
-      `specialization: ${specialization.name}\nskills loaded: ${skills.length}\n`
-    )
+    process.stdout.write(`profile: ${profile.name}\nskills loaded: ${skills.length}\n`)
     process.stdout.write(
       `resources:\n${resourceSummary(resources)}\nskill provenance:\n${skills
         .map(
@@ -185,7 +181,7 @@ const validateDiagnostics = (
 const createRuntime = (
   api: PiApi,
   dataHome: string,
-  specialization: Specialization,
+  profile: Profile,
   guard: ReturnType<typeof createSessionGuard>,
   runtimeOptions: RuntimeFactoryOptions
 ): Effect.Effect<RuntimeFactoryResult, LauncherError, FileSystem.FileSystem> =>
@@ -196,12 +192,12 @@ const createRuntime = (
     const resources = yield* composeResources({
       cwd: runtimeOptions.cwd,
       gitRoot: yield* gitRoot(runtimeOptions.cwd),
-      specialization,
+      profile,
     }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources')))
     const work = yield* fromSync('Cannot create background-work extension', () =>
       createWorkExtension({
         dataHome,
-        specialization: specialization.name,
+        profile: profile.name,
       })
     )
     const services = yield* fromPromise('Cannot create Pi session services', async () =>
@@ -211,7 +207,7 @@ const createRuntime = (
         modelRuntime: await api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
-          appendSystemPrompt: [specialization.guidance],
+          appendSystemPrompt: [profile.guidance],
           extensionFactories: [
             { name: 'dev:session-guard', factory: guard.factory },
             { name: 'dev:work', factory: work.factory },
@@ -287,26 +283,22 @@ const run = Effect.gen(function* () {
   const selection = yield* resolveSelection({
     cwd: options.cwd,
     dataHome,
-    explicit: options.specialization,
-  }).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot resolve specialization selection'))
-  )
-  if (options.saveSpecialization !== undefined) {
-    yield* getSpecialization(options.saveSpecialization).pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot validate specialization preference'))
+    explicit: options.profile,
+  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve profile selection')))
+  if (options.saveProfile !== undefined) {
+    yield* getProfile(options.saveProfile).pipe(
+      Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference'))
     )
     const path = yield* saveSelection({
       cwd: options.cwd,
       dataHome,
-      specialization: options.saveSpecialization,
-    }).pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot save specialization preference'))
-    )
+      profile: options.saveProfile,
+    }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot save profile preference')))
     yield* Effect.sync(() => {
-      process.stdout.write(`saved specialization ${options.saveSpecialization} at ${path}\n`)
+      process.stdout.write(`saved profile ${options.saveProfile} at ${path}\n`)
     })
     if (
-      options.specialization === undefined &&
+      options.profile === undefined &&
       options.resume === undefined &&
       !options.continueSession &&
       !options.diagnostics
@@ -335,28 +327,26 @@ const run = Effect.gen(function* () {
   if (!options.diagnostics) yield* guard.protect(sessions)
   const recorded =
     options.resume !== undefined || options.continueSession
-      ? specializationFromSession(sessions)
+      ? profileFromSession(sessions)
       : undefined
-  const selectedName = recorded ?? selection.specialization
+  const selectedName = recorded ?? selection.profile
   if (
     (options.resume !== undefined || options.continueSession) &&
     recorded === undefined &&
-    options.specialization === undefined
+    options.profile === undefined
   )
     return yield* new LauncherError({
       message:
-        'This conversation has no dev specialization metadata. Resume it with an explicit --specialization choice.',
+        'This conversation has no dev profile metadata. Resume it with an explicit --profile choice.',
     })
-  const specialization = yield* getSpecialization(selectedName).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load selected specialization'))
+  const profile = yield* getProfile(selectedName).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile'))
   )
   const resources = yield* composeResources({
     cwd: options.cwd,
     gitRoot: root,
-    specialization,
-  }).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot compose specialization resources'))
-  )
+    profile,
+  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
   if (options.diagnostics) {
     const dispatch = yield* readDispatch.pipe(
       Effect.mapError(error => toLauncherError(error, 'Cannot read dispatch configuration'))
@@ -373,9 +363,7 @@ const run = Effect.gen(function* () {
   }
   const context = yield* Effect.context<FileSystem.FileSystem>()
   const createRuntimeFactory: RuntimeFactory = runtimeOptions =>
-    Effect.runPromiseWith(context)(
-      createRuntime(api, dataHome, specialization, guard, runtimeOptions)
-    )
+    Effect.runPromiseWith(context)(createRuntime(api, dataHome, profile, guard, runtimeOptions))
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
       const runtime = yield* Effect.acquireRelease(
@@ -390,13 +378,13 @@ const run = Effect.gen(function* () {
       )
       yield* Effect.sync(() => guard.bind(runtime))
       yield* fromSync('Pi startup diagnostics failed', () =>
-        validateDiagnostics(runtime.services, specialization, resources, options.probeRuntime)
+        validateDiagnostics(runtime.services, profile, resources, options.probeRuntime)
       )
       if (recorded === undefined)
         yield* Effect.sync(() => {
-          sessions.appendCustomEntry('dev/specialization', {
+          sessions.appendCustomEntry('dev/profile', {
             version: 1,
-            specialization: specialization.name,
+            profile: profile.name,
             source: selection.source,
           })
         })

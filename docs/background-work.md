@@ -77,7 +77,7 @@ created in the private data home.
 A read-only child receives inspection tools rather than arbitrary shell or edit
 capabilities. Native batching is preserved over the available tools. This is a
 tool boundary, not an OS sandbox. Project instructions and the base Pi prompt
-remain in place; specialization guidance and requested skills are composed
+remain in place; profile guidance and requested skills are composed
 explicitly. A child is not given the lead's conversation.
 
 For a writer, prepare a separate linked worktree of the lead repository and pass

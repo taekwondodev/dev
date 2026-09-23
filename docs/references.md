@@ -9,7 +9,7 @@ The initial investigation was read-only. These are observations from the plannin
 - Calling the installed `loadSkills` and `formatSkillsForPrompt` on the shared directory produced 55 loaded skills, eight catalog entries, and no diagnostics. `dev-cycle` was absent from that catalog because its frontmatter disables model invocation. This probe checked discovery and formatting, not model behavior.
 - The Apple usage sample was the 30 most recent root sessions with source `desktop` or `cli` and more than ten messages in `~/.hermes/profiles/apple-dev/state.db`, from session `20260908_011855_4953b2` through `20260917_170745_4a0c9c`. Tool calls were deduplicated by session and call identifier. This sample excludes child work and is not a benchmark or a complete workload census.
 - Existing Apple guidance is under `~/.hermes/profiles/apple-dev/skills`. Shared eval scripts under `~/Developer/skills/skills/eval/scripts` include Hermes-specific launch and trace handling.
-- The user supplied the workload estimate and requested a general development environment with optional Apple specialization. Token savings and human-time improvements have not been measured on a replacement environment.
+- The user supplied the workload estimate and requested a general development environment with optional Apple profile. Token savings and human-time improvements have not been measured on a replacement environment.
 
 Existing transcripts and configuration can establish migration requirements, but credentials are outside the investigation scope. Inspect only the fields and session content needed for the decision.
 

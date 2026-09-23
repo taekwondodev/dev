@@ -86,7 +86,7 @@ export interface WorkOwnerOptions {
   readonly dataHome: string
   readonly cwd: string
   readonly sessionId: string
-  readonly specialization: string
+  readonly profile: string
   readonly onChange?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
 }
@@ -381,7 +381,7 @@ class WorkOwnerImpl implements WorkOwnerService {
   private readonly sessionId: SessionId
   private readonly cwd: string
   private readonly dataHome: string
-  private readonly specialization: string
+  private readonly profile: string
   private readonly onChange: () => void
   private readonly onOutcome: (attempt: AttemptView) => void
   private readonly store: WorkStore
@@ -401,7 +401,7 @@ class WorkOwnerImpl implements WorkOwnerService {
     this.sessionId = asSessionId(requiredString(options.sessionId, 'Session identity'))
     this.cwd = resolve(options.cwd)
     this.dataHome = resolve(options.dataHome)
-    this.specialization = options.specialization
+    this.profile = options.profile
     this.onChange = options.onChange ?? (() => undefined)
     this.onOutcome = options.onOutcome ?? (() => undefined)
   }
@@ -1063,7 +1063,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               request: {
                 dataHome: self.dataHome,
                 cwd,
-                specialization: self.specialization,
+                profile: self.profile,
                 sessionDir: join(self.dataHome, 'child-sessions'),
                 access: request.access,
                 prompt: request.prompt,

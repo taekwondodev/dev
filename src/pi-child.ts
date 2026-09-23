@@ -11,7 +11,7 @@ import { GenerationId, SessionId, TaskId } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi, type PiApi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
-import { composeResources, getSpecialization } from './specializations.ts'
+import { composeResources, getProfile } from './profiles.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError>()('ChildError', {
   message: Schema.String,
@@ -55,7 +55,7 @@ const OwnerAttemptId = Schema.NonEmptyString.pipe(Schema.brand('dev/child/Attemp
 export const ChildRequestEnvelope = Schema.Struct({
   dataHome: AbsolutePath,
   cwd: AbsolutePath,
-  specialization: Schema.NonEmptyString,
+  profile: Schema.NonEmptyString,
   sessionDir: AbsolutePath,
   access: Schema.Literals(ACCESS_MODES),
   prompt: Schema.NonEmptyString,
@@ -108,7 +108,7 @@ interface ResourceContext {
   readonly packageVersion: string
   readonly cwd: string
   readonly access: AccessMode
-  readonly specialization: string
+  readonly profile: string
   readonly resources: Resources['provenance']
   readonly skills: readonly { readonly name: string; readonly path: string }[]
   readonly tools: readonly string[]
@@ -288,7 +288,7 @@ function childBrief(
     'You are an independent Pi child process for one delegated attempt.',
     access,
     'Do not delegate work, start a background fleet, or treat noninteractive UI absence as approval.',
-    `Specialization resources: ${resources.provenance.map(item => `${item.source}: ${item.path}`).join('; ')}`,
+    `Profile resources: ${resources.provenance.map(item => `${item.source}: ${item.path}`).join('; ')}`,
     skillLine,
   ].join('\n')
 }
@@ -599,7 +599,7 @@ function makeContext(
     packageVersion: packageInfo.version,
     cwd: request.cwd,
     access: request.access,
-    specialization: request.specialization,
+    profile: request.profile,
     resources: resources.provenance,
     skills: selectedSkills.map(skill => ({ name: skill.name, path: skill.filePath })),
     tools: session.getActiveToolNames(),
@@ -707,14 +707,12 @@ const acquireSession = Effect.fn('acquireSession')(function* (
       process.env.PI_OFFLINE = '1'
     })
   const loaded = yield* loadPi.pipe(Effect.mapError(toChildError))
-  const specialization = yield* getSpecialization(request.specialization).pipe(
-    Effect.mapError(toChildError)
-  )
+  const profile = yield* getProfile(request.profile).pipe(Effect.mapError(toChildError))
   const projectGitRoot = yield* gitRoot(request.cwd).pipe(Effect.mapError(toChildError))
   const resources = yield* composeResources({
     cwd: request.cwd,
     gitRoot: projectGitRoot,
-    specialization,
+    profile,
   }).pipe(Effect.mapError(toChildError))
   const skillSelection = yield* resolveTaskSkills(loaded.api, request, resources)
   const selectedSkills = skillSelection.selected

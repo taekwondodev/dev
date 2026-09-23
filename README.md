@@ -1,6 +1,6 @@
 # dev
 
-A personal, terminal-first development environment built on Pi, with shared workflow skills and optional domain specializations.
+A personal, terminal-first development environment built on Pi, with shared workflow skills and optional domain profiles.
 
 **Status:** checkout bootstrap implemented; global Pi and the shared workflow remain external dependencies.
 
@@ -26,9 +26,9 @@ Run these commands from the dev checkout, not from the project you want to edit:
 
 The launch directory is the working project. You do not need to enter `~/Developer/dev` or add a dependency to the project's `package.json`. Use `dev --cwd /path/to/your/project` to select a directory explicitly, or `dev --diagnostics` to inspect the resolved working directory, data home and resources.
 
-Pi discovers project instructions such as `AGENTS.md` from the working directory and its ancestors, not from the executable's location. This checkout's `AGENTS.md` describes development of dev itself; the launcher does not inject it into unrelated projects. Selected guidance from `specializations/*/SOUL.md` is appended separately, without replacing the native project instructions.
+Pi discovers project instructions such as `AGENTS.md` from the working directory and its ancestors, not from the executable's location. This checkout's `AGENTS.md` describes development of dev itself; the launcher does not inject it into unrelated projects. Selected guidance from `profiles/*/SOUL.md` is appended separately, without replacing the native project instructions.
 
-Use `dev --specialization apple` for a temporary Apple session, `dev --save-specialization apple` to save a repository preference, and `dev --continue` or `dev --resume PATH` to resume a conversation.
+Use `dev --profile apple` for a temporary Apple session, `dev --save-profile apple` to save a repository preference, and `dev --continue` or `dev --resume PATH` to resume a conversation.
 
 - [Terminal commands](docs/COMMANDS-TERMINAL.md): daily use, setup, updates and removal of the command.
 - [Session commands](docs/COMMANDS-SESSION.md): commands entered inside Pi.

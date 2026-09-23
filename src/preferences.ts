@@ -11,7 +11,7 @@ export class PreferencesError extends Schema.TaggedError<PreferencesError>()('Pr
 }) {}
 
 const PreferenceSchema = Schema.Struct({
-  specialization: Schema.optional(Schema.String),
+  profile: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
 })
 
@@ -22,7 +22,7 @@ type SelectionSource = 'general default' | 'saved preference' | 'temporary overr
 export interface Selection {
   readonly identity: string
   readonly path: string
-  readonly specialization: string
+  readonly profile: string
   readonly source: SelectionSource
 }
 
@@ -35,7 +35,7 @@ export interface ResolveSelectionOptions {
 export interface SaveSelectionOptions {
   readonly cwd: string
   readonly dataHome: string
-  readonly specialization: string
+  readonly profile: string
 }
 
 const defaultPath = resolve(fileURLToPath(new URL('../.dev/', import.meta.url)))
@@ -107,19 +107,17 @@ export const resolveSelection = (
   Effect.gen(function* () {
     const identity = yield* projectIdentity(options.cwd)
     const path = preferencePath(options.dataHome, identity)
-    const saved = (yield* readPreference(path)).specialization
+    const saved = (yield* readPreference(path)).profile
     let source: SelectionSource = 'general default'
     if (saved !== undefined) source = 'saved preference'
     if (options.explicit !== undefined) source = 'temporary override'
     return {
       identity,
       path,
-      specialization: options.explicit ?? saved ?? 'general',
+      profile: options.explicit ?? saved ?? 'general',
       source,
     }
-  }).pipe(
-    Effect.mapError(error => toPreferencesError(error, 'Cannot resolve specialization selection'))
-  )
+  }).pipe(Effect.mapError(error => toPreferencesError(error, 'Cannot resolve profile selection')))
 
 export const saveSelection = (
   options: SaveSelectionOptions
@@ -132,14 +130,12 @@ export const saveSelection = (
     const temporary = `${path}.${process.pid}.tmp`
     yield* fs.writeFileString(
       temporary,
-      `${JSON.stringify({ specialization: options.specialization, project: identity }, null, 2)}\n`,
+      `${JSON.stringify({ profile: options.profile, project: identity }, null, 2)}\n`,
       { mode: 0o600 }
     )
     yield* fs.rename(temporary, path)
     return path
-  }).pipe(
-    Effect.mapError(error => toPreferencesError(error, 'Cannot save specialization selection'))
-  )
+  }).pipe(Effect.mapError(error => toPreferencesError(error, 'Cannot save profile selection')))
 
 export const sessionDir = (
   dataHome: string

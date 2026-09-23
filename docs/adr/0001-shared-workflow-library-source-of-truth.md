@@ -14,7 +14,7 @@ Copying those procedures into this repository would create competing sources
 of truth. Changes to shared workflow behavior could then diverge between
 environments and require repeated synchronization. This repository instead
 needs to own the Pi integration, configuration, and project-specific
-specializations.
+profiles.
 
 ## Decision
 

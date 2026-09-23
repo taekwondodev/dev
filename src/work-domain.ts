@@ -130,7 +130,7 @@ export const ChildResourcesSchema = Schema.Struct({
   packageVersion: Schema.NonEmptyString,
   cwd: Schema.NonEmptyString,
   access: WorkAccessSchema,
-  specialization: Schema.NonEmptyString,
+  profile: Schema.NonEmptyString,
   resources: Schema.Array(
     Schema.Struct({
       path: Schema.NonEmptyString,

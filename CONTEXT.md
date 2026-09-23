@@ -19,11 +19,11 @@ through `~/.agents/skills`. It owns common development workflow guidance,
 including `dev-cycle`, planning, implementation, review, and writing guidance.
 This repository consumes that guidance rather than copying or redefining it.
 
-## Specialization
+## Profile
 
-A specialization is a selectable set of instructions, skills, and domain
+A profile is a selectable set of instructions, skills, and domain
 resources for a particular development area. Apple development is an important
-specialization of `dev`, not the identity of the whole environment.
+profile of `dev`, not the identity of the whole environment.
 
 Existing Apple-specific guidance is associated with the existing `apple-dev`
 profile. Its ownership and paths must be checked before any migration.
