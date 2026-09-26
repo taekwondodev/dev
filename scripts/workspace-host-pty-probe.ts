@@ -58,6 +58,7 @@ import {
 } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
+import { loadInstalledPi } from './workspace-check-support.ts'
 import {
   fixtureId as id,
   makeFixtureBinding,
@@ -98,13 +99,10 @@ globalThis.fetch = async () => {
   throw new Error('Network is disabled by the dev36 host fixture')
 }
 
-const piRoot = new URL('../node_modules/@earendil-works/pi-coding-agent/', import.meta.url)
-const pi: typeof Pi = await import(new URL('dist/index.js', piRoot).href)
-const trustResolver: typeof PiProjectTrust = await import(
-  new URL('dist/core/project-trust.js', piRoot).href
-)
-const eventStreams: typeof PiEventStream = await import(
-  new URL('node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js', piRoot).href
+const { pi, importFromPi } = await loadInstalledPi()
+const trustResolver = await importFromPi<typeof PiProjectTrust>('dist/core/project-trust.js')
+const eventStreams = await importFromPi<typeof PiEventStream>(
+  'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
 
 const TASK_LEAD = id(1)

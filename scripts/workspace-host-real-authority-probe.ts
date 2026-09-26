@@ -23,6 +23,7 @@ import { createWorkExtension } from '../src/work-extension.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
+import { loadInstalledPi } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { Effect, Exit, Scope } from 'effect'
 
@@ -34,13 +35,10 @@ interface EventStreamModule {
   createAssistantMessageEventStream(): AssistantEventStream
 }
 
-const piRoot = new URL('../node_modules/@earendil-works/pi-coding-agent/', import.meta.url)
-const pi: typeof Pi = await import(new URL('dist/index.js', piRoot).href)
-const trustResolver: typeof PiProjectTrust = await import(
-  new URL('dist/core/project-trust.js', piRoot).href
-)
-const eventStreamModule: EventStreamModule = await import(
-  new URL('node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js', piRoot).href
+const { pi, importFromPi } = await loadInstalledPi()
+const trustResolver = await importFromPi<typeof PiProjectTrust>('dist/core/project-trust.js')
+const eventStreamModule = await importFromPi<EventStreamModule>(
+  'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-real-authority-')))

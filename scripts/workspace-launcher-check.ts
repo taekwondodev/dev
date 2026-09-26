@@ -16,14 +16,13 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import { loadInstalledPi } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
 
 const devRoot = fileURLToPath(new URL('..', import.meta.url))
-const pi: typeof Pi = await import(
-  new URL('../node_modules/@earendil-works/pi-coding-agent/dist/index.js', import.meta.url).href
-)
+const { pi } = await loadInstalledPi()
 const initRepository = (cwd: string) => {
   const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd })
   git(['init', '--quiet', '-b', 'main'])
