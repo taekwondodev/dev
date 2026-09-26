@@ -110,13 +110,8 @@ export const currentCommit = (workspace: GitWorkspace): string => {
   return workspace.head
 }
 
-export const allocateDetachedWorktree = (
-  source: GitWorkspace,
-  destination: string,
-  commit: string
-): GitWorkspace => {
-  if (!isAbsolute(destination) || basename(destination).length === 0)
-    throw new GitWorkspaceError('Managed worktree destination must be an absolute path')
+// Runs only read-only Git commands, so a refusal leaves no Git effect behind.
+export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: string): void => {
   const trackedPaths = git(source.path, ['ls-tree', '-r', '--name-only', '-z', commit])
   const attributes = git(
     source.path,
@@ -132,6 +127,16 @@ export const allocateDetachedWorktree = (
     throw new GitWorkspaceError(
       'Managed allocation is unavailable for filtered files; checkout filter effects are not controlled'
     )
+}
+
+// The caller has already run assertManagedCheckoutSupported for this commit.
+export const addDetachedWorktree = (
+  source: GitWorkspace,
+  destination: string,
+  commit: string
+): GitWorkspace => {
+  if (!isAbsolute(destination) || basename(destination).length === 0)
+    throw new GitWorkspaceError('Managed worktree destination must be an absolute path')
   git(source.path, ['worktree', 'add', '--detach', destination, commit])
   const created = canonicalGitWorkspace(destination)
   if (
@@ -146,4 +151,13 @@ export const allocateDetachedWorktree = (
       `Created worktree does not match the recorded allocation: ${destination}`
     )
   return created
+}
+
+export const allocateDetachedWorktree = (
+  source: GitWorkspace,
+  destination: string,
+  commit: string
+): GitWorkspace => {
+  assertManagedCheckoutSupported(source, commit)
+  return addDetachedWorktree(source, destination, commit)
 }

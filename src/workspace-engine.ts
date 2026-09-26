@@ -37,7 +37,8 @@ import {
   type WorkspaceView,
 } from './workspace-domain.ts'
 import {
-  allocateDetachedWorktree,
+  addDetachedWorktree,
+  assertManagedCheckoutSupported,
   canonicalGitWorkspace,
   currentCommit,
   GitWorkspaceError,
@@ -3206,12 +3207,13 @@ export class WorkspaceEngine {
           putOperation(db, operation as OperationRecord)
         })
       )
+      assertManagedCheckoutSupported(sourceGit, commit)
       operation = { ...operation, phase: 'started' }
       inDb(this.authority, sourceRepo, db =>
         transaction(db, () => saveOperation(db, operation as OperationRecord))
       )
 
-      const createdGit = allocateDetachedWorktree(sourceGit, destination, commit)
+      const createdGit = addDetachedWorktree(sourceGit, destination, commit)
       const rootFd = openSync(
         createdGit.path,
         constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW

@@ -1522,6 +1522,50 @@ try {
     'inspect reports a workspace whose writer was killed as blocked because no dev session holds it, while a live writer stays active'
   )
 
+  const filteredRepo = join(sandbox, 'filtered-repo')
+  mkdirSync(filteredRepo)
+  git(['init', '--quiet', '-b', 'main'], filteredRepo)
+  writeFileSync(join(filteredRepo, 'AGENTS.md'), 'fixture\n')
+  writeFileSync(join(filteredRepo, '.gitattributes'), 'AGENTS.md filter=fixture\n')
+  git(['add', '.'], filteredRepo)
+  git(
+    ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'x'],
+    filteredRepo
+  )
+  const smudged = join(sandbox, 'filtered-smudge-ran')
+  git(['config', 'filter.fixture.smudge', `touch ${smudged}`], filteredRepo)
+  const filteredRoot = join(sandbox, 'filtered-authority')
+  const filteredLifecycle = makeWorkspaceLifecycle({ root: filteredRoot })
+  const filteredOwner = await filteredLifecycle.attach({
+    conversation: conversation('filtered-owner'),
+    cwd: filteredRepo,
+  })
+  ready(await filteredOwner.authorize({ access: 'write' }))
+  const filteredContender = await filteredLifecycle.attach({
+    conversation: conversation('filtered-contender'),
+    cwd: filteredRepo,
+  })
+  const boundBefore = filteredContender.binding
+  await expectWorkspaceError(filteredContender.authorize({ access: 'write' }), ['blocked'])
+  assert.ok(!existsSync(smudged), 'no checkout filter ran')
+  assert.deepEqual(filteredContender.binding, boundBefore)
+  assert.equal(
+    ready(await filteredContender.authorize({ access: 'read' })).workspaceId,
+    boundBefore.workspaceId,
+    'the refusal left admission open'
+  )
+  assert.deepEqual(
+    (await filteredLifecycle.inspect({})).flatMap(view => view.pending),
+    [],
+    'the refused allocation leaves no pending operation'
+  )
+  await filteredContender.close()
+  await filteredOwner.close()
+  await filteredLifecycle.close()
+  checks.push(
+    'a managed allocation refused for checkout filters before any Git effect keeps the binding and admission, runs no filter and leaves no pending operation'
+  )
+
   // The default root must be the same for every installation, launch directory, data home
   // and HOME. Only the pure resolver module is imported, so nothing can open the root.
   const devRoot = new URL('..', import.meta.url)
