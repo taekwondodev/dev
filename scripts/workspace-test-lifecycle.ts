@@ -1,4 +1,5 @@
 import { Effect, Exit, Scope } from 'effect'
+import { errorText } from '../src/error-text.ts'
 import {
   WorkspaceError,
   type WorkspaceAttachment,
@@ -97,7 +98,7 @@ export const openShell = async (
               ? cause
               : new WorkspaceError({
                   outcome: 'unavailable',
-                  message: cause instanceof Error ? cause.message : String(cause),
+                  message: errorText(cause),
                 }),
         })
       )

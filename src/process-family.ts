@@ -2,6 +2,7 @@ import { execFile, type ChildProcess } from 'node:child_process'
 import { Writable } from 'node:stream'
 import { promisify } from 'node:util'
 import { Duration, Effect, Schedule, Schema } from 'effect'
+import { errorText } from './error-text.ts'
 import { ownedProcesses, type ProcessObservation } from './work-lifecycle.ts'
 import { WorkspaceProcessSchema, type WorkspaceProcess } from './workspace-domain.ts'
 
@@ -20,7 +21,7 @@ export const processGate = (child: ChildProcess): Writable => {
 
 export type ObservedProcess = ProcessObservation & { readonly birth: string }
 
-export const readProcessTable = async (): Promise<ObservedProcess[]> => {
+const readProcessTable = async (): Promise<ObservedProcess[]> => {
   // The start time is the birth identity, so it must not follow the system time zone.
   const { stdout } = await execFilePromise('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
     env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
@@ -65,7 +66,7 @@ export const processTable: Effect.Effect<ObservedProcess[], ProcessObservationLo
     try: readProcessTable,
     catch: cause =>
       new ProcessObservationLost({
-        message: `The process table could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+        message: `The process table could not be read: ${errorText(cause)}`,
       }),
   }).pipe(Effect.retry(transientRetry))
 
@@ -81,27 +82,26 @@ export interface TrackedFamily {
 // One observation of a launched family: its root's group plus every tracked descendant.
 // The family is reported whenever it changed, and the observation is lost when the root's
 // identity was reused or a tracked process has no birth identity to recognize it by.
-export const observeFamily = <E>(
+export const observeFamily = Effect.fnUntraced(function* <E>(
   family: TrackedFamily,
   options: {
     readonly rootExited: boolean
     readonly report: (processes: readonly WorkspaceProcess[]) => Effect.Effect<void, E>
   }
-): Effect.Effect<TrackedFamily, ProcessObservationLost | E> =>
-  Effect.gen(function* () {
-    const table = yield* processTable
-    if (rootIdentityReused(table, family.root, options.rootExited))
-      return yield* new ProcessObservationLost({
-        message: 'Root process identity was reused; cleanup is unknown',
-      })
-    const known = ownedProcesses(table, family.pid, family.known, family.root)
-    const processes = yield* decodeFamily(known).pipe(
-      Effect.mapError(
-        () => new ProcessObservationLost({ message: 'A tracked process has no birth identity' })
-      )
+): Effect.fn.Return<TrackedFamily, ProcessObservationLost | E> {
+  const table = yield* processTable
+  if (rootIdentityReused(table, family.root, options.rootExited))
+    return yield* new ProcessObservationLost({
+      message: 'Root process identity was reused; cleanup is unknown',
+    })
+  const known = ownedProcesses(table, family.pid, family.known, family.root)
+  const processes = yield* decodeFamily(known).pipe(
+    Effect.mapError(
+      () => new ProcessObservationLost({ message: 'A tracked process has no birth identity' })
     )
-    const signature = JSON.stringify(processes)
-    if (signature !== family.reported)
-      yield* options.report(processes).pipe(Effect.retry(transientRetry))
-    return { ...family, known, reported: signature }
-  })
+  )
+  const signature = JSON.stringify(processes)
+  if (signature !== family.reported)
+    yield* options.report(processes).pipe(Effect.retry(transientRetry))
+  return { ...family, known, reported: signature }
+})
