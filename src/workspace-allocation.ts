@@ -453,7 +453,7 @@ export const isolateContendedWriter = (
       from: toBinding(state.binding),
       target: grant,
       reason:
-        'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied.',
+        'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied',
     }
     const targetLease: GrantLease = {
       grant,
