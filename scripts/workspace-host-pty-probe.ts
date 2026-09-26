@@ -614,10 +614,11 @@ assert.deepEqual(parseWorkspaceCommand(['resume', TASK_RESUME, '--workspace', WS
   taskId: TASK_RESUME,
   workspaceId: WS_RESUME_A,
 })
-assert.deepEqual(parseWorkspaceCommand(['inspect', `${TASK_LEAD.slice(0, 8)}*`]), {
-  kind: 'inspect',
-  taskId: `${TASK_LEAD.slice(0, 8)}*`,
-})
+assert.throws(
+  () => parseWorkspaceCommand(['inspect', `${TASK_LEAD.slice(0, 8)}*`]),
+  (error: unknown) => error instanceof WorkspaceCommandError && error.exitCode === 2,
+  'a task prefix or pattern is a usage error, never a lookup'
+)
 assert.throws(
   () => parseWorkspaceCommand(['resume', TASK_RESUME, '--workspace']),
   WorkspaceCommandError

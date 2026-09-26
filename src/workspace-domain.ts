@@ -148,6 +148,7 @@ export interface WorkspaceLifecycle {
     readonly cwd: string
     readonly selection?: WorkspaceSelection
   }): Promise<WorkspaceAttachment>
+  // With a taskId, only the views of exactly that task, across every repository.
   inspect(input: {
     readonly cwd?: string
     readonly taskId?: string

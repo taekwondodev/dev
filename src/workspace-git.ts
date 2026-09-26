@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { basename, isAbsolute, resolve } from 'node:path'
+import { WorkspaceError } from './workspace-domain.ts'
 
 export interface FileIdentity {
   readonly device: string
@@ -18,12 +19,10 @@ export interface GitWorkspace {
   readonly head: string
 }
 
-export class GitWorkspaceError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'GitWorkspaceError'
-  }
-}
+// Git refusals and failures leave dev's own state unchanged, so the authority reports them
+// as blocked rather than as a separate error model.
+const gitBlocked = (message: string): WorkspaceError =>
+  new WorkspaceError({ outcome: 'blocked', message })
 
 const git = (cwd: string, args: readonly string[], input?: string): string => {
   const result = spawnSync(
@@ -55,11 +54,10 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
       },
     }
   )
-  if (result.error !== undefined)
-    throw new GitWorkspaceError(`Cannot run Git: ${result.error.message}`)
+  if (result.error !== undefined) throw gitBlocked(`Cannot run Git: ${result.error.message}`)
 
   if (result.status !== 0)
-    throw new GitWorkspaceError(
+    throw gitBlocked(
       `Git ${args[0] ?? 'command'} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ''}`
     )
   return result.stdout.replace(/\n$/, '')
@@ -67,18 +65,18 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
 
 const physicalIdentity = (path: string): FileIdentity => {
   const info = statSync(path)
-  if (!info.isDirectory()) throw new GitWorkspaceError(`Git identity is not a directory: ${path}`)
+  if (!info.isDirectory()) throw gitBlocked(`Git identity is not a directory: ${path}`)
   return { device: String(info.dev), inode: String(info.ino) }
 }
 
 export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
-  if (!isAbsolute(cwd)) throw new GitWorkspaceError(`Workspace cwd must be absolute: ${cwd}`)
+  if (!isAbsolute(cwd)) throw gitBlocked(`Workspace cwd must be absolute: ${cwd}`)
   let checkout: string
   try {
     checkout = realpathSync(git(cwd, ['rev-parse', '--show-toplevel']))
   } catch (cause) {
-    if (cause instanceof GitWorkspaceError) throw cause
-    throw new GitWorkspaceError(`Cannot resolve Git checkout at ${cwd}`)
+    if (cause instanceof WorkspaceError) throw cause
+    throw gitBlocked(`Cannot resolve Git checkout at ${cwd}`)
   }
   const common = realpathSync(
     git(checkout, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
@@ -106,7 +104,7 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
 
 export const currentCommit = (workspace: GitWorkspace): string => {
   if (workspace.head.length === 0)
-    throw new GitWorkspaceError(`Checkout has no current commit: ${workspace.path}`)
+    throw gitBlocked(`Checkout has no current commit: ${workspace.path}`)
   return workspace.head
 }
 
@@ -124,7 +122,7 @@ export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: str
       (value, index) => index % 3 === 2 && value !== 'unspecified' && value !== 'unset'
     )
   )
-    throw new GitWorkspaceError(
+    throw gitBlocked(
       'Managed allocation is unavailable for filtered files; checkout filter effects are not controlled'
     )
 }
@@ -136,7 +134,7 @@ export const addDetachedWorktree = (
   commit: string
 ): GitWorkspace => {
   if (!isAbsolute(destination) || basename(destination).length === 0)
-    throw new GitWorkspaceError('Managed worktree destination must be an absolute path')
+    throw gitBlocked('Managed worktree destination must be an absolute path')
   git(source.path, ['worktree', 'add', '--detach', destination, commit])
   const created = canonicalGitWorkspace(destination)
   if (
@@ -147,9 +145,7 @@ export const addDetachedWorktree = (
     created.objectFormat !== source.objectFormat ||
     created.head !== commit
   )
-    throw new GitWorkspaceError(
-      `Created worktree does not match the recorded allocation: ${destination}`
-    )
+    throw gitBlocked(`Created worktree does not match the recorded allocation: ${destination}`)
   return created
 }
 

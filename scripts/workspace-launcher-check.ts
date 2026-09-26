@@ -368,6 +368,13 @@ try {
   checks.push(
     'dev workspace inspect <task> finds exactly that task in whichever of two repositories holds it, from a non-Git or another repository launch directory, and a task ID differing in one character finds nothing'
   )
+  const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'])
+  assert.equal(malformed.code, 2, malformed.stderr)
+  assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace/)
+  assert.ok(malformed.stderr.includes('not-a-task-id'), malformed.stderr)
+  checks.push(
+    'dev workspace inspect with a malformed task ID is a usage error: exit 2 naming the bad argument, before the authority is asked'
+  )
 
   const catalogPath = join(inspectRoot, 'catalog.sqlite')
   const setCatalogPayload = (payload: string) => {

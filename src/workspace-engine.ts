@@ -41,7 +41,6 @@ import {
   assertManagedCheckoutSupported,
   canonicalGitWorkspace,
   currentCommit,
-  GitWorkspaceError,
   type FileIdentity,
   type GitWorkspace,
 } from './workspace-git.ts'
@@ -299,7 +298,7 @@ function unavailable(message: string): never {
 function blocked(message: string): never {
   return fail('blocked', message)
 }
-function review(message: string): never {
+function requireReview(message: string): never {
   return fail('review-required', message)
 }
 function ambiguous(message: string): never {
@@ -313,11 +312,11 @@ const encode = (value: unknown): string => {
   return result
 }
 const decodeJson = (value: unknown, label: string): unknown => {
-  if (typeof value !== 'string') return review(`Corrupt ${label}: payload is not text`)
+  if (typeof value !== 'string') return requireReview(`Corrupt ${label}: payload is not text`)
   try {
     return JSON.parse(value)
   } catch {
-    return review(`Corrupt ${label}: payload is not valid JSON`)
+    return requireReview(`Corrupt ${label}: payload is not valid JSON`)
   }
 }
 const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
@@ -329,7 +328,7 @@ const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
     return Schema.decodeUnknownSync(schema)(decodeJson(raw, label))
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    return review(`Corrupt ${label}: persisted record failed schema validation`)
+    return requireReview(`Corrupt ${label}: persisted record failed schema validation`)
   }
 }
 const now = (): number => Date.now()
@@ -560,7 +559,7 @@ const assertSqliteSafety = (): void => {
     )
 }
 
-const columns = (db: DatabaseSync, sql: string, ...params: (string | number | null)[]): SqlRow[] =>
+const rows = (db: DatabaseSync, sql: string, ...params: (string | number | null)[]): SqlRow[] =>
   db.prepare(sql).all(...params) as SqlRow[]
 const first = (
   db: DatabaseSync,
@@ -569,19 +568,19 @@ const first = (
 ): SqlRow | undefined => db.prepare(sql).get(...params) as SqlRow | undefined
 const textField = (row: SqlRow | undefined, key: string): string => {
   const value = row?.[key]
-  if (typeof value !== 'string') return review(`Corrupt workspace authority column: ${key}`)
+  if (typeof value !== 'string') return requireReview(`Corrupt workspace authority column: ${key}`)
   return value
 }
 const numberField = (row: SqlRow | undefined, key: string): number => {
   const value = row?.[key]
   if (typeof value !== 'number' || !Number.isFinite(value))
-    return review(`Corrupt workspace authority column: ${key}`)
+    return requireReview(`Corrupt workspace authority column: ${key}`)
   return value
 }
 const normalizeSql = (sql: string): string => sql.replace(/\s+/g, ' ').trim()
 const schemaCatalog = (db: DatabaseSync): string =>
   JSON.stringify({
-    objects: columns(
+    objects: rows(
       db,
       "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
     ).map(row => ({
@@ -590,7 +589,7 @@ const schemaCatalog = (db: DatabaseSync): string =>
       table: row.tbl_name,
       sql: normalizeSql(String(row.sql)),
     })),
-    tables: columns(db, 'PRAGMA table_list')
+    tables: rows(db, 'PRAGMA table_list')
       .filter(row => row.name !== 'sqlite_schema' && row.name !== 'sqlite_temp_schema')
       .map(row => ({
         schema: row.schema,
@@ -707,7 +706,7 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   if (version !== SCHEMA_VERSION || schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
     unavailable(`Workspace ${kind} database has an unsupported schema: ${path}`)
   if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
-    review(`Workspace ${kind} database is corrupt: ${path}`)
+    requireReview(`Workspace ${kind} database is corrupt: ${path}`)
   databaseFile(path)
 }
 const openRecordDb = (
@@ -840,7 +839,7 @@ const validateProtocol = (path: string, namespaceId?: string): string => {
       unavailable(`Workspace protocol version mismatch at ${path}`)
     const actual = textField(row, 'namespace_id')
     if (!isUuid(actual) || (namespaceId !== undefined && namespaceId !== actual))
-      review(`Workspace protocol identity mismatch at ${path}`)
+      requireReview(`Workspace protocol identity mismatch at ${path}`)
     return actual
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
@@ -901,10 +900,12 @@ const acquireGate = (
       textField(marker, 'path') !== identityPath ||
       textField(marker, 'key') !== key
     )
-      review(`Workspace gate identity was replaced or does not match its canonical path: ${path}`)
+      requireReview(
+        `Workspace gate identity was replaced or does not match its canonical path: ${path}`
+      )
     db.exec(exclusive ? 'BEGIN EXCLUSIVE' : 'BEGIN')
     if (textField(first(db, 'SELECT kind FROM gate_marker WHERE id=1'), 'kind') !== kind)
-      review(`Workspace gate marker changed while acquiring ${path}`)
+      requireReview(`Workspace gate marker changed while acquiring ${path}`)
     const locked = db
     db = undefined
     let released = false
@@ -943,7 +944,7 @@ const acquireProtocolGate = (path: string, root: string, namespaceId: string): G
       numberField(marker, 'version') !== PROTOCOL_VERSION ||
       textField(marker, 'namespace_id') !== namespaceId
     )
-      review(`Workspace protocol identity changed at ${path}`)
+      requireReview(`Workspace protocol identity changed at ${path}`)
     db.exec('BEGIN')
     if (
       textField(
@@ -951,7 +952,7 @@ const acquireProtocolGate = (path: string, root: string, namespaceId: string): G
         'namespace_id'
       ) !== namespaceId
     )
-      review(`Workspace protocol marker changed while joining ${root}`)
+      requireReview(`Workspace protocol marker changed while joining ${root}`)
     const locked = db
     db = undefined
     let released = false
@@ -1055,7 +1056,7 @@ const canonicalPathSlot = (path: string): string => {
   const info = lstatIfExists(absolute)
   if (info !== undefined) {
     if (info.isSymbolicLink() || !info.isDirectory())
-      review(`Workspace path is not a physical directory: ${absolute}`)
+      requireReview(`Workspace path is not a physical directory: ${absolute}`)
     return realpathSync(absolute)
   }
   const parent = realpathSync(dirname(absolute))
@@ -1153,7 +1154,7 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
     value.provisionId !== textField(row, 'provision_id') ||
     value.revision !== numberField(row, 'revision')
   )
-    review(`Repository catalog columns disagree with payload: ${value.id}`)
+    requireReview(`Repository catalog columns disagree with payload: ${value.id}`)
   return value
 }
 const validateRepositoryRecord = (
@@ -1167,7 +1168,7 @@ const validateRepositoryRecord = (
     value.inode !== repository.commonIdentity.inode ||
     value.objectFormat !== repository.objectFormat
   )
-    review(`Git common-directory identity changed: ${repository.commonPath}`)
+    requireReview(`Git common-directory identity changed: ${repository.commonPath}`)
   return value
 }
 
@@ -1195,7 +1196,7 @@ class WorkspaceAuthority {
   initialize(): string {
     if (this.closed) unavailable('Workspace lifecycle is closed')
     if (this.initialized)
-      return this.namespaceId ?? review('Workspace namespace identity is missing')
+      return this.namespaceId ?? requireReview('Workspace namespace identity is missing')
     this.checkStorage()
     assertSqliteSafety()
     const rootInfo = lstatIfExists(this.root)
@@ -1217,13 +1218,14 @@ class WorkspaceAuthority {
           return true
         }
       })
-      if (hasEvidence) review(`Workspace authority has data but no namespace markers: ${this.root}`)
+      if (hasEvidence)
+        requireReview(`Workspace authority has data but no namespace markers: ${this.root}`)
       const candidateId = workspaceId()
       createProtocolDatabase(this.paths.protocol, candidateId)
       const id = validateProtocol(this.paths.protocol)
       createCatalogDatabase(this.paths.catalog, id)
     } else if (!protocolExists || !catalogExists) {
-      review(`Workspace authority has incomplete namespace markers: ${this.root}`)
+      requireReview(`Workspace authority has incomplete namespace markers: ${this.root}`)
     }
     const id = validateProtocol(this.paths.protocol)
     const acquired = acquireProtocolGate(this.paths.protocol, this.root, id)
@@ -1239,7 +1241,7 @@ class WorkspaceAuthority {
           'value'
         )
         if (actual !== id || version !== String(PROTOCOL_VERSION))
-          review(`Workspace catalog does not match namespace ${this.root}`)
+          requireReview(`Workspace catalog does not match namespace ${this.root}`)
       } finally {
         catalog.close()
       }
@@ -1264,10 +1266,10 @@ class WorkspaceAuthority {
     if (protocol === undefined && catalog === undefined) {
       const entries = requireEntries(this.root)
       if (entries.length === 0) return undefined
-      review(`Workspace authority has files but no valid namespace markers: ${this.root}`)
+      requireReview(`Workspace authority has files but no valid namespace markers: ${this.root}`)
     }
     if (protocol === undefined || catalog === undefined)
-      review(`Workspace authority is incomplete: ${this.root}`)
+      requireReview(`Workspace authority is incomplete: ${this.root}`)
     const id = validateProtocol(this.paths.protocol)
     const release = acquireProtocolGate(this.paths.protocol, this.root, id)
     try {
@@ -1283,7 +1285,7 @@ class WorkspaceAuthority {
             'value'
           ) !== String(PROTOCOL_VERSION)
         )
-          review(`Workspace catalog does not match namespace ${this.root}`)
+          requireReview(`Workspace catalog does not match namespace ${this.root}`)
       } finally {
         db.close()
       }
@@ -1298,7 +1300,7 @@ class WorkspaceAuthority {
     const namespaceId =
       this.namespaceId ??
       (create
-        ? review('Workspace namespace is not initialized')
+        ? requireReview('Workspace namespace is not initialized')
         : validateProtocol(this.paths.protocol))
     const db = openRecordDb(this.paths.catalog, 'catalog', create, candidate => {
       candidate
@@ -1314,7 +1316,7 @@ class WorkspaceAuthority {
     )
     if (actual !== namespaceId) {
       db.close()
-      review(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
+      requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
     }
     return db
   }
@@ -1350,9 +1352,9 @@ class WorkspaceAuthority {
       inode = record.inode
       format = record.objectFormat
       if (state === 'ready' && lstatIfExists(path) === undefined)
-        review(`Ready repository shard is missing: ${path}`)
+        requireReview(`Ready repository shard is missing: ${path}`)
       if (state === 'provisioning' && !create && lstatIfExists(path) === undefined)
-        review(`Repository shard provisioning is incomplete: ${path}`)
+        requireReview(`Repository shard provisioning is incomplete: ${path}`)
       if (
         repository !== undefined &&
         (commonPath !== repository.commonPath ||
@@ -1360,14 +1362,16 @@ class WorkspaceAuthority {
           inode !== repository.commonIdentity.inode ||
           format !== repository.objectFormat)
       )
-        review(`Repository identity changed for workspace shard ${repositoryId}`)
+        requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
     } finally {
       catalog.close()
     }
     privateDirectory(directory, create && state === 'provisioning')
     const db = openRecordDb(path, 'shard', create && state === 'provisioning', candidate => {
       if (repository === undefined)
-        review(`Cannot initialize repository shard without its Git identity: ${repositoryId}`)
+        requireReview(
+          `Cannot initialize repository shard without its Git identity: ${repositoryId}`
+        )
       const values: readonly [string, string][] = [
         ['repository_id', repositoryId],
         ['common_path', repository.commonPath],
@@ -1391,7 +1395,7 @@ class WorkspaceAuthority {
     expected: { commonPath: string; device: string; inode: string; format: string }
   ): void {
     const values = new Map(
-      columns(db, 'SELECT key, value FROM shard_meta').map(row => [
+      rows(db, 'SELECT key, value FROM shard_meta').map(row => [
         textField(row, 'key'),
         textField(row, 'value'),
       ])
@@ -1405,7 +1409,7 @@ class WorkspaceAuthority {
       values.get('object_format') !== expected.format ||
       values.get('protocol_version') !== String(PROTOCOL_VERSION)
     )
-      review(`Repository shard identity or schema mismatch: ${repositoryId}`)
+      requireReview(`Repository shard identity or schema mismatch: ${repositoryId}`)
   }
 
   private markRepositoryReady(repositoryId: string): void {
@@ -1418,7 +1422,8 @@ class WorkspaceAuthority {
           FROM repositories WHERE id=?`,
           repositoryId
         )
-        if (row === undefined) review(`Repository catalog mapping disappeared: ${repositoryId}`)
+        if (row === undefined)
+          requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
         const current = parseRepositoryCatalogRow(row)
         if (current.state === 'ready') return
         const ready: RepositoryCatalogRecord = {
@@ -1435,7 +1440,7 @@ class WorkspaceAuthority {
           current.revision
         )
         if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-          review(`Cannot publish ready repository shard: ${repositoryId}`)
+          requireReview(`Cannot publish ready repository shard: ${repositoryId}`)
       })
     } finally {
       db.close()
@@ -1460,12 +1465,12 @@ class WorkspaceAuthority {
         repository.commonIdentity.inode
       )
       if (byPath === undefined && byPhysical !== undefined)
-        review(
+        requireReview(
           `Repository common directory has an unrecognized path alias: ${repository.commonPath}`
         )
       if (byPath !== undefined) {
         if (byPhysical === undefined || textField(byPath, 'id') !== textField(byPhysical, 'id'))
-          review(`Repository physical identity changed: ${repository.commonPath}`)
+          requireReview(`Repository physical identity changed: ${repository.commonPath}`)
         const record = validateRepositoryRecord(repository, byPath)
         registered = { id: record.id, state: record.state }
       } else {
@@ -1523,7 +1528,7 @@ class WorkspaceAuthority {
           byPhysical === undefined ||
           textField(byPath, 'id') !== textField(byPhysical, 'id')
         )
-          review(
+          requireReview(
             `Repository identity conflicts with existing catalog data: ${repository.commonPath}`
           )
         const record = validateRepositoryRecord(repository, byPath)
@@ -1533,7 +1538,9 @@ class WorkspaceAuthority {
       }
     }
     if (registered === undefined)
-      review(`Repository registration produced no authoritative record: ${repository.commonPath}`)
+      requireReview(
+        `Repository registration produced no authoritative record: ${repository.commonPath}`
+      )
     const repositoryId = registered.id
     const state = registered.state
     let structure: GateRelease | undefined
@@ -1548,21 +1555,23 @@ class WorkspaceAuthority {
           'SELECT state FROM repositories WHERE id=?',
           repositoryId
         )
-        if (current === undefined) review(`Repository catalog mapping disappeared: ${repositoryId}`)
+        if (current === undefined)
+          requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
         currentState = textField(current, 'state')
       } finally {
         currentCatalog.close()
       }
       if (currentState === 'ready') {
         const path = this.shardPath(repositoryId)
-        if (lstatIfExists(path) === undefined) review(`Ready repository shard is missing: ${path}`)
+        if (lstatIfExists(path) === undefined)
+          requireReview(`Ready repository shard is missing: ${path}`)
         const shard = this.openShard(repositoryId, false, repository)
         shard.close()
       } else if (currentState === 'provisioning') {
         privateDirectory(dirname(this.shardPath(repositoryId)), true)
         const shard = this.openShard(repositoryId, true, repository)
         shard.close()
-      } else review(`Invalid repository catalog state: ${repositoryId}`)
+      } else requireReview(`Invalid repository catalog state: ${repositoryId}`)
     } finally {
       structure?.()
     }
@@ -1576,14 +1585,14 @@ class WorkspaceAuthority {
   }[] {
     const db = this.openCatalog(false)
     try {
-      return columns(
+      return rows(
         db,
         `SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload
         FROM repositories ORDER BY id`
       ).map(row => {
         const record = parseRepositoryCatalogRow(row)
         if (record.state !== 'ready')
-          review(`Repository shard provisioning is unresolved: ${record.id}`)
+          requireReview(`Repository shard provisioning is unresolved: ${record.id}`)
         return { id: record.id, state: record.state, commonPath: record.commonPath }
       })
     } finally {
@@ -1618,7 +1627,7 @@ const requireEntries = (directory: string): string[] => {
   }
 }
 
-const valueOf = <S extends Schema.ConstraintDecoder<unknown>>(
+const decodeOrFail = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   input: unknown,
   label: string,
@@ -1627,7 +1636,7 @@ const valueOf = <S extends Schema.ConstraintDecoder<unknown>>(
   try {
     return Schema.decodeUnknownSync(schema)(input)
   } catch {
-    return outcome === 'invalid' ? invalid(`Invalid ${label}`) : review(`Invalid ${label}`)
+    return outcome === 'invalid' ? invalid(`Invalid ${label}`) : requireReview(`Invalid ${label}`)
   }
 }
 
@@ -1636,11 +1645,11 @@ const getTask = (db: DatabaseSync, id: string): TaskRecord | undefined => {
   if (row === undefined) return undefined
   const value = parseRecord(TaskSchema, row.payload, `task ${id}`)
   if (value.id !== textField(row, 'id') || value.revision !== numberField(row, 'revision'))
-    review(`Task columns disagree with payload: ${id}`)
+    requireReview(`Task columns disagree with payload: ${id}`)
   return value
 }
 const putTask = (db: DatabaseSync, value: TaskRecord): void => {
-  const checked = valueOf(TaskSchema, value, 'task record')
+  const checked = decodeOrFail(TaskSchema, value, 'task record')
   db.prepare('INSERT INTO tasks(id, revision, payload) VALUES(?,?,?)').run(
     checked.id,
     checked.revision,
@@ -1663,7 +1672,7 @@ const getWorkspace = (db: DatabaseSync, id: string): WorkspaceRecord | undefined
     value.status !== textField(row, 'status') ||
     value.revision !== numberField(row, 'revision')
   )
-    review(`Workspace columns disagree with payload: ${id}`)
+    requireReview(`Workspace columns disagree with payload: ${id}`)
   return value
 }
 const getWorkspaceByPath = (db: DatabaseSync, path: string): WorkspaceRecord | undefined => {
@@ -1671,7 +1680,7 @@ const getWorkspaceByPath = (db: DatabaseSync, path: string): WorkspaceRecord | u
   return row === undefined ? undefined : getWorkspace(db, textField(row, 'id'))
 }
 const putWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
-  const checked = valueOf(WorkspaceSchema, value, 'workspace record')
+  const checked = decodeOrFail(WorkspaceSchema, value, 'workspace record')
   db.prepare(
     'INSERT INTO workspaces(id,path_key,path,origin,status,revision,payload) VALUES(?,?,?,?,?,?,?)'
   ).run(
@@ -1702,7 +1711,7 @@ const getReservation = (
     (value.acquisitionId ?? null) !== (row.acquisition_id ?? null) ||
     value.revision !== numberField(row, 'revision')
   )
-    review(`Reservation columns disagree with payload: ${value.id}`)
+    requireReview(`Reservation columns disagree with payload: ${value.id}`)
   return value
 }
 const getReservationById = (db: DatabaseSync, id: string): ReservationRecord | undefined => {
@@ -1710,7 +1719,7 @@ const getReservationById = (db: DatabaseSync, id: string): ReservationRecord | u
   return row === undefined ? undefined : getReservation(db, textField(row, 'workspace_id'))
 }
 const putReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  const checked = valueOf(ReservationSchema, value, 'reservation record')
+  const checked = decodeOrFail(ReservationSchema, value, 'reservation record')
   db.prepare(
     'INSERT INTO reservations(id,workspace_id,task_id,acquisition_id,revision,payload) VALUES(?,?,?,?,?,?)'
   ).run(
@@ -1723,7 +1732,7 @@ const putReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   )
 }
 const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  const checked = valueOf(ReservationSchema, value, 'reservation record')
+  const checked = decodeOrFail(ReservationSchema, value, 'reservation record')
   db.prepare(
     'UPDATE reservations SET task_id=?,acquisition_id=?,revision=?,payload=? WHERE id=? AND workspace_id=?'
   ).run(
@@ -1735,7 +1744,7 @@ const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => 
     checked.workspaceId
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    review(`Reservation disappeared: ${checked.id}`)
+    requireReview(`Reservation disappeared: ${checked.id}`)
 }
 const getBinding = (db: DatabaseSync, key: string): BindingRecord | undefined => {
   const row = first(
@@ -1751,11 +1760,11 @@ const getBinding = (db: DatabaseSync, key: string): BindingRecord | undefined =>
     (value.taskId ?? null) !== (row.task_id ?? null) ||
     value.revision !== numberField(row, 'revision')
   )
-    review(`Binding columns disagree with payload: ${key}`)
+    requireReview(`Binding columns disagree with payload: ${key}`)
   return value
 }
 const putBinding = (db: DatabaseSync, value: BindingRecord): void => {
-  const checked = valueOf(BindingSchema, value, 'conversation binding')
+  const checked = decodeOrFail(BindingSchema, value, 'conversation binding')
   db.prepare(`INSERT INTO bindings(conversation_key,workspace_id,task_id,revision,payload) VALUES(?,?,?,?,?)
     ON CONFLICT(conversation_key) DO UPDATE SET workspace_id=excluded.workspace_id,task_id=excluded.task_id,revision=excluded.revision,payload=excluded.payload`).run(
     checked.key,
@@ -1783,11 +1792,11 @@ const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
     value.stage !== textField(row, 'stage') ||
     value.revision !== numberField(row, 'revision')
   )
-    review(`Workspace use columns disagree with payload: ${id}`)
+    requireReview(`Workspace use columns disagree with payload: ${id}`)
   return value
 }
 const putUse = (db: DatabaseSync, value: UseRecord): void => {
-  const checked = valueOf(UseSchema, value, 'workspace use')
+  const checked = decodeOrFail(UseSchema, value, 'workspace use')
   db.prepare(
     'INSERT INTO uses(id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,revision,payload) VALUES(?,?,?,?,?,?,?,?,?)'
   ).run(
@@ -1803,13 +1812,13 @@ const putUse = (db: DatabaseSync, value: UseRecord): void => {
   )
 }
 const saveUse = (db: DatabaseSync, value: UseRecord): void => {
-  const checked = valueOf(UseSchema, value, 'workspace use')
+  const checked = decodeOrFail(UseSchema, value, 'workspace use')
   // Every settling route writes through here, so no route can miss these rules.
   // `unknown` records lost evidence that no later observation or host report can
   // restore; resolving it is an explicit recovery decision.
   const stored = getUse(db, checked.id)
   if (stored?.stage === 'unknown' && checked.stage !== 'unknown')
-    review(`Workspace use ${checked.id} is unknown; only explicit recovery can resolve it`)
+    requireReview(`Workspace use ${checked.id} is unknown; only explicit recovery can resolve it`)
   if (checked.stage === 'quiescent')
     assertNoActiveDependentUseInDb(db, checked.id, `Cannot settle workspace use ${checked.id}`)
   db.prepare(
@@ -1826,7 +1835,7 @@ const saveUse = (db: DatabaseSync, value: UseRecord): void => {
     checked.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    review(`Workspace use disappeared: ${checked.id}`)
+    requireReview(`Workspace use disappeared: ${checked.id}`)
 }
 const getOperation = (db: DatabaseSync, id: string): OperationRecord | undefined => {
   const row = first(
@@ -1844,11 +1853,11 @@ const getOperation = (db: DatabaseSync, id: string): OperationRecord | undefined
     value.taskId !== textField(row, 'task_id') ||
     value.expectedBindingRevision !== numberField(row, 'revision')
   )
-    review(`Operation columns disagree with payload: ${id}`)
+    requireReview(`Operation columns disagree with payload: ${id}`)
   return value
 }
 const putOperation = (db: DatabaseSync, value: OperationRecord): void => {
-  const checked = valueOf(OperationSchema, value, 'workspace operation')
+  const checked = decodeOrFail(OperationSchema, value, 'workspace operation')
   db.prepare(
     'INSERT INTO operations(id,kind,phase,workspace_id,task_id,revision,created_at,payload) VALUES(?,?,?,?,?,?,?,?)'
   ).run(
@@ -1863,7 +1872,7 @@ const putOperation = (db: DatabaseSync, value: OperationRecord): void => {
   )
 }
 const saveOperation = (db: DatabaseSync, value: OperationRecord): void => {
-  const checked = valueOf(OperationSchema, value, 'workspace operation')
+  const checked = decodeOrFail(OperationSchema, value, 'workspace operation')
   db.prepare(
     'UPDATE operations SET kind=?,phase=?,workspace_id=?,task_id=?,revision=?,created_at=?,payload=? WHERE id=?'
   ).run(
@@ -1877,14 +1886,14 @@ const saveOperation = (db: DatabaseSync, value: OperationRecord): void => {
     checked.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    review(`Workspace operation disappeared: ${checked.id}`)
+    requireReview(`Workspace operation disappeared: ${checked.id}`)
 }
 const getUseRows = (db: DatabaseSync, workspaceIdValue: string): UseRecord[] =>
-  columns(db, 'SELECT id FROM uses WHERE workspace_id=? ORDER BY id', workspaceIdValue)
+  rows(db, 'SELECT id FROM uses WHERE workspace_id=? ORDER BY id', workspaceIdValue)
     .map(row => getUse(db, textField(row, 'id')))
     .filter((value): value is UseRecord => value !== undefined)
 const getAllUseRows = (db: DatabaseSync): UseRecord[] =>
-  columns(db, 'SELECT id FROM uses ORDER BY id')
+  rows(db, 'SELECT id FROM uses ORDER BY id')
     .map(row => getUse(db, textField(row, 'id')))
     .filter((value): value is UseRecord => value !== undefined)
 // Scoped uses are admitted within an ordinary grant, whose gates they write under, so
@@ -1907,7 +1916,8 @@ const assertNoActiveDependentUseInDb = (
 const assertWithinLiveInDb = (db: DatabaseSync, use: UseRecord): void => {
   if (use.withinUseId === undefined) return
   const parent = getUse(db, use.withinUseId)
-  if (parent === undefined) review(`Scoped operation lost its within grant: ${use.withinUseId}`)
+  if (parent === undefined)
+    requireReview(`Scoped operation lost its within grant: ${use.withinUseId}`)
   if (parent.stage !== 'authorized')
     blocked(`Scoped operation cannot start under a ${parent.stage} within grant: ${parent.id}`)
 }
@@ -1972,7 +1982,7 @@ const makeWorkspaceRecord = (
   id = workspaceId(),
   allocationOperationId?: string
 ): WorkspaceRecord =>
-  valueOf(
+  decodeOrFail(
     WorkspaceSchema,
     {
       id,
@@ -1994,12 +2004,13 @@ const makeWorkspaceRecord = (
     'Git workspace identity'
   )
 const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
-  if (record.status !== 'ready') return review(`Workspace allocation is unresolved: ${record.path}`)
+  if (record.status !== 'ready')
+    return requireReview(`Workspace allocation is unresolved: ${record.path}`)
   let actual: GitWorkspace
   try {
     actual = canonicalGitWorkspace(record.path)
   } catch (cause) {
-    return review(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
+    return requireReview(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
   }
   if (
     actual.path !== record.path ||
@@ -2010,7 +2021,7 @@ const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
     !sameIdentity(actual.commonIdentity, record.common) ||
     actual.objectFormat !== record.objectFormat
   )
-    return review(`Workspace path or Git identity was replaced: ${record.path}`)
+    return requireReview(`Workspace path or Git identity was replaced: ${record.path}`)
   return actual
 }
 const conversationRecord = (
@@ -2023,7 +2034,7 @@ const conversationRecord = (
   let sessionFile: string
   if (sessionInfo !== undefined) {
     if (!sessionInfo.isFile() || sessionInfo.isSymbolicLink() || sessionInfo.nlink !== 1)
-      review(`Conversation file is not a regular, uniquely linked file: ${sessionPath}`)
+      requireReview(`Conversation file is not a regular, uniquely linked file: ${sessionPath}`)
     sessionFile = realpathSync(sessionPath)
   } else sessionFile = resolve(realpathSync(dirname(sessionPath)), basename(sessionPath))
   const dataHome = realpathSync(resolve(input.dataHome))
@@ -2048,7 +2059,7 @@ const toGrant = (
   cwd: string,
   access: 'read' | 'write'
 ): WorkspaceGrant =>
-  valueOf(
+  decodeOrFail(
     WorkspaceGrantSchema,
     {
       namespaceId: authority.initialize(),
@@ -2088,17 +2099,17 @@ const taskWorkspaces = (
   const result: { repo: string; reservation: ReservationRecord; workspace: WorkspaceRecord }[] = []
   for (const repository of authority.listRepositories()) {
     inDb(authority, repository.id, db => {
-      for (const row of columns(
+      for (const row of rows(
         db,
         'SELECT id FROM reservations WHERE task_id=? ORDER BY id',
         taskId
       )) {
         const reservation = getReservationById(db, textField(row, 'id'))
         if (reservation === undefined || reservation.taskId !== taskId)
-          review(`Task reservation is inconsistent: ${taskId}`)
+          requireReview(`Task reservation is inconsistent: ${taskId}`)
         const workspace = getWorkspace(db, reservation.workspaceId)
         if (workspace === undefined)
-          review(`Reserved workspace is missing: ${reservation.workspaceId}`)
+          requireReview(`Reserved workspace is missing: ${reservation.workspaceId}`)
         result.push({ repo: repository.id, reservation, workspace })
       }
     })
@@ -2118,14 +2129,14 @@ const findBinding = (
     })
   }
   if (matches.length > 1)
-    review(`Conversation has multiple authoritative workspace bindings: ${key}`)
+    requireReview(`Conversation has multiple authoritative workspace bindings: ${key}`)
   return matches[0]
 }
 const isActiveUse = (use: UseRecord): boolean => use.stage !== 'quiescent'
 const validExecution = (input: WorkspaceExecution): WorkspaceExecution =>
-  valueOf(ExecutionSchema, input, 'workspace execution identity', 'invalid')
+  decodeOrFail(ExecutionSchema, input, 'workspace execution identity', 'invalid')
 const validExecutionFact = (input: unknown): WorkspaceExecutionFact =>
-  valueOf(ExecutionFactSchema, input, 'execution fact', 'invalid')
+  decodeOrFail(ExecutionFactSchema, input, 'execution fact', 'invalid')
 
 interface GrantLease {
   readonly grant: WorkspaceGrant
@@ -2247,7 +2258,6 @@ export class WorkspaceEngine {
   }
   private translate(cause: unknown): never {
     if (cause instanceof WorkspaceError) throw cause
-    if (cause instanceof GitWorkspaceError) blocked(cause.message)
     unavailable(`Workspace authority operation failed: ${errorText(cause)}`)
   }
   private ensureOpen(): void {
@@ -2285,7 +2295,7 @@ export class WorkspaceEngine {
             selected.workspaceId === pending.handoff.target.workspaceId)
         if (selectionMatches && canonicalPathSlot(input.cwd) === pending.handoff.target.checkout)
           return new WorkspaceAttachmentImpl(this, live, pending.handoff.operationId)
-        review('A pending live workspace handoff can only reopen its exact destination')
+        requireReview('A pending live workspace handoff can only reopen its exact destination')
       }
       if (input.selection !== undefined) {
         const selection = this.resolveSelection(input.selection)
@@ -2295,7 +2305,7 @@ export class WorkspaceEngine {
           selection.reservation.taskId === live.binding.taskId
         )
           return new WorkspaceAttachmentImpl(this, live)
-        review('A live attachment cannot be moved without its host handoff')
+        requireReview('A live attachment cannot be moved without its host handoff')
       }
       return new WorkspaceAttachmentImpl(this, live)
     }
@@ -2307,7 +2317,7 @@ export class WorkspaceEngine {
       // Holding the conversation gate proves no host anywhere still performs its switch.
       if (previous !== undefined && pendingOperationId !== undefined) {
         if (!this.retireUnstartedTransition(pendingOperationId))
-          review(
+          requireReview(
             `The last workspace switch of this conversation (${pendingOperationId}) may have reached the host, so it cannot be resumed until explicit recovery exists; its history is unchanged`
           )
         const { repo } = previous
@@ -2315,7 +2325,7 @@ export class WorkspaceEngine {
           transaction(db, () => {
             const current = getBinding(db, normalized.key)
             if (current === undefined || current.pendingOperationId !== pendingOperationId)
-              review('Conversation binding changed while its unstarted switch was withdrawn')
+              requireReview('Conversation binding changed while its unstarted switch was withdrawn')
             const withdrawn = { ...current, pendingOperationId: undefined }
             putBinding(db, withdrawn)
             return withdrawn
@@ -2331,7 +2341,7 @@ export class WorkspaceEngine {
         this.ensureNoUnresolvedUse(selected.repo, selected.workspace.id)
         const probe = acquirePathGates(this.authority.paths, selected.workspace.path, true)
         releaseGates(probe)
-        binding = valueOf(
+        binding = decodeOrFail(
           BindingSchema,
           {
             key: normalized.key,
@@ -2350,7 +2360,7 @@ export class WorkspaceEngine {
             transaction(db, () => {
               const current = getBinding(db, normalized.key)
               if (current === undefined || current.revision !== previous.binding.revision)
-                review('Conversation binding changed during explicit recovery')
+                requireReview('Conversation binding changed during explicit recovery')
               putBinding(db, binding)
             })
           )
@@ -2359,7 +2369,7 @@ export class WorkspaceEngine {
             transaction(db, () => {
               const current = getBinding(db, normalized.key)
               if (current === undefined || current.revision !== previous.binding.revision)
-                review('Conversation binding changed during explicit recovery')
+                requireReview('Conversation binding changed during explicit recovery')
               putBinding(db, { ...current, superseded: true, pendingOperationId: undefined })
             })
           )
@@ -2371,9 +2381,9 @@ export class WorkspaceEngine {
         binding = previous.binding
         const workspace = inDb(this.authority, repoId, db => getWorkspace(db, binding.workspaceId))
         if (workspace === undefined)
-          review(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
+          requireReview(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
         if (lstatIfExists(workspace.path) === undefined)
-          review(
+          requireReview(
             `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
           )
         this.validateWorkspace(workspace)
@@ -2384,7 +2394,7 @@ export class WorkspaceEngine {
         const actualCwd = realpathSync(resolve(input.cwd))
         if (!safeWithin(workspace.path, actualCwd))
           invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
-        binding = valueOf(
+        binding = decodeOrFail(
           BindingSchema,
           {
             key: normalized.key,
@@ -2480,7 +2490,7 @@ export class WorkspaceEngine {
     if (workspace.origin === 'managed') {
       const base = resolve(this.authority.paths.worktrees, workspace.repositoryId)
       if (!safeWithin(base, workspace.path) || workspace.path === base)
-        review(`Managed workspace escaped its allocation root: ${workspace.path}`)
+        requireReview(`Managed workspace escaped its allocation root: ${workspace.path}`)
     }
     return actual
   }
@@ -2499,7 +2509,7 @@ export class WorkspaceEngine {
           if (existing !== undefined) {
             this.assertWorkspaceMatches(existing, git)
             if (existing.status !== 'ready')
-              review(`Workspace allocation is unresolved: ${existing.path}`)
+              requireReview(`Workspace allocation is unresolved: ${existing.path}`)
             return existing
           }
           const record = makeWorkspaceRecord(repo, git, origin)
@@ -2520,7 +2530,7 @@ export class WorkspaceEngine {
       !sameIdentity(record.common, git.commonIdentity) ||
       record.objectFormat !== git.objectFormat
     )
-      review(`Workspace path slot was replaced: ${record.path}`)
+      requireReview(`Workspace path slot was replaced: ${record.path}`)
   }
 
   private currentSource(state: ConversationState): {
@@ -2536,7 +2546,7 @@ export class WorkspaceEngine {
     const workspace = inDb(this.authority, state.repositoryId, db =>
       getWorkspace(db, binding.workspaceId)
     )
-    if (workspace === undefined) review(`Bound workspace is missing: ${binding.workspaceId}`)
+    if (workspace === undefined) requireReview(`Bound workspace is missing: ${binding.workspaceId}`)
     return { repo: state.repositoryId, binding, workspace, git: this.validateWorkspace(workspace) }
   }
 
@@ -2551,20 +2561,20 @@ export class WorkspaceEngine {
     attachment: WorkspaceAttachmentImpl,
     input: WorkspaceGrant
   ): { readonly lease: GrantLease; readonly workspace: WorkspaceRecord; readonly use: UseRecord } {
-    const grant = valueOf(WorkspaceGrantSchema, input, 'within workspace grant', 'invalid')
+    const grant = decodeOrFail(WorkspaceGrantSchema, input, 'within workspace grant', 'invalid')
     const owners = attachment.state.leaseAttachments.get(grant.useId)
     if (owners === undefined || !owners.has(attachment.token))
-      review('Scoped operation grant was not issued to this attachment')
+      requireReview('Scoped operation grant was not issued to this attachment')
     const lease = this.validateGrant(attachment.state, grant)
     const result = inDb(this.authority, grant.repositoryId, db => {
       const workspace = getWorkspace(db, grant.workspaceId)
       const use = getUse(db, grant.useId)
       if (workspace === undefined || use === undefined)
-        review('Scoped operation grant has no live workspace use')
+        requireReview('Scoped operation grant has no live workspace use')
       if (use.effect !== undefined || use.execution !== undefined)
         invalid('A scoped operation must be admitted within an ordinary workspace grant')
       if (use.access !== grant.access || use.stage === 'quiescent')
-        review('Scoped operation grant is no longer active')
+        requireReview('Scoped operation grant is no longer active')
       if (use.stage !== 'authorized')
         blocked(`Scoped operation grant is unresolved: ${use.id} (${use.stage})`)
       return { workspace, use }
@@ -2620,7 +2630,7 @@ export class WorkspaceEngine {
       const ready = this.authorizeRead(state, source.repo, source.workspace, source.binding, cwd)
       if (operation.execution === undefined) return ready
       const base = state.leases.get(ready.grant.useId)
-      if (base === undefined) review('Reader grant disappeared before execution attribution')
+      if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
       return this.executionUse(state, base, operation.execution)
     }
     if (operation.delegated === true) {
@@ -2701,7 +2711,7 @@ export class WorkspaceEngine {
       const useId = workspaceId()
       const reservationId = reservation?.id ?? workspaceId()
       const acquisitionId = workspaceId()
-      const updatedBinding = valueOf(
+      const updatedBinding = decodeOrFail(
         BindingSchema,
         {
           ...source.binding,
@@ -2710,7 +2720,7 @@ export class WorkspaceEngine {
         },
         'write binding'
       )
-      const use: UseRecord = valueOf(
+      const use: UseRecord = decodeOrFail(
         UseSchema,
         {
           id: useId,
@@ -2737,7 +2747,7 @@ export class WorkspaceEngine {
             currentBinding.revision !== source.binding.revision ||
             currentBinding.workspaceId !== source.workspace.id
           )
-            review('Conversation binding changed during write admission')
+            requireReview('Conversation binding changed during write admission')
           const currentReservation = getReservation(db, source.workspace.id)
           if (currentReservation !== undefined && currentReservation.taskId !== taskId)
             blocked(`Checkout is reserved by another task: ${source.workspace.path}`)
@@ -2752,7 +2762,7 @@ export class WorkspaceEngine {
             })
           } else {
             if (currentReservation.id !== reservationId)
-              review('Workspace reservation identity changed')
+              requireReview('Workspace reservation identity changed')
             updateReservation(db, {
               ...currentReservation,
               acquisitionId,
@@ -2827,7 +2837,7 @@ export class WorkspaceEngine {
         : undefined
     const execution =
       operation.execution === undefined ? undefined : validExecution(operation.execution)
-    const use: UseRecord = valueOf(
+    const use: UseRecord = decodeOrFail(
       UseSchema,
       {
         id: workspaceId(),
@@ -2867,7 +2877,7 @@ export class WorkspaceEngine {
           currentWithin.access !== within.access ||
           currentWithin.stage !== 'authorized'
         )
-          review('Within grant changed before scoped operation admission')
+          requireReview('Within grant changed before scoped operation admission')
         putUse(db, use)
       })
     )
@@ -2919,7 +2929,7 @@ export class WorkspaceEngine {
     const gates = acquirePathGates(this.authority.paths, workspace.path, false)
     try {
       const reservation = inDb(this.authority, repo, db => getReservation(db, workspace.id))
-      const use = valueOf(
+      const use = decodeOrFail(
         UseSchema,
         {
           id: workspaceId(),
@@ -2981,8 +2991,8 @@ export class WorkspaceEngine {
     this.validateGrant(state, parent.grant)
     const execution = validExecution(input)
     const base = inDb(this.authority, parent.repositoryId, db => getUse(db, parent.useId))
-    if (base === undefined) review('Workspace grant has no base use record')
-    const use: UseRecord = valueOf(
+    if (base === undefined) requireReview('Workspace grant has no base use record')
+    const use: UseRecord = decodeOrFail(
       UseSchema,
       {
         ...base,
@@ -2998,7 +3008,7 @@ export class WorkspaceEngine {
       'execution recovery use'
     )
     inDb(this.authority, parent.repositoryId, db => transaction(db, () => putUse(db, use)))
-    const grant = valueOf(
+    const grant = decodeOrFail(
       WorkspaceGrantSchema,
       { ...parent.grant, useId: use.id },
       'execution grant'
@@ -3083,7 +3093,7 @@ export class WorkspaceEngine {
         current !== undefined &&
         (current.repositoryId !== input.repositoryId || current.workspaceId !== input.workspaceId)
       )
-        review(`Conflicting workspace identities share one held path gate: ${path}`)
+        requireReview(`Conflicting workspace identities share one held path gate: ${path}`)
       groups.set(path, { ...input, path, writer: input.writer || current?.writer === true })
     }
     for (const intent of intents) add(intent)
@@ -3109,7 +3119,7 @@ export class WorkspaceEngine {
         getWorkspace(db, group.workspaceId)
       )
       if (record === undefined || record.path !== group.path)
-        review(`Workspace gate no longer matches its durable checkout: ${group.path}`)
+        requireReview(`Workspace gate no longer matches its durable checkout: ${group.path}`)
       this.validateWorkspace(record)
     }
 
@@ -3126,7 +3136,7 @@ export class WorkspaceEngine {
     const sourceGates = acquired.get(source.path)
     const targetGates = acquired.get(targetPath)
     if (sourceGates === undefined || targetGates === undefined)
-      review('Workspace allocation gates were not acquired')
+      requireReview('Workspace allocation gates were not acquired')
     const extras = [...groups.values()]
       .filter(group => group.path !== targetPath)
       .map(group => ({ ...group, gates: acquired.get(group.path) }))
@@ -3160,10 +3170,10 @@ export class WorkspaceEngine {
     privateDirectory(destinationParent, true)
     const destination = join(destinationParent, workspaceIdValue)
     if (lstatIfExists(destination) !== undefined)
-      review(`Managed worktree destination already exists: ${destination}`)
+      requireReview(`Managed worktree destination already exists: ${destination}`)
     const targetSlot = canonicalPathSlot(destination)
     if (targetSlot !== destination)
-      review(`Managed worktree destination is not canonical: ${destination}`)
+      requireReview(`Managed worktree destination is not canonical: ${destination}`)
 
     // Taken before the local path gates are released: it never waits, so a contended
     // structure gate fails here with the conversation's admission intact.
@@ -3189,7 +3199,7 @@ export class WorkspaceEngine {
       )
       state.extraGates.push(...pathGates.extras)
       const commit = currentCommit(sourceGit)
-      operation = valueOf(
+      operation = decodeOrFail(
         OperationSchema,
         {
           id: allocationId,
@@ -3220,7 +3230,7 @@ export class WorkspaceEngine {
             binding.revision !== state.binding.revision ||
             binding.workspaceId !== sourceWorkspace.id
           )
-            review('Conversation binding changed before worktree allocation')
+            requireReview('Conversation binding changed before worktree allocation')
           const task = getTask(db, taskId)
           if (task === undefined)
             putTask(db, { id: taskId, repositoryId: sourceRepo, revision: 0, createdAt: now() })
@@ -3253,7 +3263,7 @@ export class WorkspaceEngine {
         actual.commonPath !== sourceGit.commonPath ||
         !sameIdentity(actual.commonIdentity, sourceGit.commonIdentity)
       )
-        review(`Git did not publish the exact requested detached worktree: ${destination}`)
+        requireReview(`Git did not publish the exact requested detached worktree: ${destination}`)
       const workspace = makeWorkspaceRecord(
         sourceRepo,
         actual,
@@ -3269,7 +3279,7 @@ export class WorkspaceEngine {
         revision: 0,
         createdAt: now(),
       }
-      const use: UseRecord = valueOf(
+      const use: UseRecord = decodeOrFail(
         UseSchema,
         {
           id: workspaceId(),
@@ -3298,7 +3308,7 @@ export class WorkspaceEngine {
       let handoff: WorkspaceHandoff | undefined
       let handoffOperation: OperationRecord | undefined
       if (!delegated) {
-        targetBinding = valueOf(
+        targetBinding = decodeOrFail(
           BindingSchema,
           {
             ...state.binding,
@@ -3311,7 +3321,7 @@ export class WorkspaceEngine {
           'allocated workspace binding'
         )
         const handoffId = workspaceId()
-        handoffOperation = valueOf(
+        handoffOperation = decodeOrFail(
           OperationSchema,
           {
             id: handoffId,
@@ -3363,7 +3373,7 @@ export class WorkspaceEngine {
             putOperation(db, handoffOperation as OperationRecord)
             const current = getBinding(db, state.key)
             if (current === undefined || current.revision !== state.binding.revision)
-              review('Conversation binding changed before handoff publication')
+              requireReview('Conversation binding changed before handoff publication')
             putBinding(db, { ...current, pendingOperationId: handoffOperation?.id })
           })
         )
@@ -3450,17 +3460,17 @@ export class WorkspaceEngine {
   }
 
   private validateGrant(state: ConversationState, input: WorkspaceGrant): GrantLease {
-    const grant = valueOf(WorkspaceGrantSchema, input, 'workspace grant', 'invalid')
+    const grant = decodeOrFail(WorkspaceGrantSchema, input, 'workspace grant', 'invalid')
     if (grant.namespaceId !== this.authority.initialize())
-      review('Workspace grant belongs to another namespace')
+      requireReview('Workspace grant belongs to another namespace')
     const lease = state.leases.get(grant.useId)
     if (lease === undefined || lease.released || !jsonEqual(lease.grant, grant))
-      review('Workspace grant is stale or was not issued to this attachment')
+      requireReview('Workspace grant is stale or was not issued to this attachment')
     const workspace = inDb(this.authority, grant.repositoryId, db => {
       const record = getWorkspace(db, grant.workspaceId)
       const use = getUse(db, grant.useId)
       if (record === undefined || use === undefined)
-        review('Workspace grant has no matching durable use')
+        requireReview('Workspace grant has no matching durable use')
       if (
         use.workspaceId !== grant.workspaceId ||
         use.bindingRevision !== grant.revision ||
@@ -3472,7 +3482,7 @@ export class WorkspaceEngine {
         use.withinUseId !== lease.withinUseId ||
         use.operationPath !== grant.path
       )
-        review('Workspace grant no longer matches its fenced use facts')
+        requireReview('Workspace grant no longer matches its fenced use facts')
       if (grant.access === 'write') {
         const reservation = getReservation(db, grant.workspaceId)
         if (
@@ -3481,7 +3491,7 @@ export class WorkspaceEngine {
           reservation.taskId !== grant.taskId ||
           reservation.acquisitionId !== grant.acquisitionId
         )
-          review('Workspace grant is not the current reservation acquisition')
+          requireReview('Workspace grant is not the current reservation acquisition')
       }
       return record
     })
@@ -3491,18 +3501,18 @@ export class WorkspaceEngine {
 
   validate(input: WorkspaceGrant): Promise<void> {
     return this.guard(() => {
-      const grant = valueOf(WorkspaceGrantSchema, input, 'workspace grant', 'invalid')
+      const grant = decodeOrFail(WorkspaceGrantSchema, input, 'workspace grant', 'invalid')
       const namespace = this.authority.inspectExisting()
       if (namespace === undefined || namespace !== grant.namespaceId)
-        review('Workspace grant namespace is missing or differs')
+        requireReview('Workspace grant namespace is missing or differs')
       const repositories = this.authority.listRepositories()
       if (!repositories.some(repository => repository.id === grant.repositoryId))
-        review('Workspace grant repository is not registered')
+        requireReview('Workspace grant repository is not registered')
       const workspace = inDb(this.authority, grant.repositoryId, db => {
         const record = getWorkspace(db, grant.workspaceId)
         const use = getUse(db, grant.useId)
         if (record === undefined || use === undefined)
-          review('Workspace grant does not identify a durable use')
+          requireReview('Workspace grant does not identify a durable use')
         if (
           use.workspaceId !== grant.workspaceId ||
           use.bindingRevision !== grant.revision ||
@@ -3512,9 +3522,9 @@ export class WorkspaceEngine {
           use.access !== grant.access ||
           use.operationPath !== grant.path
         )
-          review('Workspace grant does not match its fenced use record')
+          requireReview('Workspace grant does not match its fenced use record')
         if (use.stage === 'quiescent' || use.stage === 'observed' || use.stage === 'unknown')
-          review(`Workspace use is no longer eligible for a child: ${use.stage}`)
+          requireReview(`Workspace use is no longer eligible for a child: ${use.stage}`)
         if (grant.access === 'write') {
           const reservation = getReservation(db, grant.workspaceId)
           if (
@@ -3523,22 +3533,22 @@ export class WorkspaceEngine {
             reservation.taskId !== grant.taskId ||
             reservation.acquisitionId !== grant.acquisitionId
           )
-            review('Workspace grant acquisition is stale')
+            requireReview('Workspace grant acquisition is stale')
         }
         return record
       })
       if (grant.checkout !== workspace.path || grant.origin !== workspace.origin)
-        review('Workspace grant checkout fields were altered')
+        requireReview('Workspace grant checkout fields were altered')
       if (!isAbsolute(grant.cwd) || !safeWithin(workspace.path, grant.cwd))
-        review('Workspace grant cwd escapes its checkout')
+        requireReview('Workspace grant cwd escapes its checkout')
       let actualCwd: string
       try {
         actualCwd = realpathSync(grant.cwd)
       } catch {
-        return review(`Workspace grant cwd is unavailable: ${grant.cwd}`)
+        return requireReview(`Workspace grant cwd is unavailable: ${grant.cwd}`)
       }
       if (actualCwd !== grant.cwd || !safeWithin(workspace.path, actualCwd))
-        review('Workspace grant cwd is not the canonical checkout path')
+        requireReview('Workspace grant cwd is not the canonical checkout path')
       this.validateWorkspace(workspace)
     })
   }
@@ -3563,7 +3573,7 @@ export class WorkspaceEngine {
       if (lease.effect !== undefined) {
         const owners = state.leaseAttachments.get(lease.useId)
         if (owners === undefined || !owners.has(attachment.token))
-          review('Scoped operation report was not issued to this attachment')
+          requireReview('Scoped operation report was not issued to this attachment')
       }
       if (!lease.isExecution) return this.reportScopedOperation(lease, checkedFact)
       if (lease.execution === undefined)
@@ -3576,8 +3586,8 @@ export class WorkspaceEngine {
         current.execution === undefined ||
         !jsonEqual(current.execution, lease.execution)
       )
-        review('Execution recovery row no longer matches the issued grant')
-      if (current.stage === 'quiescent') review('Execution has already been settled')
+        requireReview('Execution recovery row no longer matches the issued grant')
+      if (current.stage === 'quiescent') requireReview('Execution has already been settled')
       const update = (value: UseRecord, guard?: (db: DatabaseSync) => void): void =>
         inDb(this.authority, lease.repositoryId, db =>
           transaction(db, () => {
@@ -3591,14 +3601,14 @@ export class WorkspaceEngine {
           if (!jsonEqual(validExecution(checkedFact.execution), lease.execution))
             invalid('Launch intent does not match the authorized execution')
           if (current.stage !== 'authorized')
-            review(`Cannot record launch intent after ${current.stage}`)
+            requireReview(`Cannot record launch intent after ${current.stage}`)
           update({ ...current, stage: 'launch-intent', revision: current.revision + 1, updatedAt })
           return
         }
         case 'spawned': {
           if (current.stage !== 'launch-intent')
-            review(`Cannot record process identity after ${current.stage}`)
-          const process = valueOf(
+            requireReview(`Cannot record process identity after ${current.stage}`)
+          const process = decodeOrFail(
             WorkspaceProcessSchema,
             checkedFact.process,
             'spawned process identity',
@@ -3615,7 +3625,7 @@ export class WorkspaceEngine {
         }
         case 'started': {
           if (current.stage !== 'spawned')
-            review(
+            requireReview(
               `Cannot release user code after ${current.stage}; process identity must be recorded first`
             )
           update({ ...current, stage: 'started', revision: current.revision + 1, updatedAt })
@@ -3623,8 +3633,8 @@ export class WorkspaceEngine {
         }
         case 'observed': {
           if (!['spawned', 'started', 'observed'].includes(current.stage))
-            review(`Cannot record a process observation after ${current.stage}`)
-          const processes = valueOf(
+            requireReview(`Cannot record a process observation after ${current.stage}`)
+          const processes = decodeOrFail(
             Schema.Array(WorkspaceProcessSchema),
             checkedFact.processes,
             'observed process set',
@@ -3653,7 +3663,7 @@ export class WorkspaceEngine {
           // Only before a process identity is recorded can the adapter know that no user
           // code was released; afterwards the family must be observed gone instead.
           if (current.stage !== 'authorized' && current.stage !== 'launch-intent')
-            review(`A launch cannot be reported failed after ${current.stage}`)
+            requireReview(`A launch cannot be reported failed after ${current.stage}`)
           update({
             ...current,
             stage: 'quiescent',
@@ -3668,7 +3678,7 @@ export class WorkspaceEngine {
           // A process that detaches into a new session escapes this observation; ADR 0005
           // accepts that residual risk.
           if (current.stage !== 'observed' || current.processes.length > 0)
-            review(
+            requireReview(
               `Quiescence after ${current.stage} requires an observed empty process family first`
             )
           update({
@@ -3700,7 +3710,7 @@ export class WorkspaceEngine {
       invalid('Scoped native operations require operation boundary facts')
     const current = inDb(this.authority, lease.repositoryId, db => getUse(db, lease.useId))
     if (current === undefined || current.effect !== lease.effect)
-      review('Scoped operation lost its durable use record')
+      requireReview('Scoped operation lost its durable use record')
     const next = inDb(this.authority, lease.repositoryId, db =>
       transaction(db, () => {
         const latest = getUse(db, lease.useId)
@@ -3710,15 +3720,15 @@ export class WorkspaceEngine {
           latest.effect !== lease.effect ||
           latest.withinUseId !== lease.withinUseId
         )
-          review('Scoped operation report is stale')
+          requireReview('Scoped operation report is stale')
         if (fact.kind === 'operation-started') {
           if (latest.stage !== 'authorized')
-            review(`Cannot start scoped operation after ${latest.stage}`)
+            requireReview(`Cannot start scoped operation after ${latest.stage}`)
           assertWithinLiveInDb(db, latest)
           if (latest.operationPath !== undefined) {
             const workspace = getWorkspace(db, latest.workspaceId)
             if (workspace === undefined)
-              review(`Scoped operation lost its workspace: ${latest.workspaceId}`)
+              requireReview(`Scoped operation lost its workspace: ${latest.workspaceId}`)
             assertNativeDestinationUnchanged(workspace.path, latest.operationPath)
           }
           const started: UseRecord = {
@@ -3732,7 +3742,7 @@ export class WorkspaceEngine {
         }
         if (fact.kind === 'operation-completed') {
           if (latest.stage !== 'operation-started' && latest.stage !== 'authorized')
-            review(`Cannot complete scoped operation after ${latest.stage}`)
+            requireReview(`Cannot complete scoped operation after ${latest.stage}`)
           const completed: UseRecord = {
             ...latest,
             stage: 'quiescent',
@@ -3747,7 +3757,7 @@ export class WorkspaceEngine {
           return completed
         }
         if (latest.stage !== 'authorized' && latest.stage !== 'operation-started')
-          review(`Cannot mark scoped operation unknown after ${latest.stage}`)
+          requireReview(`Cannot mark scoped operation unknown after ${latest.stage}`)
         const unknown: UseRecord = {
           ...latest,
           stage: 'unknown',
@@ -3801,7 +3811,7 @@ export class WorkspaceEngine {
       const gates = acquirePathGates(this.authority.paths, target.workspace.path, true)
       const operationId = workspaceId()
       const acquisitionId = workspaceId()
-      const use: UseRecord = valueOf(
+      const use: UseRecord = decodeOrFail(
         UseSchema,
         {
           id: workspaceId(),
@@ -3820,7 +3830,7 @@ export class WorkspaceEngine {
         },
         'resume use'
       )
-      const targetBinding: BindingRecord = valueOf(
+      const targetBinding: BindingRecord = decodeOrFail(
         BindingSchema,
         {
           key: state.key,
@@ -3832,7 +3842,7 @@ export class WorkspaceEngine {
         },
         'resume binding'
       )
-      const operation: OperationRecord = valueOf(
+      const operation: OperationRecord = decodeOrFail(
         OperationSchema,
         {
           id: operationId,
@@ -3887,7 +3897,7 @@ export class WorkspaceEngine {
               reservation.id !== target.reservation.id ||
               reservation.taskId !== target.reservation.taskId
             )
-              review('Selected reservation changed before resume')
+              requireReview('Selected reservation changed before resume')
             updateReservation(db, {
               ...reservation,
               acquisitionId,
@@ -3898,7 +3908,7 @@ export class WorkspaceEngine {
             if (source.repo === target.repo) {
               const current = getBinding(db, state.key)
               if (current === undefined || current.revision !== state.binding.revision)
-                review('Conversation binding changed before resume')
+                requireReview('Conversation binding changed before resume')
               putBinding(db, { ...current, pendingOperationId: operationId })
             }
           })
@@ -3908,7 +3918,7 @@ export class WorkspaceEngine {
             transaction(db, () => {
               const current = getBinding(db, state.key)
               if (current === undefined || current.revision !== state.binding.revision)
-                review('Conversation binding changed before resume')
+                requireReview('Conversation binding changed before resume')
               putBinding(db, { ...current, pendingOperationId: operationId })
             })
           )
@@ -3947,7 +3957,7 @@ export class WorkspaceEngine {
         !jsonEqual(pending.handoff.target, transition.target) ||
         !jsonEqual(pending.handoff.from, transition.from)
       )
-        review('Workspace handoff token is stale or belongs to another transition')
+        requireReview('Workspace handoff token is stale or belongs to another transition')
       let operation: OperationRecord
       try {
         this.validateGrant(state, pending.handoff.target)
@@ -3956,7 +3966,7 @@ export class WorkspaceEngine {
           transaction(db, () => {
             const current = getOperation(db, transition.operationId)
             if (current === undefined || current.kind !== 'handoff' || current.phase !== 'intent')
-              review(`Workspace handoff intent is unavailable: ${transition.operationId}`)
+              requireReview(`Workspace handoff intent is unavailable: ${transition.operationId}`)
             const started = { ...current, phase: 'started' as const }
             saveOperation(db, started)
             return started
@@ -3979,7 +3989,9 @@ export class WorkspaceEngine {
           pending,
           `Host transition outcome is uncertain: ${errorText(cause)}`
         )
-        return review(`Workspace handoff requires explicit recovery: ${transition.operationId}`)
+        return requireReview(
+          `Workspace handoff requires explicit recovery: ${transition.operationId}`
+        )
       }
       if (outcome === 'cancelled')
         this.cancelTransition(
@@ -4033,14 +4045,14 @@ export class WorkspaceEngine {
     const targetUse = inDb(this.authority, pending.targetRepositoryId, db =>
       getUse(db, pending.targetLease.useId)
     )
-    if (targetUse === undefined) review('Cancelled handoff lost its target use record')
+    if (targetUse === undefined) requireReview('Cancelled handoff lost its target use record')
     if (targetUse.stage !== 'authorized')
-      review('Cancelled handoff target was used before host confirmation')
+      requireReview('Cancelled handoff target was used before host confirmation')
     inDb(this.authority, pending.targetRepositoryId, db =>
       transaction(db, () => {
         const current = getOperation(db, operationId)
         if (current === undefined || (current.phase !== 'intent' && current.phase !== 'started'))
-          review('Handoff result no longer matches its intent')
+          requireReview('Handoff result no longer matches its intent')
         const cancelled: OperationRecord = { ...current, phase: 'cancelled', result }
         saveUse(db, {
           ...targetUse,
@@ -4053,7 +4065,7 @@ export class WorkspaceEngine {
         if (pending.sourceRepositoryId === pending.targetRepositoryId) {
           const binding = getBinding(db, state.key)
           if (binding === undefined || binding.pendingOperationId !== operationId)
-            review('Cancelled handoff binding changed')
+            requireReview('Cancelled handoff binding changed')
           putBinding(db, { ...binding, pendingOperationId: undefined })
         }
       })
@@ -4063,7 +4075,7 @@ export class WorkspaceEngine {
         transaction(db, () => {
           const binding = getBinding(db, state.key)
           if (binding === undefined || binding.pendingOperationId !== operationId)
-            review('Cancelled handoff source binding changed')
+            requireReview('Cancelled handoff source binding changed')
           putBinding(db, { ...binding, pendingOperationId: undefined })
         })
       )
@@ -4090,7 +4102,7 @@ export class WorkspaceEngine {
       .map(lease => {
         const use = inDb(this.authority, lease.repositoryId, db => getUse(db, lease.useId))
         if (use === undefined)
-          review(`Old workspace use disappeared during handoff: ${lease.useId}`)
+          requireReview(`Old workspace use disappeared during handoff: ${lease.useId}`)
         return { lease, use }
       })
   }
@@ -4165,7 +4177,7 @@ export class WorkspaceEngine {
             binding.pendingOperationId !== operation.id ||
             binding.revision !== operation.expectedBindingRevision
           )
-            review('Conversation binding changed before confirmed handoff publication')
+            requireReview('Conversation binding changed before confirmed handoff publication')
           putBinding(db, confirmedBinding)
           saveOperation(db, confirmedOperation)
         })
@@ -4176,7 +4188,7 @@ export class WorkspaceEngine {
         transaction(db, () => {
           const current = getOperation(db, operation.id)
           if (current === undefined || current.phase !== 'started')
-            review('Cross-repository handoff intent changed')
+            requireReview('Cross-repository handoff intent changed')
           saveOperation(db, {
             ...current,
             result: 'Host confirmed; binding publication is pending across repository shards.',
@@ -4190,7 +4202,7 @@ export class WorkspaceEngine {
         transaction(db, () => {
           const binding = getBinding(db, state.key)
           if (binding === undefined || binding.pendingOperationId !== operation.id)
-            review('Cross-repository source binding changed')
+            requireReview('Cross-repository source binding changed')
           putBinding(db, { ...binding, superseded: true, pendingOperationId: undefined })
         })
       )
@@ -4261,8 +4273,8 @@ export class WorkspaceEngine {
         inDb(this.authority, repository.id, db => {
           const workspaceRows =
             input.taskId === undefined
-              ? columns(db, 'SELECT id FROM workspaces ORDER BY path')
-              : columns(
+              ? rows(db, 'SELECT id FROM workspaces ORDER BY path')
+              : rows(
                   db,
                   `SELECT DISTINCT workspaces.id FROM workspaces
                 LEFT JOIN reservations ON reservations.workspace_id=workspaces.id
@@ -4275,12 +4287,12 @@ export class WorkspaceEngine {
           for (const row of workspaceRows) {
             const id = textField(row, 'id')
             const workspace = getWorkspace(db, id)
-            if (workspace === undefined) review(`Workspace inventory row disappeared: ${id}`)
+            if (workspace === undefined) requireReview(`Workspace inventory row disappeared: ${id}`)
             present.add(id)
             const reservation = getReservation(db, id)
             if (input.taskId !== undefined && reservation?.taskId !== input.taskId) continue
             const uses = getUseRows(db, id)
-            const operationRows = columns(
+            const operationRows = rows(
               db,
               `SELECT id FROM operations
               WHERE workspace_id=? AND phase IN ('intent','started','unknown','review-required') ORDER BY created_at,id`,
@@ -4347,7 +4359,7 @@ export class WorkspaceEngine {
               pending,
             })
           }
-          const orphanOperations = columns(
+          const orphanOperations = rows(
             db,
             `SELECT id FROM operations
             WHERE phase IN ('intent','started','unknown','review-required') ORDER BY created_at,id`

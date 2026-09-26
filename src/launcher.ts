@@ -34,6 +34,7 @@ import {
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
   chooseResumeCandidate,
+  WorkspaceCommandError,
   type WorkspaceCommand,
 } from './workspace-command.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
@@ -384,7 +385,7 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
       try {
         workspaceCommand = parseWorkspaceCommand(options.workspaceArgs)
       } catch (error) {
-        const exitCode = error instanceof Error && 'exitCode' in error ? Number(error.exitCode) : 2
+        const exitCode = error instanceof WorkspaceCommandError ? error.exitCode : 2
         yield* Effect.sync(() => {
           process.stderr.write(`${messageOf(error)}\n`)
           process.exitCode = exitCode
@@ -451,12 +452,12 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
       )
       try {
         workspaceResume = chooseResumeCandidate(
-          views.filter(view => view.taskId === resumeCommand.taskId),
+          views,
           resumeCommand.taskId,
           resumeCommand.workspaceId
         )
       } catch (error) {
-        const exitCode = error instanceof Error && 'exitCode' in error ? Number(error.exitCode) : 1
+        const exitCode = error instanceof WorkspaceCommandError ? error.exitCode : 1
         yield* Effect.sync(() => {
           process.stderr.write(`${messageOf(error)}\n`)
           process.exitCode = exitCode

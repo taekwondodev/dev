@@ -972,12 +972,11 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       notify(context, `Workspace inspection failed: ${formatError(error)}`, 'error')
       return
     }
-    const exactViews = views.filter(view => view.taskId === command.taskId)
-    const candidates = resumeCandidates(exactViews, command.taskId)
+    const candidates = resumeCandidates(views, command.taskId)
     let candidate: ResumeCandidate | undefined
     if (command.workspaceId) {
       try {
-        candidate = chooseResumeCandidate(exactViews, command.taskId, command.workspaceId)
+        candidate = chooseResumeCandidate(views, command.taskId, command.workspaceId)
       } catch (error) {
         notify(context, error instanceof Error ? error.message : String(error), 'error')
         return
@@ -1004,7 +1003,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       }
     } else {
       try {
-        chooseResumeCandidate(exactViews, command.taskId)
+        chooseResumeCandidate(views, command.taskId)
       } catch (error) {
         notify(context, error instanceof Error ? error.message : String(error), 'error')
         return
