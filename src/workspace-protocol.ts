@@ -106,7 +106,6 @@ const AttachRequestSchema = Schema.Struct({
   conversation: ConversationSchema,
   cwd: Schema.NonEmptyString,
   selection: Schema.optional(SelectionSchema),
-  withdrawUnstartedSwitch: Schema.optional(Schema.Boolean),
 })
 const AuthorizeRequestSchema = Schema.Struct({
   op: Schema.Literal('authorize'),

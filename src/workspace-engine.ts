@@ -47,7 +47,7 @@ import {
 } from './workspace-git.ts'
 
 const PROTOCOL_VERSION = 1
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const BUSY_TIMEOUT_MS = 5000
 const SHARED_GATE_WAIT_MS = 250
 const UUID = WorkspaceId
@@ -154,6 +154,7 @@ const UseSchema = Schema.Struct({
   execution: Schema.optional(ExecutionSchema),
   processes: Schema.Array(WorkspaceProcessSchema),
   reason: Schema.optional(Schema.String),
+  conversationKey: Schema.NonEmptyString,
   bindingRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Schema.Finite,
@@ -849,7 +850,11 @@ const validateProtocol = (path: string, namespaceId?: string): string => {
   }
 }
 
-const gateDirectory = (paths: AuthorityPaths, family: 'paths' | 'repos', key: string): string => {
+const gateDirectory = (
+  paths: AuthorityPaths,
+  family: 'paths' | 'repos' | 'conversations',
+  key: string
+): string => {
   const directory = join(paths.gates, family, key)
   privateDirectory(join(paths.gates, family), true)
   privateDirectory(directory, true)
@@ -872,7 +877,8 @@ const acquireGate = (
   kind: string,
   identityPath: string,
   key: string,
-  exclusive: boolean
+  exclusive: boolean,
+  waitMs = exclusive ? 0 : SHARED_GATE_WAIT_MS
 ): GateRelease => {
   privateDirectory(dirname(path), false)
   if (lstatIfExists(path) === undefined) publishGate(path, kind, identityPath, key)
@@ -880,10 +886,8 @@ const acquireGate = (
   let db: DatabaseSync | undefined
   try {
     db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
-    // A shared holder only ever waits out a momentary exclusive probe, never a holder.
-    db.exec(
-      `PRAGMA busy_timeout = ${exclusive ? 0 : SHARED_GATE_WAIT_MS}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`
-    )
+    // A waiting acquirer only ever waits out a momentary probe, never a holder.
+    db.exec(`PRAGMA busy_timeout = ${waitMs}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`)
     if (
       textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase() !== 'delete' ||
       numberField(first(db, 'PRAGMA user_version'), 'user_version') !== SCHEMA_VERSION ||
@@ -973,23 +977,16 @@ interface PathGates {
   readonly use: GateRelease
   readonly writer?: GateRelease
 }
-const presenceGate = (
-  paths: AuthorityPaths,
-  canonical: string
-): { readonly key: string; readonly path: string } => {
-  const key = hash(canonical)
-  return { key, path: join(paths.gates, 'paths', key, 'use.sqlite') }
-}
 const acquirePathGates = (paths: AuthorityPaths, path: string, writer: boolean): PathGates => {
   const canonical = canonicalPathSlot(path)
-  const gate = presenceGate(paths, canonical)
-  const directory = gateDirectory(paths, 'paths', gate.key)
-  const presence = acquireGate(gate.path, 'use', canonical, gate.key, false)
+  const key = hash(canonical)
+  const directory = gateDirectory(paths, 'paths', key)
+  const presence = acquireGate(join(directory, 'use.sqlite'), 'use', canonical, key, false)
   try {
     if (!writer) return { use: presence }
     return {
       use: presence,
-      writer: acquireGate(join(directory, 'writer.sqlite'), 'writer', canonical, gate.key, true),
+      writer: acquireGate(join(directory, 'writer.sqlite'), 'writer', canonical, key, true),
     }
   } catch (cause) {
     presence()
@@ -1010,6 +1007,44 @@ const acquireStructureGate = (
     key,
     true
   )
+}
+// A live conversation holds its gate for as long as any attachment keeps its state, so a
+// free gate means no dev session anywhere on this account still runs the conversation.
+const conversationGate = (
+  paths: AuthorityPaths,
+  conversationKey: string
+): { readonly key: string; readonly path: string } => {
+  const key = hash(conversationKey)
+  return { key, path: join(paths.gates, 'conversations', key, 'conversation.sqlite') }
+}
+const acquireConversationGate = (paths: AuthorityPaths, conversationKey: string): GateRelease => {
+  const gate = conversationGate(paths, conversationKey)
+  gateDirectory(paths, 'conversations', gate.key)
+  try {
+    return acquireGate(
+      gate.path,
+      'conversation',
+      conversationKey,
+      gate.key,
+      true,
+      SHARED_GATE_WAIT_MS
+    )
+  } catch (cause) {
+    if (cause instanceof WorkspaceError && cause.outcome === 'blocked')
+      blocked('This conversation is open in another dev session; close it there first')
+    throw cause
+  }
+}
+const conversationHeld = (paths: AuthorityPaths, conversationKey: string): boolean => {
+  const gate = conversationGate(paths, conversationKey)
+  if (lstatIfExists(gate.path) === undefined) return false
+  try {
+    acquireGate(gate.path, 'conversation', conversationKey, gate.key, true)()
+    return false
+  } catch (cause) {
+    if (cause instanceof WorkspaceError && cause.outcome === 'blocked') return true
+    throw cause
+  }
 }
 const releaseGates = (gates: PathGates): void => {
   gates.writer?.()
@@ -1877,27 +1912,13 @@ const assertWithinLiveInDb = (db: DatabaseSync, use: UseRecord): void => {
     blocked(`Scoped operation cannot start under a ${parent.stage} within grant: ${parent.id}`)
 }
 
-// Every participant holds its checkout's presence gate while it runs, so a free gate
-// under recorded live uses means their owner is gone without settling them.
-const presenceHeld = (paths: AuthorityPaths, workspace: WorkspaceRecord): boolean => {
-  const gate = presenceGate(paths, workspace.path)
-  if (lstatIfExists(gate.path) === undefined) return false
-  try {
-    acquireGate(gate.path, 'use', workspace.path, gate.key, true)()
-    return false
-  } catch (cause) {
-    if (cause instanceof WorkspaceError && cause.outcome === 'blocked') return true
-    throw cause
-  }
-}
-
 const assessWorkspace = (input: {
   readonly identityReason: string | undefined
   readonly pending: { readonly id: string; readonly stage: string } | undefined
   readonly unresolved: boolean
   readonly unknown: boolean
   readonly live: boolean
-  readonly abandoned: boolean
+  readonly abandoned: readonly string[]
   readonly reserved: boolean
 }): Pick<WorkspaceView, 'outcome' | 'reason' | 'nextAction'> => {
   const operation =
@@ -1916,12 +1937,12 @@ const assessWorkspace = (input: {
       reason: operation ?? 'A persisted workspace use is unresolved.',
       nextAction: 'Wait for a directly observed safe boundary or require explicit recovery.',
     }
-  if (input.abandoned)
+  if (input.abandoned.length > 0)
     return {
       outcome: 'blocked',
       reason:
         operation ??
-        'No dev session holds this workspace, but its recorded uses were never settled; processes they started may still run.',
+        `Uses ${input.abandoned.join(', ')} were left unsettled by conversations no dev session holds; processes they started may still run.`,
       nextAction:
         'Do not reuse it for writing; explicit recovery of abandoned uses is not available yet.',
     }
@@ -2149,6 +2170,7 @@ interface ConversationState {
   closing: boolean
   pending?: PendingTransition
   writeGrant?: WorkspaceGrant
+  readonly releaseConversation: () => void
 }
 
 class WorkspaceAttachmentImpl implements WorkspaceAttachment {
@@ -2241,7 +2263,6 @@ export class WorkspaceEngine {
     conversation: WorkspaceConversation
     cwd: string
     selection?: WorkspaceSelection
-    withdrawUnstartedSwitch?: boolean
   }): Promise<WorkspaceAttachment> {
     return this.guard(() => this.attachUnsafe(input))
   }
@@ -2249,7 +2270,6 @@ export class WorkspaceEngine {
     conversation: WorkspaceConversation
     cwd: string
     selection?: WorkspaceSelection
-    withdrawUnstartedSwitch?: boolean
   }): WorkspaceAttachment {
     this.authority.initialize()
     if (!isAbsolute(input.cwd)) invalid('Workspace cwd must be absolute')
@@ -2280,118 +2300,122 @@ export class WorkspaceEngine {
       return new WorkspaceAttachmentImpl(this, live)
     }
 
-    let previous = findBinding(this.authority, normalized.key)
-    const pendingOperationId = previous?.binding.pendingOperationId
-    if (previous !== undefined && pendingOperationId !== undefined) {
-      if (input.withdrawUnstartedSwitch !== true)
-        review(
-          `This conversation has an unfinished workspace switch (${pendingOperationId}); resume it with dev --resume, which withdraws a switch that never reached the host`
-        )
-      if (!this.retireUnstartedTransition(pendingOperationId))
-        review(
-          `The last workspace switch of this conversation (${pendingOperationId}) may have reached the host, so it cannot be resumed until explicit recovery exists; its history is unchanged`
-        )
-      const { repo } = previous
-      const kept = inDb(this.authority, repo, db =>
-        transaction(db, () => {
-          const current = getBinding(db, normalized.key)
-          if (current === undefined || current.pendingOperationId !== pendingOperationId)
-            review('Conversation binding changed while its unstarted switch was withdrawn')
-          const withdrawn = { ...current, pendingOperationId: undefined }
-          putBinding(db, withdrawn)
-          return withdrawn
-        })
-      )
-      previous = { repo, binding: kept }
-    }
-    let repoId: string
-    let binding: BindingRecord
-    if (input.selection !== undefined) {
-      const selected = this.resolveSelection(input.selection)
-      this.validateWorkspace(selected.workspace)
-      this.ensureNoUnresolvedUse(selected.repo, selected.workspace.id)
-      const probe = acquirePathGates(this.authority.paths, selected.workspace.path, true)
-      releaseGates(probe)
-      binding = valueOf(
-        BindingSchema,
-        {
-          key: normalized.key,
-          conversation: normalized.conversation,
-          taskId: selected.reservation.taskId,
-          workspaceId: selected.workspace.id,
-          cwd: selected.workspace.path,
-          revision: (previous?.binding.revision ?? -1) + 1,
-        },
-        'explicit task binding'
-      )
-      if (previous === undefined) {
-        inDb(this.authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
-      } else if (previous.repo === selected.repo) {
-        inDb(this.authority, selected.repo, db =>
+    const releaseConversation = acquireConversationGate(this.authority.paths, normalized.key)
+    try {
+      let previous = findBinding(this.authority, normalized.key)
+      const pendingOperationId = previous?.binding.pendingOperationId
+      // Holding the conversation gate proves no host anywhere still performs its switch.
+      if (previous !== undefined && pendingOperationId !== undefined) {
+        if (!this.retireUnstartedTransition(pendingOperationId))
+          review(
+            `The last workspace switch of this conversation (${pendingOperationId}) may have reached the host, so it cannot be resumed until explicit recovery exists; its history is unchanged`
+          )
+        const { repo } = previous
+        const kept = inDb(this.authority, repo, db =>
           transaction(db, () => {
             const current = getBinding(db, normalized.key)
-            if (current === undefined || current.revision !== previous.binding.revision)
-              review('Conversation binding changed during explicit recovery')
-            putBinding(db, binding)
+            if (current === undefined || current.pendingOperationId !== pendingOperationId)
+              review('Conversation binding changed while its unstarted switch was withdrawn')
+            const withdrawn = { ...current, pendingOperationId: undefined }
+            putBinding(db, withdrawn)
+            return withdrawn
           })
         )
-      } else {
-        inDb(this.authority, previous.repo, db =>
-          transaction(db, () => {
-            const current = getBinding(db, normalized.key)
-            if (current === undefined || current.revision !== previous.binding.revision)
-              review('Conversation binding changed during explicit recovery')
-            putBinding(db, { ...current, superseded: true, pendingOperationId: undefined })
-          })
-        )
-        inDb(this.authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
+        previous = { repo, binding: kept }
       }
-      repoId = selected.repo
-    } else if (previous !== undefined) {
-      repoId = previous.repo
-      binding = previous.binding
-      const workspace = inDb(this.authority, repoId, db => getWorkspace(db, binding.workspaceId))
-      if (workspace === undefined)
-        review(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
-      if (lstatIfExists(workspace.path) === undefined)
-        review(
-          `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
+      let repoId: string
+      let binding: BindingRecord
+      if (input.selection !== undefined) {
+        const selected = this.resolveSelection(input.selection)
+        this.validateWorkspace(selected.workspace)
+        this.ensureNoUnresolvedUse(selected.repo, selected.workspace.id)
+        const probe = acquirePathGates(this.authority.paths, selected.workspace.path, true)
+        releaseGates(probe)
+        binding = valueOf(
+          BindingSchema,
+          {
+            key: normalized.key,
+            conversation: normalized.conversation,
+            taskId: selected.reservation.taskId,
+            workspaceId: selected.workspace.id,
+            cwd: selected.workspace.path,
+            revision: (previous?.binding.revision ?? -1) + 1,
+          },
+          'explicit task binding'
         )
-      this.validateWorkspace(workspace)
-    } else {
-      const git = canonicalGitWorkspace(input.cwd)
-      repoId = this.authority.registerRepository(git)
-      const workspace = this.registerWorkspace(repoId, git, 'pre-existing')
-      const actualCwd = realpathSync(resolve(input.cwd))
-      if (!safeWithin(workspace.path, actualCwd))
-        invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
-      binding = valueOf(
-        BindingSchema,
-        {
-          key: normalized.key,
-          conversation: normalized.conversation,
-          workspaceId: workspace.id,
-          cwd: actualCwd,
-          revision: 0,
-        },
-        'new conversation binding'
-      )
-      inDb(this.authority, repoId, db => transaction(db, () => putBinding(db, binding)))
+        if (previous === undefined) {
+          inDb(this.authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
+        } else if (previous.repo === selected.repo) {
+          inDb(this.authority, selected.repo, db =>
+            transaction(db, () => {
+              const current = getBinding(db, normalized.key)
+              if (current === undefined || current.revision !== previous.binding.revision)
+                review('Conversation binding changed during explicit recovery')
+              putBinding(db, binding)
+            })
+          )
+        } else {
+          inDb(this.authority, previous.repo, db =>
+            transaction(db, () => {
+              const current = getBinding(db, normalized.key)
+              if (current === undefined || current.revision !== previous.binding.revision)
+                review('Conversation binding changed during explicit recovery')
+              putBinding(db, { ...current, superseded: true, pendingOperationId: undefined })
+            })
+          )
+          inDb(this.authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
+        }
+        repoId = selected.repo
+      } else if (previous !== undefined) {
+        repoId = previous.repo
+        binding = previous.binding
+        const workspace = inDb(this.authority, repoId, db => getWorkspace(db, binding.workspaceId))
+        if (workspace === undefined)
+          review(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
+        if (lstatIfExists(workspace.path) === undefined)
+          review(
+            `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
+          )
+        this.validateWorkspace(workspace)
+      } else {
+        const git = canonicalGitWorkspace(input.cwd)
+        repoId = this.authority.registerRepository(git)
+        const workspace = this.registerWorkspace(repoId, git, 'pre-existing')
+        const actualCwd = realpathSync(resolve(input.cwd))
+        if (!safeWithin(workspace.path, actualCwd))
+          invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
+        binding = valueOf(
+          BindingSchema,
+          {
+            key: normalized.key,
+            conversation: normalized.conversation,
+            workspaceId: workspace.id,
+            cwd: actualCwd,
+            revision: 0,
+          },
+          'new conversation binding'
+        )
+        inDb(this.authority, repoId, db => transaction(db, () => putBinding(db, binding)))
+      }
+      const state: ConversationState = {
+        key: normalized.key,
+        conversation: normalized.conversation,
+        binding,
+        repositoryId: repoId,
+        leases: new Map(),
+        leaseAttachments: new Map(),
+        extraGates: [],
+        refs: 0,
+        parked: false,
+        closing: false,
+        releaseConversation,
+      }
+      this.states.set(normalized.key, state)
+      return new WorkspaceAttachmentImpl(this, state)
+    } catch (cause) {
+      releaseConversation()
+      throw cause
     }
-    const state: ConversationState = {
-      key: normalized.key,
-      conversation: normalized.conversation,
-      binding,
-      repositoryId: repoId,
-      leases: new Map(),
-      leaseAttachments: new Map(),
-      extraGates: [],
-      refs: 0,
-      parked: false,
-      closing: false,
-    }
-    this.states.set(normalized.key, state)
-    return new WorkspaceAttachmentImpl(this, state)
   }
 
   // A transition that never reached the host changed nothing, so it is withdrawn and the
@@ -2697,6 +2721,7 @@ export class WorkspaceEngine {
           access: 'write',
           stage: 'authorized',
           processes: [],
+          conversationKey: state.key,
           bindingRevision: updatedBinding.revision,
           revision: 0,
           createdAt: now(),
@@ -2821,6 +2846,7 @@ export class WorkspaceEngine {
         ...(operationPath === undefined ? {} : { operationPath }),
         ...(execution === undefined ? {} : { execution }),
         processes: [],
+        conversationKey: state.key,
         bindingRevision: withinUse.bindingRevision,
         revision: 0,
         createdAt: now(),
@@ -2903,6 +2929,7 @@ export class WorkspaceEngine {
           access: 'read',
           stage: 'authorized',
           processes: [],
+          conversationKey: state.key,
           bindingRevision: binding.revision,
           revision: 0,
           createdAt: now(),
@@ -3254,6 +3281,7 @@ export class WorkspaceEngine {
           stage: 'authorized',
           ...(delegated && execution !== undefined ? { execution: validExecution(execution) } : {}),
           processes: [],
+          conversationKey: state.key,
           bindingRevision: state.binding.revision + (delegated ? 0 : 1),
           revision: 0,
           createdAt: now(),
@@ -3784,6 +3812,7 @@ export class WorkspaceEngine {
           access: 'write',
           stage: 'authorized',
           processes: [],
+          conversationKey: state.key,
           bindingRevision: state.binding.revision + 1,
           revision: 0,
           createdAt: now(),
@@ -4280,9 +4309,15 @@ export class WorkspaceEngine {
               unknown,
               live,
               abandoned:
-                live &&
-                identityReason === undefined &&
-                !presenceHeld(this.authority.paths, workspace),
+                identityReason === undefined
+                  ? uses
+                      .filter(
+                        use =>
+                          isActiveUse(use) &&
+                          !conversationHeld(this.authority.paths, use.conversationKey)
+                      )
+                      .map(use => use.id)
+                  : [],
               reserved: reservation !== undefined,
             })
             views.push({
@@ -4354,8 +4389,10 @@ export class WorkspaceEngine {
       state.refs = Math.max(0, state.refs - 1)
       if (state.refs > 0) return Promise.resolve()
       this.settleClosingState(state, state.pending)
-      if (state.pending === undefined) this.states.delete(state.key)
-      else state.closing = false
+      if (state.pending === undefined) {
+        this.states.delete(state.key)
+        state.releaseConversation()
+      } else state.closing = false
       return Promise.resolve()
     } catch (cause) {
       return this.reject(cause)
@@ -4446,7 +4483,10 @@ export class WorkspaceEngine {
   close(): Promise<void> {
     if (this.lifecycleClosed) return Promise.resolve()
     try {
-      for (const state of this.states.values()) this.settleClosingState(state, state.pending)
+      for (const state of this.states.values()) {
+        this.settleClosingState(state, state.pending)
+        state.releaseConversation()
+      }
       this.lifecycleClosed = true
       this.authority.close()
       return Promise.resolve()

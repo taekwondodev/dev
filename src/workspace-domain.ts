@@ -143,12 +143,10 @@ export interface WorkspaceAttachment {
 }
 
 export interface WorkspaceLifecycle {
-  // Only a caller that already holds the conversation's claim may withdraw its switch.
   attach(input: {
     readonly conversation: WorkspaceConversation
     readonly cwd: string
     readonly selection?: WorkspaceSelection
-    readonly withdrawUnstartedSwitch?: boolean
   }): Promise<WorkspaceAttachment>
   inspect(input: {
     readonly cwd?: string

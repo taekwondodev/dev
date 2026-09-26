@@ -167,10 +167,7 @@ try {
           if (property === 'attach')
             return async input => {
               const attachment = await target.attach(input)
-              process.stdout.write(JSON.stringify({
-                withdrawUnstartedSwitch: input.withdrawUnstartedSwitch,
-                workspaceId: attachment.binding.workspaceId,
-              }) + '\\n')
+              process.stdout.write(JSON.stringify({ workspaceId: attachment.binding.workspaceId }) + '\\n')
               await attachment.close()
               throw new Error('launcher check stops after attach')
             }
@@ -228,7 +225,6 @@ try {
   assert.equal(withdrawal.code, 1, withdrawal.stderr)
   assert.match(withdrawal.stderr, /launcher check stops after attach/)
   assert.deepEqual(JSON.parse(withdrawal.stdout.trim().split('\n').at(-1) ?? '{}'), {
-    withdrawUnstartedSwitch: true,
     workspaceId: switchSource,
   })
   const afterWithdrawal = makeWorkspaceLifecycle({ root: authorityRoot })
@@ -246,7 +242,23 @@ try {
     await afterWithdrawal.close()
   }
   checks.push(
-    'dev --resume claims the conversation and asks the authority to withdraw its switch that never reached the host, which returns it durably to the last confirmed workspace'
+    'dev --resume of a conversation whose host died withdraws its switch that never reached that host, returning it durably to the last confirmed workspace'
+  )
+
+  // A lifecycle in this process keeps the conversation live, as another installation would.
+  const liveElsewhere = makeWorkspaceLifecycle({ root: authorityRoot })
+  const liveConversation = await liveElsewhere.attach({
+    conversation: switchConversation,
+    cwd: repo,
+  })
+  const refused = await runLauncher(resumeArgs(switchFile), { STOP_AFTER_ATTACH: '1' })
+  await liveConversation.close()
+  await liveElsewhere.close()
+  assert.equal(refused.code, 1, refused.stderr)
+  assert.match(refused.stderr, /open in another dev session/)
+  assert.ok(refused.stderr.includes(switchFile), refused.stderr)
+  checks.push(
+    'dev --resume of a conversation live in another lifecycle on the same authority exits 1 with guidance instead of taking it over'
   )
 
   // Read-only commands answer from the authority as they find it. They run with a data

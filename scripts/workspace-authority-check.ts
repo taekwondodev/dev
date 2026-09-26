@@ -103,6 +103,9 @@ const expectWorkspaceError = async (promise: Promise<unknown>, outcomes: readonl
     error => error instanceof WorkspaceError && outcomes.includes(error.outcome)
   )
 }
+const switchStage = async (reader: WorkspaceLifecycle, operationId: string) =>
+  (await reader.inspect({})).flatMap(view => view.pending).find(item => item.id === operationId)
+    ?.stage
 const runChild = (code: string): Promise<string> =>
   new Promise((resolveOutput, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
@@ -1437,42 +1440,36 @@ try {
     workspaceId: recoveryTarget.workspaceId,
   })
   const sourceWorkspaceId = recoveryAttachment.binding.workspaceId
-  const otherProcess = makeWorkspaceLifecycle({ root: recoveryRoot })
+  // A second lifecycle on the same root stands in for another installation: it shares the
+  // authority but none of the first installation's conversation claims.
+  const otherInstallation = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const otherSelection = { taskId: otherTarget.taskId!, workspaceId: otherTarget.workspaceId }
   await expectWorkspaceError(
-    otherProcess.attach({ conversation: recoveryConversation, cwd: fenceRepo }),
-    ['review-required']
+    otherInstallation.attach({ conversation: recoveryConversation, cwd: fenceRepo }),
+    ['blocked']
   )
-  const pendingStage = async (reader: typeof otherProcess) =>
-    (await reader.inspect({}))
-      .flatMap(view => view.pending)
-      .find(item => item.id === pendingSwitch.operationId)?.stage
-  assert.equal(
-    await pendingStage(otherProcess),
-    'intent',
-    'a refused attach leaves the pending switch for its live host'
-  )
-  await otherProcess.close()
-  await recoveryLifecycle.close()
-  const recoveryReopened = makeWorkspaceLifecycle({ root: recoveryRoot })
   await expectWorkspaceError(
-    recoveryReopened.attach({
+    otherInstallation.attach({
       conversation: recoveryConversation,
       cwd: otherTarget.cwd,
-      selection: { taskId: otherTarget.taskId!, workspaceId: otherTarget.workspaceId },
+      selection: otherSelection,
     }),
-    ['review-required']
+    ['blocked']
   )
   assert.equal(
-    await pendingStage(recoveryReopened),
+    await switchStage(otherInstallation, pendingSwitch.operationId),
     'intent',
-    'an unclaimed selection does not orphan the switch of a host that died'
+    'an attach refused while the conversation is live elsewhere leaves its switch to that host'
   )
+  await otherInstallation.close()
+  await recoveryLifecycle.close()
+  const recoveryReopened = makeWorkspaceLifecycle({ root: recoveryRoot })
   const resumedAtSource = await recoveryReopened.attach({
     conversation: recoveryConversation,
     cwd: fenceRepo,
-    withdrawUnstartedSwitch: true,
   })
   assert.equal(resumedAtSource.binding.workspaceId, sourceWorkspaceId)
+  assert.notEqual(await switchStage(recoveryReopened, pendingSwitch.operationId), 'intent')
   assert.equal(
     ready(await resumedAtSource.authorize({ access: 'write' })).workspaceId,
     sourceWorkspaceId
@@ -1489,8 +1486,34 @@ try {
   )
   await targetOwner.close()
   await recoveryReopened.close()
+
+  const selectingConversation = conversation('unstarted-selection')
+  const selectingLifecycle = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const selecting = await selectingLifecycle.attach({
+    conversation: selectingConversation,
+    cwd: fenceRepo,
+  })
+  const selectingSwitch = await selecting.select({
+    taskId: recoveryTarget.taskId!,
+    workspaceId: recoveryTarget.workspaceId,
+  })
+  await selectingLifecycle.close()
+  const selectingReopened = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const selected = await selectingReopened.attach({
+    conversation: selectingConversation,
+    cwd: otherTarget.cwd,
+    selection: otherSelection,
+  })
+  assert.equal(selected.binding.workspaceId, otherTarget.workspaceId)
+  assert.notEqual(
+    await switchStage(selectingReopened, selectingSwitch.operationId),
+    'intent',
+    'a selection after the host died withdraws the switch instead of orphaning it'
+  )
+  await selected.close()
+  await selectingReopened.close()
   checks.push(
-    'an attach without the conversation claim is refused and leaves the pending switch in intent, both beside its live host and, with a selection, after that host died; a claimed resume then withdraws the switch that never reached the host, keeps the last confirmed workspace and frees the unused target'
+    'while a conversation is live, an attach from another lifecycle on the same authority is refused, with or without a selection, and its switch stays with the live host; once the host is gone, any attach withdraws the switch that never reached it, keeping the last confirmed workspace or binding the selected one, and frees the unused target'
   )
 
   const crashRoot = join(sandbox, 'crash-authority')
@@ -1511,15 +1534,25 @@ try {
     cwd: scopedRepo,
   })
   ready(await liveWriter.authorize({ access: 'write' }))
+  const coPresentReader = await crashLifecycle.attach({
+    conversation: conversation('co-present-reader'),
+    cwd: failureRepo,
+  })
+  const coPresentRead = ready(await coPresentReader.authorize({ access: 'read' }))
   const crashViews = await crashLifecycle.inspect({})
   const abandoned = crashViews.find(view => view.path === realpathSync(failureRepo))
-  assert.equal(abandoned?.outcome, 'blocked')
-  assert.match(abandoned?.reason ?? '', /No dev session holds this workspace/)
+  const crashedUse = abandoned?.uses.find(use => use.access === 'write')
+  assert.ok(crashedUse)
+  assert.equal(abandoned?.outcome, 'blocked', 'a live reader does not hide the dead writer')
+  assert.match(abandoned?.reason ?? '', /left unsettled by conversations no dev session holds/)
+  assert.ok(abandoned?.reason?.includes(crashedUse.id))
+  assert.ok(!abandoned?.reason?.includes(coPresentRead.useId))
   assert.equal(crashViews.find(view => view.path === realpathSync(scopedRepo))?.outcome, 'active')
+  await coPresentReader.close()
   await liveWriter.close()
   await crashLifecycle.close()
   checks.push(
-    'inspect reports a workspace whose writer was killed as blocked because no dev session holds it, while a live writer stays active'
+    'inspect names the use of a killed writer as left by a conversation no dev session holds, even while a live reader shares its checkout, and a live writer stays active'
   )
 
   const filteredRepo = join(sandbox, 'filtered-repo')

@@ -473,7 +473,6 @@ class WorkspaceLifecycleClient implements WorkspaceLifecycle {
     readonly conversation: WorkspaceConversation
     readonly cwd: string
     readonly selection?: WorkspaceSelection
-    readonly withdrawUnstartedSwitch?: boolean
   }): Promise<WorkspaceAttachment> {
     const opened = await this.client.request({ op: 'attach', ...input })
     const attachment = new RemoteWorkspaceAttachment(

@@ -562,7 +562,6 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
           conversation: { sessionId, sessionFile, dataHome },
           cwd: sessions.getCwd(),
           ...(workspaceResume === undefined ? {} : { selection: workspaceResume.selection }),
-          ...(resumedPath === undefined ? {} : { withdrawUnstartedSwitch: true }),
         }),
       catch: error =>
         new LauncherError({

@@ -122,7 +122,7 @@ Avvia una nuova sessione. Il lavoro in background legato alla precedente viene i
 /resume
 ```
 
-Apre la selezione di un'altra sessione da riprendere. Il cambio interrompe il lavoro in background e termina i processi delle shell della sessione che stai lasciando. Se la conversazione ripresa ha uno switch di workspace mai arrivato all'host, `/resume` viene rifiutato: riprendila dal terminale con `dev --resume`, che ritira lo switch e riparte dall'ultimo workspace confermato.
+Apre la selezione di un'altra sessione da riprendere. Il cambio interrompe il lavoro in background e termina i processi delle shell della sessione che stai lasciando. Se la conversazione ripresa ha uno switch di workspace mai arrivato all'host, lo ritira e riparte dall'ultimo workspace confermato. Se la conversazione è ancora aperta in un'altra sessione di `dev`, anche di un'altra installazione, `/resume` viene rifiutato.
 
 ```text
 /tree
