@@ -25,9 +25,6 @@ import {
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates } from './workspace-gates.ts'
 import {
-  BindingSchema,
-  UseSchema,
-  OperationSchema,
   getReservation,
   updateReservation,
   getBinding,
@@ -48,15 +45,7 @@ import {
   type UseRecord,
   type OperationRecord,
 } from './workspace-records.ts'
-import {
-  workspaceId,
-  isUuid,
-  now,
-  jsonEqual,
-  errorText,
-  transaction,
-  decodeOrFail,
-} from './workspace-sqlite.ts'
+import { workspaceId, now, jsonEqual, errorText, transaction } from './workspace-sqlite.ts'
 
 export const resolveSelection = (
   authority: WorkspaceAuthority,
@@ -66,9 +55,6 @@ export const resolveSelection = (
   reservation: ReservationRecord
   workspace: WorkspaceRecord
 } => {
-  if (!isUuid(selection.taskId)) invalid('Task ID must be an exact UUID')
-  if (selection.workspaceId !== undefined && !isUuid(selection.workspaceId))
-    invalid('Workspace ID must be an exact UUID')
   const matches = taskWorkspaces(authority, selection.taskId)
   const selected =
     selection.workspaceId === undefined
@@ -117,59 +103,47 @@ export const selectWorkspace = (
   const gates = acquirePathGates(authority.paths, target.workspace.path, true)
   const operationId = workspaceId()
   const acquisitionId = workspaceId()
-  const use: UseRecord = decodeOrFail(
-    UseSchema,
-    {
-      id: workspaceId(),
-      workspaceId: target.workspace.id,
-      taskId: target.reservation.taskId,
-      reservationId: target.reservation.id,
-      acquisitionId,
-      access: 'write',
-      stage: 'authorized',
-      processes: [],
-      incarnation: state.incarnation,
-      bindingRevision: state.binding.revision + 1,
-      revision: 0,
-      createdAt: now(),
-      updatedAt: now(),
-    },
-    'resume use'
-  )
-  const targetBinding: BindingRecord = decodeOrFail(
-    BindingSchema,
-    {
-      key: state.key,
-      conversation: state.conversation,
-      taskId: target.reservation.taskId,
-      workspaceId: target.workspace.id,
-      cwd: target.workspace.path,
-      revision: state.binding.revision + 1,
-    },
-    'resume binding'
-  )
-  const operation: OperationRecord = decodeOrFail(
-    OperationSchema,
-    {
-      id: operationId,
-      kind: 'handoff',
-      phase: 'intent',
-      repositoryId: target.repo,
-      workspaceId: target.workspace.id,
-      taskId: target.reservation.taskId,
-      reservationId: target.reservation.id,
-      acquisitionId,
-      sourceRepositoryId: source.repo,
-      sourceWorkspaceId: source.workspace.id,
-      sourcePath: source.workspace.path,
-      targetPath: target.workspace.path,
-      conversationKey: state.key,
-      expectedBindingRevision: state.binding.revision,
-      reason: 'explicit-task-resume',
-      createdAt: now(),
-    },
-    'resume handoff intent'
-  )
+  const use = {
+    id: workspaceId(),
+    workspaceId: target.workspace.id,
+    taskId: target.reservation.taskId,
+    reservationId: target.reservation.id,
+    acquisitionId,
+    access: 'write',
+    stage: 'authorized',
+    processes: [],
+    incarnation: state.incarnation,
+    bindingRevision: state.binding.revision + 1,
+    revision: 0,
+    createdAt: now(),
+    updatedAt: now(),
+  } satisfies UseRecord
+  const targetBinding = {
+    key: state.key,
+    conversation: state.conversation,
+    taskId: target.reservation.taskId,
+    workspaceId: target.workspace.id,
+    cwd: target.workspace.path,
+    revision: state.binding.revision + 1,
+  } satisfies BindingRecord
+  const operation = {
+    id: operationId,
+    kind: 'handoff',
+    phase: 'intent',
+    repositoryId: target.repo,
+    workspaceId: target.workspace.id,
+    taskId: target.reservation.taskId,
+    reservationId: target.reservation.id,
+    acquisitionId,
+    sourceRepositoryId: source.repo,
+    sourceWorkspaceId: source.workspace.id,
+    sourcePath: source.workspace.path,
+    targetPath: target.workspace.path,
+    conversationKey: state.key,
+    expectedBindingRevision: state.binding.revision,
+    reason: 'explicit-task-resume',
+    createdAt: now(),
+  } satisfies OperationRecord
   const grant = toGrant(
     authority,
     target.repo,

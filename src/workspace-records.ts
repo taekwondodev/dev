@@ -6,8 +6,6 @@ import {
   WorkspaceEffectSchema,
   WorkspaceProcessSchema,
   type WorkspaceBinding,
-  type WorkspaceExecution,
-  type WorkspaceExecutionFact,
 } from './workspace-domain.ts'
 import { canonicalGitWorkspace, type FileIdentity, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
@@ -78,20 +76,6 @@ const ExecutionSchema = Schema.Struct({
   generation: Schema.NonEmptyString,
   logs: Schema.optional(Schema.String),
 })
-const ExecutionFactSchema = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal('launch-intent'), execution: ExecutionSchema }),
-  Schema.Struct({ kind: Schema.Literal('spawned'), process: WorkspaceProcessSchema }),
-  Schema.Struct({ kind: Schema.Literal('started') }),
-  Schema.Struct({
-    kind: Schema.Literal('observed'),
-    processes: Schema.Array(WorkspaceProcessSchema),
-  }),
-  Schema.Struct({ kind: Schema.Literal('quiescent'), reason: Schema.NonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal('launch-failed'), reason: Schema.NonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal('unknown'), reason: Schema.NonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal('operation-started') }),
-  Schema.Struct({ kind: Schema.Literal('operation-completed') }),
-])
 export const BindingSchema = Schema.Struct({
   key: Schema.NonEmptyString,
   conversation: Schema.Struct({
@@ -182,6 +166,7 @@ export const getTask = (db: DatabaseSync, id: string): TaskRecord | undefined =>
     requireReview(`Task columns disagree with payload: ${id}`)
   return value
 }
+// Writers validate because records carry Git and filesystem values that no boundary decoded.
 export const putTask = (db: DatabaseSync, value: TaskRecord): void => {
   const checked = decodeOrFail(TaskSchema, value, 'task record')
   db.prepare('INSERT INTO tasks(id, revision, payload) VALUES(?,?,?)').run(
@@ -461,28 +446,23 @@ export const makeWorkspaceRecord = (
   origin: 'pre-existing' | 'managed',
   id = workspaceId(),
   allocationOperationId?: string
-): WorkspaceRecord =>
-  decodeOrFail(
-    WorkspaceSchema,
-    {
-      id,
-      repositoryId,
-      path: git.path,
-      pathKey: hash(git.path),
-      physical: git.identity,
-      gitAdminPath: git.gitAdminPath,
-      gitAdmin: git.gitAdminIdentity,
-      commonPath: git.commonPath,
-      common: git.commonIdentity,
-      objectFormat: git.objectFormat,
-      origin,
-      status: 'ready',
-      ...(allocationOperationId === undefined ? {} : { allocationOperationId }),
-      revision: 0,
-      createdAt: now(),
-    },
-    'Git workspace identity'
-  )
+): WorkspaceRecord => ({
+  id,
+  repositoryId,
+  path: git.path,
+  pathKey: hash(git.path),
+  physical: git.identity,
+  gitAdminPath: git.gitAdminPath,
+  gitAdmin: git.gitAdminIdentity,
+  commonPath: git.commonPath,
+  common: git.commonIdentity,
+  objectFormat: git.objectFormat,
+  origin,
+  status: 'ready',
+  ...(allocationOperationId === undefined ? {} : { allocationOperationId }),
+  revision: 0,
+  createdAt: now(),
+})
 export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
   if (record.status !== 'ready')
     return requireReview(`Workspace allocation is unresolved: ${record.path}`)
@@ -514,7 +494,3 @@ export const toBinding = (record: BindingRecord): WorkspaceBinding => ({
 })
 
 export const isActiveUse = (use: UseRecord): boolean => use.stage !== 'quiescent'
-export const validExecution = (input: WorkspaceExecution): WorkspaceExecution =>
-  decodeOrFail(ExecutionSchema, input, 'workspace execution identity', 'invalid')
-export const validExecutionFact = (input: unknown): WorkspaceExecutionFact =>
-  decodeOrFail(ExecutionFactSchema, input, 'execution fact', 'invalid')

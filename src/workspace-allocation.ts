@@ -10,7 +10,6 @@ import {
   type ConversationState,
 } from './workspace-conversation.ts'
 import {
-  invalid,
   requireReview,
   type WorkspaceAuthorization,
   type WorkspaceExecution,
@@ -31,9 +30,6 @@ import {
 } from './workspace-git.ts'
 import { canonicalPathSlot, lstatIfExists } from './workspace-paths.ts'
 import {
-  BindingSchema,
-  UseSchema,
-  OperationSchema,
   sameIdentity,
   getTask,
   putTask,
@@ -47,7 +43,6 @@ import {
   saveOperation,
   makeWorkspaceRecord,
   toBinding,
-  validExecution,
   type WorkspaceRecord,
   type ReservationRecord,
   type BindingRecord,
@@ -56,14 +51,12 @@ import {
 } from './workspace-records.ts'
 import {
   workspaceId,
-  isUuid,
   now,
   errorText,
   fsyncPath,
   fsyncParent,
   privateDirectory,
   transaction,
-  decodeOrFail,
 } from './workspace-sqlite.ts'
 
 const releaseLocalGates = (state: ConversationState): GateIntent[] => {
@@ -197,7 +190,6 @@ export const allocateWorkspace = (
   delegated: boolean,
   execution?: WorkspaceExecution
 ): WorkspaceAuthorization => {
-  if (!isUuid(taskId)) invalid('Workspace task identity is invalid')
   const previousWriteGrant = state.writeGrant
   if (!delegated)
     assertNoLiveExecution(
@@ -245,29 +237,25 @@ export const allocateWorkspace = (
     )
     state.extraGates.push(...pathGates.extras)
     const commit = currentCommit(sourceGit)
-    operation = decodeOrFail(
-      OperationSchema,
-      {
-        id: allocationId,
-        kind: 'allocation',
-        phase: 'intent',
-        repositoryId: sourceRepo,
-        workspaceId: workspaceIdValue,
-        taskId,
-        reservationId,
-        acquisitionId,
-        sourceRepositoryId: sourceRepo,
-        sourceWorkspaceId: sourceWorkspace.id,
-        sourcePath: sourceWorkspace.path,
-        sourceCommit: commit,
-        targetPath: destination,
-        conversationKey: state.key,
-        expectedBindingRevision: state.binding.revision,
-        reason: delegated ? 'delegated-writer' : 'checkout-contention',
-        createdAt: now(),
-      },
-      'allocation intent'
-    )
+    operation = {
+      id: allocationId,
+      kind: 'allocation',
+      phase: 'intent',
+      repositoryId: sourceRepo,
+      workspaceId: workspaceIdValue,
+      taskId,
+      reservationId,
+      acquisitionId,
+      sourceRepositoryId: sourceRepo,
+      sourceWorkspaceId: sourceWorkspace.id,
+      sourcePath: sourceWorkspace.path,
+      sourceCommit: commit,
+      targetPath: destination,
+      conversationKey: state.key,
+      expectedBindingRevision: state.binding.revision,
+      reason: delegated ? 'delegated-writer' : 'checkout-contention',
+      createdAt: now(),
+    } satisfies OperationRecord
     inDb(authority, sourceRepo, db =>
       transaction(db, () => {
         const binding = getBinding(db, state.key)
@@ -325,26 +313,22 @@ export const allocateWorkspace = (
       revision: 0,
       createdAt: now(),
     }
-    const use: UseRecord = decodeOrFail(
-      UseSchema,
-      {
-        id: workspaceId(),
-        workspaceId: workspaceIdValue,
-        taskId,
-        reservationId,
-        acquisitionId,
-        access: 'write',
-        stage: 'authorized',
-        ...(delegated && execution !== undefined ? { execution: validExecution(execution) } : {}),
-        processes: [],
-        incarnation: state.incarnation,
-        bindingRevision: state.binding.revision + (delegated ? 0 : 1),
-        revision: 0,
-        createdAt: now(),
-        updatedAt: now(),
-      },
-      'allocated writer use'
-    )
+    const use = {
+      id: workspaceId(),
+      workspaceId: workspaceIdValue,
+      taskId,
+      reservationId,
+      acquisitionId,
+      access: 'write',
+      stage: 'authorized',
+      ...(delegated && execution !== undefined ? { execution } : {}),
+      processes: [],
+      incarnation: state.incarnation,
+      bindingRevision: state.binding.revision + (delegated ? 0 : 1),
+      revision: 0,
+      createdAt: now(),
+      updatedAt: now(),
+    } satisfies UseRecord
     const completed: OperationRecord = {
       ...operation,
       phase: 'confirmed',
@@ -354,43 +338,34 @@ export const allocateWorkspace = (
     let handoff: WorkspaceHandoff | undefined
     let handoffOperation: OperationRecord | undefined
     if (!delegated) {
-      targetBinding = decodeOrFail(
-        BindingSchema,
-        {
-          ...state.binding,
-          taskId,
-          workspaceId: workspaceIdValue,
-          cwd: destination,
-          revision: state.binding.revision + 1,
-          pendingOperationId: undefined,
-        },
-        'allocated workspace binding'
-      )
       const handoffId = workspaceId()
-      handoffOperation = decodeOrFail(
-        OperationSchema,
-        {
-          id: handoffId,
-          kind: 'handoff',
-          phase: 'intent',
-          repositoryId: sourceRepo,
-          workspaceId: workspaceIdValue,
-          taskId,
-          reservationId,
-          acquisitionId,
-          sourceRepositoryId: sourceRepo,
-          sourceWorkspaceId: sourceWorkspace.id,
-          sourcePath: sourceWorkspace.path,
-          sourceCommit: commit,
-          targetPath: destination,
-          conversationKey: state.key,
-          expectedBindingRevision: state.binding.revision,
-          reason: 'isolate-contended-writer',
-          createdAt: now(),
-        },
-        'allocation handoff'
-      )
-      targetBinding = { ...targetBinding, pendingOperationId: handoffId }
+      targetBinding = {
+        ...state.binding,
+        taskId,
+        workspaceId: workspaceIdValue,
+        cwd: destination,
+        revision: state.binding.revision + 1,
+        pendingOperationId: handoffId,
+      }
+      handoffOperation = {
+        id: handoffId,
+        kind: 'handoff',
+        phase: 'intent',
+        repositoryId: sourceRepo,
+        workspaceId: workspaceIdValue,
+        taskId,
+        reservationId,
+        acquisitionId,
+        sourceRepositoryId: sourceRepo,
+        sourceWorkspaceId: sourceWorkspace.id,
+        sourcePath: sourceWorkspace.path,
+        sourceCommit: commit,
+        targetPath: destination,
+        conversationKey: state.key,
+        expectedBindingRevision: state.binding.revision,
+        reason: 'isolate-contended-writer',
+        createdAt: now(),
+      }
       const grant = toGrant(authority, sourceRepo, workspace, use, destination, 'write')
       handoff = {
         operationId: handoffId,
@@ -444,7 +419,7 @@ export const allocateWorkspace = (
       gates: pathGates.target,
       borrowed: false,
       isExecution: execution !== undefined,
-      ...(execution === undefined ? {} : { execution: validExecution(execution) }),
+      ...(execution === undefined ? {} : { execution }),
       released: false,
     }
     state.leases.set(use.id, lease)

@@ -1,7 +1,6 @@
 import { realpathSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, resolve } from 'node:path'
-import { Schema } from 'effect'
 import { allocateWorkspace } from './workspace-allocation.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import type { GrantLease, ConversationState, AttachmentHandle } from './workspace-conversation.ts'
@@ -9,10 +8,7 @@ import {
   blocked,
   invalid,
   requireReview,
-  WorkspaceEffectSchema,
   WorkspaceError,
-  WorkspaceProcessSchema,
-  WorkspaceGrantSchema,
   type WorkspaceAuthorization,
   type WorkspaceExecution,
   type WorkspaceExecutionFact,
@@ -23,8 +19,6 @@ import { acquirePathGates, releaseGates, type PathGates } from './workspace-gate
 import type { GitWorkspace } from './workspace-git.ts'
 import { assertDestinationUnchanged, isWithin, resolveWriteDestination } from './workspace-paths.ts'
 import {
-  BindingSchema,
-  UseSchema,
   getTask,
   putTask,
   getWorkspace,
@@ -39,13 +33,11 @@ import {
   getUseRows,
   assertWithinLiveInDb,
   isActiveUse,
-  validExecution,
-  validExecutionFact,
   type WorkspaceRecord,
   type BindingRecord,
   type UseRecord,
 } from './workspace-records.ts'
-import { workspaceId, now, jsonEqual, transaction, decodeOrFail } from './workspace-sqlite.ts'
+import { workspaceId, now, jsonEqual, transaction } from './workspace-sqlite.ts'
 
 export const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<string>()
@@ -79,9 +71,8 @@ export const currentSource = (
 const validateWithinGrant = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  input: WorkspaceGrant
+  grant: WorkspaceGrant
 ): { readonly lease: GrantLease; readonly workspace: WorkspaceRecord; readonly use: UseRecord } => {
-  const grant = decodeOrFail(WorkspaceGrantSchema, input, 'within workspace grant', 'invalid')
   const owners = attachment.state.leaseAttachments.get(grant.useId)
   if (owners === undefined || !owners.has(attachment.token))
     requireReview('Scoped operation grant was not issued to this attachment')
@@ -112,14 +103,10 @@ export const authorizeOperation = (
   const state = attachment.state
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
-  if (operation.access !== 'read' && operation.access !== 'write')
-    invalid('Operation access must be read or write')
   if (operation.cwd !== undefined && !isAbsolute(operation.cwd))
     invalid('Operation cwd must be absolute')
   if (operation.delegated === true && operation.access !== 'write')
     invalid('Delegated workspace admission requires write access')
-  if (operation.effect !== undefined && !Schema.is(WorkspaceEffectSchema)(operation.effect))
-    invalid('Workspace operation effect is invalid')
   if (operation.effect === undefined) {
     if (operation.within !== undefined || operation.path !== undefined)
       invalid('Scoped operation fields require an explicit effect classification')
@@ -128,7 +115,6 @@ export const authorizeOperation = (
       invalid('Scoped operation requires an attachment-owned within grant')
     if (operation.delegated === true)
       invalid('Scoped operation cannot also request a delegated allocation')
-    if (operation.execution !== undefined) validExecution(operation.execution)
     return authorizeScoped(authority, attachment, operation)
   }
   const source = currentSource(authority, state)
@@ -136,7 +122,6 @@ export const authorizeOperation = (
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
   if (!isWithin(source.workspace.path, cwd))
     invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
-  if (operation.execution !== undefined) validExecution(operation.execution)
   if (operation.access === 'read') {
     const ready = authorizeRead(
       authority,
@@ -231,34 +216,26 @@ export const authorizeOperation = (
     const useId = workspaceId()
     const reservationId = reservation?.id ?? workspaceId()
     const acquisitionId = workspaceId()
-    const updatedBinding = decodeOrFail(
-      BindingSchema,
-      {
-        ...source.binding,
-        ...(source.binding.taskId === undefined ? { taskId } : {}),
-        revision: source.binding.revision + (source.binding.taskId === undefined ? 1 : 0),
-      },
-      'write binding'
-    )
-    const use: UseRecord = decodeOrFail(
-      UseSchema,
-      {
-        id: useId,
-        workspaceId: source.workspace.id,
-        taskId,
-        reservationId,
-        acquisitionId,
-        access: 'write',
-        stage: 'authorized',
-        processes: [],
-        incarnation: state.incarnation,
-        bindingRevision: updatedBinding.revision,
-        revision: 0,
-        createdAt: now(),
-        updatedAt: now(),
-      },
-      'write use'
-    )
+    const updatedBinding = {
+      ...source.binding,
+      ...(source.binding.taskId === undefined ? { taskId } : {}),
+      revision: source.binding.revision + (source.binding.taskId === undefined ? 1 : 0),
+    } satisfies BindingRecord
+    const use = {
+      id: useId,
+      workspaceId: source.workspace.id,
+      taskId,
+      reservationId,
+      acquisitionId,
+      access: 'write',
+      stage: 'authorized',
+      processes: [],
+      incarnation: state.incarnation,
+      bindingRevision: updatedBinding.revision,
+      revision: 0,
+      createdAt: now(),
+      updatedAt: now(),
+    } satisfies UseRecord
     inDb(authority, source.repo, db =>
       transaction(db, () => {
         const currentBinding = getBinding(db, state.key)
@@ -355,31 +332,26 @@ const authorizeScoped = (
     effect === 'native-file-write'
       ? resolveWriteDestination(workspace.path, cwd, operation.path as string)
       : undefined
-  const execution =
-    operation.execution === undefined ? undefined : validExecution(operation.execution)
-  const use: UseRecord = decodeOrFail(
-    UseSchema,
-    {
-      id: workspaceId(),
-      workspaceId: workspace.id,
-      taskId: withinUse.taskId,
-      ...(withinUse.reservationId === undefined ? {} : { reservationId: withinUse.reservationId }),
-      ...(withinUse.acquisitionId === undefined ? {} : { acquisitionId: withinUse.acquisitionId }),
-      access: operation.access,
-      stage: 'authorized',
-      effect,
-      withinUseId: withinUse.id,
-      ...(operationPath === undefined ? {} : { operationPath }),
-      ...(execution === undefined ? {} : { execution }),
-      processes: [],
-      incarnation: state.incarnation,
-      bindingRevision: withinUse.bindingRevision,
-      revision: 0,
-      createdAt: now(),
-      updatedAt: now(),
-    },
-    'scoped workspace use'
-  )
+  const { execution } = operation
+  const use = {
+    id: workspaceId(),
+    workspaceId: workspace.id,
+    taskId: withinUse.taskId,
+    ...(withinUse.reservationId === undefined ? {} : { reservationId: withinUse.reservationId }),
+    ...(withinUse.acquisitionId === undefined ? {} : { acquisitionId: withinUse.acquisitionId }),
+    access: operation.access,
+    stage: 'authorized',
+    effect,
+    withinUseId: withinUse.id,
+    ...(operationPath === undefined ? {} : { operationPath }),
+    ...(execution === undefined ? {} : { execution }),
+    processes: [],
+    incarnation: state.incarnation,
+    bindingRevision: withinUse.bindingRevision,
+    revision: 0,
+    createdAt: now(),
+    updatedAt: now(),
+  } satisfies UseRecord
   inDb(authority, withinLease.repositoryId, db =>
     transaction(db, () => {
       const currentWithin = getUse(db, withinUse.id)
@@ -439,24 +411,20 @@ const authorizeRead = (
   const gates = acquirePathGates(authority.paths, workspace.path, false)
   try {
     const reservation = inDb(authority, repo, db => getReservation(db, workspace.id))
-    const use = decodeOrFail(
-      UseSchema,
-      {
-        id: workspaceId(),
-        workspaceId: workspace.id,
-        taskId: binding.taskId,
-        ...(reservation === undefined ? {} : { reservationId: reservation.id }),
-        access: 'read',
-        stage: 'authorized',
-        processes: [],
-        incarnation: state.incarnation,
-        bindingRevision: binding.revision,
-        revision: 0,
-        createdAt: now(),
-        updatedAt: now(),
-      },
-      'reader use'
-    )
+    const use = {
+      id: workspaceId(),
+      workspaceId: workspace.id,
+      taskId: binding.taskId,
+      ...(reservation === undefined ? {} : { reservationId: reservation.id }),
+      access: 'read',
+      stage: 'authorized',
+      processes: [],
+      incarnation: state.incarnation,
+      bindingRevision: binding.revision,
+      revision: 0,
+      createdAt: now(),
+      updatedAt: now(),
+    } satisfies UseRecord
     inDb(authority, repo, db => transaction(db, () => putUse(db, use)))
     const grant = toGrant(authority, repo, workspace, use, cwd, 'read')
     const lease: GrantLease = {
@@ -498,33 +466,24 @@ const executionUse = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   parent: GrantLease,
-  input: WorkspaceExecution
+  execution: WorkspaceExecution
 ): WorkspaceAuthorization => {
   validateGrant(authority, state, parent.grant)
-  const execution = validExecution(input)
   const base = inDb(authority, parent.repositoryId, db => getUse(db, parent.useId))
   if (base === undefined) requireReview('Workspace grant has no base use record')
-  const use: UseRecord = decodeOrFail(
-    UseSchema,
-    {
-      ...base,
-      id: workspaceId(),
-      execution,
-      stage: 'authorized',
-      processes: [],
-      revision: 0,
-      createdAt: now(),
-      updatedAt: now(),
-      reason: undefined,
-    },
-    'execution recovery use'
-  )
+  const use = {
+    ...base,
+    id: workspaceId(),
+    execution,
+    stage: 'authorized',
+    processes: [],
+    revision: 0,
+    createdAt: now(),
+    updatedAt: now(),
+    reason: undefined,
+  } satisfies UseRecord
   inDb(authority, parent.repositoryId, db => transaction(db, () => putUse(db, use)))
-  const grant = decodeOrFail(
-    WorkspaceGrantSchema,
-    { ...parent.grant, useId: use.id },
-    'execution grant'
-  )
+  const grant = { ...parent.grant, useId: use.id } satisfies WorkspaceGrant
   const lease: GrantLease = {
     grant,
     repositoryId: parent.repositoryId,
@@ -541,9 +500,8 @@ const executionUse = (
 export const validateGrant = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  input: WorkspaceGrant
+  grant: WorkspaceGrant
 ): GrantLease => {
-  const grant = decodeOrFail(WorkspaceGrantSchema, input, 'workspace grant', 'invalid')
   if (grant.namespaceId !== authority.initialize())
     requireReview('Workspace grant belongs to another namespace')
   const lease = state.leases.get(grant.useId)
@@ -584,9 +542,8 @@ export const validateGrant = (
 
 export const validateDurableGrant = (
   authority: WorkspaceAuthority,
-  input: WorkspaceGrant
+  grant: WorkspaceGrant
 ): void => {
-  const grant = decodeOrFail(WorkspaceGrantSchema, input, 'workspace grant', 'invalid')
   const namespace = authority.inspectExisting()
   if (namespace === undefined || namespace !== grant.namespaceId)
     requireReview('Workspace grant namespace is missing or differs')
@@ -640,29 +597,28 @@ export const validateDurableGrant = (
 export const reportExecutionFact = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  input: WorkspaceGrant,
+  grant: WorkspaceGrant,
   fact: WorkspaceExecutionFact
 ): void => {
   attachment.assertOpen()
   const state = attachment.state
   if (state.closing) blocked('Execution reporting is fenced during attachment closure')
-  const checkedFact = validExecutionFact(fact)
   // A transition waits for running work to end, so facts that end it stay reportable.
   if (
     state.parked &&
-    ['launch-intent', 'spawned', 'started', 'operation-started'].includes(checkedFact.kind)
+    ['launch-intent', 'spawned', 'started', 'operation-started'].includes(fact.kind)
   )
     blocked('Starting an operation is fenced during a host transition')
-  const lease = validateGrant(authority, state, input)
+  const lease = validateGrant(authority, state, grant)
   if (lease.effect !== undefined) {
     const owners = state.leaseAttachments.get(lease.useId)
     if (owners === undefined || !owners.has(attachment.token))
       requireReview('Scoped operation report was not issued to this attachment')
   }
-  if (!lease.isExecution) return reportScopedOperation(authority, lease, checkedFact)
+  if (!lease.isExecution) return reportScopedOperation(authority, lease, fact)
   if (lease.execution === undefined)
     invalid('Execution facts require a fresh execution-scoped grant')
-  if (checkedFact.kind === 'operation-started' || checkedFact.kind === 'operation-completed')
+  if (fact.kind === 'operation-started' || fact.kind === 'operation-completed')
     invalid('Operation boundary facts are only valid for non-process scoped operations')
   const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
   if (
@@ -680,9 +636,9 @@ export const reportExecutionFact = (
       })
     )
   const updatedAt = now()
-  switch (checkedFact.kind) {
+  switch (fact.kind) {
     case 'launch-intent': {
-      if (!jsonEqual(validExecution(checkedFact.execution), lease.execution))
+      if (!jsonEqual(fact.execution, lease.execution))
         invalid('Launch intent does not match the authorized execution')
       if (current.stage !== 'authorized')
         requireReview(`Cannot record launch intent after ${current.stage}`)
@@ -692,16 +648,10 @@ export const reportExecutionFact = (
     case 'spawned': {
       if (current.stage !== 'launch-intent')
         requireReview(`Cannot record process identity after ${current.stage}`)
-      const process = decodeOrFail(
-        WorkspaceProcessSchema,
-        checkedFact.process,
-        'spawned process identity',
-        'invalid'
-      )
       update({
         ...current,
         stage: 'spawned',
-        processes: [process],
+        processes: [fact.process],
         revision: current.revision + 1,
         updatedAt,
       })
@@ -718,16 +668,10 @@ export const reportExecutionFact = (
     case 'observed': {
       if (!['spawned', 'started', 'observed'].includes(current.stage))
         requireReview(`Cannot record a process observation after ${current.stage}`)
-      const processes = decodeOrFail(
-        Schema.Array(WorkspaceProcessSchema),
-        checkedFact.processes,
-        'observed process set',
-        'invalid'
-      )
       update({
         ...current,
         stage: 'observed',
-        processes,
+        processes: fact.processes,
         revision: current.revision + 1,
         updatedAt,
       })
@@ -737,7 +681,7 @@ export const reportExecutionFact = (
       update({
         ...current,
         stage: 'unknown',
-        reason: checkedFact.reason,
+        reason: fact.reason,
         revision: current.revision + 1,
         updatedAt,
       })
@@ -751,7 +695,7 @@ export const reportExecutionFact = (
       update({
         ...current,
         stage: 'quiescent',
-        reason: `launch-failed: ${checkedFact.reason}`,
+        reason: `launch-failed: ${fact.reason}`,
         revision: current.revision + 1,
         updatedAt,
       })
@@ -768,7 +712,7 @@ export const reportExecutionFact = (
       update({
         ...current,
         stage: 'quiescent',
-        reason: checkedFact.reason,
+        reason: fact.reason,
         revision: current.revision + 1,
         updatedAt,
       })
@@ -776,7 +720,7 @@ export const reportExecutionFact = (
       return
     }
     default: {
-      const exhaustive: never = checkedFact
+      const exhaustive: never = fact
       return exhaustive
     }
   }

@@ -17,7 +17,7 @@ import {
   isActiveUse,
   type OperationRecord,
 } from './workspace-records.ts'
-import { isUuid, errorText, effectiveUid, rows, first, textField } from './workspace-sqlite.ts'
+import { errorText, effectiveUid, rows, first, textField } from './workspace-sqlite.ts'
 import { hasErrorCode } from './workspace-paths.ts'
 
 const logAvailability = (path: string): boolean | undefined => {
@@ -95,7 +95,6 @@ export const inspectWorkspaces = (
   authority: WorkspaceAuthority,
   input: { cwd?: string; taskId?: string }
 ): readonly WorkspaceView[] => {
-  if (input.taskId !== undefined && !isUuid(input.taskId)) invalid('Task ID must be an exact UUID')
   const namespace = authority.inspectExisting()
   if (namespace === undefined) return []
   let repositoryFilter: string | undefined

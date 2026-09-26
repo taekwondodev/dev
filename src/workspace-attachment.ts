@@ -18,7 +18,6 @@ import { acquirePathGates, acquireConversationPresence, releaseGates } from './w
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, isWithin, lstatIfExists } from './workspace-paths.ts'
 import {
-  BindingSchema,
   sameIdentity,
   getWorkspace,
   getWorkspaceByPath,
@@ -37,7 +36,7 @@ import {
   type BindingRecord,
   type UseRecord,
 } from './workspace-records.ts'
-import { now, hash, transaction, decodeOrFail } from './workspace-sqlite.ts'
+import { now, hash, transaction } from './workspace-sqlite.ts'
 import { resolveSelection } from './workspace-transitions.ts'
 
 const conversationRecord = (
@@ -47,8 +46,6 @@ const conversationRecord = (
   readonly key: string
   readonly identity: string
 } => {
-  if (!input.sessionId || !input.sessionFile || !input.dataHome)
-    invalid('Conversation identity is incomplete')
   const sessionPath = resolve(input.sessionFile)
   const sessionInfo = lstatIfExists(sessionPath)
   let sessionFile: string
@@ -136,18 +133,14 @@ export const attachConversation = (
       ensureNoUnresolvedUse(authority, selected.repo, selected.workspace.id)
       const probe = acquirePathGates(authority.paths, selected.workspace.path, true)
       releaseGates(probe)
-      binding = decodeOrFail(
-        BindingSchema,
-        {
-          key: normalized.key,
-          conversation: normalized.conversation,
-          taskId: selected.reservation.taskId,
-          workspaceId: selected.workspace.id,
-          cwd: selected.workspace.path,
-          revision: (previous?.binding.revision ?? -1) + 1,
-        },
-        'explicit task binding'
-      )
+      binding = {
+        key: normalized.key,
+        conversation: normalized.conversation,
+        taskId: selected.reservation.taskId,
+        workspaceId: selected.workspace.id,
+        cwd: selected.workspace.path,
+        revision: (previous?.binding.revision ?? -1) + 1,
+      }
       if (previous === undefined) {
         inDb(authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
       } else if (previous.repo === selected.repo) {
@@ -189,17 +182,13 @@ export const attachConversation = (
       const actualCwd = realpathSync(resolve(input.cwd))
       if (!isWithin(workspace.path, actualCwd))
         invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
-      binding = decodeOrFail(
-        BindingSchema,
-        {
-          key: normalized.key,
-          conversation: normalized.conversation,
-          workspaceId: workspace.id,
-          cwd: actualCwd,
-          revision: 0,
-        },
-        'new conversation binding'
-      )
+      binding = {
+        key: normalized.key,
+        conversation: normalized.conversation,
+        workspaceId: workspace.id,
+        cwd: actualCwd,
+        revision: 0,
+      }
       inDb(authority, repoId, db => transaction(db, () => putBinding(db, binding)))
     }
     const state: ConversationState = {

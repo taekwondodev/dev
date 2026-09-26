@@ -471,12 +471,11 @@ export const transaction = <A>(db: DatabaseSync, operation: () => A): A => {
 export const decodeOrFail = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   input: unknown,
-  label: string,
-  outcome: 'invalid' | 'review-required' = 'review-required'
+  label: string
 ): S['Type'] => {
   try {
     return Schema.decodeUnknownSync(schema)(input)
   } catch {
-    return outcome === 'invalid' ? invalid(`Invalid ${label}`) : requireReview(`Invalid ${label}`)
+    return requireReview(`Invalid ${label}`)
   }
 }

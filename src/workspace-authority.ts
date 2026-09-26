@@ -8,7 +8,6 @@ import {
   requireReview,
   unavailable,
   WorkspaceError,
-  WorkspaceGrantSchema,
   type WorkspaceGrant,
 } from './workspace-domain.ts'
 import { acquireProtocolGate, acquireStructureGate, type GateRelease } from './workspace-gates.ts'
@@ -51,7 +50,6 @@ import {
   databaseFile,
   openRecordDb,
   transaction,
-  decodeOrFail,
   type SqlRow,
 } from './workspace-sqlite.ts'
 
@@ -701,26 +699,21 @@ export const toGrant = (
   use: UseRecord,
   cwd: string,
   access: 'read' | 'write'
-): WorkspaceGrant =>
-  decodeOrFail(
-    WorkspaceGrantSchema,
-    {
-      namespaceId: authority.initialize(),
-      repositoryId: repo,
-      workspaceId: workspace.id,
-      useId: use.id,
-      ...(use.acquisitionId === undefined ? {} : { acquisitionId: use.acquisitionId }),
-      ...(use.reservationId === undefined ? {} : { reservationId: use.reservationId }),
-      ...(use.taskId === undefined ? {} : { taskId: use.taskId }),
-      revision: use.bindingRevision,
-      cwd,
-      checkout: workspace.path,
-      access,
-      origin: workspace.origin,
-      ...(use.operationPath === undefined ? {} : { path: use.operationPath }),
-    },
-    'workspace grant'
-  )
+): WorkspaceGrant => ({
+  namespaceId: authority.initialize(),
+  repositoryId: repo,
+  workspaceId: workspace.id,
+  useId: use.id,
+  ...(use.acquisitionId === undefined ? {} : { acquisitionId: use.acquisitionId }),
+  ...(use.reservationId === undefined ? {} : { reservationId: use.reservationId }),
+  ...(use.taskId === undefined ? {} : { taskId: use.taskId }),
+  revision: use.bindingRevision,
+  cwd,
+  checkout: workspace.path,
+  access,
+  origin: workspace.origin,
+  ...(use.operationPath === undefined ? {} : { path: use.operationPath }),
+})
 export const inDb = <A>(
   authority: WorkspaceAuthority,
   repo: string,
