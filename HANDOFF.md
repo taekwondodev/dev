@@ -1,166 +1,94 @@
-# Handoff: #36 workspace admission, test-tools group done, final review round 2 next
+# Handoff: #36 workspace admission, final review round 2 paused with verified blockers
 
 ## Resume
 
-- `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. The issue is OPEN by user decision until the PR exists; the evidence comment is already posted ([link](https://github.com/taekwondodev/dev/issues/36#issuecomment-5844741850)). #37 (release and cleanup) is out of scope.
-- `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. It is the only registered worktree; the scratch worktrees used earlier (`dev-36-authority`, `wt-*`) are gone.
-- `snapshot`: 2026-09-26 evening. HEAD `450b53e9cac271d86b7e21bfbb91427c1ad32ece` plus this handoff commit, working tree clean, local unpushed commits over `main` (`4772677`). The full suite is green at `450b53e` (see Evidence).
-- `phase`: `dev-cycle` step 7, the final three-axis review, between round 1 and round 2. Every smell group, including test tools, is now fixed. Owning skills: `code-review` for round 2, then `pr` for delivery.
+- `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. The issue is OPEN by user decision until the PR exists. #37 (release and cleanup) is out of scope.
+- `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. It is the only registered worktree (the round-2 adversarial reviewer's detached worktree was removed).
+- `snapshot`: 2026-09-26 20:40 CEST. HEAD `39c32347f0c4a764ef75f99b14fc5eb2497dbfe5` before this handoff commit, working tree clean, 44 local unpushed commits over `main` (`4772677`). Nothing is pushed. No `dev-shell`, `sleep 60/600` or probe process is running; `~/Library/Application Support/dev` does not exist.
+- `phase`: `dev-cycle` step 7, final three-axis review, round 2. Standards and Spec returned; Adversarial was stopped by the user's pause before returning, so its coverage is unavailable. Owning skills: `code-review` (round 2 and re-review), then `pr`.
 - `authorization`: user instructions of 2026-09-26.
   - Local commits: authorized.
-  - At the end, after the final review converges: push the branch and open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link. The user merges, which closes #36; do not merge or close #36 yourself.
-  - Never push directly to `main`; #37 is unauthorized.
-  - Do not reset, rebase or clean the branch; keep `docs/agents/triage-labels.md` unformatted and out of scope.
-  - The user resumed from the previous handoff on the evening of 2026-09-26; the suite rerun and the test-tools group it planned are done.
-- `next_action`: final review round 2 with `code-review`: three isolated reviewers (Spec, Adversarial, Standards) on `git diff f7cb3b4 HEAD`, rechecking the round-1 findings, the integration deviations and the changes of this session listed under Retained context. Fix blockers with regressions and rerun only the affected axes and checks.
+  - After the final review converges: push the branch, open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link. The user merges; do not merge or close #36.
+  - Never push to `main`; #37 is unauthorized. Do not reset, rebase or clean the branch; keep `docs/agents/triage-labels.md` unformatted and out of scope.
+  - Blocking review findings may be fixed without asking. Standards smells and adversarial `consider` items are user-owned decisions (code-review rule); the user has historically chosen to fix every smell group before the PR, but still ask.
+  - The user paused this session on 2026-09-26 20:40 CEST and will continue in a new session.
+- `next_action`: fix the round-2 blocking findings listed under "Round 2 blockers to fix" (B1 to B7), one commit each, each with its regression or mutation evidence, keeping the suite green. In the first human-facing turn, also put the round-2 smells (S1 to S10) and the two judgment calls (J1, J2) to the user with the structured question tool, so their answer can be folded into the same work.
 - `required_inputs`:
   - `session-pickup`: `/Users/taekwondodev/Developer/skills/skills/session-pickup/SKILL.md`
   - `dev-cycle`: `/Users/taekwondodev/Developer/skills/skills/dev-cycle/SKILL.md`
-  - `AGENTS.md`, and `node_modules/effect/AGENTS.md` before writing Effect code (project rule).
-  - `docs/adr/0005-scoped-runtime-coordination.md` (scoped operations, Effect boundary, executable extensions) and `docs/DEVELOPMENT.md` (checks, module ownership).
-- `done_when`: round 2 converges (no blocking finding left), the full suite passes on the final commit (lint 0 errors and 0 effect messages, smoke, `workspace:check`, both PTY probes `passed_marker: true` with no missing actions or input error, `oxfmt --check src scripts`, `git diff --check`, no leaked `dev-shell` or `sleep 60`, real authority root absent), and every fix is committed. Then deliver with `pr`.
+  - `code-review`: `/Users/taekwondodev/Developer/skills/skills/code-review/SKILL.md` and its `references/result-contract.md` (for the re-review).
+  - `AGENTS.md`; `node_modules/effect/AGENTS.md` before writing Effect code (project rule); `/Users/taekwondodev/.claude/skills/coding-standards/SKILL.md` (comment rule at line 55, validate-once at line 61).
+  - `docs/adr/0005-scoped-runtime-coordination.md` (Effect boundary, executable extensions), `docs/DEVELOPMENT.md` (checks).
+- `done_when`: B1 to B7 are committed; for each, the named regression passes and was observed failing under a mutation that reverts the fix (or, for comment-only changes, a self-review of every comment added in `f7cb3b4..HEAD` against the comment rule); the full suite passes on the resulting commit (see Evidence for the exact commands).
 - `stop_when`:
-  - a failure that needs a behavior or scope decision;
-  - a review finding classed blocking that cannot be fixed without one;
-  - any step that would merge, close #36, start #37 or push to `main`;
-  - any step that would touch the real authority root `~/Library/Application Support/dev/workspace-authority/`, `~/.pi` or credentials (every check uses temporary roots; the launcher only runs through the injected-lifecycle seam or with a disposable `HOME`).
+  - a fix needs a behavior or scope decision not recorded here (for example J1);
+  - any step would merge, close #36, start #37 or push to `main`;
+  - any step would touch `~/Library/Application Support/dev/`, `~/.pi` or credentials (every check uses temporary roots under a private `TMPDIR`; the launcher runs only through the injected-lifecycle seam or with a disposable `HOME`);
+  - after the re-review, a blocking finding remains after this second full round: show the remaining findings to the user instead of starting a third round (code-review rule).
 
 ## Retained context
 
-**Implementation decisions (2026-09-25/26), recorded in ADR 0005 unless noted. Do not reopen them silently.**
+**Recorded decisions. Do not reopen them silently.** ADR 0005 plus these (2026-09-25/26): the opaque fence is scoped to its checkout; a shell use ends on observed cessation of its process group and tracked descendants (a `setsid` escape is an accepted residual); `unknown` is absorbing, no recovery verb yet; the lead tool gate classifies by verified effect and refuses an unrecorded tool without ending the turn; the authority root is fixed per OS account and only code importing `src/launcher.ts` can inject another lifecycle; dev defers to Pi's folder trust for the user's own `.pi/`; delegated children keep the coarse grain; a mixed batch that parks the host costs one extra fenced request (accepted); a contended write is refused while the conversation's own process is live in the checkout it would leave; shells stop at every session end except `/reload`; native writes to distinct destinations may run together; worktrees left by a withdrawn switch stay reserved until #37. Grilling of 2026-09-26: the conversation gate is account-wide, keyed by session file and session ID; each opening holds an incarnation gate whose token every use records; any attach that wins the gate withdraws a switch that never reached the host, TUI `/resume` included; the Pi-facing layer runs in Effect; every smell group is fixed before the PR; delivery by PR. User preferences (memory): Effect everywhere, Promises only where Pi calls in; fix smells in the same delivery.
 
-1. The opaque fence is scoped to its checkout (#27 contention unit); the repository structure gate serializes only dev's own Git structural effects.
-2. A shell use ends on observed cessation of its process group and tracked descendants. A process that detaches into a new session escapes; the residual is accepted, also for delegated children.
-3. No recovery verb for `unknown` yet; `unknown` is absorbing and blocks its checkout for writers.
-4. The lead tool gate classifies by verified effect. Bash, `!` and `!!` run through dev's shell; read, grep, find and ls are reads; write and edit are native writes; an unrecorded tool is refused without ending the turn.
-5. The authority root is fixed per OS account (ADR 0003); only code importing `src/launcher.ts` can inject another lifecycle.
-6. Dev defers to Pi's folder trust for the user's own `.pi/` (ADR 0005, Executable extensions).
-7. Delegated children keep the coarse workspace grain.
-8. Accepted known limit: a mixed batch that parks the host costs one extra fenced model request (the ADR records the abort-based fix).
-9. A contended write is refused with guidance while the conversation's own process is live in the checkout it would leave.
-10. Shells stop at every session end or replacement except `/reload`.
-11. Native writes to distinct destinations may be in flight together.
-12. Worktrees left by a withdrawn automatic switch stay reserved until #37.
+**History that shapes round 2.** Round 1 ran at `f7cb3b4`; its blockers were fixed in `05d3afa` and by two refactor branches (`81150f9..8be1e48` engine, `a663588..7c2c50f` Effect layer, integrated through `69d8362`). The refactor agent reported deviations that the adversarial rerun must still judge: one merged "unsupported format" protocol message; `holdGates` applies the allocation identity check; `settleClosingState` settles every lease before releasing any gate; `canonicalRoot` resolves through `realpathSync.native`; extra keys on an operation are stripped by the protocol decode rather than refused. Noted, not changed: a reused root after a gated launch settles as `launch-failed` instead of `unknown`. The previous session (`e2aad51..450b53e`) finished the test-tools smell group: child gate over an injectable `ControllerChannel` in Effect; `makeRuntimeFactory` exported from `src/launcher.ts` and used by both PTY probes; stub lifecycle reduced to fact recording; driver reads `DEV36_INPUTS`; real-authority probe on `makeClaims` with 14 claims; specific assertions; `b376473` dropped the trailing period of the contention handoff reason.
 
-**Grilling decisions of 2026-09-26, implemented:**
+**Round 2 blockers to fix** (each verified by the coordinator against the cited code; fixed point `f7cb3b4`):
 
-- A conversation gate in the account-wide authority, keyed by session file and session ID (not data home).
-- Each opening of a conversation holds an incarnation gate whose token every use records, so `inspect` names uses left by ended sessions even after the conversation is resumed.
-- Any attach that wins the conversation gate withdraws a switch that never reached the host, TUI `/resume` included.
-- The Pi-facing layer runs in Effect (ADR 0005 "Effect boundary").
-- Every review smell group is fixed before the PR.
-- Delivery is by PR.
+- B1 (Standards hard, validate-once still partial). `src/workspace-lifecycle.ts:268` decodes the already-typed `input` with `WorkspaceRpcInputSchema`, and the worker decodes the envelope again (`src/workspace-worker.ts:228`); on any undecodable message the worker sends `startup-failure` and closes its port (`:253-262`), so the client decode cannot simply be deleted. Fix: decode once at the worker; when a message is an RPC envelope with a usable numeric `id` but an invalid `request`, answer that request with an `invalid` failure (existing `failResponse`) and keep the port open; then delete the client decode (the size check and `callbackId` read stay on the raw input). Regression: `scripts/workspace-authority-check.ts:948` (a malformed operation cast `as unknown as WorkspaceOperation`, expects `invalid`) must still pass through the worker path, plus a check that the worker stays usable for the next request after a malformed one.
+- B2 (Standards hard). Every record writer re-decodes its typed record (`decodeOrFail` at `src/workspace-records.ts:156, 187, 226, 239, 271, 303, 319, 363, 378`, justified by the comment at `:154`), because Git values enter undecoded: `canonicalGitWorkspace` (`src/workspace-git.ts:72-103`) returns raw Git output. Fix: define a `GitWorkspace` schema (non-empty paths and `objectFormat`, identity with non-empty `device`/`inode`, `head` may be empty) and decode once in `canonicalGitWorkspace`, failing as a Git block; reuse its identity schema for `PhysicalSchema` in records; remove the writer decodes and the comment; delete `decodeOrFail` (`src/workspace-sqlite.ts:393`) if it becomes unused. Regression: the authority check and process check stay green; show a mutation (for example an empty `objectFormat`) is refused at `canonicalGitWorkspace`.
+- B3 (Standards hard, introduced by `e2aad51`). `validateWorkspaceWritePath` (`src/work-child-workspace.ts:33`) is an async Promise wrapper that the gate immediately wraps in `Effect.tryPromise` (`:113-117`). Fix: make it an Effect (`Effect.try` over `decodeWriteOperand` and `resolveWriteDestination`, keeping their `WorkspaceError`), yield it in the gate, and run it with `Effect.runPromise` in `scripts/workspace-process-check.ts:86-121`.
+- B4 (Standards hard, round-1 class "comments restating ADR text"). Delete, or reduce to a bare ADR pointer: `src/workspace-host.ts:70-72` and `:200-201`, `src/workspace-shell.ts:351`, `src/workspace-native-write.ts:47-48`.
+- B5 (Standards hard, comment rule: only a non-obvious WHY). WHAT-comments added in this range: `src/work-child-workspace.ts:21`, `src/workspace-engine.ts:15`, `src/workspace-gates.ts:239`, `src/workspace-sqlite.ts:340`, `src/launcher.ts:205` (keep only the second sentence, why the parts are optional), `scripts/workspace-host-pty-probe.ts:575` and `:1801`, `scripts/workspace-host-real-authority-probe.ts:288`, `scripts/workspace-host-contract-check.ts:6-8`. Then review every other comment added in `git diff f7cb3b4 HEAD` against the same rule.
+- B6 (Spec partial). A TUI `/resume` whose target conversation cannot attach is cancelled with only `The session was not switched: <reason>` (`src/workspace-host.ts:859-867`); for a removed workspace the reason names only the path (`src/workspace-attachment.ts:173-176`). The #34 resolution (https://github.com/taekwondodev/dev/issues/34#issuecomment-5799183185, "Resume and ordinary writing": keep the conversation file, offer `dev --cwd PATH`, expose the old conversation reference; "Feedback and recovery": always give the next safe action) and #36 AC10 require what `dev --resume` already prints (`src/launcher.ts:573`: the unchanged conversation file and `dev --cwd PATH`). Fix: the TUI refusal names the target conversation file and the next safe action, ideally through one helper shared with the launcher text; update the real probe's exact held-notice assertion (currently `'The session was not switched: This conversation is open in another dev session; close it there first'`); add a real-probe claim for the removed-workspace `/resume` (for example: attach a new conversation through a second `openLifecycle` at a fresh pre-existing Git checkout, close it, `rm -rf` the checkout, then `runtime.switchSession(file)` returns `{ cancelled: true }`, the notice names the file and `dev --cwd PATH`, the file is byte-identical and the checkout is not recreated); document the case under `/resume` in `docs/COMMANDS-SESSION.md` (Italian, near line 125).
+- B7 (completes `b376473`). The explicit-selection handoff reason still ends with a period (`src/workspace-transitions.ts:164-165`), so after `/workspace resume` the model-facing `noReplayMessage` (`src/workspace-host.ts:198`, sent by `queueReevaluation` at `:503` for command-origin switches too) renders `..`. Fix: drop the trailing period; add an exact assertion on the handoff message the stub or real probe observes after the resume.
 
-**Final review round 1** ran at `f7cb3b4` with three isolated reviewers (Spec, Adversarial, Standards).
+**Judgment calls for the user (not blocking unless the user says so):**
 
-Blockers, all fixed in `05d3afa` with regressions observed failing under a mutation that reverts each fix:
+- J1. After `/workspace resume`, the host tells the user `Workspace is now X at Y. The blocked operation was not replayed.` and tells the model `... The prior operation was blocked and was not replayed ...`, although an explicit resume blocked nothing. Options: make both texts origin-aware (command vs tool-call/user-bash), or keep them. The stub asserts that a model turn follows the resume (`resumed-a`), so changing whether a turn is triggered is a behavior change.
+- J2. The #36 evidence comment (https://github.com/taekwondodev/dev/issues/36#issuecomment-5844741850) states superseded behavior ("Only a claimed resume ... withdraws a switch", "Conversation claims are per installation") and limits since closed. The PR body must restate current decisions and limits; ask whether to also post a correcting comment on #36.
 
-- the conversation gate was keyed by data home;
-- the `inspect` docs were stale;
-- TUI `/resume` of a conversation live elsewhere made Pi exit with no cleanup; it now notifies and cancels;
-- the shell's final `quiescent` report had lost its retry (the controller's final report now retries too);
-- hand-written error-code guards;
-- code comments restating ADR text.
+**Round 2 smells for the user's decision** (Standards, `smell` class; locations as reported, spot-check before acting):
 
-The remaining two Standards blockers, validate-once and host Promise APIs, went to worktree agents together with the smell groups, and are integrated at `81150f9..8be1e48` and `a663588..7c2c50f`.
-
-**What the integrated branches changed (check these in round 2):**
-
-- Engine (`81150f9..8be1e48`):
-  - RPC inputs are decoded once, at the worker;
-  - `WorkspaceOperation` and grant leases are tagged unions, callers build `{ kind: ... }`;
-  - IDs are branded (`WorkspaceId`, `newId()`);
-  - each schema is defined once in `src/workspace-domain.ts`;
-  - duplicated engine checks are extracted;
-  - dead code is gone (`allocateDetachedWorktree`, `taskLabel`), as is the attachment/engine middle-man layer, so the worker dispatches through `engine.run`;
-  - `allocateWorkspace` is split in two;
-  - generic helpers moved to `src/workspace-platform.ts`, and `AuthorityPaths` to `src/workspace-authority-root.ts`.
-  - Deviations the agent reported:
-    - one merged "unsupported format" message for the protocol gate;
-    - `holdGates` applies the allocation identity check;
-    - `settleClosingState` settles every lease before releasing any gate;
-    - `canonicalRoot` resolves through `realpathSync.native`;
-    - extra keys on an operation are stripped by the protocol decode rather than refused.
-- Effect layer (`a663588..7c2c50f`):
-  - `prepareRuntime` and `commitRuntime` are Effects;
-  - `WorkspaceWorkControls` are Effects built by `workControlsOf`, and a failing control is a notice;
-  - `Effect.fnUntraced` throughout;
-  - native writes settle on `Deferred`s and run through the host's runtime;
-  - handoffs fork into a scoped `FiberSet`;
-  - command parsers return `Effect` failures, and unexpected exceptions stay defects;
-  - one `sameConversation`, one `noUiTrustContext`;
-  - Pi types imported from the package root;
-  - two new checks: failing work controls, and `dev --probe-runtime` through the real runtime factory with a disposable `HOME`.
-- Integration (`69d8362` and conflict resolutions):
-  - `exactId` is an Effect decoding the branded ID;
-  - the host and shell `authorize` calls use the union shapes;
-  - one `errorText` in `src/error-text.ts` for every workspace module.
-  - Error-text copies remain in older modules outside the #36 diff (`preferences.ts`, `profiles.ts`, `work-dispatch.ts`, `work-controller.ts`, `work-extension.ts`, `pi-child.ts`, `runtime-coordination.ts`, `session-guard.ts`, `work-protocol.ts`); out of scope unless the user asks.
-
-**What this session changed (2026-09-26 evening, check these in round 2 too):**
-
-- `e2aad51`: `src/work-child-workspace.ts` checks a child's use in Effect over a `ControllerChannel` that defaults to `process`; `pi-child.ts` yields it. The stub probe drives the gate through a real Pi session's `extensionRunner.emitToolCall` with a granting channel; no global `process.send` patch or fake `ExtensionAPI`.
-- `ad57e9d`: `src/launcher.ts` exports `makeRuntimeFactory(parts)`, whose `RuntimeParts` accept `modelRuntime`, `model` and `extensions(dev, cwd)`. Both PTY probes build every runtime with it, with the real session guard (lease in the checkout's `.dev/`) and profile resources; they pre-record fixture distrust instead of setting it in a factory copy. The stub records the trust context from Pi's `project_trust` event, so a launcher that drops the TUI context now fails the probe.
-- `5511f32`: the stub lifecycle only issues grants and records facts; its copies of scoped admission, the stage machine, the transition fence and the live-execution refusals are gone, leaving fault injection. Fact-sequence assertions still fail for a shell skipping `started`, a shell settling while a descendant lives, and a native write without `operation-started`.
-- `1f59cec`: the stub prints `DEV36_INPUTS {...}`; the driver's key table uses `{TASK_LEAD}`-style fields and reports `input_error` for an unprinted field. A probe ignoring SIGTERM is killed after 10 s.
-- `b376473` (behavior fix found by a specific assertion): the contention handoff reason ends without a period, so the three messages that append one no longer render `..`.
-- `2ae99ec`: the real-authority probe reports `makeClaims` claims (14). The held-switch notice is recorded through the host's handler context and asserted exactly; the reload and session-end halves are separate claims; `within` timers are unref'd, so the probe exits in ~11 s instead of ~92 s.
-- `450b53e`: stub list, inspect and TUI host messages are compared by headers and rows instead of `/workspace/`.
-- Not mutation-verified: the exact `!` history entry in the real probe (was `includes('user-bash')`).
-
-**Noted, not changed:** the controller now settles an unacknowledged launch before the root-reuse check, so a reused root after a gated launch settles as `launch-failed` instead of `unknown`; the root never released user code.
+- S1. Dead code missed: six unused exported protocol types in `src/workspace-protocol.ts:82-85, 99, 184-193` (`WorkspaceRpcEnvelope`, `WorkspaceRpcResult`, `WorkspaceRpcSuccess`, `WorkspaceRpcFailure`, `WorkspaceHostCallback`, `WorkspaceBindingUpdate`); `formatWorkspaceViews` keeps an unused `options`/header branch (`src/workspace-command.ts:120-134`); exit code 130 declared for workspace commands but never produced (`src/workspace-command.ts:20, 32`).
+- S2. The host's `/workspace` handler reimplements list/inspect dispatch and the "list needs a Git repository" guard (`src/workspace-host.ts:1064-1106`), while `runReadOnlyWorkspaceCommand` keeps `currentWorkspaceId`/`effectiveCwd` options nobody passes (`src/workspace-command.ts:207-235`); the guard exists three times with different wording (`src/launcher.ts:428`, `src/workspace-host.ts:1074`, `src/workspace-command.ts:221`).
+- S3. One schema per shape incomplete: `src/workspace-records.ts` redeclares origin and access literals and seven non-negative-int revisions that `src/workspace-domain.ts:32, 68-69` keeps private. Overlaps B2.
+- S4. Primitive IDs left: `Map<string, GrantLease>` and `sourceWorkspaceId: string` (`src/workspace-conversation.ts:72-73, 93-94, 148`), `targetOperationId: string` (`src/workspace-engine.ts:19`), `operationId: string` (`src/workspace-attachment.ts:216`), incarnation minted with `randomUUID()` instead of `newId()` (`src/workspace-gates.ts:269`), and others at `src/workspace-attachment.ts:76, 280`, `src/workspace-admission.ts:399`, `src/workspace-command.ts:176`.
+- S5. Generic classifiers `hasErrorCode`/`sqliteCode` live in `src/workspace-paths.ts` and are imported by `src/workspace-platform.ts:6`; the SQLite busy test `sqliteCode(cause) === 5 || === 6` is duplicated (`src/workspace-sqlite.ts:372`, `src/workspace-gates.ts:82`); the lifecycle client has its own error-to-text variant (`src/workspace-lifecycle.ts:228-235`) instead of `errorText`.
+- S6. Local helpers named `unavailable`/`invalid` return a `WorkspaceError` while `src/workspace-domain.ts` exports throwing functions with the same names (`src/work-child-workspace.ts:31`, new in `e2aad51`; `src/workspace-lifecycle.ts:43-46`).
+- S7. Host result types use optional fields and `in` checks instead of kind-tagged unions (`src/workspace-host.ts:111-113, 603-618, 645, 714`), non-null assertions (`:1079, 1086`); `src/launcher.ts:437-438, 457` still casts `workspaceCommand` although it could bind a const.
+- S8. `src/launcher.ts:352-388` signal handling chains Effects with async/await in a Node signal listener (not a Pi calling point); build one Effect and start it with `Effect.runFork`.
+- S9. Engine functions hand-check absolute cwd after the worker decode (`src/workspace-admission.ts:123-124, 526`, `src/workspace-attachment.ts:78`, `src/workspace-inspect.ts:99`); an absolute-path refinement on the cwd fields in `src/workspace-domain.ts` would enforce it at decode.
+- S10. `scripts/workspace-host-contract-check.ts` still tests the stub's fixture shapes (claims at `:56-126`) and drives the host through a hand-made Pi API cast `as unknown as ExtensionAPI` (`:161-170, 181`), the pattern `e2aad51` removed from the stub probe; drive the notices through a real Pi session instead, and drop or reduce the fixture-shape claims.
+- Also raised by Spec as a limit for Standards: `src/work-extension.ts` `runningWork`/`stopAll` return Promises that `workControlsOf` wraps (`src/workspace-host.ts:131-137`); ADR 0005 "Effect boundary" does not name this seam.
 
 ## Evidence and gaps
 
-| Check                                                  | Commit                | Result                                                                        | Source            |
-| ------------------------------------------------------ | --------------------- | ----------------------------------------------------------------------------- | ----------------- |
-| full suite, as in `done_when`                          | `450b53e`             | pass, 0 effect messages, 20 oxlint warnings (none new), no leaks, root absent | observed          |
-| full suite                                             | `e1c9c4b`             | pass (before the test-tools group)                                            | observed          |
-| mutations of every rewritten assertion of this session | per commit            | each killed by its intended assertion, except the one listed above            | observed          |
-| full suite in the engine / Effect worktrees            | `3744a55` / `1744ed4` | pass                                                                          | reported by agent |
+| Check or source                                                                                                                                                                                                                                         | State                                             | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Kind                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full suite: `npm run lint`, `npm run smoke`, `npm run workspace:check`, `npm run workspace:tui`, `npx oxfmt --check src scripts`, `git diff --check`, `pgrep -fl "dev-shell\|sleep 60"`, real root absent; run with `TMPDIR` set to a private directory | `450b53e` (HEAD `39c3234` adds only `HANDOFF.md`) | pass; lint 0 errors, 0 effect messages, 20 pre-existing oxlint warnings; both PTY probes `passed_marker: true`, no missing actions, `input_error: null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | observed                                                                                                                                                                                                                                                                                |
+| Round 2 Standards (isolated reviewer)                                                                                                                                                                                                                   | `f7cb3b4..39c3234`                                | coverage complete; 5 hard (B1 to B5), 10 smells (S1 to S10); coordinator verified B1 to B5 in the code                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | observed report, verified                                                                                                                                                                                                                                                               |
+| Round 2 Spec (isolated reviewer)                                                                                                                                                                                                                        | `f7cb3b4..39c3234`                                | coverage complete; 1 `partial` (B6); limits recorded as B7, J1, J2 and the Promise seam note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | observed report, verified                                                                                                                                                                                                                                                               |
+| Round 2 Adversarial                                                                                                                                                                                                                                     | not returned                                      | coverage unavailable: stopped at the user's pause                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | gap, must rerun                                                                                                                                                                                                                                                                         |
+| Adversarial partial evidence, unverified: race between the read-only `incarnationHeld(paths, token)` and the owner's `acquireConversationPresence(paths, id)` then `presence.release()` (`src/workspace-gates.ts`, around `:269` and `:296-306`)        | experiments against `39c3234`                     | run concurrently on one temporary authority root (owner loop: acquire, write the incarnation token to a file, busy-wait 2 ms, release; inspector loop: read the token, call `incarnationHeld`). Two runs: owner release failed once with `ENOTEMPTY` and left an incarnation directory. Another run: the inspector once hit `Cannot durably publish workspace authority database`, which suggests a read-only inspect can publish a gate database (touches AC9 "read-only terminal commands do not provision authority"). Earlier runs were dominated by `not private or not owned` errors, probably from the harness setup | reported by the stopped reviewer; harness and logs may survive at `/private/tmp/claude-503/-Users-taekwondodev-Developer-dev/e6d9267e-2259-4a72-83df-ba74d20fe10f/scratchpad/review-adversarial/{exp,logs}/` (`exp/incarnation-race.ts`, `logs/race*.log`); the directory may be pruned |
+| Mutation evidence for `e2aad51..450b53e`                                                                                                                                                                                                                | per commit                                        | each rewritten assertion killed by its intended assertion, except the exact `!` history entry in the real probe                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | observed                                                                                                                                                                                                                                                                                |
+| Round 1 reproductions                                                                                                                                                                                                                                   | `f7cb3b4`                                         | `/Users/taekwondodev/.hermes/cache/scratch/review-final/` (may be pruned)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | earlier                                                                                                                                                                                                                                                                                 |
 
-**Regressions added in `05d3afa`**, each observed failing under a mutation reverting its fix:
-
-- held-conversation switch cancelled (real TUI probe and stub probe);
-- shell and controller final-report retry (process check);
-- same conversation file under two data homes refused;
-- gate kept while the last attachment closes with a pending switch;
-- `inspect` naming a dead session's use after the conversation is resumed (authority check).
-
-**Acceptance (#36).** As of `05d3afa` every criterion is met or met with an accepted limit. The accounting published in the #36 comment still holds, with these closures since then:
-
-- AC 4: a second installation with its own data home is refused.
-- AC 8: a refused allocation and a held-conversation switch both run in the real TUI against the real authority.
-- AC 9: terminal edges are covered by the launcher check (no-Git list, absent versus corrupt authority, cross-repository inspect, malformed ID exits 2).
-- `/reload` keeping shells and a WorkOwner pre-spawn failure are now tested.
-
-Remaining limits for the PR body:
-
-- no power-loss proof;
-- `setsid` escape;
-- no recovery verb for `unknown`;
-- the extra parked request;
-- creation failure during a rebind driven only against the stub lifecycle.
-
-**Round-1 review evidence.** Reproductions are under `/Users/taekwondodev/.hermes/cache/scratch/review-final/{spec,adversarial,standards}/`; they expire with scratch pruning. The round-1 diff is `/Users/taekwondodev/.hermes/cache/scratch/dev36-final/final.diff`.
+Remaining PR limits (unchanged): no power-loss proof; `setsid` escape; no recovery verb for `unknown`; the extra parked request; creation failure during a rebind driven only against the stub lifecycle.
 
 ## Remaining work
 
-1. Final review round 2 with `code-review` (`next_action`). If round 2 does not converge, show the remaining findings to the user (procedure rule).
-2. Rerun the full suite on the final commit; update this handoff.
-3. Delivery with the `pr` skill:
-   - push `feat/36-workspace-admission`;
-   - open a PR to `main` with `Closes #36`, evidence, decisions and limits;
-   - comment on #36 with the PR link;
-   - leave the merge to the user.
+1. Ask the user about S1 to S10, J1 and J2 (first human-facing turn); fold accepted items into the fix work.
+2. Fix B1 to B7 (`next_action`), plus the accepted smells and judgment calls, each committed with evidence.
+3. Rerun the full suite on the resulting commit.
+4. Re-review with `code-review`: run the Adversarial axis in full on `git diff f7cb3b4 HEAD` (it never completed in round 2; give it the partial race evidence above to confirm or dismiss), and rerun Standards and Spec on the changes since `39c3234`, checking B1 to B7. This is the second full round: if a blocking finding remains, show the remaining findings to the user.
+5. Rerun the full suite on the final commit; update this handoff.
+6. Deliver with the `pr` skill: push `feat/36-workspace-admission`; open a PR to `main` with `Closes #36`, current decisions, evidence and limits (not the stale evidence comment, see J2); comment on #36 with the PR link; leave the merge to the user.
 
-Whole-task completion: PR open and linked from #36, merged by the user.
-
-Later, not authorized: #37 (release and cleanup, including worktrees left by withdrawn switches); a recovery verb for `unknown`; the abort-based fix for the mixed-batch limit.
+Whole-task completion: PR open and linked from #36, merged by the user. Later, not authorized: #37, a recovery verb for `unknown`, the abort-based fix for the mixed-batch limit.
 
 ## Sources
 
-- #36 body and comments (read with `gh`, see `docs/agents/issue-tracker.md`): canonical acceptance, with linked resolutions #27, #28, #30, #31, #34 and the amendments on durability (https://github.com/taekwondodev/dev/issues/31#issuecomment-5810802846) and on the extension policy (https://github.com/taekwondodev/dev/issues/36#issuecomment-5815706403). Read for round 2 (Spec) and for the PR body.
-- `/Users/taekwondodev/.claude/skills/code-review/SKILL.md` and `references/result-contract.md`: read before round 2.
-- `/Users/taekwondodev/.claude/skills/pr/SKILL.md`: read before delivery.
-- Memory notes in `/Users/taekwondodev/.claude/projects/-Users-taekwondodev-Developer-dev/memory/`: the user wants Effect used uniformly and prefers fixing review smells in the same delivery.
+- #36 body and comments, linked #27 #28 #30 #31 #34 and the amendments (https://github.com/taekwondodev/dev/issues/31#issuecomment-5810802846, https://github.com/taekwondodev/dev/issues/36#issuecomment-5815706403): read with `gh` (`docs/agents/issue-tracker.md`) for B6, the re-review and the PR body.
+- `/Users/taekwondodev/Developer/skills/skills/code-review/references/standards-review.md`, `/Users/taekwondodev/.claude/skills/interrogate/SKILL.md`, `/Users/taekwondodev/.claude/skills/testing/SKILL.md`: pass their paths to the re-review workers.
+- `/Users/taekwondodev/Developer/skills/skills/pr/SKILL.md`: read before delivery.
+- Memory notes in `/Users/taekwondodev/.claude/projects/-Users-taekwondodev-Developer-dev/memory/`: Effect everywhere; fix smells before the PR.
