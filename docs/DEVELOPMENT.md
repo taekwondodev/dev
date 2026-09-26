@@ -8,6 +8,8 @@ Read [AGENTS.md](../AGENTS.md), [CONTEXT.md](../CONTEXT.md), and the ADRs applic
 
 Use the shared `dev-cycle` workflow rather than duplicating its rules here. Consult [references](references.md) when choosing Pi APIs, and verify the installed package before relying on an API shape.
 
+For a clean or isolated setup, verify that the installed Pi loader can discover and invoke the required shared skills.
+
 ```bash
 cd ~/Developer/dev
 npm ci
@@ -32,7 +34,11 @@ Checks and setup regenerate an ignored module-resolution link to the declaration
 - `src/work-*.ts` and `src/pi-child.ts` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership, and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) for the lifecycle authority and transactional storage contract.
 - `config/crew-dispatch.json` is versioned policy; `.dev/` is private dev state and `~/.pi/agent/auth.json` is the shared Pi credential store. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
 
-The shared workflow library remains external and authoritative under [ADR 0001](adr/0001-shared-workflow-library-source-of-truth.md). Updating this integration does not authorize edits to other profiles, credentials or shared assets.
+## Private-state relocation
+
+Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home, and leave historical conversation text unchanged. Credentials, other profiles and shared assets remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries).
+
+Git exclusion is not access control: keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance checks](COMMANDS-TERMINAL.md#manutenzione-dalla-cartella-di-installazione).
 
 ## Existing verification commands
 

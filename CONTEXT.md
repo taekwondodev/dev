@@ -28,6 +28,29 @@ profile of `dev`, not the identity of the whole environment.
 Existing Apple-specific guidance is associated with the existing `apple-dev`
 profile. Its ownership and paths must be checked before any migration.
 
+## Workspace ownership vocabulary
+
+The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426)
+and [cleanup](https://github.com/taekwondodev/dev/issues/29#issuecomment-5796162017)
+contracts define these terms for the planned workspace lifecycle. Automatic
+workspace lifecycle management is not implemented yet.
+
+**Workflow task**: A unit of work whose identity can span Pi conversations and
+execution attempts, with one or more associated workspaces.
+
+**Workspace**: A Git checkout used by a workflow task, whether pre-existing or
+allocated by dev.
+
+**Workspace reservation**: The durable association that retains a workspace for
+a workflow task independently of the executions using it.
+
+**Write acquisition**: An execution's exclusive right to write to one workspace,
+with an identity distinct from previous acquisitions of that workspace.
+
+**Task release**: An explicit user instruction to evaluate a workflow task's
+reserved workspaces for reservation release or safe removal, not a guarantee
+that either operation can proceed.
+
 ## Background work
 
 An attempt is one owned execution of a workflow task, identified by its lead
