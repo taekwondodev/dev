@@ -17,6 +17,7 @@ import {
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceHandoff,
+  type WorkspaceId,
   type WorkspaceOperation,
   type WorkspaceSelection,
   type WorkspaceView,
@@ -158,7 +159,10 @@ export class WorkspaceEngine {
     return this.guard(() => performHandoff(this.authority, attachment, transition, replace))
   }
 
-  inspect(input: { cwd?: string; taskId?: string }): Promise<readonly WorkspaceView[]> {
+  inspect(input: {
+    readonly cwd?: string
+    readonly taskId?: WorkspaceId
+  }): Promise<readonly WorkspaceView[]> {
     return this.guard(() => inspectWorkspaces(this.authority, input))
   }
 

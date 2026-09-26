@@ -9,7 +9,14 @@ import {
   type WorkspaceId,
 } from './workspace-domain.ts'
 import type { PathGates } from './workspace-gates.ts'
-import { getUse, type BindingRecord, type UseRecord } from './workspace-records.ts'
+import {
+  activeDependentUses,
+  getUse,
+  saveUse,
+  type BindingRecord,
+  type UseRecord,
+} from './workspace-records.ts'
+import { now, transaction } from './workspace-sqlite.ts'
 
 export type LeaseKind =
   | { readonly kind: 'ordinary' }
@@ -85,6 +92,43 @@ export const outgoingUses = (
         requireReview(`Old workspace use disappeared during handoff: ${lease.useId}`)
       return { lease, use }
     })
+}
+
+export type UseSettlement = Pick<UseRecord, 'stage' | 'reason'>
+
+// Dependents first: a use is created after its `within` parent, so reverse insertion order
+// settles descendants before the parent whose gates they write under. A parent whose
+// dependent is still live is left `unknown` instead of claimed quiescent.
+export const settleDependentsFirst = (
+  authority: WorkspaceAuthority,
+  entries: readonly { readonly lease: GrantLease; readonly use: UseRecord }[],
+  settlementOf: (use: UseRecord) => UseSettlement,
+  dependentsReason: string,
+  onFailure: (cause: unknown) => void = cause => {
+    throw cause
+  }
+): void => {
+  for (const { lease, use } of entries.toReversed()) {
+    if (use.stage === 'quiescent' || use.stage === 'unknown') continue
+    const settlement = settlementOf(use)
+    try {
+      inDb(authority, lease.repositoryId, db =>
+        transaction(db, () => {
+          const dependents = settlement.stage === 'quiescent' ? activeDependentUses(db, use.id) : []
+          const settled: UseSettlement =
+            dependents.length === 0
+              ? settlement
+              : {
+                  stage: 'unknown',
+                  reason: `${dependentsReason}: ${dependents.map(dependent => dependent.id).join(', ')}`,
+                }
+          saveUse(db, { ...use, ...settled, revision: use.revision + 1, updatedAt: now() })
+        })
+      )
+    } catch (cause) {
+      onFailure(cause)
+    }
+  }
 }
 
 // A process of this conversation still running in the workspace it would leave cannot

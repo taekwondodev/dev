@@ -6,7 +6,11 @@ import {
   validateWorkspace,
   type WorkspaceAuthority,
 } from './workspace-authority.ts'
-import type { PendingTransition, ConversationState } from './workspace-conversation.ts'
+import {
+  settleDependentsFirst,
+  type ConversationState,
+  type PendingTransition,
+} from './workspace-conversation.ts'
 import {
   blocked,
   invalid,
@@ -19,7 +23,7 @@ import { acquirePathGates, acquireConversationPresence, releaseGates } from './w
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, isWithin, lstatIfExists } from './workspace-paths.ts'
 import {
-  sameIdentity,
+  matchesGitWorkspace,
   getWorkspace,
   getWorkspaceByPath,
   putWorkspace,
@@ -30,12 +34,10 @@ import {
   getOperation,
   saveOperation,
   getUseRows,
-  activeDependentUses,
   makeWorkspaceRecord,
   isActiveUse,
   type WorkspaceRecord,
   type BindingRecord,
-  type UseRecord,
 } from './workspace-records.ts'
 import { now, hash, transaction } from './workspace-sqlite.ts'
 import { resolveSelection } from './workspace-transitions.ts'
@@ -261,7 +263,8 @@ const registerWorkspace = (
       transaction(db, () => {
         const existing = getWorkspaceByPath(db, git.path)
         if (existing !== undefined) {
-          assertWorkspaceMatches(existing, git)
+          if (!matchesGitWorkspace(existing, git))
+            requireReview(`Workspace path slot was replaced: ${existing.path}`)
           if (existing.status !== 'ready')
             requireReview(`Workspace allocation is unresolved: ${existing.path}`)
           return existing
@@ -273,19 +276,6 @@ const registerWorkspace = (
     true,
     git
   )
-}
-
-const assertWorkspaceMatches = (record: WorkspaceRecord, git: GitWorkspace): void => {
-  if (
-    record.path !== git.path ||
-    !sameIdentity(record.physical, git.identity) ||
-    record.gitAdminPath !== git.gitAdminPath ||
-    !sameIdentity(record.gitAdmin, git.gitAdminIdentity) ||
-    record.commonPath !== git.commonPath ||
-    !sameIdentity(record.common, git.commonIdentity) ||
-    record.objectFormat !== git.objectFormat
-  )
-    requireReview(`Workspace path slot was replaced: ${record.path}`)
 }
 
 const ensureNoUnresolvedUse = (
@@ -304,61 +294,35 @@ export const settleClosingState = (
   pending: PendingTransition | undefined
 ): void => {
   state.closing = true
-  // Dependents first: a use is created after its `within` parent, so reverse insertion
-  // order settles descendants before the parent whose gates they write under.
-  for (const lease of [...state.leases.values()].toReversed()) {
-    const preserveTarget = pending !== undefined && lease.useId === pending.targetLease.useId
-    let use: UseRecord | undefined
+  const preserved = pending?.targetLease.useId
+  const leases = [...state.leases.values()]
+  const closing = leases.flatMap(lease => {
+    if (lease.useId === preserved) return []
     try {
-      use = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
+      const use = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
+      return use === undefined ? [] : [{ lease, use }]
     } catch {
-      use = undefined
+      return []
     }
-    if (
-      use !== undefined &&
-      use.stage !== 'quiescent' &&
-      use.stage !== 'unknown' &&
-      !preserveTarget
-    ) {
-      let stage: UseRecord['stage'] = 'unknown'
-      let reason = 'attachment-closed-without-authoritative-operation-cessation'
-      if (use.stage === 'authorized') {
-        stage = 'quiescent'
-        reason = 'attachment-closed-before-operation-boundary'
-      }
-      // Close must not fail, so it cannot refuse the way a reported settlement does.
-      // Instead it declines to claim quiescence it has not established: an unsettled
-      // dependent leaves the parent `unknown`, which keeps its workspace blocked.
-      if (stage === 'quiescent') {
-        let dependents: UseRecord[] = []
-        try {
-          dependents = inDb(authority, lease.repositoryId, db => activeDependentUses(db, use.id))
-        } catch {
-          dependents = []
-        }
-        if (dependents.length > 0) {
-          stage = 'unknown'
-          reason = `attachment-closed-while-dependent-scoped-operations-were-live: ${dependents
-            .map(dependent => dependent.id)
-            .join(', ')}`
-        }
-      }
-      try {
-        inDb(authority, lease.repositoryId, db =>
-          transaction(db, () =>
-            saveUse(db, {
-              ...use,
-              stage,
-              reason,
-              revision: use.revision + 1,
-              updatedAt: now(),
-            })
-          )
-        )
-      } catch {
-        /* the durable earlier claim remains blocking */
-      }
+  })
+  // Close must not fail, so it cannot refuse the way a reported settlement does. Instead it
+  // declines to claim quiescence it has not established, keeping the workspace blocked.
+  settleDependentsFirst(
+    authority,
+    closing,
+    use =>
+      use.stage === 'authorized'
+        ? { stage: 'quiescent', reason: 'attachment-closed-before-operation-boundary' }
+        : {
+            stage: 'unknown',
+            reason: 'attachment-closed-without-authoritative-operation-cessation',
+          },
+    'attachment-closed-while-dependent-scoped-operations-were-live',
+    () => {
+      /* the durable earlier claim remains blocking */
     }
+  )
+  for (const lease of leases.toReversed()) {
     if (lease.gates !== undefined) {
       try {
         releaseGates(lease.gates)
@@ -366,7 +330,7 @@ export const settleClosingState = (
         lease.gates = undefined
       }
     }
-    if (!preserveTarget) lease.released = true
+    if (lease.useId !== preserved) lease.released = true
   }
   for (const held of state.extraGates.splice(0)) {
     try {

@@ -1,12 +1,7 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import {
-  validateRepositoryRecord,
-  inDb,
-  validateWorkspace,
-  type WorkspaceAuthority,
-} from './workspace-authority.ts'
-import { invalid, requireReview, type WorkspaceView } from './workspace-domain.ts'
+import { inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
+import { invalid, requireReview, type WorkspaceId, type WorkspaceView } from './workspace-domain.ts'
 import { incarnationHeld } from './workspace-gates.ts'
 import { canonicalGitWorkspace } from './workspace-git.ts'
 import {
@@ -17,7 +12,7 @@ import {
   isActiveUse,
   type OperationRecord,
 } from './workspace-records.ts'
-import { errorText, effectiveUid, rows, first, textField } from './workspace-sqlite.ts'
+import { errorText, effectiveUid, rows, textField } from './workspace-sqlite.ts'
 import { hasErrorCode } from './workspace-paths.ts'
 
 const logAvailability = (path: string): boolean | undefined => {
@@ -93,27 +88,15 @@ const assessWorkspace = (input: {
 
 export const inspectWorkspaces = (
   authority: WorkspaceAuthority,
-  input: { cwd?: string; taskId?: string }
+  input: { readonly cwd?: string; readonly taskId?: WorkspaceId }
 ): readonly WorkspaceView[] => {
   const namespace = authority.inspectExisting()
   if (namespace === undefined) return []
-  let repositoryFilter: string | undefined
+  let repositoryFilter: WorkspaceId | undefined
   if (input.cwd !== undefined) {
     if (!isAbsolute(input.cwd)) invalid('Inspection cwd must be absolute')
-    const git = canonicalGitWorkspace(input.cwd)
-    const catalog = authority.openCatalog(false)
-    try {
-      const row = first(
-        catalog,
-        `SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload
-        FROM repositories WHERE common_path=?`,
-        git.commonPath
-      )
-      if (row === undefined) return []
-      repositoryFilter = validateRepositoryRecord(git, row).id
-    } finally {
-      catalog.close()
-    }
+    repositoryFilter = authority.findRepository(canonicalGitWorkspace(input.cwd))
+    if (repositoryFilter === undefined) return []
   }
   const repositories =
     repositoryFilter === undefined

@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs'
+import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, resolve } from 'node:path'
 import { allocateWorkspace } from './workspace-allocation.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
@@ -478,6 +479,37 @@ const executionUse = (
   return { kind: 'ready', grant }
 }
 
+// A grant stays valid only while its use row, and for a writer the reservation's current
+// acquisition, still carry the facts it was fenced with.
+const fencedUse = (
+  db: DatabaseSync,
+  grant: WorkspaceGrant,
+  missing: string
+): { readonly workspace: WorkspaceRecord; readonly use: UseRecord } => {
+  const workspace = getWorkspace(db, grant.workspaceId)
+  const use = getUse(db, grant.useId)
+  if (workspace === undefined || use === undefined) requireReview(missing)
+  return { workspace, use }
+}
+const matchesGrant = (use: UseRecord, grant: WorkspaceGrant): boolean =>
+  use.workspaceId === grant.workspaceId &&
+  use.bindingRevision === grant.revision &&
+  use.acquisitionId === grant.acquisitionId &&
+  use.reservationId === grant.reservationId &&
+  use.taskId === grant.taskId &&
+  use.access === grant.access &&
+  use.operationPath === grant.path
+const holdsCurrentAcquisition = (db: DatabaseSync, grant: WorkspaceGrant): boolean => {
+  if (grant.access !== 'write') return true
+  const reservation = getReservation(db, grant.workspaceId)
+  return (
+    reservation !== undefined &&
+    reservation.id === grant.reservationId &&
+    reservation.taskId === grant.taskId &&
+    reservation.acquisitionId === grant.acquisitionId
+  )
+}
+
 export const validateGrant = (
   authority: WorkspaceAuthority,
   state: ConversationState,
@@ -490,33 +522,16 @@ export const validateGrant = (
     requireReview('Workspace grant is stale or was not issued to this attachment')
   const scoped = isScoped(lease) ? lease : undefined
   const workspace = inDb(authority, grant.repositoryId, db => {
-    const record = getWorkspace(db, grant.workspaceId)
-    const use = getUse(db, grant.useId)
-    if (record === undefined || use === undefined)
-      requireReview('Workspace grant has no matching durable use')
+    const fenced = fencedUse(db, grant, 'Workspace grant has no matching durable use')
     if (
-      use.workspaceId !== grant.workspaceId ||
-      use.bindingRevision !== grant.revision ||
-      use.acquisitionId !== grant.acquisitionId ||
-      use.reservationId !== grant.reservationId ||
-      use.taskId !== grant.taskId ||
-      use.access !== grant.access ||
-      use.effect !== scoped?.kind ||
-      use.withinUseId !== scoped?.withinUseId ||
-      use.operationPath !== grant.path
+      !matchesGrant(fenced.use, grant) ||
+      fenced.use.effect !== scoped?.kind ||
+      fenced.use.withinUseId !== scoped?.withinUseId
     )
       requireReview('Workspace grant no longer matches its fenced use facts')
-    if (grant.access === 'write') {
-      const reservation = getReservation(db, grant.workspaceId)
-      if (
-        reservation === undefined ||
-        reservation.id !== grant.reservationId ||
-        reservation.taskId !== grant.taskId ||
-        reservation.acquisitionId !== grant.acquisitionId
-      )
-        requireReview('Workspace grant is not the current reservation acquisition')
-    }
-    return record
+    if (!holdsCurrentAcquisition(db, grant))
+      requireReview('Workspace grant is not the current reservation acquisition')
+    return fenced.workspace
   })
   validateWorkspace(authority, workspace)
   return lease
@@ -533,33 +548,14 @@ export const validateDurableGrant = (
   if (!repositories.some(repository => repository.id === grant.repositoryId))
     requireReview('Workspace grant repository is not registered')
   const workspace = inDb(authority, grant.repositoryId, db => {
-    const record = getWorkspace(db, grant.workspaceId)
-    const use = getUse(db, grant.useId)
-    if (record === undefined || use === undefined)
-      requireReview('Workspace grant does not identify a durable use')
-    if (
-      use.workspaceId !== grant.workspaceId ||
-      use.bindingRevision !== grant.revision ||
-      use.acquisitionId !== grant.acquisitionId ||
-      use.reservationId !== grant.reservationId ||
-      use.taskId !== grant.taskId ||
-      use.access !== grant.access ||
-      use.operationPath !== grant.path
-    )
+    const fenced = fencedUse(db, grant, 'Workspace grant does not identify a durable use')
+    if (!matchesGrant(fenced.use, grant))
       requireReview('Workspace grant does not match its fenced use record')
-    if (use.stage === 'quiescent' || use.stage === 'observed' || use.stage === 'unknown')
-      requireReview(`Workspace use is no longer eligible for a child: ${use.stage}`)
-    if (grant.access === 'write') {
-      const reservation = getReservation(db, grant.workspaceId)
-      if (
-        reservation === undefined ||
-        reservation.id !== grant.reservationId ||
-        reservation.taskId !== grant.taskId ||
-        reservation.acquisitionId !== grant.acquisitionId
-      )
-        requireReview('Workspace grant acquisition is stale')
-    }
-    return record
+    const { stage } = fenced.use
+    if (stage === 'quiescent' || stage === 'observed' || stage === 'unknown')
+      requireReview(`Workspace use is no longer eligible for a child: ${stage}`)
+    if (!holdsCurrentAcquisition(db, grant)) requireReview('Workspace grant acquisition is stale')
+    return fenced.workspace
   })
   if (grant.checkout !== workspace.path || grant.origin !== workspace.origin)
     requireReview('Workspace grant checkout fields were altered')

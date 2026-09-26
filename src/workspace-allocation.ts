@@ -85,22 +85,30 @@ const releaseLocalGates = (state: ConversationState): GateIntent[] => {
   return intents
 }
 
-const holdGates = (
-  authority: WorkspaceAuthority,
-  state: ConversationState,
-  intents: readonly GateIntent[]
-): void => {
+// Slots are taken in path order so concurrent acquirers cannot deadlock; a writer intent
+// makes its whole slot a writer.
+const groupBySlot = (intents: readonly GateIntent[]): GateIntent[] => {
   const groups = new Map<string, GateIntent>()
   for (const intent of intents) {
     const path = canonicalPathSlot(intent.path)
     const current = groups.get(path)
+    if (
+      current !== undefined &&
+      (current.repositoryId !== intent.repositoryId || current.workspaceId !== intent.workspaceId)
+    )
+      requireReview(`Conflicting workspace identities share one held path gate: ${path}`)
     groups.set(path, { ...intent, path, writer: intent.writer || current?.writer === true })
   }
+  return [...groups.values()].toSorted((left, right) => left.path.localeCompare(right.path))
+}
+
+const acquireInOrder = (
+  authority: WorkspaceAuthority,
+  groups: readonly GateIntent[]
+): HeldPathGate[] => {
   const acquired: HeldPathGate[] = []
   try {
-    for (const group of [...groups.values()].toSorted((left, right) =>
-      left.path.localeCompare(right.path)
-    ))
+    for (const group of groups)
       acquired.push({
         ...group,
         gates: acquirePathGates(authority.paths, group.path, group.writer),
@@ -109,7 +117,15 @@ const holdGates = (
     for (const held of acquired.toReversed()) releaseGates(held.gates)
     throw cause
   }
-  state.extraGates.push(...acquired)
+  return acquired
+}
+
+const holdGates = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  intents: readonly GateIntent[]
+): void => {
+  state.extraGates.push(...acquireInOrder(authority, groupBySlot(intents)))
 }
 
 const orderedAllocationGates = (
@@ -124,61 +140,36 @@ const orderedAllocationGates = (
   readonly target: PathGates
   readonly extras: readonly HeldPathGate[]
 } => {
-  const groups = new Map<string, GateIntent>()
-  const add = (input: GateIntent): void => {
-    const path = canonicalPathSlot(input.path)
-    const current = groups.get(path)
-    if (
-      current !== undefined &&
-      (current.repositoryId !== input.repositoryId || current.workspaceId !== input.workspaceId)
-    )
-      requireReview(`Conflicting workspace identities share one held path gate: ${path}`)
-    groups.set(path, { ...input, path, writer: input.writer || current?.writer === true })
-  }
-  for (const intent of intents) add(intent)
-  add({
-    repositoryId: sourceRepo,
-    workspaceId: source.id,
-    path: source.path,
-    writer:
-      state.writeGrant?.workspaceId === source.id ||
-      intents.some(intent => intent.workspaceId === source.id && intent.writer),
-  })
   const targetPath = canonicalPathSlot(target.path)
-  add({
-    repositoryId: sourceRepo,
-    workspaceId: target.id,
-    path: targetPath,
-    writer: true,
-  })
-
-  for (const group of groups.values()) {
+  const groups = groupBySlot([
+    ...intents,
+    {
+      repositoryId: sourceRepo,
+      workspaceId: source.id,
+      path: source.path,
+      writer:
+        state.writeGrant?.workspaceId === source.id ||
+        intents.some(intent => intent.workspaceId === source.id && intent.writer),
+    },
+    { repositoryId: sourceRepo, workspaceId: target.id, path: targetPath, writer: true },
+  ])
+  for (const group of groups) {
     if (group.path === targetPath) continue
     const record = inDb(authority, group.repositoryId, db => getWorkspace(db, group.workspaceId))
     if (record === undefined || record.path !== group.path)
       requireReview(`Workspace gate no longer matches its durable checkout: ${group.path}`)
     validateWorkspace(authority, record)
   }
-
-  const acquired = new Map<string, PathGates>()
-  try {
-    for (const group of [...groups.values()].toSorted((left, right) =>
-      left.path.localeCompare(right.path)
-    ))
-      acquired.set(group.path, acquirePathGates(authority.paths, group.path, group.writer))
-  } catch (cause) {
-    for (const gates of [...acquired.values()].reverse()) releaseGates(gates)
-    throw cause
-  }
-  const sourceGates = acquired.get(source.path)
-  const targetGates = acquired.get(targetPath)
+  const acquired = acquireInOrder(authority, groups)
+  const sourceGates = acquired.find(held => held.path === source.path)?.gates
+  const targetGates = acquired.find(held => held.path === targetPath)?.gates
   if (sourceGates === undefined || targetGates === undefined)
     requireReview('Workspace allocation gates were not acquired')
-  const extras = [...groups.values()]
-    .filter(group => group.path !== targetPath)
-    .map(group => ({ ...group, gates: acquired.get(group.path) }))
-    .filter((group): group is HeldPathGate => group.gates !== undefined)
-  return { source: sourceGates, target: targetGates, extras }
+  return {
+    source: sourceGates,
+    target: targetGates,
+    extras: acquired.filter(held => held.path !== targetPath),
+  }
 }
 
 export const allocateWorkspace = (

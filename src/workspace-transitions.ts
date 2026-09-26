@@ -9,6 +9,7 @@ import {
 import {
   outgoingUses,
   assertNoLiveExecution,
+  settleDependentsFirst,
   type GrantLease,
   type PendingTransition,
   type ConversationState,
@@ -39,7 +40,6 @@ import {
   putOperation,
   saveOperation,
   getUseRows,
-  activeDependentUses,
   toBinding,
   isActiveUse,
   type WorkspaceRecord,
@@ -385,32 +385,17 @@ const finishConfirmed = (
 ): void => {
   const sourceWorkspaceId = pending.handoff.from.workspaceId
   const oldUses = outgoingUses(authority, state, sourceWorkspaceId, pending.targetLease.useId)
-  // Dependents first: a use is always created after its `within` parent, so reverse
-  // insertion order settles descendants before the parent whose gates they rely on.
-  // A dependent left unknown keeps its parent unknown instead of failing here, after
-  // the host has already switched.
-  for (const { lease, use } of oldUses.toReversed()) {
-    if (use.stage === 'quiescent' || use.stage === 'unknown') continue
-    inDb(authority, lease.repositoryId, db =>
-      transaction(db, () => {
-        const dependents = activeDependentUses(db, use.id)
-        let settlement: Pick<UseRecord, 'stage' | 'reason'> = {
-          stage: 'quiescent',
-          reason: 'host-tool-batch-settled',
-        }
-        if (use.execution !== undefined)
-          settlement = { stage: 'unknown', reason: 'host-switched-while-a-process-was-live' }
-        else if (dependents.length > 0)
-          settlement = {
-            stage: 'unknown',
-            reason: `host-transition-left-dependent-uses-unresolved: ${dependents
-              .map(dependent => dependent.id)
-              .join(', ')}`,
-          }
-        saveUse(db, { ...use, ...settlement, revision: use.revision + 1, updatedAt: now() })
-      })
-    )
-  }
+  // The host has already switched, so a dependent left live keeps its parent unknown
+  // instead of failing here.
+  settleDependentsFirst(
+    authority,
+    oldUses,
+    use =>
+      use.execution === undefined
+        ? { stage: 'quiescent', reason: 'host-tool-batch-settled' }
+        : { stage: 'unknown', reason: 'host-switched-while-a-process-was-live' },
+    'host-transition-left-dependent-uses-unresolved'
+  )
   const oldLeases = oldUses.map(({ lease }) => lease)
   const confirmedBinding: BindingRecord = {
     ...pending.targetBinding,

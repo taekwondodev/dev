@@ -2,19 +2,30 @@ import { execFileSync } from 'node:child_process'
 import { lstatSync, realpathSync, readdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { userInfo } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
-import { Schema } from 'effect'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   invalid,
   requireReview,
   unavailable,
   WorkspaceError,
-  WorkspaceId,
   type WorkspaceGrant,
+  type WorkspaceId,
 } from './workspace-domain.ts'
-import { acquireProtocolGate, acquireStructureGate, type GateRelease } from './workspace-gates.ts'
+import {
+  acquireProtocolGate,
+  acquireStructureGate,
+  createProtocolDatabase,
+  validateProtocol,
+  type GateRelease,
+} from './workspace-gates.ts'
 import type { GitWorkspace } from './workspace-git.ts'
-import { hasErrorCode, isWithin, lstatIfExists, sqliteCode } from './workspace-paths.ts'
+import {
+  canonicalPath,
+  hasErrorCode,
+  isWithin,
+  lstatIfExists,
+  sqliteCode,
+} from './workspace-paths.ts'
 import {
   RepositoryCatalogSchema,
   getWorkspace,
@@ -30,7 +41,6 @@ import {
 import {
   PROTOCOL_VERSION,
   SCHEMA_VERSION,
-  PROTOCOL_SQL,
   newId,
   encode,
   parseRecord,
@@ -39,14 +49,11 @@ import {
   fsyncParent,
   privateDirectory,
   ensureDirectoryPath,
-  privateFile,
   assertSqliteSafety,
   rows,
   first,
   textField,
   numberField,
-  schemaCatalog,
-  expectedCatalog,
   createPublishedDatabase,
   databaseFile,
   openRecordDb,
@@ -57,19 +64,9 @@ import {
 const canonicalRoot = (requested: string): string => {
   if (!isAbsolute(requested)) invalid('Workspace authority root must be an absolute path')
   const absolute = resolve(requested)
-  const requestedInfo = lstatIfExists(absolute)
-  if (requestedInfo?.isSymbolicLink())
+  if (lstatIfExists(absolute)?.isSymbolicLink())
     unavailable(`Workspace authority root must not be a symbolic link: ${absolute}`)
-  const parts: string[] = []
-  let cursor = absolute
-  while (lstatIfExists(cursor) === undefined) {
-    const parent = dirname(cursor)
-    if (parent === cursor) unavailable(`Cannot resolve workspace authority root: ${absolute}`)
-    parts.unshift(basename(cursor))
-    cursor = parent
-  }
-  const physicalParent = realpathSync(cursor)
-  return resolve(physicalParent, ...parts)
+  return canonicalPath(absolute).path
 }
 
 // Initial support is local macOS storage. A synchronized folder or network mount can
@@ -122,20 +119,13 @@ const assertSupportedStorage = (root: string): void => {
   if (reason !== undefined) unavailable(reason)
 }
 
-const createProtocolDatabase = (path: string, namespaceId: string): void =>
-  createPublishedDatabase(path, 'protocol', db => {
-    db.prepare('INSERT INTO protocol_marker(id, version, namespace_id) VALUES(1, ?, ?)').run(
-      PROTOCOL_VERSION,
-      namespaceId
-    )
-  })
-const createCatalogDatabase = (path: string, namespaceId: string): void => {
+const catalogMeta = (db: DatabaseSync, key: 'namespace_id' | 'protocol_version'): string =>
+  textField(first(db, 'SELECT value FROM catalog_meta WHERE key=?', key), 'value')
+const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => {
   createPublishedDatabase(path, 'catalog', db => {
-    db.prepare('INSERT INTO catalog_meta(key, value) VALUES(?, ?)').run('namespace_id', namespaceId)
-    db.prepare('INSERT INTO catalog_meta(key, value) VALUES(?, ?)').run(
-      'protocol_version',
-      String(PROTOCOL_VERSION)
-    )
+    const insert = db.prepare('INSERT INTO catalog_meta(key, value) VALUES(?, ?)')
+    insert.run('namespace_id', namespaceId)
+    insert.run('protocol_version', String(PROTOCOL_VERSION))
   })
   // Catalog data is durably published in DELETE mode first; only then switch the
   // complete record database to WAL. Never reset an existing database here.
@@ -176,33 +166,22 @@ const makePaths = (root: string): AuthorityPaths => ({
   worktrees: join(root, 'worktrees'),
 })
 
-const validateProtocol = (path: string, namespaceId?: string): WorkspaceId => {
-  privateFile(path)
-  let db: DatabaseSync | undefined
-  try {
-    db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
-    db.exec('PRAGMA busy_timeout = 0; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
-    if (textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase() !== 'delete')
-      unavailable(`Workspace protocol gate has an unsupported journal mode: ${path}`)
-    if (
-      numberField(first(db, 'PRAGMA user_version'), 'user_version') !== SCHEMA_VERSION ||
-      schemaCatalog(db) !== expectedCatalog(PROTOCOL_SQL)
-    )
-      unavailable(`Workspace protocol gate has an unsupported schema: ${path}`)
-    const row = first(db, 'SELECT version, namespace_id FROM protocol_marker WHERE id = 1')
-    if (numberField(row, 'version') !== PROTOCOL_VERSION)
-      unavailable(`Workspace protocol version mismatch at ${path}`)
-    const actual = textField(row, 'namespace_id')
-    if (!Schema.is(WorkspaceId)(actual) || (namespaceId !== undefined && namespaceId !== actual))
-      return requireReview(`Workspace protocol identity mismatch at ${path}`)
-    return actual
-  } catch (cause) {
-    if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot validate workspace protocol gate ${path}: ${errorText(cause)}`)
-  } finally {
-    db?.close()
-  }
-}
+const REPOSITORY_ROW =
+  'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories'
+const repositoryRow = (db: DatabaseSync, where: string, ...params: string[]): SqlRow | undefined =>
+  first(db, `${REPOSITORY_ROW} WHERE ${where}`, ...params)
+const registrationRows = (
+  db: DatabaseSync,
+  repository: GitWorkspace
+): { readonly byPath: SqlRow | undefined; readonly byPhysical: SqlRow | undefined } => ({
+  byPath: repositoryRow(db, 'common_path=?', repository.commonPath),
+  byPhysical: repositoryRow(
+    db,
+    'device=? AND inode=?',
+    repository.commonIdentity.device,
+    repository.commonIdentity.inode
+  ),
+})
 
 const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
   const value = parseRecord(
@@ -223,17 +202,17 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
     requireReview(`Repository catalog columns disagree with payload: ${value.id}`)
   return value
 }
-export const validateRepositoryRecord = (
+const matchesRepository = (record: RepositoryCatalogRecord, repository: GitWorkspace): boolean =>
+  record.commonPath === repository.commonPath &&
+  record.device === repository.commonIdentity.device &&
+  record.inode === repository.commonIdentity.inode &&
+  record.objectFormat === repository.objectFormat
+const validateRepositoryRecord = (
   repository: GitWorkspace,
   row: SqlRow
 ): RepositoryCatalogRecord => {
   const value = parseRepositoryCatalogRow(row)
-  if (
-    value.commonPath !== repository.commonPath ||
-    value.device !== repository.commonIdentity.device ||
-    value.inode !== repository.commonIdentity.inode ||
-    value.objectFormat !== repository.objectFormat
-  )
+  if (!matchesRepository(value, repository))
     requireReview(`Git common-directory identity changed: ${repository.commonPath}`)
   return value
 }
@@ -246,7 +225,6 @@ export class WorkspaceAuthority {
   private initialized = false
   private storageChecked = false
   private closed = false
-  private readonly shardIds = new Set<string>()
 
   constructor(root: string) {
     this.root = canonicalRoot(root)
@@ -257,6 +235,28 @@ export class WorkspaceAuthority {
     if (this.storageChecked) return
     assertSupportedStorage(this.root)
     this.storageChecked = true
+  }
+
+  // Returns the protocol gate held while the catalog was matched to the namespace.
+  private joinNamespace(): { readonly id: WorkspaceId; readonly release: GateRelease } {
+    const id = validateProtocol(this.paths.protocol)
+    const release = acquireProtocolGate(this.paths.protocol, this.root, id)
+    try {
+      const catalog = this.openCatalog()
+      try {
+        if (
+          catalogMeta(catalog, 'namespace_id') !== id ||
+          catalogMeta(catalog, 'protocol_version') !== String(PROTOCOL_VERSION)
+        )
+          requireReview(`Workspace catalog does not match namespace ${this.root}`)
+      } finally {
+        catalog.close()
+      }
+    } catch (cause) {
+      release()
+      throw cause
+    }
+    return { id, release }
   }
 
   initialize(): WorkspaceId {
@@ -286,37 +286,14 @@ export class WorkspaceAuthority {
       })
       if (hasEvidence)
         requireReview(`Workspace authority has data but no namespace markers: ${this.root}`)
-      const candidateId = newId()
-      createProtocolDatabase(this.paths.protocol, candidateId)
-      const id = validateProtocol(this.paths.protocol)
-      createCatalogDatabase(this.paths.catalog, id)
+      createProtocolDatabase(this.paths.protocol, newId())
+      createCatalogDatabase(this.paths.catalog, validateProtocol(this.paths.protocol))
     } else if (!protocolExists || !catalogExists) {
       requireReview(`Workspace authority has incomplete namespace markers: ${this.root}`)
     }
-    const id = validateProtocol(this.paths.protocol)
-    const acquired = acquireProtocolGate(this.paths.protocol, this.root, id)
-    try {
-      const catalog = this.openCatalog(false)
-      try {
-        const actual = textField(
-          first(catalog, "SELECT value FROM catalog_meta WHERE key='namespace_id'"),
-          'value'
-        )
-        const version = textField(
-          first(catalog, "SELECT value FROM catalog_meta WHERE key='protocol_version'"),
-          'value'
-        )
-        if (actual !== id || version !== String(PROTOCOL_VERSION))
-          requireReview(`Workspace catalog does not match namespace ${this.root}`)
-      } finally {
-        catalog.close()
-      }
-    } catch (cause) {
-      acquired()
-      throw cause
-    }
+    const { id, release } = this.joinNamespace()
     this.namespaceId = id
-    this.protocolRelease = acquired
+    this.protocolRelease = release
     this.initialized = true
     return id
   }
@@ -336,55 +313,29 @@ export class WorkspaceAuthority {
     }
     if (protocol === undefined || catalog === undefined)
       requireReview(`Workspace authority is incomplete: ${this.root}`)
-    const id = validateProtocol(this.paths.protocol)
-    const release = acquireProtocolGate(this.paths.protocol, this.root, id)
-    try {
-      const db = this.openCatalog(false)
-      try {
-        if (
-          textField(
-            first(db, "SELECT value FROM catalog_meta WHERE key='namespace_id'"),
-            'value'
-          ) !== id ||
-          textField(
-            first(db, "SELECT value FROM catalog_meta WHERE key='protocol_version'"),
-            'value'
-          ) !== String(PROTOCOL_VERSION)
-        )
-          requireReview(`Workspace catalog does not match namespace ${this.root}`)
-      } finally {
-        db.close()
-      }
-    } finally {
-      release()
-    }
+    const { id, release } = this.joinNamespace()
+    release()
     return id
   }
 
-  openCatalog(create: boolean): DatabaseSync {
-    if (!this.initialized && create) this.initialize()
-    const namespaceId =
-      this.namespaceId ??
-      (create
-        ? requireReview('Workspace namespace is not initialized')
-        : validateProtocol(this.paths.protocol))
-    const db = openRecordDb(this.paths.catalog, 'catalog', create, candidate => {
-      candidate
-        .prepare('INSERT INTO catalog_meta(key, value) VALUES(?, ?)')
-        .run('namespace_id', namespaceId)
-      candidate
-        .prepare('INSERT INTO catalog_meta(key, value) VALUES(?, ?)')
-        .run('protocol_version', String(PROTOCOL_VERSION))
-    })
-    const actual = textField(
-      first(db, "SELECT value FROM catalog_meta WHERE key='namespace_id'"),
-      'value'
-    )
-    if (actual !== namespaceId) {
+  private openCatalog(): DatabaseSync {
+    const namespaceId = this.namespaceId ?? validateProtocol(this.paths.protocol)
+    const db = openRecordDb(this.paths.catalog, 'catalog')
+    if (catalogMeta(db, 'namespace_id') !== namespaceId) {
       db.close()
       requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
     }
     return db
+  }
+
+  private readRepository(repositoryId: WorkspaceId): RepositoryCatalogRecord | undefined {
+    const catalog = this.openCatalog()
+    try {
+      const row = repositoryRow(catalog, 'id=?', repositoryId)
+      return row === undefined ? undefined : parseRepositoryCatalogRow(row)
+    } finally {
+      catalog.close()
+    }
   }
 
   shardPath(repositoryId: WorkspaceId): string {
@@ -394,71 +345,46 @@ export class WorkspaceAuthority {
   openShard(repositoryId: WorkspaceId, create = false, repository?: GitWorkspace): DatabaseSync {
     if (!this.initialized && create) this.initialize()
     const path = this.shardPath(repositoryId)
-    const directory = dirname(path)
-    const catalog = this.openCatalog(false)
-    let state: string
-    let commonPath: string
-    let device: string
-    let inode: string
-    let format: string
-    try {
-      const row = first(
-        catalog,
-        `SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload
-        FROM repositories WHERE id=?`,
-        repositoryId
-      )
-      if (row === undefined)
-        unavailable(`Repository is not registered in workspace authority: ${repositoryId}`)
-      const record = parseRepositoryCatalogRow(row)
-      state = record.state
-      commonPath = record.commonPath
-      device = record.device
-      inode = record.inode
-      format = record.objectFormat
-      if (state === 'ready' && lstatIfExists(path) === undefined)
-        requireReview(`Ready repository shard is missing: ${path}`)
-      if (state === 'provisioning' && !create && lstatIfExists(path) === undefined)
-        requireReview(`Repository shard provisioning is incomplete: ${path}`)
-      if (
-        repository !== undefined &&
-        (commonPath !== repository.commonPath ||
-          device !== repository.commonIdentity.device ||
-          inode !== repository.commonIdentity.inode ||
-          format !== repository.objectFormat)
-      )
-        requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
-    } finally {
-      catalog.close()
-    }
-    privateDirectory(directory, create && state === 'provisioning')
-    const db = openRecordDb(path, 'shard', create && state === 'provisioning', candidate => {
-      if (repository === undefined)
-        requireReview(
-          `Cannot initialize repository shard without its Git identity: ${repositoryId}`
-        )
-      const values: readonly [string, string][] = [
-        ['repository_id', repositoryId],
-        ['common_path', repository.commonPath],
-        ['common_device', repository.commonIdentity.device],
-        ['common_inode', repository.commonIdentity.inode],
-        ['object_format', repository.objectFormat],
-        ['protocol_version', String(PROTOCOL_VERSION)],
-      ]
-      const insert = candidate.prepare('INSERT INTO shard_meta(key, value) VALUES(?, ?)')
-      for (const [key, value] of values) insert.run(key, value)
-    })
-    this.validateShardMeta(db, repositoryId, { commonPath, device, inode, format })
-    if (state === 'provisioning') this.markRepositoryReady(repositoryId)
-    this.shardIds.add(repositoryId)
+    const record = this.readRepository(repositoryId)
+    if (record === undefined)
+      return unavailable(`Repository is not registered in workspace authority: ${repositoryId}`)
+    const published = lstatIfExists(path) !== undefined
+    if (record.state === 'ready' && !published)
+      requireReview(`Ready repository shard is missing: ${path}`)
+    if (record.state === 'provisioning' && !create && !published)
+      requireReview(`Repository shard provisioning is incomplete: ${path}`)
+    if (repository !== undefined && !matchesRepository(record, repository))
+      requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
+    const provision = create && record.state === 'provisioning'
+    privateDirectory(dirname(path), provision)
+    const db = openRecordDb(
+      path,
+      'shard',
+      provision
+        ? candidate => {
+            if (repository === undefined)
+              requireReview(
+                `Cannot initialize repository shard without its Git identity: ${repositoryId}`
+              )
+            const values: readonly [string, string][] = [
+              ['repository_id', repositoryId],
+              ['common_path', repository.commonPath],
+              ['common_device', repository.commonIdentity.device],
+              ['common_inode', repository.commonIdentity.inode],
+              ['object_format', repository.objectFormat],
+              ['protocol_version', String(PROTOCOL_VERSION)],
+            ]
+            const insert = candidate.prepare('INSERT INTO shard_meta(key, value) VALUES(?, ?)')
+            for (const [key, value] of values) insert.run(key, value)
+          }
+        : undefined
+    )
+    this.validateShardMeta(db, record)
+    if (record.state === 'provisioning') this.markRepositoryReady(repositoryId)
     return db
   }
 
-  private validateShardMeta(
-    db: DatabaseSync,
-    repositoryId: WorkspaceId,
-    expected: { commonPath: string; device: string; inode: string; format: string }
-  ): void {
+  private validateShardMeta(db: DatabaseSync, expected: RepositoryCatalogRecord): void {
     const values = new Map(
       rows(db, 'SELECT key, value FROM shard_meta').map(row => [
         textField(row, 'key'),
@@ -467,26 +393,21 @@ export class WorkspaceAuthority {
     )
     if (
       numberField(first(db, 'PRAGMA user_version'), 'user_version') !== SCHEMA_VERSION ||
-      values.get('repository_id') !== repositoryId ||
+      values.get('repository_id') !== expected.id ||
       values.get('common_path') !== expected.commonPath ||
       values.get('common_device') !== expected.device ||
       values.get('common_inode') !== expected.inode ||
-      values.get('object_format') !== expected.format ||
+      values.get('object_format') !== expected.objectFormat ||
       values.get('protocol_version') !== String(PROTOCOL_VERSION)
     )
-      requireReview(`Repository shard identity or schema mismatch: ${repositoryId}`)
+      requireReview(`Repository shard identity or schema mismatch: ${expected.id}`)
   }
 
   private markRepositoryReady(repositoryId: WorkspaceId): void {
-    const db = this.openCatalog(false)
+    const db = this.openCatalog()
     try {
       transaction(db, () => {
-        const row = first(
-          db,
-          `SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload
-          FROM repositories WHERE id=?`,
-          repositoryId
-        )
+        const row = repositoryRow(db, 'id=?', repositoryId)
         if (row === undefined)
           requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
         const current = parseRepositoryCatalogRow(row)
@@ -514,21 +435,11 @@ export class WorkspaceAuthority {
 
   registerRepository(repository: GitWorkspace): WorkspaceId {
     this.initialize()
-    const catalog = this.openCatalog(false)
-    let registered: { readonly id: WorkspaceId; readonly state: string } | undefined
+    const catalog = this.openCatalog()
+    let registered: RepositoryCatalogRecord | undefined
     let registrationConflict = false
     try {
-      const byPath = first(
-        catalog,
-        'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories WHERE common_path=?',
-        repository.commonPath
-      )
-      const byPhysical = first(
-        catalog,
-        'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories WHERE device=? AND inode=?',
-        repository.commonIdentity.device,
-        repository.commonIdentity.inode
-      )
+      const { byPath, byPhysical } = registrationRows(catalog, repository)
       if (byPath === undefined && byPhysical !== undefined)
         requireReview(
           `Repository common directory has an unrecognized path alias: ${repository.commonPath}`
@@ -536,19 +447,16 @@ export class WorkspaceAuthority {
       if (byPath !== undefined) {
         if (byPhysical === undefined || textField(byPath, 'id') !== textField(byPhysical, 'id'))
           requireReview(`Repository physical identity changed: ${repository.commonPath}`)
-        const record = validateRepositoryRecord(repository, byPath)
-        registered = { id: record.id, state: record.state }
+        registered = validateRepositoryRecord(repository, byPath)
       } else {
-        const candidateId = newId()
-        const provisionId = newId()
-        const payload = {
-          id: candidateId,
+        const provisioning: RepositoryCatalogRecord = {
+          id: newId(),
           commonPath: repository.commonPath,
           device: repository.commonIdentity.device,
           inode: repository.commonIdentity.inode,
           objectFormat: repository.objectFormat,
           state: 'provisioning',
-          provisionId,
+          provisionId: newId(),
           revision: 0,
         }
         transaction(catalog, () => {
@@ -556,16 +464,16 @@ export class WorkspaceAuthority {
             .prepare(`INSERT INTO repositories(id, common_path, device, inode, object_format, state, provision_id, revision, payload)
             VALUES(?,?,?,?,?,'provisioning',?,0,?)`)
             .run(
-              candidateId,
-              repository.commonPath,
-              repository.commonIdentity.device,
-              repository.commonIdentity.inode,
-              repository.objectFormat,
-              provisionId,
-              encode(payload)
+              provisioning.id,
+              provisioning.commonPath,
+              provisioning.device,
+              provisioning.inode,
+              provisioning.objectFormat,
+              provisioning.provisionId,
+              encode(provisioning)
             )
         })
-        registered = { id: candidateId, state: 'provisioning' }
+        registered = provisioning
       }
     } catch (cause) {
       if (cause instanceof WorkspaceError) throw cause
@@ -575,19 +483,9 @@ export class WorkspaceAuthority {
       catalog.close()
     }
     if (registrationConflict) {
-      const retry = this.openCatalog(false)
+      const retry = this.openCatalog()
       try {
-        const byPath = first(
-          retry,
-          'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories WHERE common_path=?',
-          repository.commonPath
-        )
-        const byPhysical = first(
-          retry,
-          'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories WHERE device=? AND inode=?',
-          repository.commonIdentity.device,
-          repository.commonIdentity.inode
-        )
+        const { byPath, byPhysical } = registrationRows(retry, repository)
         if (
           byPath === undefined ||
           byPhysical === undefined ||
@@ -596,8 +494,7 @@ export class WorkspaceAuthority {
           requireReview(
             `Repository identity conflicts with existing catalog data: ${repository.commonPath}`
           )
-        const record = validateRepositoryRecord(repository, byPath)
-        registered = { id: record.id, state: record.state }
+        registered = validateRepositoryRecord(repository, byPath)
       } finally {
         retry.close()
       }
@@ -607,40 +504,36 @@ export class WorkspaceAuthority {
         `Repository registration produced no authoritative record: ${repository.commonPath}`
       )
     const repositoryId = registered.id
-    const state = registered.state
     let structure: GateRelease | undefined
     try {
-      if (state === 'provisioning')
+      if (registered.state === 'provisioning')
         structure = acquireStructureGate(this.paths, repository, repositoryId)
-      const currentCatalog = this.openCatalog(false)
-      let currentState: string
-      try {
-        const current = first(
-          currentCatalog,
-          'SELECT state FROM repositories WHERE id=?',
-          repositoryId
-        )
-        if (current === undefined)
-          requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
-        currentState = textField(current, 'state')
-      } finally {
-        currentCatalog.close()
-      }
-      if (currentState === 'ready') {
+      const current = this.readRepository(repositoryId)
+      if (current === undefined)
+        requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
+      if (current.state === 'ready') {
         const path = this.shardPath(repositoryId)
         if (lstatIfExists(path) === undefined)
           requireReview(`Ready repository shard is missing: ${path}`)
-        const shard = this.openShard(repositoryId, false, repository)
-        shard.close()
-      } else if (currentState === 'provisioning') {
+        this.openShard(repositoryId, false, repository).close()
+      } else {
         privateDirectory(dirname(this.shardPath(repositoryId)), true)
-        const shard = this.openShard(repositoryId, true, repository)
-        shard.close()
-      } else requireReview(`Invalid repository catalog state: ${repositoryId}`)
+        this.openShard(repositoryId, true, repository).close()
+      }
     } finally {
       structure?.()
     }
     return repositoryId
+  }
+
+  findRepository(repository: GitWorkspace): WorkspaceId | undefined {
+    const catalog = this.openCatalog()
+    try {
+      const row = repositoryRow(catalog, 'common_path=?', repository.commonPath)
+      return row === undefined ? undefined : validateRepositoryRecord(repository, row).id
+    } finally {
+      catalog.close()
+    }
   }
 
   listRepositories(): readonly {
@@ -648,13 +541,9 @@ export class WorkspaceAuthority {
     readonly state: string
     readonly commonPath: string
   }[] {
-    const db = this.openCatalog(false)
+    const db = this.openCatalog()
     try {
-      return rows(
-        db,
-        `SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload
-        FROM repositories ORDER BY id`
-      ).map(row => {
+      return rows(db, `${REPOSITORY_ROW} ORDER BY id`).map(row => {
         const record = parseRepositoryCatalogRow(row)
         if (record.state !== 'ready')
           requireReview(`Repository shard provisioning is unresolved: ${record.id}`)

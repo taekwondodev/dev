@@ -450,6 +450,14 @@ export const makeWorkspaceRecord = (
   revision: 0,
   createdAt: now(),
 })
+export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace): boolean =>
+  record.path === git.path &&
+  sameIdentity(record.physical, git.identity) &&
+  record.gitAdminPath === git.gitAdminPath &&
+  sameIdentity(record.gitAdmin, git.gitAdminIdentity) &&
+  record.commonPath === git.commonPath &&
+  sameIdentity(record.common, git.commonIdentity) &&
+  record.objectFormat === git.objectFormat
 export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
   if (record.status !== 'ready')
     return requireReview(`Workspace allocation is unresolved: ${record.path}`)
@@ -459,15 +467,7 @@ export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => 
   } catch (cause) {
     return requireReview(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
   }
-  if (
-    actual.path !== record.path ||
-    !sameIdentity(actual.identity, record.physical) ||
-    actual.gitAdminPath !== record.gitAdminPath ||
-    !sameIdentity(actual.gitAdminIdentity, record.gitAdmin) ||
-    actual.commonPath !== record.commonPath ||
-    !sameIdentity(actual.commonIdentity, record.common) ||
-    actual.objectFormat !== record.objectFormat
-  )
+  if (!matchesGitWorkspace(record, actual))
     return requireReview(`Workspace path or Git identity was replaced: ${record.path}`)
   return actual
 }

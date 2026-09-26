@@ -412,16 +412,16 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
     requireReview(`Workspace ${kind} database is corrupt: ${path}`)
   databaseFile(path)
 }
+// A missing database is created only when the caller supplies its initial rows.
 export const openRecordDb = (
   path: string,
   kind: 'catalog' | 'shard',
-  create: boolean,
-  initialize: (db: DatabaseSync) => void
+  initialize?: (db: DatabaseSync) => void
 ): DatabaseSync => {
   try {
     const existed = lstatIfExists(path) !== undefined
     if (!existed) {
-      if (!create) unavailable(`Workspace authority database is missing: ${path}`)
+      if (initialize === undefined) unavailable(`Workspace authority database is missing: ${path}`)
       createPublishedDatabase(path, kind, initialize)
     }
     databaseFile(path)
