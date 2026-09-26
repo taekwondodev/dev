@@ -3,9 +3,23 @@
 // missing, mistyped or unproduced field. This check adds what types cannot: every shape the
 // stub produces decodes with the schemas the lifecycle client applies to authority
 // responses (ID formats, non-empty strings, revision bounds), and decoding keeps every field
-// the stub sets.
+// the stub sets. It also drives the host's `/workspace` handler on the same shapes for the
+// failures the TUI probe does not inject: each must reach the user as a notice, never as a
+// rejected Pi handler.
 import assert from 'node:assert/strict'
-import { Schema } from 'effect'
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  RegisteredCommand,
+} from '@earendil-works/pi-coding-agent'
+import { Effect, Exit, Schema, Scope } from 'effect'
+import {
+  WorkspaceError,
+  type WorkspaceAttachment,
+  type WorkspaceLifecycle,
+  type WorkspaceSelection,
+} from '../src/workspace-domain.ts'
+import { makeWorkspaceHost, workControlsOf } from '../src/workspace-host.ts'
 import { WorkspaceRpcResponseSchema } from '../src/workspace-protocol.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import {
@@ -111,13 +125,133 @@ await claim(
   }
 )
 
+await claim(
+  "the host's /workspace handler reports session-owned work it cannot list or stop, and a malformed command, as notices without selecting a workspace or rejecting Pi's handler",
+  async () => {
+    const current = descriptor('pre-existing')
+    const target = descriptor('managed')
+    const selections: WorkspaceSelection[] = []
+    const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this claim' })
+    const attachment: WorkspaceAttachment = {
+      binding: makeFixtureBinding({ conversation, descriptor: current }),
+      authorize: () => Effect.fail(refused),
+      select: selection => {
+        selections.push(selection)
+        return Effect.fail(refused)
+      },
+      reportExecution: () => Effect.void,
+      handoff: () => Effect.void,
+      close: Effect.void,
+    }
+    const lifecycle: WorkspaceLifecycle = {
+      attach: () => Effect.fail(refused),
+      inspect: () =>
+        Effect.succeed([
+          makeFixtureView({
+            descriptor: target,
+            outcome: 'preserved-for-resume',
+            reservationId: fixtureId(112),
+          }),
+        ]),
+      validate: () => Effect.void,
+    }
+    const notices: { readonly message: string; readonly level: string | undefined }[] = []
+    const displayed: unknown[] = []
+    let workspaceCommand: RegisteredCommand['handler'] | undefined
+    const api = {
+      on: () => undefined,
+      getAllTools: () => [],
+      sendMessage: (message: { readonly content: unknown }) => {
+        displayed.push(message.content)
+      },
+      registerCommand: (name: string, command: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
+        if (name === 'workspace') workspaceCommand = command.handler
+      },
+    } as unknown as ExtensionAPI
+    const context = {
+      cwd: current.path,
+      hasUI: true,
+      ui: {
+        notify: (message: string, level?: string) => notices.push({ message, level }),
+        select: async () => undefined,
+        confirm: async () => true,
+        getEditorText: () => '',
+        setEditorText: () => undefined,
+      },
+    } as unknown as ExtensionCommandContext
+    const scope = Scope.makeUnsafe()
+    try {
+      const host = await Effect.runPromise(
+        Scope.provide(scope)(
+          makeWorkspaceHost({
+            lifecycle,
+            attachment,
+            dataHome: conversation.dataHome,
+            openSessionManager: () => {
+              throw new Error('not used by this claim')
+            },
+            repositoryRoot: cwd => Effect.succeed(cwd),
+          })
+        )
+      )
+      host.extensionFactory(api)
+      assert.ok(workspaceCommand, 'the host registered /workspace')
+      const resume = `resume ${target.taskId} --workspace ${target.workspaceId}`
+
+      host.setWorkControls(
+        workControlsOf({
+          runningWork: () => Promise.reject(new Error('fixture listing failed')),
+          stopAll: async () => undefined,
+        })
+      )
+      await workspaceCommand(resume, context)
+      host.setWorkControls(
+        workControlsOf({
+          runningWork: async () => [
+            {
+              taskId: 'fixture-work',
+              attemptId: 'fixture-attempt',
+              kind: 'process',
+              status: 'running',
+              cwd: current.path,
+            },
+          ],
+          stopAll: () => Promise.reject(new Error('fixture stop failed')),
+        })
+      )
+      await workspaceCommand(resume, context)
+      await workspaceCommand('switch', context)
+
+      assert.deepEqual(notices, [
+        {
+          message:
+            'Session-owned work could not be listed, so no switch was started: fixture listing failed',
+          level: 'error',
+        },
+        {
+          message:
+            'Session-owned work could not be stopped, so no switch was started: fixture stop failed',
+          level: 'error',
+        },
+      ])
+      assert.deepEqual(selections, [], 'no workspace was selected')
+      assert.equal(host.isParked(), false, 'the host was not parked')
+      assert.deepEqual(displayed, [
+        'Unknown workspace command "switch". Use list, inspect <task>, or resume <task> [--workspace <workspace>].',
+      ])
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+    }
+  }
+)
+
 console.log(
   JSON.stringify(
     {
       result: 'passed',
       checks: passed,
       limitation:
-        'Schema conformance only; it does not drive the Pi TUI. The stub renders no use or pending rows. workspace-host-real-authority-probe.ts drives the same host against the real authority through grants, native-write grants, a rebind handoff, bindings and inspect views with real use rows.',
+        'Schema conformance and command-failure notices only; it does not drive the Pi TUI. The stub renders no use or pending rows. workspace-host-real-authority-probe.ts drives the same host against the real authority through grants, native-write grants, a rebind handoff, bindings and inspect views with real use rows.',
     },
     null,
     2

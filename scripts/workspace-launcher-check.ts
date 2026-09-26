@@ -278,6 +278,21 @@ try {
     }
   )
 
+  await claim(
+    'dev --probe-runtime builds its Pi runtime on the binding the workspace host prepares and commits, and exits 0 with Pi state only under a disposable HOME',
+    async () => {
+      const probeHome = join(sandbox, 'probe-home')
+      mkdirSync(join(probeHome, '.agents', 'skills'), { recursive: true })
+      const probed = await runLauncher(
+        ['--probe-runtime', '--cwd', repo, '--data-home', dataHome, '--profile', 'general'],
+        { HOME: probeHome, LAUNCHER_CHECK_ROOT: join(sandbox, 'probe-authority') }
+      )
+      assert.equal(probed.code, 0, probed.stderr)
+      assert.match(probed.stdout, /^runtime probe: ok$/m)
+      assert.ok(existsSync(join(probeHome, '.pi', 'agent')), 'Pi kept its state in the probe HOME')
+    }
+  )
+
   // Read-only commands answer from the authority as they find it. They run with a data
   // home and HOME that must stay unused, so a Pi session would show up as created files.
   const secondRepo = join(sandbox, 'second-repo')
@@ -467,7 +482,7 @@ try {
         result: 'passed',
         checks: passed,
         limitation:
-          'The launcher runs with a lifecycle injected on a temporary authority root; the fixed per-account root is not touched.',
+          'The launcher runs with a lifecycle injected on a temporary authority root; the fixed per-account root is not touched. The runtime probe runs with a disposable HOME, so it reads no global Pi agent state and calls no model.',
       },
       null,
       2
