@@ -1,11 +1,15 @@
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { setTimeout as sleep } from 'node:timers/promises'
-import { Effect } from 'effect'
+import { Duration, Effect, Schema } from 'effect'
 import type { EditOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js'
 import type { WriteOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js'
-import type { WorkspaceAttachment, WorkspaceGrant } from './workspace-domain.ts'
+import type { WorkspaceAttachment, WorkspaceError, WorkspaceGrant } from './workspace-domain.ts'
 import { canonicalPath, isWithin } from './workspace-paths.ts'
+
+export class NativeWriteRefused extends Schema.TaggedError<NativeWriteRefused>()(
+  'NativeWriteRefused',
+  { message: Schema.String }
+) {}
 
 interface NativeWrite {
   readonly toolCallId: string
@@ -13,7 +17,7 @@ interface NativeWrite {
   readonly grant: WorkspaceGrant
   readonly destination: string
   readonly identity: string
-  started?: Promise<void>
+  started?: Effect.Effect<void, WorkspaceError>
 }
 
 export interface NativeWrites {
@@ -23,12 +27,13 @@ export interface NativeWrites {
     readonly toolCallId: string
     readonly attachment: WorkspaceAttachment
     readonly grant: WorkspaceGrant
-  }): void
-  finish(toolCallId: string): Promise<void>
-  settle(): Promise<void>
+  }): Effect.Effect<void, NativeWriteRefused>
+  finish(toolCallId: string): Effect.Effect<void>
+  readonly settle: Effect.Effect<void>
 }
 
 const SETTLE_WAIT_MS = 2000
+const SETTLE_POLL = Duration.millis(25)
 
 // macOS volumes ignore case and normalization by default. Folding through upper case also
 // catches expansions that lowercasing misses, such as ß and ss; any spelling this fold
@@ -45,50 +50,66 @@ const NO_FOLLOW_WRITE =
 // between, so the start boundary is reported from inside the write, next to its open.
 // After the session shuts down Pi no longer reports a call's end, so shutdown refuses
 // further operations and settles every admitted write itself.
-export const createNativeWrites = (onError: (message: string) => void): NativeWrites => {
+export const makeNativeWrites = (onError: (message: string) => void): NativeWrites => {
   const writes = new Map<string, NativeWrite>()
   let inProgress = 0
   let closing = false
 
-  const complete = async (write: NativeWrite): Promise<void> => {
-    writes.delete(write.toolCallId)
-    try {
-      await Effect.runPromise(
-        write.attachment.reportExecution(write.grant, { kind: 'operation-completed' })
-      )
-    } catch (error) {
-      onError(
-        `Native file write ${write.toolCallId} could not be settled: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-  }
+  const complete = (write: NativeWrite): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      writes.delete(write.toolCallId)
+      return write.attachment
+        .reportExecution(write.grant, { kind: 'operation-completed' })
+        .pipe(
+          Effect.catch(error =>
+            Effect.sync(() =>
+              onError(
+                `Native file write ${write.toolCallId} could not be settled: ${error.message}`
+              )
+            )
+          )
+        )
+    })
 
-  const operate = async <A>(
+  // Pi calls these operations with Promises. A filesystem failure reaches Pi's tool as the
+  // original Node error, so it is carried as a defect rather than translated.
+  const operate = <A>(
     path: string,
     role: 'destination' | 'parent',
     operation: () => Promise<A>
   ): Promise<A> => {
     inProgress += 1
-    try {
-      if (closing) throw new Error('The session is closing; the file operation was not run')
-      const actual = canonicalPath(path).path
-      const matched = [...writes.values()].filter(write =>
-        role === 'destination'
-          ? write.destination === actual
-          : write.destination !== actual && isWithin(actual, write.destination)
-      )
-      if (matched.length === 0)
-        throw new Error(`Native file operation on ${path} matches no admitted destination`)
-      for (const write of matched) {
-        write.started ??= Effect.runPromise(
-          write.attachment.reportExecution(write.grant, { kind: 'operation-started' })
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        if (closing)
+          return yield* new NativeWriteRefused({
+            message: 'The session is closing; the file operation was not run',
+          })
+        const actual = canonicalPath(path).path
+        const matched = [...writes.values()].filter(write =>
+          role === 'destination'
+            ? write.destination === actual
+            : write.destination !== actual && isWithin(actual, write.destination)
         )
-        await write.started
-      }
-      return await operation()
-    } finally {
-      inProgress -= 1
-    }
+        if (matched.length === 0)
+          return yield* new NativeWriteRefused({
+            message: `Native file operation on ${path} matches no admitted destination`,
+          })
+        for (const write of matched) {
+          write.started ??= yield* Effect.cached(
+            write.attachment.reportExecution(write.grant, { kind: 'operation-started' })
+          )
+          yield* write.started
+        }
+        return yield* Effect.promise(operation)
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            inProgress -= 1
+          })
+        )
+      )
+    )
   }
 
   const writeFileOperation = (path: string, content: string) =>
@@ -110,28 +131,45 @@ export const createNativeWrites = (onError: (message: string) => void): NativeWr
       readFile: path => operate(path, 'destination', () => readFile(path)),
       writeFile: writeFileOperation,
     },
-    admit(input) {
-      if (closing) throw new Error('The session is closing')
-      const destination = input.grant.path
-      if (destination === undefined) throw new Error('A native write grant has no destination')
-      const identity = destinationIdentity(destination)
-      if ([...writes.values()].some(write => write.identity === identity))
-        throw new Error(`Another native write to ${destination} is still in flight`)
-      writes.set(input.toolCallId, { ...input, destination, identity })
-    },
-    async finish(toolCallId) {
-      const write = writes.get(toolCallId)
-      if (write !== undefined) await complete(write)
-    },
-    async settle() {
+    admit: input =>
+      Effect.suspend(() => {
+        if (closing)
+          return Effect.fail(new NativeWriteRefused({ message: 'The session is closing' }))
+        const destination = input.grant.path
+        if (destination === undefined)
+          return Effect.fail(
+            new NativeWriteRefused({ message: 'A native write grant has no destination' })
+          )
+        const identity = destinationIdentity(destination)
+        if ([...writes.values()].some(write => write.identity === identity))
+          return Effect.fail(
+            new NativeWriteRefused({
+              message: `Another native write to ${destination} is still in flight`,
+            })
+          )
+        writes.set(input.toolCallId, { ...input, destination, identity })
+        return Effect.void
+      }),
+    finish: toolCallId =>
+      Effect.suspend(() => {
+        const write = writes.get(toolCallId)
+        return write === undefined ? Effect.void : complete(write)
+      }),
+    settle: Effect.gen(function* () {
       closing = true
-      try {
-        const deadline = Date.now() + SETTLE_WAIT_MS
-        while (inProgress > 0 && Date.now() < deadline) await sleep(25)
-        if (inProgress === 0) await Promise.all([...writes.values()].map(complete))
-      } finally {
-        closing = false
-      }
-    },
+      const deadline = Date.now() + SETTLE_WAIT_MS
+      while (inProgress > 0 && Date.now() < deadline) yield* Effect.sleep(SETTLE_POLL)
+      if (inProgress === 0)
+        yield* Effect.forEach([...writes.values()], complete, {
+          concurrency: 'unbounded',
+          discard: true,
+        })
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          closing = false
+        })
+      )
+    ),
   }
 }

@@ -11,7 +11,7 @@ import type {
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import type { SessionManager } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
 import { decodeWriteOperand } from './workspace-paths.ts'
-import { createNativeWrites } from './workspace-native-write.ts'
+import { makeNativeWrites } from './workspace-native-write.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 import type { EditOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js'
@@ -188,7 +188,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
   const preservedInput: string[] = []
   const readerWarnings = new Map<string, string>()
   let writerWarned = false
-  const nativeWrites = createNativeWrites(message => notify(currentContext, message, 'error'))
+  const nativeWrites = makeNativeWrites(message => notify(currentContext, message, 'error'))
 
   const shellScope = Scope.makeUnsafe()
   const shell = Effect.runSync(
@@ -568,11 +568,13 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       if (operation.kind !== 'ready')
         throw new Error('the workspace changed before the native write was admitted')
       try {
-        nativeWrites.admit({
-          toolCallId: event.toolCallId,
-          attachment: activeAttachment,
-          grant: operation.grant,
-        })
+        await Effect.runPromise(
+          nativeWrites.admit({
+            toolCallId: event.toolCallId,
+            attachment: activeAttachment,
+            grant: operation.grant,
+          })
+        )
       } catch (error) {
         await run(
           activeAttachment.reportExecution(operation.grant, { kind: 'operation-completed' })
@@ -855,7 +857,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       if (closed) return
       closed = true
       if (pending?.switchStarted) return
-      await nativeWrites.settle()
+      await Effect.runPromise(nativeWrites.settle)
       await Effect.runPromise(shell.stop)
       await Effect.runPromise(Scope.close(shellScope, Exit.void))
       for (const attachment of stagedAttachments.values()) await closeAttachmentOnce(attachment)
@@ -878,7 +880,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       api.on('tool_call', (event, context) => safeToolCall(api, event, context))
 
       api.on('tool_execution_end', async event => {
-        await nativeWrites.finish(event.toolCallId)
+        await Effect.runPromise(nativeWrites.finish(event.toolCallId))
         readerWarnings.delete(event.toolCallId)
       })
 
@@ -929,7 +931,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       })
 
       api.on('session_shutdown', async event => {
-        await nativeWrites.settle()
+        await Effect.runPromise(nativeWrites.settle)
         if (event.reason !== 'reload') await Effect.runPromise(shell.stop)
         if (event.reason !== 'quit' || pending?.switchStarted) return
         if (pending && !pending.switchStarted) {

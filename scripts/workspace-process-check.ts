@@ -20,7 +20,7 @@ import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
-import { createNativeWrites } from '../src/workspace-native-write.ts'
+import { makeNativeWrites } from '../src/workspace-native-write.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
 import { allocateDetachedWorktree, canonicalGitWorkspace } from '../src/workspace-git.ts'
 import type { AttemptView } from '../src/work-domain.ts'
@@ -390,7 +390,7 @@ try {
     assert.ok(!existsSync(racedMarker), 'a command launched as the shell stops never runs')
     checks.push('a command launched while the host shell stops is refused before it runs')
 
-    const nativeWrites = createNativeWrites(message => {
+    const nativeWrites = makeNativeWrites(message => {
       throw new Error(message)
     })
     const admitNative = async (toolCallId: string, path: string) => {
@@ -403,13 +403,15 @@ try {
         path,
       })
       if (operation.kind !== 'ready') throw new Error('Unexpected native write handoff')
-      nativeWrites.admit({ toolCallId, attachment: attachment.effect, grant: operation.grant })
+      await Effect.runPromise(
+        nativeWrites.admit({ toolCallId, attachment: attachment.effect, grant: operation.grant })
+      )
       return operation.grant
     }
     const writtenGrant = await admitNative('settle-written', 'settled.txt')
     const unusedGrant = await admitNative('settle-unused', 'unused.txt')
     await nativeWrites.writeOperations.writeFile(join(grant.cwd, 'settled.txt'), 'settled')
-    await nativeWrites.settle()
+    await Effect.runPromise(nativeWrites.settle)
     await assert.rejects(
       nativeWrites.writeOperations.writeFile(join(grant.cwd, 'unused.txt'), 'late'),
       /matches no admitted destination/
@@ -446,25 +448,28 @@ try {
       ['Café.txt', 'CAFÉ.TXT'],
       ['straße.txt', 'STRASSE.txt'],
     ] as const) {
-      nativeWrites.admit({
-        toolCallId: `fold-${first}`,
-        attachment: attachment.effect,
-        grant: await authorizeNative(first),
-      })
+      await Effect.runPromise(
+        nativeWrites.admit({
+          toolCallId: `fold-${first}`,
+          attachment: attachment.effect,
+          grant: await authorizeNative(first),
+        })
+      )
       const refused = await authorizeNative(second)
-      assert.throws(
-        () =>
+      await assert.rejects(
+        Effect.runPromise(
           nativeWrites.admit({
             toolCallId: `fold-${second}`,
             attachment: attachment.effect,
             grant: refused,
-          }),
+          })
+        ),
         /still in flight/,
         `${second} names the file ${first} already being written`
       )
       await attachment.reportExecution(refused, { kind: 'operation-completed' })
     }
-    await nativeWrites.settle()
+    await Effect.runPromise(nativeWrites.settle)
     checks.push(
       'a native write is refused while another write to the same file under a different case, normalization or ß/ss spelling is in flight'
     )
