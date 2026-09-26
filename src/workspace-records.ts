@@ -347,9 +347,8 @@ export const putUse = (db: DatabaseSync, value: UseRecord): void => {
 }
 export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
   const checked = decodeOrFail(UseSchema, value, 'workspace use')
-  // Every settling route writes through here, so no route can miss these rules.
-  // `unknown` records lost evidence that no later observation or host report can
-  // restore; resolving it is an explicit recovery decision.
+  // Every settling route writes through here, so the absorbing `unknown` and dependent
+  // rules of ADR 0005 cannot be bypassed by a new route.
   const stored = getUse(db, checked.id)
   if (stored?.stage === 'unknown' && checked.stage !== 'unknown')
     requireReview(`Workspace use ${checked.id} is unknown; only explicit recovery can resolve it`)

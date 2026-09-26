@@ -107,9 +107,7 @@ export const resolveWriteDestination = (
   return writeDestination(checkout, resolve(cwd, requested))
 }
 
-// The destination is opened after this boundary, so every component of its existing prefix
-// is resolved again: a directory swapped for a link since authorization would otherwise
-// redirect the write. Only a descriptor handed to the writer would close the open(2) window.
+// Rerun at the start boundary; the remaining open(2) window is the residual ADR 0005 accepts.
 export const assertDestinationUnchanged = (checkout: string, recorded: string): void => {
   let actual: string
   try {

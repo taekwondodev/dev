@@ -46,10 +46,8 @@ const destinationIdentity = (path: string): string =>
 const NO_FOLLOW_WRITE =
   constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW
 
-// Pi runs a call only after every hook of its batch, and sibling calls may run in
-// between, so the start boundary is reported from inside the write, next to its open.
-// After the session shuts down Pi no longer reports a call's end, so shutdown refuses
-// further operations and settles every admitted write itself.
+// Start and completion are reported where ADR 0005 places them: from inside the write, and
+// by this module at shutdown, after which Pi no longer reports a call's end.
 export const makeNativeWrites = (onError: (message: string) => void): NativeWrites => {
   const writes = new Map<string, NativeWrite>()
   let inProgress = 0

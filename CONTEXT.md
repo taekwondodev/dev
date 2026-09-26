@@ -74,6 +74,8 @@ before changing workspace admission, shells, native writes or the lead's tool ga
 Read its [executable-extension policy](docs/adr/0005-scoped-runtime-coordination.md#executable-extensions)
 before adding or updating extensions, changing resource loading or routing
 project effects through tools, event handlers or child processes.
+Read its [Effect boundary](docs/adr/0005-scoped-runtime-coordination.md#effect-boundary)
+before adding Promise-based code outside Pi's calling points.
 
 ## Configuration and private state
 
