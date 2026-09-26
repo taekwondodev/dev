@@ -1,24 +1,24 @@
-# Handoff: #36 workspace admission, review fixes integrated, full suite not yet rerun
+# Handoff: #36 workspace admission, test-tools group done, final review round 2 next
 
 ## Resume
 
 - `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. The issue is OPEN by user decision until the PR exists; the evidence comment is already posted ([link](https://github.com/taekwondodev/dev/issues/36#issuecomment-5844741850)). #37 (release and cleanup) is out of scope.
 - `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. It is the only registered worktree; the scratch worktrees used earlier (`dev-36-authority`, `wt-*`) are gone.
-- `snapshot`: 2026-09-26 night. HEAD `69d8362426ae691add8c18a4e1a59359dc990029`, working tree clean, 35 local unpushed commits over `main` (`4772677`). The last 11 commits (`a663588` to `69d8362`) integrate two parallel review-fix branches and were checked only with `npx tsc --noEmit -p .` (0 errors), `npx oxfmt --check src scripts` and `git diff --check`. The full suite was last green at `05d3afa`.
-- `phase`: `dev-cycle` step 7, the final three-axis review, now between round 1 and round 2. Owning skills: `dev-cycle`, then `code-review` for round 2 and `pr` for delivery.
+- `snapshot`: 2026-09-26 evening. HEAD `450b53e9cac271d86b7e21bfbb91427c1ad32ece` plus this handoff commit, working tree clean, local unpushed commits over `main` (`4772677`). The full suite is green at `450b53e` (see Evidence).
+- `phase`: `dev-cycle` step 7, the final three-axis review, between round 1 and round 2. Every smell group, including test tools, is now fixed. Owning skills: `code-review` for round 2, then `pr` for delivery.
 - `authorization`: user instructions of 2026-09-26.
   - Local commits: authorized.
   - At the end, after the final review converges: push the branch and open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link. The user merges, which closes #36; do not merge or close #36 yourself.
   - Never push directly to `main`; #37 is unauthorized.
   - Do not reset, rebase or clean the branch; keep `docs/agents/triage-labels.md` unformatted and out of scope.
-  - The user stopped the previous session before the suite rerun and asked to continue from this handoff.
-- `next_action`: run the full suite on HEAD with `TMPDIR` set to a private temporary directory: `npm run lint`, `npm run smoke`, `npm run workspace:check`, `npm run workspace:tui`, `npx oxfmt --check src scripts`, `git diff --check`, then `pgrep -fl "dev-shell|sleep 60"` for leaked processes, then confirm `~/Library/Application Support/dev` still does not exist. Fix anything red with a regression, and commit.
+  - The user resumed from the previous handoff on the evening of 2026-09-26; the suite rerun and the test-tools group it planned are done.
+- `next_action`: final review round 2 with `code-review`: three isolated reviewers (Spec, Adversarial, Standards) on `git diff f7cb3b4 HEAD`, rechecking the round-1 findings, the integration deviations and the changes of this session listed under Retained context. Fix blockers with regressions and rerun only the affected axes and checks.
 - `required_inputs`:
   - `session-pickup`: `/Users/taekwondodev/Developer/skills/skills/session-pickup/SKILL.md`
   - `dev-cycle`: `/Users/taekwondodev/Developer/skills/skills/dev-cycle/SKILL.md`
   - `AGENTS.md`, and `node_modules/effect/AGENTS.md` before writing Effect code (project rule).
   - `docs/adr/0005-scoped-runtime-coordination.md` (scoped operations, Effect boundary, executable extensions) and `docs/DEVELOPMENT.md` (checks, module ownership).
-- `done_when`: every command in `next_action` passes on the same commit (lint with 0 errors and 0 effect messages, both PTY probes `passed_marker: true` with no missing actions, no leaked process, real authority root absent), with any fix committed.
+- `done_when`: round 2 converges (no blocking finding left), the full suite passes on the final commit (lint 0 errors and 0 effect messages, smoke, `workspace:check`, both PTY probes `passed_marker: true` with no missing actions or input error, `oxfmt --check src scripts`, `git diff --check`, no leaked `dev-shell` or `sleep 60`, real authority root absent), and every fix is committed. Then deliver with `pr`.
 - `stop_when`:
   - a failure that needs a behavior or scope decision;
   - a review finding classed blocking that cannot be fixed without one;
@@ -97,19 +97,27 @@ The remaining two Standards blockers, validate-once and host Promise APIs, went 
   - one `errorText` in `src/error-text.ts` for every workspace module.
   - Error-text copies remain in older modules outside the #36 diff (`preferences.ts`, `profiles.ts`, `work-dispatch.ts`, `work-controller.ts`, `work-extension.ts`, `pi-child.ts`, `runtime-coordination.ts`, `session-guard.ts`, `work-protocol.ts`); out of scope unless the user asks.
 
+**What this session changed (2026-09-26 evening, check these in round 2 too):**
+
+- `e2aad51`: `src/work-child-workspace.ts` checks a child's use in Effect over a `ControllerChannel` that defaults to `process`; `pi-child.ts` yields it. The stub probe drives the gate through a real Pi session's `extensionRunner.emitToolCall` with a granting channel; no global `process.send` patch or fake `ExtensionAPI`.
+- `ad57e9d`: `src/launcher.ts` exports `makeRuntimeFactory(parts)`, whose `RuntimeParts` accept `modelRuntime`, `model` and `extensions(dev, cwd)`. Both PTY probes build every runtime with it, with the real session guard (lease in the checkout's `.dev/`) and profile resources; they pre-record fixture distrust instead of setting it in a factory copy. The stub records the trust context from Pi's `project_trust` event, so a launcher that drops the TUI context now fails the probe.
+- `5511f32`: the stub lifecycle only issues grants and records facts; its copies of scoped admission, the stage machine, the transition fence and the live-execution refusals are gone, leaving fault injection. Fact-sequence assertions still fail for a shell skipping `started`, a shell settling while a descendant lives, and a native write without `operation-started`.
+- `1f59cec`: the stub prints `DEV36_INPUTS {...}`; the driver's key table uses `{TASK_LEAD}`-style fields and reports `input_error` for an unprinted field. A probe ignoring SIGTERM is killed after 10 s.
+- `b376473` (behavior fix found by a specific assertion): the contention handoff reason ends without a period, so the three messages that append one no longer render `..`.
+- `2ae99ec`: the real-authority probe reports `makeClaims` claims (14). The held-switch notice is recorded through the host's handler context and asserted exactly; the reload and session-end halves are separate claims; `within` timers are unref'd, so the probe exits in ~11 s instead of ~92 s.
+- `450b53e`: stub list, inspect and TUI host messages are compared by headers and rows instead of `/workspace/`.
+- Not mutation-verified: the exact `!` history entry in the real probe (was `includes('user-bash')`).
+
 **Noted, not changed:** the controller now settles an unacknowledged launch before the root-reuse check, so a reused root after a gated launch settles as `launch-failed` instead of `unknown`; the root never released user code.
 
 ## Evidence and gaps
 
-| Check                                           | Commit                         | Result                                              | Source            |
-| ----------------------------------------------- | ------------------------------ | --------------------------------------------------- | ----------------- |
-| `tsc`, `oxfmt --check`, `git diff --check`      | `69d8362`                      | pass                                                | observed          |
-| lint, smoke, `workspace:check`, `workspace:tui` | `69d8362`                      | **not run** (user instruction)                      | required next     |
-| full suite, as in `next_action`                 | `05d3afa`                      | pass, 0 effect messages, no leaks, real root absent | observed          |
-| full suite in the engine worktree               | `3744a55` (before integration) | pass                                                | reported by agent |
-| full suite in the Effect worktree               | `1744ed4` (before integration) | pass                                                | reported by agent |
-
-Integration conflict resolutions were not exercised by any test yet.
+| Check                                                  | Commit                | Result                                                                        | Source            |
+| ------------------------------------------------------ | --------------------- | ----------------------------------------------------------------------------- | ----------------- |
+| full suite, as in `done_when`                          | `450b53e`             | pass, 0 effect messages, 20 oxlint warnings (none new), no leaks, root absent | observed          |
+| full suite                                             | `e1c9c4b`             | pass (before the test-tools group)                                            | observed          |
+| mutations of every rewritten assertion of this session | per commit            | each killed by its intended assertion, except the one listed above            | observed          |
+| full suite in the engine / Effect worktrees            | `3744a55` / `1744ed4` | pass                                                                          | reported by agent |
 
 **Regressions added in `05d3afa`**, each observed failing under a mutation reverting its fix:
 
@@ -138,17 +146,9 @@ Remaining limits for the PR body:
 
 ## Remaining work
 
-1. Full suite on HEAD (`next_action`); fix red.
-2. The test-tools smell group, chosen by the user. Mutation-verify every rewritten assertion.
-   - The stub lifecycle in `scripts/workspace-host-pty-probe.ts` still copies the engine's scoped rules and execution stage machine. Record facts instead, keep the fact-sequence assertions, and leave rule enforcement to the real-authority probe.
-   - Both probes rebuild their own copy of the launcher's runtime factory. Export it from `src/launcher.ts` with injectable model, lifecycle and extensions and use it in both, or record the limit in `docs/DEVELOPMENT.md`.
-   - The real-authority probe prints a static claim list; use `makeClaims` from `scripts/workspace-check-support.ts`.
-   - `scripts/run-workspace-pty-probes.py` hard-codes the stub's fixture IDs; let the probe print what the driver must type.
-   - The stub patches `process.send` and `process.connected` globally and casts a fake `ExtensionAPI`; test the child gate through an injectable IPC seam.
-   - Replace weak assertions such as `/workspace/i` with specific text.
-3. Rerun the full suite; update `HANDOFF.md`.
-4. Final review round 2 with `code-review`: three isolated reviewers on `git diff f7cb3b4 HEAD`, rechecking the round-1 findings and the integration deviations listed above. Fix blockers and rerun affected axes. If round 2 does not converge, show the remaining findings to the user (procedure rule).
-5. Delivery with the `pr` skill:
+1. Final review round 2 with `code-review` (`next_action`). If round 2 does not converge, show the remaining findings to the user (procedure rule).
+2. Rerun the full suite on the final commit; update this handoff.
+3. Delivery with the `pr` skill:
    - push `feat/36-workspace-admission`;
    - open a PR to `main` with `Closes #36`, evidence, decisions and limits;
    - comment on #36 with the PR link;
@@ -162,6 +162,5 @@ Later, not authorized: #37 (release and cleanup, including worktrees left by wit
 
 - #36 body and comments (read with `gh`, see `docs/agents/issue-tracker.md`): canonical acceptance, with linked resolutions #27, #28, #30, #31, #34 and the amendments on durability (https://github.com/taekwondodev/dev/issues/31#issuecomment-5810802846) and on the extension policy (https://github.com/taekwondodev/dev/issues/36#issuecomment-5815706403). Read for round 2 (Spec) and for the PR body.
 - `/Users/taekwondodev/.claude/skills/code-review/SKILL.md` and `references/result-contract.md`: read before round 2.
-- `/Users/taekwondodev/.claude/skills/testing/SKILL.md`: read before the test-tools group.
 - `/Users/taekwondodev/.claude/skills/pr/SKILL.md`: read before delivery.
 - Memory notes in `/Users/taekwondodev/.claude/projects/-Users-taekwondodev-Developer-dev/memory/`: the user wants Effect used uniformly and prefers fixing review smells in the same delivery.
