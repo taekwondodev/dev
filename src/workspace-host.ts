@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import { Effect, Exit, Scope } from 'effect'
 import { resolve } from 'node:path'
 import type { AgentSessionRuntime } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
 import type {
@@ -12,7 +12,7 @@ import type {
 import type { SessionManager } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
 import { decodeWriteOperand } from './workspace-paths.ts'
 import { createNativeWrites } from './workspace-native-write.ts'
-import { createWorkspaceShell } from './workspace-shell.ts'
+import { makeWorkspaceShell } from './workspace-shell.ts'
 import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 import type { EditOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js'
 import type { WriteOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js'
@@ -190,12 +190,29 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
   let writerWarned = false
   const nativeWrites = createNativeWrites(message => notify(currentContext, message, 'error'))
 
-  const shell = createWorkspaceShell(async cwd => {
-    const result = await run(activeAttachment.authorize({ access: 'write', cwd }))
-    if (result.kind !== 'ready')
-      throw new Error('Workspace admission requires a host rebind; the command was not executed.')
-    return { attachment: activeAttachment, grant: result.grant }
-  })
+  const shellScope = Scope.makeUnsafe()
+  const shell = Effect.runSync(
+    Scope.provide(shellScope)(
+      makeWorkspaceShell(cwd =>
+        Effect.suspend(() => {
+          const attachment = activeAttachment
+          return attachment.authorize({ access: 'write', cwd }).pipe(
+            Effect.flatMap(result =>
+              result.kind === 'ready'
+                ? Effect.succeed({ attachment, grant: result.grant })
+                : Effect.fail(
+                    new WorkspaceError({
+                      outcome: 'blocked',
+                      message:
+                        'Workspace admission requires a host rebind; the command was not executed.',
+                    })
+                  )
+            )
+          )
+        })
+      )
+    )
+  )
 
   const closeAttachmentOnce = async (attachment: WorkspaceAttachment): Promise<void> => {
     if (closedAttachments.has(attachment)) return
@@ -300,7 +317,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     try {
       capturePendingInput(transition.context)
       await assertSessionIdle()
-      await shell.stop()
+      await Effect.runPromise(shell.stop)
       const identity = currentSessionIdentity()
       const minimumEntries = runtime?.session.sessionManager.getEntries().length ?? 0
       pendingReopen = {
@@ -839,7 +856,8 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       closed = true
       if (pending?.switchStarted) return
       await nativeWrites.settle()
-      await shell.stop()
+      await Effect.runPromise(shell.stop)
+      await Effect.runPromise(Scope.close(shellScope, Exit.void))
       for (const attachment of stagedAttachments.values()) await closeAttachmentOnce(attachment)
       stagedAttachments.clear()
       for (const attachment of preparedAttachments) await closeAttachmentOnce(attachment)
@@ -912,7 +930,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
 
       api.on('session_shutdown', async event => {
         await nativeWrites.settle()
-        if (event.reason !== 'reload') await shell.stop()
+        if (event.reason !== 'reload') await Effect.runPromise(shell.stop)
         if (event.reason !== 'quit' || pending?.switchStarted) return
         if (pending && !pending.switchStarted) {
           try {
@@ -1068,7 +1086,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       if (!confirmed) return
       try {
         await workControls?.stopAll('workspace switch confirmed')
-        await shell.stop()
+        await Effect.runPromise(shell.stop)
       } catch (error) {
         notify(
           context,

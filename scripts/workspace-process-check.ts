@@ -19,9 +19,8 @@ import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
-import { openLifecycle } from './workspace-test-lifecycle.ts'
+import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { createNativeWrites } from '../src/workspace-native-write.ts'
-import { createWorkspaceShell } from '../src/workspace-shell.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
 import { allocateDetachedWorktree, canonicalGitWorkspace } from '../src/workspace-git.ts'
 import type { AttemptView } from '../src/work-domain.ts'
@@ -249,7 +248,7 @@ try {
       await noAuthority.dispose()
     }
 
-    const shell = createWorkspaceShell(async shellCwd => {
+    const shell = await openShell(async shellCwd => {
       const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
       if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
       return { attachment: attachment.effect, grant: writer.grant }
@@ -322,7 +321,7 @@ try {
         )
       )
     )
-    const barrierShell = createWorkspaceShell(async shellCwd => {
+    const barrierShell = await openShell(async shellCwd => {
       const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
       if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
       return { attachment: abortAtBarrier, grant: writer.grant }

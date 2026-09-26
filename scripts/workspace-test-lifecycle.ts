@@ -1,18 +1,21 @@
 import { Effect, Exit, Scope } from 'effect'
-import type {
-  WorkspaceAttachment,
-  WorkspaceAuthorization,
-  WorkspaceBinding,
-  WorkspaceConversation,
-  WorkspaceExecutionFact,
-  WorkspaceGrant,
-  WorkspaceHandoff,
-  WorkspaceLifecycle,
-  WorkspaceOperation,
-  WorkspaceSelection,
-  WorkspaceView,
+import {
+  WorkspaceError,
+  type WorkspaceAttachment,
+  type WorkspaceAuthorization,
+  type WorkspaceBinding,
+  type WorkspaceConversation,
+  type WorkspaceExecutionFact,
+  type WorkspaceGrant,
+  type WorkspaceHandoff,
+  type WorkspaceLifecycle,
+  type WorkspaceOperation,
+  type WorkspaceSelection,
+  type WorkspaceView,
 } from '../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { makeWorkspaceShell, type WorkspaceAdmission } from '../src/workspace-shell.ts'
+import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 
 // The checks are imperative scripts, so they drive the Effect client through Promises. Code
 // under test that takes the client itself receives `effect`.
@@ -68,5 +71,38 @@ export const openLifecycle = async (options: { readonly root: string }): Promise
     inspect: input => Effect.runPromise(lifecycle.inspect(input)),
     validate: grant => Effect.runPromise(lifecycle.validate(grant)),
     close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+  }
+}
+
+export interface TestShell {
+  readonly operations: BashOperations
+  live(): number
+  stop(): Promise<void>
+}
+
+export const openShell = async (
+  admit: (cwd: string) => Promise<WorkspaceAdmission>
+): Promise<TestShell> => {
+  const scope = await Effect.runPromise(Scope.make())
+  const shell = await Effect.runPromise(
+    Scope.provide(scope)(
+      makeWorkspaceShell(cwd =>
+        Effect.tryPromise({
+          try: () => admit(cwd),
+          catch: cause =>
+            cause instanceof WorkspaceError
+              ? cause
+              : new WorkspaceError({
+                  outcome: 'unavailable',
+                  message: cause instanceof Error ? cause.message : String(cause),
+                }),
+        })
+      )
+    )
+  )
+  return {
+    operations: shell.operations,
+    live: () => shell.live(),
+    stop: () => Effect.runPromise(shell.stop),
   }
 }
