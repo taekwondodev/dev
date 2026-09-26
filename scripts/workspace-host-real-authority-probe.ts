@@ -16,6 +16,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import type {
   ExtensionAPI,
+  ExtensionContext,
   ExtensionFactory,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import { makeRuntimeFactory } from '../src/launcher.ts'
@@ -25,7 +26,7 @@ import { createSessionGuard } from '../src/session-guard.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { loadInstalledPi } from './workspace-check-support.ts'
+import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
@@ -284,6 +285,44 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
   })
 }
 
+// The host notifies through the context Pi hands its handlers; the probe keeps each message.
+const notices: string[] = []
+const bound = (target: object, key: string | symbol): unknown => {
+  const value: unknown = Reflect.get(target, key)
+  return typeof value === 'function' ? value.bind(target) : value
+}
+const recordingNotices = (context: ExtensionContext): ExtensionContext =>
+  new Proxy(context, {
+    get: (target, key) =>
+      key === 'ui'
+        ? new Proxy(target.ui, {
+            get: (ui, uiKey) =>
+              uiKey === 'notify'
+                ? (...args: Parameters<ExtensionContext['ui']['notify']>) => {
+                    notices.push(args[0])
+                    ui.notify(...args)
+                  }
+                : bound(ui, uiKey),
+          })
+        : bound(target, key),
+  })
+const recordHostNotices =
+  (factory: ExtensionFactory): ExtensionFactory =>
+  api =>
+    factory(
+      new Proxy(api, {
+        get: (target, key) =>
+          key === 'on'
+            ? (event: string, handler: (payload: unknown, context: ExtensionContext) => unknown) =>
+                Reflect.apply(target.on, target, [
+                  event,
+                  (payload: unknown, context: ExtensionContext) =>
+                    handler(payload, recordingNotices(context)),
+                ])
+            : bound(target, key),
+      })
+    )
+
 const guard = createSessionGuard(
   await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
 )
@@ -299,7 +338,14 @@ const runtimeFactory = await Effect.runPromise(
       lifecycle: lifecycle.effect,
       modelRuntime: Effect.succeed(modelRuntime),
       model: offlineModel,
-      extensions: dev => [{ name: 'probe:observer', factory: observer }, ...dev],
+      extensions: dev => [
+        { name: 'probe:observer', factory: observer },
+        ...dev.map(item =>
+          item.name === 'dev:workspace-host'
+            ? { ...item, factory: recordHostNotices(item.factory) }
+            : item
+        ),
+      ],
     })
   }).pipe(Effect.provide(NodeServices.layer))
 )
@@ -315,7 +361,7 @@ const bindingBeforeRefusal = structuredClone(workspaceHost.attachment.binding)
 const within = <A>(promise: Promise<A>, ms: number, what: string) =>
   Promise.race([
     promise,
-    sleep(ms).then(() => {
+    sleep(ms, undefined, { ref: false }).then(() => {
       throw new Error(`timed out: ${what}`)
     }),
   ])
@@ -339,18 +385,33 @@ void mode.run().catch((cause: unknown) => {
 
 await within(leadStarted, 30000, 'lead session_start')
 assert.equal(resolve(runtime.cwd), resolve(lead))
+const { claim, passed } = makeClaims()
 
 const readOnly = (args: readonly string[]) => {
   const command = Effect.runSync(parseWorkspaceCommand(args))
   if (command.kind === 'resume') throw new Error('Expected a read-only workspace command')
   return Effect.runPromise(runReadOnlyWorkspaceCommand(lifecycle.effect, command, { cwd: lead }))
 }
-const listResult = await readOnly([])
-const inspectResult = await readOnly(['inspect', squatterTaskId])
-assert.equal(listResult.exitCode, 0, listResult.stderr ?? '')
-assert.equal(inspectResult.exitCode, 0, inspectResult.stderr ?? '')
-assert.match(listResult.stdout ?? '', /Workspace list for repository/)
-assert.match(inspectResult.stdout ?? '', /^ {2}use [\w-]+: write, /m)
+await claim(
+  "the read-only list and inspect commands answer from the real authority with the squatter's workspace and its write use",
+  async () => {
+    const listResult = await readOnly([])
+    const inspectResult = await readOnly(['inspect', squatterTaskId])
+    assert.equal(listResult.exitCode, 0, listResult.stderr ?? '')
+    assert.equal(inspectResult.exitCode, 0, inspectResult.stderr ?? '')
+    const squatterRow = `task ${squatterTaskId} — workspace ${squatterAdmission.grant.workspaceId}`
+    assert.deepEqual(
+      (listResult.stdout ?? '').split('\n').filter(line => !line.startsWith(' ')),
+      [`Workspace list for repository ${lead}:`, squatterRow]
+    )
+    const inspected = (inspectResult.stdout ?? '').split('\n')
+    assert.equal(inspected[0], `Workspace records for exact task ${squatterTaskId}: ${squatterRow}`)
+    assert.ok(
+      inspected.some(line => line.startsWith(`  use ${squatterAdmission.grant.useId}: write, `)),
+      inspectResult.stdout
+    )
+  }
+)
 
 const persistedResult = (toolCallId: string) => {
   const found = runtime.session.sessionManager
@@ -369,25 +430,32 @@ const worktrees = () =>
   git(['worktree', 'list', '--porcelain'], lead)
     .split('\n')
     .filter(line => line.startsWith('worktree '))
+const SHELL_GONE = 'The shell process group and every tracked descendant were observed gone'
 
 // The first contended write needs a managed worktree of the filtered commit: the authority
 // refuses it before any Git effect, and the host reports that without leaving its binding.
 await within(refusalEnded, 30000, 'the turn with the refused allocation to end')
-assert.deepEqual(workspaceHost.attachment.binding, bindingBeforeRefusal, 'the binding is kept')
-assert.equal(bindingBeforeRefusal.cwd, resolve(lead))
-assert.equal(workspaceHost.isParked(), false, 'the refusal does not park the host')
-assert.equal(resolve(runtime.cwd), resolve(lead))
-assert.ok(!existsSync(join(lead, 'filtered.txt')), 'the contested write never ran')
-assert.ok(!existsSync(filterMarker), 'no checkout filter ran')
-assert.deepEqual(worktrees(), [`worktree ${lead}`], 'no managed worktree was created')
-assert.deepEqual(
-  (await lifecycle.inspect({})).flatMap(view => view.pending),
-  [],
-  'the refused allocation leaves no pending operation'
+await claim(
+  'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI and changes nothing: the binding is kept, neither the write nor the filter runs, and no worktree or pending operation is left',
+  async () => {
+    assert.deepEqual(workspaceHost.attachment.binding, bindingBeforeRefusal, 'the binding is kept')
+    assert.equal(bindingBeforeRefusal.cwd, resolve(lead))
+    assert.equal(workspaceHost.isParked(), false, 'the refusal does not park the host')
+    assert.equal(resolve(runtime.cwd), resolve(lead))
+    assert.ok(!existsSync(join(lead, 'filtered.txt')), 'the contested write never ran')
+    assert.ok(!existsSync(filterMarker), 'no checkout filter ran')
+    assert.deepEqual(worktrees(), [`worktree ${lead}`], 'no managed worktree was created')
+    assert.deepEqual(
+      (await lifecycle.inspect({})).flatMap(view => view.pending),
+      [],
+      'the refused allocation leaves no pending operation'
+    )
+    assert.deepEqual(persistedResult('filtered-write'), {
+      isError: true,
+      text: 'Workspace admission failed closed: Managed allocation is unavailable for filtered files; checkout filter effects are not controlled',
+    })
+  }
 )
-const refusedWrite = persistedResult('filtered-write')
-assert.equal(refusedWrite.isError, true, 'the refused write is reported as a failed tool call')
-assert.match(refusedWrite.text, /checkout filter/)
 // Later contention allocates from a commit without the filter.
 git(['rm', '--quiet', '.gitattributes'], lead)
 git(['commit', '--quiet', '-m', 'real-authority fixture'], lead)
@@ -397,63 +465,93 @@ signal('READY_FOR_NEXT_CALL')
 await within(finished, 90000, 'scripted turns to finish')
 signal('TURNS_FINISHED')
 
-const binding = workspaceHost.attachment.binding
+const { binding } = workspaceHost.attachment
 const managed = binding.cwd
-assert.notEqual(resolve(managed), resolve(lead), 'the contended write rebinds the conversation')
-assert.equal(git(['rev-parse', 'HEAD'], managed), leadCommit)
-assert.ok(!existsSync(join(lead, 'contended.txt')), 'the blocked write never ran')
-assert.ok(!existsSync(join(managed, 'contended.txt')), 'the blocked write was not replayed')
-assert.equal(readFileSync(join(managed, 'shell.txt'), 'utf8'), 'shell-ran')
-assert.equal(readFileSync(join(managed, 'native.txt'), 'utf8'), 'native write\n')
-assert.ok(!existsSync(join(fixture, 'unverified-tool-ran')), 'the unverified tool never ran')
-assert.equal(providerCall, script.length, 'refusing the unverified tool did not end the turn')
-
-assert.equal(
-  persistedResult('contended-read').isError,
-  false,
-  'the call after the refusal is admitted'
-)
-assert.match(
-  persistedResult('contended-read').text,
-  /\[dev workspace\] A writer owns this live checkout/
-)
-assert.match(persistedResult('contended-native-write').text, /rebind|not executed|admission/i)
-assert.equal(persistedResult('lead-shell').isError, false)
-assert.equal(persistedResult('native-write').isError, false)
-assert.equal(persistedResult('second-native-write').isError, false)
-assert.equal(readFileSync(join(managed, 'second.txt'), 'utf8'), 'second write\n')
-const duplicate = persistedResult('duplicate-native-write')
-assert.equal(duplicate.isError, true)
-assert.match(duplicate.text, /still in flight/)
-assert.ok(
-  !persistedResult('own-read').text.includes('[dev workspace]'),
-  "a read beside the conversation's own writer is not warned"
-)
-const unverified = persistedResult('unverified-tool')
-assert.equal(unverified.isError, true)
-assert.match(unverified.text, /no verified workspace effect/)
-
 const managedUses = async () =>
   (await lifecycle.inspect({})).find(
     (view: WorkspaceView) => view.workspaceId === binding.workspaceId
   )?.uses ?? []
-const shellUse = await waitFor('the lead shell use to settle', async () => {
-  const use = (await managedUses()).find(
-    item => item.effect === 'opaque' && item.execution?.taskKey === 'lead-shell'
-  )
-  return use?.stage === 'quiescent' ? use : undefined
-})
-assert.match(shellUse.reason ?? '', /observed gone/)
-assert.equal(readFileSync(join(managed, lateMarker), 'utf8'), 'late')
+
+await claim(
+  'the tool call after the refused allocation is admitted, and as a read beside a live writer it carries the writer warning in its tool result',
+  () => {
+    const read = persistedResult('contended-read')
+    assert.equal(read.isError, false)
+    assert.ok(
+      read.text.endsWith(
+        '\n[dev workspace] A writer owns this live checkout; files may change while you read. No stable snapshot is provided.'
+      ),
+      read.text
+    )
+  }
+)
+await claim(
+  'a real contended native write is blocked, rebinds to an exact-commit managed worktree and is not replayed',
+  () => {
+    assert.notEqual(resolve(managed), resolve(lead), 'the contended write rebinds the conversation')
+    assert.equal(git(['rev-parse', 'HEAD'], managed), leadCommit)
+    assert.ok(!existsSync(join(lead, 'contended.txt')), 'the blocked write never ran')
+    assert.ok(!existsSync(join(managed, 'contended.txt')), 'the blocked write was not replayed')
+    assert.deepEqual(persistedResult('contended-native-write'), {
+      isError: true,
+      text: 'Workspace admission requires a host rebind: Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied. The operation was not executed.',
+    })
+  }
+)
+await claim(
+  'the lead bash tool runs through the workspace shell; its use ends only after a backgrounded descendant is observed gone',
+  async () => {
+    assert.equal(persistedResult('lead-shell').isError, false)
+    assert.equal(readFileSync(join(managed, 'shell.txt'), 'utf8'), 'shell-ran')
+    const shellUse = await waitFor('the lead shell use to settle', async () => {
+      const use = (await managedUses()).find(
+        item => item.effect === 'opaque' && item.execution?.taskKey === 'lead-shell'
+      )
+      return use?.stage === 'quiescent' ? use : undefined
+    })
+    assert.equal(shellUse.reason, SHELL_GONE)
+    assert.equal(readFileSync(join(managed, lateMarker), 'utf8'), 'late')
+  }
+)
 const nativeUses = (await managedUses()).filter(item => item.effect === 'native-file-write')
-for (const name of ['native.txt', 'second.txt']) {
-  const nativeUse = nativeUses.find(item => item.path === join(managed, name))
-  assert.equal(nativeUse?.stage, 'quiescent', name)
-  assert.equal(nativeUse?.reason, 'operation-completed:native-file-write', name)
-}
-const duplicateUse = nativeUses.find(item => item.path === join(managed, 'NATIVE.txt'))
-assert.equal(duplicateUse?.stage, 'quiescent')
-assert.equal(duplicateUse?.reason, 'operation-ended-before-start:native-file-write')
+await claim(
+  'lead native writes to distinct files in one batch each record their exact destination as a scoped use, started from inside the write and settled when Pi reports the call finished',
+  () => {
+    for (const [toolCallId, name, content] of [
+      ['native-write', 'native.txt', 'native write\n'],
+      ['second-native-write', 'second.txt', 'second write\n'],
+    ] as const) {
+      assert.equal(persistedResult(toolCallId).isError, false, toolCallId)
+      assert.equal(readFileSync(join(managed, name), 'utf8'), content)
+      const nativeUse = nativeUses.find(item => item.path === join(managed, name))
+      assert.equal(nativeUse?.stage, 'quiescent', name)
+      assert.equal(nativeUse?.reason, 'operation-completed:native-file-write', name)
+    }
+  }
+)
+await claim(
+  'a lead native write to a file already being written under another case is refused, and the host settles its use before it starts',
+  () => {
+    const duplicate = persistedResult('duplicate-native-write')
+    assert.equal(duplicate.isError, true)
+    assert.match(duplicate.text, /still in flight/)
+    const duplicateUse = nativeUses.find(item => item.path === join(managed, 'NATIVE.txt'))
+    assert.equal(duplicateUse?.stage, 'quiescent')
+    assert.equal(duplicateUse?.reason, 'operation-ended-before-start:native-file-write')
+  }
+)
+await claim("a read beside the conversation's own writer carries no warning", () => {
+  const read = persistedResult('own-read')
+  assert.equal(read.isError, false)
+  assert.ok(!read.text.includes('[dev workspace]'), read.text)
+})
+await claim('a tool without a verified workspace effect is refused without ending the turn', () => {
+  const unverified = persistedResult('unverified-tool')
+  assert.equal(unverified.isError, true)
+  assert.match(unverified.text, /^Tool probe_unverified has no verified workspace effect in dev/)
+  assert.ok(!existsSync(join(fixture, 'unverified-tool-ran')), 'the unverified tool never ran')
+  assert.equal(providerCall, script.length, 'refusing the unverified tool did not end the turn')
+})
 
 // Another lifecycle on this authority keeps a second conversation live, as another installation
 // would. Switching this runtime to it must be cancelled, never failed: Pi exits on a failure.
@@ -483,30 +581,48 @@ const held = await holder.attach({
   conversation: { sessionId: heldManager.getSessionId(), sessionFile: heldFile, dataHome },
   cwd: lead,
 })
-const sessionBeforeHeldSwitch = runtime.session.sessionManager.getSessionId()
-assert.deepEqual(await runtime.switchSession(heldFile), { cancelled: true })
-assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeHeldSwitch)
-assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
+await claim(
+  'switching the TUI runtime to a conversation that another lifecycle keeps live is cancelled with a notice, leaving the session and host usable, instead of failing, which Pi treats as fatal',
+  async () => {
+    const sessionBeforeHeldSwitch = runtime.session.sessionManager.getSessionId()
+    const noticesBefore = notices.length
+    assert.deepEqual(await runtime.switchSession(heldFile), { cancelled: true })
+    assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeHeldSwitch)
+    assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
+    assert.deepEqual(notices.slice(noticesBefore), [
+      'The session was not switched: This conversation is open in another dev session; close it there first',
+    ])
+  }
+)
 await held.close()
 await holder.close()
 
 signal('READY_FOR_USER_BASH')
-await waitFor('the user shell command to run', async () =>
-  existsSync(join(managed, 'user.txt')) ? true : undefined
+await claim(
+  'a user ! command runs through the same workspace shell and Pi records it in history',
+  async () => {
+    await waitFor('the user shell command to run', async () =>
+      existsSync(join(managed, 'user.txt')) ? true : undefined
+    )
+    assert.equal(readFileSync(join(managed, 'user.txt'), 'utf8'), 'user-bash')
+    await waitFor('the user shell use to settle', async () => {
+      const shells = (await managedUses()).filter(
+        item => item.effect === 'opaque' && item.execution?.taskKey === 'lead-shell'
+      )
+      return shells.length === 2 && shells.every(item => item.stage === 'quiescent')
+        ? true
+        : undefined
+    })
+    const userBash = runtime.session.sessionManager
+      .getEntries()
+      .flatMap(entry =>
+        entry.type === 'message' && entry.message.role === 'bashExecution'
+          ? [{ command: entry.message.command, exitCode: entry.message.exitCode }]
+          : []
+      )
+    assert.deepEqual(userBash, [{ command: 'printf user-bash > user.txt', exitCode: 0 }])
+  }
 )
-assert.equal(readFileSync(join(managed, 'user.txt'), 'utf8'), 'user-bash')
-await waitFor('the user shell use to settle', async () => {
-  const shells = (await managedUses()).filter(
-    item => item.effect === 'opaque' && item.execution?.taskKey === 'lead-shell'
-  )
-  return shells.length === 2 && shells.every(item => item.stage === 'quiescent') ? true : undefined
-})
-const userBash = runtime.session.sessionManager
-  .getEntries()
-  .flatMap(entry =>
-    entry.type === 'message' && entry.message.role === 'bashExecution' ? [entry.message] : []
-  )
-assert.ok(userBash.some(message => message.command.includes('user-bash')))
 
 // A /reload keeps the conversation's live shells; any other session end stops them. The
 // backgrounded sleep outlives the shell, so its use stays live until the family is gone.
@@ -546,56 +662,54 @@ const survivorUse = await waitFor('the live shell use', async () =>
 signal('READY_FOR_RELOAD')
 await within(reloaded, 60000, 'the /reload session restart')
 await sleep(1500)
-assert.ok(alive(survivorPid), 'a reload keeps the live shell family')
-assert.notEqual(
-  (await managedUses()).find(item => item.id === survivorUse.id)?.stage,
-  'quiescent',
-  'a reload keeps the live shell use open'
+await claim(
+  'a /reload typed in the TUI keeps a live lead shell family and its open use',
+  async () => {
+    assert.ok(alive(survivorPid), 'a reload keeps the live shell family')
+    assert.notEqual(
+      (await managedUses()).find(item => item.id === survivorUse.id)?.stage,
+      'quiescent',
+      'a reload keeps the live shell use open'
+    )
+  }
 )
-
-const report = {
-  fixture,
-  leadCommit,
-  managedWorkspace: binding.workspaceId,
-  networkAttempts,
-  checks: [
-    'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI and changes nothing: the binding is kept, neither the write nor the filter runs, no worktree or pending operation is left, and the next tool call is admitted',
-    'a real contended native write is blocked, rebinds to an exact-commit managed worktree and is not replayed',
-    'the lead bash tool runs through the workspace shell; its use ends only after a backgrounded descendant is observed gone',
-    'a read beside a live writer carries the writer warning in its tool result',
-    'lead native writes to distinct files in one batch each record their exact destination as a scoped use, started from inside the write and settled when Pi reports the call finished',
-    'a lead native write to a file already being written under another case is refused, and the host settles its use before it starts',
-    "a read beside the conversation's own writer carries no warning",
-    'a tool without a verified workspace effect is refused without ending the turn',
-    'a user ! command runs through the same workspace shell and Pi records it in history',
-    'a /reload typed in the TUI keeps a live lead shell family and its open use; the session end that follows (quit) stops the family, observes it gone and settles the use as quiescent',
-    'switching the TUI runtime to a conversation that another lifecycle keeps live is cancelled with a notice, leaving the session and host usable, instead of failing, which Pi treats as fatal',
-    'no network access is attempted',
-  ],
-  limits: [
-    'No power-loss or crash durability proof.',
-    'A process that detaches into its own session escapes shell observation by design.',
-  ],
-}
 
 mode.stop('transcript')
-assert.ok(alive(survivorPid), 'the live shell family is still running when the session ends')
-await runtime.dispose()
-for (let attempt = 0; attempt < 20 && alive(survivorPid); attempt += 1) await sleep(250)
-assert.ok(!alive(survivorPid), 'ending the session stops the live shell family')
-survivorStopped = true
-assert.ok(
-  Date.now() - survivorLaunchedAt < (survivorSeconds - 10) * 1000,
-  'the family was stopped, not left to finish on its own'
+await claim(
+  'the session end that follows the reload stops the live shell family, observes it gone and settles its use as quiescent',
+  async () => {
+    assert.ok(alive(survivorPid), 'the live shell family is still running when the session ends')
+    await runtime.dispose()
+    for (let attempt = 0; attempt < 20 && alive(survivorPid); attempt += 1) await sleep(250)
+    assert.ok(!alive(survivorPid), 'ending the session stops the live shell family')
+    survivorStopped = true
+    assert.ok(
+      Date.now() - survivorLaunchedAt < (survivorSeconds - 10) * 1000,
+      'the family was stopped, not left to finish on its own'
+    )
+    const stoppedUse = (await managedUses()).find(item => item.id === survivorUse.id)
+    assert.equal(stoppedUse?.stage, 'quiescent', JSON.stringify(stoppedUse))
+    assert.equal(stoppedUse?.reason, SHELL_GONE)
+  }
 )
-const stoppedUse = (await managedUses()).find(item => item.id === survivorUse.id)
-assert.equal(stoppedUse?.stage, 'quiescent', JSON.stringify(stoppedUse))
-assert.match(stoppedUse?.reason ?? '', /observed gone/)
 await Effect.runPromise(workspaceHost.close)
 await Effect.runPromise(Scope.close(hostScope, Exit.void))
 await squatter.close()
 await lifecycle.close()
 assert.equal(runFailure, undefined)
-assert.equal(networkAttempts, 0)
-assert.ok(!existsSync(filterMarker), 'no checkout filter ran at any allocation')
+await claim('no checkout filter ran at any allocation and no network access is attempted', () => {
+  assert.ok(!existsSync(filterMarker), 'no checkout filter ran at any allocation')
+  assert.equal(networkAttempts, 0)
+})
+const report = {
+  fixture,
+  leadCommit,
+  managedWorkspace: binding.workspaceId,
+  networkAttempts,
+  checks: passed,
+  limits: [
+    'No power-loss or crash durability proof.',
+    'A process that detaches into its own session escapes shell observation by design.',
+  ],
+}
 process.stdout.write(`\nDEV_REAL_AUTHORITY_PROBE_PASSED ${JSON.stringify(report)}\n`)
