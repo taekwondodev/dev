@@ -16,6 +16,7 @@ import {
   type WorkSetupError,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
+import type { WorkspaceAttachment, WorkspaceLifecycle } from './workspace-domain.ts'
 
 const WorkInputSchema = Schema.Struct({
   action: Schema.Literals(['process', 'delegate', 'dispatch', 'list', 'inspect', 'cancel']),
@@ -101,6 +102,10 @@ const withOwner = <A>(
 const summary = (record: AttemptView) => ({
   id: record.id,
   taskId: record.owner.taskId,
+  workflowTaskId: record.workflowTaskId,
+  workspaceId: record.workspaceId,
+  workspaceUseId: record.workspaceUseId,
+  cwd: record.cwd,
   status: record.status,
   kind: record.kind,
   worktree: record.worktree,
@@ -136,15 +141,32 @@ const outcomeAttempts = (
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
   readonly bindSession: (session: WorkSession) => void
+  readonly runningWork: () => Promise<
+    readonly {
+      readonly taskId: string
+      readonly attemptId: string
+      readonly kind: 'process' | 'agent'
+      readonly status: string
+      readonly cwd: string
+    }[]
+  >
+  readonly stopAll: (reason: string) => Promise<void>
   readonly close: (reason?: string) => Promise<void>
 }
 
 export const createWorkExtension = ({
   dataHome,
   profile,
+  workspace,
+  isWorkspaceParked,
 }: {
   readonly dataHome: string
   readonly profile: string
+  readonly workspace: {
+    readonly lifecycle: WorkspaceLifecycle
+    readonly attachment: WorkspaceAttachment
+  }
+  readonly isWorkspaceParked: () => boolean
 }): WorkExtension => {
   let sessionOwner: OwnerState | undefined
   let session: WorkSession | undefined
@@ -171,6 +193,7 @@ export const createWorkExtension = ({
               profile,
               cwd: ctx.cwd,
               sessionId,
+              workspace,
               onChange: () => scheduleStatus(),
               onOutcome: attempt => {
                 if (
@@ -384,6 +407,7 @@ export const createWorkExtension = ({
       items,
       canReactivate:
         reactivation === 'ready' &&
+        !isWorkspaceParked() &&
         !status.agentsBlocked &&
         items.every(
           ({ item, publication }) => publication.state === 'ready' && !item.attempt.deliveryError
@@ -461,6 +485,10 @@ export const createWorkExtension = ({
 
   const execute = (input: WorkInput): Effect.Effect<unknown, WorkFailure, WorkOwner> =>
     withOwner(owner => {
+      if (isWorkspaceParked() && (input.action === 'process' || input.action === 'delegate'))
+        return Effect.fail(
+          new WorkError({ message: 'Workspace host is parked; no background work was started' })
+        )
       if (input.action === 'process') {
         const request: ProcessStartRequest = {
           taskId: input.taskId ?? '',
@@ -541,6 +569,33 @@ export const createWorkExtension = ({
       }
       return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
     })
+
+  const runningWork: WorkExtension['runningWork'] = async () => {
+    const current = context
+    if (!current || sessionOwner?._tag !== 'active') return []
+    const snapshot = await run(
+      current,
+      withOwner(owner => owner.snapshot)
+    )
+    return snapshot.records
+      .filter(
+        record =>
+          record.status === 'running' || record.status === 'waiting' || record.status === 'unknown'
+      )
+      .map(record => ({
+        taskId: record.owner.taskId,
+        attemptId: record.id,
+        kind: record.kind,
+        status: record.status,
+        cwd: record.cwd,
+      }))
+  }
+
+  const stopAll: WorkExtension['stopAll'] = async reason => {
+    const current = context
+    if (!current || sessionOwner?._tag !== 'active') return
+    await interrupt(current, reason)
+  }
 
   const bindSession = (value: WorkSession): void => {
     removeSessionListener?.()
@@ -640,7 +695,7 @@ export const createWorkExtension = ({
     })
     pi.on('agent_end', async event => {
       const last = event.messages.findLast(message => message.role === 'assistant')
-      if (last?.stopReason === 'aborted' && context !== undefined) {
+      if (last?.stopReason === 'aborted' && context !== undefined && !isWorkspaceParked()) {
         if (reactivation !== 'suspended') reactivation = 'awaiting-success'
         await interrupt(context, 'lead agent interrupted')
       }
@@ -668,7 +723,7 @@ export const createWorkExtension = ({
       name: 'work',
       label: 'Background work',
       description:
-        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId identifies the workflow task; each launch creates a distinct attempt. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; writers require a pre-created separate linked worktree. worktree.path records its verified root. Cleanup blocked means termination or reservation release is unconfirmed; review-required asks for evaluation, not deletion. Report retained worktrees in your handoff, verify current use and preserve or integrate changes before user-authorized removal; never force removal. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
+        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId is a controller-local key, distinct from the durable workflowTaskId; each launch creates an attempt and a workspace use. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; WorkspaceLifecycle allocates a distinct workspace for each delegated writer without copying dirty files. Admission may require a host rebind: no command then runs, and a fresh decision is required. worktree.path records the managed checkout. A workspace use ends only when the whole owned process group is observed gone; a process that detaches into its own session escapes that observation, and lost observation leaves the workspace blocked for explicit recovery. Report retained workspaces in your handoff; do not release reservations or remove worktrees through this tool. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
       parameters,
       async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
         const result = await run(ctx, decodeInput(input).pipe(Effect.flatMap(execute)))
@@ -712,6 +767,8 @@ export const createWorkExtension = ({
   return {
     factory,
     bindSession,
+    runningWork,
+    stopAll,
     close,
   }
 }

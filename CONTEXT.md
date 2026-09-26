@@ -32,8 +32,9 @@ profile. Its ownership and paths must be checked before any migration.
 
 The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426)
 and [cleanup](https://github.com/taekwondodev/dev/issues/29#issuecomment-5796162017)
-contracts define these terms for the planned workspace lifecycle. Automatic
-workspace lifecycle management is not implemented yet.
+contracts define these terms. The workspace lifecycle implements admission,
+reservations, conversation bindings and recovery facts; task release and
+worktree removal are not implemented yet.
 
 **Workflow task**: A unit of work whose identity can span Pi conversations and
 execution attempts, with one or more associated workspaces.
@@ -46,6 +47,11 @@ a workflow task independently of the executions using it.
 
 **Write acquisition**: An execution's exclusive right to write to one workspace,
 with an identity distinct from previous acquisitions of that workspace.
+
+**Workspace use**: The recorded presence of a conversation, operation or process
+in one workspace. A process use ends only when its process family is observed
+gone; an `unknown` use keeps its workspace blocked for writers until explicit
+recovery.
 
 **Task release**: An explicit user instruction to evaluate a workflow task's
 reserved workspaces for reservation release or safe removal, not a guarantee
@@ -62,7 +68,12 @@ process ownership, resource boundaries or outcome delivery.
 Read [ADR 0004](docs/adr/0004-authoritative-lifecycle-incremental-store.md)
 before changing lifecycle authority, operational storage, revisions or retention.
 Read [ADR 0005](docs/adr/0005-scoped-runtime-coordination.md) before changing
-concurrent launcher admission, conversation claims or maintenance barriers.
+concurrent launcher admission, conversation claims or maintenance barriers, and
+its [scoped workspace operations](docs/adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations)
+before changing workspace admission, shells, native writes or the lead's tool gate.
+Read its [executable-extension policy](docs/adr/0005-scoped-runtime-coordination.md#executable-extensions)
+before adding or updating extensions, changing resource loading or routing
+project effects through tools, event handlers or child processes.
 
 ## Configuration and private state
 

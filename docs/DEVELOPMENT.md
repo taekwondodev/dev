@@ -31,6 +31,7 @@ Checks and setup regenerate an ignored module-resolution link to the declaration
 - `src/pi-runtime.ts` resolves the installed global Pi SDK and its declarations.
 - `src/preferences.ts` owns private data paths, the global Pi auth path and profile preferences.
 - `src/profiles.ts` composes selected guidance and skill paths; portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
+- `src/workspace-*.ts` implement the workspace authority, its worker, Git and storage adapters, the lead shell, native writes and the Pi host integration. `src/process-family.ts` holds the process table and launch gate shared with background work. Read [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) before changing admission, shells or the tool gate.
 - `src/work-*.ts` and `src/pi-child.ts` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership, and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) for the lifecycle authority and transactional storage contract.
 - `config/crew-dispatch.json` is versioned policy; `.dev/` is private dev state and `~/.pi/agent/auth.json` is the shared Pi credential store. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
 
@@ -50,6 +51,13 @@ npm run smoke
 `lint` checks TypeScript, dedicated Effect diagnostics in strict mode, then Oxlint, propagating each failure. It does not fix or format source. In particular, `floatingEffect` is an error at the terminal boundary, not merely an editor diagnostic. `lint:fix` and `format` are separate opt-in mutations; `format:check` checks formatting without writing. Oxlint remains unpatched. The TypeScript-only capitalization/error-constructor exceptions accommodate Effect's Schema and service factories; Effect diagnostics still check their usage.
 
 The smoke command checks launcher diagnostics with temporary private storage; it is not evidence of a successful model response.
+
+```bash
+npm run workspace:check
+npm run workspace:tui
+```
+
+`workspace:check` exercises the workspace authority, real process adapters, the host fixture contract and the launcher on disposable storage under the system temporary directory; the launcher check injects a lifecycle through `launch` instead of opening the fixed per-account authority. `workspace:tui` drives the real Pi TUI in a pseudo-terminal, once against a stub lifecycle for fault injection and once against the real authority. Their drivers are Python only because Node has no built-in pseudo-terminal; everything they drive is TypeScript. Neither touches the real workspace authority, credentials or the network.
 
 ```bash
 npm run dev:probe

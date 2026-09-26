@@ -83,7 +83,29 @@ La scelta usa la data di modifica del file e la directory registrata nell'intest
 dev --resume /percorso/sessione.jsonl
 ```
 
-Riprende una sessione Pi specifica.
+Riprende una sessione Pi specifica. Se la conversazione ha uno switch di workspace mai arrivato all'host, lo ritira e riparte dall'ultimo workspace confermato. Il blocco della conversazione vale per una sola installazione di `dev`: non riprenderla da un'altra installazione con la stessa data home mentre è ancora aperta, altrimenti lo switch in corso si ferma e va rivisto. Se il workspace legato alla conversazione è stato rimosso, il comando lo segnala senza ricrearlo, indica il file della conversazione (la cronologia resta intatta) e suggerisce di ripartire da un checkout esistente con `dev --cwd PATH`.
+
+Quando più sessioni scrivono sullo stesso checkout, la prima resta nel checkout; un'altra attività viene spostata in un worktree dedicato creato dal commit corrente, senza copiare file modificati, non tracciati o ignorati. Un comando shell occupa solo il proprio checkout fino a quando i processi che ha avviato risultano terminati; gli altri worktree dello stesso repository continuano a lavorare.
+
+```bash
+dev workspace
+```
+
+Elenca task e workspace registrati per il repository Git della directory corrente o di `--cwd`, inclusi quelli in pausa o bloccati. Equivale a `dev workspace list`. È in sola lettura: non crea l'autorità, non apre sessioni Pi e non richiede credenziali.
+
+```bash
+dev workspace inspect <task>
+```
+
+Mostra tutti i workspace noti di quel task esatto, anche in altri repository: percorso, origine, usi attivi o incerti, operazioni in sospeso e prossima azione sicura. Un uso `unknown` blocca il suo workspace per nuovi writer finché non esisterà un recupero esplicito, che la prima versione non offre. Dopo un crash, un workspace con usi rimasti aperti ma senza più nessun processo dev che lo tenga appare come `blocked`, non come `active`.
+
+```bash
+dev workspace resume <task> --workspace <workspace>
+```
+
+Apre una nuova conversazione sul workspace conservato di quel task. `--workspace` è obbligatorio solo se il task ha più workspace. Non sposta file modificati, non riavvia lavori e non sostituisce un workspace occupato, mancante o sostituito.
+
+I comandi `workspace` escono con 0 quando restituiscono l'osservazione richiesta, 1 se non è ottenibile e 2 per argomenti non validi o ambigui.
 
 ```bash
 dev --help

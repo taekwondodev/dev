@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Effect, Option, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
@@ -26,6 +27,16 @@ import { createWorkExtension } from './work-extension.ts'
 import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
+import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
+import type { WorkspaceLifecycle } from './workspace-domain.ts'
+import { createWorkspaceHost, type WorkspaceHost } from './workspace-host.ts'
+import {
+  parseWorkspaceCommand,
+  runReadOnlyWorkspaceCommand,
+  chooseResumeCandidate,
+  type WorkspaceCommand,
+} from './workspace-command.ts'
+import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 
 export class LauncherError extends Schema.TaggedError<LauncherError>()('LauncherError', {
   message: Schema.String,
@@ -42,6 +53,7 @@ interface LaunchOptions {
   readonly diagnostics: boolean
   readonly probeRuntime: boolean
   readonly help: boolean
+  readonly workspaceArgs?: readonly string[]
 }
 
 type RuntimeFactory = Parameters<PiApi['createAgentSessionRuntime']>[0]
@@ -98,6 +110,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         diagnostics: boolean
         probeRuntime: boolean
         help: boolean
+        workspaceArgs?: readonly string[]
       } = {
         cwd: process.cwd(),
         continueSession: false,
@@ -116,7 +129,10 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         else if (arg === '--diagnostics') values.diagnostics = true
         else if (arg === '--probe-runtime') values.probeRuntime = true
         else if (arg === '--help') values.help = true
-        else throw new Error(`Unknown option ${arg}. Use --help.`)
+        else if (arg === 'workspace') {
+          values.workspaceArgs = argv.slice(index + 1)
+          break
+        } else throw new Error(`Unknown option ${arg}. Use --help.`)
       }
       return {
         ...values,
@@ -131,7 +147,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | resume <task> [--workspace <workspace>]]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace resume <task> [--workspace <id>]  start a fresh conversation on a retained workspace\n`
     )
   })
 
@@ -180,30 +196,69 @@ const validateDiagnostics = (
 
 const createRuntime = (
   api: PiApi,
+  packageRoot: string,
   dataHome: string,
   profile: Profile,
   guard: ReturnType<typeof createSessionGuard>,
+  workspaceHost: WorkspaceHost,
+  lifecycle: WorkspaceLifecycle,
   runtimeOptions: RuntimeFactoryOptions
 ): Effect.Effect<RuntimeFactoryResult, LauncherError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const { sessionManager: runtimeSessionManager, cwd: requestedCwd } = runtimeOptions
+    const workspace = yield* fromPromise('Cannot resolve workspace binding before Pi startup', () =>
+      workspaceHost.prepareRuntime({ sessionManager: runtimeSessionManager, cwd: requestedCwd })
+    )
+    const { attachment, cwd, sessionManager } = workspace
     yield* guard
-      .protect(runtimeOptions.sessionManager)
+      .protect(sessionManager)
       .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot claim Pi conversation')))
     const resources = yield* composeResources({
-      cwd: runtimeOptions.cwd,
-      gitRoot: yield* gitRoot(runtimeOptions.cwd),
+      cwd,
+      gitRoot: yield* gitRoot(cwd),
       profile,
     }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources')))
     const work = yield* fromSync('Cannot create background-work extension', () =>
       createWorkExtension({
         dataHome,
         profile: profile.name,
+        workspace: { lifecycle, attachment },
+        isWorkspaceParked: workspaceHost.isParked,
       })
     )
+    yield* Effect.sync(() =>
+      workspaceHost.setWorkControls({ running: work.runningWork, stopAll: work.stopAll })
+    )
+    const trustResolver: typeof PiProjectTrust = yield* fromPromise(
+      'Cannot load Pi project-trust resolver',
+      async () =>
+        import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href) as Promise<
+          typeof PiProjectTrust
+        >
+    )
+    const settingsManager = yield* fromSync('Cannot create trust-gated Pi settings', () =>
+      api.SettingsManager.create(cwd, runtimeOptions.agentDir, { projectTrusted: false })
+    )
+    const trustStore = new api.ProjectTrustStore(runtimeOptions.agentDir)
+    const projectTrustContext =
+      runtimeOptions.projectTrustContext?.cwd === cwd
+        ? runtimeOptions.projectTrustContext
+        : {
+            cwd,
+            mode: 'tui' as const,
+            hasUI: false,
+            ui: {
+              select: async () => undefined,
+              confirm: async () => false,
+              input: async () => undefined,
+              notify: () => undefined,
+            },
+          }
     const services = yield* fromPromise('Cannot create Pi session services', async () =>
       api.createAgentSessionServices({
-        cwd: runtimeOptions.cwd,
+        cwd,
         agentDir: runtimeOptions.agentDir,
+        settingsManager,
         modelRuntime: await api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
@@ -211,16 +266,44 @@ const createRuntime = (
           extensionFactories: [
             { name: 'dev:session-guard', factory: guard.factory },
             { name: 'dev:work', factory: work.factory },
+            { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
           ],
+        },
+        resourceLoaderReloadOptions: {
+          resolveProjectTrust: ({ extensionsResult }) =>
+            trustResolver.resolveProjectTrusted({
+              cwd,
+              trustStore,
+              defaultProjectTrust: settingsManager.getDefaultProjectTrust(),
+              extensionsResult,
+              projectTrustContext,
+            }),
         },
       })
     )
     const result = yield* fromPromise('Cannot create Pi session', () =>
       api.createAgentSessionFromServices({
         services,
-        sessionManager: runtimeOptions.sessionManager,
+        sessionManager,
         sessionStartEvent: runtimeOptions.sessionStartEvent,
+        customTools: [
+          api.defineTool(
+            api.createBashToolDefinition(cwd, {
+              operations: workspaceHost.shellOperations,
+              commandPrefix: settingsManager.getShellCommandPrefix(),
+            })
+          ),
+          api.defineTool(
+            api.createWriteToolDefinition(cwd, { operations: workspaceHost.writeOperations })
+          ),
+          api.defineTool(
+            api.createEditToolDefinition(cwd, { operations: workspaceHost.editOperations })
+          ),
+        ],
       })
+    )
+    yield* fromPromise('Cannot commit workspace runtime binding', () =>
+      workspaceHost.commitRuntime(attachment)
     )
     yield* Effect.sync(() => {
       work.bindSession(result.session)
@@ -245,7 +328,7 @@ const installSignalHandlers = (
   release: Effect.Effect<void, never>
 ): Effect.Effect<SignalHandlers> =>
   Effect.sync(() => {
-    const terminate = async (): Promise<void> => {
+    const terminate = async (exitCode: number): Promise<void> => {
       try {
         await Effect.runPromise(disposeRuntime(runtime))
       } catch (error) {
@@ -256,162 +339,352 @@ const installSignalHandlers = (
         } catch (error) {
           process.stderr.write(`${messageOf(error)}\n`)
         }
-        process.exitCode = 1
-        process.exit(1)
+        process.exitCode = exitCode
+        process.exit(exitCode)
       }
     }
-    const onSignal = (): void => {
-      void terminate()
+    const onInterrupt = (): void => {
+      void terminate(130)
     }
-    process.once('SIGTERM', onSignal)
-    process.once('SIGINT', onSignal)
-    process.once('SIGHUP', onSignal)
+    const onTerminate = (): void => {
+      void terminate(1)
+    }
+    process.once('SIGTERM', onTerminate)
+    process.once('SIGINT', onInterrupt)
+    process.once('SIGHUP', onTerminate)
     return {
       remove: () => {
-        process.removeListener('SIGTERM', onSignal)
-        process.removeListener('SIGINT', onSignal)
-        process.removeListener('SIGHUP', onSignal)
+        process.removeListener('SIGTERM', onTerminate)
+        process.removeListener('SIGINT', onInterrupt)
+        process.removeListener('SIGHUP', onTerminate)
       },
     }
   })
 
-const run = Effect.gen(function* () {
-  const options = yield* parseArgs(process.argv.slice(2))
-  if (options.help) return yield* printHelp()
-  const dataHome = options.dataHome ?? (yield* defaultDataHome)
-  const root = yield* gitRoot(options.cwd)
-  const selection = yield* resolveSelection({
-    cwd: options.cwd,
-    dataHome,
-    explicit: options.profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve profile selection')))
-  if (options.saveProfile !== undefined) {
-    yield* getProfile(options.saveProfile).pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference'))
-    )
-    const path = yield* saveSelection({
-      cwd: options.cwd,
-      dataHome,
-      profile: options.saveProfile,
-    }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot save profile preference')))
-    yield* Effect.sync(() => {
-      process.stdout.write(`saved profile ${options.saveProfile} at ${path}\n`)
-    })
-    if (
-      options.profile === undefined &&
-      options.resume === undefined &&
-      !options.continueSession &&
-      !options.diagnostics
-    )
-      return
-  }
-  const lease = yield* acquireRuntime(dataHome)
-  const guard = createSessionGuard(lease)
-  const { api, packageInfo } = yield* loadPi.pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load Pi'))
+// The authority location is fixed per OS account so every cooperating runtime meets the
+// same authority; only code that imports this module can supply another lifecycle.
+export interface LauncherDependencies {
+  readonly workspaceLifecycle: () => WorkspaceLifecycle
+}
+
+const acquireWorkspaceLifecycle = (open: LauncherDependencies['workspaceLifecycle']) =>
+  Effect.acquireRelease(fromSync('Cannot open workspace lifecycle', open), lifecycle =>
+    fromPromise('Cannot close workspace lifecycle', () => lifecycle.close()).pipe(Effect.orDie)
   )
-  const sessionsPath = yield* sessionDir(dataHome).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
-  )
-  const resumedPath =
-    options.resume ??
-    (options.continueSession
-      ? yield* findRecentSession(packageInfo.root, options.cwd, sessionsPath)
-      : undefined)
-  if (resumedPath !== undefined) yield* lease.protect({ path: resumedPath })
-  const sessions = yield* fromSync('Cannot create Pi session manager', () =>
-    resumedPath === undefined
-      ? api.SessionManager.create(options.cwd, sessionsPath)
-      : api.SessionManager.open(resumedPath, sessionsPath, options.cwd)
-  )
-  if (!options.diagnostics) yield* guard.protect(sessions)
-  const recorded =
-    options.resume !== undefined || options.continueSession
-      ? profileFromSession(sessions)
-      : undefined
-  const selectedName = recorded ?? selection.profile
-  if (
-    (options.resume !== undefined || options.continueSession) &&
-    recorded === undefined &&
-    options.profile === undefined
-  )
-    return yield* new LauncherError({
-      message:
-        'This conversation has no dev profile metadata. Resume it with an explicit --profile choice.',
-    })
-  const profile = yield* getProfile(selectedName).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile'))
-  )
-  const resources = yield* composeResources({
-    cwd: options.cwd,
-    gitRoot: root,
-    profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
-  if (options.diagnostics) {
-    const dispatch = yield* readDispatch.pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot read dispatch configuration'))
-    )
-    yield* Effect.sync(() => {
-      process.stdout.write(
-        `cwd: ${options.cwd}\npi: ${packageInfo.version} (${packageInfo.root})\ndata home: ${dataHome}\ndispatch: ${dispatch.path}\nselection: ${selectedName} (${recorded === undefined ? selection.source : 'conversation metadata'})\n`
-      )
-      process.stdout.write(
-        `SOUL.md: ${resources.soulPath}\nresource paths:\n${resourceSummary(resources)}\n`
-      )
-    })
-    return
-  }
-  const context = yield* Effect.context<FileSystem.FileSystem>()
-  const createRuntimeFactory: RuntimeFactory = runtimeOptions =>
-    Effect.runPromiseWith(context)(createRuntime(api, dataHome, profile, guard, runtimeOptions))
-  const sessionProgram = Effect.scoped(
-    Effect.gen(function* () {
-      const runtime = yield* Effect.acquireRelease(
-        fromPromise('Cannot create Pi runtime', () =>
-          api.createAgentSessionRuntime(createRuntimeFactory, {
-            cwd: options.cwd,
-            agentDir: globalPiAgentDir(),
-            sessionManager: sessions,
-          })
-        ),
-        disposeRuntime
-      )
-      yield* Effect.sync(() => guard.bind(runtime))
-      yield* fromSync('Pi startup diagnostics failed', () =>
-        validateDiagnostics(runtime.services, profile, resources, options.probeRuntime)
-      )
-      if (recorded === undefined)
+
+const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
+  Effect.gen(function* () {
+    const options = yield* parseArgs(argv)
+    if (options.help) return yield* printHelp()
+
+    let workspaceCommand: WorkspaceCommand | undefined
+    let workspaceLifecycle: WorkspaceLifecycle | undefined
+    let workspaceResume: ReturnType<typeof chooseResumeCandidate> | undefined
+    if (options.workspaceArgs !== undefined) {
+      try {
+        workspaceCommand = parseWorkspaceCommand(options.workspaceArgs)
+      } catch (error) {
+        const exitCode = error instanceof Error && 'exitCode' in error ? Number(error.exitCode) : 2
         yield* Effect.sync(() => {
-          sessions.appendCustomEntry('dev/profile', {
-            version: 1,
-            profile: profile.name,
-            source: selection.source,
-          })
-        })
-      if (options.probeRuntime) {
-        yield* Effect.sync(() => {
-          process.stdout.write('runtime probe: ok\n')
+          process.stderr.write(`${messageOf(error)}\n`)
+          process.exitCode = exitCode
         })
         return
       }
-      const release = lease.release.pipe(Effect.orDie)
-      yield* Effect.acquireRelease(installSignalHandlers(runtime, release), ({ remove }) =>
-        Effect.sync(remove)
+      if (
+        options.saveProfile !== undefined ||
+        options.resume !== undefined ||
+        options.continueSession ||
+        options.diagnostics ||
+        options.probeRuntime
+      ) {
+        yield* Effect.sync(() => {
+          process.stderr.write(
+            `workspace commands cannot be combined with --save-profile, --resume, --continue, --diagnostics, or --probe-runtime.\n`
+          )
+          process.exitCode = 2
+        })
+        return
+      }
+      if (workspaceCommand.kind !== 'resume') {
+        const listRoot = workspaceCommand.kind === 'list' ? yield* gitRoot(options.cwd) : undefined
+        if (workspaceCommand.kind === 'list' && listRoot === undefined) {
+          yield* Effect.sync(() => {
+            process.stderr.write(
+              `Workspace list requires a Git repository; pass --cwd PATH to a Git checkout.\n`
+            )
+            process.exitCode = 2
+          })
+          return
+        }
+        workspaceLifecycle = yield* acquireWorkspaceLifecycle(dependencies.workspaceLifecycle)
+        const result = yield* fromPromise('Workspace read-only command failed', () =>
+          runReadOnlyWorkspaceCommand(
+            workspaceLifecycle!,
+            workspaceCommand as Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
+            workspaceCommand!.kind === 'list' ? { cwd: listRoot } : {}
+          )
+        )
+        yield* Effect.sync(() => {
+          if (result.stdout !== undefined) process.stdout.write(`${result.stdout}\n`)
+          if (result.stderr !== undefined) process.stderr.write(`${result.stderr}\n`)
+          process.exitCode = result.exitCode
+        })
+        return
+      }
+      if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+        yield* Effect.sync(() => {
+          process.stderr.write(
+            `Workspace resume requires an interactive TTY; it never falls back to a silent workspace switch.\n`
+          )
+          process.exitCode = 2
+        })
+        return
+      }
+      workspaceLifecycle = yield* acquireWorkspaceLifecycle(dependencies.workspaceLifecycle)
+      const resumeCommand = workspaceCommand as Extract<
+        WorkspaceCommand,
+        { readonly kind: 'resume' }
+      >
+      const views = yield* fromPromise('Cannot inspect retained workspace candidates', () =>
+        workspaceLifecycle!.inspect({ taskId: resumeCommand.taskId })
       )
-      yield* runInteractive(api, runtime)
+      try {
+        workspaceResume = chooseResumeCandidate(
+          views.filter(view => view.taskId === resumeCommand.taskId),
+          resumeCommand.taskId,
+          resumeCommand.workspaceId
+        )
+      } catch (error) {
+        const exitCode = error instanceof Error && 'exitCode' in error ? Number(error.exitCode) : 1
+        yield* Effect.sync(() => {
+          process.stderr.write(`${messageOf(error)}\n`)
+          process.exitCode = exitCode
+        })
+        return
+      }
+    }
+
+    const launchCwd = workspaceResume?.view.path ?? options.cwd
+    const dataHome = options.dataHome ?? (yield* defaultDataHome)
+    const root = yield* gitRoot(launchCwd)
+    const selection = yield* resolveSelection({
+      cwd: launchCwd,
+      dataHome,
+      explicit: options.profile,
+    }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve profile selection')))
+    if (options.saveProfile !== undefined) {
+      yield* getProfile(options.saveProfile).pipe(
+        Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference'))
+      )
+      const path = yield* saveSelection({
+        cwd: options.cwd,
+        dataHome,
+        profile: options.saveProfile,
+      }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot save profile preference')))
+      yield* Effect.sync(() => {
+        process.stdout.write(`saved profile ${options.saveProfile} at ${path}\n`)
+      })
+      if (
+        options.profile === undefined &&
+        options.resume === undefined &&
+        !options.continueSession &&
+        !options.diagnostics
+      )
+        return
+    }
+    const lease = yield* acquireRuntime(dataHome)
+    const guard = createSessionGuard(lease)
+    const { api, packageInfo } = yield* loadPi.pipe(
+      Effect.mapError(error => toLauncherError(error, 'Cannot load Pi'))
+    )
+    const sessionsPath = yield* sessionDir(dataHome).pipe(
+      Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
+    )
+    const resumedPath =
+      options.resume ??
+      (options.continueSession
+        ? yield* findRecentSession(packageInfo.root, launchCwd, sessionsPath)
+        : undefined)
+    if (resumedPath !== undefined) yield* lease.protect({ path: resumedPath })
+    let sessions = yield* fromSync('Cannot create Pi session manager', () =>
+      resumedPath === undefined
+        ? api.SessionManager.create(launchCwd, sessionsPath)
+        : api.SessionManager.open(resumedPath, sessionsPath, launchCwd)
+    )
+    if (!options.diagnostics) yield* guard.protect(sessions)
+    const recorded =
+      options.resume !== undefined || options.continueSession
+        ? profileFromSession(sessions)
+        : undefined
+
+    if (
+      (options.resume !== undefined || options.continueSession) &&
+      recorded === undefined &&
+      options.profile === undefined
+    )
+      return yield* new LauncherError({
+        message:
+          'This conversation has no dev profile metadata. Resume it with an explicit --profile choice.',
+      })
+    if (options.diagnostics) {
+      const diagnosticProfile = yield* getProfile(recorded ?? selection.profile).pipe(
+        Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile'))
+      )
+      const diagnosticResources = yield* composeResources({
+        cwd: launchCwd,
+        gitRoot: root,
+        profile: diagnosticProfile,
+      }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
+      const dispatch = yield* readDispatch.pipe(
+        Effect.mapError(error => toLauncherError(error, 'Cannot read dispatch configuration'))
+      )
+      yield* Effect.sync(() => {
+        process.stdout.write(
+          `cwd: ${launchCwd}\npi: ${packageInfo.version} (${packageInfo.root})\ndata home: ${dataHome}\ndispatch: ${dispatch.path}\nselection: ${recorded ?? selection.profile} (${recorded === undefined ? selection.source : 'conversation metadata'})\n`
+        )
+        process.stdout.write(
+          `SOUL.md: ${diagnosticResources.soulPath}\nresource paths:\n${resourceSummary(diagnosticResources)}\n`
+        )
+      })
+      return
+    }
+    workspaceLifecycle ??= yield* acquireWorkspaceLifecycle(dependencies.workspaceLifecycle)
+    const sessionFile = sessions.getSessionFile()
+    if (!sessionFile)
+      return yield* new LauncherError({
+        message: 'Workspace-bound conversations require a persisted session file',
+      })
+    const sessionId = sessions.getSessionId()
+    const attachment = yield* Effect.tryPromise({
+      try: () =>
+        workspaceLifecycle!.attach({
+          conversation: { sessionId, sessionFile, dataHome },
+          cwd: sessions.getCwd(),
+          ...(workspaceResume === undefined ? {} : { selection: workspaceResume.selection }),
+          ...(resumedPath === undefined ? {} : { withdrawUnstartedSwitch: true }),
+        }),
+      catch: error =>
+        new LauncherError({
+          message: `Cannot attach this conversation to a workspace: ${messageOf(error)}\nThe conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`,
+          cause: error,
+        }),
     })
+    const effectiveCwd = attachment.binding.cwd
+    if (resolve(sessions.getCwd()) !== resolve(effectiveCwd)) {
+      sessions = yield* fromSync('Cannot reopen Pi session at its authorized workspace cwd', () =>
+        api.SessionManager.open(sessionFile, sessionsPath, effectiveCwd)
+      )
+      if (
+        sessions.getSessionId() !== sessionId ||
+        resolve(sessions.getSessionFile() ?? '') !== resolve(sessionFile)
+      )
+        return yield* new LauncherError({
+          message: 'Reopened Pi session changed conversation identity',
+        })
+    }
+    const workspaceHost = yield* fromSync('Cannot create workspace host', () =>
+      createWorkspaceHost({
+        lifecycle: workspaceLifecycle!,
+        attachment,
+        dataHome,
+        openSessionManager: (file, cwdOverride) =>
+          api.SessionManager.open(file, sessionsPath, cwdOverride),
+        repositoryRoot: cwd => Effect.runPromise(gitRoot(cwd)),
+      })
+    )
+    const effectiveSelection =
+      resolve(effectiveCwd) === resolve(launchCwd)
+        ? selection
+        : yield* resolveSelection({ cwd: effectiveCwd, dataHome, explicit: options.profile }).pipe(
+            Effect.mapError(error =>
+              toLauncherError(error, 'Cannot resolve profile selection for authorized cwd')
+            )
+          )
+    const selectedName = recorded ?? effectiveSelection.profile
+    const profile = yield* getProfile(selectedName).pipe(
+      Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile'))
+    )
+    const effectiveRoot = yield* gitRoot(effectiveCwd)
+    const resources = yield* composeResources({
+      cwd: effectiveCwd,
+      gitRoot: effectiveRoot,
+      profile,
+    }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
+    if (recorded === undefined)
+      yield* Effect.sync(() => {
+        sessions.appendCustomEntry('dev/profile', {
+          version: 1,
+          profile: profile.name,
+          source: effectiveSelection.source,
+        })
+      })
+    const context = yield* Effect.context<FileSystem.FileSystem>()
+    const createRuntimeFactory: RuntimeFactory = runtimeOptions =>
+      Effect.runPromiseWith(context)(
+        createRuntime(
+          api,
+          packageInfo.root,
+          dataHome,
+          profile,
+          guard,
+          workspaceHost,
+          workspaceLifecycle!,
+          runtimeOptions
+        )
+      )
+    const sessionProgram = Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.acquireRelease(Effect.succeed(workspaceHost), host =>
+          fromPromise('Cannot close workspace host', () => host.close()).pipe(Effect.orDie)
+        )
+        const runtime = yield* Effect.acquireRelease(
+          fromPromise('Cannot create Pi runtime', () =>
+            api.createAgentSessionRuntime(createRuntimeFactory, {
+              cwd: effectiveCwd,
+              agentDir: globalPiAgentDir(),
+              sessionManager: sessions,
+            })
+          ),
+          disposeRuntime
+        )
+        yield* Effect.sync(() => {
+          workspaceHost.bindRuntime(runtime)
+          guard.bind(runtime)
+        })
+        yield* fromSync('Pi startup diagnostics failed', () =>
+          validateDiagnostics(runtime.services, profile, resources, options.probeRuntime)
+        )
+
+        if (options.probeRuntime) {
+          yield* Effect.sync(() => {
+            process.stdout.write('runtime probe: ok\n')
+          })
+          return
+        }
+        const release = lease.release.pipe(Effect.orDie)
+        yield* Effect.acquireRelease(installSignalHandlers(runtime, release), ({ remove }) =>
+          Effect.sync(remove)
+        )
+        yield* runInteractive(api, runtime)
+      })
+    )
+    yield* sessionProgram
+  }).pipe(Effect.scoped)
+
+export const launch = (
+  argv: readonly string[],
+  dependencies: LauncherDependencies = { workspaceLifecycle: () => makeWorkspaceLifecycle() }
+) =>
+  run(argv, dependencies).pipe(
+    Effect.catch(error =>
+      Effect.sync(() => {
+        process.stderr.write(`${messageOf(error)}\n`)
+        process.exitCode = 1
+      })
+    ),
+    Effect.provide(NodeServices.layer)
   )
-  yield* sessionProgram
-}).pipe(Effect.scoped)
 
-const program = run.pipe(
-  Effect.catch(error =>
-    Effect.sync(() => {
-      process.stderr.write(`${messageOf(error)}\n`)
-      process.exitCode = 1
-    })
-  ),
-  Effect.provide(NodeServices.layer)
-)
-
-NodeRuntime.runMain(program, { disableErrorReporting: true })
+if (import.meta.main)
+  NodeRuntime.runMain(launch(process.argv.slice(2)), { disableErrorReporting: true })

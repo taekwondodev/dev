@@ -12,6 +12,8 @@ import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi, type PiApi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getProfile } from './profiles.ts'
+import { WorkspaceGrantSchema } from './workspace-domain.ts'
+import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError>()('ChildError', {
   message: Schema.String,
@@ -58,6 +60,7 @@ export const ChildRequestEnvelope = Schema.Struct({
   profile: Schema.NonEmptyString,
   sessionDir: AbsolutePath,
   access: Schema.Literals(ACCESS_MODES),
+  workspace: WorkspaceGrantSchema,
   prompt: Schema.NonEmptyString,
   owner: Schema.Struct({
     sessionId: SessionId,
@@ -182,6 +185,15 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
   )
   const fs = yield* FileSystem.FileSystem
   const cwdExists = yield* fs.exists(request.cwd).pipe(Effect.mapError(toChildError))
+  if (
+    request.workspace.cwd !== request.cwd ||
+    request.workspace.access !== (request.access === 'write' ? 'write' : 'read')
+  )
+    return yield* new ChildError({ message: 'Child request does not match its workspace grant' })
+  yield* Effect.tryPromise({
+    try: () => checkChildWorkspace(request.workspace, 'read'),
+    catch: toChildError,
+  })
   if (!cwdExists)
     return yield* new ChildError({
       message: `request.cwd must be an existing directory: ${request.cwd}`,
@@ -754,6 +766,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
           ].filter(Boolean),
           ...(skillSelection.filter ? { skillsOverride: skillSelection.filter } : {}),
           noExtensions: request.access === 'read-only',
+          extensionFactories: [
+            { name: 'dev:child-workspace', factory: childWorkspaceExtension(request.workspace) },
+          ],
         },
       }),
     catch: toChildError,
