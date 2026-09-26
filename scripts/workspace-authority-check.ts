@@ -1091,12 +1091,14 @@ try {
     await expectWorkspaceError(nativeWriteTo(requested), ['invalid'])
   assert.ok(!existsSync(join(traversalOutside, 'escape.txt')))
   assert.ok(!existsSync(join(traversalOutside, 'inner', 'escape.txt')))
+  mkdirSync(join(traversalRepo, 'vendor', '.git'), { recursive: true })
+  await expectWorkspaceError(nativeWriteTo('vendor/escape.txt'), ['invalid'])
   const traversalAdmitted = ready(await nativeWriteTo('tracked.txt'))
   assert.equal(traversalAdmitted.path, join(traversalRepo, 'tracked.txt'))
   await traversalAttachment.reportExecution(traversalAdmitted, { kind: 'operation-started' })
   await traversalAttachment.reportExecution(traversalAdmitted, { kind: 'operation-completed' })
   checks.push(
-    'raw parent traversal and Pi path shorthand are refused; an admitted native write carries its exact destination'
+    'raw parent traversal, Pi path shorthand and a destination inside a nested repository are refused, as at the child tool boundary; an admitted native write carries its exact destination'
   )
   mkdirSync(join(traversalRepo, 'sub'))
   symlinkSync(join(traversalRepo, 'sub'), join(traversalRepo, 'inlink'))

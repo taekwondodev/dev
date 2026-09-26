@@ -16,9 +16,14 @@ import {
 } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { userInfo } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { Schema } from 'effect'
 import {
+  ambiguous,
+  blocked,
+  invalid,
+  requireReview,
+  unavailable,
   WorkspaceEffectSchema,
   WorkspaceError,
   WorkspaceId,
@@ -44,6 +49,13 @@ import {
   type FileIdentity,
   type GitWorkspace,
 } from './workspace-git.ts'
+import {
+  assertDestinationUnchanged,
+  canonicalPathSlot,
+  isWithin,
+  lstatIfExists,
+  resolveWriteDestination,
+} from './workspace-paths.ts'
 
 const PROTOCOL_VERSION = 1
 const SCHEMA_VERSION = 2
@@ -286,24 +298,6 @@ const GATE_SQL = `
   PRAGMA user_version = ${SCHEMA_VERSION};
 `
 
-function fail(outcome: WorkspaceError['outcome'], message: string): never {
-  throw new WorkspaceError({ outcome, message })
-}
-function invalid(message: string): never {
-  return fail('invalid', message)
-}
-function unavailable(message: string): never {
-  return fail('unavailable', message)
-}
-function blocked(message: string): never {
-  return fail('blocked', message)
-}
-function requireReview(message: string): never {
-  return fail('review-required', message)
-}
-function ambiguous(message: string): never {
-  return fail('ambiguous', message)
-}
 const workspaceId = (): string => randomUUID()
 const isUuid = (value: string): boolean => Schema.is(UUID)(value)
 const encode = (value: unknown): string => {
@@ -346,14 +340,6 @@ const sqliteCode = (cause: unknown): number | undefined =>
     ? cause.errcode & 255
     : undefined
 
-const lstatIfExists = (path: string) => {
-  try {
-    return lstatSync(path)
-  } catch (cause) {
-    if (isMissing(cause)) return undefined
-    throw cause
-  }
-}
 const fsyncPath = (path: string, directory = false): void => {
   const flags = constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : 0)
   const fd = openSync(path, flags)
@@ -464,7 +450,7 @@ export const unsupportedAuthorityStorage = (input: {
 }): string | undefined => {
   for (const parts of SYNCHRONIZED_FOLDERS) {
     const folder = join(input.home, ...parts)
-    if (safeWithin(folder, input.path))
+    if (isWithin(folder, input.path))
       return `Workspace authority cannot live in a synchronized folder: ${folder}`
   }
   const mount = input.mountTable
@@ -472,7 +458,7 @@ export const unsupportedAuthorityStorage = (input: {
     .map(line => /^.+? on (.+) \((.+)\)$/.exec(line))
     .filter(match => match !== null)
     .map(match => ({ point: match[1] ?? '', options: (match[2] ?? '').split(', ') }))
-    .filter(entry => entry.point !== '' && safeWithin(entry.point, input.path))
+    .filter(entry => entry.point !== '' && isWithin(entry.point, input.path))
     .toSorted((left, right) => right.point.length - left.point.length)[0]
   if (mount === undefined) return `Cannot identify the filesystem holding ${input.path}`
   const [type = 'unknown'] = mount.options
@@ -1051,92 +1037,8 @@ const releaseGates = (gates: PathGates): void => {
   gates.writer?.()
   gates.use()
 }
-const canonicalPathSlot = (path: string): string => {
-  const absolute = resolve(path)
-  const info = lstatIfExists(absolute)
-  if (info !== undefined) {
-    if (info.isSymbolicLink() || !info.isDirectory())
-      requireReview(`Workspace path is not a physical directory: ${absolute}`)
-    return realpathSync(absolute)
-  }
-  const parent = realpathSync(dirname(absolute))
-  return resolve(parent, basename(absolute))
-}
-
 const sameIdentity = (left: FileIdentity, right: FileIdentity): boolean =>
   left.device === right.device && left.inode === right.inode
-const safeWithin = (root: string, path: string): boolean => {
-  const rel = relative(root, path)
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
-}
-const validateNativeFilePath = (root: string, cwd: string, requested: string): string => {
-  if (requested.length === 0 || requested.includes('\0')) invalid('Invalid native file path')
-  // `resolve` removes `..` lexically, before any symbolic link is resolved, while an
-  // executor hands the operand to the kernel, which resolves links first. Through an
-  // in-workspace link to an external directory the two name different files, so a
-  // validated in-workspace path would authorize a write outside the checkout. Refuse
-  // the ambiguity; the grant then carries the one destination execution may use.
-  if (requested.split(sep).includes('..'))
-    invalid(`Native file path must not traverse parent directories: ${requested}`)
-  // Pi expands its own path shorthand, so these operands name one file to the authority
-  // (a literal directory inside the checkout) and a different one to the tool that would
-  // execute them. Same ambiguity as `..`, same refusal, and it keeps this validator in
-  // agreement with the child tool boundary in work-child-workspace.ts.
-  if (
-    requested.startsWith('@') ||
-    requested === '~' ||
-    requested.startsWith('~/') ||
-    requested.startsWith('file://') ||
-    /[  -   　]/.test(requested)
-  )
-    invalid(`Native file path must be a literal path, not Pi shorthand: ${requested}`)
-  return nativeDestination(root, resolve(cwd, requested))
-}
-// A symbolic link in the existing prefix is resolved and judged on where it lands, the
-// same way the child validator judges it. `.native` canonicalizes case on a
-// case-insensitive volume, as the child's fs/promises realpath does.
-const nativeDestination = (root: string, absolute: string): string => {
-  let ancestor = absolute
-  const suffix: string[] = []
-  while (lstatIfExists(ancestor) === undefined) {
-    const parent = dirname(ancestor)
-    if (parent === ancestor) invalid(`Cannot establish native file identity: ${absolute}`)
-    suffix.unshift(basename(ancestor))
-    ancestor = parent
-  }
-  const canonicalAncestor = realpathSync.native(ancestor)
-  const canonicalInfo = statSync(canonicalAncestor)
-  if (suffix.length > 0 && !canonicalInfo.isDirectory())
-    invalid(`Native file path parent is not a directory: ${ancestor}`)
-  const actual = resolve(canonicalAncestor, ...suffix)
-  if (!safeWithin(root, actual) || actual === root)
-    invalid(`Native file path escapes its workspace: ${absolute}`)
-  const parts = relative(root, actual).split(sep)
-  if (parts.some(part => part.toLowerCase() === '.git'))
-    invalid('Native file writes cannot target Git administrative paths')
-  if (suffix.length === 0) {
-    const info = lstatSync(absolute)
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
-      invalid(`Native file destination is not a regular, uniquely linked file: ${absolute}`)
-  }
-  if (canonicalInfo.dev !== lstatSync(root).dev)
-    invalid(`Native file path crosses an unsupported mount boundary: ${absolute}`)
-  return actual
-}
-// Execution opens the recorded destination after this boundary, so every component of
-// its existing prefix is resolved again: a directory swapped for a link since
-// authorization would otherwise redirect the write. The kernel still resolves the path
-// once more at open(2); only a descriptor handed to execution would close that window.
-const assertNativeDestinationUnchanged = (root: string, recorded: string): void => {
-  let actual: string
-  try {
-    actual = nativeDestination(root, recorded)
-  } catch (cause) {
-    return blocked(`Native file destination changed after authorization: ${errorText(cause)}`)
-  }
-  if (actual !== recorded)
-    blocked(`Native file destination now resolves elsewhere: ${recorded} -> ${actual}`)
-}
 
 const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
   const value = parseRecord(
@@ -2392,7 +2294,7 @@ export class WorkspaceEngine {
         repoId = this.authority.registerRepository(git)
         const workspace = this.registerWorkspace(repoId, git, 'pre-existing')
         const actualCwd = realpathSync(resolve(input.cwd))
-        if (!safeWithin(workspace.path, actualCwd))
+        if (!isWithin(workspace.path, actualCwd))
           invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
         binding = decodeOrFail(
           BindingSchema,
@@ -2489,7 +2391,7 @@ export class WorkspaceEngine {
     const actual = validateWorkspacePath(workspace)
     if (workspace.origin === 'managed') {
       const base = resolve(this.authority.paths.worktrees, workspace.repositoryId)
-      if (!safeWithin(base, workspace.path) || workspace.path === base)
+      if (!isWithin(base, workspace.path) || workspace.path === base)
         requireReview(`Managed workspace escaped its allocation root: ${workspace.path}`)
     }
     return actual
@@ -2623,7 +2525,7 @@ export class WorkspaceEngine {
     const source = this.currentSource(state)
     const cwd =
       operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
-    if (!safeWithin(source.workspace.path, cwd))
+    if (!isWithin(source.workspace.path, cwd))
       invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
     if (operation.execution !== undefined) validExecution(operation.execution)
     if (operation.access === 'read') {
@@ -2829,11 +2731,11 @@ export class WorkspaceEngine {
     if (effect !== 'opaque' && operation.execution !== undefined)
       invalid('Native operations cannot carry process execution identity')
     const cwd = realpathSync(resolve(operation.cwd ?? within.cwd))
-    if (!safeWithin(workspace.path, cwd))
+    if (!isWithin(workspace.path, cwd))
       invalid(`Scoped operation cwd escapes its workspace: ${cwd}`)
     const operationPath =
       effect === 'native-file-write'
-        ? validateNativeFilePath(workspace.path, cwd, operation.path as string)
+        ? resolveWriteDestination(workspace.path, cwd, operation.path as string)
         : undefined
     const execution =
       operation.execution === undefined ? undefined : validExecution(operation.execution)
@@ -3539,7 +3441,7 @@ export class WorkspaceEngine {
       })
       if (grant.checkout !== workspace.path || grant.origin !== workspace.origin)
         requireReview('Workspace grant checkout fields were altered')
-      if (!isAbsolute(grant.cwd) || !safeWithin(workspace.path, grant.cwd))
+      if (!isAbsolute(grant.cwd) || !isWithin(workspace.path, grant.cwd))
         requireReview('Workspace grant cwd escapes its checkout')
       let actualCwd: string
       try {
@@ -3547,7 +3449,7 @@ export class WorkspaceEngine {
       } catch {
         return requireReview(`Workspace grant cwd is unavailable: ${grant.cwd}`)
       }
-      if (actualCwd !== grant.cwd || !safeWithin(workspace.path, actualCwd))
+      if (actualCwd !== grant.cwd || !isWithin(workspace.path, actualCwd))
         requireReview('Workspace grant cwd is not the canonical checkout path')
       this.validateWorkspace(workspace)
     })
@@ -3729,7 +3631,7 @@ export class WorkspaceEngine {
             const workspace = getWorkspace(db, latest.workspaceId)
             if (workspace === undefined)
               requireReview(`Scoped operation lost its workspace: ${latest.workspaceId}`)
-            assertNativeDestinationUnchanged(workspace.path, latest.operationPath)
+            assertDestinationUnchanged(workspace.path, latest.operationPath)
           }
           const started: UseRecord = {
             ...latest,

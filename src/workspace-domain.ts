@@ -9,6 +9,25 @@ export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()('Worksp
   message: Schema.String,
 }) {}
 
+export function fail(outcome: WorkspaceError['outcome'], message: string): never {
+  throw new WorkspaceError({ outcome, message })
+}
+export function invalid(message: string): never {
+  return fail('invalid', message)
+}
+export function unavailable(message: string): never {
+  return fail('unavailable', message)
+}
+export function blocked(message: string): never {
+  return fail('blocked', message)
+}
+export function requireReview(message: string): never {
+  return fail('review-required', message)
+}
+export function ambiguous(message: string): never {
+  return fail('ambiguous', message)
+}
+
 export interface WorkspaceConversation {
   readonly sessionId: string
   readonly sessionFile: string

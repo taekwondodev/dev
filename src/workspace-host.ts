@@ -9,7 +9,7 @@ import type {
   ToolCallEventResult,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import type { SessionManager } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
-import { validateWorkspaceWritePath } from './work-child-workspace.ts'
+import { decodeWriteOperand } from './workspace-paths.ts'
 import { createNativeWrites } from './workspace-native-write.ts'
 import { createWorkspaceShell } from './workspace-shell.ts'
 import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
@@ -519,7 +519,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     const writer = await admitWriter(context)
     if ('refusal' in writer) return writer.refusal
     try {
-      const path = await validateWorkspaceWritePath(writer.grant, event.input)
+      const path = decodeWriteOperand(event.input)
       const operation = await activeAttachment.authorize({
         access: 'write',
         effect: 'native-file-write',

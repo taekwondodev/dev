@@ -1,11 +1,10 @@
-import { constants, realpathSync, lstatSync } from 'node:fs'
+import { constants } from 'node:fs'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
-import { Predicate } from 'effect'
 import type { EditOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js'
 import type { WriteOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js'
 import type { WorkspaceAttachment, WorkspaceGrant } from './workspace-domain.ts'
+import { canonicalPath, isWithin } from './workspace-paths.ts'
 
 interface NativeWrite {
   readonly toolCallId: string
@@ -35,29 +34,6 @@ const SETTLE_WAIT_MS = 2000
 // still separates is admitted as a distinct destination.
 const destinationIdentity = (path: string): string =>
   path.normalize('NFC').toUpperCase().toLowerCase().normalize('NFC')
-
-const canonical = (path: string): string => {
-  const suffix: string[] = []
-  let ancestor = path
-  for (;;) {
-    try {
-      lstatSync(ancestor)
-      break
-    } catch (cause) {
-      if (!Predicate.isObject(cause) || cause.code !== 'ENOENT') throw cause
-      const parent = dirname(ancestor)
-      if (parent === ancestor) return path
-      suffix.unshift(basename(ancestor))
-      ancestor = parent
-    }
-  }
-  return join(realpathSync.native(ancestor), ...suffix)
-}
-
-const contains = (directory: string, path: string): boolean => {
-  const inside = relative(directory, path)
-  return inside !== '' && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)
-}
 
 // Only the destination's final component is opened without following links; the
 // authority re-resolves its ancestors at the start boundary just before.
@@ -92,9 +68,11 @@ export const createNativeWrites = (onError: (message: string) => void): NativeWr
     inProgress += 1
     try {
       if (closing) throw new Error('The session is closing; the file operation was not run')
-      const actual = canonical(path)
+      const actual = canonicalPath(path).path
       const matched = [...writes.values()].filter(write =>
-        role === 'destination' ? write.destination === actual : contains(actual, write.destination)
+        role === 'destination'
+          ? write.destination === actual
+          : write.destination !== actual && isWithin(actual, write.destination)
       )
       if (matched.length === 0)
         throw new Error(`Native file operation on ${path} matches no admitted destination`)

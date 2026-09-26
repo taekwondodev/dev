@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, realpath } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { Predicate, Schema } from 'effect'
+import { Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { WorkspaceId, type WorkspaceGrant } from './workspace-domain.ts'
+import { decodeWriteOperand, resolveWriteDestination } from './workspace-paths.ts'
 
 const Reply = Schema.Struct({
   type: Schema.Literal('workspace-checked'),
@@ -13,85 +12,14 @@ const Reply = Schema.Struct({
   reason: Schema.optional(Schema.String),
 })
 const decodeReply = Schema.decodeUnknownOption(Reply)
-const FileInput = Schema.Struct({ path: Schema.NonEmptyString })
 const readTools = new Set(['read', 'grep', 'find', 'ls'])
 
+// A child has no authority of its own to consult, so its tool boundary applies the same
+// validator locally and the controller then checks the grant over IPC.
 export const validateWorkspaceWritePath = async (
   grant: WorkspaceGrant,
   input: unknown
-): Promise<string> => {
-  const { path } = Schema.decodeUnknownSync(FileInput)(input)
-  if (path.includes('\0')) throw new Error('Invalid write path')
-  if (
-    path.startsWith('@') ||
-    path === '~' ||
-    path.startsWith('~/') ||
-    path.startsWith('file://') ||
-    /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/.test(path)
-  )
-    throw new Error(
-      'Use a literal absolute or relative write path; Pi path shorthand is not an authority identity'
-    )
-  // `resolve` removes `..` lexically, before the filesystem resolves any symbolic link,
-  // while the builtin tool hands this operand to the kernel, which resolves links first.
-  // Through an in-workspace link the two name different files, so the ambiguous operand
-  // is refused outright.
-  //
-  // This closes the ambiguity, not the race. A `tool_call` hook can only allow or block;
-  // it cannot rewrite the tool's input or hand it a descriptor. Between this check and
-  // the tool's own open(2) a component of the path can still be replaced by a symbolic
-  // link, and the write then follows it. That residual window is a property of the hook
-  // boundary and is accepted, not fixed here.
-  if (path.split('/').includes('..'))
-    throw new Error('Write path must not traverse parent directories')
-  const absolute = resolve(grant.cwd, path)
-  let ancestor = absolute
-  const suffix: string[] = []
-  for (;;) {
-    try {
-      await lstat(ancestor)
-      break
-    } catch (cause) {
-      if (!Predicate.isObject(cause) || cause.code !== 'ENOENT') throw cause
-      const parent = dirname(ancestor)
-      if (parent === ancestor) throw new Error('Cannot establish write-path identity', { cause })
-      suffix.unshift(basename(ancestor))
-      ancestor = parent
-    }
-  }
-  const canonicalAncestor = await realpath(ancestor)
-  const actual = join(canonicalAncestor, ...suffix)
-  const inside = relative(grant.checkout, actual)
-  if (inside === '') throw new Error('A workspace directory is not a file-write destination')
-  if (inside === '..' || inside.startsWith('../') || isAbsolute(inside))
-    throw new Error('Write path escapes the authorized workspace')
-  if (inside.split('/').some(part => part.toLowerCase() === '.git'))
-    throw new Error('Direct Git administrative writes require structural authority')
-  const rootDevice = (await lstat(grant.checkout)).dev
-  for (
-    let directory = suffix.length > 0 ? canonicalAncestor : dirname(actual);
-    directory !== grant.checkout;
-    directory = dirname(directory)
-  ) {
-    if ((await lstat(directory)).dev !== rootDevice)
-      throw new Error('Write destination crosses an unsupported mount boundary')
-    let nested = false
-    try {
-      await lstat(join(directory, '.git'))
-      nested = true
-    } catch (cause) {
-      if (!Predicate.isObject(cause) || cause.code !== 'ENOENT') throw cause
-    }
-    if (nested)
-      throw new Error('Write destination belongs to a nested repository; select it explicitly')
-  }
-  if (suffix.length === 0) {
-    const info = await lstat(absolute)
-    if (!info.isFile() || info.nlink !== 1)
-      throw new Error('Write destination must be a regular file without hard links')
-  }
-  return path
-}
+): Promise<string> => resolveWriteDestination(grant.checkout, grant.cwd, decodeWriteOperand(input))
 
 export const checkChildWorkspace = (
   grant: WorkspaceGrant,
