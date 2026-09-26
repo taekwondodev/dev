@@ -1,6 +1,7 @@
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { Effect } from 'effect'
 import type { EditOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js'
 import type { WriteOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js'
 import type { WorkspaceAttachment, WorkspaceGrant } from './workspace-domain.ts'
@@ -52,7 +53,9 @@ export const createNativeWrites = (onError: (message: string) => void): NativeWr
   const complete = async (write: NativeWrite): Promise<void> => {
     writes.delete(write.toolCallId)
     try {
-      await write.attachment.reportExecution(write.grant, { kind: 'operation-completed' })
+      await Effect.runPromise(
+        write.attachment.reportExecution(write.grant, { kind: 'operation-completed' })
+      )
     } catch (error) {
       onError(
         `Native file write ${write.toolCallId} could not be settled: ${error instanceof Error ? error.message : String(error)}`
@@ -77,9 +80,9 @@ export const createNativeWrites = (onError: (message: string) => void): NativeWr
       if (matched.length === 0)
         throw new Error(`Native file operation on ${path} matches no admitted destination`)
       for (const write of matched) {
-        write.started ??= write.attachment.reportExecution(write.grant, {
-          kind: 'operation-started',
-        })
+        write.started ??= Effect.runPromise(
+          write.attachment.reportExecution(write.grant, { kind: 'operation-started' })
+        )
         await write.started
       }
       return await operation()

@@ -23,7 +23,8 @@ import { createWorkExtension } from '../src/work-extension.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
 import { createWorkspaceHost } from '../src/workspace-host.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { openLifecycle } from './workspace-test-lifecycle.ts'
+import { Effect } from 'effect'
 
 interface AssistantEventStream {
   push(event: unknown): void
@@ -76,7 +77,7 @@ globalThis.fetch = async () => {
   throw new Error('Network is disabled by the real-authority probe')
 }
 
-const lifecycle = makeWorkspaceLifecycle({ root: authorityRoot })
+const lifecycle = await openLifecycle({ root: authorityRoot })
 
 const squatterHome = join(fixture, 'squatter')
 mkdir(squatterHome)
@@ -235,8 +236,8 @@ const hostAttachment = await lifecycle.attach({
   cwd: lead,
 })
 const workspaceHost = createWorkspaceHost({
-  lifecycle,
-  attachment: hostAttachment,
+  lifecycle: lifecycle.effect,
+  attachment: hostAttachment.effect,
   dataHome,
   openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
   repositoryRoot: gitRoot,
@@ -273,7 +274,7 @@ const runtime = await pi.createAgentSessionRuntime(
     const work = createWorkExtension({
       dataHome,
       profile: 'general',
-      workspace: { lifecycle, attachment },
+      workspace: { lifecycle: lifecycle.effect, attachment },
       isWorkspaceParked: workspaceHost.isParked,
     })
     workspaceHost.setWorkControls({ running: work.runningWork, stopAll: work.stopAll })
@@ -375,7 +376,7 @@ assert.equal(resolve(runtime.cwd), resolve(lead))
 const readOnly = (args: readonly string[]) => {
   const command = parseWorkspaceCommand([...args])
   if (command.kind === 'resume') throw new Error('Expected a read-only workspace command')
-  return runReadOnlyWorkspaceCommand(lifecycle, command, { cwd: lead })
+  return Effect.runPromise(runReadOnlyWorkspaceCommand(lifecycle.effect, command, { cwd: lead }))
 }
 const listResult = await readOnly([])
 const inspectResult = await readOnly(['inspect', squatterTaskId])

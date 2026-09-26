@@ -13,7 +13,7 @@ import {
   type WorkspaceHandoff,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { openLifecycle } from './workspace-test-lifecycle.ts'
 import {
   fixtureId,
   makeFixtureBinding,
@@ -84,7 +84,7 @@ try {
   git(['add', 'tracked.txt'], repo)
   git(['commit', '--quiet', '-m', 'contract-fixture'], repo)
 
-  const lifecycle = makeWorkspaceLifecycle({ root: join(sandbox, 'authority') })
+  const lifecycle = await openLifecycle({ root: join(sandbox, 'authority') })
   const primary = await lifecycle.attach({ conversation: conversation('primary'), cwd: repo })
   const admission = await primary.authorize({ access: 'write' })
   assert.equal(admission.kind, 'ready')

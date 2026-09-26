@@ -29,7 +29,6 @@ import {
   WorkspaceId,
   WorkspaceProcessSchema,
   WorkspaceGrantSchema,
-  type WorkspaceAttachment,
   type WorkspaceAuthorization,
   type WorkspaceBinding,
   type WorkspaceConversation,
@@ -2086,7 +2085,10 @@ interface ConversationState {
   readonly releaseConversation: () => void
 }
 
-class WorkspaceAttachmentImpl implements WorkspaceAttachment {
+// The worker's side of an attachment; clients reach it through the lifecycle's RPC.
+export type EngineAttachment = WorkspaceAttachmentImpl
+
+class WorkspaceAttachmentImpl {
   private readonly engine: WorkspaceEngine
   readonly state: ConversationState
   readonly token = workspaceId()
@@ -2175,14 +2177,14 @@ export class WorkspaceEngine {
     conversation: WorkspaceConversation
     cwd: string
     selection?: WorkspaceSelection
-  }): Promise<WorkspaceAttachment> {
+  }): Promise<EngineAttachment> {
     return this.guard(() => this.attachUnsafe(input))
   }
   private attachUnsafe(input: {
     conversation: WorkspaceConversation
     cwd: string
     selection?: WorkspaceSelection
-  }): WorkspaceAttachment {
+  }): EngineAttachment {
     this.authority.initialize()
     if (!isAbsolute(input.cwd)) invalid('Workspace cwd must be absolute')
     const normalized = conversationRecord(input.conversation)

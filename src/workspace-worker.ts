@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
-import { WorkspaceError, type WorkspaceAttachment } from './workspace-domain.ts'
-import { WorkspaceEngine } from './workspace-engine.ts'
+import { WorkspaceError } from './workspace-domain.ts'
+import { WorkspaceEngine, type EngineAttachment } from './workspace-engine.ts'
 import {
   decodeWorkspaceWorkerData,
   decodeWorkspaceParentMessage,
@@ -60,12 +60,12 @@ try {
 const authority = engine
 if (port !== null && authority !== undefined) {
   let nextAttachmentId = 0
-  const attachments = new Map<number, WorkspaceAttachment>()
+  const attachments = new Map<number, EngineAttachment>()
   const callbacks = new Map<number, CallbackWaiter>()
   const activeRequests = new Map<number, Promise<void>>()
   let closing = false
 
-  const requireAttachment = (id: number): WorkspaceAttachment => {
+  const requireAttachment = (id: number): EngineAttachment => {
     const attachment = attachments.get(id)
     if (attachment === undefined)
       throw new WorkspaceError({ outcome: 'blocked', message: 'Workspace attachment is closed' })

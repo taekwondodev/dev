@@ -561,24 +561,21 @@ class WorkOwnerImpl implements WorkOwnerService {
           generation: reservation.generation,
           logs: self.store.plannedLogPath(id, 'stdout'),
         }
-        const admission = yield* Effect.tryPromise({
-          try: async () => {
-            const allocated = await workspace.attachment.authorize({
-              access: request.kind === 'agent' && request.access === 'read-only' ? 'read' : 'write',
-              delegated: request.kind === 'agent' && request.access === 'write',
-              cwd: requestedCwd,
-              ...(request.kind === 'agent' ? { execution } : {}),
-            })
-            if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
-            return workspace.attachment.authorize({
-              access: 'write',
-              effect: 'opaque',
-              within: allocated.grant,
-              execution,
-            })
-          },
-          catch: toFailure,
-        })
+        const admission = yield* Effect.gen(function* () {
+          const allocated = yield* workspace.attachment.authorize({
+            access: request.kind === 'agent' && request.access === 'read-only' ? 'read' : 'write',
+            delegated: request.kind === 'agent' && request.access === 'write',
+            cwd: requestedCwd,
+            ...(request.kind === 'agent' ? { execution } : {}),
+          })
+          if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
+          return yield* workspace.attachment.authorize({
+            access: 'write',
+            effect: 'opaque',
+            within: allocated.grant,
+            execution,
+          })
+        }).pipe(Effect.mapError(toFailure))
         if (admission.kind === 'rebind')
           return yield* new WorkError({
             message: `Workspace handoff required before starting work: ${admission.handoff.reason}. No command was executed; obtain a fresh host tool decision.`,
@@ -655,14 +652,12 @@ class WorkOwnerImpl implements WorkOwnerService {
           const selected = grant
           const { workspace } = self
           return !installed && selected !== undefined && workspace !== undefined
-            ? Effect.tryPromise({
-                try: () =>
-                  workspace.attachment.reportExecution(selected, {
-                    kind: 'launch-failed',
-                    reason: 'Admission ended before any process was spawned',
-                  }),
-                catch: toFailure,
-              })
+            ? workspace.attachment
+                .reportExecution(selected, {
+                  kind: 'launch-failed',
+                  reason: 'Admission ended before any process was spawned',
+                })
+                .pipe(Effect.mapError(toFailure))
             : Effect.void
         }),
         Effect.ensuring(Effect.sync(() => self.reservations.delete(reservation.taskId)))
@@ -1137,23 +1132,26 @@ class WorkOwnerImpl implements WorkOwnerService {
         if (workspace === undefined || child === undefined)
           return yield* new WorkError({ message: 'Child workspace owner is unavailable' })
         const checked = yield* Effect.result(
-          Effect.tryPromise({
-            try: async () => {
-              if (
-                message.useId !== job.workspace.useId ||
-                (message.operation !== 'read' && job.workspace.access !== 'write')
-              )
-                throw new Error('Child workspace grant does not match the requested operation')
-              await workspace.lifecycle.validate(job.workspace)
-              self.assertPreparedUnsafe(
-                token.sessionId,
-                token.generation,
-                record.owner.taskId,
-                record.kind,
-                record.id
-              )
-            },
-            catch: toFailure,
+          Effect.gen(function* () {
+            if (
+              message.useId !== job.workspace.useId ||
+              (message.operation !== 'read' && job.workspace.access !== 'write')
+            )
+              return yield* new WorkError({
+                message: 'Child workspace grant does not match the requested operation',
+              })
+            yield* workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure))
+            yield* Effect.try({
+              try: () =>
+                self.assertPreparedUnsafe(
+                  token.sessionId,
+                  token.generation,
+                  record.owner.taskId,
+                  record.kind,
+                  record.id
+                ),
+              catch: toFailure,
+            })
           })
         )
         yield* sendIpc(child, {
@@ -1567,10 +1565,9 @@ class WorkOwnerImpl implements WorkOwnerService {
     if (workspace === undefined)
       return Effect.fail(new WorkError({ message: 'Workspace authority is unavailable' }))
     if (job.workspaceLaunch === 'settled') return Effect.void
-    return Effect.tryPromise({
-      try: () => workspace.attachment.reportExecution(job.workspace, fact),
-      catch: toFailure,
-    })
+    return workspace.attachment
+      .reportExecution(job.workspace, fact)
+      .pipe(Effect.mapError(toFailure))
   }
 
   private recordFor(id: AttemptId): Effect.Effect<AttemptRecord, WorkFailure> {

@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { Effect } from 'effect'
 import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 import type {
@@ -52,6 +53,7 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceOperation,
   type WorkspaceProcess,
+  type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
 import { createWorkspaceHost } from '../src/workspace-host.ts'
@@ -247,6 +249,19 @@ const refuse = (outcome: WorkspaceError['outcome'], message: string): never => {
   throw new WorkspaceError({ outcome, message })
 }
 
+// The fixture keeps its rules as plain async code and meets the host at the Effect boundary.
+const fromAsync = <A>(run: () => Promise<A>): Effect.Effect<A, WorkspaceError> =>
+  Effect.tryPromise({
+    try: run,
+    catch: cause =>
+      cause instanceof WorkspaceError
+        ? cause
+        : new WorkspaceError({
+            outcome: 'unavailable',
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+  })
+
 const makeView = (item: FixtureDescriptor, outcome: WorkspaceView['outcome']): WorkspaceView =>
   makeFixtureView({
     descriptor: item,
@@ -419,11 +434,8 @@ const makeAttachment = (
     }
     return undefined
   }
-  return {
-    get binding() {
-      return binding
-    },
-    async authorize(operation) {
+  const fixture = {
+    async authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization> {
       const scope: UseScope =
         operation.effect ?? (operation.delegated === true ? 'delegated' : 'ordinary')
       switch (scope) {
@@ -456,7 +468,7 @@ const makeAttachment = (
           return authorizeScoped(owned, scope, binding, operation)
       }
     },
-    async select(selection) {
+    async select(selection: WorkspaceSelection): Promise<WorkspaceHandoff> {
       if (pending !== undefined)
         return refuse('blocked', 'A workspace transition is already pending')
       const live = liveExecution()
@@ -469,7 +481,7 @@ const makeAttachment = (
       pending = handoffTo(binding, candidate, 'fixture explicit retained-workspace selection')
       return pending
     },
-    async reportExecution(grant, fact) {
+    async reportExecution(grant: WorkspaceGrant, fact: WorkspaceExecutionFact): Promise<void> {
       const use = uses.get(grant.useId)
       try {
         if (use === undefined) return refuse('invalid', `${fact.kind} for an unissued use`)
@@ -493,7 +505,10 @@ const makeAttachment = (
         ...(grant.path === undefined ? {} : { pathExists: existsSync(grant.path) }),
       })
     },
-    async handoff(transition, replace) {
+    async handoff(
+      transition: WorkspaceHandoff,
+      replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>
+    ): Promise<void> {
       if (pending?.operationId !== transition.operationId)
         return refuse('review-required', 'Workspace handoff token is stale')
       assert.equal(transition.from.conversation.sessionId, conversation.sessionId)
@@ -550,14 +565,30 @@ const makeAttachment = (
         throw error
       }
     },
-    async close() {
-      timeline.push({ kind: 'attachment-closed', workspaceId: attached.workspaceId })
+  }
+  return {
+    get binding() {
+      return binding
     },
+    authorize: operation => fromAsync(() => fixture.authorize(operation)),
+    select: selection => fromAsync(() => fixture.select(selection)),
+    reportExecution: (grant, fact) => fromAsync(() => fixture.reportExecution(grant, fact)),
+    handoff: (transition, replace) =>
+      fromAsync(() =>
+        fixture.handoff(transition, target => Effect.runPromise(Effect.orDie(replace(target))))
+      ),
+    close: Effect.sync(() => {
+      timeline.push({ kind: 'attachment-closed', workspaceId: attached.workspaceId })
+    }),
   }
 }
 
-const lifecycle: WorkspaceLifecycle = {
-  async attach(input) {
+const fixtureLifecycle = {
+  async attach(input: {
+    readonly conversation: WorkspaceConversation
+    readonly cwd: string
+    readonly selection?: WorkspaceSelection
+  }): Promise<WorkspaceAttachment> {
     const path = resolve(input.cwd)
     const { sessionId } = input.conversation
     attachCalls.push({ path, sessionId })
@@ -580,7 +611,10 @@ const lifecycle: WorkspaceLifecycle = {
     if (attached === undefined) throw new Error(`fixture has no workspace descriptor for ${path}`)
     return makeAttachment(input.conversation, attached)
   },
-  async inspect(input) {
+  async inspect(input: {
+    readonly cwd?: string
+    readonly taskId?: string
+  }): Promise<WorkspaceView[]> {
     inspections.push(input)
     let rows = [
       ...descriptors.map(item =>
@@ -595,11 +629,15 @@ const lifecycle: WorkspaceLifecycle = {
     }
     return rows
   },
-  async validate(grant) {
+  async validate(grant: WorkspaceGrant): Promise<void> {
     const known = descriptorByPath.get(resolve(grant.checkout))
     if (known?.workspaceId !== grant.workspaceId) throw new Error('fixture grant identity mismatch')
   },
-  async close() {},
+}
+const lifecycle: WorkspaceLifecycle = {
+  attach: input => fromAsync(() => fixtureLifecycle.attach(input)),
+  inspect: input => fromAsync(() => fixtureLifecycle.inspect(input)),
+  validate: grant => fromAsync(() => fixtureLifecycle.validate(grant)),
 }
 
 assert.deepEqual(parseWorkspaceCommand([]), { kind: 'list' })
@@ -632,11 +670,12 @@ assert.equal(
   chooseResumeCandidate(resumeViews, TASK_RESUME, WS_RESUME_C).view.workspaceId,
   WS_RESUME_C
 )
-const listResult = await runReadOnlyWorkspaceCommand(lifecycle, { kind: 'list' }, { cwd: lead })
-const inspectResult = await runReadOnlyWorkspaceCommand(lifecycle, {
-  kind: 'inspect',
-  taskId: TASK_LEAD,
-})
+const listResult = await Effect.runPromise(
+  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'list' }, { cwd: lead })
+)
+const inspectResult = await Effect.runPromise(
+  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'inspect', taskId: TASK_LEAD })
+)
 assert.equal(listResult.exitCode, 0)
 assert.match(listResult.stdout ?? '', /workspace/)
 assert.equal(inspectResult.exitCode, 0)
@@ -1083,10 +1122,12 @@ const initialSessionFile = initialManager.getSessionFile()
 assert.ok(initialSessionFile)
 const workspaceHost = createWorkspaceHost({
   lifecycle,
-  attachment: await lifecycle.attach({
-    conversation: { sessionId: initialSessionId, sessionFile: initialSessionFile, dataHome },
-    cwd: lead,
-  }),
+  attachment: await Effect.runPromise(
+    lifecycle.attach({
+      conversation: { sessionId: initialSessionId, sessionFile: initialSessionFile, dataHome },
+      cwd: lead,
+    })
+  ),
   dataHome,
   openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
   repositoryRoot: async cwd => resolve(cwd),

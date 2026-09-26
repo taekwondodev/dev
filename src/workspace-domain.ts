@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { type Effect, Schema } from 'effect'
 
 export const WorkspaceId = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)
@@ -147,18 +147,22 @@ export interface WorkspaceView {
   }[]
 }
 
+export type HostReplace = (
+  target: WorkspaceGrant
+) => Effect.Effect<'confirmed' | 'cancelled', unknown>
+
 export interface WorkspaceAttachment {
   readonly binding: WorkspaceBinding
-  authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization>
-  select(selection: WorkspaceSelection): Promise<WorkspaceHandoff>
-  reportExecution(grant: WorkspaceGrant, fact: WorkspaceExecutionFact): Promise<void>
+  authorize(operation: WorkspaceOperation): Effect.Effect<WorkspaceAuthorization, WorkspaceError>
+  select(selection: WorkspaceSelection): Effect.Effect<WorkspaceHandoff, WorkspaceError>
+  reportExecution(
+    grant: WorkspaceGrant,
+    fact: WorkspaceExecutionFact
+  ): Effect.Effect<void, WorkspaceError>
   // Runs outside Pi callbacks. The lifecycle owns intent/start/result publication;
   // the callback owns quiescence, runtime replacement and observed host outcome.
-  handoff(
-    transition: WorkspaceHandoff,
-    replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>
-  ): Promise<void>
-  close(): Promise<void>
+  handoff(transition: WorkspaceHandoff, replace: HostReplace): Effect.Effect<void, WorkspaceError>
+  readonly close: Effect.Effect<void, WorkspaceError>
 }
 
 export interface WorkspaceLifecycle {
@@ -166,13 +170,12 @@ export interface WorkspaceLifecycle {
     readonly conversation: WorkspaceConversation
     readonly cwd: string
     readonly selection?: WorkspaceSelection
-  }): Promise<WorkspaceAttachment>
+  }): Effect.Effect<WorkspaceAttachment, WorkspaceError>
   // With a taskId, only the views of exactly that task, across every repository.
   inspect(input: {
     readonly cwd?: string
     readonly taskId?: string
-  }): Promise<readonly WorkspaceView[]>
+  }): Effect.Effect<readonly WorkspaceView[], WorkspaceError>
   // A child verifies the parent's fenced use; it must not acquire a competing writer.
-  validate(grant: WorkspaceGrant): Promise<void>
-  close(): Promise<void>
+  validate(grant: WorkspaceGrant): Effect.Effect<void, WorkspaceError>
 }

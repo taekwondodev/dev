@@ -20,14 +20,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import {
   WorkspaceError,
-  type WorkspaceAttachment,
   type WorkspaceExecution,
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
-  type WorkspaceLifecycle,
 } from '../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../src/workspace-engine.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import {
+  openLifecycle,
+  type TestAttachment,
+  type TestLifecycle,
+} from './workspace-test-lifecycle.ts'
 
 let captureNextWorker = false
 let capturedWorker: Worker | undefined
@@ -103,7 +105,7 @@ const expectWorkspaceError = async (promise: Promise<unknown>, outcomes: readonl
     error => error instanceof WorkspaceError && outcomes.includes(error.outcome)
   )
 }
-const switchStage = async (reader: WorkspaceLifecycle, operationId: string) =>
+const switchStage = async (reader: TestLifecycle, operationId: string) =>
   (await reader.inspect({})).flatMap(view => view.pending).find(item => item.id === operationId)
     ?.stage
 const runChild = (code: string): Promise<string> =>
@@ -138,7 +140,7 @@ try {
   git(['commit', '--quiet', '-m', 'fixture'])
   const commit = git(['rev-parse', 'HEAD'])
 
-  const lifecycle = makeWorkspaceLifecycle({ root })
+  const lifecycle = await openLifecycle({ root })
   const first = await lifecycle.attach({ conversation: conversation('first'), cwd: repo })
   const writerResult = await first.authorize({ access: 'write' })
   assert.equal(writerResult.kind, 'ready')
@@ -151,13 +153,13 @@ try {
   writeFileSync(join(repo, 'untracked.txt'), 'untracked source data\n')
   writeFileSync(join(repo, 'ignored.txt'), 'ignored source data\n')
 
-  const moduleUrl = new URL('../src/workspace-lifecycle.ts', import.meta.url).href
+  const moduleUrl = new URL('./workspace-test-lifecycle.ts', import.meta.url).href
   const childReaderConversation = conversation('subprocess-reader')
   const childWriterConversation = conversation('subprocess-writer')
   const subprocessEvidence = JSON.parse(
     await runChild(`
-    import { makeWorkspaceLifecycle } from ${JSON.stringify(moduleUrl)}
-    const lifecycle = makeWorkspaceLifecycle({ root: ${JSON.stringify(root)} })
+    import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+    const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
     const reader = await lifecycle.attach({ conversation: ${JSON.stringify(childReaderConversation)}, cwd: ${JSON.stringify(repo)} })
     const read = await reader.authorize({ access: 'read' })
     const attemptedWriter = await lifecycle.attach({ conversation: ${JSON.stringify(childWriterConversation)}, cwd: ${JSON.stringify(repo)},
@@ -233,8 +235,8 @@ try {
   const provisionProbe = (name: string) => {
     const conversationValue = conversation(name)
     return runChild(`
-      import { makeWorkspaceLifecycle } from ${JSON.stringify(moduleUrl)}
-      const lifecycle = makeWorkspaceLifecycle({ root: ${JSON.stringify(root)} })
+      import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+      const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
       try {
         const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversationValue)}, cwd: ${JSON.stringify(concurrentRepo)} })
         const result = await attachment.authorize({ access: 'read' })
@@ -315,7 +317,7 @@ try {
     'readers share the live checkout; each delegated writer gets a distinct detached exact-commit worktree'
   )
 
-  const isolatedRoot = makeWorkspaceLifecycle({ root: join(sandbox, 'isolated-authority') })
+  const isolatedRoot = await openLifecycle({ root: join(sandbox, 'isolated-authority') })
   assert.deepEqual(await isolatedRoot.inspect({}), [])
   const isolatedAttachment = await isolatedRoot.attach({
     conversation: conversation('isolated-root'),
@@ -408,12 +410,12 @@ try {
   )
   const isolatedAuthorityPath = join(sandbox, 'isolated-authority')
   chmodSync(isolatedAuthorityPath, 0o755)
-  const unsafeAuthority = makeWorkspaceLifecycle({ root: isolatedAuthorityPath })
+  const unsafeAuthority = await openLifecycle({ root: isolatedAuthorityPath })
   await expectWorkspaceError(unsafeAuthority.inspect({}), ['unavailable'])
   await unsafeAuthority.close()
   const authorityAlias = join(sandbox, 'authority-symlink')
   symlinkSync(isolatedAuthorityPath, authorityAlias, 'dir')
-  const aliasInspector = makeWorkspaceLifecycle({ root: authorityAlias })
+  const aliasInspector = await openLifecycle({ root: authorityAlias })
   await expectWorkspaceError(aliasInspector.inspect({}), ['unavailable'])
   await aliasInspector.close()
   checks.push('non-private and symlinked authority roots are rejected')
@@ -517,7 +519,7 @@ try {
   ])
   await lifecycle.close()
 
-  const reopened = makeWorkspaceLifecycle({ root })
+  const reopened = await openLifecycle({ root })
   const afterRestart = await reopened.inspect({ taskId: firstGrant.taskId })
   assert.ok(
     afterRestart.some(
@@ -586,7 +588,7 @@ try {
     'uncertainty and reservations survive close/reopen; a new conversation does not auto-select a task; resume requires an exact selection and a fresh acquisition; a pending handoff reopens only at its target'
   )
 
-  const corruptLifecycle = makeWorkspaceLifecycle({ root: join(sandbox, 'corrupt-authority') })
+  const corruptLifecycle = await openLifecycle({ root: join(sandbox, 'corrupt-authority') })
   const corruptAttachment = await corruptLifecycle.attach({
     conversation: conversation('corrupt'),
     cwd: repo,
@@ -614,7 +616,7 @@ try {
   } finally {
     shard.close()
   }
-  const corruptInspector = makeWorkspaceLifecycle({ root: join(sandbox, 'corrupt-authority') })
+  const corruptInspector = await openLifecycle({ root: join(sandbox, 'corrupt-authority') })
   await expectWorkspaceError(corruptInspector.inspect({}), ['review-required'])
   await corruptInspector.close()
   const repairedShard = new DatabaseSync(shardPath)
@@ -628,7 +630,7 @@ try {
     .prepare('UPDATE repositories SET payload=? WHERE id=?')
     .run('[]', corruptResult.grant.repositoryId)
   catalog.close()
-  const corruptCatalogInspector = makeWorkspaceLifecycle({
+  const corruptCatalogInspector = await openLifecycle({
     root: join(sandbox, 'corrupt-authority'),
   })
   await expectWorkspaceError(corruptCatalogInspector.inspect({}), ['review-required'])
@@ -647,7 +649,7 @@ try {
   const deathRoot = join(sandbox, 'worker-death-authority')
   captureNextWorker = true
   capturedWorker = undefined
-  const deathLifecycle = makeWorkspaceLifecycle({ root: deathRoot })
+  const deathLifecycle = await openLifecycle({ root: deathRoot })
   const deathAttachment = await deathLifecycle.attach({
     conversation: conversation('worker-death'),
     cwd: failureRepo,
@@ -659,7 +661,7 @@ try {
   await deathWorker.terminate()
   await expectWorkspaceError(deathLifecycle.inspect({}), ['unavailable'])
   await deathLifecycle.close()
-  const deathRecovery = makeWorkspaceLifecycle({ root: deathRoot })
+  const deathRecovery = await openLifecycle({ root: deathRoot })
   const deathViews = await deathRecovery.inspect({ taskId: deathAdmission.grant.taskId })
   assert.ok(
     deathViews.some(
@@ -671,7 +673,7 @@ try {
   await deathRecovery.close()
 
   const lostAckRoot = join(sandbox, 'lost-ack-authority')
-  const lostAckLifecycle = makeWorkspaceLifecycle({ root: lostAckRoot })
+  const lostAckLifecycle = await openLifecycle({ root: lostAckRoot })
   const lostAckAttachment = await lostAckLifecycle.attach({
     conversation: conversation('lost-ack'),
     cwd: failureRepo,
@@ -680,7 +682,7 @@ try {
   await expectWorkspaceError(lostAckAttachment.authorize({ access: 'write' }), ['unavailable'])
   const lostAckBinding = lostAckAttachment.binding
   await lostAckLifecycle.close()
-  const lostAckRecovery = makeWorkspaceLifecycle({ root: lostAckRoot })
+  const lostAckRecovery = await openLifecycle({ root: lostAckRoot })
   const lostAckViews = await lostAckRecovery.inspect({})
   assert.ok(
     lostAckViews.some(
@@ -705,7 +707,7 @@ try {
     birth: 'authority-check',
   }
   const startProcessUse = async (
-    attachment: WorkspaceAttachment,
+    attachment: TestAttachment,
     grant: WorkspaceGrant,
     execution: WorkspaceExecution
   ) => {
@@ -713,16 +715,16 @@ try {
     await attachment.reportExecution(grant, { kind: 'spawned', process: liveProcess })
     await attachment.reportExecution(grant, { kind: 'started' })
   }
-  const endProcessUse = async (attachment: WorkspaceAttachment, grant: WorkspaceGrant) => {
+  const endProcessUse = async (attachment: TestAttachment, grant: WorkspaceGrant) => {
     await attachment.reportExecution(grant, { kind: 'observed', processes: [] })
     await attachment.reportExecution(grant, {
       kind: 'quiescent',
       reason: 'fixture process family observed gone',
     })
   }
-  const findUse = async (lifecycleValue: WorkspaceLifecycle, useId: string) =>
+  const findUse = async (lifecycleValue: TestLifecycle, useId: string) =>
     (await lifecycleValue.inspect({})).flatMap(view => view.uses).find(use => use.id === useId)
-  const ready = (result: Awaited<ReturnType<WorkspaceAttachment['authorize']>>) => {
+  const ready = (result: Awaited<ReturnType<TestAttachment['authorize']>>) => {
     if (result.kind !== 'ready') throw new Error(`Expected a ready grant, got ${result.kind}`)
     return result.grant
   }
@@ -740,7 +742,7 @@ try {
   git(['worktree', 'add', '--quiet', '-b', 'linked-scope', linkedRepo, scopedCommit], scopedRepo)
 
   const scopedRoot = join(sandbox, 'scoped-authority')
-  const scopedLifecycle = makeWorkspaceLifecycle({ root: scopedRoot })
+  const scopedLifecycle = await openLifecycle({ root: scopedRoot })
   const scopedPrimary = await scopedLifecycle.attach({
     conversation: conversation('scoped-primary'),
     cwd: scopedRepo,
@@ -940,7 +942,7 @@ try {
   await scopedSibling.close()
   await scopedLifecycle.close()
 
-  const scopedRecovery = makeWorkspaceLifecycle({ root: scopedRoot })
+  const scopedRecovery = await openLifecycle({ root: scopedRoot })
   const unknownShell = await findUse(scopedRecovery, primaryShell.useId)
   assert.equal(unknownShell?.stage, 'unknown')
   assert.equal(unknownShell?.reason, 'test-shell-observation-lost')
@@ -982,7 +984,7 @@ try {
   )
 
   const structureRoot = join(sandbox, 'structure-authority')
-  const structureLifecycle = makeWorkspaceLifecycle({ root: structureRoot })
+  const structureLifecycle = await openLifecycle({ root: structureRoot })
   const structureAttachment = await structureLifecycle.attach({
     conversation: conversation('structure'),
     cwd: linkedRepo,
@@ -1025,7 +1027,7 @@ try {
   )
 
   const scopedLostAckRoot = join(sandbox, 'scoped-lost-ack-authority')
-  const scopedLostAckLifecycle = makeWorkspaceLifecycle({ root: scopedLostAckRoot })
+  const scopedLostAckLifecycle = await openLifecycle({ root: scopedLostAckRoot })
   const scopedLostAckAttachment = await scopedLostAckLifecycle.attach({
     conversation: conversation('scoped-lost-ack'),
     cwd: failureRepo,
@@ -1045,7 +1047,7 @@ try {
     ['unavailable']
   )
   await scopedLostAckLifecycle.close()
-  const scopedLostAckRecovery = makeWorkspaceLifecycle({ root: scopedLostAckRoot })
+  const scopedLostAckRecovery = await openLifecycle({ root: scopedLostAckRoot })
   const scopedLostAckUse = await findUse(scopedLostAckRecovery, scopedLostAckOperation.useId)
   assert.equal(scopedLostAckUse?.effect, 'native-file-write')
   assert.ok(['operation-started', 'unknown'].includes(scopedLostAckUse?.stage ?? ''))
@@ -1063,7 +1065,7 @@ try {
   git(['add', 'tracked.txt'], traversalRepo)
   git(['commit', '--quiet', '-m', 'traversal-fixture'], traversalRepo)
   symlinkSync(join(traversalOutside, 'inner'), join(traversalRepo, 'link'))
-  const traversalLifecycle = makeWorkspaceLifecycle({ root: join(sandbox, 'traversal-authority') })
+  const traversalLifecycle = await openLifecycle({ root: join(sandbox, 'traversal-authority') })
   const traversalAttachment = await traversalLifecycle.attach({
     conversation: conversation('traversal'),
     cwd: traversalRepo,
@@ -1161,7 +1163,7 @@ try {
   git(['worktree', 'add', '--quiet', '-b', 'fence-linked', fenceLinked, fenceCommit], fenceRepo)
 
   const fenceRoot = join(sandbox, 'fence-authority')
-  const fenceLifecycle = makeWorkspaceLifecycle({ root: fenceRoot })
+  const fenceLifecycle = await openLifecycle({ root: fenceRoot })
   const fencePrimary = await fenceLifecycle.attach({
     conversation: conversation('fence-primary'),
     cwd: fenceRepo,
@@ -1199,8 +1201,8 @@ try {
   await endProcessUse(fenceSibling, fenceSiblingShell)
   await fenceSibling.close()
   const fenceCrossProcess = await runChild(`
-    import { makeWorkspaceLifecycle } from ${JSON.stringify(moduleUrl)}
-    const lifecycle = makeWorkspaceLifecycle({ root: ${JSON.stringify(fenceRoot)} })
+    import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+    const lifecycle = await openLifecycle({ root: ${JSON.stringify(fenceRoot)} })
     const attachment = await lifecycle.attach({
       conversation: ${JSON.stringify(conversation('fence-cross-process'))},
       cwd: ${JSON.stringify(fenceLinked)},
@@ -1225,7 +1227,7 @@ try {
   )
 
   const closeRoot = join(sandbox, 'close-nesting-authority')
-  const closeLifecycle = makeWorkspaceLifecycle({ root: closeRoot })
+  const closeLifecycle = await openLifecycle({ root: closeRoot })
   const closeAttachment = await closeLifecycle.attach({
     conversation: conversation('close-nesting'),
     cwd: fenceRepo,
@@ -1242,7 +1244,7 @@ try {
   await closeAttachment.reportExecution(closeDependent, { kind: 'operation-started' })
   await closeAttachment.close()
   await closeLifecycle.close()
-  const closeRecovery = makeWorkspaceLifecycle({ root: closeRoot })
+  const closeRecovery = await openLifecycle({ root: closeRoot })
   assert.equal((await findUse(closeRecovery, closeDependent.useId))?.stage, 'unknown')
   const closedParent = await findUse(closeRecovery, closeParent.useId)
   assert.equal(closedParent?.stage, 'unknown')
@@ -1251,7 +1253,7 @@ try {
   checks.push('closing with a live dependent records both it and its parent unknown, not quiescent')
 
   const launderRoot = join(sandbox, 'launder-authority')
-  const launderLifecycle = makeWorkspaceLifecycle({ root: launderRoot })
+  const launderLifecycle = await openLifecycle({ root: launderRoot })
   const launderMain = await launderLifecycle.attach({
     conversation: conversation('launder-main'),
     cwd: fenceRepo,
@@ -1311,7 +1313,7 @@ try {
   )
 
   const removedRoot = join(sandbox, 'removed-workspace-authority')
-  const removedLifecycle = makeWorkspaceLifecycle({ root: removedRoot })
+  const removedLifecycle = await openLifecycle({ root: removedRoot })
   const removedConversation = conversation('removed-workspace')
   const removedAttachment = await removedLifecycle.attach({
     conversation: removedConversation,
@@ -1349,7 +1351,7 @@ try {
   )
 
   const transitionRoot = join(sandbox, 'transition-authority')
-  const transitionLifecycle = makeWorkspaceLifecycle({ root: transitionRoot })
+  const transitionLifecycle = await openLifecycle({ root: transitionRoot })
   const transitionAttachment = await transitionLifecycle.attach({
     conversation: conversation('transition'),
     cwd: fenceRepo,
@@ -1390,7 +1392,7 @@ try {
   )
 
   const readerAgentRoot = join(sandbox, 'reader-agent-authority')
-  const readerAgentLifecycle = makeWorkspaceLifecycle({ root: readerAgentRoot })
+  const readerAgentLifecycle = await openLifecycle({ root: readerAgentRoot })
   const readerOwner = await readerAgentLifecycle.attach({
     conversation: conversation('reader-owner'),
     cwd: fenceRepo,
@@ -1418,7 +1420,7 @@ try {
 
   const recoveryRoot = join(sandbox, 'unstarted-recovery-authority')
   const recoveryConversation = conversation('unstarted-recovery')
-  const recoveryLifecycle = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const recoveryLifecycle = await openLifecycle({ root: recoveryRoot })
   const recoveryAllocator = await recoveryLifecycle.attach({
     conversation: conversation('unstarted-recovery-allocator'),
     cwd: fenceRepo,
@@ -1444,7 +1446,7 @@ try {
   const sourceWorkspaceId = recoveryAttachment.binding.workspaceId
   // A second lifecycle on the same root stands in for another installation: it shares the
   // authority but none of the first installation's conversation claims.
-  const otherInstallation = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const otherInstallation = await openLifecycle({ root: recoveryRoot })
   const otherSelection = { taskId: otherTarget.taskId!, workspaceId: otherTarget.workspaceId }
   await expectWorkspaceError(
     otherInstallation.attach({ conversation: recoveryConversation, cwd: fenceRepo }),
@@ -1465,7 +1467,7 @@ try {
   )
   await otherInstallation.close()
   await recoveryLifecycle.close()
-  const recoveryReopened = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const recoveryReopened = await openLifecycle({ root: recoveryRoot })
   const resumedAtSource = await recoveryReopened.attach({
     conversation: recoveryConversation,
     cwd: fenceRepo,
@@ -1490,7 +1492,7 @@ try {
   await recoveryReopened.close()
 
   const selectingConversation = conversation('unstarted-selection')
-  const selectingLifecycle = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const selectingLifecycle = await openLifecycle({ root: recoveryRoot })
   const selecting = await selectingLifecycle.attach({
     conversation: selectingConversation,
     cwd: fenceRepo,
@@ -1500,7 +1502,7 @@ try {
     workspaceId: recoveryTarget.workspaceId,
   })
   await selectingLifecycle.close()
-  const selectingReopened = makeWorkspaceLifecycle({ root: recoveryRoot })
+  const selectingReopened = await openLifecycle({ root: recoveryRoot })
   const selected = await selectingReopened.attach({
     conversation: selectingConversation,
     cwd: otherTarget.cwd,
@@ -1521,8 +1523,8 @@ try {
   const crashRoot = join(sandbox, 'crash-authority')
   const crashConversation = conversation('crashed-writer')
   await runChild(`
-    import { makeWorkspaceLifecycle } from ${JSON.stringify(moduleUrl)}
-    const lifecycle = makeWorkspaceLifecycle({ root: ${JSON.stringify(crashRoot)} })
+    import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+    const lifecycle = await openLifecycle({ root: ${JSON.stringify(crashRoot)} })
     const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(crashConversation)}, cwd: ${JSON.stringify(failureRepo)} })
     await attachment.authorize({ access: 'write' })
     process.kill(process.pid, 'SIGKILL')
@@ -1530,7 +1532,7 @@ try {
     () => assert.fail('the crashing child must not exit cleanly'),
     () => undefined
   )
-  const crashLifecycle = makeWorkspaceLifecycle({ root: crashRoot })
+  const crashLifecycle = await openLifecycle({ root: crashRoot })
   const liveWriter = await crashLifecycle.attach({
     conversation: conversation('live-writer'),
     cwd: scopedRepo,
@@ -1570,7 +1572,7 @@ try {
   const smudged = join(sandbox, 'filtered-smudge-ran')
   git(['config', 'filter.fixture.smudge', `touch ${smudged}`], filteredRepo)
   const filteredRoot = join(sandbox, 'filtered-authority')
-  const filteredLifecycle = makeWorkspaceLifecycle({ root: filteredRoot })
+  const filteredLifecycle = await openLifecycle({ root: filteredRoot })
   const filteredOwner = await filteredLifecycle.attach({
     conversation: conversation('filtered-owner'),
     cwd: filteredRepo,

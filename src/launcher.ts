@@ -2,7 +2,7 @@
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Schema, type Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
 import {
@@ -365,13 +365,8 @@ const installSignalHandlers = (
 // The authority location is fixed per OS account so every cooperating runtime meets the
 // same authority; only code that imports this module can supply another lifecycle.
 export interface LauncherDependencies {
-  readonly workspaceLifecycle: () => WorkspaceLifecycle
+  readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
 }
-
-const acquireWorkspaceLifecycle = (open: LauncherDependencies['workspaceLifecycle']) =>
-  Effect.acquireRelease(fromSync('Cannot open workspace lifecycle', open), lifecycle =>
-    fromPromise('Cannot close workspace lifecycle', () => lifecycle.close()).pipe(Effect.orDie)
-  )
 
 const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
   Effect.gen(function* () {
@@ -418,13 +413,11 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
           })
           return
         }
-        workspaceLifecycle = yield* acquireWorkspaceLifecycle(dependencies.workspaceLifecycle)
-        const result = yield* fromPromise('Workspace read-only command failed', () =>
-          runReadOnlyWorkspaceCommand(
-            workspaceLifecycle!,
-            workspaceCommand as Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
-            workspaceCommand!.kind === 'list' ? { cwd: listRoot } : {}
-          )
+        workspaceLifecycle = yield* dependencies.workspaceLifecycle
+        const result = yield* runReadOnlyWorkspaceCommand(
+          workspaceLifecycle,
+          workspaceCommand as Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
+          workspaceCommand!.kind === 'list' ? { cwd: listRoot } : {}
         )
         yield* Effect.sync(() => {
           if (result.stdout !== undefined) process.stdout.write(`${result.stdout}\n`)
@@ -442,14 +435,18 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
         })
         return
       }
-      workspaceLifecycle = yield* acquireWorkspaceLifecycle(dependencies.workspaceLifecycle)
+      workspaceLifecycle = yield* dependencies.workspaceLifecycle
       const resumeCommand = workspaceCommand as Extract<
         WorkspaceCommand,
         { readonly kind: 'resume' }
       >
-      const views = yield* fromPromise('Cannot inspect retained workspace candidates', () =>
-        workspaceLifecycle!.inspect({ taskId: resumeCommand.taskId })
-      )
+      const views = yield* workspaceLifecycle
+        .inspect({ taskId: resumeCommand.taskId })
+        .pipe(
+          Effect.mapError(error =>
+            toLauncherError(error, 'Cannot inspect retained workspace candidates')
+          )
+        )
       try {
         workspaceResume = chooseResumeCandidate(
           views,
@@ -550,26 +547,28 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
       })
       return
     }
-    workspaceLifecycle ??= yield* acquireWorkspaceLifecycle(dependencies.workspaceLifecycle)
+    workspaceLifecycle ??= yield* dependencies.workspaceLifecycle
     const sessionFile = sessions.getSessionFile()
     if (!sessionFile)
       return yield* new LauncherError({
         message: 'Workspace-bound conversations require a persisted session file',
       })
     const sessionId = sessions.getSessionId()
-    const attachment = yield* Effect.tryPromise({
-      try: () =>
-        workspaceLifecycle!.attach({
-          conversation: { sessionId, sessionFile, dataHome },
-          cwd: sessions.getCwd(),
-          ...(workspaceResume === undefined ? {} : { selection: workspaceResume.selection }),
-        }),
-      catch: error =>
-        new LauncherError({
-          message: `Cannot attach this conversation to a workspace: ${messageOf(error)}\nThe conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`,
-          cause: error,
-        }),
-    })
+    const attachment = yield* workspaceLifecycle
+      .attach({
+        conversation: { sessionId, sessionFile, dataHome },
+        cwd: sessions.getCwd(),
+        ...(workspaceResume === undefined ? {} : { selection: workspaceResume.selection }),
+      })
+      .pipe(
+        Effect.mapError(
+          error =>
+            new LauncherError({
+              message: `Cannot attach this conversation to a workspace: ${error.message}\nThe conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`,
+              cause: error,
+            })
+        )
+      )
     const effectiveCwd = attachment.binding.cwd
     if (resolve(sessions.getCwd()) !== resolve(effectiveCwd)) {
       sessions = yield* fromSync('Cannot reopen Pi session at its authorized workspace cwd', () =>
@@ -674,7 +673,7 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
 
 export const launch = (
   argv: readonly string[],
-  dependencies: LauncherDependencies = { workspaceLifecycle: () => makeWorkspaceLifecycle() }
+  dependencies: LauncherDependencies = { workspaceLifecycle: makeWorkspaceLifecycle() }
 ) =>
   run(argv, dependencies).pipe(
     Effect.catch(error =>

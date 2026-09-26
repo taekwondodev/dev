@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { Effect, Schema } from 'effect'
 import {
   WorkspaceId,
   type WorkspaceLifecycle,
@@ -202,7 +202,7 @@ export const chooseResumeCandidate = (
   })
 }
 
-export const runReadOnlyWorkspaceCommand = async (
+export const runReadOnlyWorkspaceCommand = (
   lifecycle: WorkspaceLifecycle,
   command: Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
   options: {
@@ -210,29 +210,24 @@ export const runReadOnlyWorkspaceCommand = async (
     readonly currentWorkspaceId?: string
     readonly effectiveCwd?: string
   } = {}
-): Promise<WorkspaceCommandResult> => {
-  try {
+): Effect.Effect<WorkspaceCommandResult> =>
+  Effect.gen(function* () {
     if (command.kind === 'list') {
       if (options.cwd === undefined)
         return {
           exitCode: 2,
           stderr: 'Workspace list requires a Git repository context; pass --cwd PATH.',
-        }
-      const views = await lifecycle.inspect({ cwd: options.cwd })
-      return {
-        exitCode: 0,
-        stdout: formatWorkspaceList(views, options.cwd, options),
-      }
+        } as const
+      const views = yield* lifecycle.inspect({ cwd: options.cwd })
+      return { exitCode: 0, stdout: formatWorkspaceList(views, options.cwd, options) } as const
     }
-    return {
-      exitCode: 0,
-      stdout: formatWorkspaceInspect(
-        await lifecycle.inspect({ taskId: command.taskId }),
-        command.taskId
-      ),
-    }
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause)
-    return { exitCode: 1, stderr: `Workspace inspection failed: ${message}` }
-  }
-}
+    const views = yield* lifecycle.inspect({ taskId: command.taskId })
+    return { exitCode: 0, stdout: formatWorkspaceInspect(views, command.taskId) } as const
+  }).pipe(
+    Effect.catch(cause =>
+      Effect.succeed({
+        exitCode: 1,
+        stderr: `Workspace inspection failed: ${cause.message}`,
+      } as const)
+    )
+  )

@@ -16,7 +16,7 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
 
@@ -91,7 +91,7 @@ try {
     throw new Error('Pi did not persist the fixture conversation')
   const conversation = { sessionId: sessions.getSessionId(), sessionFile, dataHome }
 
-  const lifecycle = makeWorkspaceLifecycle({ root: authorityRoot })
+  const lifecycle = await openLifecycle({ root: authorityRoot })
   const allocator = await lifecycle.attach({
     conversation: {
       sessionId: 'launcher-allocator',
@@ -154,29 +154,38 @@ try {
   // The lifecycle always opens the temporary root named by LAUNCHER_CHECK_ROOT.
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
+    import { Effect } from 'effect'
     import { launch } from ${JSON.stringify(new URL('../src/launcher.ts', import.meta.url).href)}
+    import { WorkspaceError } from ${JSON.stringify(new URL('../src/workspace-domain.ts', import.meta.url).href)}
     import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../src/workspace-lifecycle.ts', import.meta.url).href)}
-    const open = () => {
-      const root = process.env.LAUNCHER_CHECK_ROOT
-      if (root === undefined || root.length === 0)
-        throw new Error('the launcher check requires a temporary authority root')
-      const lifecycle = makeWorkspaceLifecycle({ root })
-      if (process.env.STOP_AFTER_ATTACH !== '1') return lifecycle
-      return new Proxy(lifecycle, {
-        get(target, property) {
-          if (property === 'attach')
-            return async input => {
-              const attachment = await target.attach(input)
+    const root = process.env.LAUNCHER_CHECK_ROOT
+    const stopAfterAttach = lifecycle => ({
+      ...lifecycle,
+      attach: input =>
+        lifecycle.attach(input).pipe(
+          Effect.tap(attachment =>
+            Effect.sync(() => {
               process.stdout.write(JSON.stringify({ workspaceId: attachment.binding.workspaceId }) + '\\n')
-              await attachment.close()
-              throw new Error('launcher check stops after attach')
-            }
-          const value = Reflect.get(target, property, target)
-          return typeof value === 'function' ? value.bind(target) : value
-        },
-      })
-    }
-    NodeRuntime.runMain(launch(process.argv.slice(1), { workspaceLifecycle: open }), {
+            })
+          ),
+          Effect.tap(attachment => attachment.close),
+          Effect.andThen(
+            Effect.fail(
+              new WorkspaceError({ outcome: 'blocked', message: 'launcher check stops after attach' })
+            )
+          )
+        ),
+    })
+    const workspaceLifecycle = Effect.suspend(() =>
+      root === undefined || root.length === 0
+        ? Effect.die(new Error('the launcher check requires a temporary authority root'))
+        : makeWorkspaceLifecycle({ root }).pipe(
+            Effect.map(lifecycle =>
+              process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
+            )
+          )
+    )
+    NodeRuntime.runMain(launch(process.argv.slice(1), { workspaceLifecycle }), {
       disableErrorReporting: true,
     })
   `
@@ -227,7 +236,7 @@ try {
   assert.deepEqual(JSON.parse(withdrawal.stdout.trim().split('\n').at(-1) ?? '{}'), {
     workspaceId: switchSource,
   })
-  const afterWithdrawal = makeWorkspaceLifecycle({ root: authorityRoot })
+  const afterWithdrawal = await openLifecycle({ root: authorityRoot })
   try {
     assert.notEqual(
       (await afterWithdrawal.inspect({}))
@@ -246,7 +255,7 @@ try {
   )
 
   // A lifecycle in this process keeps the conversation live, as another installation would.
-  const liveElsewhere = makeWorkspaceLifecycle({ root: authorityRoot })
+  const liveElsewhere = await openLifecycle({ root: authorityRoot })
   const liveConversation = await liveElsewhere.attach({
     conversation: switchConversation,
     cwd: repo,
@@ -279,7 +288,7 @@ try {
     'the non-Git fixture directory is outside every repository'
   )
   const inspectRoot = join(sandbox, 'inspect-authority')
-  const inspectLifecycle = makeWorkspaceLifecycle({ root: inspectRoot })
+  const inspectLifecycle = await openLifecycle({ root: inspectRoot })
   const writerGrant = async (cwd: string, sessionId: string) => {
     const writer = await inspectLifecycle.attach({
       conversation: { sessionId, sessionFile: join(sandbox, `${sessionId}.jsonl`), dataHome },

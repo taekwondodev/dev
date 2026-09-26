@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
 import type { Writable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { Effect } from 'effect'
 import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 import {
   processGate,
@@ -182,19 +183,22 @@ export const createWorkspaceShell = (
       attemptId: randomUUID(),
       generation: 'lead',
     }
-    const admitted = await attachment.authorize({
-      access: 'write',
-      effect: 'opaque',
-      within,
-      cwd,
-      execution,
-    })
+    const admitted = await Effect.runPromise(
+      attachment.authorize({
+        access: 'write',
+        effect: 'opaque',
+        within,
+        cwd,
+        execution,
+      })
+    )
     if (admitted.kind !== 'ready')
       throw new Error(
         'Workspace admission changed before the shell started; the command was not executed.'
       )
     const { grant } = admitted
-    const report = (fact: WorkspaceExecutionFact) => attachment.reportExecution(grant, fact)
+    const report = (fact: WorkspaceExecutionFact) =>
+      Effect.runPromise(attachment.reportExecution(grant, fact))
     const notLaunched = async (reason: string, cause: unknown): Promise<never> => {
       await report({ kind: 'launch-failed', reason }).catch(() => undefined)
       throw cause instanceof Error ? cause : new Error(reason)

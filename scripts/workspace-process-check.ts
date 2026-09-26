@@ -16,17 +16,32 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
-import { ManagedRuntime } from 'effect'
+import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { createNativeWrites } from '../src/workspace-native-write.ts'
 import { createWorkspaceShell } from '../src/workspace-shell.ts'
-import type { WorkspaceAttachment } from '../src/workspace-domain.ts'
+import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
 import { allocateDetachedWorktree, canonicalGitWorkspace } from '../src/workspace-git.ts'
 import type { AttemptView } from '../src/work-domain.ts'
 
 const exec = promisify(execFile)
+
+// Faults are injected into the authority reports a component under test makes.
+const withReport = (
+  base: WorkspaceAttachment,
+  reportExecution: WorkspaceAttachment['reportExecution']
+): WorkspaceAttachment => ({
+  get binding() {
+    return base.binding
+  },
+  authorize: operation => base.authorize(operation),
+  select: selection => base.select(selection),
+  handoff: (transition, replace) => base.handoff(transition, replace),
+  close: base.close,
+  reportExecution,
+})
 const root = await realpath(await mkdtemp(join(tmpdir(), 'dev-workspace-process-')))
 const checks: string[] = []
 try {
@@ -51,7 +66,7 @@ try {
     '-m',
     'Fixture',
   ])
-  const authority = makeWorkspaceLifecycle({ root: join(root, 'authority') })
+  const authority = await openLifecycle({ root: join(root, 'authority') })
   const sessionId = randomUUID()
   const sessionFile = join(dataHome, 'conversation.jsonl')
   await writeFile(sessionFile, '', { mode: 0o600 })
@@ -142,7 +157,7 @@ try {
         cwd: grant.cwd,
         sessionId,
         profile: 'general',
-        workspace: { lifecycle: authority, attachment },
+        workspace: { lifecycle: authority.effect, attachment: attachment.effect },
         onOutcome: deliver,
       })
     )
@@ -237,7 +252,7 @@ try {
     const shell = createWorkspaceShell(async shellCwd => {
       const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
       if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
-      return { attachment, grant: writer.grant }
+      return { attachment: attachment.effect, grant: writer.grant }
     })
     const shellUses = async () =>
       (await authority.inspect({ taskId: grant.taskId }))
@@ -298,19 +313,15 @@ try {
     setTimeout(() => early.abort(), 5)
     await assert.rejects(abortedEarly, /aborted/)
     const barrier = new AbortController()
-    const abortAtBarrier: WorkspaceAttachment = {
-      get binding() {
-        return attachment.binding
-      },
-      authorize: operation => attachment.authorize(operation),
-      select: selection => attachment.select(selection),
-      handoff: (transition, replace) => attachment.handoff(transition, replace),
-      close: () => attachment.close(),
-      reportExecution: async (reported, fact) => {
-        await attachment.reportExecution(reported, fact)
-        if (fact.kind === 'spawned') barrier.abort()
-      },
-    }
+    const abortAtBarrier = withReport(attachment.effect, (reported, fact) =>
+      attachment.effect.reportExecution(reported, fact).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (fact.kind === 'spawned') barrier.abort()
+          })
+        )
+      )
+    )
     const barrierShell = createWorkspaceShell(async shellCwd => {
       const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
       if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
@@ -393,7 +404,7 @@ try {
         path,
       })
       if (operation.kind !== 'ready') throw new Error('Unexpected native write handoff')
-      nativeWrites.admit({ toolCallId, attachment, grant: operation.grant })
+      nativeWrites.admit({ toolCallId, attachment: attachment.effect, grant: operation.grant })
       return operation.grant
     }
     const writtenGrant = await admitNative('settle-written', 'settled.txt')
@@ -438,12 +449,17 @@ try {
     ] as const) {
       nativeWrites.admit({
         toolCallId: `fold-${first}`,
-        attachment,
+        attachment: attachment.effect,
         grant: await authorizeNative(first),
       })
       const refused = await authorizeNative(second)
       assert.throws(
-        () => nativeWrites.admit({ toolCallId: `fold-${second}`, attachment, grant: refused }),
+        () =>
+          nativeWrites.admit({
+            toolCallId: `fold-${second}`,
+            attachment: attachment.effect,
+            grant: refused,
+          }),
         /still in flight/,
         `${second} names the file ${first} already being written`
       )
@@ -457,27 +473,22 @@ try {
     // The authority never acknowledges the identity or the first failure report, so the
     // controller cannot tell whether the family was recorded until it retries.
     let launchFailedReports = 0
-    const lossyAttachment = new Proxy(attachment, {
-      get(target, property) {
-        if (property === 'reportExecution')
-          return async (...args: Parameters<WorkspaceAttachment['reportExecution']>) => {
-            const [, fact] = args
-            if (fact.kind === 'spawned') throw new Error('injected lost identity report')
-            if (fact.kind === 'launch-failed' && launchFailedReports++ === 0)
-              throw new Error('injected lost failure report')
-            return target.reportExecution(...args)
-          }
-        const value: unknown = Reflect.get(target, property, target)
-        return typeof value === 'function' ? value.bind(target) : value
-      },
-    })
+    const lost = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
+    const lossyAttachment = withReport(attachment.effect, (reported, fact) =>
+      Effect.suspend(() => {
+        if (fact.kind === 'spawned') return Effect.fail(lost('injected lost identity report'))
+        if (fact.kind === 'launch-failed' && launchFailedReports++ === 0)
+          return Effect.fail(lost('injected lost failure report'))
+        return attachment.effect.reportExecution(reported, fact)
+      })
+    )
     const lossyRuntime = ManagedRuntime.make(
       makeWorkOwnerLayer({
         dataHome,
         cwd: grant.cwd,
         sessionId,
         profile: 'general',
-        workspace: { lifecycle: authority, attachment: lossyAttachment },
+        workspace: { lifecycle: authority.effect, attachment: lossyAttachment },
       })
     )
     const lossyMarker = join(root, 'lossy-launch-ran')
@@ -516,29 +527,23 @@ try {
     // A real failure between the durable launch intent and the spawn: once the intent is
     // recorded the attempt directory stops being writable, so opening its logs fails.
     const lockedDirectories: string[] = []
-    const lockingAttachment = new Proxy(attachment, {
-      get(target, property) {
-        if (property === 'reportExecution')
-          return async (...args: Parameters<WorkspaceAttachment['reportExecution']>) => {
-            await target.reportExecution(...args)
-            const [, fact] = args
-            if (fact.kind === 'launch-intent' && fact.execution.logs !== undefined) {
-              const directory = dirname(fact.execution.logs)
-              lockedDirectories.push(directory)
-              await chmod(directory, 0o500)
-            }
-          }
-        const value: unknown = Reflect.get(target, property, target)
-        return typeof value === 'function' ? value.bind(target) : value
-      },
-    })
+    const lockingAttachment = withReport(attachment.effect, (reported, fact) =>
+      attachment.effect.reportExecution(reported, fact).pipe(
+        Effect.tap(() => {
+          if (fact.kind !== 'launch-intent' || fact.execution.logs === undefined) return Effect.void
+          const directory = dirname(fact.execution.logs)
+          lockedDirectories.push(directory)
+          return Effect.promise(() => chmod(directory, 0o500))
+        })
+      )
+    )
     const lockedRuntime = ManagedRuntime.make(
       makeWorkOwnerLayer({
         dataHome,
         cwd: grant.cwd,
         sessionId,
         profile: 'general',
-        workspace: { lifecycle: authority, attachment: lockingAttachment },
+        workspace: { lifecycle: authority.effect, attachment: lockingAttachment },
       })
     )
     const lockedMarker = join(root, 'locked-log-launch-ran')

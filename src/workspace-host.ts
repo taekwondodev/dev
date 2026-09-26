@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import { resolve } from 'node:path'
 import type { AgentSessionRuntime } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
 import type {
@@ -26,6 +27,7 @@ import {
 } from './workspace-command.ts'
 import {
   WorkspaceError,
+  type HostReplace,
   type WorkspaceAttachment,
   type WorkspaceConversation,
   type WorkspaceGrant,
@@ -33,6 +35,13 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceView,
 } from './workspace-domain.ts'
+
+// Transitional bridge while this host still runs on Promises.
+const run = <A>(effect: Effect.Effect<A, WorkspaceError>): Promise<A> => Effect.runPromise(effect)
+const replaceWith =
+  (replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>): HostReplace =>
+  target =>
+    Effect.promise(() => replace(target))
 
 export interface WorkspaceHostOptions {
   readonly lifecycle: WorkspaceLifecycle
@@ -182,7 +191,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
   const nativeWrites = createNativeWrites(message => notify(currentContext, message, 'error'))
 
   const shell = createWorkspaceShell(async cwd => {
-    const result = await activeAttachment.authorize({ access: 'write', cwd })
+    const result = await run(activeAttachment.authorize({ access: 'write', cwd }))
     if (result.kind !== 'ready')
       throw new Error('Workspace admission requires a host rebind; the command was not executed.')
     return { attachment: activeAttachment, grant: result.grant }
@@ -191,7 +200,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
   const closeAttachmentOnce = async (attachment: WorkspaceAttachment): Promise<void> => {
     if (closedAttachments.has(attachment)) return
     closedAttachments.add(attachment)
-    await attachment.close()
+    await run(attachment.close)
   }
 
   const notify = (
@@ -301,56 +310,62 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
       }
       let callbackResult: 'confirmed' | 'cancelled' | undefined
       handoffCalled = true
-      await transition.transitionSource.handoff(transition.handoff, async target => {
-        transition.switchStarted = true
-        const currentRuntime = runtime
-        if (!currentRuntime) throw new Error('Pi runtime disappeared before workspace replacement')
-        const trustSnapshot = contextForCwd(transition.context, transition.handoff.target.cwd)
-        const withSession = async (fresh: ReplacedSessionContext): Promise<void> => {
-          restoreInput(fresh)
-          const binding = activeAttachment.binding
-          if (
-            binding.conversation.sessionId !== fresh.sessionManager.getSessionId() ||
-            resolve(binding.conversation.sessionFile) !==
-              resolve(fresh.sessionManager.getSessionFile() ?? '') ||
-            binding.workspaceId !== transition.handoff.target.workspaceId ||
-            resolve(binding.cwd) !== resolve(fresh.cwd)
-          ) {
-            throw new Error(
-              'Pi replacement context does not carry the authority-selected workspace attachment'
-            )
-          }
-        }
-        let result: { readonly cancelled: boolean }
-        invokingHandoffSwitch = true
-        try {
-          result = await currentRuntime.switchSession(identity.file, {
-            cwdOverride: target.cwd,
-            projectTrustContextFactory: cwd => ({ ...trustSnapshot, cwd }),
-            withSession,
+      await run(
+        transition.transitionSource.handoff(
+          transition.handoff,
+          replaceWith(async target => {
+            transition.switchStarted = true
+            const currentRuntime = runtime
+            if (!currentRuntime)
+              throw new Error('Pi runtime disappeared before workspace replacement')
+            const trustSnapshot = contextForCwd(transition.context, transition.handoff.target.cwd)
+            const withSession = async (fresh: ReplacedSessionContext): Promise<void> => {
+              restoreInput(fresh)
+              const binding = activeAttachment.binding
+              if (
+                binding.conversation.sessionId !== fresh.sessionManager.getSessionId() ||
+                resolve(binding.conversation.sessionFile) !==
+                  resolve(fresh.sessionManager.getSessionFile() ?? '') ||
+                binding.workspaceId !== transition.handoff.target.workspaceId ||
+                resolve(binding.cwd) !== resolve(fresh.cwd)
+              ) {
+                throw new Error(
+                  'Pi replacement context does not carry the authority-selected workspace attachment'
+                )
+              }
+            }
+            let result: { readonly cancelled: boolean }
+            invokingHandoffSwitch = true
+            try {
+              result = await currentRuntime.switchSession(identity.file, {
+                cwdOverride: target.cwd,
+                projectTrustContextFactory: cwd => ({ ...trustSnapshot, cwd }),
+                withSession,
+              })
+            } finally {
+              invokingHandoffSwitch = false
+            }
+            if (result.cancelled) {
+              callbackResult = 'cancelled'
+              return 'cancelled'
+            }
+            const current = activeAttachment.binding
+            if (
+              current.conversation.sessionId !== identity.id ||
+              resolve(current.conversation.sessionFile) !== resolve(identity.file) ||
+              current.workspaceId !== target.workspaceId ||
+              resolve(current.cwd) !== resolve(target.cwd) ||
+              resolve(currentRuntime.cwd) !== resolve(target.cwd)
+            ) {
+              throw new Error(
+                'Pi replacement completed without the authority-selected workspace binding'
+              )
+            }
+            callbackResult = 'confirmed'
+            return 'confirmed'
           })
-        } finally {
-          invokingHandoffSwitch = false
-        }
-        if (result.cancelled) {
-          callbackResult = 'cancelled'
-          return 'cancelled'
-        }
-        const current = activeAttachment.binding
-        if (
-          current.conversation.sessionId !== identity.id ||
-          resolve(current.conversation.sessionFile) !== resolve(identity.file) ||
-          current.workspaceId !== target.workspaceId ||
-          resolve(current.cwd) !== resolve(target.cwd) ||
-          resolve(currentRuntime.cwd) !== resolve(target.cwd)
-        ) {
-          throw new Error(
-            'Pi replacement completed without the authority-selected workspace binding'
-          )
-        }
-        callbackResult = 'confirmed'
-        return 'confirmed'
-      })
+        )
+      )
       pendingReopen = undefined
       if (callbackResult === 'cancelled') {
         pending = undefined
@@ -407,9 +422,11 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
         try {
           if (handoffCalled) tolerateWithdrawn(error)
           else
-            await transition.transitionSource
-              .handoff(transition.handoff, async () => 'cancelled')
-              .catch(tolerateWithdrawn)
+            await run(
+              transition.transitionSource.handoff(transition.handoff, () =>
+                Effect.succeed('cancelled' as const)
+              )
+            ).catch(tolerateWithdrawn)
           pendingReopen = undefined
           pending = undefined
           parked = false
@@ -446,11 +463,13 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     if (parked)
       return { blocked: 'Workspace host is parked during a transition; no operation started.' }
     try {
-      const result = await activeAttachment.authorize({
-        access,
-        cwd,
-        ...(delegated ? { delegated: true } : {}),
-      })
+      const result = await run(
+        activeAttachment.authorize({
+          access,
+          cwd,
+          ...(delegated ? { delegated: true } : {}),
+        })
+      )
       if (result.kind === 'rebind') {
         requestHandoff(result.handoff, origin, context, origin === 'user-bash')
         return {
@@ -520,13 +539,15 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     if ('refusal' in writer) return writer.refusal
     try {
       const path = decodeWriteOperand(event.input)
-      const operation = await activeAttachment.authorize({
-        access: 'write',
-        effect: 'native-file-write',
-        within: writer.grant,
-        path,
-        cwd: context.cwd,
-      })
+      const operation = await run(
+        activeAttachment.authorize({
+          access: 'write',
+          effect: 'native-file-write',
+          within: writer.grant,
+          path,
+          cwd: context.cwd,
+        })
+      )
       if (operation.kind !== 'ready')
         throw new Error('the workspace changed before the native write was admitted')
       try {
@@ -536,15 +557,15 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
           grant: operation.grant,
         })
       } catch (error) {
-        await activeAttachment
-          .reportExecution(operation.grant, { kind: 'operation-completed' })
-          .catch((settleError: unknown) =>
-            notify(
-              context,
-              `Refused native ${event.toolName} could not be settled: ${formatError(settleError)}`,
-              'error'
-            )
+        await run(
+          activeAttachment.reportExecution(operation.grant, { kind: 'operation-completed' })
+        ).catch((settleError: unknown) =>
+          notify(
+            context,
+            `Refused native ${event.toolName} could not be settled: ${formatError(settleError)}`,
+            'error'
           )
+        )
         throw error
       }
     } catch (error) {
@@ -601,7 +622,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     readonly cwd: string
   }> => {
     const conversation = workspaceConversation(manager, options.dataHome)
-    const attachment = existing ?? (await options.lifecycle.attach({ conversation, cwd }))
+    const attachment = existing ?? (await run(options.lifecycle.attach({ conversation, cwd })))
     if (attachment !== activeAttachment) preparedAttachments.add(attachment)
     const effectiveCwd = attachment.binding.cwd
     if (
@@ -735,10 +756,12 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
               minimumEntries: targetManager.getEntries().length,
             }
           }
-          const prepared = await options.lifecycle.attach({
-            conversation: workspaceConversation(targetManager, options.dataHome),
-            cwd: targetManager.getCwd(),
-          })
+          const prepared = await run(
+            options.lifecycle.attach({
+              conversation: workspaceConversation(targetManager, options.dataHome),
+              cwd: targetManager.getCwd(),
+            })
+          )
           staged = prepared
           stagedAttachments.set(stagedKey, prepared)
           parked = true
@@ -893,9 +916,11 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
         if (event.reason !== 'quit' || pending?.switchStarted) return
         if (pending && !pending.switchStarted) {
           try {
-            await pending.transitionSource
-              .handoff(pending.handoff, async () => 'cancelled')
-              .catch(tolerateWithdrawn)
+            await run(
+              pending.transitionSource.handoff(pending.handoff, () =>
+                Effect.succeed('cancelled' as const)
+              )
+            ).catch(tolerateWithdrawn)
             pending = undefined
             parked = false
           } catch (error) {
@@ -930,8 +955,10 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
               )
               return
             }
-            const views = await options.lifecycle.inspect(
-              command.kind === 'inspect' ? { taskId: command.taskId } : { cwd: repositoryRoot! }
+            const views = await run(
+              options.lifecycle.inspect(
+                command.kind === 'inspect' ? { taskId: command.taskId } : { cwd: repositoryRoot! }
+              )
             )
             const text =
               command.kind === 'inspect'
@@ -967,7 +994,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     }
     let views: readonly WorkspaceView[]
     try {
-      views = await options.lifecycle.inspect({ taskId: command.taskId })
+      views = await run(options.lifecycle.inspect({ taskId: command.taskId }))
     } catch (error) {
       notify(context, `Workspace inspection failed: ${formatError(error)}`, 'error')
       return
@@ -1055,7 +1082,7 @@ export function createWorkspaceHost(options: WorkspaceHostOptions): WorkspaceHos
     const selection = candidate.selection
     let handoff: WorkspaceHandoff
     try {
-      handoff = await activeAttachment.select(selection)
+      handoff = await run(activeAttachment.select(selection))
     } catch (error) {
       notify(context, `Workspace selection was rejected: ${formatError(error)}`, 'error')
       return
