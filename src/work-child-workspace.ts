@@ -3,6 +3,7 @@ import { Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { WorkspaceId, type WorkspaceGrant } from './workspace-domain.ts'
 import { decodeWriteOperand, resolveWriteDestination } from './workspace-paths.ts'
+import { errorText } from './error-text.ts'
 
 const Reply = Schema.Struct({
   type: Schema.Literal('workspace-checked'),
@@ -83,7 +84,7 @@ export const childWorkspaceExtension =
         if (fileWrite) await validateWorkspaceWritePath(grant, event.input)
         await checkChildWorkspace(grant, read ? 'read' : 'write')
       } catch (cause) {
-        return { block: true, reason: cause instanceof Error ? cause.message : String(cause) }
+        return { block: true, reason: errorText(cause) }
       }
     })
   }

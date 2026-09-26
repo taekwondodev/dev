@@ -12,7 +12,8 @@ import {
   isActiveUse,
   type OperationRecord,
 } from './workspace-records.ts'
-import { errorText, rows, textField } from './workspace-sqlite.ts'
+import { errorText } from './error-text.ts'
+import { rows, textField } from './workspace-sqlite.ts'
 import { effectiveUid } from './workspace-platform.ts'
 import { hasErrorCode } from './workspace-paths.ts'
 

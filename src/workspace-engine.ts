@@ -9,7 +9,7 @@ import {
   type WorkspaceSelection,
 } from './workspace-domain.ts'
 import { toBinding } from './workspace-records.ts'
-import { errorText } from './workspace-sqlite.ts'
+import { errorText } from './error-text.ts'
 import { newId } from './workspace-platform.ts'
 
 // The worker's side of a client attachment; clients reach it through the lifecycle's RPC.

@@ -2,6 +2,7 @@ import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Predicate, Schema } from 'effect'
 import { blocked, invalid, requireReview } from './workspace-domain.ts'
+import { errorText } from './error-text.ts'
 
 // Node reports system call failures with a string `code`, SQLite with a numeric `errcode`.
 export const hasErrorCode = (cause: unknown, code: string): boolean =>
@@ -119,9 +120,7 @@ export const assertDestinationUnchanged = (checkout: string, recorded: string): 
   try {
     actual = writeDestination(checkout, recorded)
   } catch (cause) {
-    return blocked(
-      `Write destination changed after authorization: ${cause instanceof Error ? cause.message : String(cause)}`
-    )
+    return blocked(`Write destination changed after authorization: ${errorText(cause)}`)
   }
   if (actual !== recorded)
     blocked(`Write destination now resolves elsewhere: ${recorded} -> ${actual}`)

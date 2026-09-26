@@ -15,6 +15,7 @@ import { Schema } from 'effect'
 import { blocked, invalid, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
 import { hasErrorCode, lstatIfExists, sqliteCode } from './workspace-paths.ts'
 import { effectiveUid, fsyncParent, privateDirectory, privateFile } from './workspace-platform.ts'
+import { errorText } from './error-text.ts'
 
 export const PROTOCOL_VERSION = 1
 export const SCHEMA_VERSION = 3
@@ -135,8 +136,6 @@ export const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
     return requireReview(`Corrupt ${label}: persisted record failed schema validation`)
   }
 }
-export const errorText = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause)
 
 const syncNewFile = (path: string): void => {
   let fd: number | undefined

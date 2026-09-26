@@ -17,6 +17,7 @@ import {
   type WorkspaceWorkerMessage,
 } from './workspace-protocol.ts'
 import { performHandoff, selectWorkspace } from './workspace-transitions.ts'
+import { errorText } from './error-text.ts'
 
 const MAX_ATTACHMENTS = 256
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024
@@ -29,8 +30,6 @@ interface CallbackWaiter {
 
 const outcomeOf = (cause: unknown): WorkspaceError['outcome'] =>
   cause instanceof WorkspaceError ? cause.outcome : 'unavailable'
-const messageOf = (cause: unknown): string =>
-  cause instanceof WorkspaceError ? cause.message : 'Workspace authority worker operation failed'
 const send = (message: WorkspaceWorkerMessage): void => {
   if (port === null) throw new Error('Workspace worker has no parent port')
   const encoded = JSON.stringify(message)
@@ -42,7 +41,7 @@ const send = (message: WorkspaceWorkerMessage): void => {
   port.postMessage(message)
 }
 const failResponse = (id: number, cause: unknown): void => {
-  send({ id, ok: false, outcome: outcomeOf(cause), message: messageOf(cause) })
+  send({ id, ok: false, outcome: outcomeOf(cause), message: errorText(cause) })
 }
 
 const startEngine = (): WorkspaceEngine | undefined => {
@@ -60,7 +59,7 @@ const startEngine = (): WorkspaceEngine | undefined => {
     send({ type: 'ready' })
     return started
   } catch (cause) {
-    send({ type: 'startup-failure', outcome: outcomeOf(cause), message: messageOf(cause) })
+    send({ type: 'startup-failure', outcome: outcomeOf(cause), message: errorText(cause) })
     port?.close()
     return undefined
   }

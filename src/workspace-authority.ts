@@ -44,7 +44,6 @@ import {
   SCHEMA_VERSION,
   encode,
   parseRecord,
-  errorText,
   assertSqliteSafety,
   rows,
   first,
@@ -56,6 +55,7 @@ import {
   transaction,
   type SqlRow,
 } from './workspace-sqlite.ts'
+import { errorText } from './error-text.ts'
 import {
   newId,
   fsyncPath,

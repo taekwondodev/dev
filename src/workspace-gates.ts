@@ -18,7 +18,6 @@ import {
   SCHEMA_VERSION,
   PROTOCOL_SQL,
   GATE_SQL,
-  errorText,
   first,
   textField,
   numberField,
@@ -26,6 +25,7 @@ import {
   expectedCatalog,
   createPublishedDatabase,
 } from './workspace-sqlite.ts'
+import { errorText } from './error-text.ts'
 import { hash, privateDirectory, privateFile } from './workspace-platform.ts'
 
 const SHARED_GATE_WAIT_MS = 250

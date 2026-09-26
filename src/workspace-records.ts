@@ -15,13 +15,13 @@ import { canonicalPathSlot } from './workspace-paths.ts'
 import {
   encode,
   parseRecord,
-  errorText,
   rows,
   first,
   textField,
   numberField,
   decodeOrFail,
 } from './workspace-sqlite.ts'
+import { errorText } from './error-text.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
 const PhysicalSchema = Schema.Struct({

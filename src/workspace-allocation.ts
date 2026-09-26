@@ -50,7 +50,8 @@ import {
   type UseRecord,
   type OperationRecord,
 } from './workspace-records.ts'
-import { errorText, transaction } from './workspace-sqlite.ts'
+import { errorText } from './error-text.ts'
+import { transaction } from './workspace-sqlite.ts'
 import { newId, now, fsyncPath, fsyncParent, privateDirectory } from './workspace-platform.ts'
 
 const releaseLocalGates = (state: ConversationState): GateIntent[] => {
