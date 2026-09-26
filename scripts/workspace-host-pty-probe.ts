@@ -11,7 +11,6 @@ import {
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { isDeepStrictEqual } from 'node:util'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
@@ -60,7 +59,6 @@ import {
   type WorkspaceId,
   type WorkspaceLifecycle,
   type WorkspaceOperation,
-  type WorkspaceProcess,
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
@@ -203,22 +201,14 @@ const displacements = new Map([
 ])
 
 type UseScope = 'ordinary' | 'delegated' | WorkspaceEffect
-type UseStage =
-  | 'authorized'
-  | 'launch-intent'
-  | 'spawned'
-  | 'started'
-  | 'observed'
-  | 'operation-started'
-  | 'quiescent'
-  | 'unknown'
+// The stub issues grants and records what the host reports; the rules that decide whether a
+// report is legal belong to the real authority, which workspace-authority-check.ts and the
+// real-authority probe exercise.
 interface FixtureUse {
   readonly grant: WorkspaceGrant
   readonly operation: WorkspaceOperation
   readonly scope: UseScope
   readonly facts: WorkspaceExecutionFact[]
-  stage: UseStage
-  processes: readonly WorkspaceProcess[]
 }
 type TimelineEntry =
   | { readonly kind: 'authorized'; readonly useId: string }
@@ -244,8 +234,6 @@ const WRITER_WARNING =
   'A writer owns this live checkout; files may change while you read. No stable snapshot is provided.'
 const uses = new Map<string, FixtureUse>()
 const timeline: TimelineEntry[] = []
-const rejectedFacts: { readonly useId: string; readonly kind: string; readonly reason: string }[] =
-  []
 const attachCalls: { readonly path: string; readonly sessionId: string }[] = []
 const handoffs: WorkspaceHandoff[] = []
 const inspections: { readonly cwd?: string; readonly taskId?: string }[] = []
@@ -288,7 +276,7 @@ const issue = (
   operation: WorkspaceOperation,
   scope: UseScope
 ): WorkspaceGrant => {
-  uses.set(grant.useId, { grant, operation, scope, facts: [], stage: 'authorized', processes: [] })
+  uses.set(grant.useId, { grant, operation, scope, facts: [] })
   owned.add(grant.useId)
   timeline.push({ kind: 'authorized', useId: grant.useId })
   return grant
@@ -328,24 +316,13 @@ const handoffTo = (
     reason,
   })
 
-// The stub mirrors the real authority's contracts (scoped admission, the execution stage
-// machine, and the live-execution refusals), so a host that drifts from them fails here
-// the way it would against the real engine.
 const authorizeScoped = (
   owned: Set<string>,
-  binding: WorkspaceBinding,
   operation: ScopedOperation
 ): WorkspaceAuthorization => {
   const { within } = operation
-  const parent = uses.get(within.useId)
-  if (parent === undefined || parent.scope !== 'ordinary')
-    return refuse('invalid', 'within must be an ordinary grant this fixture issued')
-  if (within.workspaceId !== binding.workspaceId)
-    return refuse('review-required', 'within grant belongs to another workspace binding')
-  if (within.access !== 'write')
-    return refuse('blocked', 'A read-only workspace grant cannot authorize a scoped mutation')
   const checkout = descriptorByPath.get(resolve(within.checkout))
-  if (checkout === undefined) return refuse('invalid', 'within grant names an unknown checkout')
+  if (checkout === undefined) throw new Error('within grant names an unknown fixture checkout')
   const cwd = resolve(operation.cwd ?? within.cwd)
   const grant = grantFor(
     checkout,
@@ -366,89 +343,12 @@ const authorizeScoped = (
   }
 }
 
-const nextStage = (use: FixtureUse, fact: WorkspaceExecutionFact): UseStage => {
-  const { stage } = use
-  const execution = executionOf(use.operation)
-  if (execution === undefined) {
-    if (use.scope !== 'native-file-write')
-      return refuse('invalid', 'Legacy workspace grants do not carry scoped operation authority')
-    switch (fact.kind) {
-      case 'operation-started':
-        return stage === 'authorized'
-          ? 'operation-started'
-          : refuse('review-required', `Cannot start scoped operation after ${stage}`)
-      case 'operation-completed':
-        return stage === 'authorized' || stage === 'operation-started'
-          ? 'quiescent'
-          : refuse('review-required', `Cannot complete scoped operation after ${stage}`)
-      case 'unknown':
-        return stage === 'authorized' || stage === 'operation-started'
-          ? 'unknown'
-          : refuse('review-required', `Cannot mark scoped operation unknown after ${stage}`)
-      default:
-        return refuse('invalid', 'Scoped native operations require operation boundary facts')
-    }
-  }
-  if (stage === 'quiescent') return refuse('review-required', 'Execution has already been settled')
-  switch (fact.kind) {
-    case 'launch-intent':
-      if (!isDeepStrictEqual(fact.execution, execution))
-        return refuse('invalid', 'Launch intent does not match the authorized execution')
-      return stage === 'authorized'
-        ? 'launch-intent'
-        : refuse('review-required', `Cannot record launch intent after ${stage}`)
-    case 'spawned':
-      return stage === 'launch-intent'
-        ? 'spawned'
-        : refuse('review-required', `Cannot record process identity after ${stage}`)
-    case 'started':
-      return stage === 'spawned'
-        ? 'started'
-        : refuse('review-required', `Cannot release user code after ${stage}`)
-    case 'observed':
-      return ['spawned', 'started', 'observed'].includes(stage)
-        ? 'observed'
-        : refuse('review-required', `Cannot record a process observation after ${stage}`)
-    case 'unknown':
-      return 'unknown'
-    case 'launch-failed':
-      return stage === 'authorized' || stage === 'launch-intent'
-        ? 'quiescent'
-        : refuse('review-required', `A launch cannot be reported failed after ${stage}`)
-    case 'quiescent':
-      return stage === 'observed' && use.processes.length === 0
-        ? 'quiescent'
-        : refuse(
-            'review-required',
-            `Quiescence after ${stage} requires an observed empty process family first`
-          )
-    case 'operation-started':
-    case 'operation-completed':
-      return refuse('invalid', 'Operation boundary facts are only valid for non-process uses')
-  }
-}
-
 const makeAttachment = (
   conversation: WorkspaceConversation,
   attached: FixtureDescriptor
 ): WorkspaceAttachment => {
   let binding: WorkspaceBinding = makeFixtureBinding({ conversation, descriptor: attached })
-  let pending: WorkspaceHandoff | undefined
   const owned = new Set<string>()
-  const liveExecution = (): string | undefined => {
-    for (const useId of owned) {
-      const use = uses.get(useId)
-      const execution = use === undefined ? undefined : executionOf(use.operation)
-      if (
-        execution !== undefined &&
-        use?.grant.workspaceId === binding.workspaceId &&
-        use.stage !== 'quiescent' &&
-        use.stage !== 'unknown'
-      )
-        return `This conversation still runs ${execution.taskKey} (${use.stage}) in its workspace`
-    }
-    return undefined
-  }
   const rules = {
     async authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization> {
       switch (operation.kind) {
@@ -456,12 +356,11 @@ const makeAttachment = (
         case 'write': {
           const cwd = resolve(operation.cwd ?? attached.path)
           const displaced = operation.kind === 'write' ? displacements.get(cwd) : undefined
-          if (displaced !== undefined) {
-            const live = liveExecution()
-            if (live !== undefined) return refuse('blocked', `${live}, so it cannot be rebound yet`)
-            pending = handoffTo(binding, displaced.target, displaced.reason)
-            return { kind: 'rebind', handoff: pending }
-          }
+          if (displaced !== undefined)
+            return {
+              kind: 'rebind',
+              handoff: handoffTo(binding, displaced.target, displaced.reason),
+            }
           const grant = issue(owned, grantFor(attached, operation.kind, cwd), operation, 'ordinary')
           return operation.kind === 'read' && cwd === resolve(targetB)
             ? { kind: 'ready', grant, warning: WRITER_WARNING }
@@ -479,38 +378,20 @@ const makeAttachment = (
           }
         case 'native-file-write':
         case 'opaque':
-          return authorizeScoped(owned, binding, operation)
+          return authorizeScoped(owned, operation)
       }
     },
     async select(selection: WorkspaceSelection): Promise<WorkspaceHandoff> {
-      if (pending !== undefined)
-        return refuse('blocked', 'A workspace transition is already pending')
-      const live = liveExecution()
-      if (live !== undefined) return refuse('blocked', `${live}, so it cannot be switched yet`)
       const candidate = allDescriptors.find(
         item => item.taskId === selection.taskId && item.workspaceId === selection.workspaceId
       )
       if (candidate === undefined) return refuse('invalid', 'fixture selection must be exact')
       timeline.push({ kind: 'select', workspaceId: candidate.workspaceId })
-      pending = handoffTo(binding, candidate, 'fixture explicit retained-workspace selection')
-      return pending
+      return handoffTo(binding, candidate, 'fixture explicit retained-workspace selection')
     },
     async reportExecution(grant: WorkspaceGrant, fact: WorkspaceExecutionFact): Promise<void> {
       const use = uses.get(grant.useId)
-      try {
-        if (use === undefined) return refuse('invalid', `${fact.kind} for an unissued use`)
-        if (
-          pending !== undefined &&
-          ['launch-intent', 'spawned', 'started', 'operation-started'].includes(fact.kind)
-        )
-          return refuse('blocked', 'Starting an operation is fenced during a host transition')
-        use.stage = nextStage(use, fact)
-      } catch (error) {
-        rejectedFacts.push({ useId: grant.useId, kind: fact.kind, reason: String(error) })
-        throw error
-      }
-      if (fact.kind === 'spawned') use.processes = [fact.process]
-      if (fact.kind === 'observed') use.processes = fact.processes
+      if (use === undefined) throw new Error(`${fact.kind} for a use this fixture never issued`)
       use.facts.push(fact)
       timeline.push({
         kind: 'fact',
@@ -523,8 +404,6 @@ const makeAttachment = (
       transition: WorkspaceHandoff,
       replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>
     ): Promise<void> {
-      if (pending?.operationId !== transition.operationId)
-        return refuse('review-required', 'Workspace handoff token is stale')
       assert.equal(transition.from.conversation.sessionId, conversation.sessionId)
       assert.equal(
         resolve(transition.from.conversation.sessionFile),
@@ -534,11 +413,8 @@ const makeAttachment = (
       const target = allDescriptors.find(item => item.workspaceId === transition.target.workspaceId)
       if (target === undefined)
         return refuse('invalid', 'fixture handoff names an unknown workspace')
-      const refusal = refusedHandoffTargets.has(target.workspaceId)
-        ? 'fixture target became unavailable'
-        : liveExecution()
-      if (refusal !== undefined) {
-        pending = undefined
+      if (refusedHandoffTargets.has(target.workspaceId)) {
+        const refusal = 'fixture target became unavailable'
         timeline.push({
           kind: 'handoff-settled',
           operationId: transition.operationId,
@@ -566,7 +442,6 @@ const makeAttachment = (
             cwd: transition.target.cwd,
             revision: binding.revision + 1,
           }
-        pending = undefined
         timeline.push({ kind: 'handoff-settled', operationId: transition.operationId, outcome })
         pendingByConversation.delete(conversationKey(conversation))
       } catch (error) {
@@ -1691,7 +1566,6 @@ for (const use of nativeWrites) {
   assert.equal(use.grant.path, join(targetB, 'fresh-native.txt'))
   assert.equal(resolve(use.operation.cwd ?? ''), resolve(targetB))
   assert.equal(uses.get(use.operation.within.useId)?.scope, 'ordinary')
-  assert.equal(use.stage, 'quiescent')
 }
 const [nativeWrite, nativeEdit, emptyEdit] = nativeWrites
 assert.ok(nativeWrite && nativeEdit && emptyEdit)
@@ -1845,8 +1719,6 @@ assert.deepEqual(
 const nextContext = providerCalls.find(call => call.step === 'work-process')?.context ?? ''
 assert.match(nextContext, /dev36-one/, 'the ! output reached the next provider request')
 assert.doesNotMatch(nextContext, /dev36-two/, 'the !! output was excluded from LLM context')
-
-assert.deepEqual(rejectedFacts, [], 'the stub accepted every fact the host and adapters reported')
 
 assert.equal(networkAttempts, 0, 'offline provider made no network calls')
 assert.equal(existsSync(extensionMarker), false, 'untrusted project extension was not loaded')
@@ -2002,7 +1874,7 @@ const report = {
     `Pi ends a tool batch early only when every result sets terminate. The unverified-tool block is non-terminating, so the stale writer-a batch that mixed it with a rebind block let Pi issue ${staleCalls.length} provider request(s) in the parked writer-a context; every tool call from it was fenced with terminate and had no effect.`,
   ],
   limits: [
-    'WorkspaceLifecycle is a typed stub mirroring the scoped-operation contract, the execution stage machine and the live-execution refusals; production admission, fencing, persistence and writer-grant restoration after a cancelled switch are covered by the real-authority probe and workspace-authority-check.ts, not here.',
+    'WorkspaceLifecycle is a typed stub that issues grants and records the reported facts without judging them; admission rules, the execution stage machine, fencing, live-execution refusals, persistence and writer-grant restoration after a cancelled switch are covered by the real-authority probe and workspace-authority-check.ts, not here.',
     'The refused switch is fault-injected in the stub; the real triggers (a live execution appearing between select and handoff, an invalidated target) are not produced here.',
     'Shell quiescence is observed through the process group and tracked descendants; a descendant that leaves the group and is not a tracked child escapes observation and is not exercised here.',
     'Project extensions are gated only by Pi folder trust; their executable side effects are not bounded by tool-call instrumentation.',
