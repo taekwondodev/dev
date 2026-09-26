@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto'
-import { Schema } from 'effect'
+import { Effect, Option, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { WorkspaceId, type WorkspaceGrant } from './workspace-domain.ts'
+import { WorkspaceError, WorkspaceId, type WorkspaceGrant } from './workspace-domain.ts'
+import type { ChildMessage } from './work-protocol.ts'
 import { decodeWriteOperand, resolveWriteDestination } from './workspace-paths.ts'
+import { newId } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
 
 const Reply = Schema.Struct({
@@ -15,6 +16,20 @@ const Reply = Schema.Struct({
 const decodeReply = Schema.decodeUnknownOption(Reply)
 const readTools = new Set(['read', 'grep', 'find', 'ls'])
 
+type WorkspaceCheck = Extract<ChildMessage, { readonly type: 'workspace-check' }>
+
+// The IPC link to the controller that owns the child's grant: the child's own process.
+export interface ControllerChannel {
+  readonly connected: boolean
+  send?(message: WorkspaceCheck, callback: (error: Error | null) => void): boolean
+  on(event: 'message', listener: (message: unknown) => void): unknown
+  once(event: 'disconnect', listener: () => void): unknown
+  removeListener(event: 'message', listener: (message: unknown) => void): unknown
+  removeListener(event: 'disconnect', listener: () => void): unknown
+}
+
+const unavailable = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
+
 export const validateWorkspaceWritePath = async (
   grant: WorkspaceGrant,
   input: unknown
@@ -22,69 +37,87 @@ export const validateWorkspaceWritePath = async (
 
 export const checkChildWorkspace = (
   grant: WorkspaceGrant,
-  operation: 'read' | 'write'
-): Promise<void> =>
-  new Promise((accept, reject) => {
-    if (!process.connected || process.send === undefined) {
-      reject(new Error('Workspace controller IPC is unavailable'))
+  operation: 'read' | 'write',
+  channel: ControllerChannel = process
+): Effect.Effect<void, WorkspaceError> =>
+  Effect.callback<void, WorkspaceError>(resume => {
+    if (!channel.connected || channel.send === undefined) {
+      resume(Effect.fail(unavailable('Workspace controller IPC is unavailable')))
       return
     }
-    const requestId = randomUUID()
+    const requestId = newId()
     const cleanup = (): void => {
-      clearTimeout(timeout)
-      process.removeListener('message', onMessage)
-      process.removeListener('disconnect', onDisconnect)
+      channel.removeListener('message', onMessage)
+      channel.removeListener('disconnect', onDisconnect)
     }
-    const fail = (cause: Error): void => {
+    const settle = (result: Effect.Effect<void, WorkspaceError>): void => {
       cleanup()
-      reject(cause)
+      resume(result)
     }
-    const onDisconnect = (): void => fail(new Error('Workspace controller disconnected'))
+    const onDisconnect = (): void =>
+      settle(Effect.fail(unavailable('Workspace controller disconnected')))
     const onMessage = (raw: unknown): void => {
       const reply = decodeReply(raw)
       if (
-        reply._tag !== 'Some' ||
+        Option.isNone(reply) ||
         reply.value.requestId !== requestId ||
         reply.value.useId !== grant.useId
       )
         return
-      cleanup()
-      if (reply.value.allowed) accept()
-      else reject(new Error(reply.value.reason ?? 'Workspace authorization rejected'))
+      settle(
+        reply.value.allowed
+          ? Effect.void
+          : Effect.fail(
+              new WorkspaceError({
+                outcome: 'blocked',
+                message: reply.value.reason ?? 'Workspace authorization rejected',
+              })
+            )
+      )
     }
-    const timeout = setTimeout(
-      () => fail(new Error('Workspace authorization acknowledgment unavailable')),
-      10000
-    )
-    process.on('message', onMessage)
-    process.once('disconnect', onDisconnect)
+    channel.on('message', onMessage)
+    channel.once('disconnect', onDisconnect)
     try {
-      process.send({ type: 'workspace-check', requestId, useId: grant.useId, operation }, cause => {
-        if (cause !== null) fail(cause)
+      channel.send({ type: 'workspace-check', requestId, useId: grant.useId, operation }, cause => {
+        if (cause !== null) settle(Effect.fail(unavailable(errorText(cause))))
       })
     } catch (cause) {
-      fail(cause instanceof Error ? cause : new Error(String(cause)))
+      settle(Effect.fail(unavailable(errorText(cause))))
     }
-  })
+    return Effect.sync(cleanup)
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: '10 seconds',
+      orElse: () => Effect.fail(unavailable('Workspace authorization acknowledgment unavailable')),
+    })
+  )
 
 export const childWorkspaceExtension =
-  (grant: WorkspaceGrant): Pi.ExtensionFactory =>
+  (grant: WorkspaceGrant, channel: ControllerChannel = process): Pi.ExtensionFactory =>
   pi => {
-    pi.on('tool_call', async event => {
-      try {
-        const tool = pi.getAllTools().find(candidate => candidate.name === event.toolName)
-        const builtin = tool?.sourceInfo.source === 'builtin'
-        const reviewGit =
-          grant.access === 'read' &&
-          event.toolName === 'git_inspect' &&
-          tool?.sourceInfo.source === 'sdk'
-        const read = (builtin && readTools.has(event.toolName)) || reviewGit
-        if (!read && grant.access !== 'write') throw new Error('Child workspace is read-only')
-        const fileWrite = builtin && (event.toolName === 'write' || event.toolName === 'edit')
-        if (fileWrite) await validateWorkspaceWritePath(grant, event.input)
-        await checkChildWorkspace(grant, read ? 'read' : 'write')
-      } catch (cause) {
-        return { block: true, reason: errorText(cause) }
-      }
-    })
+    pi.on('tool_call', event =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const tool = pi.getAllTools().find(candidate => candidate.name === event.toolName)
+          const builtin = tool?.sourceInfo.source === 'builtin'
+          const reviewGit =
+            grant.access === 'read' &&
+            event.toolName === 'git_inspect' &&
+            tool?.sourceInfo.source === 'sdk'
+          const read = (builtin && readTools.has(event.toolName)) || reviewGit
+          if (!read && grant.access !== 'write')
+            return yield* new WorkspaceError({
+              outcome: 'blocked',
+              message: 'Child workspace is read-only',
+            })
+          if (builtin && (event.toolName === 'write' || event.toolName === 'edit'))
+            yield* Effect.tryPromise({
+              try: () => validateWorkspaceWritePath(grant, event.input),
+              catch: cause => new WorkspaceError({ outcome: 'invalid', message: errorText(cause) }),
+            })
+          yield* checkChildWorkspace(grant, read ? 'read' : 'write', channel)
+          return undefined
+        }).pipe(Effect.catch(error => Effect.succeed({ block: true, reason: error.message })))
+      )
+    )
   }

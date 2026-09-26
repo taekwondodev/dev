@@ -190,10 +190,7 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
     request.workspace.access !== (request.access === 'write' ? 'write' : 'read')
   )
     return yield* new ChildError({ message: 'Child request does not match its workspace grant' })
-  yield* Effect.tryPromise({
-    try: () => checkChildWorkspace(request.workspace, 'read'),
-    catch: toChildError,
-  })
+  yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
       message: `request.cwd must be an existing directory: ${request.cwd}`,

@@ -124,7 +124,10 @@ try {
       }
     )
     await claim('a child without its live controller cannot authorize a write', async () => {
-      await assert.rejects(checkChildWorkspace(checkoutGrant, 'write'), /IPC is unavailable/)
+      await assert.rejects(
+        Effect.runPromise(checkChildWorkspace(checkoutGrant, 'write')),
+        /IPC is unavailable/
+      )
     })
 
     const delegatedGrant = await claim(
