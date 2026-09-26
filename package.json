@@ -21,7 +21,7 @@
     "diagnostics": "node src/launcher.ts --diagnostics",
     "smoke": "node scripts/smoke.ts",
     "workspace:check": "npm run types:pi && node scripts/workspace-authority-check.ts && node scripts/workspace-process-check.ts && node scripts/workspace-host-contract-check.ts && node scripts/workspace-launcher-check.ts",
-    "workspace:tui": "npm run types:pi && python3 scripts/run-workspace-host-pty-probe.py && python3 scripts/run-workspace-host-real-authority-probe.py",
+    "workspace:tui": "npm run types:pi && python3 scripts/run-workspace-pty-probes.py",
     "setup": "node scripts/maintain.ts setup",
     "update": "node scripts/maintain.ts update",
     "rollback": "node scripts/maintain.ts rollback",

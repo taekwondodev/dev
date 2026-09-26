@@ -57,7 +57,7 @@ npm run workspace:check
 npm run workspace:tui
 ```
 
-`workspace:check` exercises the workspace authority, real process adapters, the host fixture contract and the launcher on disposable storage under the system temporary directory; the launcher check injects a lifecycle through `launch` instead of opening the fixed per-account authority. `workspace:tui` drives the real Pi TUI in a pseudo-terminal, once against a stub lifecycle for fault injection and once against the real authority. Their drivers are Python only because Node has no built-in pseudo-terminal; everything they drive is TypeScript. Neither touches the real workspace authority, credentials or the network.
+`workspace:check` exercises the workspace authority, real process adapters, the host fixture contract and the launcher on disposable storage under the system temporary directory; the launcher check injects a lifecycle through `launch` instead of opening the fixed per-account authority. `workspace:tui` drives the real Pi TUI in a pseudo-terminal, once against a stub lifecycle for fault injection and once against the real authority. One driver, `scripts/run-workspace-pty-probes.py`, runs both from a table of the keys each probe expects at its markers; pass `stub` or `real` to run one. It is Python only because Node has no built-in pseudo-terminal; everything it drives is TypeScript. Neither probe touches the real workspace authority, credentials or the network.
 
 ```bash
 npm run dev:probe
