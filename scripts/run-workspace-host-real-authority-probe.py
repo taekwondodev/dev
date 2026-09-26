@@ -15,6 +15,7 @@ TIMEOUT = 240
 MARKER = 'DEV_REAL_AUTHORITY_PROBE_PASSED '
 ACTIONS = {
     'DEV_REAL_AUTHORITY_READY_FOR_USER_BASH': b'\x15!printf user-bash > user.txt\r',
+    'DEV_REAL_AUTHORITY_READY_FOR_RELOAD': b'\x15/reload\r',
 }
 
 env = os.environ.copy()

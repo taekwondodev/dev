@@ -1,6 +1,5 @@
-import { join } from 'node:path'
-import { userInfo } from 'node:os'
 import { parentPort, workerData } from 'node:worker_threads'
+import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 import { WorkspaceError, type WorkspaceAttachment } from './workspace-domain.ts'
 import { WorkspaceEngine } from './workspace-engine.ts'
 import {
@@ -50,9 +49,7 @@ try {
       message: 'Workspace worker configuration is invalid',
     })
   }
-  const root =
-    data.root ??
-    join(userInfo().homedir, 'Library', 'Application Support', 'dev', 'workspace-authority')
+  const root = data.root ?? defaultAuthorityRoot()
   engine = new WorkspaceEngine(root)
   send({ type: 'ready' })
 } catch (cause) {

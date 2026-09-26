@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events'
 import { DatabaseSync } from 'node:sqlite'
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,8 +14,9 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { tmpdir, userInfo } from 'node:os'
+import { isAbsolute, join, relative } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import {
   WorkspaceError,
@@ -72,6 +74,11 @@ Object.defineProperty(EventEmitter.prototype, 'emit', {
     return Reflect.apply(originalEventEmit, this, [eventName, ...args]) as boolean
   },
 })
+
+const inside = (parent: string, path: string) => {
+  const offset = relative(parent, path)
+  return offset === '' || (!offset.startsWith('..') && !isAbsolute(offset))
+}
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-authority-check-')))
 const checks: string[] = []
@@ -1513,6 +1520,60 @@ try {
   await crashLifecycle.close()
   checks.push(
     'inspect reports a workspace whose writer was killed as blocked because no dev session holds it, while a live writer stays active'
+  )
+
+  // The default root must be the same for every installation, launch directory, data home
+  // and HOME. Only the pure resolver module is imported, so nothing can open the root.
+  const devRoot = new URL('..', import.meta.url)
+  const secondInstallation = join(sandbox, 'second-installation')
+  cpSync(new URL('src', devRoot), join(secondInstallation, 'src'), { recursive: true })
+  cpSync(new URL('package.json', devRoot), join(secondInstallation, 'package.json'))
+  const resolveDefaultRoot = (
+    installation: URL,
+    cwd: string,
+    env: Readonly<Record<string, string>>
+  ): string => {
+    const resolver = new URL('src/workspace-authority-root.ts', installation).href
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `const { defaultAuthorityRoot } = await import(${JSON.stringify(resolver)})
+        process.stdout.write(JSON.stringify(defaultAuthorityRoot()))`,
+      ],
+      { cwd, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 30000 }
+    )
+    if (result.status !== 0 || result.stdout.length === 0)
+      throw new Error(`The default root was not resolved (${result.status}): ${result.stderr}`)
+    const resolved: unknown = JSON.parse(result.stdout)
+    if (typeof resolved !== 'string') throw new Error('The resolver returned a non-string root')
+    return resolved
+  }
+  const elsewhere = join(sandbox, 'elsewhere')
+  const otherHome = join(sandbox, 'other-home')
+  mkdirSync(elsewhere)
+  mkdirSync(otherHome)
+  const fromFirst = resolveDefaultRoot(devRoot, repo, {
+    DEV_DATA_HOME: join(sandbox, 'data-first-installation'),
+  })
+  const fromSecond = resolveDefaultRoot(pathToFileURL(`${secondInstallation}/`), elsewhere, {
+    DEV_DATA_HOME: join(sandbox, 'data-second-installation'),
+    HOME: otherHome,
+  })
+  const accountRoot = join(
+    userInfo().homedir,
+    'Library',
+    'Application Support',
+    'dev',
+    'workspace-authority'
+  )
+  assert.equal(fromFirst, accountRoot, 'the default root derives from the OS account')
+  assert.equal(fromSecond, fromFirst, 'a second installation resolves the same default root')
+  for (const excluded of [fileURLToPath(devRoot), secondInstallation, repo, elsewhere, otherHome])
+    assert.ok(!inside(excluded, fromFirst), `the default root is not under ${excluded}`)
+  checks.push(
+    'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME, and is never opened by the check'
   )
 
   console.log(

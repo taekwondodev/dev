@@ -5,15 +5,15 @@
 - `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. State OPEN by user decision until the PR exists. #37 (release and cleanup) is out of scope.
 - `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. The detached worktree `/Users/taekwondodev/.hermes/cache/scratch/dev-36-authority` (HEAD `4772677`) is still registered; retain it. The `dev-36-host` worktree named by an earlier handoff no longer exists and is not registered; nothing depends on it. Unrelated prunable registrations under `/private/tmp` and `/private/var/folders` are untouched.
 - `snapshot`: 2026-09-26, after the user's go-ahead. `git log 4772677..HEAD` holds two local, unpushed commits: `670eded docs: condense ADRs and add workspace vocabulary` (the pre-existing doc changes, applied from `preexisting-docs.patch`) and the `feat(workspace)` commit with everything else, including this file. The full suite was green on the committed content (tree `e8c4f1f6` plus this file).
-- `phase`: `dev-cycle`, closing the remaining gaps before the PR. The user asked to grill the open decisions with real examples (`grilling`), then implement them.
-- `authorization`: user instruction of 2026-09-26: commit everything locally (done); post the #36 evidence comment but keep #36 open until the PR, and link issue and PR; continue the remaining work in parallel, and only afterwards close everything. Push and PR publication are not yet authorized: ask when the remaining work is done. #37 is unauthorized. Delivery is a PR from `feat/36-workspace-admission` to `main`, never a direct push to `main`. Do not reset, rebase or clean the branch. Keep `docs/agents/triage-labels.md` unformatted and out of scope.
-- `next_action`: finish the grilling of the open decisions listed under _Remaining work_, then implement the chosen ones with a regression each.
+- `phase`: `dev-cycle` implementation of the work order decided in the 2026-09-26 grilling (see _Remaining work_). Step 0 runs as a background evidence task limited to `scripts/`; wait for it before editing `src/`, since it temporarily mutates `src/` files to prove its checks fail.
+- `authorization`: user instructions of 2026-09-26. Done: local commits, and the #36 evidence comment with the issue kept open. At the end, after the full independent review, push the branch and open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link; the user merges, which closes #36. Do not merge or close #36 yourself. #37 is unauthorized. Never push directly to `main`. Do not reset, rebase or clean the branch. Keep `docs/agents/triage-labels.md` unformatted and out of scope.
+- `next_action`: after step 0 reports, commit its script changes, then start step 1 of the work order.
 - `required_inputs`:
   - `session-pickup`: `/Users/taekwondodev/Developer/skills/skills/session-pickup/SKILL.md`
   - `dev-cycle`: `/Users/taekwondodev/Developer/skills/skills/dev-cycle/SKILL.md`
   - `grilling`: `/Users/taekwondodev/Developer/skills/skills/grilling/SKILL.md`
   - `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/adr/0005-scoped-runtime-coordination.md`.
-- `done_when`: every open decision has a user answer, and each chosen change is implemented with a regression, or recorded as a limit.
+- `done_when`: every step of the work order is implemented with mutation-verified regressions, the full suite is green, the final three-axis review converges, and the PR is open and linked from #36.
 - `stop_when`: a decision is unanswered; any check turns red when rerun; a new review finding is classed blocking; any step would push, open a PR, close #36, start #37, touch the real authority root `~/Library/Application Support/dev/workspace-authority/`, `~/.pi` or credentials.
 
 ## Retained context
@@ -104,12 +104,46 @@ Each round-5 fix has a regression that was observed failing under a mutation rev
 
 ## Remaining work
 
-1. Done: local commits; #36 evidence comment posted, issue kept open.
-2. Grill and then close the open decisions: the evidence gaps of AC 4, 8 and 9, the non-blocking smells, the per-installation conversation claim, the `inspect` label that can hide abandoned uses, and whether an independent review of the final changes is wanted.
-3. After the remaining work: rerun the full suite and ask for push and PR publication. The PR body references #36 and #36 gets a comment linking the PR; close #36 only when the user says so.
-4. Later, not authorized now: #37 release and cleanup, including the worktrees left by withdrawn switches; an explicit recovery verb for `unknown` (#34 excludes repair verbs from the first version); the abort-based fix for the mixed-batch limit.
+Decisions from the 2026-09-26 grilling, all answered by the user:
 
-Whole-task completion: PR open and linked, and #36 closed with an accurate evidence, commit and limit report when the user authorizes it.
+- Add a per-conversation gate to the authority. Every use records its conversation. Any attach that wins the gate may withdraw an unstarted switch: the `withdrawUnstartedSwitch` option disappears, and TUI `/resume` can withdraw too. `inspect` names the uses of dead conversations. This fixes cross-installation resume (conversation claims are per installation) and the `active` label hiding abandoned uses.
+- Fix every smell group before the PR: dead code, duplicated logic, test tooling, and the first review's smells still present.
+- Port the Pi-facing layer to Effect: authority client, shell, native writes and host. Promise stays only at Pi's hook points.
+- Run a final full independent review (Spec, Adversarial, Standards) on everything after round 4.
+- Deliver as push plus PR with `Closes #36`; the user merges.
+
+Work order, confirmed by the user: 0. Background evidence task, `scripts/` only: AC 9 terminal edges, AC 4 root resolution across installations, `/reload` keeping shells, WorkOwner pre-spawn failure, AC 8 rebind failure against the real authority.
+
+1. Dead code: remove `native-read`, the child's `unbounded` operation and the unused `sourceCwd`.
+2. Per-conversation gate, as decided above, with ADR 0005 and command docs updated.
+3. Split `workspace-engine.ts` (4,462 lines) into modules:
+   - store (SQLite, records, codecs);
+   - gates (presence, writer, structure, conversation);
+   - path identity (one validator replacing the engine, child and native-write copies);
+   - admission;
+   - transitions (attach, select, handoff, allocation);
+   - inspect.
+
+   In the same step:
+   - rename `columns` to `rows`, `valueOf` to `decodeOrFail`, `review` to `requireReview`;
+   - use one error model, tagged outcomes at the authority, one CLI error type, and have the launcher narrow with `instanceof` instead of duck-typing `exitCode`;
+   - decode CLI IDs with `WorkspaceId`;
+   - filter inspect views once and share the empty-result sentence.
+
+4. Port the authority client, shell, native writes and host to Effect. Use one observation loop and one retry policy, shared with the controller.
+5. Test tooling:
+   - one Python PTY driver;
+   - probes load Pi through `src/pi-runtime.ts`;
+   - less stub logic, with the contract check reduced to compile-time guards where types suffice;
+   - authority-check claims bound to the assertions that prove them;
+   - fault injection through an injectable seam that asserts it fired, instead of prototype patching.
+6. ADRs: record the Effect boundary and the conversation gate; keep each rule in either the ADR or the code comment, not both.
+7. Full suite, then the final three-axis review; fix until it converges or show remaining findings to the user.
+8. Push, open the PR with `Closes #36`, comment on #36 with the PR link.
+
+Later, not authorized now: #37 release and cleanup, including the worktrees left by withdrawn switches; a recovery verb for `unknown` (#34 excludes repair verbs from the first version); the abort-based fix for the mixed-batch limit.
+
+Whole-task completion: PR open and linked from #36, merged by the user.
 
 ## Sources
 

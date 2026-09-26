@@ -2,9 +2,19 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
@@ -501,6 +511,71 @@ try {
     }
     checks.push(
       'a controller launch whose identity and first failure report are lost settles as never launched instead of unknown, and the checkout stays writable'
+    )
+
+    // A real failure between the durable launch intent and the spawn: once the intent is
+    // recorded the attempt directory stops being writable, so opening its logs fails.
+    const lockedDirectories: string[] = []
+    const lockingAttachment = new Proxy(attachment, {
+      get(target, property) {
+        if (property === 'reportExecution')
+          return async (...args: Parameters<WorkspaceAttachment['reportExecution']>) => {
+            await target.reportExecution(...args)
+            const [, fact] = args
+            if (fact.kind === 'launch-intent' && fact.execution.logs !== undefined) {
+              const directory = dirname(fact.execution.logs)
+              lockedDirectories.push(directory)
+              await chmod(directory, 0o500)
+            }
+          }
+        const value: unknown = Reflect.get(target, property, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    const lockedRuntime = ManagedRuntime.make(
+      makeWorkOwnerLayer({
+        dataHome,
+        cwd: grant.cwd,
+        sessionId,
+        profile: 'general',
+        workspace: { lifecycle: authority, attachment: lockingAttachment },
+      })
+    )
+    const lockedMarker = join(root, 'locked-log-launch-ran')
+    try {
+      await assert.rejects(
+        lockedRuntime.runPromise(
+          ownerEffect(owner =>
+            owner.startProcess({
+              taskId: 'locked-log-launch',
+              command: `printf ran > ${JSON.stringify(lockedMarker)}`,
+            })
+          )
+        ),
+        /EACCES|permission denied/i
+      )
+      assert.equal(lockedDirectories.length, 1, 'the launch intent was recorded before the failure')
+      let lockedUse
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        lockedUse = (await authority.inspect({ taskId: grant.taskId }))
+          .flatMap(view => view.uses)
+          .find(use => use.execution?.taskKey === 'locked-log-launch')
+        if (lockedUse?.stage === 'quiescent' || lockedUse?.stage === 'unknown') break
+        await new Promise(resolveWait => setTimeout(resolveWait, 250))
+      }
+      assert.equal(lockedUse?.stage, 'quiescent', lockedUse?.reason)
+      assert.match(
+        lockedUse?.reason ?? '',
+        /^launch-failed: The launch failed before user code was released: .*(EACCES|permission denied)/i
+      )
+      assert.ok(!existsSync(lockedMarker), 'no user code ran')
+      assert.equal((await attachment.authorize({ access: 'write' })).kind, 'ready')
+    } finally {
+      for (const directory of lockedDirectories) await chmod(directory, 0o700)
+      await lockedRuntime.dispose()
+    }
+    checks.push(
+      'a controller launch that fails after its durable launch intent but before spawning rejects, runs no user code, settles its use as quiescent with a launch-failed reason instead of unknown, and the checkout stays writable'
     )
   } finally {
     await attachment.close()

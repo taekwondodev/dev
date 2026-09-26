@@ -165,6 +165,10 @@ let resolveLeadStarted: () => void = () => undefined
 const leadStarted = new Promise<void>(resolveStart => {
   resolveLeadStarted = resolveStart
 })
+let resolveReloaded: () => void = () => undefined
+const reloaded = new Promise<void>(resolveReload => {
+  resolveReloaded = resolveReload
+})
 
 function scriptedStream(
   _model: unknown,
@@ -249,8 +253,9 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
       return { content: [{ type: 'text', text: 'ran' }], details: {} }
     },
   })
-  api.on('session_start', (_event, context) => {
+  api.on('session_start', (event, context) => {
     if (resolve(context.cwd) === resolve(lead)) resolveLeadStarted()
+    if (event.reason === 'reload') resolveReloaded()
   })
   api.on('agent_end', event => {
     const last = event.messages.findLast(message => message.role === 'assistant')
@@ -466,6 +471,51 @@ const userBash = runtime.session.sessionManager
   )
 assert.ok(userBash.some(message => message.command.includes('user-bash')))
 
+// A /reload keeps the conversation's live shells; any other session end stops them. The
+// backgrounded sleep outlives the shell, so its use stays live until the family is gone.
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+const survivorSeconds = 60
+const survivorPidFile = join(fixture, 'reload-survivor.pid')
+const survivorLaunchedAt = Date.now()
+await workspaceHost.shellOperations.exec(
+  `sleep ${survivorSeconds} >/dev/null 2>&1 & printf %s $! > ${JSON.stringify(survivorPidFile)}`,
+  managed,
+  { onData: () => undefined }
+)
+const survivorPid = Number(readFileSync(survivorPidFile, 'utf8'))
+// A failed run must not leak the family that only the session end would stop.
+let survivorStopped = false
+process.on('exit', () => {
+  if (!survivorStopped)
+    try {
+      process.kill(survivorPid, 'SIGKILL')
+    } catch {}
+})
+const survivorUse = await waitFor('the live shell use', async () =>
+  (await managedUses()).find(
+    item =>
+      item.effect === 'opaque' &&
+      item.execution?.taskKey === 'lead-shell' &&
+      item.stage !== 'quiescent'
+  )
+)
+signal('READY_FOR_RELOAD')
+await within(reloaded, 60000, 'the /reload session restart')
+await sleep(1500)
+assert.ok(alive(survivorPid), 'a reload keeps the live shell family')
+assert.notEqual(
+  (await managedUses()).find(item => item.id === survivorUse.id)?.stage,
+  'quiescent',
+  'a reload keeps the live shell use open'
+)
+
 const report = {
   fixture,
   leadCommit,
@@ -480,6 +530,7 @@ const report = {
     "a read beside the conversation's own writer carries no warning",
     'a tool without a verified workspace effect is refused without ending the turn',
     'a user ! command runs through the same workspace shell and Pi records it in history',
+    'a /reload typed in the TUI keeps a live lead shell family and its open use; the session end that follows (quit) stops the family, observes it gone and settles the use as quiescent',
     'no network access is attempted',
   ],
   limits: [
@@ -489,7 +540,18 @@ const report = {
 }
 
 mode.stop('transcript')
+assert.ok(alive(survivorPid), 'the live shell family is still running when the session ends')
 await runtime.dispose()
+for (let attempt = 0; attempt < 20 && alive(survivorPid); attempt += 1) await sleep(250)
+assert.ok(!alive(survivorPid), 'ending the session stops the live shell family')
+survivorStopped = true
+assert.ok(
+  Date.now() - survivorLaunchedAt < (survivorSeconds - 10) * 1000,
+  'the family was stopped, not left to finish on its own'
+)
+const stoppedUse = (await managedUses()).find(item => item.id === survivorUse.id)
+assert.equal(stoppedUse?.stage, 'quiescent', stoppedUse?.reason)
+assert.match(stoppedUse?.reason ?? '', /observed gone/)
 await workspaceHost.close()
 await squatter.close()
 await lifecycle.close()

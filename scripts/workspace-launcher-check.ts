@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict'
-import { execFile, execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
@@ -22,17 +24,10 @@ const devRoot = fileURLToPath(new URL('..', import.meta.url))
 const pi: typeof Pi = await import(
   new URL('../node_modules/@earendil-works/pi-coding-agent/dist/index.js', import.meta.url).href
 )
-const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
-const checks: string[] = []
-try {
-  const repo = join(sandbox, 'repo')
-  const dataHome = join(sandbox, 'data')
-  const authorityRoot = join(sandbox, 'authority')
-  mkdirSync(repo)
-  mkdirSync(dataHome, { mode: 0o700 })
-  const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd: repo })
+const initRepository = (cwd: string) => {
+  const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd })
   git(['init', '--quiet', '-b', 'main'])
-  writeFileSync(join(repo, 'tracked.txt'), 'launcher fixture\n')
+  writeFileSync(join(cwd, 'tracked.txt'), 'launcher fixture\n')
   git(['add', 'tracked.txt'])
   git([
     '-c',
@@ -44,6 +39,27 @@ try {
     '-m',
     'fixture',
   ])
+}
+const pathsUnder = (root: string) =>
+  readdirSync(root, { recursive: true, encoding: 'utf8' }).toSorted()
+const authorityFiles = (root: string) =>
+  readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => {
+      const path = join(entry.parentPath, entry.name)
+      return `${relative(root, path)} ${createHash('sha256').update(readFileSync(path)).digest('hex')}`
+    })
+    .toSorted()
+
+const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
+const checks: string[] = []
+try {
+  const repo = join(sandbox, 'repo')
+  const dataHome = join(sandbox, 'data')
+  const authorityRoot = join(sandbox, 'authority')
+  mkdirSync(repo)
+  mkdirSync(dataHome, { mode: 0o700 })
+  initRepository(repo)
 
   const sessions = pi.SessionManager.create(repo, join(dataHome, 'sessions'))
   const user: SessionMessage = {
@@ -135,12 +151,16 @@ try {
 
   // With STOP_AFTER_ATTACH the injected lifecycle reports what the launcher asked of the
   // authority and stops it there, before a Pi runtime would load the global agent directory.
+  // The lifecycle always opens the temporary root named by LAUNCHER_CHECK_ROOT.
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
     import { launch } from ${JSON.stringify(new URL('../src/launcher.ts', import.meta.url).href)}
     import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../src/workspace-lifecycle.ts', import.meta.url).href)}
     const open = () => {
-      const lifecycle = makeWorkspaceLifecycle({ root: ${JSON.stringify(authorityRoot)} })
+      const root = process.env.LAUNCHER_CHECK_ROOT
+      if (root === undefined || root.length === 0)
+        throw new Error('the launcher check requires a temporary authority root')
+      const lifecycle = makeWorkspaceLifecycle({ root })
       if (process.env.STOP_AFTER_ATTACH !== '1') return lifecycle
       return new Proxy(lifecycle, {
         get(target, property) {
@@ -163,29 +183,14 @@ try {
       disableErrorReporting: true,
     })
   `
-  const runLauncher = (resumed: string, stopAfterAttach: boolean) =>
+  const runLauncher = (args: readonly string[], env: Readonly<Record<string, string>> = {}) =>
     new Promise<{ code: number | null; stdout: string; stderr: string }>(resolveRun => {
       execFile(
         process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          driver,
-          '--',
-          '--resume',
-          resumed,
-          '--data-home',
-          dataHome,
-          '--profile',
-          'general',
-        ],
+        ['--input-type=module', '-e', driver, '--', ...args],
         {
           cwd: devRoot,
-          env: {
-            ...process.env,
-            PI_OFFLINE: '1',
-            ...(stopAfterAttach ? { STOP_AFTER_ATTACH: '1' } : {}),
-          },
+          env: { ...process.env, PI_OFFLINE: '1', LAUNCHER_CHECK_ROOT: authorityRoot, ...env },
           timeout: 60000,
         },
         (error, stdout, stderr) =>
@@ -196,7 +201,15 @@ try {
           })
       )
     })
-  const outcome = await runLauncher(sessionFile, false)
+  const resumeArgs = (resumed: string) => [
+    '--resume',
+    resumed,
+    '--data-home',
+    dataHome,
+    '--profile',
+    'general',
+  ]
+  const outcome = await runLauncher(resumeArgs(sessionFile))
   assert.equal(outcome.code, 1, outcome.stderr)
   assert.match(outcome.stderr, /no longer exists and is not recreated/)
   assert.ok(outcome.stderr.includes(sessionFile), outcome.stderr)
@@ -211,7 +224,7 @@ try {
     'dev --resume of a conversation whose workspace was removed exits 1, names the unchanged conversation file and points to dev --cwd PATH, without recreating the workspace'
   )
 
-  const withdrawal = await runLauncher(switchFile, true)
+  const withdrawal = await runLauncher(resumeArgs(switchFile), { STOP_AFTER_ATTACH: '1' })
   assert.equal(withdrawal.code, 1, withdrawal.stderr)
   assert.match(withdrawal.stderr, /launcher check stops after attach/)
   assert.deepEqual(JSON.parse(withdrawal.stdout.trim().split('\n').at(-1) ?? '{}'), {
@@ -234,6 +247,159 @@ try {
   }
   checks.push(
     'dev --resume claims the conversation and asks the authority to withdraw its switch that never reached the host, which returns it durably to the last confirmed workspace'
+  )
+
+  // Read-only commands answer from the authority as they find it. They run with a data
+  // home and HOME that must stay unused, so a Pi session would show up as created files.
+  const secondRepo = join(sandbox, 'second-repo')
+  const notGit = join(sandbox, 'not-git')
+  const readOnlyHome = join(sandbox, 'read-only-home')
+  const unusedDataHome = join(sandbox, 'read-only-data')
+  for (const path of [secondRepo, notGit, readOnlyHome]) mkdirSync(path)
+  initRepository(secondRepo)
+  const ceiling = { GIT_CEILING_DIRECTORIES: sandbox }
+  assert.notEqual(
+    spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: notGit,
+      env: { ...process.env, ...ceiling },
+    }).status,
+    0,
+    'the non-Git fixture directory is outside every repository'
+  )
+  const inspectRoot = join(sandbox, 'inspect-authority')
+  const inspectLifecycle = makeWorkspaceLifecycle({ root: inspectRoot })
+  const writerGrant = async (cwd: string, sessionId: string) => {
+    const writer = await inspectLifecycle.attach({
+      conversation: { sessionId, sessionFile: join(sandbox, `${sessionId}.jsonl`), dataHome },
+      cwd,
+    })
+    const admitted = await writer.authorize({ access: 'write' })
+    await writer.close()
+    if (admitted.kind !== 'ready' || admitted.grant.taskId === undefined)
+      throw new Error(`The fixture could not reserve a task in ${cwd}`)
+    return { ...admitted.grant, taskId: admitted.grant.taskId }
+  }
+  let firstGrant: Awaited<ReturnType<typeof writerGrant>>
+  let secondGrant: Awaited<ReturnType<typeof writerGrant>>
+  try {
+    firstGrant = await writerGrant(repo, 'inspect-first')
+    secondGrant = await writerGrant(secondRepo, 'inspect-second')
+  } finally {
+    await inspectLifecycle.close()
+  }
+  assert.notEqual(firstGrant.repositoryId, secondGrant.repositoryId)
+
+  const jsonlBefore = pathsUnder(sandbox).filter(path => path.endsWith('.jsonl'))
+  const readOnly = (root: string, args: readonly string[]) =>
+    runLauncher(args, {
+      LAUNCHER_CHECK_ROOT: root,
+      DEV_DATA_HOME: unusedDataHome,
+      HOME: readOnlyHome,
+      ...ceiling,
+    })
+
+  const absentParent = join(sandbox, 'absent-authority')
+  const absentRoot = join(absentParent, 'root')
+  const outsideGit = await readOnly(absentRoot, ['--cwd', notGit, 'workspace', 'list'])
+  assert.equal(outsideGit.code, 2, outsideGit.stderr)
+  assert.equal(outsideGit.stdout, '', 'nothing is listed for a directory outside Git')
+  assert.equal(
+    outsideGit.stderr,
+    'Workspace list requires a Git repository; pass --cwd PATH to a Git checkout.\n'
+  )
+  checks.push(
+    'dev workspace list outside a Git repository lists nothing, exits 2 and points to --cwd PATH'
+  )
+
+  const emptyList = await readOnly(absentRoot, ['--cwd', repo, 'workspace'])
+  assert.equal(emptyList.code, 0, emptyList.stderr)
+  assert.equal(
+    emptyList.stdout,
+    `Workspace list for repository ${repo}:\nNo workspace records were found.\n`
+  )
+  const absentTask = randomUUID()
+  const emptyInspect = await readOnly(absentRoot, ['workspace', 'inspect', absentTask])
+  assert.equal(emptyInspect.code, 0, emptyInspect.stderr)
+  assert.equal(emptyInspect.stdout, `No workspace records exist for exact task ${absentTask}.\n`)
+  assert.ok(
+    !existsSync(absentParent),
+    'reading an authority that does not exist provisions nothing'
+  )
+  checks.push(
+    'dev workspace and dev workspace inspect <task> against an authority that does not exist yet report no records, exit 0 and create neither the root nor its parent'
+  )
+
+  const inspectTask = async (cwd: string, grant: typeof secondGrant, repository: string) => {
+    const found = await readOnly(inspectRoot, ['--cwd', cwd, 'workspace', 'inspect', grant.taskId])
+    assert.equal(found.code, 0, found.stderr)
+    const lines = found.stdout.split('\n')
+    assert.equal(
+      lines[0],
+      `Workspace records for exact task ${grant.taskId}: task ${grant.taskId} — workspace ${grant.workspaceId}`
+    )
+    assert.deepEqual(
+      lines.filter(line => line.startsWith('  repository: ')),
+      [`  repository: ${grant.repositoryId}`],
+      'only the exact task is reported'
+    )
+    assert.deepEqual(
+      lines.filter(line => line.startsWith('  path: ')),
+      [`  path: ${repository}`]
+    )
+  }
+  await inspectTask(notGit, secondGrant, secondRepo)
+  await inspectTask(secondRepo, firstGrant, repo)
+  const nearMiss = `${secondGrant.taskId.slice(0, -1)}${secondGrant.taskId.endsWith('0') ? '1' : '0'}`
+  const missed = await readOnly(inspectRoot, ['workspace', 'inspect', nearMiss])
+  assert.equal(missed.code, 0, missed.stderr)
+  assert.equal(missed.stdout, `No workspace records exist for exact task ${nearMiss}.\n`)
+  checks.push(
+    'dev workspace inspect <task> finds exactly that task in whichever of two repositories holds it, from a non-Git or another repository launch directory, and a task ID differing in one character finds nothing'
+  )
+
+  const catalogPath = join(inspectRoot, 'catalog.sqlite')
+  const setCatalogPayload = (payload: string) => {
+    const catalog = new DatabaseSync(catalogPath)
+    try {
+      const row = catalog
+        .prepare('SELECT payload FROM repositories WHERE id=?')
+        .get(secondGrant.repositoryId)
+      if (typeof row?.payload !== 'string') throw new Error('The catalog fixture row is missing')
+      catalog
+        .prepare('UPDATE repositories SET payload=? WHERE id=?')
+        .run(payload, secondGrant.repositoryId)
+      return row.payload
+    } finally {
+      catalog.close()
+    }
+  }
+  const intactPayload = setCatalogPayload('[]')
+  const damaged = authorityFiles(inspectRoot)
+  for (const args of [
+    ['--cwd', secondRepo, 'workspace', 'list'],
+    ['--cwd', notGit, 'workspace', 'inspect', secondGrant.taskId],
+  ]) {
+    const reported = await readOnly(inspectRoot, args)
+    assert.equal(reported.code, 1, `${args.join(' ')}: ${reported.stderr}`)
+    assert.equal(reported.stdout, '', 'a damaged authority is not presented as a listing')
+    assert.match(reported.stderr, /^Workspace inspection failed: .*catalog/)
+  }
+  assert.deepEqual(authorityFiles(inspectRoot), damaged, 'the damaged authority is left as found')
+  setCatalogPayload(intactPayload)
+  await inspectTask(notGit, secondGrant, secondRepo)
+  checks.push(
+    'dev workspace list and inspect <task> report a corrupt catalog with exit 1 and no listing, leave every authority file byte-identical, and after repair the same records answer again, so nothing was reinitialized'
+  )
+
+  assert.ok(!existsSync(unusedDataHome), 'no read-only command resolved a data home')
+  assert.deepEqual(pathsUnder(readOnlyHome), [], 'no read-only command created Pi state in HOME')
+  assert.deepEqual(
+    pathsUnder(sandbox).filter(path => path.endsWith('.jsonl')),
+    jsonlBefore,
+    'no read-only command created a Pi session file'
+  )
+  checks.push(
+    'no read-only workspace command creates an authority root, a data home, Pi state or a session file'
   )
   console.log(
     JSON.stringify(
