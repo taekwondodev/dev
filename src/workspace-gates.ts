@@ -1,0 +1,241 @@
+import { DatabaseSync } from 'node:sqlite'
+import { dirname, join } from 'node:path'
+import type { AuthorityPaths } from './workspace-authority.ts'
+import { blocked, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
+import type { GitWorkspace } from './workspace-git.ts'
+import { canonicalPathSlot, lstatIfExists } from './workspace-paths.ts'
+import {
+  PROTOCOL_VERSION,
+  SCHEMA_VERSION,
+  PROTOCOL_SQL,
+  GATE_SQL,
+  hash,
+  errorText,
+  sqliteCode,
+  privateDirectory,
+  privateFile,
+  first,
+  textField,
+  numberField,
+  schemaCatalog,
+  expectedCatalog,
+  createPublishedDatabase,
+} from './workspace-sqlite.ts'
+
+const SHARED_GATE_WAIT_MS = 250
+
+export type GateRelease = () => void
+
+const gateDirectory = (
+  paths: AuthorityPaths,
+  family: 'paths' | 'repos' | 'conversations',
+  key: string
+): string => {
+  const directory = join(paths.gates, family, key)
+  privateDirectory(join(paths.gates, family), true)
+  privateDirectory(directory, true)
+  return directory
+}
+
+const publishGate = (path: string, kind: string, identityPath: string, key: string): void => {
+  createPublishedDatabase(path, 'gate', db => {
+    db.prepare('INSERT INTO gate_marker(id, version, kind, path, key) VALUES(1, ?, ?, ?, ?)').run(
+      PROTOCOL_VERSION,
+      kind,
+      identityPath,
+      key
+    )
+  })
+}
+
+const acquireGate = (
+  path: string,
+  kind: string,
+  identityPath: string,
+  key: string,
+  exclusive: boolean,
+  waitMs = exclusive ? 0 : SHARED_GATE_WAIT_MS
+): GateRelease => {
+  privateDirectory(dirname(path), false)
+  if (lstatIfExists(path) === undefined) publishGate(path, kind, identityPath, key)
+  privateFile(path)
+  let db: DatabaseSync | undefined
+  try {
+    db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
+    // A waiting acquirer only ever waits out a momentary probe, never a holder.
+    db.exec(`PRAGMA busy_timeout = ${waitMs}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`)
+    if (
+      textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase() !== 'delete' ||
+      numberField(first(db, 'PRAGMA user_version'), 'user_version') !== SCHEMA_VERSION ||
+      schemaCatalog(db) !== expectedCatalog(GATE_SQL)
+    )
+      unavailable(`Workspace gate has an unsupported format: ${path}`)
+    const marker = first(db, 'SELECT version, kind, path, key FROM gate_marker WHERE id=1')
+    if (
+      numberField(marker, 'version') !== PROTOCOL_VERSION ||
+      textField(marker, 'kind') !== kind ||
+      textField(marker, 'path') !== identityPath ||
+      textField(marker, 'key') !== key
+    )
+      requireReview(
+        `Workspace gate identity was replaced or does not match its canonical path: ${path}`
+      )
+    db.exec(exclusive ? 'BEGIN EXCLUSIVE' : 'BEGIN')
+    if (textField(first(db, 'SELECT kind FROM gate_marker WHERE id=1'), 'kind') !== kind)
+      requireReview(`Workspace gate marker changed while acquiring ${path}`)
+    const locked = db
+    db = undefined
+    let released = false
+    return () => {
+      if (released) return
+      try {
+        locked.close()
+        released = true
+      } catch (cause) {
+        unavailable(`Cannot release workspace gate ${path}: ${errorText(cause)}`)
+      }
+    }
+  } catch (cause) {
+    db?.close()
+    if (cause instanceof WorkspaceError) throw cause
+    if (sqliteCode(cause) === 5 || sqliteCode(cause) === 6)
+      blocked(`Workspace ${kind === 'use' ? 'presence' : kind} gate is busy: ${identityPath}`)
+    unavailable(`Cannot acquire workspace gate ${path}: ${errorText(cause)}`)
+  }
+}
+
+export const acquireProtocolGate = (
+  path: string,
+  root: string,
+  namespaceId: string
+): GateRelease => {
+  privateFile(path)
+  let db: DatabaseSync | undefined
+  try {
+    db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
+    db.exec('PRAGMA busy_timeout = 0; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
+    if (
+      textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase() !== 'delete' ||
+      numberField(first(db, 'PRAGMA user_version'), 'user_version') !== SCHEMA_VERSION ||
+      schemaCatalog(db) !== expectedCatalog(PROTOCOL_SQL)
+    )
+      unavailable(`Workspace protocol gate has an unsupported format: ${path}`)
+    const marker = first(db, 'SELECT version, namespace_id FROM protocol_marker WHERE id=1')
+    if (
+      numberField(marker, 'version') !== PROTOCOL_VERSION ||
+      textField(marker, 'namespace_id') !== namespaceId
+    )
+      requireReview(`Workspace protocol identity changed at ${path}`)
+    db.exec('BEGIN')
+    if (
+      textField(
+        first(db, 'SELECT namespace_id FROM protocol_marker WHERE id=1'),
+        'namespace_id'
+      ) !== namespaceId
+    )
+      requireReview(`Workspace protocol marker changed while joining ${root}`)
+    const locked = db
+    db = undefined
+    let released = false
+    return () => {
+      if (released) return
+      try {
+        locked.close()
+        released = true
+      } catch (cause) {
+        unavailable(`Cannot release protocol gate ${root}: ${errorText(cause)}`)
+      }
+    }
+  } catch (cause) {
+    db?.close()
+    if (cause instanceof WorkspaceError) throw cause
+    if (sqliteCode(cause) === 5 || sqliteCode(cause) === 6)
+      blocked(`Workspace protocol gate is busy: ${root}`)
+    unavailable(`Cannot acquire workspace protocol gate ${path}: ${errorText(cause)}`)
+  }
+}
+
+export interface PathGates {
+  readonly use: GateRelease
+  readonly writer?: GateRelease
+}
+export const acquirePathGates = (
+  paths: AuthorityPaths,
+  path: string,
+  writer: boolean
+): PathGates => {
+  const canonical = canonicalPathSlot(path)
+  const key = hash(canonical)
+  const directory = gateDirectory(paths, 'paths', key)
+  const presence = acquireGate(join(directory, 'use.sqlite'), 'use', canonical, key, false)
+  try {
+    if (!writer) return { use: presence }
+    return {
+      use: presence,
+      writer: acquireGate(join(directory, 'writer.sqlite'), 'writer', canonical, key, true),
+    }
+  } catch (cause) {
+    presence()
+    throw cause
+  }
+}
+export const acquireStructureGate = (
+  paths: AuthorityPaths,
+  repository: GitWorkspace,
+  repositoryId: string
+): GateRelease => {
+  const key = repositoryId
+  const directory = gateDirectory(paths, 'repos', key)
+  return acquireGate(
+    join(directory, 'structure.sqlite'),
+    'structure',
+    repository.commonPath,
+    key,
+    true
+  )
+}
+// A live conversation holds its gate for as long as any attachment keeps its state, so a
+// free gate means no dev session anywhere on this account still runs the conversation.
+const conversationGate = (
+  paths: AuthorityPaths,
+  conversationKey: string
+): { readonly key: string; readonly path: string } => {
+  const key = hash(conversationKey)
+  return { key, path: join(paths.gates, 'conversations', key, 'conversation.sqlite') }
+}
+export const acquireConversationGate = (
+  paths: AuthorityPaths,
+  conversationKey: string
+): GateRelease => {
+  const gate = conversationGate(paths, conversationKey)
+  gateDirectory(paths, 'conversations', gate.key)
+  try {
+    return acquireGate(
+      gate.path,
+      'conversation',
+      conversationKey,
+      gate.key,
+      true,
+      SHARED_GATE_WAIT_MS
+    )
+  } catch (cause) {
+    if (cause instanceof WorkspaceError && cause.outcome === 'blocked')
+      blocked('This conversation is open in another dev session; close it there first')
+    throw cause
+  }
+}
+export const conversationHeld = (paths: AuthorityPaths, conversationKey: string): boolean => {
+  const gate = conversationGate(paths, conversationKey)
+  if (lstatIfExists(gate.path) === undefined) return false
+  try {
+    acquireGate(gate.path, 'conversation', conversationKey, gate.key, true)()
+    return false
+  } catch (cause) {
+    if (cause instanceof WorkspaceError && cause.outcome === 'blocked') return true
+    throw cause
+  }
+}
+export const releaseGates = (gates: PathGates): void => {
+  gates.writer?.()
+  gates.use()
+}

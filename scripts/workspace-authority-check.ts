@@ -24,7 +24,7 @@ import {
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
 } from '../src/workspace-domain.ts'
-import { unsupportedAuthorityStorage } from '../src/workspace-engine.ts'
+import { unsupportedAuthorityStorage } from '../src/workspace-authority.ts'
 import {
   openLifecycle,
   type TestAttachment,
