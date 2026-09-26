@@ -1334,7 +1334,11 @@ const preflightFile = preflightManager.getSessionFile()
 assert.ok(preflightFile)
 assert.equal(pi.SessionManager.open(preflightFile, sessionDir).getCwd(), targetFail)
 failedConversationIds.add(preflightManager.getSessionId())
-await assert.rejects(activeRuntime.switchSession(preflightFile), /fixture preflight attach failure/)
+assert.deepEqual(
+  await activeRuntime.switchSession(preflightFile),
+  { cancelled: true },
+  'a refused attach cancels the switch instead of failing it, which Pi treats as fatal'
+)
 assert.equal(activeRuntime.session.sessionManager.getSessionId(), initialSessionId)
 assert.equal(activeRuntime.session.sessionManager.getSessionFile(), initialSessionFile)
 assert.equal(resolve(activeRuntime.cwd), resolve(lead))

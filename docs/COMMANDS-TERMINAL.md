@@ -97,7 +97,7 @@ Elenca task e workspace registrati per il repository Git della directory corrent
 dev workspace inspect <task>
 ```
 
-Mostra tutti i workspace noti di quel task esatto, anche in altri repository: percorso, origine, usi attivi o incerti, operazioni in sospeso e prossima azione sicura. Un uso `unknown` blocca il suo workspace per nuovi writer finché non esisterà un recupero esplicito, che la prima versione non offre. Dopo un crash, un workspace con usi rimasti aperti ma senza più nessun processo dev che lo tenga appare come `blocked`, non come `active`.
+Mostra tutti i workspace noti di quel task esatto, anche in altri repository: percorso, origine, usi attivi o incerti, operazioni in sospeso e prossima azione sicura. Un uso `unknown` blocca il suo workspace per nuovi writer finché non esisterà un recupero esplicito, che la prima versione non offre. Dopo un crash, un workspace con usi lasciati aperti da una sessione dev ormai terminata appare come `blocked`, non come `active`, e il motivo elenca quegli usi: anche mentre un'altra sessione lavora nello stesso checkout e anche dopo che hai ripreso la stessa conversazione.
 
 ```bash
 dev workspace resume <task> --workspace <workspace>

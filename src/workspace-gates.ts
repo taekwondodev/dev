@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
+import { rmSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import type { AuthorityPaths } from './workspace-authority.ts'
 import { blocked, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
 import type { GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot, lstatIfExists } from './workspace-paths.ts'
+import { canonicalPathSlot, lstatIfExists, sqliteCode } from './workspace-paths.ts'
 import {
   PROTOCOL_VERSION,
   SCHEMA_VERSION,
@@ -11,7 +13,6 @@ import {
   GATE_SQL,
   hash,
   errorText,
-  sqliteCode,
   privateDirectory,
   privateFile,
   first,
@@ -28,7 +29,7 @@ export type GateRelease = () => void
 
 const gateDirectory = (
   paths: AuthorityPaths,
-  family: 'paths' | 'repos' | 'conversations',
+  family: 'paths' | 'repos' | 'conversations' | 'incarnations',
   key: string
 ): string => {
   const directory = join(paths.gates, family, key)
@@ -194,41 +195,69 @@ export const acquireStructureGate = (
     true
   )
 }
-// A live conversation holds its gate for as long as any attachment keeps its state, so a
-// free gate means no dev session anywhere on this account still runs the conversation.
+// The conversation and incarnation gates of ADR 0005, scoped workspace operations.
 const conversationGate = (
   paths: AuthorityPaths,
-  conversationKey: string
+  identity: string
 ): { readonly key: string; readonly path: string } => {
-  const key = hash(conversationKey)
+  const key = hash(identity)
   return { key, path: join(paths.gates, 'conversations', key, 'conversation.sqlite') }
 }
-export const acquireConversationGate = (
+const incarnationGate = (paths: AuthorityPaths, incarnation: string): string =>
+  join(paths.gates, 'incarnations', incarnation, 'incarnation.sqlite')
+
+export interface ConversationPresence {
+  readonly incarnation: string
+  readonly release: GateRelease
+}
+
+export const acquireConversationPresence = (
   paths: AuthorityPaths,
-  conversationKey: string
-): GateRelease => {
-  const gate = conversationGate(paths, conversationKey)
+  identity: string
+): ConversationPresence => {
+  const gate = conversationGate(paths, identity)
   gateDirectory(paths, 'conversations', gate.key)
+  let releaseConversation: GateRelease
   try {
-    return acquireGate(
-      gate.path,
-      'conversation',
-      conversationKey,
-      gate.key,
-      true,
-      SHARED_GATE_WAIT_MS
-    )
+    releaseConversation = acquireGate(gate.path, 'conversation', identity, gate.key, true)
   } catch (cause) {
     if (cause instanceof WorkspaceError && cause.outcome === 'blocked')
       blocked('This conversation is open in another dev session; close it there first')
     throw cause
   }
-}
-export const conversationHeld = (paths: AuthorityPaths, conversationKey: string): boolean => {
-  const gate = conversationGate(paths, conversationKey)
-  if (lstatIfExists(gate.path) === undefined) return false
+  const incarnation = randomUUID()
+  const directory = gateDirectory(paths, 'incarnations', incarnation)
   try {
-    acquireGate(gate.path, 'conversation', conversationKey, gate.key, true)()
+    const releaseIncarnation = acquireGate(
+      incarnationGate(paths, incarnation),
+      'incarnation',
+      incarnation,
+      incarnation,
+      true
+    )
+    return {
+      incarnation,
+      release: () => {
+        try {
+          releaseIncarnation()
+          // An incarnation token is never reused, so its gate can go once released.
+          rmSync(directory, { recursive: true, force: true })
+        } finally {
+          releaseConversation()
+        }
+      },
+    }
+  } catch (cause) {
+    releaseConversation()
+    throw cause
+  }
+}
+
+export const incarnationHeld = (paths: AuthorityPaths, incarnation: string): boolean => {
+  const path = incarnationGate(paths, incarnation)
+  if (lstatIfExists(path) === undefined) return false
+  try {
+    acquireGate(path, 'incarnation', incarnation, incarnation, true)()
     return false
   } catch (cause) {
     if (cause instanceof WorkspaceError && cause.outcome === 'blocked') return true

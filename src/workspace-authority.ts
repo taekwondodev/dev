@@ -13,7 +13,7 @@ import {
 } from './workspace-domain.ts'
 import { acquireProtocolGate, acquireStructureGate, type GateRelease } from './workspace-gates.ts'
 import type { GitWorkspace } from './workspace-git.ts'
-import { isWithin, lstatIfExists } from './workspace-paths.ts'
+import { hasErrorCode, isWithin, lstatIfExists, sqliteCode } from './workspace-paths.ts'
 import {
   RepositoryCatalogSchema,
   getWorkspace,
@@ -34,9 +34,7 @@ import {
   isUuid,
   encode,
   parseRecord,
-  isMissing,
   errorText,
-  sqliteCode,
   fsyncPath,
   fsyncParent,
   privateDirectory,
@@ -691,7 +689,7 @@ const requireEntries = (directory: string): string[] => {
   try {
     return readdirSync(directory)
   } catch (cause) {
-    if (isMissing(cause)) return []
+    if (hasErrorCode(cause, 'ENOENT')) return []
     throw cause
   }
 }

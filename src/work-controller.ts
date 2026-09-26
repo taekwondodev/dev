@@ -1347,15 +1347,17 @@ class WorkOwnerImpl implements WorkOwnerService {
       const record = job.lifecycle.snapshot()
       let cleanupError: string | undefined
       const observation = yield* Effect.result(
-        self.reportWorkspace(
-          job,
-          job.workspaceLaunch === 'identity-recorded'
-            ? {
-                kind: 'quiescent',
-                reason: 'The owned process group and every tracked descendant were observed gone',
-              }
-            : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
-        )
+        self
+          .reportWorkspace(
+            job,
+            job.workspaceLaunch === 'identity-recorded'
+              ? {
+                  kind: 'quiescent',
+                  reason: 'The owned process group and every tracked descendant were observed gone',
+                }
+              : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
+          )
+          .pipe(Effect.retry(transientRetry))
       )
       if (observation._tag === 'Failure') cleanupError = errorMessage(observation.failure)
 

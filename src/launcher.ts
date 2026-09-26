@@ -363,8 +363,7 @@ const installSignalHandlers = (
     }
   })
 
-// The authority location is fixed per OS account so every cooperating runtime meets the
-// same authority; only code that imports this module can supply another lifecycle.
+// The only way to supply another authority than the fixed one of ADR 0003.
 export interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
 }

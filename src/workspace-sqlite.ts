@@ -22,10 +22,10 @@ import {
   WorkspaceError,
   WorkspaceId,
 } from './workspace-domain.ts'
-import { lstatIfExists } from './workspace-paths.ts'
+import { hasErrorCode, lstatIfExists, sqliteCode } from './workspace-paths.ts'
 
 export const PROTOCOL_VERSION = 1
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 const BUSY_TIMEOUT_MS = 5000
 export const UUID = WorkspaceId
 
@@ -149,17 +149,8 @@ export const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
 export const now = (): number => Date.now()
 export const hash = (text: string): string => createHash('sha256').update(text).digest('hex')
 export const jsonEqual = (left: unknown, right: unknown): boolean => encode(left) === encode(right)
-export const isMissing = (cause: unknown): boolean =>
-  typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT'
 export const errorText = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
-export const sqliteCode = (cause: unknown): number | undefined =>
-  typeof cause === 'object' &&
-  cause !== null &&
-  'errcode' in cause &&
-  typeof cause.errcode === 'number'
-    ? cause.errcode & 255
-    : undefined
 
 export const fsyncPath = (path: string, directory = false): void => {
   const flags = constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : 0)
@@ -181,10 +172,7 @@ export const privateDirectory = (path: string, create: boolean): void => {
       fsyncParent(path)
       fsyncPath(path, true)
     } catch (cause) {
-      if (
-        !(typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'EEXIST')
-      )
-        throw cause
+      if (!hasErrorCode(cause, 'EEXIST')) throw cause
     }
     info = lstatIfExists(path)
   }
@@ -210,10 +198,7 @@ export const ensureDirectoryPath = (path: string): void => {
     fsyncParent(path)
     fsyncPath(path, true)
   } catch (cause) {
-    if (
-      !(typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'EEXIST')
-    )
-      throw cause
+    if (!hasErrorCode(cause, 'EEXIST')) throw cause
   }
   const created = lstatIfExists(path)
   if (created === undefined || !created.isDirectory() || created.isSymbolicLink())
@@ -378,10 +363,7 @@ export const createPublishedDatabase = (
     try {
       linkSync(candidate, path)
     } catch (cause) {
-      if (
-        !(typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'EEXIST')
-      )
-        throw cause
+      if (!hasErrorCode(cause, 'EEXIST')) throw cause
     }
     unlinkSync(candidate)
     fsyncParent(path)
@@ -465,12 +447,7 @@ export const openRecordDb = (
     }
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    if (
-      typeof cause === 'object' &&
-      cause !== null &&
-      'errcode' in cause &&
-      (cause.errcode === 5 || cause.errcode === 6)
-    )
+    if (sqliteCode(cause) === 5 || sqliteCode(cause) === 6)
       blocked(`Workspace authority database is busy: ${path}`)
     unavailable(`Cannot open workspace authority database ${path}: ${errorText(cause)}`)
   }

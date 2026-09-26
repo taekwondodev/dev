@@ -128,7 +128,7 @@ export const selectWorkspace = (
       access: 'write',
       stage: 'authorized',
       processes: [],
-      conversationKey: state.key,
+      incarnation: state.incarnation,
       bindingRevision: state.binding.revision + 1,
       revision: 0,
       createdAt: now(),

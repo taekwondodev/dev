@@ -442,6 +442,30 @@ try {
       }
     )
 
+    await claim(
+      "a transient refusal of a shell family's final quiescent report is retried, so its use settles instead of becoming unknown",
+      async () => {
+        let refused = 0
+        const flaky = withReport(attachment.effect, (reported, fact) =>
+          Effect.suspend(() => {
+            if (fact.kind !== 'quiescent' || refused > 0)
+              return attachment.effect.reportExecution(reported, fact)
+            refused += 1
+            return Effect.fail(lost('injected busy authority'))
+          })
+        )
+        const flakyShell = await openShell(async shellCwd => {
+          const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
+          if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
+          return { attachment: flaky, grant: writer.grant }
+        })
+        await flakyShell.operations.exec('true', grant.cwd, silent)
+        await settled(10)
+        assert.equal(refused, 1)
+        await flakyShell.stop()
+      }
+    )
+
     const nativeWrites = makeNativeWrites(message => {
       throw new Error(message)
     })
@@ -567,13 +591,54 @@ try {
             if (lossyUse?.stage === 'quiescent' || lossyUse?.stage === 'unknown') break
             await new Promise(resolveWait => setTimeout(resolveWait, 250))
           }
-          assert.equal(lossyUse?.stage, 'quiescent', lossyUse?.reason)
+          assert.equal(lossyUse?.stage, 'quiescent', JSON.stringify(lossyUse))
           assert.match(lossyUse?.reason ?? '', /^launch-failed: /)
           assert.equal(launchFailedReports, 2)
           assert.ok(!existsSync(lossyMarker), 'the failed launch never released user code')
           assert.equal((await attachment.authorize({ access: 'write' })).kind, 'ready')
         } finally {
           await lossyRuntime.dispose()
+        }
+      }
+    )
+
+    await claim(
+      "a transient refusal of a controller family's final quiescent report is retried, so its use settles instead of staying unresolved",
+      async () => {
+        let refused = 0
+        const flaky = withReport(attachment.effect, (reported, fact) =>
+          Effect.suspend(() => {
+            if (fact.kind !== 'quiescent' || refused > 0)
+              return attachment.effect.reportExecution(reported, fact)
+            refused += 1
+            return Effect.fail(lost('injected busy authority'))
+          })
+        )
+        const flakyRuntime = ManagedRuntime.make(
+          makeWorkOwnerLayer({
+            dataHome,
+            cwd: grant.cwd,
+            sessionId,
+            profile: 'general',
+            workspace: { lifecycle: authority.effect, attachment: flaky },
+          })
+        )
+        try {
+          await flakyRuntime.runPromise(
+            ownerEffect(owner => owner.startProcess({ taskId: 'flaky-final', command: 'true' }))
+          )
+          let finalUse
+          for (let attempt = 0; attempt < 60; attempt += 1) {
+            finalUse = (await authority.inspect({ taskId: grant.taskId }))
+              .flatMap(view => view.uses)
+              .find(use => use.execution?.taskKey === 'flaky-final')
+            if (finalUse?.stage === 'quiescent' || finalUse?.stage === 'unknown') break
+            await new Promise(resolveWait => setTimeout(resolveWait, 250))
+          }
+          assert.equal(finalUse?.stage, 'quiescent', JSON.stringify(finalUse))
+          assert.equal(refused, 1)
+        } finally {
+          await flakyRuntime.dispose()
         }
       }
     )
@@ -630,7 +695,7 @@ try {
             if (lockedUse?.stage === 'quiescent' || lockedUse?.stage === 'unknown') break
             await new Promise(resolveWait => setTimeout(resolveWait, 250))
           }
-          assert.equal(lockedUse?.stage, 'quiescent', lockedUse?.reason)
+          assert.equal(lockedUse?.stage, 'quiescent', JSON.stringify(lockedUse))
           assert.match(
             lockedUse?.reason ?? '',
             /^launch-failed: The launch failed before user code was released: .*(EACCES|permission denied)/i

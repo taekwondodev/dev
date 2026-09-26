@@ -507,6 +507,41 @@ const duplicateUse = nativeUses.find(item => item.path === join(managed, 'NATIVE
 assert.equal(duplicateUse?.stage, 'quiescent')
 assert.equal(duplicateUse?.reason, 'operation-ended-before-start:native-file-write')
 
+// Another lifecycle on this authority keeps a second conversation live, as another installation
+// would. Switching this runtime to it must be cancelled, never failed: Pi exits on a failure.
+const heldManager = pi.SessionManager.create(lead, sessionDir)
+const heldReply: Parameters<Pi.SessionManager['appendMessage']>[0] = {
+  role: 'assistant',
+  content: [{ type: 'text', text: 'held conversation' }],
+  api: offlineModel.api,
+  provider: offlineModel.provider,
+  model: offlineModel.id,
+  stopReason: 'stop',
+  timestamp: Date.now(),
+  usage: {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  },
+}
+heldManager.appendMessage(heldReply)
+const heldFile = heldManager.getSessionFile()
+if (heldFile === undefined) throw new Error('Pi did not persist the held conversation')
+const holder = await openLifecycle({ root: authorityRoot })
+const held = await holder.attach({
+  conversation: { sessionId: heldManager.getSessionId(), sessionFile: heldFile, dataHome },
+  cwd: lead,
+})
+const sessionBeforeHeldSwitch = runtime.session.sessionManager.getSessionId()
+assert.deepEqual(await runtime.switchSession(heldFile), { cancelled: true })
+assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeHeldSwitch)
+assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
+await held.close()
+await holder.close()
+
 signal('READY_FOR_USER_BASH')
 await waitFor('the user shell command to run', async () =>
   existsSync(join(managed, 'user.txt')) ? true : undefined
@@ -586,6 +621,7 @@ const report = {
     'a tool without a verified workspace effect is refused without ending the turn',
     'a user ! command runs through the same workspace shell and Pi records it in history',
     'a /reload typed in the TUI keeps a live lead shell family and its open use; the session end that follows (quit) stops the family, observes it gone and settles the use as quiescent',
+    'switching the TUI runtime to a conversation that another lifecycle keeps live is cancelled with a notice, leaving the session and host usable, instead of failing, which Pi treats as fatal',
     'no network access is attempted',
   ],
   limits: [
@@ -605,7 +641,7 @@ assert.ok(
   'the family was stopped, not left to finish on its own'
 )
 const stoppedUse = (await managedUses()).find(item => item.id === survivorUse.id)
-assert.equal(stoppedUse?.stage, 'quiescent', stoppedUse?.reason)
+assert.equal(stoppedUse?.stage, 'quiescent', JSON.stringify(stoppedUse))
 assert.match(stoppedUse?.reason ?? '', /observed gone/)
 await Effect.runPromise(workspaceHost.close)
 await Effect.runPromise(Scope.close(hostScope, Exit.void))

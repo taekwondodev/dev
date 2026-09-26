@@ -14,8 +14,6 @@ const Reply = Schema.Struct({
 const decodeReply = Schema.decodeUnknownOption(Reply)
 const readTools = new Set(['read', 'grep', 'find', 'ls'])
 
-// A child has no authority of its own to consult, so its tool boundary applies the same
-// validator locally and the controller then checks the grant over IPC.
 export const validateWorkspaceWritePath = async (
   grant: WorkspaceGrant,
   input: unknown

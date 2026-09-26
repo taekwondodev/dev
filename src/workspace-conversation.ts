@@ -54,6 +54,7 @@ export interface ConversationState {
   closing: boolean
   pending?: PendingTransition
   writeGrant?: WorkspaceGrant
+  readonly incarnation: string
   readonly releaseConversation: () => void
 }
 

@@ -337,7 +337,7 @@ export const allocateWorkspace = (
         stage: 'authorized',
         ...(delegated && execution !== undefined ? { execution: validExecution(execution) } : {}),
         processes: [],
-        conversationKey: state.key,
+        incarnation: state.incarnation,
         bindingRevision: state.binding.revision + (delegated ? 0 : 1),
         revision: 0,
         createdAt: now(),

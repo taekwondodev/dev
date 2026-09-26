@@ -9,6 +9,7 @@ import {
   processGate,
   processGateScript,
   processTable,
+  transientRetry,
   type ObservedProcess,
   type TrackedFamily,
 } from './process-family.ts'
@@ -141,7 +142,7 @@ export const makeWorkspaceShell = (
             yield* report({
               kind: 'quiescent',
               reason: 'The shell process group and every tracked descendant were observed gone',
-            })
+            }).pipe(Effect.retry(transientRetry))
             return
           }
           yield* Effect.sleep(OBSERVATION_INTERVAL)

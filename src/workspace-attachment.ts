@@ -14,7 +14,7 @@ import {
   type WorkspaceConversation,
   type WorkspaceSelection,
 } from './workspace-domain.ts'
-import { acquirePathGates, acquireConversationGate, releaseGates } from './workspace-gates.ts'
+import { acquirePathGates, acquireConversationPresence, releaseGates } from './workspace-gates.ts'
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, isWithin, lstatIfExists } from './workspace-paths.ts'
 import {
@@ -42,7 +42,11 @@ import { resolveSelection } from './workspace-transitions.ts'
 
 const conversationRecord = (
   input: WorkspaceConversation
-): { readonly conversation: WorkspaceConversation; readonly key: string } => {
+): {
+  readonly conversation: WorkspaceConversation
+  readonly key: string
+  readonly identity: string
+} => {
   if (!input.sessionId || !input.sessionFile || !input.dataHome)
     invalid('Conversation identity is incomplete')
   const sessionPath = resolve(input.sessionFile)
@@ -57,7 +61,11 @@ const conversationRecord = (
   if (!statSync(dataHome).isDirectory())
     invalid(`Conversation data home is not a directory: ${dataHome}`)
   const conversation = { sessionId: input.sessionId, sessionFile, dataHome }
-  return { conversation, key: hash(JSON.stringify(conversation)) }
+  return {
+    conversation,
+    key: hash(JSON.stringify(conversation)),
+    identity: hash(JSON.stringify({ sessionId: conversation.sessionId, sessionFile })),
+  }
 }
 
 export const attachConversation = (
@@ -98,11 +106,10 @@ export const attachConversation = (
     return { state: live }
   }
 
-  const releaseConversation = acquireConversationGate(authority.paths, normalized.key)
+  const presence = acquireConversationPresence(authority.paths, normalized.identity)
   try {
     let previous = findBinding(authority, normalized.key)
     const pendingOperationId = previous?.binding.pendingOperationId
-    // Holding the conversation gate proves no host anywhere still performs its switch.
     if (previous !== undefined && pendingOperationId !== undefined) {
       if (!retireUnstartedTransition(authority, pendingOperationId))
         requireReview(
@@ -206,18 +213,17 @@ export const attachConversation = (
       refs: 0,
       parked: false,
       closing: false,
-      releaseConversation,
+      incarnation: presence.incarnation,
+      releaseConversation: presence.release,
     }
     states.set(normalized.key, state)
     return { state }
   } catch (cause) {
-    releaseConversation()
+    presence.release()
     throw cause
   }
 }
 
-// A transition that never reached the host changed nothing, so it is withdrawn and the
-// last confirmed binding stands. One that started may have switched the host.
 const retireUnstartedTransition = (authority: WorkspaceAuthority, operationId: string): boolean => {
   let withdrawn = false
   for (const repository of authority.listRepositories()) {

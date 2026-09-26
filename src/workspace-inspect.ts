@@ -7,7 +7,7 @@ import {
   type WorkspaceAuthority,
 } from './workspace-authority.ts'
 import { invalid, requireReview, type WorkspaceView } from './workspace-domain.ts'
-import { conversationHeld } from './workspace-gates.ts'
+import { incarnationHeld } from './workspace-gates.ts'
 import { canonicalGitWorkspace } from './workspace-git.ts'
 import {
   getWorkspace,
@@ -17,15 +17,8 @@ import {
   isActiveUse,
   type OperationRecord,
 } from './workspace-records.ts'
-import {
-  isUuid,
-  isMissing,
-  errorText,
-  effectiveUid,
-  rows,
-  first,
-  textField,
-} from './workspace-sqlite.ts'
+import { isUuid, errorText, effectiveUid, rows, first, textField } from './workspace-sqlite.ts'
+import { hasErrorCode } from './workspace-paths.ts'
 
 const logAvailability = (path: string): boolean | undefined => {
   try {
@@ -41,7 +34,7 @@ const logAvailability = (path: string): boolean | undefined => {
   } catch (cause) {
     // Expired transient logs do not erase ownership; an inspection error is
     // unknown availability, not evidence that a workspace can be reused.
-    return isMissing(cause) ? false : undefined
+    return hasErrorCode(cause, 'ENOENT') ? false : undefined
   }
 }
 
@@ -75,7 +68,7 @@ const assessWorkspace = (input: {
       outcome: 'blocked',
       reason:
         operation ??
-        `Uses ${input.abandoned.join(', ')} were left unsettled by conversations no dev session holds; processes they started may still run.`,
+        `Uses ${input.abandoned.join(', ')} were left unsettled by dev sessions that have ended; processes they started may still run.`,
       nextAction:
         'Do not reuse it for writing; explicit recovery of abandoned uses is not available yet.',
     }
@@ -184,8 +177,7 @@ export const inspectWorkspaces = (
             identityReason === undefined
               ? uses
                   .filter(
-                    use =>
-                      isActiveUse(use) && !conversationHeld(authority.paths, use.conversationKey)
+                    use => isActiveUse(use) && !incarnationHeld(authority.paths, use.incarnation)
                   )
                   .map(use => use.id)
               : [],

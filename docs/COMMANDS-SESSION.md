@@ -68,7 +68,7 @@ Elenca task e workspace del repository corrente, segnando il binding attuale e l
 /workspace inspect <task>
 ```
 
-Mostra i workspace noti di quel task esatto con usi, operazioni in sospeso e prossima azione sicura. Non modifica nulla.
+Mostra i workspace noti di quel task esatto con usi, operazioni in sospeso e prossima azione sicura. Un workspace con usi lasciati aperti da una sessione dev terminata appare come `blocked` e ne elenca gli usi. Non modifica nulla.
 
 ```text
 /workspace resume <task> --workspace <workspace>

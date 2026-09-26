@@ -837,11 +837,25 @@ export const makeWorkspaceHost = (
               sessionId: id,
               minimumEntries: targetManager.getEntries().length,
             }
-          const conversation = yield* workspaceConversation(targetManager, options.dataHome)
-          const prepared = yield* options.lifecycle.attach({
-            conversation,
-            cwd: targetManager.getCwd(),
-          })
+          // Nothing has changed before Pi's own switch, so a refusal here is reported and the
+          // switch cancelled; Pi treats a rejected switch as fatal and exits.
+          const attached = yield* Effect.exit(
+            workspaceConversation(targetManager, options.dataHome).pipe(
+              Effect.flatMap(conversation =>
+                options.lifecycle.attach({ conversation, cwd: targetManager.getCwd() })
+              )
+            )
+          )
+          if (Exit.isFailure(attached)) {
+            clearReopen()
+            notify(
+              currentContext,
+              `The session was not switched: ${formatError(Cause.squash(attached.cause))}`,
+              'warning'
+            )
+            return { cancelled: true }
+          }
+          const prepared = attached.value
           staged = prepared
           stagedAttachments.set(stagedKey, prepared)
           parked = true

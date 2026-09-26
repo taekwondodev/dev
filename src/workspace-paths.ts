@@ -1,14 +1,21 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { Schema } from 'effect'
+import { Predicate, Schema } from 'effect'
 import { blocked, invalid, requireReview } from './workspace-domain.ts'
+
+// Node reports system call failures with a string `code`, SQLite with a numeric `errcode`.
+export const hasErrorCode = (cause: unknown, code: string): boolean =>
+  Predicate.hasProperty(cause, 'code') && cause.code === code
+export const sqliteCode = (cause: unknown): number | undefined =>
+  Predicate.hasProperty(cause, 'errcode') && Predicate.isNumber(cause.errcode)
+    ? cause.errcode & 255
+    : undefined
 
 export const lstatIfExists = (path: string) => {
   try {
     return lstatSync(path)
   } catch (cause) {
-    if (typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT')
-      return undefined
+    if (hasErrorCode(cause, 'ENOENT')) return undefined
     throw cause
   }
 }
@@ -60,7 +67,7 @@ const assertLiteralOperand = (requested: string): void => {
     requested === '~' ||
     requested.startsWith('~/') ||
     requested.startsWith('file://') ||
-    /[  -   　]/.test(requested)
+    /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/.test(requested)
   )
     invalid(`Write path must be a literal path, not Pi shorthand: ${requested}`)
 }
@@ -96,8 +103,7 @@ const writeDestination = (checkout: string, absolute: string): string => {
   return path
 }
 
-// The one validator for every file-write boundary: the authority for lead writes and the
-// child's tool hook for delegated writes. It returns the exact destination to write.
+// Returns the exact destination to write; ADR 0005 names every boundary that calls it.
 export const resolveWriteDestination = (
   checkout: string,
   cwd: string,

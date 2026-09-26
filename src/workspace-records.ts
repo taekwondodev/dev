@@ -129,7 +129,7 @@ export const UseSchema = Schema.Struct({
   execution: Schema.optional(ExecutionSchema),
   processes: Schema.Array(WorkspaceProcessSchema),
   reason: Schema.optional(Schema.String),
-  conversationKey: Schema.NonEmptyString,
+  incarnation: Schema.NonEmptyString,
   bindingRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Schema.Finite,

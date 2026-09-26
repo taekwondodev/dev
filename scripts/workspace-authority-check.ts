@@ -1553,7 +1553,7 @@ try {
   )
 
   await claim(
-    'while a conversation is live, an attach from another lifecycle on the same authority is refused, with or without a selection, and its switch stays with the live host; once the host is gone, any attach withdraws the switch that never reached it, keeping the last confirmed workspace or binding the selected one, and frees the unused target',
+    'while a conversation is live, an attach from another lifecycle on the same authority is refused, with or without a selection, under another data home, and after its host closed its last attachment with the switch pending, and its switch stays with the live host; once the host is gone, any attach withdraws the switch that never reached it, keeping the last confirmed workspace or binding the selected one, and frees the unused target',
     async () => {
       const recoveryRoot = join(sandbox, 'unstarted-recovery-authority')
       const recoveryConversation = conversation('unstarted-recovery')
@@ -1604,6 +1604,24 @@ try {
         'intent',
         'an attach refused while the conversation is live elsewhere leaves its switch to that host'
       )
+      // Another installation has its own data home, but the same conversation file.
+      const otherDataHome = join(sandbox, 'other-installation-data')
+      mkdirSync(otherDataHome, { recursive: true })
+      await expectWorkspaceError(
+        otherInstallation.attach({
+          conversation: { ...recoveryConversation, dataHome: otherDataHome },
+          cwd: fenceRepo,
+        }),
+        'blocked'
+      )
+      // The host keeps its state while its switch is pending, so closing its last attachment
+      // must not free the conversation for anyone else.
+      await recoveryAttachment.close()
+      await expectWorkspaceError(
+        otherInstallation.attach({ conversation: recoveryConversation, cwd: fenceRepo }),
+        'blocked'
+      )
+      assert.equal(await switchStage(otherInstallation, pendingSwitch.operationId), 'intent')
       await otherInstallation.close()
       await recoveryLifecycle.close()
       const recoveryReopened = await openLifecycle({ root: recoveryRoot })
@@ -1663,7 +1681,7 @@ try {
   )
 
   await claim(
-    'inspect names the use of a killed writer as left by a conversation no dev session holds, even while a live reader shares its checkout, and a live writer stays active',
+    'inspect names the use of a killed writer as left by an ended session, even while a live reader shares its checkout and after the same conversation is resumed, and a live writer stays active',
     async () => {
       const crashRoot = join(sandbox, 'crash-authority')
       const crashConversation = conversation('crashed-writer')
@@ -1693,13 +1711,26 @@ try {
       const crashedUse = abandoned?.uses.find(use => use.access === 'write')
       assert.ok(crashedUse)
       assert.equal(abandoned?.outcome, 'blocked', 'a live reader does not hide the dead writer')
-      assert.match(abandoned?.reason ?? '', /left unsettled by conversations no dev session holds/)
       assert.ok(abandoned?.reason?.includes(crashedUse.id))
       assert.ok(!abandoned?.reason?.includes(coPresentRead.useId))
       assert.equal(
         crashViews.find(view => view.path === realpathSync(scopedRepo))?.outcome,
         'active'
       )
+      const resumed = await crashLifecycle.attach({
+        conversation: crashConversation,
+        cwd: failureRepo,
+      })
+      const resumedView = (await crashLifecycle.inspect({})).find(
+        view => view.path === realpathSync(failureRepo)
+      )
+      assert.equal(
+        resumedView?.outcome,
+        'blocked',
+        'resuming the conversation does not revive its dead use'
+      )
+      assert.ok(resumedView?.reason?.includes(crashedUse.id))
+      await resumed.close()
       await coPresentReader.close()
       await liveWriter.close()
       await crashLifecycle.close()
