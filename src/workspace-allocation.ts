@@ -238,7 +238,7 @@ export const allocateWorkspace = (
     )
     state.extraGates.push(...pathGates.extras)
     const commit = currentCommit(sourceGit)
-    operation = {
+    const intent = {
       id: allocationId,
       kind: 'allocation',
       phase: 'intent',
@@ -257,6 +257,7 @@ export const allocateWorkspace = (
       reason: delegated ? 'delegated-writer' : 'checkout-contention',
       createdAt: now(),
     } satisfies OperationRecord
+    operation = intent
     inDb(authority, sourceRepo, db =>
       transaction(db, () => {
         const binding = getBinding(db, state.key)
@@ -269,14 +270,13 @@ export const allocateWorkspace = (
         const task = getTask(db, taskId)
         if (task === undefined)
           putTask(db, { id: taskId, repositoryId: sourceRepo, revision: 0, createdAt: now() })
-        putOperation(db, operation as OperationRecord)
+        putOperation(db, intent)
       })
     )
     assertManagedCheckoutSupported(sourceGit, commit)
-    operation = { ...operation, phase: 'started' }
-    inDb(authority, sourceRepo, db =>
-      transaction(db, () => saveOperation(db, operation as OperationRecord))
-    )
+    const started: OperationRecord = { ...intent, phase: 'started' }
+    operation = started
+    inDb(authority, sourceRepo, db => transaction(db, () => saveOperation(db, started)))
 
     const createdGit = addDetachedWorktree(sourceGit, destination, commit)
     const rootFd = openSync(
@@ -331,16 +331,13 @@ export const allocateWorkspace = (
       updatedAt: now(),
     } satisfies UseRecord
     const completed: OperationRecord = {
-      ...operation,
+      ...started,
       phase: 'confirmed',
       result: `Observed detached worktree at ${destination}`,
     }
-    let targetBinding: BindingRecord | undefined
-    let handoff: WorkspaceHandoff | undefined
-    let handoffOperation: OperationRecord | undefined
     if (!delegated) {
       const handoffId = newId()
-      targetBinding = {
+      const targetBinding: BindingRecord = {
         ...state.binding,
         taskId,
         workspaceId: workspaceIdValue,
@@ -348,7 +345,7 @@ export const allocateWorkspace = (
         revision: state.binding.revision + 1,
         pendingOperationId: handoffId,
       }
-      handoffOperation = {
+      const handoffOperation: OperationRecord = {
         id: handoffId,
         kind: 'handoff',
         phase: 'intent',
@@ -368,7 +365,7 @@ export const allocateWorkspace = (
         createdAt: now(),
       }
       const grant = toGrant(authority, sourceRepo, workspace, use, destination, 'write')
-      handoff = {
+      const handoff: WorkspaceHandoff = {
         operationId: handoffId,
         from: toBinding(state.binding),
         target: grant,
@@ -380,8 +377,7 @@ export const allocateWorkspace = (
         repositoryId: sourceRepo,
         useId: use.id,
         gates: pathGates.target,
-        borrowed: false,
-        isExecution: false,
+        kind: 'ordinary',
         released: false,
       }
       state.leases.set(use.id, targetLease)
@@ -392,11 +388,11 @@ export const allocateWorkspace = (
           putReservation(db, reservation)
           putUse(db, use)
           saveOperation(db, completed)
-          putOperation(db, handoffOperation as OperationRecord)
+          putOperation(db, handoffOperation)
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
             requireReview('Conversation binding changed before handoff publication')
-          putBinding(db, { ...current, pendingOperationId: handoffOperation?.id })
+          putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
         })
       )
       const transition: PendingTransition = {
@@ -418,9 +414,9 @@ export const allocateWorkspace = (
       repositoryId: sourceRepo,
       useId: use.id,
       gates: pathGates.target,
-      borrowed: false,
-      isExecution: execution !== undefined,
-      ...(execution === undefined ? {} : { execution }),
+      ...(execution === undefined
+        ? { kind: 'ordinary' as const }
+        : { kind: 'execution' as const, execution }),
       released: false,
     }
     state.leases.set(use.id, lease)

@@ -47,7 +47,9 @@ import {
   type WorkspaceAuthorization,
   type WorkspaceBinding,
   type WorkspaceConversation,
+  type ScopedOperation,
   type WorkspaceEffect,
+  type WorkspaceExecution,
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceHandoff,
@@ -281,6 +283,13 @@ const issue = (
   return grant
 }
 
+const executionOf = (operation: WorkspaceOperation): WorkspaceExecution | undefined =>
+  operation.kind === 'native-file-write' ? undefined : operation.execution
+const withinOf = (operation: WorkspaceOperation): WorkspaceGrant | undefined =>
+  operation.kind === 'native-file-write' || operation.kind === 'opaque'
+    ? operation.within
+    : undefined
+
 const grantFor = (
   item: FixtureDescriptor,
   access: WorkspaceGrant['access'],
@@ -313,34 +322,27 @@ const handoffTo = (
 // the way it would against the real engine.
 const authorizeScoped = (
   owned: Set<string>,
-  effect: WorkspaceEffect,
   binding: WorkspaceBinding,
-  operation: WorkspaceOperation
+  operation: ScopedOperation
 ): WorkspaceAuthorization => {
   const { within } = operation
-  if (within === undefined) return refuse('invalid', 'A scoped operation requires a within grant')
   const parent = uses.get(within.useId)
   if (parent === undefined || parent.scope !== 'ordinary')
     return refuse('invalid', 'within must be an ordinary grant this fixture issued')
   if (within.workspaceId !== binding.workspaceId)
     return refuse('review-required', 'within grant belongs to another workspace binding')
-  if (operation.access === 'write' && within.access !== 'write')
+  if (within.access !== 'write')
     return refuse('blocked', 'A read-only workspace grant cannot authorize a scoped mutation')
-  if (operation.access !== 'write') return refuse('invalid', `${effect} requires write access`)
-  if ((effect === 'native-file-write') !== (operation.path !== undefined))
-    return refuse('invalid', 'Only native file writes carry, and they require, a path')
-  if ((effect === 'opaque') !== (operation.execution !== undefined))
-    return refuse('invalid', 'Only opaque operations carry, and they require, an execution')
   const checkout = descriptorByPath.get(resolve(within.checkout))
   if (checkout === undefined) return refuse('invalid', 'within grant names an unknown checkout')
   const cwd = resolve(operation.cwd ?? within.cwd)
   const grant = grantFor(
     checkout,
-    operation.access,
+    'write',
     cwd,
-    operation.path === undefined
-      ? undefined
-      : resolveWriteDestination(checkout.path, cwd, operation.path)
+    operation.kind === 'native-file-write'
+      ? resolveWriteDestination(checkout.path, cwd, operation.path)
+      : undefined
   )
   return {
     kind: 'ready',
@@ -348,15 +350,16 @@ const authorizeScoped = (
       owned,
       { ...grant, acquisitionId: within.acquisitionId, reservationId: within.reservationId },
       operation,
-      effect
+      operation.kind
     ),
   }
 }
 
 const nextStage = (use: FixtureUse, fact: WorkspaceExecutionFact): UseStage => {
   const { stage } = use
-  if (use.operation.execution === undefined) {
-    if (use.operation.effect === undefined)
+  const execution = executionOf(use.operation)
+  if (execution === undefined) {
+    if (use.scope !== 'native-file-write')
       return refuse('invalid', 'Legacy workspace grants do not carry scoped operation authority')
     switch (fact.kind) {
       case 'operation-started':
@@ -378,7 +381,7 @@ const nextStage = (use: FixtureUse, fact: WorkspaceExecutionFact): UseStage => {
   if (stage === 'quiescent') return refuse('review-required', 'Execution has already been settled')
   switch (fact.kind) {
     case 'launch-intent':
-      if (!isDeepStrictEqual(fact.execution, use.operation.execution))
+      if (!isDeepStrictEqual(fact.execution, execution))
         return refuse('invalid', 'Launch intent does not match the authorized execution')
       return stage === 'authorized'
         ? 'launch-intent'
@@ -424,48 +427,48 @@ const makeAttachment = (
   const liveExecution = (): string | undefined => {
     for (const useId of owned) {
       const use = uses.get(useId)
+      const execution = use === undefined ? undefined : executionOf(use.operation)
       if (
-        use?.operation.execution !== undefined &&
-        use.grant.workspaceId === binding.workspaceId &&
+        execution !== undefined &&
+        use?.grant.workspaceId === binding.workspaceId &&
         use.stage !== 'quiescent' &&
         use.stage !== 'unknown'
       )
-        return `This conversation still runs ${use.operation.execution.taskKey} (${use.stage}) in its workspace`
+        return `This conversation still runs ${execution.taskKey} (${use.stage}) in its workspace`
     }
     return undefined
   }
   const rules = {
     async authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization> {
-      const scope: UseScope =
-        operation.effect ?? (operation.delegated === true ? 'delegated' : 'ordinary')
-      switch (scope) {
-        case 'ordinary': {
+      switch (operation.kind) {
+        case 'read':
+        case 'write': {
           const cwd = resolve(operation.cwd ?? attached.path)
-          const displaced = operation.access === 'write' ? displacements.get(cwd) : undefined
+          const displaced = operation.kind === 'write' ? displacements.get(cwd) : undefined
           if (displaced !== undefined) {
             const live = liveExecution()
             if (live !== undefined) return refuse('blocked', `${live}, so it cannot be rebound yet`)
             pending = handoffTo(binding, displaced.target, displaced.reason)
             return { kind: 'rebind', handoff: pending }
           }
-          const grant = issue(owned, grantFor(attached, operation.access, cwd), operation, scope)
-          return operation.access === 'read' && cwd === resolve(targetB)
+          const grant = issue(owned, grantFor(attached, operation.kind, cwd), operation, 'ordinary')
+          return operation.kind === 'read' && cwd === resolve(targetB)
             ? { kind: 'ready', grant, warning: WRITER_WARNING }
             : { kind: 'ready', grant }
         }
-        case 'delegated':
+        case 'delegated-write':
           return {
             kind: 'ready',
             grant: issue(
               owned,
               grantFor(delegatedDescriptor, 'write', delegatedDescriptor.path),
               operation,
-              scope
+              'delegated'
             ),
           }
         case 'native-file-write':
         case 'opaque':
-          return authorizeScoped(owned, scope, binding, operation)
+          return authorizeScoped(owned, binding, operation)
       }
     },
     async select(selection: WorkspaceSelection): Promise<WorkspaceHandoff> {
@@ -1379,7 +1382,7 @@ const factKinds = (use: FixtureUse): readonly string[] => use.facts.map(fact => 
 const usesWhere = (predicate: (use: FixtureUse) => boolean): FixtureUse[] =>
   [...uses.values()].filter(predicate)
 const shellUses = (): FixtureUse[] =>
-  usesWhere(use => use.scope === 'opaque' && use.operation.execution?.taskKey === 'lead-shell')
+  usesWhere(use => use.scope === 'opaque' && executionOf(use.operation)?.taskKey === 'lead-shell')
 const factIndex = (useId: string, kind: WorkspaceExecutionFact['kind']): number =>
   timeline.findIndex(
     entry => entry.kind === 'fact' && entry.useId === useId && entry.fact.kind === kind
@@ -1418,7 +1421,7 @@ const firstProcess = processResults.get('work-owner-process')
 assert.ok(firstProcess)
 assert.equal(firstProcess.status, 'running')
 const [workUse] = usesWhere(
-  use => use.scope === 'opaque' && use.operation.execution?.attemptId === firstProcess.id
+  use => use.scope === 'opaque' && executionOf(use.operation)?.attemptId === firstProcess.id
 )
 assert.ok(workUse, 'the WorkOwner launch was admitted as an opaque scoped use')
 assert.deepEqual(factKinds(workUse).slice(0, 3), ['launch-intent', 'spawned', 'started'])
@@ -1433,7 +1436,7 @@ const activeWork = preparedWorkExtensions.findLast(item => item.cwd === targetB)
 assert.ok(activeWork)
 const cancelledWork = async (attemptId: string) => {
   const [use] = usesWhere(
-    item => item.scope === 'opaque' && item.operation.execution?.attemptId === attemptId
+    item => item.scope === 'opaque' && executionOf(item.operation)?.attemptId === attemptId
   )
   assert.ok(use, `attempt ${attemptId} was admitted as an opaque scoped use`)
   const terminal = await poll(`settled attempt ${attemptId}`, async () => {
@@ -1470,7 +1473,7 @@ const retainedProcess = processResults.get('work-owner-retained')
 assert.ok(retainedProcess)
 assert.equal(retainedProcess.status, 'running')
 const [retainedUse] = usesWhere(
-  use => use.scope === 'opaque' && use.operation.execution?.attemptId === retainedProcess.id
+  use => use.scope === 'opaque' && executionOf(use.operation)?.attemptId === retainedProcess.id
 )
 assert.ok(retainedUse, 'the retained WorkOwner launch was admitted as an opaque scoped use')
 assert.ok(
@@ -1705,10 +1708,11 @@ for (const [name, source, path] of [
 const nativeWrites = usesWhere(use => use.scope === 'native-file-write')
 assert.equal(nativeWrites.length, 3, 'the write and both edits became native-file-write uses')
 for (const use of nativeWrites) {
+  assert.ok(use.operation.kind === 'native-file-write')
   assert.equal(use.operation.path, 'fresh-native.txt')
   assert.equal(use.grant.path, join(targetB, 'fresh-native.txt'))
   assert.equal(resolve(use.operation.cwd ?? ''), resolve(targetB))
-  assert.equal(uses.get(use.operation.within?.useId ?? '')?.scope, 'ordinary')
+  assert.equal(uses.get(use.operation.within.useId)?.scope, 'ordinary')
   assert.equal(use.stage, 'quiescent')
 }
 const [nativeWrite, nativeEdit, emptyEdit] = nativeWrites
@@ -1758,10 +1762,10 @@ const assertShellFacts = (use: FixtureUse, label: string): void => {
   assert.deepEqual(lastObserved, { kind: 'observed', processes: [] }, `${label} observed []`)
   const [launch] = use.facts
   assert.ok(launch?.kind === 'launch-intent')
-  assert.deepEqual(launch.execution, use.operation.execution)
+  assert.deepEqual(launch.execution, executionOf(use.operation))
   assert.equal(launch.execution.sessionId, initialSessionId)
   assert.equal(launch.execution.generation, 'lead')
-  const parent = uses.get(use.operation.within?.useId ?? '')
+  const parent = uses.get(withinOf(use.operation)?.useId ?? '')
   assert.equal(parent?.scope, 'ordinary', `${label} is scoped within an ordinary grant`)
   assert.equal(parent?.grant.access, 'write', `${label} is scoped within a write grant`)
   assert.equal(use.grant.workspaceId, WS_B)
@@ -1999,7 +2003,7 @@ const report = {
   staleToolResultsPersisted: toolResultIds,
   nativeFileWrites: nativeWrites.map(use => ({ grant: use.grant, facts: use.facts })),
   shellUses: allShellUses.map(use => ({
-    attemptId: use.operation.execution?.attemptId,
+    attemptId: executionOf(use.operation)?.attemptId,
     facts: factKinds(use),
   })),
   resumeConfirmation: firstConfirm.message,

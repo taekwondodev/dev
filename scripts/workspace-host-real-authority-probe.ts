@@ -93,7 +93,7 @@ const squatter = await lifecycle.attach({
   },
   cwd: lead,
 })
-const squatterAdmission = await squatter.authorize({ access: 'write' })
+const squatterAdmission = await squatter.authorize({ kind: 'write' })
 if (squatterAdmission.kind !== 'ready') throw new Error('The squatter was not admitted')
 assert.equal(resolve(squatterAdmission.grant.checkout), resolve(lead))
 const squatterTaskId = squatterAdmission.grant.taskId

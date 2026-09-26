@@ -118,16 +118,27 @@ export const WorkspaceAuthorizationSchema = Schema.Union([
 ])
 export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
-export const WorkspaceOperationSchema = Schema.Struct({
-  access: WorkspaceAccessSchema,
-  effect: Schema.optional(WorkspaceEffectSchema),
-  within: Schema.optional(WorkspaceGrantSchema),
-  path: Schema.optional(Schema.NonEmptyString),
-  cwd: Schema.optional(Schema.NonEmptyString),
-  delegated: Schema.optional(Schema.Boolean),
-  execution: Schema.optional(WorkspaceExecutionSchema),
-})
+export const WorkspaceOperationSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literals(['read', 'write', 'delegated-write']),
+    cwd: Schema.optional(Schema.NonEmptyString),
+    execution: Schema.optional(WorkspaceExecutionSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('native-file-write'),
+    within: WorkspaceGrantSchema,
+    path: Schema.NonEmptyString,
+    cwd: Schema.optional(Schema.NonEmptyString),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('opaque'),
+    within: WorkspaceGrantSchema,
+    execution: WorkspaceExecutionSchema,
+    cwd: Schema.optional(Schema.NonEmptyString),
+  }),
+])
 export type WorkspaceOperation = typeof WorkspaceOperationSchema.Type
+export type ScopedOperation = Extract<WorkspaceOperation, { readonly within: WorkspaceGrant }>
 
 export const WorkspaceExecutionFactSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('launch-intent'), execution: WorkspaceExecutionSchema }),

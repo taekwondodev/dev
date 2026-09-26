@@ -23,6 +23,7 @@ import {
   type WorkspaceExecution,
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
+  type WorkspaceOperation,
 } from '../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../src/workspace-authority.ts'
 import type { StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
@@ -223,7 +224,7 @@ try {
 
   const lifecycle = await openLifecycle({ root })
   const first = await lifecycle.attach({ conversation: conversation('first'), cwd: repo })
-  const firstGrant = ready(await first.authorize({ access: 'write' }))
+  const firstGrant = ready(await first.authorize({ kind: 'write' }))
   assert.equal(firstGrant.origin, 'pre-existing')
   assert.equal(firstGrant.checkout, realpathSync(repo))
   assert.ok(firstGrant.taskId && firstGrant.workspaceId && firstGrant.acquisitionId)
@@ -242,11 +243,11 @@ try {
         import { openLifecycle } from ${JSON.stringify(moduleUrl)}
         const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
         const reader = await lifecycle.attach({ conversation: ${JSON.stringify(childReaderConversation)}, cwd: ${JSON.stringify(repo)} })
-        const read = await reader.authorize({ access: 'read' })
+        const read = await reader.authorize({ kind: 'read' })
         const attemptedWriter = await lifecycle.attach({ conversation: ${JSON.stringify(childWriterConversation)}, cwd: ${JSON.stringify(repo)},
           selection: { taskId: ${JSON.stringify(firstGrant.taskId)}, workspaceId: ${JSON.stringify(firstGrant.workspaceId)} } })
           .then(async attachment => {
-            try { await attachment.authorize({ access: 'write' }); return 'unexpected-ready' }
+            try { await attachment.authorize({ kind: 'write' }); return 'unexpected-ready' }
             catch (error) { return error.outcome ?? 'untyped-error' }
             finally { await attachment.close() }
           }, error => error.outcome ?? 'untyped-error')
@@ -268,7 +269,7 @@ try {
         conversation: activeContenderConversation,
         cwd: repo,
       })
-      const activeDecision = await contender.authorize({ access: 'write' })
+      const activeDecision = await contender.authorize({ kind: 'write' })
       if (activeDecision.kind !== 'rebind') throw new Error('Contended writer was not isolated')
       const activeTarget = activeDecision.handoff.target
       assert.equal(activeTarget.origin, 'managed')
@@ -316,7 +317,7 @@ try {
         const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
         try {
           const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversationValue)}, cwd: ${JSON.stringify(concurrentRepo)} })
-          const result = await attachment.authorize({ access: 'read' })
+          const result = await attachment.authorize({ kind: 'read' })
           await attachment.close()
           await lifecycle.close()
           console.log(JSON.stringify({ outcome: 'ready', repositoryId: result.grant.repositoryId, workspaceId: result.grant.workspaceId }))
@@ -358,13 +359,13 @@ try {
         conversation: conversation('paused-owner'),
         cwd: concurrentRepo,
       })
-      ready(await pausedOwner.authorize({ access: 'write' }))
+      ready(await pausedOwner.authorize({ kind: 'write' }))
       await pausedOwner.close()
       const pausedContender = await lifecycle.attach({
         conversation: conversation('paused-contender'),
         cwd: concurrentRepo,
       })
-      const pausedDecision = await pausedContender.authorize({ access: 'write' })
+      const pausedDecision = await pausedContender.authorize({ kind: 'write' })
       if (pausedDecision.kind !== 'rebind') throw new Error('Paused reservation was not isolated')
       assert.equal(pausedDecision.handoff.target.origin, 'managed')
       assert.equal(git(['rev-parse', 'HEAD'], pausedDecision.handoff.target.checkout), pausedCommit)
@@ -381,29 +382,25 @@ try {
         conversation: conversation('reader-one'),
         cwd: repo,
       })
-      const readerOneResult = await firstReader.authorize({ access: 'read' })
+      const readerOneResult = await firstReader.authorize({ kind: 'read' })
       assert.equal(readerOneResult.kind, 'ready')
       assert.match(readerOneResult.warning ?? '', /writer owns this live checkout/)
       const secondReader = await lifecycle.attach({
         conversation: conversation('reader-two'),
         cwd: repo,
       })
-      assert.equal((await secondReader.authorize({ access: 'read' })).kind, 'ready')
+      assert.equal((await secondReader.authorize({ kind: 'read' })).kind, 'ready')
 
       const delegating = await lifecycle.attach({
         conversation: conversation('delegated'),
         cwd: repo,
       })
-      const delegatedResult = ready(
-        await delegating.authorize({ access: 'write', delegated: true })
-      )
+      const delegatedResult = ready(await delegating.authorize({ kind: 'delegated-write' }))
       assert.equal(delegatedResult.origin, 'managed')
       assert.notEqual(delegatedResult.checkout, firstGrant.checkout)
       assert.equal(git(['rev-parse', 'HEAD'], delegatedResult.checkout), commit)
       assert.notEqual(delegatedResult.workspaceId, firstGrant.workspaceId)
-      const secondDelegated = ready(
-        await delegating.authorize({ access: 'write', delegated: true })
-      )
+      const secondDelegated = ready(await delegating.authorize({ kind: 'delegated-write' }))
       assert.notEqual(secondDelegated.workspaceId, delegatedResult.workspaceId)
       assert.equal(git(['rev-parse', 'HEAD'], secondDelegated.checkout), commit)
       return {
@@ -425,9 +422,9 @@ try {
         conversation: conversation('isolated-root'),
         cwd: repo,
       })
-      const isolatedRead = ready(await isolatedAttachment.authorize({ access: 'read' }))
+      const isolatedRead = ready(await isolatedAttachment.authorize({ kind: 'read' }))
       assert.notEqual(isolatedRead.repositoryId, firstGrant.repositoryId)
-      const isolatedWrite = ready(await isolatedAttachment.authorize({ access: 'write' }))
+      const isolatedWrite = ready(await isolatedAttachment.authorize({ kind: 'write' }))
       const isolatedExecution = (attemptId: string) => ({
         sessionId: 'isolated-session',
         taskKey: 'isolated-task',
@@ -437,7 +434,7 @@ try {
       })
       const failedSpawn = ready(
         await isolatedAttachment.authorize({
-          access: 'write',
+          kind: 'write',
           execution: isolatedExecution('failed-spawn'),
         })
       )
@@ -448,7 +445,7 @@ try {
       })
       const controlled = ready(
         await isolatedAttachment.authorize({
-          access: 'write',
+          kind: 'write',
           execution: isolatedExecution('controlled-exit'),
         })
       )
@@ -491,7 +488,7 @@ try {
       assert.equal(settled.find(use => use.id === controlled.useId)?.stage, 'quiescent')
       const uncertainAtClose = ready(
         await isolatedAttachment.authorize({
-          access: 'write',
+          kind: 'write',
           execution: isolatedExecution('host-close'),
         })
       )
@@ -564,7 +561,7 @@ try {
     generation: 'generation-1',
     logs: join(sandbox, 'logs-first'),
   }
-  const executionGrant = ready(await first.authorize({ access: 'write', execution }))
+  const executionGrant = ready(await first.authorize({ kind: 'write', execution }))
   await claim(
     "a child's validation accepts the parent's live grant and refuses a malformed grant as invalid and a moved one for review",
     async () => {
@@ -629,7 +626,7 @@ try {
         conversation: conversation('uncertain-effect-contender'),
         cwd: repo,
       })
-      const unresolvedDecision = await unresolvedContender.authorize({ access: 'write' })
+      const unresolvedDecision = await unresolvedContender.authorize({ kind: 'write' })
       if (unresolvedDecision.kind !== 'rebind')
         throw new Error('A writer contending with an unknown use was not isolated')
       assert.equal(git(['rev-parse', 'HEAD'], unresolvedDecision.handoff.target.checkout), commit)
@@ -688,7 +685,7 @@ try {
           workspaceId: delegatedGrant.workspaceId,
         },
       })
-      const resumedGrant = ready(await resumed.authorize({ access: 'write' }))
+      const resumedGrant = ready(await resumed.authorize({ kind: 'write' }))
       assert.equal(resumedGrant.workspaceId, delegatedGrant.workspaceId)
       assert.equal(resumedGrant.checkout, delegatedGrant.checkout)
       assert.notEqual(resumedGrant.acquisitionId, delegatedGrant.acquisitionId)
@@ -726,7 +723,7 @@ try {
       conversation: conversation('corrupt'),
       cwd: repo,
     })
-    const corruptGrant = ready(await corruptAttachment.authorize({ access: 'read' }))
+    const corruptGrant = ready(await corruptAttachment.authorize({ kind: 'read' }))
     const shardPath = join(
       sandbox,
       'corrupt-authority',
@@ -785,7 +782,7 @@ try {
         conversation: conversation('worker-death'),
         cwd: failureRepo,
       })
-      const deathGrant = ready(await deathAttachment.authorize({ access: 'write' }))
+      const deathGrant = ready(await deathAttachment.authorize({ kind: 'write' }))
       await death.worker().terminate()
       await expectWorkspaceError(deathLifecycle.inspect({}), 'unavailable')
       await deathLifecycle.close()
@@ -804,7 +801,7 @@ try {
         cwd: failureRepo,
       })
       lostAck.dropNextAcknowledgment('authorize')
-      await expectWorkspaceError(lostAckAttachment.authorize({ access: 'write' }), 'unavailable')
+      await expectWorkspaceError(lostAckAttachment.authorize({ kind: 'write' }), 'unavailable')
       assert.deepEqual(lostAck.dropped, ['authorize'], 'the authorize acknowledgment was dropped')
       const lostAckBinding = lostAckAttachment.binding
       await lostAckLifecycle.close()
@@ -836,15 +833,14 @@ try {
     conversation: conversation('scoped-sibling'),
     cwd: linkedRepo,
   })
-  const primaryGrant = ready(await scopedPrimary.authorize({ access: 'write' }))
-  const siblingGrant = ready(await scopedSibling.authorize({ access: 'write' }))
+  const primaryGrant = ready(await scopedPrimary.authorize({ kind: 'write' }))
+  const siblingGrant = ready(await scopedSibling.authorize({ kind: 'write' }))
   assert.notEqual(primaryGrant.workspaceId, siblingGrant.workspaceId)
   assert.equal(primaryGrant.repositoryId, siblingGrant.repositoryId)
 
   const nativeWrite = ready(
     await scopedPrimary.authorize({
-      access: 'write',
-      effect: 'native-file-write',
+      kind: 'native-file-write',
       within: primaryGrant,
       path: 'tracked.txt',
     })
@@ -857,16 +853,13 @@ try {
       const siblingShellExecution = processExecution('sibling-shell')
       const siblingShell = ready(
         await scopedSibling.authorize({
-          access: 'write',
-          effect: 'opaque',
+          kind: 'opaque',
           within: siblingGrant,
           execution: siblingShellExecution,
         })
       )
       await startProcessUse(scopedSibling, siblingShell, siblingShellExecution)
-      const concurrentAllocation = ready(
-        await scopedSibling.authorize({ access: 'write', delegated: true })
-      )
+      const concurrentAllocation = ready(await scopedSibling.authorize({ kind: 'delegated-write' }))
       assert.equal(concurrentAllocation.origin, 'managed')
       assert.equal(git(['rev-parse', 'HEAD'], concurrentAllocation.checkout), scopedCommit)
       await endProcessUse(scopedSibling, siblingShell)
@@ -888,8 +881,7 @@ try {
       )
       const laterNativeWrite = ready(
         await scopedPrimary.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: primaryGrant,
           path: 'tracked.txt',
         })
@@ -915,20 +907,18 @@ try {
   )
 
   await claim(
-    'scoped operations are admitted only within an ordinary grant; a shell needs process identity and write access, a native operation carries none',
+    'scoped operations are admitted only within an ordinary grant, and the protocol refuses a shell without process identity',
     async () => {
       const nativeInsideNative = ready(
         await scopedPrimary.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: primaryGrant,
           path: 'outer.txt',
         })
       )
       await expectWorkspaceError(
         scopedPrimary.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: nativeInsideNative,
           path: 'inner.txt',
         }),
@@ -937,12 +927,11 @@ try {
       await scopedPrimary.reportExecution(nativeInsideNative, { kind: 'operation-completed' })
       const primaryExecution = processExecution('primary-agent')
       const primaryAgent = ready(
-        await scopedPrimary.authorize({ access: 'write', execution: primaryExecution })
+        await scopedPrimary.authorize({ kind: 'write', execution: primaryExecution })
       )
       await expectWorkspaceError(
         scopedPrimary.authorize({
-          access: 'write',
-          effect: 'opaque',
+          kind: 'opaque',
           within: primaryAgent,
           execution: processExecution('nested-in-agent'),
         }),
@@ -953,26 +942,10 @@ try {
         reason: 'not launched',
       })
       await expectWorkspaceError(
-        scopedPrimary.authorize({ access: 'write', effect: 'opaque', within: primaryGrant }),
-        'invalid'
-      )
-      await expectWorkspaceError(
         scopedPrimary.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'opaque',
           within: primaryGrant,
-          path: 'native-with-process.txt',
-          execution: processExecution('native-with-process'),
-        }),
-        'invalid'
-      )
-      await expectWorkspaceError(
-        scopedPrimary.authorize({
-          access: 'read',
-          effect: 'opaque',
-          within: primaryGrant,
-          execution: processExecution('read-shell'),
-        }),
+        } as unknown as WorkspaceOperation),
         'invalid'
       )
     }
@@ -984,33 +957,31 @@ try {
       const primaryShellExecution = processExecution('primary-shell')
       const shell = ready(
         await scopedPrimary.authorize({
-          access: 'write',
-          effect: 'opaque',
+          kind: 'opaque',
           within: primaryGrant,
           execution: primaryShellExecution,
         })
       )
       assert.equal(
-        ready(await scopedPrimary.authorize({ access: 'write' })).useId,
+        ready(await scopedPrimary.authorize({ kind: 'write' })).useId,
         primaryGrant.useId
       )
       const besideShell = ready(
         await scopedPrimary.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: primaryGrant,
           path: 'tracked.txt',
         })
       )
       await scopedPrimary.reportExecution(besideShell, { kind: 'operation-started' })
       await scopedPrimary.reportExecution(besideShell, { kind: 'operation-completed' })
-      const ownRead = await scopedPrimary.authorize({ access: 'read' })
+      const ownRead = await scopedPrimary.authorize({ kind: 'read' })
       assert.equal(ownRead.kind === 'ready' ? ownRead.warning : 'rebind', undefined)
       const shellReader = await scopedLifecycle.attach({
         conversation: conversation('shell-reader'),
         cwd: scopedRepo,
       })
-      const shellReaderResult = await shellReader.authorize({ access: 'read' })
+      const shellReaderResult = await shellReader.authorize({ kind: 'read' })
       assert.equal(shellReaderResult.kind, 'ready')
       assert.match(
         shellReaderResult.kind === 'ready' ? (shellReaderResult.warning ?? '') : '',
@@ -1021,8 +992,7 @@ try {
       const secondShellExecution = processExecution('second-primary-shell')
       const secondShell = ready(
         await scopedPrimary.authorize({
-          access: 'write',
-          effect: 'opaque',
+          kind: 'opaque',
           within: primaryGrant,
           execution: secondShellExecution,
         })
@@ -1055,7 +1025,7 @@ try {
         conversation: conversation('shell-contender'),
         cwd: scopedRepo,
       })
-      const shellContention = await shellContender.authorize({ access: 'write' })
+      const shellContention = await shellContender.authorize({ kind: 'write' })
       if (shellContention.kind !== 'rebind')
         throw new Error('A writer contending with an unknown shell was not isolated')
       assert.equal(
@@ -1069,12 +1039,11 @@ try {
         cwd: linkedRepo,
         selection: { taskId: siblingGrant.taskId!, workspaceId: siblingGrant.workspaceId },
       })
-      const linkedWrite = ready(await linkedResume.authorize({ access: 'write' }))
+      const linkedWrite = ready(await linkedResume.authorize({ kind: 'write' }))
       const linkedShellExecution = processExecution('linked-shell')
       const linkedShell = ready(
         await linkedResume.authorize({
-          access: 'write',
-          effect: 'opaque',
+          kind: 'opaque',
           within: linkedWrite,
           execution: linkedShellExecution,
         })
@@ -1082,7 +1051,7 @@ try {
       await startProcessUse(linkedResume, linkedShell, linkedShellExecution)
       await endProcessUse(linkedResume, linkedShell)
       assert.equal(
-        ready(await linkedResume.authorize({ access: 'write', delegated: true })).origin,
+        ready(await linkedResume.authorize({ kind: 'delegated-write' })).origin,
         'managed'
       )
       await linkedResume.close()
@@ -1099,7 +1068,7 @@ try {
         conversation: conversation('structure'),
         cwd: linkedRepo,
       })
-      const structureWrite = ready(await structureAttachment.authorize({ access: 'write' }))
+      const structureWrite = ready(await structureAttachment.authorize({ kind: 'write' }))
       const structuralLock = new DatabaseSync(
         join(structureRoot, 'gates', 'repos', structureWrite.repositoryId, 'structure.sqlite'),
         { timeout: 0 }
@@ -1109,8 +1078,7 @@ try {
         const structureShellExecution = processExecution('structure-shell')
         const structureShell = ready(
           await structureAttachment.authorize({
-            access: 'write',
-            effect: 'opaque',
+            kind: 'opaque',
             within: structureWrite,
             execution: structureShellExecution,
           })
@@ -1118,12 +1086,12 @@ try {
         await startProcessUse(structureAttachment, structureShell, structureShellExecution)
         await endProcessUse(structureAttachment, structureShell)
         await expectWorkspaceError(
-          structureAttachment.authorize({ access: 'write', delegated: true }),
+          structureAttachment.authorize({ kind: 'delegated-write' }),
           'blocked'
         )
-        ready(await structureAttachment.authorize({ access: 'read' }))
+        ready(await structureAttachment.authorize({ kind: 'read' }))
         assert.equal(
-          ready(await structureAttachment.authorize({ access: 'write' })).useId,
+          ready(await structureAttachment.authorize({ kind: 'write' })).useId,
           structureWrite.useId,
           'an allocation refused before any Git effect leaves the conversation admitted'
         )
@@ -1148,13 +1116,10 @@ try {
         conversation: conversation('scoped-lost-ack'),
         cwd: failureRepo,
       })
-      const scopedLostAckParent = ready(
-        await scopedLostAckAttachment.authorize({ access: 'write' })
-      )
+      const scopedLostAckParent = ready(await scopedLostAckAttachment.authorize({ kind: 'write' }))
       const scopedLostAckOperation = ready(
         await scopedLostAckAttachment.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: scopedLostAckParent,
           path: 'file.txt',
         })
@@ -1190,11 +1155,10 @@ try {
     conversation: conversation('traversal'),
     cwd: traversalRepo,
   })
-  const traversalParent = ready(await traversalAttachment.authorize({ access: 'write' }))
+  const traversalParent = ready(await traversalAttachment.authorize({ kind: 'write' }))
   const nativeWriteTo = (path: string) =>
     traversalAttachment.authorize({
-      access: 'write',
-      effect: 'native-file-write',
+      kind: 'native-file-write',
       within: traversalParent,
       path,
     })
@@ -1286,17 +1250,17 @@ try {
         conversation: conversation('fence-primary'),
         cwd: fenceRepo,
       })
-      ready(await fencePrimary.authorize({ access: 'write' }))
+      ready(await fencePrimary.authorize({ kind: 'write' }))
       const fenceAgentExecution = processExecution('fence-agent')
       const fenceAgent = ready(
-        await fencePrimary.authorize({ access: 'write', execution: fenceAgentExecution })
+        await fencePrimary.authorize({ kind: 'write', execution: fenceAgentExecution })
       )
       await startProcessUse(fencePrimary, fenceAgent, fenceAgentExecution)
       const fenceContender = await fenceLifecycle.attach({
         conversation: conversation('fence-contender'),
         cwd: fenceRepo,
       })
-      const fenceContention = await fenceContender.authorize({ access: 'write' })
+      const fenceContention = await fenceContender.authorize({ kind: 'write' })
       if (fenceContention.kind !== 'rebind')
         throw new Error('A live write execution did not isolate a contender')
       await fenceContender.handoff(fenceContention.handoff, async () => 'cancelled')
@@ -1305,12 +1269,11 @@ try {
         conversation: conversation('fence-sibling'),
         cwd: fenceLinked,
       })
-      const fenceSiblingWrite = ready(await fenceSibling.authorize({ access: 'write' }))
+      const fenceSiblingWrite = ready(await fenceSibling.authorize({ kind: 'write' }))
       const fenceSiblingShellExecution = processExecution('fence-sibling-shell')
       const fenceSiblingShell = ready(
         await fenceSibling.authorize({
-          access: 'write',
-          effect: 'opaque',
+          kind: 'opaque',
           within: fenceSiblingWrite,
           execution: fenceSiblingShellExecution,
         })
@@ -1326,9 +1289,9 @@ try {
           cwd: ${JSON.stringify(fenceLinked)},
           selection: ${JSON.stringify({ taskId: fenceSiblingWrite.taskId, workspaceId: fenceSiblingWrite.workspaceId })},
         })
-        const write = await attachment.authorize({ access: 'write' })
+        const write = await attachment.authorize({ kind: 'write' })
         const shell = await attachment.authorize({
-          access: 'write', effect: 'opaque', within: write.grant,
+          kind: 'opaque', within: write.grant,
           execution: ${JSON.stringify(processExecution('fence-cross-process'))},
         })
         await attachment.reportExecution(shell.grant, { kind: 'launch-failed', reason: 'not launched' })
@@ -1352,11 +1315,10 @@ try {
         conversation: conversation('close-nesting'),
         cwd: fenceRepo,
       })
-      const closeParent = ready(await closeAttachment.authorize({ access: 'write' }))
+      const closeParent = ready(await closeAttachment.authorize({ kind: 'write' }))
       const closeDependent = ready(
         await closeAttachment.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: closeParent,
           path: 'tracked.txt',
         })
@@ -1385,19 +1347,16 @@ try {
         conversation: conversation('launder-main'),
         cwd: fenceRepo,
       })
-      const launderParent = ready(await launderMain.authorize({ access: 'write' }))
+      const launderParent = ready(await launderMain.authorize({ kind: 'write' }))
       const launderAllocator = await launderLifecycle.attach({
         conversation: conversation('launder-allocator'),
         cwd: fenceRepo,
       })
-      const launderTarget = ready(
-        await launderAllocator.authorize({ access: 'write', delegated: true })
-      )
+      const launderTarget = ready(await launderAllocator.authorize({ kind: 'delegated-write' }))
       await launderAllocator.close()
       const launderScoped = ready(
         await launderMain.authorize({
-          access: 'write',
-          effect: 'native-file-write',
+          kind: 'native-file-write',
           within: launderParent,
           path: 'tracked.txt',
         })
@@ -1420,7 +1379,7 @@ try {
         conversation: conversation('launder-contender'),
         cwd: fenceRepo,
       })
-      const launderContention = await launderContender.authorize({ access: 'write' })
+      const launderContention = await launderContender.authorize({ kind: 'write' })
       if (launderContention.kind !== 'rebind')
         throw new Error('The old checkout admitted a contender beside unknown uses')
       await launderContender.handoff(launderContention.handoff, async () => 'cancelled')
@@ -1429,7 +1388,7 @@ try {
         conversation: conversation('launder-linked'),
         cwd: fenceLinked,
       })
-      ready(await launderLinked.authorize({ access: 'write' }))
+      ready(await launderLinked.authorize({ kind: 'write' }))
       await launderLinked.close()
       await launderMain.close()
       await launderLifecycle.close()
@@ -1450,9 +1409,7 @@ try {
         conversation: conversation('removed-allocator'),
         cwd: fenceRepo,
       })
-      const removedTarget = ready(
-        await removedAllocator.authorize({ access: 'write', delegated: true })
-      )
+      const removedTarget = ready(await removedAllocator.authorize({ kind: 'delegated-write' }))
       await removedAllocator.close()
       await removedAttachment.handoff(
         await removedAttachment.select({
@@ -1486,18 +1443,18 @@ try {
         conversation: conversation('transition'),
         cwd: fenceRepo,
       })
-      const transitionParent = ready(await transitionAttachment.authorize({ access: 'write' }))
+      const transitionParent = ready(await transitionAttachment.authorize({ kind: 'write' }))
       const transitionAllocator = await transitionLifecycle.attach({
         conversation: conversation('transition-allocator'),
         cwd: fenceRepo,
       })
       const transitionTarget = ready(
-        await transitionAllocator.authorize({ access: 'write', delegated: true })
+        await transitionAllocator.authorize({ kind: 'delegated-write' })
       )
       await transitionAllocator.close()
       const transitionExecution = processExecution('transition-process')
       const transitionProcess = ready(
-        await transitionAttachment.authorize({ access: 'write', execution: transitionExecution })
+        await transitionAttachment.authorize({ kind: 'write', execution: transitionExecution })
       )
       await startProcessUse(transitionAttachment, transitionProcess, transitionExecution)
       const transitionSelection = {
@@ -1505,7 +1462,7 @@ try {
         workspaceId: transitionTarget.workspaceId,
       }
       await expectWorkspaceError(transitionAttachment.select(transitionSelection), 'blocked')
-      ready(await transitionAttachment.authorize({ access: 'read' }))
+      ready(await transitionAttachment.authorize({ kind: 'read' }))
       assert.equal(
         (await findUse(transitionLifecycle, transitionParent.useId))?.stage,
         'authorized'
@@ -1513,7 +1470,7 @@ try {
       await endProcessUse(transitionAttachment, transitionProcess)
       const withdrawn = await transitionAttachment.select(transitionSelection)
       await transitionAttachment.handoff(withdrawn, async () => 'cancelled')
-      ready(await transitionAttachment.authorize({ access: 'write' }))
+      ready(await transitionAttachment.authorize({ kind: 'write' }))
       const transitionHandoff = await transitionAttachment.select(transitionSelection)
       await transitionAttachment.handoff(transitionHandoff, async () => 'confirmed')
       assert.equal(transitionAttachment.binding.workspaceId, transitionTarget.workspaceId)
@@ -1532,20 +1489,20 @@ try {
         conversation: conversation('reader-owner'),
         cwd: fenceRepo,
       })
-      ready(await readerOwner.authorize({ access: 'write' }))
+      ready(await readerOwner.authorize({ kind: 'write' }))
       const readerAgent = await readerAgentLifecycle.attach({
         conversation: conversation('reader-agent'),
         cwd: fenceRepo,
       })
       const readerAgentExecution = processExecution('reader-agent')
       const readerAgentUse = ready(
-        await readerAgent.authorize({ access: 'read', execution: readerAgentExecution })
+        await readerAgent.authorize({ kind: 'read', execution: readerAgentExecution })
       )
       await startProcessUse(readerAgent, readerAgentUse, readerAgentExecution)
-      await expectWorkspaceError(readerAgent.authorize({ access: 'write' }), 'blocked')
-      ready(await readerAgent.authorize({ access: 'read' }))
+      await expectWorkspaceError(readerAgent.authorize({ kind: 'write' }), 'blocked')
+      ready(await readerAgent.authorize({ kind: 'read' }))
       await endProcessUse(readerAgent, readerAgentUse)
-      assert.equal((await readerAgent.authorize({ access: 'write' })).kind, 'rebind')
+      assert.equal((await readerAgent.authorize({ kind: 'write' })).kind, 'rebind')
       await readerAgent.close()
       await readerOwner.close()
       await readerAgentLifecycle.close()
@@ -1562,17 +1519,13 @@ try {
         conversation: conversation('unstarted-recovery-allocator'),
         cwd: fenceRepo,
       })
-      const recoveryTarget = ready(
-        await recoveryAllocator.authorize({ access: 'write', delegated: true })
-      )
+      const recoveryTarget = ready(await recoveryAllocator.authorize({ kind: 'delegated-write' }))
       await recoveryAllocator.close()
       const otherAllocator = await recoveryLifecycle.attach({
         conversation: conversation('unstarted-recovery-other-allocator'),
         cwd: fenceRepo,
       })
-      const otherTarget = ready(
-        await otherAllocator.authorize({ access: 'write', delegated: true })
-      )
+      const otherTarget = ready(await otherAllocator.authorize({ kind: 'delegated-write' }))
       await otherAllocator.close()
       const recoveryAttachment = await recoveryLifecycle.attach({
         conversation: recoveryConversation,
@@ -1636,7 +1589,7 @@ try {
         'the unstarted switch was withdrawn, so it is no longer pending'
       )
       assert.equal(
-        ready(await resumedAtSource.authorize({ access: 'write' })).workspaceId,
+        ready(await resumedAtSource.authorize({ kind: 'write' })).workspaceId,
         sourceWorkspaceId
       )
       await resumedAtSource.close()
@@ -1646,7 +1599,7 @@ try {
         selection: { taskId: recoveryTarget.taskId!, workspaceId: recoveryTarget.workspaceId },
       })
       assert.equal(
-        ready(await targetOwner.authorize({ access: 'write' })).workspaceId,
+        ready(await targetOwner.authorize({ kind: 'write' })).workspaceId,
         recoveryTarget.workspaceId
       )
       await targetOwner.close()
@@ -1689,7 +1642,7 @@ try {
         import { openLifecycle } from ${JSON.stringify(moduleUrl)}
         const lifecycle = await openLifecycle({ root: ${JSON.stringify(crashRoot)} })
         const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(crashConversation)}, cwd: ${JSON.stringify(failureRepo)} })
-        await attachment.authorize({ access: 'write' })
+        await attachment.authorize({ kind: 'write' })
         process.kill(process.pid, 'SIGKILL')
       `).then(
         () => assert.fail('the crashing child must not exit cleanly'),
@@ -1700,12 +1653,12 @@ try {
         conversation: conversation('live-writer'),
         cwd: scopedRepo,
       })
-      ready(await liveWriter.authorize({ access: 'write' }))
+      ready(await liveWriter.authorize({ kind: 'write' }))
       const coPresentReader = await crashLifecycle.attach({
         conversation: conversation('co-present-reader'),
         cwd: failureRepo,
       })
-      const coPresentRead = ready(await coPresentReader.authorize({ access: 'read' }))
+      const coPresentRead = ready(await coPresentReader.authorize({ kind: 'read' }))
       const crashViews = await crashLifecycle.inspect({})
       const abandoned = crashViews.find(view => view.path === realpathSync(failureRepo))
       const crashedUse = abandoned?.uses.find(use => use.access === 'write')
@@ -1766,17 +1719,17 @@ try {
         conversation: conversation('filtered-owner'),
         cwd: filteredRepo,
       })
-      ready(await filteredOwner.authorize({ access: 'write' }))
+      ready(await filteredOwner.authorize({ kind: 'write' }))
       const filteredContender = await filteredLifecycle.attach({
         conversation: conversation('filtered-contender'),
         cwd: filteredRepo,
       })
       const boundBefore = filteredContender.binding
-      await expectWorkspaceError(filteredContender.authorize({ access: 'write' }), 'blocked')
+      await expectWorkspaceError(filteredContender.authorize({ kind: 'write' }), 'blocked')
       assert.ok(!existsSync(smudged), 'no checkout filter ran')
       assert.deepEqual(filteredContender.binding, boundBefore)
       assert.equal(
-        ready(await filteredContender.authorize({ access: 'read' })).workspaceId,
+        ready(await filteredContender.authorize({ kind: 'read' })).workspaceId,
         boundBefore.workspaceId,
         'the refusal left admission open'
       )

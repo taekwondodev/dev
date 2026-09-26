@@ -76,7 +76,7 @@ try {
     conversation: { sessionId, sessionFile, dataHome },
   })
   try {
-    const admission = await attachment.authorize({ access: 'write' })
+    const admission = await attachment.authorize({ kind: 'write' })
     assert.equal(admission.kind, 'ready', 'first writer keeps the checkout')
     if (admission.kind !== 'ready') throw new Error('Unexpected fixture handoff')
     const checkoutGrant = admission.grant
@@ -137,7 +137,7 @@ try {
           `#!/bin/sh\nprintf unsafe > ${JSON.stringify(hookMarker)}\n`,
           { mode: 0o700 }
         )
-        const delegated = await attachment.authorize({ access: 'write', delegated: true })
+        const delegated = await attachment.authorize({ kind: 'delegated-write' })
         assert.equal(delegated.kind, 'ready')
         if (delegated.kind !== 'ready') throw new Error('Unexpected delegated handoff')
         assert.equal(delegated.grant.origin, 'managed')
@@ -160,7 +160,7 @@ try {
         workspaceId: delegatedGrant.workspaceId,
       },
     })
-    const resumed = await attachment.authorize({ access: 'write' })
+    const resumed = await attachment.authorize({ kind: 'write' })
     assert.equal(resumed.kind, 'ready')
     if (resumed.kind !== 'ready') throw new Error('Unexpected resume handoff')
     const { grant } = resumed
@@ -238,7 +238,7 @@ try {
           assert.equal(settledUse?.effect, 'opaque')
           assert.equal(settledUse?.stage, 'quiescent')
           assert.match(settledUse?.reason ?? '', /observed gone/)
-          const next = await attachment.authorize({ access: 'write' })
+          const next = await attachment.authorize({ kind: 'write' })
           assert.equal(next.kind, 'ready', 'observed cessation leaves the checkout writable')
         }
       )
@@ -277,7 +277,7 @@ try {
     )
 
     const shell = await openShell(async shellCwd => {
-      const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
+      const writer = await attachment.authorize({ kind: 'write', cwd: shellCwd })
       if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
       return { attachment: attachment.effect, grant: writer.grant }
     })
@@ -361,7 +361,7 @@ try {
           )
         )
         const barrierShell = await openShell(async shellCwd => {
-          const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
+          const writer = await attachment.authorize({ kind: 'write', cwd: shellCwd })
           if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
           return { attachment: abortAtBarrier, grant: writer.grant }
         })
@@ -455,7 +455,7 @@ try {
           })
         )
         const flakyShell = await openShell(async shellCwd => {
-          const writer = await attachment.authorize({ access: 'write', cwd: shellCwd })
+          const writer = await attachment.authorize({ kind: 'write', cwd: shellCwd })
           if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
           return { attachment: flaky, grant: writer.grant }
         })
@@ -473,11 +473,10 @@ try {
       },
     })
     const authorizeNative = async (path: string) => {
-      const writer = await attachment.authorize({ access: 'write' })
+      const writer = await attachment.authorize({ kind: 'write' })
       if (writer.kind !== 'ready') throw new Error('Unexpected write handoff')
       const operation = await attachment.authorize({
-        access: 'write',
-        effect: 'native-file-write',
+        kind: 'native-file-write',
         within: writer.grant,
         path,
       })
@@ -598,7 +597,7 @@ try {
           assert.match(lossyUse?.reason ?? '', /^launch-failed: /)
           assert.equal(launchFailedReports, 2)
           assert.ok(!existsSync(lossyMarker), 'the failed launch never released user code')
-          assert.equal((await attachment.authorize({ access: 'write' })).kind, 'ready')
+          assert.equal((await attachment.authorize({ kind: 'write' })).kind, 'ready')
         } finally {
           await lossyRuntime.dispose()
         }
@@ -704,7 +703,7 @@ try {
             /^launch-failed: The launch failed before user code was released: .*(EACCES|permission denied)/i
           )
           assert.ok(!existsSync(lockedMarker), 'no user code ran')
-          assert.equal((await attachment.authorize({ access: 'write' })).kind, 'ready')
+          assert.equal((await attachment.authorize({ kind: 'write' })).kind, 'ready')
         } finally {
           for (const directory of lockedDirectories) await chmod(directory, 0o700)
           await lockedRuntime.dispose()

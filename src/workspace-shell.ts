@@ -186,13 +186,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
       attemptId: randomUUID(),
       generation: 'lead',
     }
-    const admitted = yield* attachment.authorize({
-      access: 'write',
-      effect: 'opaque',
-      within,
-      cwd,
-      execution,
-    })
+    const admitted = yield* attachment.authorize({ kind: 'opaque', within, cwd, execution })
     if (admitted.kind !== 'ready')
       return yield* failure(
         'Workspace admission changed before the shell started; the command was not executed.'

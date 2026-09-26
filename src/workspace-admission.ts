@@ -1,9 +1,14 @@
 import { realpathSync } from 'node:fs'
-import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, resolve } from 'node:path'
 import { allocateWorkspace } from './workspace-allocation.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
-import type { GrantLease, ConversationState, AttachmentHandle } from './workspace-conversation.ts'
+import {
+  isScoped,
+  type AttachmentHandle,
+  type ConversationState,
+  type GrantLease,
+  type LeaseKind,
+} from './workspace-conversation.ts'
 import {
   blocked,
   invalid,
@@ -16,6 +21,7 @@ import {
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceId,
+  type ScopedOperation,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
@@ -108,24 +114,14 @@ export const authorizeOperation = (
     blocked('Workspace admission is parked during a host transition')
   if (operation.cwd !== undefined && !isAbsolute(operation.cwd))
     invalid('Operation cwd must be absolute')
-  if (operation.delegated === true && operation.access !== 'write')
-    invalid('Delegated workspace admission requires write access')
-  if (operation.effect === undefined) {
-    if (operation.within !== undefined || operation.path !== undefined)
-      invalid('Scoped operation fields require an explicit effect classification')
-  } else {
-    if (operation.within === undefined)
-      invalid('Scoped operation requires an attachment-owned within grant')
-    if (operation.delegated === true)
-      invalid('Scoped operation cannot also request a delegated allocation')
+  if (operation.kind === 'native-file-write' || operation.kind === 'opaque')
     return authorizeScoped(authority, attachment, operation)
-  }
   const source = currentSource(authority, state)
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
   if (!isWithin(source.workspace.path, cwd))
     invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
-  if (operation.access === 'read') {
+  if (operation.kind === 'read') {
     const ready = authorizeRead(
       authority,
       state,
@@ -139,7 +135,7 @@ export const authorizeOperation = (
     if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
     return executionUse(authority, state, base, operation.execution)
   }
-  if (operation.delegated === true) {
+  if (operation.kind === 'delegated-write') {
     const taskId = source.binding.taskId ?? newId()
     return allocateWorkspace(
       authority,
@@ -285,8 +281,7 @@ export const authorizeOperation = (
       repositoryId: source.repo,
       useId,
       gates,
-      borrowed: false,
-      isExecution: false,
+      kind: 'ordinary',
       released: false,
     }
     state.leases.set(useId, lease)
@@ -304,50 +299,39 @@ export const authorizeOperation = (
 const authorizeScoped = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  operation: WorkspaceOperation
+  operation: ScopedOperation
 ): WorkspaceAuthorization => {
   const { state } = attachment
-  const { effect, within } = operation
-  if (effect === undefined || within === undefined)
-    invalid('Scoped operation requires an explicit effect and within grant')
+  const { within } = operation
   const {
     lease: withinLease,
     workspace,
     use: withinUse,
   } = validateWithinGrant(authority, attachment, within)
-  if (operation.access === 'write' && within.access !== 'write')
+  if (within.access !== 'write')
     blocked('A read-only workspace grant cannot authorize a scoped mutation')
-  if (effect === 'native-file-write' && operation.access !== 'write')
-    invalid('Native file writes require write access')
-  if (effect === 'opaque' && operation.access !== 'write')
-    invalid('Opaque operations require write access')
-  if (effect === 'native-file-write' && operation.path === undefined)
-    invalid('Native file writes require an exact destination path')
-  if (effect !== 'native-file-write' && operation.path !== undefined)
-    invalid('Only native file writes accept a path operand')
-  if (effect === 'opaque' && operation.execution === undefined)
-    invalid('Opaque operations require process execution identity')
-  if (effect !== 'opaque' && operation.execution !== undefined)
-    invalid('Native operations cannot carry process execution identity')
   const cwd = realpathSync(resolve(operation.cwd ?? within.cwd))
   if (!isWithin(workspace.path, cwd)) invalid(`Scoped operation cwd escapes its workspace: ${cwd}`)
+  const kind: LeaseKind =
+    operation.kind === 'native-file-write'
+      ? { kind: operation.kind, withinUseId: withinUse.id }
+      : { kind: operation.kind, withinUseId: withinUse.id, execution: operation.execution }
   const operationPath =
-    effect === 'native-file-write'
-      ? resolveWriteDestination(workspace.path, cwd, operation.path as string)
+    operation.kind === 'native-file-write'
+      ? resolveWriteDestination(workspace.path, cwd, operation.path)
       : undefined
-  const { execution } = operation
   const use = {
     id: newId(),
     workspaceId: workspace.id,
     taskId: withinUse.taskId,
     ...(withinUse.reservationId === undefined ? {} : { reservationId: withinUse.reservationId }),
     ...(withinUse.acquisitionId === undefined ? {} : { acquisitionId: withinUse.acquisitionId }),
-    access: operation.access,
+    access: 'write',
     stage: 'authorized',
-    effect,
+    effect: operation.kind,
     withinUseId: withinUse.id,
     ...(operationPath === undefined ? {} : { operationPath }),
-    ...(execution === undefined ? {} : { execution }),
+    ...(operation.kind === 'opaque' ? { execution: operation.execution } : {}),
     processes: [],
     incarnation: state.incarnation,
     bindingRevision: withinUse.bindingRevision,
@@ -372,16 +356,12 @@ const authorizeScoped = (
       putUse(db, use)
     })
   )
-  const grant = toGrant(authority, withinLease.repositoryId, workspace, use, cwd, operation.access)
+  const grant = toGrant(authority, withinLease.repositoryId, workspace, use, cwd, 'write')
   state.leases.set(use.id, {
+    ...kind,
     grant,
     repositoryId: withinLease.repositoryId,
     useId: use.id,
-    effect,
-    withinUseId: withinUse.id,
-    borrowed: true,
-    isExecution: execution !== undefined,
-    ...(execution === undefined ? {} : { execution }),
     released: false,
   })
   return { kind: 'ready', grant }
@@ -398,7 +378,7 @@ const authorizeRead = (
   for (const lease of state.leases.values()) {
     if (
       !lease.released &&
-      !lease.isExecution &&
+      lease.kind === 'ordinary' &&
       lease.grant.access === 'read' &&
       lease.grant.workspaceId === workspace.id &&
       lease.grant.revision === binding.revision
@@ -435,8 +415,7 @@ const authorizeRead = (
       repositoryId: repo,
       useId: use.id,
       gates,
-      borrowed: false,
-      isExecution: false,
+      kind: 'ordinary',
       released: false,
     }
     state.leases.set(use.id, lease)
@@ -491,8 +470,7 @@ const executionUse = (
     grant,
     repositoryId: parent.repositoryId,
     useId: use.id,
-    borrowed: true,
-    isExecution: true,
+    kind: 'execution',
     execution,
     released: false,
   }
@@ -510,6 +488,7 @@ export const validateGrant = (
   const lease = state.leases.get(grant.useId)
   if (lease === undefined || lease.released || !sameGrant(lease.grant, grant))
     requireReview('Workspace grant is stale or was not issued to this attachment')
+  const scoped = isScoped(lease) ? lease : undefined
   const workspace = inDb(authority, grant.repositoryId, db => {
     const record = getWorkspace(db, grant.workspaceId)
     const use = getUse(db, grant.useId)
@@ -522,8 +501,8 @@ export const validateGrant = (
       use.reservationId !== grant.reservationId ||
       use.taskId !== grant.taskId ||
       use.access !== grant.access ||
-      use.effect !== lease.effect ||
-      use.withinUseId !== lease.withinUseId ||
+      use.effect !== scoped?.kind ||
+      use.withinUseId !== scoped?.withinUseId ||
       use.operationPath !== grant.path
     )
       requireReview('Workspace grant no longer matches its fenced use facts')
@@ -613,14 +592,14 @@ export const reportExecutionFact = (
   )
     blocked('Starting an operation is fenced during a host transition')
   const lease = validateGrant(authority, state, grant)
-  if (lease.effect !== undefined) {
+  if (isScoped(lease)) {
     const owners = state.leaseAttachments.get(lease.useId)
     if (owners === undefined || !owners.has(attachment.token))
       requireReview('Scoped operation report was not issued to this attachment')
   }
-  if (!lease.isExecution) return reportScopedOperation(authority, lease, fact)
-  if (lease.execution === undefined)
-    invalid('Execution facts require a fresh execution-scoped grant')
+  if (lease.kind === 'ordinary')
+    invalid('Legacy workspace grants do not carry scoped operation authority')
+  if (lease.kind === 'native-file-write') return reportScopedOperation(authority, lease, fact)
   if (fact.kind === 'operation-started' || fact.kind === 'operation-completed')
     invalid('Operation boundary facts are only valid for non-process scoped operations')
   const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
@@ -631,13 +610,8 @@ export const reportExecutionFact = (
   )
     requireReview('Execution recovery row no longer matches the issued grant')
   if (current.stage === 'quiescent') requireReview('Execution has already been settled')
-  const update = (value: UseRecord, guard?: (db: DatabaseSync) => void): void =>
-    inDb(authority, lease.repositoryId, db =>
-      transaction(db, () => {
-        guard?.(db)
-        saveUse(db, value)
-      })
-    )
+  const update = (value: UseRecord): void =>
+    inDb(authority, lease.repositoryId, db => transaction(db, () => saveUse(db, value)))
   const updatedAt = now()
   switch (fact.kind) {
     case 'launch-intent': {
@@ -731,11 +705,9 @@ export const reportExecutionFact = (
 
 const reportScopedOperation = (
   authority: WorkspaceAuthority,
-  lease: GrantLease,
+  lease: Extract<GrantLease, { readonly kind: 'native-file-write' }>,
   fact: WorkspaceExecutionFact
 ): void => {
-  if (lease.effect === undefined)
-    invalid('Legacy workspace grants do not carry scoped operation authority')
   if (
     fact.kind !== 'operation-started' &&
     fact.kind !== 'operation-completed' &&
@@ -743,7 +715,7 @@ const reportScopedOperation = (
   )
     invalid('Scoped native operations require operation boundary facts')
   const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
-  if (current === undefined || current.effect !== lease.effect)
+  if (current === undefined || current.effect !== lease.kind)
     requireReview('Scoped operation lost its durable use record')
   const next = inDb(authority, lease.repositoryId, db =>
     transaction(db, () => {
@@ -751,7 +723,7 @@ const reportScopedOperation = (
       if (
         latest === undefined ||
         latest.revision !== current.revision ||
-        latest.effect !== lease.effect ||
+        latest.effect !== lease.kind ||
         latest.withinUseId !== lease.withinUseId
       )
         requireReview('Scoped operation report is stale')
@@ -782,8 +754,8 @@ const reportScopedOperation = (
           stage: 'quiescent',
           reason:
             latest.stage === 'authorized'
-              ? `operation-ended-before-start:${lease.effect}`
-              : `operation-completed:${lease.effect}`,
+              ? `operation-ended-before-start:${lease.kind}`
+              : `operation-completed:${lease.kind}`,
           revision: latest.revision + 1,
           updatedAt: now(),
         }

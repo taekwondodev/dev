@@ -294,7 +294,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const shell = yield* makeWorkspaceShell(cwd =>
     Effect.suspend(() => {
       const attachment = activeAttachment
-      return attachment.authorize({ access: 'write', cwd }).pipe(
+      return attachment.authorize({ kind: 'write', cwd }).pipe(
         Effect.flatMap(result =>
           result.kind === 'ready'
             ? Effect.succeed({ attachment, grant: result.grant })
@@ -569,7 +569,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     ): Effect.fn.Return<Admission, WorkspaceError> {
       if (parked)
         return { blocked: 'Workspace host is parked during a transition; no operation started.' }
-      const result = yield* activeAttachment.authorize({ access, cwd })
+      const result = yield* activeAttachment.authorize({ kind: access, cwd })
       if (result.kind === 'rebind') {
         requestHandoff(result.handoff, origin, context, origin === 'user-bash')
         return {
@@ -650,8 +650,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         catch: cause => hostFailure(errorText(cause)),
       })
       const operation = yield* attachment.authorize({
-        access: 'write',
-        effect: 'native-file-write',
+        kind: 'native-file-write',
         within: writer.grant,
         path,
         cwd: context.cwd,

@@ -167,8 +167,7 @@ export const selectWorkspace = (
     repositoryId: target.repo,
     useId: use.id,
     gates,
-    borrowed: false,
-    isExecution: false,
+    kind: 'ordinary',
     released: false,
   }
   try {

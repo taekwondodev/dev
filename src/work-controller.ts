@@ -562,16 +562,18 @@ class WorkOwnerImpl implements WorkOwnerService {
           logs: self.store.plannedLogPath(id, 'stdout'),
         }
         const admission = yield* Effect.gen(function* () {
-          const allocated = yield* workspace.attachment.authorize({
-            access: request.kind === 'agent' && request.access === 'read-only' ? 'read' : 'write',
-            delegated: request.kind === 'agent' && request.access === 'write',
-            cwd: requestedCwd,
-            ...(request.kind === 'agent' ? { execution } : {}),
-          })
+          const allocated = yield* workspace.attachment.authorize(
+            request.kind === 'process'
+              ? { kind: 'write', cwd: requestedCwd }
+              : {
+                  kind: request.access === 'read-only' ? 'read' : 'delegated-write',
+                  cwd: requestedCwd,
+                  execution,
+                }
+          )
           if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
           return yield* workspace.attachment.authorize({
-            access: 'write',
-            effect: 'opaque',
+            kind: 'opaque',
             within: allocated.grant,
             execution,
           })

@@ -7,23 +7,29 @@ import {
   type WorkspaceGrant,
   type WorkspaceHandoff,
   type WorkspaceId,
-  type WorkspaceOperation,
 } from './workspace-domain.ts'
 import type { PathGates } from './workspace-gates.ts'
 import { getUse, type BindingRecord, type UseRecord } from './workspace-records.ts'
 
-export interface GrantLease {
+export type LeaseKind =
+  | { readonly kind: 'ordinary' }
+  | { readonly kind: 'execution'; readonly execution: WorkspaceExecution }
+  | { readonly kind: 'native-file-write'; readonly withinUseId: WorkspaceId }
+  | {
+      readonly kind: 'opaque'
+      readonly withinUseId: WorkspaceId
+      readonly execution: WorkspaceExecution
+    }
+export type GrantLease = LeaseKind & {
   readonly grant: WorkspaceGrant
   readonly repositoryId: WorkspaceId
   readonly useId: WorkspaceId
-  readonly effect?: WorkspaceOperation['effect']
-  readonly withinUseId?: WorkspaceId
   gates?: PathGates
-  readonly borrowed: boolean
-  readonly isExecution: boolean
-  readonly execution?: WorkspaceExecution
   released: boolean
 }
+export type ScopedLease = Extract<GrantLease, { readonly withinUseId: WorkspaceId }>
+export const isScoped = (lease: GrantLease): lease is ScopedLease =>
+  lease.kind === 'native-file-write' || lease.kind === 'opaque'
 export interface GateIntent {
   readonly repositoryId: WorkspaceId
   readonly workspaceId: WorkspaceId

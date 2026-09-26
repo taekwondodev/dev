@@ -99,7 +99,7 @@ try {
     },
     cwd: repo,
   })
-  const allocated = await allocator.authorize({ access: 'write', delegated: true })
+  const allocated = await allocator.authorize({ kind: 'delegated-write' })
   if (allocated.kind !== 'ready' || allocated.grant.taskId === undefined)
     throw new Error('The fixture could not allocate a managed workspace')
   await allocator.close()
@@ -133,7 +133,7 @@ try {
     },
     cwd: repo,
   })
-  const switchTarget = await switchAllocator.authorize({ access: 'write', delegated: true })
+  const switchTarget = await switchAllocator.authorize({ kind: 'delegated-write' })
   if (switchTarget.kind !== 'ready' || switchTarget.grant.taskId === undefined)
     throw new Error('The fixture could not allocate a switch target')
   await switchAllocator.close()
@@ -317,7 +317,7 @@ try {
       conversation: { sessionId, sessionFile: join(sandbox, `${sessionId}.jsonl`), dataHome },
       cwd,
     })
-    const admitted = await writer.authorize({ access: 'write' })
+    const admitted = await writer.authorize({ kind: 'write' })
     await writer.close()
     if (admitted.kind !== 'ready' || admitted.grant.taskId === undefined)
       throw new Error(`The fixture could not reserve a task in ${cwd}`)
