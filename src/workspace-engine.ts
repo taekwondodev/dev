@@ -2606,7 +2606,6 @@ export class WorkspaceEngine {
         source.repo,
         source.workspace,
         source.git,
-        cwd,
         taskId,
         true,
         operation.execution
@@ -2632,7 +2631,6 @@ export class WorkspaceEngine {
         source.repo,
         source.workspace,
         source.git,
-        cwd,
         source.binding.taskId ?? workspaceId(),
         false,
         operation.execution
@@ -2649,7 +2647,6 @@ export class WorkspaceEngine {
         source.repo,
         source.workspace,
         source.git,
-        cwd,
         workspaceId(),
         false,
         operation.execution
@@ -2670,7 +2667,6 @@ export class WorkspaceEngine {
         source.repo,
         source.workspace,
         source.git,
-        cwd,
         workspaceId(),
         false,
         operation.execution
@@ -2785,8 +2781,6 @@ export class WorkspaceEngine {
     } = this.validateWithinGrant(attachment, within)
     if (operation.access === 'write' && within.access !== 'write')
       blocked('A read-only workspace grant cannot authorize a scoped mutation')
-    if (effect === 'native-read' && operation.access !== 'read')
-      invalid('Native-read operations require read access')
     if (effect === 'native-file-write' && operation.access !== 'write')
       invalid('Native file writes require write access')
     if (effect === 'opaque' && operation.access !== 'write')
@@ -3118,7 +3112,6 @@ export class WorkspaceEngine {
     sourceRepo: string,
     sourceWorkspace: WorkspaceRecord,
     sourceGit: GitWorkspace,
-    sourceCwd: string,
     taskId: string,
     delegated: boolean,
     execution?: WorkspaceExecution

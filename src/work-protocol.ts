@@ -99,7 +99,7 @@ export const ChildMessageSchema = Schema.Union([
     type: Schema.Literal('workspace-check'),
     requestId: WorkspaceId,
     useId: WorkspaceId,
-    operation: Schema.Literals(['read', 'write', 'unbounded']),
+    operation: Schema.Literals(['read', 'write']),
   }),
 ])
 

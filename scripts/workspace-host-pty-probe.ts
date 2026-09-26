@@ -310,8 +310,7 @@ const authorizeScoped = (
     return refuse('review-required', 'within grant belongs to another workspace binding')
   if (operation.access === 'write' && within.access !== 'write')
     return refuse('blocked', 'A read-only workspace grant cannot authorize a scoped mutation')
-  if (operation.access !== (effect === 'native-read' ? 'read' : 'write'))
-    return refuse('invalid', `${effect} has the wrong access`)
+  if (operation.access !== 'write') return refuse('invalid', `${effect} requires write access`)
   if ((effect === 'native-file-write') !== (operation.path !== undefined))
     return refuse('invalid', 'Only native file writes carry, and they require, a path')
   if ((effect === 'opaque') !== (operation.execution !== undefined))
@@ -449,7 +448,6 @@ const makeAttachment = (
               scope
             ),
           }
-        case 'native-read':
         case 'native-file-write':
         case 'opaque':
           return authorizeScoped(owned, scope, binding, operation)
@@ -1913,7 +1911,8 @@ const exerciseChildGate = async (
   try {
     const result = await handler({ toolName: 'read', input: { path: 'AGENTS.md' } })
     assert.equal(result?.block === true, expectBlocked)
-    if (expectBlocked) assert.equal(sent.length, 0, 'unbounded read is rejected before IPC')
+    if (expectBlocked)
+      assert.equal(sent.length, 0, 'a read-only child refuses a shadowed read tool before any IPC')
     else assert.equal(sent[0]?.operation, 'read')
     return result
   } finally {

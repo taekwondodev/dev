@@ -751,12 +751,6 @@ try {
   assert.notEqual(primaryGrant.workspaceId, siblingGrant.workspaceId)
   assert.equal(primaryGrant.repositoryId, siblingGrant.repositoryId)
 
-  const activeNativeRead = ready(
-    await scopedPrimary.authorize({ access: 'read', effect: 'native-read', within: primaryGrant })
-  )
-  await scopedPrimary.reportExecution(activeNativeRead, { kind: 'operation-started' })
-  await scopedPrimary.reportExecution(activeNativeRead, { kind: 'operation-completed' })
-
   const nativeWrite = ready(
     await scopedPrimary.authorize({
       access: 'write',
@@ -822,17 +816,22 @@ try {
   )
 
   const nativeInsideNative = ready(
-    await scopedPrimary.authorize({ access: 'read', effect: 'native-read', within: primaryGrant })
+    await scopedPrimary.authorize({
+      access: 'write',
+      effect: 'native-file-write',
+      within: primaryGrant,
+      path: 'outer.txt',
+    })
   )
   await expectWorkspaceError(
     scopedPrimary.authorize({
-      access: 'read',
-      effect: 'native-read',
+      access: 'write',
+      effect: 'native-file-write',
       within: nativeInsideNative,
+      path: 'inner.txt',
     }),
     ['invalid']
   )
-  await scopedPrimary.reportExecution(nativeInsideNative, { kind: 'operation-started' })
   await scopedPrimary.reportExecution(nativeInsideNative, { kind: 'operation-completed' })
   const primaryExecution = processExecution('primary-agent')
   const primaryAgent = ready(
@@ -857,9 +856,10 @@ try {
   )
   await expectWorkspaceError(
     scopedPrimary.authorize({
-      access: 'read',
-      effect: 'native-read',
+      access: 'write',
+      effect: 'native-file-write',
       within: primaryGrant,
+      path: 'native-with-process.txt',
       execution: processExecution('native-with-process'),
     }),
     ['invalid']

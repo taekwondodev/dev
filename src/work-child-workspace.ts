@@ -95,7 +95,7 @@ export const validateWorkspaceWritePath = async (
 
 export const checkChildWorkspace = (
   grant: WorkspaceGrant,
-  operation: 'read' | 'write' | 'unbounded'
+  operation: 'read' | 'write'
 ): Promise<void> =>
   new Promise((accept, reject) => {
     if (!process.connected || process.send === undefined) {
@@ -155,10 +155,7 @@ export const childWorkspaceExtension =
         if (!read && grant.access !== 'write') throw new Error('Child workspace is read-only')
         const fileWrite = builtin && (event.toolName === 'write' || event.toolName === 'edit')
         if (fileWrite) await validateWorkspaceWritePath(grant, event.input)
-        let operation: 'read' | 'write' | 'unbounded' = 'unbounded'
-        if (read) operation = 'read'
-        else if (fileWrite) operation = 'write'
-        await checkChildWorkspace(grant, operation)
+        await checkChildWorkspace(grant, read ? 'read' : 'write')
       } catch (cause) {
         return { block: true, reason: cause instanceof Error ? cause.message : String(cause) }
       }

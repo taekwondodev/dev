@@ -36,7 +36,7 @@ export const WorkspaceProcessSchema = Schema.Struct({
 })
 export type WorkspaceProcess = typeof WorkspaceProcessSchema.Type
 
-export const WorkspaceEffectSchema = Schema.Literals(['native-read', 'native-file-write', 'opaque'])
+export const WorkspaceEffectSchema = Schema.Literals(['native-file-write', 'opaque'])
 export type WorkspaceEffect = typeof WorkspaceEffectSchema.Type
 
 export const WorkspaceGrantSchema = Schema.Struct({
