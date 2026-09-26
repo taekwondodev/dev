@@ -32,13 +32,14 @@ import type {
   AssistantMessage,
   Model,
 } from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
+import { errorText } from '../src/error-text.ts'
 import { childWorkspaceExtension } from '../src/work-child-workspace.ts'
 import { createWorkExtension, type WorkExtension } from '../src/work-extension.ts'
 import {
   chooseResumeCandidate,
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
-  WorkspaceCommandError,
+  type WorkspaceCommandError,
 } from '../src/workspace-command.ts'
 import {
   WorkspaceError,
@@ -56,7 +57,7 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../src/workspace-host.ts'
+import { makeWorkspaceHost, noUiTrustContext, workControlsOf } from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
 import { loadInstalledPi } from './workspace-check-support.ts'
 import {
@@ -256,7 +257,7 @@ const fromAsync = <A>(run: () => Promise<A>): Effect.Effect<A, WorkspaceError> =
         ? cause
         : new WorkspaceError({
             outcome: 'unavailable',
-            message: cause instanceof Error ? cause.message : String(cause),
+            message: errorText(cause),
           }),
   })
 
@@ -638,34 +639,37 @@ const lifecycle: WorkspaceLifecycle = {
   validate: grant => fromAsync(() => fixtureLifecycle.validate(grant)),
 }
 
-assert.deepEqual(parseWorkspaceCommand([]), { kind: 'list' })
-assert.deepEqual(parseWorkspaceCommand(['list']), { kind: 'list' })
-assert.deepEqual(parseWorkspaceCommand(['inspect', TASK_LEAD]), {
+// A defect stays thrown through the flip, so only an expected refusal is returned.
+const refused = <A>(effect: Effect.Effect<A, WorkspaceCommandError>): WorkspaceCommandError =>
+  Effect.runSync(Effect.flip(effect))
+const parseCommand = (tokens: readonly string[]) => Effect.runSync(parseWorkspaceCommand(tokens))
+assert.deepEqual(parseCommand([]), { kind: 'list' })
+assert.deepEqual(parseCommand(['list']), { kind: 'list' })
+assert.deepEqual(parseCommand(['inspect', TASK_LEAD]), {
   kind: 'inspect',
   taskId: TASK_LEAD,
 })
-assert.deepEqual(parseWorkspaceCommand(['resume', TASK_RESUME]), {
+assert.deepEqual(parseCommand(['resume', TASK_RESUME]), {
   kind: 'resume',
   taskId: TASK_RESUME,
 })
-assert.deepEqual(parseWorkspaceCommand(['resume', TASK_RESUME, '--workspace', WS_RESUME_A]), {
+assert.deepEqual(parseCommand(['resume', TASK_RESUME, '--workspace', WS_RESUME_A]), {
   kind: 'resume',
   taskId: TASK_RESUME,
   workspaceId: WS_RESUME_A,
 })
-assert.throws(
-  () => parseWorkspaceCommand(['inspect', `${TASK_LEAD.slice(0, 8)}*`]),
-  (error: unknown) => error instanceof WorkspaceCommandError && error.exitCode === 2,
+assert.equal(
+  refused(parseWorkspaceCommand(['inspect', `${TASK_LEAD.slice(0, 8)}*`])).exitCode,
+  2,
   'a task prefix or pattern is a usage error, never a lookup'
 )
-assert.throws(
-  () => parseWorkspaceCommand(['resume', TASK_RESUME, '--workspace']),
-  WorkspaceCommandError
-)
+assert.equal(refused(parseWorkspaceCommand(['resume', TASK_RESUME, '--workspace'])).exitCode, 2)
 const resumeViews = resumeDescriptors.map(item => makeView(item, 'preserved-for-resume'))
-assert.throws(() => chooseResumeCandidate(resumeViews, TASK_RESUME), /multiple retained workspaces/)
+const ambiguousResume = refused(chooseResumeCandidate(resumeViews, TASK_RESUME))
+assert.match(ambiguousResume.message, /multiple retained workspaces/)
+assert.equal(ambiguousResume.exitCode, 2)
 assert.equal(
-  chooseResumeCandidate(resumeViews, TASK_RESUME, WS_RESUME_C).view.workspaceId,
+  Effect.runSync(chooseResumeCandidate(resumeViews, TASK_RESUME, WS_RESUME_C)).view.workspaceId,
   WS_RESUME_C
 )
 const listResult = await Effect.runPromise(
@@ -1102,18 +1106,6 @@ const instrumentHost =
       })
     )
 
-const untrustedContext = (cwd: string): ProjectTrustContext => ({
-  cwd,
-  mode: 'tui',
-  hasUI: false,
-  ui: {
-    select: async () => undefined,
-    confirm: async () => false,
-    input: async () => undefined,
-    notify: () => undefined,
-  },
-})
-
 const initialManager = pi.SessionManager.create(lead, sessionDir)
 const initialSessionId = initialManager.getSessionId()
 const initialSessionFile = initialManager.getSessionFile()
@@ -1228,10 +1220,9 @@ const observer =
   }
 
 const runtimeFactory: Pi.CreateAgentSessionRuntimeFactory = async options => {
-  const { attachment, cwd, sessionManager } = await workspaceHost.prepareRuntime({
-    sessionManager: options.sessionManager,
-    cwd: options.cwd,
-  })
+  const { attachment, cwd, sessionManager } = await Effect.runPromise(
+    workspaceHost.prepareRuntime({ sessionManager: options.sessionManager, cwd: options.cwd })
+  )
   const work = createWorkExtension({
     dataHome,
     profile: 'general',
@@ -1239,12 +1230,12 @@ const runtimeFactory: Pi.CreateAgentSessionRuntimeFactory = async options => {
     isWorkspaceParked: workspaceHost.isParked,
   })
   preparedWorkExtensions.push({ cwd, work })
-  workspaceHost.setWorkControls({ running: work.runningWork, stopAll: work.stopAll })
+  workspaceHost.setWorkControls(workControlsOf(work))
   const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: false })
   const trustStore = new pi.ProjectTrustStore(agentDir)
   trustStore.set(cwd, false)
   const projectTrustContext =
-    options.projectTrustContext?.cwd === cwd ? options.projectTrustContext : untrustedContext(cwd)
+    options.projectTrustContext?.cwd === cwd ? options.projectTrustContext : noUiTrustContext(cwd)
   const services = await pi.createAgentSessionServices({
     cwd,
     agentDir,
@@ -1291,7 +1282,7 @@ const runtimeFactory: Pi.CreateAgentSessionRuntimeFactory = async options => {
       pi.defineTool(pi.createEditToolDefinition(cwd, { operations: workspaceHost.editOperations })),
     ],
   })
-  await workspaceHost.commitRuntime(attachment)
+  await Effect.runPromise(workspaceHost.commitRuntime(attachment))
   work.bindSession(result.session)
   assert.equal(
     workspaceHost.attachment,

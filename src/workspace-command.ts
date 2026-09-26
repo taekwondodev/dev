@@ -1,6 +1,7 @@
 import { Effect, Schema } from 'effect'
 import {
   WorkspaceId,
+  type WorkspaceError,
   type WorkspaceLifecycle,
   type WorkspaceSelection,
   type WorkspaceView,
@@ -34,54 +35,45 @@ export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandEr
 const usage = (message: string): WorkspaceCommandError =>
   new WorkspaceCommandError({ message, exitCode: 2 })
 
-// Command parsing and selection report only WorkspaceCommandError; anything else is a bug
-// and keeps the generic failure code.
-export const attemptCommand = <A>(run: () => A): Effect.Effect<A, WorkspaceCommandError> =>
-  Effect.try({
-    try: run,
-    catch: cause =>
-      cause instanceof WorkspaceCommandError
-        ? cause
-        : new WorkspaceCommandError({
-            message: cause instanceof Error ? cause.message : String(cause),
-            exitCode: 1,
-          }),
-  })
-
 const isWorkspaceId = Schema.is(WorkspaceId)
-const exactId = (value: string | undefined, name: string): string => {
+const exactId = Effect.fnUntraced(function* (
+  value: string | undefined,
+  name: string
+): Effect.fn.Return<string, WorkspaceCommandError> {
   if (value === undefined || !isWorkspaceId(value))
-    throw usage(
+    return yield* usage(
       `${name} must be an exact ID as listed by dev workspace, got ${JSON.stringify(value ?? '')}`
     )
   return value
-}
+})
 
 const noTaskRecords = (taskId: string): string =>
   `No workspace records exist for exact task ${taskId}.`
 
-export const parseWorkspaceCommand = (tokens: readonly string[]): WorkspaceCommand => {
+export const parseWorkspaceCommand = Effect.fnUntraced(function* (
+  tokens: readonly string[]
+): Effect.fn.Return<WorkspaceCommand, WorkspaceCommandError> {
   if (tokens.length === 0) return { kind: 'list' }
   const [verb, ...args] = tokens
   if (verb === 'list') {
-    if (args.length !== 0) throw usage('Usage: workspace [list]')
+    if (args.length !== 0) return yield* usage('Usage: workspace [list]')
     return { kind: 'list' }
   }
   if (verb === 'inspect') {
-    if (args.length !== 1) throw usage('Usage: workspace inspect <task>')
-    return { kind: 'inspect', taskId: exactId(args[0], 'Task') }
+    if (args.length !== 1) return yield* usage('Usage: workspace inspect <task>')
+    return { kind: 'inspect', taskId: yield* exactId(args[0], 'Task') }
   }
   if (verb === 'resume') {
-    const taskId = exactId(args[0], 'Task')
+    const taskId = yield* exactId(args[0], 'Task')
     if (args.length === 1) return { kind: 'resume', taskId }
     if (args.length === 3 && args[1] === '--workspace')
-      return { kind: 'resume', taskId, workspaceId: exactId(args[2], 'Workspace') }
-    throw usage('Usage: workspace resume <task> [--workspace <workspace>]')
+      return { kind: 'resume', taskId, workspaceId: yield* exactId(args[2], 'Workspace') }
+    return yield* usage('Usage: workspace resume <task> [--workspace <workspace>]')
   }
-  throw usage(
+  return yield* usage(
     `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task>, or resume <task> [--workspace <workspace>].`
   )
-}
+})
 
 const sortedViews = (views: readonly WorkspaceView[]): WorkspaceView[] =>
   views.toSorted(
@@ -129,7 +121,7 @@ const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] =>
       ]),
 ]
 
-export const formatWorkspaceViews = (
+const formatWorkspaceViews = (
   views: readonly WorkspaceView[],
   options: { readonly currentWorkspaceId?: string; readonly effectiveCwd?: string } = {}
 ): string => {
@@ -182,11 +174,11 @@ export const resumeCandidates = (
 const choicesText = (candidates: readonly ResumeCandidate[]): string =>
   candidates.map(({ view }) => `  ${view.workspaceId}  ${view.path} (${view.origin})`).join('\n')
 
-export const chooseResumeCandidate = (
+export const chooseResumeCandidate = Effect.fnUntraced(function* (
   exactTaskViews: readonly WorkspaceView[],
   taskId: string,
   requestedWorkspaceId?: string
-): ResumeCandidate => {
+): Effect.fn.Return<ResumeCandidate, WorkspaceCommandError> {
   const candidates = resumeCandidates(exactTaskViews, taskId)
   if (requestedWorkspaceId !== undefined) {
     const selected = candidates.find(
@@ -194,7 +186,7 @@ export const chooseResumeCandidate = (
     )
     if (selected !== undefined) return selected
     const choices = choicesText(candidates)
-    throw new WorkspaceCommandError({
+    return yield* new WorkspaceCommandError({
       message:
         choices.length === 0
           ? `Task ${taskId} has no workspace currently preserved for resume.\n${formatWorkspaceViews(exactTaskViews)}`
@@ -204,44 +196,44 @@ export const chooseResumeCandidate = (
   }
   if (candidates.length === 1) return candidates[0]!
   if (candidates.length > 1)
-    throw usage(
+    return yield* usage(
       `Task ${taskId} has multiple retained workspaces; select one with --workspace:\n${choicesText(candidates)}`
     )
-  throw new WorkspaceCommandError({
+  return yield* new WorkspaceCommandError({
     message:
       exactTaskViews.length === 0
         ? noTaskRecords(taskId)
         : `Task ${taskId} has no workspace currently preserved for resume.\n${formatWorkspaceViews(exactTaskViews)}`,
     exitCode: 1,
   })
-}
+})
 
-export const runReadOnlyWorkspaceCommand = (
-  lifecycle: WorkspaceLifecycle,
-  command: Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
-  options: {
-    readonly cwd?: string
-    readonly currentWorkspaceId?: string
-    readonly effectiveCwd?: string
-  } = {}
-): Effect.Effect<WorkspaceCommandResult> =>
-  Effect.gen(function* () {
+export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
+  function* (
+    lifecycle: WorkspaceLifecycle,
+    command: Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
+    options: {
+      readonly cwd?: string
+      readonly currentWorkspaceId?: string
+      readonly effectiveCwd?: string
+    } = {}
+  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError> {
     if (command.kind === 'list') {
       if (options.cwd === undefined)
         return {
           exitCode: 2,
           stderr: 'Workspace list requires a Git repository context; pass --cwd PATH.',
-        } as const
+        }
       const views = yield* lifecycle.inspect({ cwd: options.cwd })
-      return { exitCode: 0, stdout: formatWorkspaceList(views, options.cwd, options) } as const
+      return { exitCode: 0, stdout: formatWorkspaceList(views, options.cwd, options) }
     }
     const views = yield* lifecycle.inspect({ taskId: command.taskId })
-    return { exitCode: 0, stdout: formatWorkspaceInspect(views, command.taskId) } as const
-  }).pipe(
-    Effect.catch(cause =>
-      Effect.succeed({
-        exitCode: 1,
-        stderr: `Workspace inspection failed: ${cause.message}`,
-      } as const)
-    )
+    return { exitCode: 0, stdout: formatWorkspaceInspect(views, command.taskId) }
+  },
+  Effect.catch(cause =>
+    Effect.succeed<WorkspaceCommandResult>({
+      exitCode: 1,
+      stderr: `Workspace inspection failed: ${cause.message}`,
+    })
   )
+)

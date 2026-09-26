@@ -22,7 +22,7 @@ import type {
 import { createWorkExtension } from '../src/work-extension.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../src/workspace-host.ts'
+import { makeWorkspaceHost, noUiTrustContext, workControlsOf } from '../src/workspace-host.ts'
 import { loadInstalledPi } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { Effect, Exit, Scope } from 'effect'
@@ -284,10 +284,9 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
 
 const runtime = await pi.createAgentSessionRuntime(
   async options => {
-    const prepared = await workspaceHost.prepareRuntime({
-      sessionManager: options.sessionManager,
-      cwd: options.cwd,
-    })
+    const prepared = await Effect.runPromise(
+      workspaceHost.prepareRuntime({ sessionManager: options.sessionManager, cwd: options.cwd })
+    )
     const { attachment, cwd, sessionManager } = prepared
     const work = createWorkExtension({
       dataHome,
@@ -295,21 +294,11 @@ const runtime = await pi.createAgentSessionRuntime(
       workspace: { lifecycle: lifecycle.effect, attachment },
       isWorkspaceParked: workspaceHost.isParked,
     })
-    workspaceHost.setWorkControls({ running: work.runningWork, stopAll: work.stopAll })
+    workspaceHost.setWorkControls(workControlsOf(work))
     const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: false })
     const trustStore = new pi.ProjectTrustStore(agentDir)
     trustStore.set(cwd, false)
-    const projectTrustContext = options.projectTrustContext ?? {
-      cwd,
-      mode: 'tui' as const,
-      hasUI: false,
-      ui: {
-        select: async () => undefined,
-        confirm: async () => false,
-        input: async () => undefined,
-        notify: () => undefined,
-      },
-    }
+    const projectTrustContext = options.projectTrustContext ?? noUiTrustContext(cwd)
     const services = await pi.createAgentSessionServices({
       cwd,
       agentDir,
@@ -355,7 +344,7 @@ const runtime = await pi.createAgentSessionRuntime(
         ),
       ],
     })
-    await workspaceHost.commitRuntime(attachment)
+    await Effect.runPromise(workspaceHost.commitRuntime(attachment))
     work.bindSession(result.session)
     return { ...result, services, diagnostics: services.diagnostics }
   },
@@ -393,7 +382,7 @@ await within(leadStarted, 30000, 'lead session_start')
 assert.equal(resolve(runtime.cwd), resolve(lead))
 
 const readOnly = (args: readonly string[]) => {
-  const command = parseWorkspaceCommand([...args])
+  const command = Effect.runSync(parseWorkspaceCommand(args))
   if (command.kind === 'resume') throw new Error('Expected a read-only workspace command')
   return Effect.runPromise(runReadOnlyWorkspaceCommand(lifecycle.effect, command, { cwd: lead }))
 }

@@ -466,8 +466,11 @@ try {
       }
     )
 
-    const nativeWrites = makeNativeWrites(message => {
-      throw new Error(message)
+    const nativeWrites = makeNativeWrites({
+      runPromise: Effect.runPromise,
+      onError: message => {
+        throw new Error(message)
+      },
     })
     const authorizeNative = async (path: string) => {
       const writer = await attachment.authorize({ access: 'write' })

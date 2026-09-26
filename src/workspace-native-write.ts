@@ -1,8 +1,7 @@
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { Duration, Effect, Schema } from 'effect'
-import type { EditOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js'
-import type { WriteOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js'
+import type { EditOperations, WriteOperations } from '@earendil-works/pi-coding-agent'
+import { Deferred, Duration, Effect, Exit, Schema } from 'effect'
 import type { WorkspaceAttachment, WorkspaceError, WorkspaceGrant } from './workspace-domain.ts'
 import { canonicalPath, isWithin } from './workspace-paths.ts'
 
@@ -32,8 +31,7 @@ export interface NativeWrites {
   readonly settle: Effect.Effect<void>
 }
 
-const SETTLE_WAIT_MS = 2000
-const SETTLE_POLL = Duration.millis(25)
+const SETTLE_WAIT = Duration.seconds(2)
 
 // macOS volumes ignore case and normalization by default. Folding through upper case also
 // catches expansions that lowercasing misses, such as ß and ss; any spelling this fold
@@ -48,9 +46,13 @@ const NO_FOLLOW_WRITE =
 
 // Start and completion are reported where ADR 0005 places them: from inside the write, and
 // by this module at shutdown, after which Pi no longer reports a call's end.
-export const makeNativeWrites = (onError: (message: string) => void): NativeWrites => {
+export const makeNativeWrites = (options: {
+  readonly runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
+  readonly onError: (message: string) => void
+}): NativeWrites => {
+  const { runPromise, onError } = options
   const writes = new Map<string, NativeWrite>()
-  let inProgress = 0
+  const inFlight = new Set<Deferred.Deferred<void>>()
   let closing = false
 
   const complete = (write: NativeWrite): Effect.Effect<void> =>
@@ -69,46 +71,57 @@ export const makeNativeWrites = (onError: (message: string) => void): NativeWrit
         )
     })
 
+  const matchAndStart = Effect.fnUntraced(function* (
+    path: string,
+    role: 'destination' | 'parent'
+  ): Effect.fn.Return<void, NativeWriteRefused | WorkspaceError> {
+    const actual = canonicalPath(path).path
+    const matched = [...writes.values()].filter(write =>
+      role === 'destination'
+        ? write.destination === actual
+        : write.destination !== actual && isWithin(actual, write.destination)
+    )
+    if (matched.length === 0)
+      return yield* new NativeWriteRefused({
+        message: `Native file operation on ${path} matches no admitted destination`,
+      })
+    for (const write of matched) {
+      write.started ??= yield* Effect.cached(
+        write.attachment.reportExecution(write.grant, { kind: 'operation-started' })
+      )
+      yield* write.started
+    }
+  })
+
   // Pi calls these operations with Promises. A filesystem failure reaches Pi's tool as the
-  // original Node error, so it is carried as a defect rather than translated.
+  // original Node error, so it is carried as a defect rather than translated. An operation
+  // counts as in flight from the moment it passes the closing check, so `settle` waits for it.
   const operate = <A>(
     path: string,
     role: 'destination' | 'parent',
     operation: () => Promise<A>
-  ): Promise<A> => {
-    inProgress += 1
-    return Effect.runPromise(
-      Effect.gen(function* () {
+  ): Promise<A> =>
+    runPromise(
+      Effect.suspend(() => {
         if (closing)
-          return yield* new NativeWriteRefused({
-            message: 'The session is closing; the file operation was not run',
-          })
-        const actual = canonicalPath(path).path
-        const matched = [...writes.values()].filter(write =>
-          role === 'destination'
-            ? write.destination === actual
-            : write.destination !== actual && isWithin(actual, write.destination)
-        )
-        if (matched.length === 0)
-          return yield* new NativeWriteRefused({
-            message: `Native file operation on ${path} matches no admitted destination`,
-          })
-        for (const write of matched) {
-          write.started ??= yield* Effect.cached(
-            write.attachment.reportExecution(write.grant, { kind: 'operation-started' })
+          return Effect.fail(
+            new NativeWriteRefused({
+              message: 'The session is closing; the file operation was not run',
+            })
           )
-          yield* write.started
-        }
-        return yield* Effect.promise(operation)
-      }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            inProgress -= 1
-          })
+        const done = Deferred.makeUnsafe<void>()
+        inFlight.add(done)
+        return matchAndStart(path, role).pipe(
+          Effect.andThen(Effect.promise(operation)),
+          Effect.ensuring(
+            Effect.sync(() => {
+              inFlight.delete(done)
+              Deferred.doneUnsafe(done, Exit.void)
+            })
+          )
         )
-      )
+      })
     )
-  }
 
   const writeFileOperation = (path: string, content: string) =>
     operate(path, 'destination', () =>
@@ -155,9 +168,11 @@ export const makeNativeWrites = (onError: (message: string) => void): NativeWrit
       }),
     settle: Effect.gen(function* () {
       closing = true
-      const deadline = Date.now() + SETTLE_WAIT_MS
-      while (inProgress > 0 && Date.now() < deadline) yield* Effect.sleep(SETTLE_POLL)
-      if (inProgress === 0)
+      const drained = yield* Effect.forEach([...inFlight], Deferred.await, { discard: true }).pipe(
+        Effect.as(true),
+        Effect.timeoutOrElse({ duration: SETTLE_WAIT, orElse: () => Effect.succeed(false) })
+      )
+      if (drained)
         yield* Effect.forEach([...writes.values()], complete, {
           concurrency: 'unbounded',
           discard: true,
