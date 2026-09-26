@@ -82,6 +82,8 @@ PROBES = {
         script='scripts/workspace-host-real-authority-probe.ts',
         passed_marker='DEV_REAL_AUTHORITY_PROBE_PASSED ',
         actions=(
+            Action('after-refused-allocation', 'DEV_REAL_AUTHORITY_READY_FOR_NEXT_CALL',
+                   b'\x15continue after the refused allocation\r'),
             Action('user-bash', 'DEV_REAL_AUTHORITY_READY_FOR_USER_BASH',
                    b'\x15!printf user-bash > user.txt\r'),
             Action('reload', 'DEV_REAL_AUTHORITY_READY_FOR_RELOAD', b'\x15/reload\r'),

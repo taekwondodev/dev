@@ -56,12 +56,16 @@ const signal = (marker: string) => process.stdout.write(`\nDEV_REAL_AUTHORITY_${
 
 mkdir(lead)
 writeFileSync(join(lead, 'AGENTS.md'), 'real-authority probe: lead\n')
+// The first target commit carries a checkout filter whose smudge would leave a marker, so a
+// managed worktree of it must be refused before any Git effect.
+writeFileSync(join(lead, '.gitattributes'), 'AGENTS.md filter=probe\n')
 git(['init', '--quiet', '-b', 'main'], lead)
 git(['config', 'user.email', 'real-authority@example.invalid'], lead)
 git(['config', 'user.name', 'real authority probe'], lead)
-git(['add', 'AGENTS.md'], lead)
-git(['commit', '--quiet', '-m', 'real-authority fixture'], lead)
-const leadCommit = git(['rev-parse', 'HEAD'], lead)
+git(['add', 'AGENTS.md', '.gitattributes'], lead)
+git(['commit', '--quiet', '-m', 'real-authority filtered fixture'], lead)
+const filterMarker = join(fixture, 'checkout-filter-ran')
+git(['config', 'filter.probe.smudge', `touch ${JSON.stringify(filterMarker)}`], lead)
 
 for (const path of [sessionDir, agentDir, dataHome]) mkdir(path)
 process.env.HOME = join(fixture, 'home')
@@ -136,6 +140,12 @@ const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
 
 const lateMarker = 'late.txt'
 const script: readonly (readonly unknown[])[] = [
+  [
+    toolCall('filtered-write', 'write', {
+      path: 'filtered.txt',
+      content: 'must not reach the contended checkout',
+    }),
+  ],
   [toolCall('contended-read', 'read', { path: 'AGENTS.md' })],
   [
     toolCall('contended-native-write', 'write', {
@@ -156,6 +166,10 @@ const script: readonly (readonly unknown[])[] = [
   [{ type: 'text', text: 'Real-authority host seam probe completed.' }],
 ]
 let providerCall = 0
+let resolveRefusalEnded: () => void = () => undefined
+const refusalEnded = new Promise<void>(resolveEnd => {
+  resolveRefusalEnded = resolveEnd
+})
 let resolveFinished: () => void = () => undefined
 const finished = new Promise<void>(resolveFinish => {
   resolveFinished = resolveFinish
@@ -263,6 +277,7 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
   })
   api.on('agent_end', event => {
     const last = event.messages.findLast(message => message.role === 'assistant')
+    if (providerCall === 1) resolveRefusalEnded()
     if (providerCall >= script.length && last?.stopReason === 'stop') resolveFinished()
   })
 }
@@ -347,6 +362,7 @@ const runtime = await pi.createAgentSessionRuntime(
   { cwd: lead, agentDir, sessionManager: initialManager }
 )
 workspaceHost.bindRuntime(runtime)
+const bindingBeforeRefusal = structuredClone(workspaceHost.attachment.binding)
 
 const within = <A>(promise: Promise<A>, ms: number, what: string) =>
   Promise.race([
@@ -388,6 +404,48 @@ assert.equal(inspectResult.exitCode, 0, inspectResult.stderr ?? '')
 assert.match(listResult.stdout ?? '', /Workspace list for repository/)
 assert.match(inspectResult.stdout ?? '', /^ {2}use [\w-]+: write, /m)
 
+const persistedResult = (toolCallId: string) => {
+  const found = runtime.session.sessionManager
+    .getEntries()
+    .flatMap(entry =>
+      entry.type === 'message' && entry.message.role === 'toolResult' ? [entry.message] : []
+    )
+    .find(message => message.toolCallId === toolCallId)
+  if (found === undefined) throw new Error(`No persisted result for ${toolCallId}`)
+  return {
+    isError: found.isError,
+    text: found.content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('\n'),
+  }
+}
+const worktrees = () =>
+  git(['worktree', 'list', '--porcelain'], lead)
+    .split('\n')
+    .filter(line => line.startsWith('worktree '))
+
+// The first contended write needs a managed worktree of the filtered commit: the authority
+// refuses it before any Git effect, and the host reports that without leaving its binding.
+await within(refusalEnded, 30000, 'the turn with the refused allocation to end')
+assert.deepEqual(workspaceHost.attachment.binding, bindingBeforeRefusal, 'the binding is kept')
+assert.equal(bindingBeforeRefusal.cwd, resolve(lead))
+assert.equal(workspaceHost.isParked(), false, 'the refusal does not park the host')
+assert.equal(resolve(runtime.cwd), resolve(lead))
+assert.ok(!existsSync(join(lead, 'filtered.txt')), 'the contested write never ran')
+assert.ok(!existsSync(filterMarker), 'no checkout filter ran')
+assert.deepEqual(worktrees(), [`worktree ${lead}`], 'no managed worktree was created')
+assert.deepEqual(
+  (await lifecycle.inspect({})).flatMap(view => view.pending),
+  [],
+  'the refused allocation leaves no pending operation'
+)
+const refusedWrite = persistedResult('filtered-write')
+assert.equal(refusedWrite.isError, true, 'the refused write is reported as a failed tool call')
+assert.match(refusedWrite.text, /checkout filter/)
+// Later contention allocates from a commit without the filter.
+git(['rm', '--quiet', '.gitattributes'], lead)
+git(['commit', '--quiet', '-m', 'real-authority fixture'], lead)
+const leadCommit = git(['rev-parse', 'HEAD'], lead)
+signal('READY_FOR_NEXT_CALL')
+
 await within(finished, 90000, 'scripted turns to finish')
 signal('TURNS_FINISHED')
 
@@ -402,36 +460,28 @@ assert.equal(readFileSync(join(managed, 'native.txt'), 'utf8'), 'native write\n'
 assert.ok(!existsSync(join(fixture, 'unverified-tool-ran')), 'the unverified tool never ran')
 assert.equal(providerCall, script.length, 'refusing the unverified tool did not end the turn')
 
-const toolResults = runtime.session.sessionManager
-  .getEntries()
-  .flatMap(entry =>
-    entry.type === 'message' && entry.message.role === 'toolResult' ? [entry.message] : []
-  )
-const resultText = (toolCallId: string) => {
-  const found = toolResults.find(message => message.toolCallId === toolCallId)
-  if (found === undefined) throw new Error(`No persisted result for ${toolCallId}`)
-  return {
-    isError: found.isError,
-    text: found.content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('\n'),
-  }
-}
+assert.equal(
+  persistedResult('contended-read').isError,
+  false,
+  'the call after the refusal is admitted'
+)
 assert.match(
-  resultText('contended-read').text,
+  persistedResult('contended-read').text,
   /\[dev workspace\] A writer owns this live checkout/
 )
-assert.match(resultText('contended-native-write').text, /rebind|not executed|admission/i)
-assert.equal(resultText('lead-shell').isError, false)
-assert.equal(resultText('native-write').isError, false)
-assert.equal(resultText('second-native-write').isError, false)
+assert.match(persistedResult('contended-native-write').text, /rebind|not executed|admission/i)
+assert.equal(persistedResult('lead-shell').isError, false)
+assert.equal(persistedResult('native-write').isError, false)
+assert.equal(persistedResult('second-native-write').isError, false)
 assert.equal(readFileSync(join(managed, 'second.txt'), 'utf8'), 'second write\n')
-const duplicate = resultText('duplicate-native-write')
+const duplicate = persistedResult('duplicate-native-write')
 assert.equal(duplicate.isError, true)
 assert.match(duplicate.text, /still in flight/)
 assert.ok(
-  !resultText('own-read').text.includes('[dev workspace]'),
+  !persistedResult('own-read').text.includes('[dev workspace]'),
   "a read beside the conversation's own writer is not warned"
 )
-const unverified = resultText('unverified-tool')
+const unverified = persistedResult('unverified-tool')
 assert.equal(unverified.isError, true)
 assert.match(unverified.text, /no verified workspace effect/)
 
@@ -526,6 +576,7 @@ const report = {
   managedWorkspace: binding.workspaceId,
   networkAttempts,
   checks: [
+    'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI and changes nothing: the binding is kept, neither the write nor the filter runs, no worktree or pending operation is left, and the next tool call is admitted',
     'a real contended native write is blocked, rebinds to an exact-commit managed worktree and is not replayed',
     'the lead bash tool runs through the workspace shell; its use ends only after a backgrounded descendant is observed gone',
     'a read beside a live writer carries the writer warning in its tool result',
@@ -562,4 +613,5 @@ await squatter.close()
 await lifecycle.close()
 assert.equal(runFailure, undefined)
 assert.equal(networkAttempts, 0)
+assert.ok(!existsSync(filterMarker), 'no checkout filter ran at any allocation')
 process.stdout.write(`\nDEV_REAL_AUTHORITY_PROBE_PASSED ${JSON.stringify(report)}\n`)
