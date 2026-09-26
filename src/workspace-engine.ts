@@ -23,7 +23,7 @@ import {
 } from './workspace-domain.ts'
 import { inspectWorkspaces } from './workspace-inspect.ts'
 import { toBinding } from './workspace-records.ts'
-import { workspaceId, errorText } from './workspace-sqlite.ts'
+import { newId, errorText } from './workspace-sqlite.ts'
 import { selectWorkspace, performHandoff } from './workspace-transitions.ts'
 
 // The worker's side of an attachment; clients reach it through the lifecycle's RPC.
@@ -32,7 +32,7 @@ export type EngineAttachment = WorkspaceAttachmentImpl
 class WorkspaceAttachmentImpl {
   private readonly engine: WorkspaceEngine
   readonly state: ConversationState
-  readonly token = workspaceId()
+  readonly token = newId()
   readonly targetOperationId?: string
   private done = false
 

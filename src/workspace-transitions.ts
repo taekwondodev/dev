@@ -19,8 +19,11 @@ import {
   blocked,
   invalid,
   requireReview,
+  sameBinding,
+  sameGrant,
   type WorkspaceGrant,
   type WorkspaceHandoff,
+  type WorkspaceId,
   type WorkspaceSelection,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates } from './workspace-gates.ts'
@@ -45,13 +48,13 @@ import {
   type UseRecord,
   type OperationRecord,
 } from './workspace-records.ts'
-import { workspaceId, now, jsonEqual, errorText, transaction } from './workspace-sqlite.ts'
+import { newId, now, errorText, transaction } from './workspace-sqlite.ts'
 
 export const resolveSelection = (
   authority: WorkspaceAuthority,
   selection: WorkspaceSelection
 ): {
-  repo: string
+  repo: WorkspaceId
   reservation: ReservationRecord
   workspace: WorkspaceRecord
 } => {
@@ -89,7 +92,7 @@ export const selectWorkspace = (
     const current = state.writeGrant
     if (current !== undefined)
       return {
-        operationId: workspaceId(),
+        operationId: newId(),
         from: toBinding(state.binding),
         target: current,
         reason: 'The selected task is already bound to this workspace.',
@@ -101,10 +104,10 @@ export const selectWorkspace = (
   )
     blocked(`Selected workspace has an active or unresolved writer: ${target.workspace.path}`)
   const gates = acquirePathGates(authority.paths, target.workspace.path, true)
-  const operationId = workspaceId()
-  const acquisitionId = workspaceId()
+  const operationId = newId()
+  const acquisitionId = newId()
   const use = {
-    id: workspaceId(),
+    id: newId(),
     workspaceId: target.workspace.id,
     taskId: target.reservation.taskId,
     reservationId: target.reservation.id,
@@ -233,8 +236,8 @@ export const performHandoff = async (
   if (
     pending === undefined ||
     pending.handoff.operationId !== transition.operationId ||
-    !jsonEqual(pending.handoff.target, transition.target) ||
-    !jsonEqual(pending.handoff.from, transition.from)
+    !sameGrant(pending.handoff.target, transition.target) ||
+    !sameBinding(pending.handoff.from, transition.from)
   )
     requireReview('Workspace handoff token is stale or belongs to another transition')
   let operation: OperationRecord

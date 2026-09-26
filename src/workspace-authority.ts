@@ -3,11 +3,13 @@ import { lstatSync, realpathSync, readdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { userInfo } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { Schema } from 'effect'
 import {
   invalid,
   requireReview,
   unavailable,
   WorkspaceError,
+  WorkspaceId,
   type WorkspaceGrant,
 } from './workspace-domain.ts'
 import { acquireProtocolGate, acquireStructureGate, type GateRelease } from './workspace-gates.ts'
@@ -29,8 +31,7 @@ import {
   PROTOCOL_VERSION,
   SCHEMA_VERSION,
   PROTOCOL_SQL,
-  workspaceId,
-  isUuid,
+  newId,
   encode,
   parseRecord,
   errorText,
@@ -175,7 +176,7 @@ const makePaths = (root: string): AuthorityPaths => ({
   worktrees: join(root, 'worktrees'),
 })
 
-const validateProtocol = (path: string, namespaceId?: string): string => {
+const validateProtocol = (path: string, namespaceId?: string): WorkspaceId => {
   privateFile(path)
   let db: DatabaseSync | undefined
   try {
@@ -192,8 +193,8 @@ const validateProtocol = (path: string, namespaceId?: string): string => {
     if (numberField(row, 'version') !== PROTOCOL_VERSION)
       unavailable(`Workspace protocol version mismatch at ${path}`)
     const actual = textField(row, 'namespace_id')
-    if (!isUuid(actual) || (namespaceId !== undefined && namespaceId !== actual))
-      requireReview(`Workspace protocol identity mismatch at ${path}`)
+    if (!Schema.is(WorkspaceId)(actual) || (namespaceId !== undefined && namespaceId !== actual))
+      return requireReview(`Workspace protocol identity mismatch at ${path}`)
     return actual
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
@@ -240,7 +241,7 @@ export const validateRepositoryRecord = (
 export class WorkspaceAuthority {
   readonly paths: AuthorityPaths
   readonly root: string
-  private namespaceId: string | undefined
+  private namespaceId: WorkspaceId | undefined
   private protocolRelease: GateRelease | undefined
   private initialized = false
   private storageChecked = false
@@ -258,7 +259,7 @@ export class WorkspaceAuthority {
     this.storageChecked = true
   }
 
-  initialize(): string {
+  initialize(): WorkspaceId {
     if (this.closed) unavailable('Workspace lifecycle is closed')
     if (this.initialized)
       return this.namespaceId ?? requireReview('Workspace namespace identity is missing')
@@ -285,7 +286,7 @@ export class WorkspaceAuthority {
       })
       if (hasEvidence)
         requireReview(`Workspace authority has data but no namespace markers: ${this.root}`)
-      const candidateId = workspaceId()
+      const candidateId = newId()
       createProtocolDatabase(this.paths.protocol, candidateId)
       const id = validateProtocol(this.paths.protocol)
       createCatalogDatabase(this.paths.catalog, id)
@@ -320,7 +321,7 @@ export class WorkspaceAuthority {
     return id
   }
 
-  inspectExisting(): string | undefined {
+  inspectExisting(): WorkspaceId | undefined {
     if (this.closed) unavailable('Workspace lifecycle is closed')
     this.checkStorage()
     const rootInfo = lstatIfExists(this.root)
@@ -386,12 +387,11 @@ export class WorkspaceAuthority {
     return db
   }
 
-  shardPath(repositoryId: string): string {
-    if (!isUuid(repositoryId)) invalid('Invalid repository ID')
+  shardPath(repositoryId: WorkspaceId): string {
     return join(this.paths.repos, repositoryId, 'records.sqlite')
   }
 
-  openShard(repositoryId: string, create = false, repository?: GitWorkspace): DatabaseSync {
+  openShard(repositoryId: WorkspaceId, create = false, repository?: GitWorkspace): DatabaseSync {
     if (!this.initialized && create) this.initialize()
     const path = this.shardPath(repositoryId)
     const directory = dirname(path)
@@ -456,7 +456,7 @@ export class WorkspaceAuthority {
 
   private validateShardMeta(
     db: DatabaseSync,
-    repositoryId: string,
+    repositoryId: WorkspaceId,
     expected: { commonPath: string; device: string; inode: string; format: string }
   ): void {
     const values = new Map(
@@ -477,7 +477,7 @@ export class WorkspaceAuthority {
       requireReview(`Repository shard identity or schema mismatch: ${repositoryId}`)
   }
 
-  private markRepositoryReady(repositoryId: string): void {
+  private markRepositoryReady(repositoryId: WorkspaceId): void {
     const db = this.openCatalog(false)
     try {
       transaction(db, () => {
@@ -512,10 +512,10 @@ export class WorkspaceAuthority {
     }
   }
 
-  registerRepository(repository: GitWorkspace): string {
+  registerRepository(repository: GitWorkspace): WorkspaceId {
     this.initialize()
     const catalog = this.openCatalog(false)
-    let registered: { readonly id: string; readonly state: string } | undefined
+    let registered: { readonly id: WorkspaceId; readonly state: string } | undefined
     let registrationConflict = false
     try {
       const byPath = first(
@@ -539,8 +539,8 @@ export class WorkspaceAuthority {
         const record = validateRepositoryRecord(repository, byPath)
         registered = { id: record.id, state: record.state }
       } else {
-        const candidateId = workspaceId()
-        const provisionId = workspaceId()
+        const candidateId = newId()
+        const provisionId = newId()
         const payload = {
           id: candidateId,
           commonPath: repository.commonPath,
@@ -644,7 +644,7 @@ export class WorkspaceAuthority {
   }
 
   listRepositories(): readonly {
-    readonly id: string
+    readonly id: WorkspaceId
     readonly state: string
     readonly commonPath: string
   }[] {
@@ -694,7 +694,7 @@ const requireEntries = (directory: string): string[] => {
 
 export const toGrant = (
   authority: WorkspaceAuthority,
-  repo: string,
+  repo: WorkspaceId,
   workspace: WorkspaceRecord,
   use: UseRecord,
   cwd: string,
@@ -716,7 +716,7 @@ export const toGrant = (
 })
 export const inDb = <A>(
   authority: WorkspaceAuthority,
-  repo: string,
+  repo: WorkspaceId,
   callback: (db: DatabaseSync) => A,
   create = false,
   git?: GitWorkspace
@@ -730,9 +730,13 @@ export const inDb = <A>(
 }
 export const taskWorkspaces = (
   authority: WorkspaceAuthority,
-  taskId: string
-): { repo: string; reservation: ReservationRecord; workspace: WorkspaceRecord }[] => {
-  const result: { repo: string; reservation: ReservationRecord; workspace: WorkspaceRecord }[] = []
+  taskId: WorkspaceId
+): { repo: WorkspaceId; reservation: ReservationRecord; workspace: WorkspaceRecord }[] => {
+  const result: {
+    repo: WorkspaceId
+    reservation: ReservationRecord
+    workspace: WorkspaceRecord
+  }[] = []
   for (const repository of authority.listRepositories()) {
     inDb(authority, repository.id, db => {
       for (const row of rows(
@@ -755,8 +759,8 @@ export const taskWorkspaces = (
 export const findBinding = (
   authority: WorkspaceAuthority,
   key: string
-): { repo: string; binding: BindingRecord } | undefined => {
-  const matches: { repo: string; binding: BindingRecord }[] = []
+): { repo: WorkspaceId; binding: BindingRecord } | undefined => {
+  const matches: { repo: WorkspaceId; binding: BindingRecord }[] = []
   for (const repository of authority.listRepositories()) {
     inDb(authority, repository.id, db => {
       const binding = getBinding(db, key)

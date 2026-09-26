@@ -9,10 +9,13 @@ import {
   invalid,
   requireReview,
   WorkspaceError,
+  sameExecution,
+  sameGrant,
   type WorkspaceAuthorization,
   type WorkspaceExecution,
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
+  type WorkspaceId,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
@@ -37,7 +40,7 @@ import {
   type BindingRecord,
   type UseRecord,
 } from './workspace-records.ts'
-import { workspaceId, now, jsonEqual, transaction } from './workspace-sqlite.ts'
+import { newId, now, transaction } from './workspace-sqlite.ts'
 
 export const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<string>()
@@ -49,7 +52,7 @@ export const currentSource = (
   authority: WorkspaceAuthority,
   state: ConversationState
 ): {
-  repo: string
+  repo: WorkspaceId
   binding: BindingRecord
   workspace: WorkspaceRecord
   git: GitWorkspace
@@ -137,7 +140,7 @@ export const authorizeOperation = (
     return executionUse(authority, state, base, operation.execution)
   }
   if (operation.delegated === true) {
-    const taskId = source.binding.taskId ?? workspaceId()
+    const taskId = source.binding.taskId ?? newId()
     return allocateWorkspace(
       authority,
       state,
@@ -168,7 +171,7 @@ export const authorizeOperation = (
       source.repo,
       source.workspace,
       source.git,
-      source.binding.taskId ?? workspaceId(),
+      source.binding.taskId ?? newId(),
       false,
       operation.execution
     )
@@ -185,7 +188,7 @@ export const authorizeOperation = (
       source.repo,
       source.workspace,
       source.git,
-      workspaceId(),
+      newId(),
       false,
       operation.execution
     )
@@ -206,16 +209,16 @@ export const authorizeOperation = (
       source.repo,
       source.workspace,
       source.git,
-      workspaceId(),
+      newId(),
       false,
       operation.execution
     )
   }
   try {
-    const taskId = source.binding.taskId ?? workspaceId()
-    const useId = workspaceId()
-    const reservationId = reservation?.id ?? workspaceId()
-    const acquisitionId = workspaceId()
+    const taskId = source.binding.taskId ?? newId()
+    const useId = newId()
+    const reservationId = reservation?.id ?? newId()
+    const acquisitionId = newId()
     const updatedBinding = {
       ...source.binding,
       ...(source.binding.taskId === undefined ? { taskId } : {}),
@@ -334,7 +337,7 @@ const authorizeScoped = (
       : undefined
   const { execution } = operation
   const use = {
-    id: workspaceId(),
+    id: newId(),
     workspaceId: workspace.id,
     taskId: withinUse.taskId,
     ...(withinUse.reservationId === undefined ? {} : { reservationId: withinUse.reservationId }),
@@ -387,7 +390,7 @@ const authorizeScoped = (
 const authorizeRead = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  repo: string,
+  repo: WorkspaceId,
   workspace: WorkspaceRecord,
   binding: BindingRecord,
   cwd: string
@@ -412,7 +415,7 @@ const authorizeRead = (
   try {
     const reservation = inDb(authority, repo, db => getReservation(db, workspace.id))
     const use = {
-      id: workspaceId(),
+      id: newId(),
       workspaceId: workspace.id,
       taskId: binding.taskId,
       ...(reservation === undefined ? {} : { reservationId: reservation.id }),
@@ -448,7 +451,7 @@ const authorizeRead = (
 const writerWarning = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  repo: string,
+  repo: WorkspaceId,
   workspaceIdValue: string
 ): string | undefined => {
   if (
@@ -473,7 +476,7 @@ const executionUse = (
   if (base === undefined) requireReview('Workspace grant has no base use record')
   const use = {
     ...base,
-    id: workspaceId(),
+    id: newId(),
     execution,
     stage: 'authorized',
     processes: [],
@@ -505,7 +508,7 @@ export const validateGrant = (
   if (grant.namespaceId !== authority.initialize())
     requireReview('Workspace grant belongs to another namespace')
   const lease = state.leases.get(grant.useId)
-  if (lease === undefined || lease.released || !jsonEqual(lease.grant, grant))
+  if (lease === undefined || lease.released || !sameGrant(lease.grant, grant))
     requireReview('Workspace grant is stale or was not issued to this attachment')
   const workspace = inDb(authority, grant.repositoryId, db => {
     const record = getWorkspace(db, grant.workspaceId)
@@ -624,7 +627,7 @@ export const reportExecutionFact = (
   if (
     current === undefined ||
     current.execution === undefined ||
-    !jsonEqual(current.execution, lease.execution)
+    !sameExecution(current.execution, lease.execution)
   )
     requireReview('Execution recovery row no longer matches the issued grant')
   if (current.stage === 'quiescent') requireReview('Execution has already been settled')
@@ -638,7 +641,7 @@ export const reportExecutionFact = (
   const updatedAt = now()
   switch (fact.kind) {
     case 'launch-intent': {
-      if (!jsonEqual(fact.execution, lease.execution))
+      if (!sameExecution(fact.execution, lease.execution))
         invalid('Launch intent does not match the authorized execution')
       if (current.stage !== 'authorized')
         requireReview(`Cannot record launch intent after ${current.stage}`)

@@ -51,6 +51,7 @@ import {
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceHandoff,
+  type WorkspaceId,
   type WorkspaceLifecycle,
   type WorkspaceOperation,
   type WorkspaceProcess,
@@ -140,8 +141,8 @@ const initProject = (path: string, label: string): void => {
 
 const descriptor = (
   path: string,
-  taskId: string,
-  workspaceId: string,
+  taskId: WorkspaceId,
+  workspaceId: WorkspaceId,
   repo: number,
   label: string
 ): FixtureDescriptor => ({

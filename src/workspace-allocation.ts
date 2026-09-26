@@ -1,5 +1,5 @@
 import { closeSync, constants, fchmodSync, fsyncSync, openSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   assertNoLiveExecution,
@@ -14,6 +14,7 @@ import {
   type WorkspaceAuthorization,
   type WorkspaceExecution,
   type WorkspaceHandoff,
+  type WorkspaceId,
 } from './workspace-domain.ts'
 import {
   acquirePathGates,
@@ -50,7 +51,7 @@ import {
   type OperationRecord,
 } from './workspace-records.ts'
 import {
-  workspaceId,
+  newId,
   now,
   errorText,
   fsyncPath,
@@ -114,9 +115,9 @@ const holdGates = (
 const orderedAllocationGates = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  sourceRepo: string,
+  sourceRepo: WorkspaceId,
   source: WorkspaceRecord,
-  destination: string,
+  target: { readonly id: WorkspaceId; readonly path: string },
   intents: readonly GateIntent[]
 ): {
   readonly source: PathGates
@@ -143,10 +144,10 @@ const orderedAllocationGates = (
       state.writeGrant?.workspaceId === source.id ||
       intents.some(intent => intent.workspaceId === source.id && intent.writer),
   })
-  const targetPath = canonicalPathSlot(destination)
+  const targetPath = canonicalPathSlot(target.path)
   add({
     repositoryId: sourceRepo,
-    workspaceId: basename(destination),
+    workspaceId: target.id,
     path: targetPath,
     writer: true,
   })
@@ -183,10 +184,10 @@ const orderedAllocationGates = (
 export const allocateWorkspace = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  sourceRepo: string,
+  sourceRepo: WorkspaceId,
   sourceWorkspace: WorkspaceRecord,
   sourceGit: GitWorkspace,
-  taskId: string,
+  taskId: WorkspaceId,
   delegated: boolean,
   execution?: WorkspaceExecution
 ): WorkspaceAuthorization => {
@@ -198,10 +199,10 @@ export const allocateWorkspace = (
       { workspaceId: sourceWorkspace.id },
       'moved to a separate worktree'
     )
-  const workspaceIdValue = workspaceId()
-  const allocationId = workspaceId()
-  const reservationId = workspaceId()
-  const acquisitionId = workspaceId()
+  const workspaceIdValue = newId()
+  const allocationId = newId()
+  const reservationId = newId()
+  const acquisitionId = newId()
   const destinationParent = join(authority.paths.worktrees, sourceRepo)
   privateDirectory(authority.paths.worktrees, true)
   privateDirectory(destinationParent, true)
@@ -232,7 +233,7 @@ export const allocateWorkspace = (
       state,
       sourceRepo,
       sourceWorkspace,
-      destination,
+      { id: workspaceIdValue, path: destination },
       gateIntents
     )
     state.extraGates.push(...pathGates.extras)
@@ -314,7 +315,7 @@ export const allocateWorkspace = (
       createdAt: now(),
     }
     const use = {
-      id: workspaceId(),
+      id: newId(),
       workspaceId: workspaceIdValue,
       taskId,
       reservationId,
@@ -338,7 +339,7 @@ export const allocateWorkspace = (
     let handoff: WorkspaceHandoff | undefined
     let handoffOperation: OperationRecord | undefined
     if (!delegated) {
-      const handoffId = workspaceId()
+      const handoffId = newId()
       targetBinding = {
         ...state.binding,
         taskId,

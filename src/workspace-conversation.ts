@@ -6,6 +6,7 @@ import {
   type WorkspaceExecution,
   type WorkspaceGrant,
   type WorkspaceHandoff,
+  type WorkspaceId,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import type { PathGates } from './workspace-gates.ts'
@@ -13,10 +14,10 @@ import { getUse, type BindingRecord, type UseRecord } from './workspace-records.
 
 export interface GrantLease {
   readonly grant: WorkspaceGrant
-  readonly repositoryId: string
-  readonly useId: string
+  readonly repositoryId: WorkspaceId
+  readonly useId: WorkspaceId
   readonly effect?: WorkspaceOperation['effect']
-  readonly withinUseId?: string
+  readonly withinUseId?: WorkspaceId
   gates?: PathGates
   readonly borrowed: boolean
   readonly isExecution: boolean
@@ -24,8 +25,8 @@ export interface GrantLease {
   released: boolean
 }
 export interface GateIntent {
-  readonly repositoryId: string
-  readonly workspaceId: string
+  readonly repositoryId: WorkspaceId
+  readonly workspaceId: WorkspaceId
   readonly path: string
   readonly writer: boolean
 }
@@ -34,8 +35,8 @@ export interface HeldPathGate extends GateIntent {
 }
 export interface PendingTransition {
   readonly handoff: WorkspaceHandoff
-  readonly sourceRepositoryId: string
-  readonly targetRepositoryId: string
+  readonly sourceRepositoryId: WorkspaceId
+  readonly targetRepositoryId: WorkspaceId
   readonly targetBinding: BindingRecord
   readonly targetLease: GrantLease
   readonly previousWriteGrant: WorkspaceGrant | undefined
@@ -45,7 +46,7 @@ export interface ConversationState {
   readonly key: string
   readonly conversation: WorkspaceConversation
   binding: BindingRecord
-  repositoryId: string
+  repositoryId: WorkspaceId
   readonly leases: Map<string, GrantLease>
   readonly leaseAttachments: Map<string, Set<string>>
   readonly extraGates: HeldPathGate[]

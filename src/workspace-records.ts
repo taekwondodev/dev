@@ -3,15 +3,17 @@ import { Schema } from 'effect'
 import {
   blocked,
   requireReview,
+  WorkspaceBindingSchema,
   WorkspaceEffectSchema,
+  WorkspaceExecutionSchema,
+  WorkspaceId,
   WorkspaceProcessSchema,
   type WorkspaceBinding,
 } from './workspace-domain.ts'
 import { canonicalGitWorkspace, type FileIdentity, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
 import {
-  UUID,
-  workspaceId,
+  newId,
   encode,
   parseRecord,
   now,
@@ -29,24 +31,24 @@ const PhysicalSchema = Schema.Struct({
   inode: Schema.NonEmptyString,
 })
 const TaskSchema = Schema.Struct({
-  id: UUID,
-  repositoryId: UUID,
+  id: WorkspaceId,
+  repositoryId: WorkspaceId,
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Schema.Finite,
 })
 export const RepositoryCatalogSchema = Schema.Struct({
-  id: UUID,
+  id: WorkspaceId,
   commonPath: Schema.NonEmptyString,
   device: Schema.NonEmptyString,
   inode: Schema.NonEmptyString,
   objectFormat: Schema.NonEmptyString,
   state: Schema.Literals(['provisioning', 'ready']),
-  provisionId: UUID,
+  provisionId: WorkspaceId,
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 })
 const WorkspaceSchema = Schema.Struct({
-  id: UUID,
-  repositoryId: UUID,
+  id: WorkspaceId,
+  repositoryId: WorkspaceId,
   path: Schema.NonEmptyString,
   pathKey: Schema.NonEmptyString,
   physical: PhysicalSchema,
@@ -57,45 +59,30 @@ const WorkspaceSchema = Schema.Struct({
   objectFormat: Schema.NonEmptyString,
   origin: Schema.Literals(['pre-existing', 'managed']),
   status: Schema.Literals(['provisioning', 'ready']),
-  allocationOperationId: Schema.optional(UUID),
+  allocationOperationId: Schema.optional(WorkspaceId),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Schema.Finite,
 })
 const ReservationSchema = Schema.Struct({
-  id: UUID,
-  taskId: UUID,
-  workspaceId: UUID,
-  acquisitionId: Schema.optional(UUID),
+  id: WorkspaceId,
+  taskId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  acquisitionId: Schema.optional(WorkspaceId),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Schema.Finite,
 })
-const ExecutionSchema = Schema.Struct({
-  sessionId: Schema.NonEmptyString,
-  taskKey: Schema.NonEmptyString,
-  attemptId: Schema.NonEmptyString,
-  generation: Schema.NonEmptyString,
-  logs: Schema.optional(Schema.String),
-})
 export const BindingSchema = Schema.Struct({
   key: Schema.NonEmptyString,
-  conversation: Schema.Struct({
-    sessionId: Schema.NonEmptyString,
-    sessionFile: Schema.NonEmptyString,
-    dataHome: Schema.NonEmptyString,
-  }),
-  taskId: Schema.optional(UUID),
-  workspaceId: UUID,
-  cwd: Schema.NonEmptyString,
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  pendingOperationId: Schema.optional(UUID),
+  ...WorkspaceBindingSchema.fields,
+  pendingOperationId: Schema.optional(WorkspaceId),
   superseded: Schema.optional(Schema.Boolean),
 })
 export const UseSchema = Schema.Struct({
-  id: UUID,
-  workspaceId: UUID,
-  taskId: Schema.optional(UUID),
-  reservationId: Schema.optional(UUID),
-  acquisitionId: Schema.optional(UUID),
+  id: WorkspaceId,
+  workspaceId: WorkspaceId,
+  taskId: Schema.optional(WorkspaceId),
+  reservationId: Schema.optional(WorkspaceId),
+  acquisitionId: Schema.optional(WorkspaceId),
   access: Schema.Literals(['read', 'write']),
   stage: Schema.Literals([
     'authorized',
@@ -108,9 +95,9 @@ export const UseSchema = Schema.Struct({
     'unknown',
   ]),
   effect: Schema.optional(WorkspaceEffectSchema),
-  withinUseId: Schema.optional(UUID),
+  withinUseId: Schema.optional(WorkspaceId),
   operationPath: Schema.optional(Schema.NonEmptyString),
-  execution: Schema.optional(ExecutionSchema),
+  execution: Schema.optional(WorkspaceExecutionSchema),
   processes: Schema.Array(WorkspaceProcessSchema),
   reason: Schema.optional(Schema.String),
   incarnation: Schema.NonEmptyString,
@@ -120,7 +107,7 @@ export const UseSchema = Schema.Struct({
   updatedAt: Schema.Finite,
 })
 export const OperationSchema = Schema.Struct({
-  id: UUID,
+  id: WorkspaceId,
   kind: Schema.Literals(['allocation', 'handoff']),
   phase: Schema.Literals([
     'intent',
@@ -130,13 +117,13 @@ export const OperationSchema = Schema.Struct({
     'unknown',
     'review-required',
   ]),
-  repositoryId: UUID,
-  workspaceId: UUID,
-  taskId: UUID,
-  reservationId: UUID,
-  acquisitionId: Schema.optional(UUID),
-  sourceRepositoryId: UUID,
-  sourceWorkspaceId: UUID,
+  repositoryId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  taskId: WorkspaceId,
+  reservationId: WorkspaceId,
+  acquisitionId: Schema.optional(WorkspaceId),
+  sourceRepositoryId: WorkspaceId,
+  sourceWorkspaceId: WorkspaceId,
   sourcePath: Schema.NonEmptyString,
   sourceCommit: Schema.optional(Schema.String),
   targetPath: Schema.NonEmptyString,
@@ -441,11 +428,11 @@ export const assertWithinLiveInDb = (db: DatabaseSync, use: UseRecord): void => 
 }
 
 export const makeWorkspaceRecord = (
-  repositoryId: string,
+  repositoryId: WorkspaceId,
   git: GitWorkspace,
   origin: 'pre-existing' | 'managed',
-  id = workspaceId(),
-  allocationOperationId?: string
+  id = newId(),
+  allocationOperationId?: WorkspaceId
 ): WorkspaceRecord => ({
   id,
   repositoryId,

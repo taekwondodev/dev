@@ -9,11 +9,11 @@ import {
 
 export type WorkspaceCommand =
   | { readonly kind: 'list' }
-  | { readonly kind: 'inspect'; readonly taskId: string }
+  | { readonly kind: 'inspect'; readonly taskId: WorkspaceId }
   | {
       readonly kind: 'resume'
-      readonly taskId: string
-      readonly workspaceId?: string
+      readonly taskId: WorkspaceId
+      readonly workspaceId?: WorkspaceId
     }
 
 export interface WorkspaceCommandResult {
@@ -35,16 +35,17 @@ export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandEr
 const usage = (message: string): WorkspaceCommandError =>
   new WorkspaceCommandError({ message, exitCode: 2 })
 
-const isWorkspaceId = Schema.is(WorkspaceId)
+const decodeId = Schema.decodeUnknownOption(WorkspaceId)
 const exactId = Effect.fnUntraced(function* (
   value: string | undefined,
   name: string
-): Effect.fn.Return<string, WorkspaceCommandError> {
-  if (value === undefined || !isWorkspaceId(value))
+): Effect.fn.Return<WorkspaceId, WorkspaceCommandError> {
+  const decoded = decodeId(value)
+  if (decoded._tag === 'None')
     return yield* usage(
       `${name} must be an exact ID as listed by dev workspace, got ${JSON.stringify(value ?? '')}`
     )
-  return value
+  return decoded.value
 })
 
 const noTaskRecords = (taskId: string): string =>
@@ -165,7 +166,7 @@ export const formatWorkspaceList = (
 
 export const resumeCandidates = (
   exactTaskViews: readonly WorkspaceView[],
-  taskId: string
+  taskId: WorkspaceId
 ): readonly ResumeCandidate[] =>
   sortedViews(exactTaskViews)
     .filter(view => view.outcome === 'preserved-for-resume')
@@ -176,7 +177,7 @@ const choicesText = (candidates: readonly ResumeCandidate[]): string =>
 
 export const chooseResumeCandidate = Effect.fnUntraced(function* (
   exactTaskViews: readonly WorkspaceView[],
-  taskId: string,
+  taskId: WorkspaceId,
   requestedWorkspaceId?: string
 ): Effect.fn.Return<ResumeCandidate, WorkspaceCommandError> {
   const candidates = resumeCandidates(exactTaskViews, taskId)

@@ -2,28 +2,29 @@
 // silently. Each factory's literal satisfies its seam type, so a missing, misspelled or
 // mistyped field fails typecheck; the guard below also fails it when a seam type gains an
 // optional field the stub does not produce.
-import type {
-  WorkspaceBinding,
-  WorkspaceConversation,
-  WorkspaceGrant,
-  WorkspaceHandoff,
-  WorkspaceView,
+import {
+  WorkspaceId,
+  type WorkspaceBinding,
+  type WorkspaceConversation,
+  type WorkspaceGrant,
+  type WorkspaceHandoff,
+  type WorkspaceView,
 } from '../src/workspace-domain.ts'
 
 export interface FixtureDescriptor {
-  readonly repoId: string
-  readonly taskId: string
-  readonly workspaceId: string
+  readonly repoId: WorkspaceId
+  readonly taskId: WorkspaceId
+  readonly workspaceId: WorkspaceId
   readonly path: string
   readonly origin: 'pre-existing' | 'managed'
   readonly label: string
 }
 
-export const fixtureId = (n: number): string =>
-  `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+export const fixtureId = (n: number): WorkspaceId =>
+  WorkspaceId.make(`00000000-0000-4000-8000-${String(n).padStart(12, '0')}`)
 
 export const makeFixtureGrant = (input: {
-  readonly namespaceId: string
+  readonly namespaceId: WorkspaceId
   readonly descriptor: FixtureDescriptor
   readonly access: 'read' | 'write'
   readonly cwd: string
@@ -49,7 +50,7 @@ export const makeFixtureGrant = (input: {
 export const makeFixtureView = (input: {
   readonly descriptor: FixtureDescriptor
   readonly outcome: WorkspaceView['outcome']
-  readonly reservationId: string
+  readonly reservationId: WorkspaceId
 }) =>
   ({
     repositoryId: input.descriptor.repoId,
@@ -82,7 +83,7 @@ export const makeFixtureBinding = (input: {
   }) satisfies WorkspaceBinding
 
 export const makeFixtureHandoff = (input: {
-  readonly operationId: string
+  readonly operationId: WorkspaceId
   readonly from: WorkspaceBinding
   readonly target: WorkspaceGrant
   readonly reason: string

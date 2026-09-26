@@ -12,6 +12,7 @@ import {
   invalid,
   requireReview,
   type WorkspaceConversation,
+  type WorkspaceId,
   type WorkspaceSelection,
 } from './workspace-domain.ts'
 import { acquirePathGates, acquireConversationPresence, releaseGates } from './workspace-gates.ts'
@@ -125,7 +126,7 @@ export const attachConversation = (
       )
       previous = { repo, binding: kept }
     }
-    let repoId: string
+    let repoId: WorkspaceId
     let binding: BindingRecord
     if (input.selection !== undefined) {
       const selected = resolveSelection(authority, input.selection)
@@ -249,7 +250,7 @@ const retireUnstartedTransition = (authority: WorkspaceAuthority, operationId: s
 
 const registerWorkspace = (
   authority: WorkspaceAuthority,
-  repo: string,
+  repo: WorkspaceId,
   git: GitWorkspace,
   origin: 'pre-existing' | 'managed'
 ): WorkspaceRecord => {
@@ -289,7 +290,7 @@ const assertWorkspaceMatches = (record: WorkspaceRecord, git: GitWorkspace): voi
 
 const ensureNoUnresolvedUse = (
   authority: WorkspaceAuthority,
-  repo: string,
+  repo: WorkspaceId,
   workspaceIdValue: string
 ): void => {
   const active = inDb(authority, repo, db => getUseRows(db, workspaceIdValue).filter(isActiveUse))

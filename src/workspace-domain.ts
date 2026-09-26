@@ -2,7 +2,8 @@ import { type Effect, Schema } from 'effect'
 
 export const WorkspaceId = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)
-)
+).pipe(Schema.brand('WorkspaceId'))
+export type WorkspaceId = typeof WorkspaceId.Type
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()('WorkspaceError', {
   outcome: Schema.Literals(['blocked', 'review-required', 'invalid', 'unavailable', 'ambiguous']),
@@ -28,24 +29,30 @@ export function ambiguous(message: string): never {
   return fail('ambiguous', message)
 }
 
-export interface WorkspaceConversation {
-  readonly sessionId: string
-  readonly sessionFile: string
-  readonly dataHome: string
-}
+const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 
-export interface WorkspaceSelection {
-  readonly taskId: string
-  readonly workspaceId?: string
-}
+export const WorkspaceConversationSchema = Schema.Struct({
+  sessionId: Schema.NonEmptyString,
+  sessionFile: Schema.NonEmptyString,
+  dataHome: Schema.NonEmptyString,
+})
+export type WorkspaceConversation = typeof WorkspaceConversationSchema.Type
 
-export interface WorkspaceExecution {
-  readonly sessionId: string
-  readonly taskKey: string
-  readonly attemptId: string
-  readonly generation: string
-  readonly logs?: string
-}
+export const WorkspaceSelectionSchema = Schema.Struct({
+  taskId: WorkspaceId,
+  workspaceId: Schema.optional(WorkspaceId),
+})
+export type WorkspaceSelection = typeof WorkspaceSelectionSchema.Type
+
+export const WorkspaceExecutionSchema = Schema.Struct({
+  sessionId: Schema.NonEmptyString,
+  taskKey: Schema.NonEmptyString,
+  attemptId: Schema.NonEmptyString,
+  generation: Schema.NonEmptyString,
+  logs: Schema.optional(Schema.String),
+})
+export type WorkspaceExecution = typeof WorkspaceExecutionSchema.Type
+export const sameExecution = Schema.toEquivalence(WorkspaceExecutionSchema)
 
 export const WorkspaceProcessSchema = Schema.Struct({
   pid: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
@@ -58,6 +65,9 @@ export type WorkspaceProcess = typeof WorkspaceProcessSchema.Type
 export const WorkspaceEffectSchema = Schema.Literals(['native-file-write', 'opaque'])
 export type WorkspaceEffect = typeof WorkspaceEffectSchema.Type
 
+const WorkspaceAccessSchema = Schema.Literals(['read', 'write'])
+const WorkspaceOriginSchema = Schema.Literals(['pre-existing', 'managed'])
+
 export const WorkspaceGrantSchema = Schema.Struct({
   namespaceId: WorkspaceId,
   repositoryId: WorkspaceId,
@@ -66,86 +76,103 @@ export const WorkspaceGrantSchema = Schema.Struct({
   acquisitionId: Schema.optional(WorkspaceId),
   reservationId: Schema.optional(WorkspaceId),
   taskId: Schema.optional(WorkspaceId),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  revision: NonNegativeInt,
   cwd: Schema.NonEmptyString,
   checkout: Schema.NonEmptyString,
-  access: Schema.Literals(['read', 'write']),
-  origin: Schema.Literals(['pre-existing', 'managed']),
+  access: WorkspaceAccessSchema,
+  origin: WorkspaceOriginSchema,
   // The destination the authority validated for a native file write. The executor opens
   // its own operand, so operands that could resolve elsewhere are refused.
   path: Schema.optional(Schema.NonEmptyString),
 })
 export type WorkspaceGrant = typeof WorkspaceGrantSchema.Type
+export const sameGrant = Schema.toEquivalence(WorkspaceGrantSchema)
 
-export interface WorkspaceBinding {
-  readonly conversation: WorkspaceConversation
-  readonly taskId?: string
-  readonly workspaceId: string
-  readonly cwd: string
-  readonly revision: number
-}
+export const WorkspaceBindingSchema = Schema.Struct({
+  conversation: WorkspaceConversationSchema,
+  taskId: Schema.optional(WorkspaceId),
+  workspaceId: WorkspaceId,
+  cwd: Schema.NonEmptyString,
+  revision: NonNegativeInt,
+})
+export type WorkspaceBinding = typeof WorkspaceBindingSchema.Type
+export const sameBinding = Schema.toEquivalence(WorkspaceBindingSchema)
 
 // The host consumes this once, after settling the entire old tool batch.
 // A persisted operation alone never authorizes replay of the host transition.
-export interface WorkspaceHandoff {
-  readonly operationId: string
-  readonly from: WorkspaceBinding
-  readonly target: WorkspaceGrant
-  readonly reason: string
-}
+export const WorkspaceHandoffSchema = Schema.Struct({
+  operationId: WorkspaceId,
+  from: WorkspaceBindingSchema,
+  target: WorkspaceGrantSchema,
+  reason: Schema.NonEmptyString,
+})
+export type WorkspaceHandoff = typeof WorkspaceHandoffSchema.Type
 
-export type WorkspaceAuthorization =
-  | { readonly kind: 'ready'; readonly grant: WorkspaceGrant; readonly warning?: string }
-  | { readonly kind: 'rebind'; readonly handoff: WorkspaceHandoff }
+export const WorkspaceAuthorizationSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('ready'),
+    grant: WorkspaceGrantSchema,
+    warning: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({ kind: Schema.Literal('rebind'), handoff: WorkspaceHandoffSchema }),
+])
+export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
-export interface WorkspaceOperation {
-  readonly access: 'read' | 'write'
-  readonly effect?: WorkspaceEffect
-  readonly within?: WorkspaceGrant
-  readonly path?: string
-  readonly cwd?: string
-  readonly delegated?: boolean
-  readonly execution?: WorkspaceExecution
-}
+export const WorkspaceOperationSchema = Schema.Struct({
+  access: WorkspaceAccessSchema,
+  effect: Schema.optional(WorkspaceEffectSchema),
+  within: Schema.optional(WorkspaceGrantSchema),
+  path: Schema.optional(Schema.NonEmptyString),
+  cwd: Schema.optional(Schema.NonEmptyString),
+  delegated: Schema.optional(Schema.Boolean),
+  execution: Schema.optional(WorkspaceExecutionSchema),
+})
+export type WorkspaceOperation = typeof WorkspaceOperationSchema.Type
 
-export type WorkspaceExecutionFact =
-  | { readonly kind: 'launch-intent'; readonly execution: WorkspaceExecution }
-  | { readonly kind: 'spawned'; readonly process: WorkspaceProcess }
-  | { readonly kind: 'started' }
-  | { readonly kind: 'observed'; readonly processes: readonly WorkspaceProcess[] }
-  | { readonly kind: 'quiescent'; readonly reason: string }
-  | { readonly kind: 'launch-failed'; readonly reason: string }
-  | { readonly kind: 'unknown'; readonly reason: string }
-  | { readonly kind: 'operation-started' }
-  | { readonly kind: 'operation-completed' }
+export const WorkspaceExecutionFactSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('launch-intent'), execution: WorkspaceExecutionSchema }),
+  Schema.Struct({ kind: Schema.Literal('spawned'), process: WorkspaceProcessSchema }),
+  Schema.Struct({ kind: Schema.Literal('started') }),
+  Schema.Struct({
+    kind: Schema.Literal('observed'),
+    processes: Schema.Array(WorkspaceProcessSchema),
+  }),
+  Schema.Struct({ kind: Schema.Literal('quiescent'), reason: Schema.NonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal('launch-failed'), reason: Schema.NonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal('unknown'), reason: Schema.NonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal('operation-started') }),
+  Schema.Struct({ kind: Schema.Literal('operation-completed') }),
+])
+export type WorkspaceExecutionFact = typeof WorkspaceExecutionFactSchema.Type
 
-export interface WorkspaceView {
-  readonly repositoryId: string
-  readonly taskId?: string
-  readonly taskLabel?: string
-  readonly workspaceId: string
-  readonly path: string
-  readonly origin: 'pre-existing' | 'managed'
-  readonly reservationId?: string
-  readonly outcome: 'active' | 'preserved-for-resume' | 'blocked' | 'review-required'
-  readonly reason: string
-  readonly nextAction: string
-  readonly uses: readonly {
-    readonly id: string
-    readonly access: 'read' | 'write'
-    readonly stage: string
-    readonly effect?: WorkspaceEffect
-    readonly path?: string
-    readonly reason?: string
-    readonly execution?: WorkspaceExecution
-    readonly logsAvailable?: boolean
-  }[]
-  readonly pending: readonly {
-    readonly id: string
-    readonly kind: string
-    readonly stage: string
-  }[]
-}
+export const WorkspaceViewSchema = Schema.Struct({
+  repositoryId: WorkspaceId,
+  taskId: Schema.optional(WorkspaceId),
+  taskLabel: Schema.optional(Schema.String),
+  workspaceId: WorkspaceId,
+  path: Schema.NonEmptyString,
+  origin: WorkspaceOriginSchema,
+  reservationId: Schema.optional(WorkspaceId),
+  outcome: Schema.Literals(['active', 'preserved-for-resume', 'blocked', 'review-required']),
+  reason: Schema.NonEmptyString,
+  nextAction: Schema.NonEmptyString,
+  uses: Schema.Array(
+    Schema.Struct({
+      id: WorkspaceId,
+      access: WorkspaceAccessSchema,
+      stage: Schema.NonEmptyString,
+      effect: Schema.optional(WorkspaceEffectSchema),
+      path: Schema.optional(Schema.NonEmptyString),
+      reason: Schema.optional(Schema.String),
+      execution: Schema.optional(WorkspaceExecutionSchema),
+      logsAvailable: Schema.optional(Schema.Boolean),
+    })
+  ),
+  pending: Schema.Array(
+    Schema.Struct({ id: WorkspaceId, kind: Schema.NonEmptyString, stage: Schema.NonEmptyString })
+  ),
+})
+export type WorkspaceView = typeof WorkspaceViewSchema.Type
 
 export type HostReplace = (
   target: WorkspaceGrant
@@ -174,7 +201,7 @@ export interface WorkspaceLifecycle {
   // With a taskId, only the views of exactly that task, across every repository.
   inspect(input: {
     readonly cwd?: string
-    readonly taskId?: string
+    readonly taskId?: WorkspaceId
   }): Effect.Effect<readonly WorkspaceView[], WorkspaceError>
   // A child verifies the parent's fenced use; it must not acquire a competing writer.
   validate(grant: WorkspaceGrant): Effect.Effect<void, WorkspaceError>

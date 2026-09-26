@@ -27,7 +27,6 @@ import { hasErrorCode, lstatIfExists, sqliteCode } from './workspace-paths.ts'
 export const PROTOCOL_VERSION = 1
 export const SCHEMA_VERSION = 3
 const BUSY_TIMEOUT_MS = 5000
-export const UUID = WorkspaceId
 
 export type SqlRow = Record<string, unknown>
 
@@ -119,8 +118,7 @@ export const GATE_SQL = `
   PRAGMA user_version = ${SCHEMA_VERSION};
 `
 
-export const workspaceId = (): string => randomUUID()
-export const isUuid = (value: string): boolean => Schema.is(UUID)(value)
+export const newId = (): WorkspaceId => WorkspaceId.make(randomUUID())
 export const encode = (value: unknown): string => {
   const result = JSON.stringify(value)
   if (typeof result !== 'string') return invalid('Workspace record cannot be encoded')
@@ -148,7 +146,6 @@ export const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
 }
 export const now = (): number => Date.now()
 export const hash = (text: string): string => createHash('sha256').update(text).digest('hex')
-export const jsonEqual = (left: unknown, right: unknown): boolean => encode(left) === encode(right)
 export const errorText = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
 

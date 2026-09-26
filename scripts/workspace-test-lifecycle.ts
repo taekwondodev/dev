@@ -9,6 +9,7 @@ import {
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceHandoff,
+  type WorkspaceId,
   type WorkspaceLifecycle,
   type WorkspaceOperation,
   type WorkspaceSelection,
@@ -42,7 +43,7 @@ export interface TestLifecycle {
   }): Promise<TestAttachment>
   inspect(input: {
     readonly cwd?: string
-    readonly taskId?: string
+    readonly taskId?: WorkspaceId
   }): Promise<readonly WorkspaceView[]>
   validate(grant: WorkspaceGrant): Promise<void>
   close(): Promise<void>
