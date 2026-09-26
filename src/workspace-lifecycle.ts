@@ -1,4 +1,4 @@
-import { Worker } from 'node:worker_threads'
+import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threads'
 import { Deferred, Duration, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
 import {
   WorkspaceError,
@@ -56,10 +56,22 @@ const byteLength = (value: unknown): number => {
   }
 }
 
+// Everything this client does with its worker. Checks wrap the real worker here to inject
+// faults, such as a lost acknowledgment, without patching Node's prototypes.
+export interface WorkspaceWorkerPort {
+  postMessage(value: unknown, transferList: readonly Transferable[]): void
+  on(event: 'message' | 'error' | 'exit', listener: (value: unknown) => void): unknown
+  terminate(): Promise<unknown>
+}
+export type StartWorkspaceWorker = (url: URL, options: WorkerOptions) => WorkspaceWorkerPort
+
+const startWorkerThread: StartWorkspaceWorker = (url, options) => new Worker(url, options)
+
 // The worker owns the authority; this client correlates its acknowledgments. Worker events
 // arrive on Node's event loop, so they complete requests through their deferreds directly.
 export const makeWorkspaceLifecycle = (options?: {
   readonly root?: string
+  readonly startWorker?: StartWorkspaceWorker
 }): Effect.Effect<WorkspaceLifecycle, never, Scope.Scope> =>
   Effect.gen(function* () {
     const pending = new Map<number, PendingRequest>()
@@ -73,10 +85,13 @@ export const makeWorkspaceLifecycle = (options?: {
     let nextRequestId = 0
     let nextCallbackId = 0
 
-    const worker = new Worker(new URL('./workspace-worker.ts', import.meta.url), {
-      workerData: options?.root === undefined ? {} : { root: options.root },
-      execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
-    })
+    const worker = (options?.startWorker ?? startWorkerThread)(
+      new URL('./workspace-worker.ts', import.meta.url),
+      {
+        workerData: options?.root === undefined ? {} : { root: options.root },
+        execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
+      }
+    )
 
     const fail = (cause: WorkspaceError): void => {
       if (phase === 'failed' || phase === 'closed') return

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { EventEmitter } from 'node:events'
 import { DatabaseSync } from 'node:sqlite'
 import {
   chmodSync,
@@ -18,6 +17,7 @@ import { tmpdir, userInfo } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Worker } from 'node:worker_threads'
+import { Schema } from 'effect'
 import {
   WorkspaceError,
   type WorkspaceExecution,
@@ -25,57 +25,67 @@ import {
   type WorkspaceGrant,
 } from '../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../src/workspace-authority.ts'
+import type { StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
+import {
+  WorkspaceWorkerMessageSchema,
+  type WorkspaceRpcOperation,
+} from '../src/workspace-protocol.ts'
 import {
   openLifecycle,
   type TestAttachment,
   type TestLifecycle,
 } from './workspace-test-lifecycle.ts'
 
-let captureNextWorker = false
-let capturedWorker: Worker | undefined
-let dropNextRpcAckFor: 'authorize' | 'report-execution' | undefined
-const lostAckIds = new WeakMap<Worker, number>()
-const originalWorkerPostMessage = Worker.prototype.postMessage as (...args: unknown[]) => unknown
-Object.defineProperty(Worker.prototype, 'postMessage', {
-  configurable: true,
-  value: function (this: Worker, value: unknown, ...rest: unknown[]) {
-    if (typeof value === 'object' && value !== null && 'id' in value) {
-      const envelope = value as { id?: unknown; request?: { op?: unknown } }
-      if (captureNextWorker && typeof envelope.id === 'number' && envelope.request !== undefined) {
-        // oxlint-disable-next-line typescript/no-this-alias
-        capturedWorker = this
-        captureNextWorker = false
-      }
-      if (
-        dropNextRpcAckFor !== undefined &&
-        typeof envelope.id === 'number' &&
-        envelope.request?.op === dropNextRpcAckFor
-      ) {
-        lostAckIds.set(this, envelope.id)
-        dropNextRpcAckFor = undefined
-      }
+const isWorkerMessage = Schema.is(WorkspaceWorkerMessageSchema)
+
+// Wraps the real worker at the lifecycle's seam. Once armed, it drops the next successful
+// acknowledgment of one operation and terminates the worker, as a crash between the commit
+// and its reply would. It recognizes acknowledgments with the protocol's own schema.
+const faultInjector = () => {
+  let started: Worker | undefined
+  let armedFor: WorkspaceRpcOperation | undefined
+  const dropped: WorkspaceRpcOperation[] = []
+  const startWorker: StartWorkspaceWorker = (url, options) => {
+    const worker = new Worker(url, options)
+    started = worker
+    return {
+      postMessage: (value, transferList) => worker.postMessage(value, transferList),
+      terminate: () => worker.terminate(),
+      on: (event, listener) =>
+        worker.on(
+          event,
+          event === 'message'
+            ? (value: unknown) => {
+                if (
+                  armedFor !== undefined &&
+                  isWorkerMessage(value) &&
+                  !('type' in value) &&
+                  value.ok &&
+                  value.op === armedFor
+                ) {
+                  dropped.push(value.op)
+                  armedFor = undefined
+                  void worker.terminate()
+                  return
+                }
+                listener(value)
+              }
+            : listener
+        ),
     }
-    return Reflect.apply(originalWorkerPostMessage, this, [value, ...rest])
-  },
-})
-const originalEventEmit = EventEmitter.prototype.emit as (...args: unknown[]) => unknown
-Object.defineProperty(EventEmitter.prototype, 'emit', {
-  configurable: true,
-  value: function (this: EventEmitter, eventName: string | symbol, ...args: unknown[]) {
-    if (this instanceof Worker && eventName === 'message') {
-      const payload = args[0]
-      if (typeof payload === 'object' && payload !== null && 'id' in payload) {
-        const response = payload as { id?: unknown; ok?: unknown }
-        if (lostAckIds.get(this) === response.id && response.ok === true) {
-          lostAckIds.delete(this)
-          void this.terminate()
-          return true
-        }
-      }
-    }
-    return Reflect.apply(originalEventEmit, this, [eventName, ...args]) as boolean
-  },
-})
+  }
+  return {
+    startWorker,
+    dropped,
+    dropNextAcknowledgment: (operation: WorkspaceRpcOperation) => {
+      armedFor = operation
+    },
+    worker: (): Worker => {
+      if (started === undefined) throw new Error('The lifecycle started no worker')
+      return started
+    },
+  }
+}
 
 const inside = (parent: string, path: string) => {
   const offset = relative(parent, path)
@@ -647,18 +657,15 @@ try {
   git(['commit', '--quiet', '-m', 'worker-failure-fixture'], failureRepo)
 
   const deathRoot = join(sandbox, 'worker-death-authority')
-  captureNextWorker = true
-  capturedWorker = undefined
-  const deathLifecycle = await openLifecycle({ root: deathRoot })
+  const death = faultInjector()
+  const deathLifecycle = await openLifecycle({ root: deathRoot, startWorker: death.startWorker })
   const deathAttachment = await deathLifecycle.attach({
     conversation: conversation('worker-death'),
     cwd: failureRepo,
   })
   const deathAdmission = await deathAttachment.authorize({ access: 'write' })
   assert.equal(deathAdmission.kind, 'ready')
-  const deathWorker = capturedWorker as Worker | undefined
-  if (deathWorker === undefined) throw new Error('Worker-death fixture did not capture its worker')
-  await deathWorker.terminate()
+  await death.worker().terminate()
   await expectWorkspaceError(deathLifecycle.inspect({}), ['unavailable'])
   await deathLifecycle.close()
   const deathRecovery = await openLifecycle({ root: deathRoot })
@@ -673,13 +680,18 @@ try {
   await deathRecovery.close()
 
   const lostAckRoot = join(sandbox, 'lost-ack-authority')
-  const lostAckLifecycle = await openLifecycle({ root: lostAckRoot })
+  const lostAck = faultInjector()
+  const lostAckLifecycle = await openLifecycle({
+    root: lostAckRoot,
+    startWorker: lostAck.startWorker,
+  })
   const lostAckAttachment = await lostAckLifecycle.attach({
     conversation: conversation('lost-ack'),
     cwd: failureRepo,
   })
-  dropNextRpcAckFor = 'authorize'
+  lostAck.dropNextAcknowledgment('authorize')
   await expectWorkspaceError(lostAckAttachment.authorize({ access: 'write' }), ['unavailable'])
+  assert.deepEqual(lostAck.dropped, ['authorize'], 'the authorize acknowledgment was dropped')
   const lostAckBinding = lostAckAttachment.binding
   await lostAckLifecycle.close()
   const lostAckRecovery = await openLifecycle({ root: lostAckRoot })
@@ -1027,7 +1039,11 @@ try {
   )
 
   const scopedLostAckRoot = join(sandbox, 'scoped-lost-ack-authority')
-  const scopedLostAckLifecycle = await openLifecycle({ root: scopedLostAckRoot })
+  const scopedLostAck = faultInjector()
+  const scopedLostAckLifecycle = await openLifecycle({
+    root: scopedLostAckRoot,
+    startWorker: scopedLostAck.startWorker,
+  })
   const scopedLostAckAttachment = await scopedLostAckLifecycle.attach({
     conversation: conversation('scoped-lost-ack'),
     cwd: failureRepo,
@@ -1041,10 +1057,15 @@ try {
       path: 'file.txt',
     })
   )
-  dropNextRpcAckFor = 'report-execution'
+  scopedLostAck.dropNextAcknowledgment('report-execution')
   await expectWorkspaceError(
     scopedLostAckAttachment.reportExecution(scopedLostAckOperation, { kind: 'operation-started' }),
     ['unavailable']
+  )
+  assert.deepEqual(
+    scopedLostAck.dropped,
+    ['report-execution'],
+    'the operation-start acknowledgment was dropped'
   )
   await scopedLostAckLifecycle.close()
   const scopedLostAckRecovery = await openLifecycle({ root: scopedLostAckRoot })

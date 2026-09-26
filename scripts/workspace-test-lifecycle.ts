@@ -13,7 +13,7 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { makeWorkspaceLifecycle, type StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
 import { makeWorkspaceShell, type WorkspaceAdmission } from '../src/workspace-shell.ts'
 import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 
@@ -62,7 +62,10 @@ export const promisedAttachment = (attachment: WorkspaceAttachment): TestAttachm
   close: () => Effect.runPromise(attachment.close),
 })
 
-export const openLifecycle = async (options: { readonly root: string }): Promise<TestLifecycle> => {
+export const openLifecycle = async (options: {
+  readonly root: string
+  readonly startWorker?: StartWorkspaceWorker
+}): Promise<TestLifecycle> => {
   const scope = await Effect.runPromise(Scope.make())
   const lifecycle = await Effect.runPromise(Scope.provide(scope)(makeWorkspaceLifecycle(options)))
   return {
