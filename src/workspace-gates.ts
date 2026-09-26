@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { Schema } from 'effect'
-import type { AuthorityPaths } from './workspace-authority.ts'
+import type { AuthorityPaths } from './workspace-authority-root.ts'
 import {
   blocked,
   requireReview,
@@ -18,10 +18,7 @@ import {
   SCHEMA_VERSION,
   PROTOCOL_SQL,
   GATE_SQL,
-  hash,
   errorText,
-  privateDirectory,
-  privateFile,
   first,
   textField,
   numberField,
@@ -29,6 +26,7 @@ import {
   expectedCatalog,
   createPublishedDatabase,
 } from './workspace-sqlite.ts'
+import { hash, privateDirectory, privateFile } from './workspace-platform.ts'
 
 const SHARED_GATE_WAIT_MS = 250
 

@@ -55,7 +55,6 @@ export const makeFixtureView = (input: {
   ({
     repositoryId: input.descriptor.repoId,
     taskId: input.descriptor.taskId,
-    taskLabel: input.descriptor.label,
     workspaceId: input.descriptor.workspaceId,
     path: input.descriptor.path,
     origin: input.descriptor.origin,

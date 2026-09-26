@@ -83,11 +83,6 @@ const sortedViews = (views: readonly WorkspaceView[]): WorkspaceView[] =>
       left.workspaceId.localeCompare(right.workspaceId)
   )
 
-const taskIdentity = (view: WorkspaceView): string =>
-  view.taskLabel === undefined || view.taskLabel === view.taskId
-    ? `task ${view.taskId ?? '(unassigned)'}`
-    : `task ${view.taskLabel} [${view.taskId}]`
-
 const usesText = (view: WorkspaceView): string[] => {
   if (view.uses.length === 0) return ['  uses: none recorded']
   return view.uses.map(({ execution, id, access, stage, logsAvailable }) => {
@@ -105,7 +100,7 @@ const usesText = (view: WorkspaceView): string[] => {
 }
 
 const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] => [
-  `${taskIdentity(view)} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current binding]' : ''}`,
+  `task ${view.taskId ?? '(unassigned)'} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current binding]' : ''}`,
   `  repository: ${view.repositoryId}`,
   `  path: ${view.path}`,
   `  origin: ${view.origin}`,

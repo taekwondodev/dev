@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import {
   closeSync,
   constants,
@@ -6,23 +6,15 @@ import {
   fsyncSync,
   lstatSync,
   linkSync,
-  mkdirSync,
   openSync,
   unlinkSync,
 } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { userInfo } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Schema } from 'effect'
-import {
-  blocked,
-  invalid,
-  requireReview,
-  unavailable,
-  WorkspaceError,
-  WorkspaceId,
-} from './workspace-domain.ts'
+import { blocked, invalid, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
 import { hasErrorCode, lstatIfExists, sqliteCode } from './workspace-paths.ts'
+import { effectiveUid, fsyncParent, privateDirectory, privateFile } from './workspace-platform.ts'
 
 export const PROTOCOL_VERSION = 1
 export const SCHEMA_VERSION = 3
@@ -118,7 +110,6 @@ export const GATE_SQL = `
   PRAGMA user_version = ${SCHEMA_VERSION};
 `
 
-export const newId = (): WorkspaceId => WorkspaceId.make(randomUUID())
 export const encode = (value: unknown): string => {
   const result = JSON.stringify(value)
   if (typeof result !== 'string') return invalid('Workspace record cannot be encoded')
@@ -144,73 +135,8 @@ export const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
     return requireReview(`Corrupt ${label}: persisted record failed schema validation`)
   }
 }
-export const now = (): number => Date.now()
-export const hash = (text: string): string => createHash('sha256').update(text).digest('hex')
 export const errorText = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
-
-export const fsyncPath = (path: string, directory = false): void => {
-  const flags = constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : 0)
-  const fd = openSync(path, flags)
-  try {
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-}
-export const fsyncParent = (path: string): void => fsyncPath(dirname(path), true)
-export const effectiveUid = (): number => process.getuid?.() ?? userInfo().uid
-
-export const privateDirectory = (path: string, create: boolean): void => {
-  let info = lstatIfExists(path)
-  if (info === undefined && create) {
-    try {
-      mkdirSync(path, { mode: 0o700 })
-      fsyncParent(path)
-      fsyncPath(path, true)
-    } catch (cause) {
-      if (!hasErrorCode(cause, 'EEXIST')) throw cause
-    }
-    info = lstatIfExists(path)
-  }
-  if (info === undefined) return unavailable(`Workspace authority directory is missing: ${path}`)
-  if (!info.isDirectory() || info.isSymbolicLink())
-    return unavailable(`Unsafe workspace authority directory: ${path}`)
-  if (info.uid !== effectiveUid() || (info.mode & 0o077) !== 0)
-    return unavailable(
-      `Workspace authority directory is not private or is not owned by this account: ${path}`
-    )
-}
-
-export const ensureDirectoryPath = (path: string): void => {
-  const info = lstatIfExists(path)
-  if (info !== undefined) {
-    if (!info.isDirectory() || info.isSymbolicLink())
-      unavailable(`Unsafe workspace authority parent: ${path}`)
-    return
-  }
-  ensureDirectoryPath(dirname(path))
-  try {
-    mkdirSync(path, { mode: 0o700 })
-    fsyncParent(path)
-    fsyncPath(path, true)
-  } catch (cause) {
-    if (!hasErrorCode(cause, 'EEXIST')) throw cause
-  }
-  const created = lstatIfExists(path)
-  if (created === undefined || !created.isDirectory() || created.isSymbolicLink())
-    unavailable(`Cannot create workspace authority directory: ${path}`)
-}
-
-export const privateFile = (path: string): void => {
-  const info = lstatIfExists(path)
-  if (info === undefined || !info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
-    return unavailable(`Unsafe workspace authority file: ${path}`)
-  if (info.uid !== effectiveUid() || (info.mode & 0o077) !== 0)
-    return unavailable(
-      `Workspace authority file is not private or is not owned by this account: ${path}`
-    )
-}
 
 const syncNewFile = (path: string): void => {
   let fd: number | undefined

@@ -13,11 +13,8 @@ import {
 import { canonicalGitWorkspace, type FileIdentity, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
 import {
-  newId,
   encode,
   parseRecord,
-  now,
-  hash,
   errorText,
   rows,
   first,
@@ -25,6 +22,7 @@ import {
   numberField,
   decodeOrFail,
 } from './workspace-sqlite.ts'
+import { newId, now, hash } from './workspace-platform.ts'
 
 const PhysicalSchema = Schema.Struct({
   device: Schema.NonEmptyString,

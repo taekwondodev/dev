@@ -23,7 +23,6 @@ import { makeClaims } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../src/workspace-native-write.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
-import { allocateDetachedWorktree, canonicalGitWorkspace } from '../src/workspace-git.ts'
 import type { AttemptView } from '../src/work-domain.ts'
 
 const exec = promisify(execFile)
@@ -714,43 +713,6 @@ try {
     await attachment.close()
     await authority.close()
   }
-  await claim(
-    'filtered target commits are refused before checkout effects or destination creation',
-    async () => {
-      await writeFile(join(cwd, '.gitattributes'), '*.txt filter=fixture\n')
-      await exec('git', ['-C', cwd, 'add', '.gitattributes'])
-      await exec('git', [
-        '-C',
-        cwd,
-        '-c',
-        'user.name=Workspace Fixture',
-        '-c',
-        'user.email=fixture@example.invalid',
-        '-c',
-        'commit.gpgsign=false',
-        'commit',
-        '--quiet',
-        '-m',
-        'Filtered checkout fixture',
-      ])
-      const filterMarker = join(root, 'checkout-filter-ran')
-      await exec('git', [
-        '-C',
-        cwd,
-        'config',
-        'filter.fixture.smudge',
-        `touch ${JSON.stringify(filterMarker)}`,
-      ])
-      const source = canonicalGitWorkspace(cwd)
-      const filteredDestination = join(root, 'filtered-destination')
-      assert.throws(
-        () => allocateDetachedWorktree(source, filteredDestination, source.head),
-        /checkout filter effects are not controlled/
-      )
-      await assert.rejects(readFile(filterMarker), { code: 'ENOENT' })
-      await assert.rejects(realpath(filteredDestination), { code: 'ENOENT' })
-    }
-  )
   console.log(
     JSON.stringify(
       {

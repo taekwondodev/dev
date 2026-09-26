@@ -18,6 +18,7 @@ import {
   validateProtocol,
   type GateRelease,
 } from './workspace-gates.ts'
+import { authorityPaths, type AuthorityPaths } from './workspace-authority-root.ts'
 import type { GitWorkspace } from './workspace-git.ts'
 import {
   canonicalPath,
@@ -41,14 +42,9 @@ import {
 import {
   PROTOCOL_VERSION,
   SCHEMA_VERSION,
-  newId,
   encode,
   parseRecord,
   errorText,
-  fsyncPath,
-  fsyncParent,
-  privateDirectory,
-  ensureDirectoryPath,
   assertSqliteSafety,
   rows,
   first,
@@ -60,6 +56,13 @@ import {
   transaction,
   type SqlRow,
 } from './workspace-sqlite.ts'
+import {
+  newId,
+  fsyncPath,
+  fsyncParent,
+  privateDirectory,
+  ensureDirectoryPath,
+} from './workspace-platform.ts'
 
 const canonicalRoot = (requested: string): string => {
   if (!isAbsolute(requested)) invalid('Workspace authority root must be an absolute path')
@@ -149,22 +152,6 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     db?.close()
   }
 }
-export interface AuthorityPaths {
-  readonly root: string
-  readonly protocol: string
-  readonly catalog: string
-  readonly repos: string
-  readonly gates: string
-  readonly worktrees: string
-}
-const makePaths = (root: string): AuthorityPaths => ({
-  root,
-  protocol: join(root, 'protocol.sqlite'),
-  catalog: join(root, 'catalog.sqlite'),
-  repos: join(root, 'repos'),
-  gates: join(root, 'gates'),
-  worktrees: join(root, 'worktrees'),
-})
 
 const REPOSITORY_ROW =
   'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories'
@@ -228,7 +215,7 @@ export class WorkspaceAuthority {
 
   constructor(root: string) {
     this.root = canonicalRoot(root)
-    this.paths = makePaths(this.root)
+    this.paths = authorityPaths(this.root)
   }
 
   private checkStorage(): void {
@@ -237,7 +224,7 @@ export class WorkspaceAuthority {
     this.storageChecked = true
   }
 
-  // Returns the protocol gate held while the catalog was matched to the namespace.
+  // The caller owns the returned protocol gate.
   private joinNamespace(): { readonly id: WorkspaceId; readonly release: GateRelease } {
     const id = validateProtocol(this.paths.protocol)
     const release = acquireProtocolGate(this.paths.protocol, this.root, id)
@@ -279,7 +266,7 @@ export class WorkspaceAuthority {
       const children = [this.paths.repos, this.paths.gates, this.paths.worktrees]
       const hasEvidence = children.some(directory => {
         try {
-          return lstatSync(directory).isDirectory() && requireEntries(directory).length > 0
+          return lstatSync(directory).isDirectory() && entriesIfExists(directory).length > 0
         } catch {
           return true
         }
@@ -307,7 +294,7 @@ export class WorkspaceAuthority {
     const protocol = lstatIfExists(this.paths.protocol)
     const catalog = lstatIfExists(this.paths.catalog)
     if (protocol === undefined && catalog === undefined) {
-      const entries = requireEntries(this.root)
+      const entries = entriesIfExists(this.root)
       if (entries.length === 0) return undefined
       requireReview(`Workspace authority has files but no valid namespace markers: ${this.root}`)
     }
@@ -554,25 +541,16 @@ export class WorkspaceAuthority {
     }
   }
 
-  private commit(): void {
+  close(): void {
     if (this.closed) return
-    let cause: unknown
-    try {
-      this.protocolRelease?.()
-    } catch (error) {
-      cause = error
-    }
+    const releaseProtocol = this.protocolRelease
     this.protocolRelease = undefined
     this.closed = true
-    if (cause !== undefined) throw cause
-  }
-
-  close(): void {
-    this.commit()
+    releaseProtocol?.()
   }
 }
 
-const requireEntries = (directory: string): string[] => {
+const entriesIfExists = (directory: string): string[] => {
   try {
     return readdirSync(directory)
   } catch (cause) {

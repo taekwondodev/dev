@@ -148,12 +148,3 @@ export const addDetachedWorktree = (
     throw gitBlocked(`Created worktree does not match the recorded allocation: ${destination}`)
   return created
 }
-
-export const allocateDetachedWorktree = (
-  source: GitWorkspace,
-  destination: string,
-  commit: string
-): GitWorkspace => {
-  assertManagedCheckoutSupported(source, commit)
-  return addDetachedWorktree(source, destination, commit)
-}

@@ -159,7 +159,6 @@ export type WorkspaceExecutionFact = typeof WorkspaceExecutionFactSchema.Type
 export const WorkspaceViewSchema = Schema.Struct({
   repositoryId: WorkspaceId,
   taskId: Schema.optional(WorkspaceId),
-  taskLabel: Schema.optional(Schema.String),
   workspaceId: WorkspaceId,
   path: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,

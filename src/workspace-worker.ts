@@ -1,7 +1,13 @@
 import { parentPort, workerData } from 'node:worker_threads'
+import {
+  authorizeOperation,
+  reportExecutionFact,
+  validateDurableGrant,
+} from './workspace-admission.ts'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 import { WorkspaceError } from './workspace-domain.ts'
 import { WorkspaceEngine, type EngineAttachment } from './workspace-engine.ts'
+import { inspectWorkspaces } from './workspace-inspect.ts'
 import {
   decodeWorkspaceWorkerData,
   decodeWorkspaceParentMessage,
@@ -10,6 +16,7 @@ import {
   type WorkspaceRpcResults,
   type WorkspaceWorkerMessage,
 } from './workspace-protocol.ts'
+import { performHandoff, selectWorkspace } from './workspace-transitions.ts'
 
 const MAX_ATTACHMENTS = 256
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024
@@ -38,27 +45,29 @@ const failResponse = (id: number, cause: unknown): void => {
   send({ id, ok: false, outcome: outcomeOf(cause), message: messageOf(cause) })
 }
 
-let engine: WorkspaceEngine | undefined
-try {
-  let data
+const startEngine = (): WorkspaceEngine | undefined => {
   try {
-    data = decodeWorkspaceWorkerData(workerData)
-  } catch {
-    throw new WorkspaceError({
-      outcome: 'invalid',
-      message: 'Workspace worker configuration is invalid',
-    })
+    let data
+    try {
+      data = decodeWorkspaceWorkerData(workerData)
+    } catch {
+      throw new WorkspaceError({
+        outcome: 'invalid',
+        message: 'Workspace worker configuration is invalid',
+      })
+    }
+    const started = new WorkspaceEngine(data.root ?? defaultAuthorityRoot())
+    send({ type: 'ready' })
+    return started
+  } catch (cause) {
+    send({ type: 'startup-failure', outcome: outcomeOf(cause), message: messageOf(cause) })
+    port?.close()
+    return undefined
   }
-  const root = data.root ?? defaultAuthorityRoot()
-  engine = new WorkspaceEngine(root)
-  send({ type: 'ready' })
-} catch (cause) {
-  send({ type: 'startup-failure', outcome: outcomeOf(cause), message: messageOf(cause) })
-  port?.close()
 }
 
-const authority = engine
-if (port !== null && authority !== undefined) {
+const engine = startEngine()
+if (port !== null && engine !== undefined) {
   let nextAttachmentId = 0
   const attachments = new Map<number, EngineAttachment>()
   const callbacks = new Map<number, CallbackWaiter>()
@@ -109,37 +118,53 @@ if (port !== null && authority !== undefined) {
             outcome: 'blocked',
             message: 'Workspace lifecycle has reached its attachment limit',
           })
-        const attachment = await authority.attach(request)
+        const attachment = await engine.attach(request)
         const attachmentId = ++nextAttachmentId
         attachments.set(attachmentId, attachment)
         return { attachmentId, binding: attachment.binding }
       }
-      case 'authorize':
-        return await requireAttachment(request.attachmentId).authorize(request.operation)
-      case 'select':
-        return await requireAttachment(request.attachmentId).select(request.selection)
-      case 'report-execution':
-        await requireAttachment(request.attachmentId).reportExecution(request.grant, request.fact)
-        return null
-      case 'handoff':
-        await requireAttachment(request.attachmentId).handoff(request.transition, target =>
-          hostReplace(request.callbackId, request.attachmentId, {
-            ...request.transition,
-            target,
-          })
+      case 'authorize': {
+        const attachment = requireAttachment(request.attachmentId)
+        return await engine.run(authority =>
+          authorizeOperation(authority, attachment, request.operation)
+        )
+      }
+      case 'select': {
+        const attachment = requireAttachment(request.attachmentId)
+        return await engine.run(authority =>
+          selectWorkspace(authority, attachment, request.selection)
+        )
+      }
+      case 'report-execution': {
+        const attachment = requireAttachment(request.attachmentId)
+        await engine.run(authority =>
+          reportExecutionFact(authority, attachment, request.grant, request.fact)
         )
         return null
+      }
+      case 'handoff': {
+        const attachment = requireAttachment(request.attachmentId)
+        await engine.run(authority =>
+          performHandoff(authority, attachment, request.transition, target =>
+            hostReplace(request.callbackId, request.attachmentId, {
+              ...request.transition,
+              target,
+            })
+          )
+        )
+        return null
+      }
       case 'close-attachment': {
         const attachment = attachments.get(request.attachmentId)
         if (attachment === undefined) return null
         attachments.delete(request.attachmentId)
-        await attachment.close()
+        await engine.closeAttachment(attachment)
         return null
       }
       case 'inspect':
-        return await authority.inspect(request)
+        return await engine.run(authority => inspectWorkspaces(authority, request))
       case 'validate':
-        await authority.validate(request.grant)
+        await engine.run(authority => validateDurableGrant(authority, request.grant))
         return null
       case 'close': {
         if (closing) return null
@@ -156,7 +181,7 @@ if (port !== null && authority !== undefined) {
           .filter(([activeId]) => activeId !== currentCloseId)
           .map(([, promise]) => promise)
         await Promise.allSettled(inFlight)
-        await authority.close()
+        await engine.close()
         attachments.clear()
         return null
       }

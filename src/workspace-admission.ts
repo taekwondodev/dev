@@ -1,12 +1,13 @@
 import { realpathSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, resolve } from 'node:path'
-import { allocateWorkspace } from './workspace-allocation.ts'
+import { allocateDelegatedWorkspace, isolateContendedWriter } from './workspace-allocation.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   isScoped,
   type AttachmentHandle,
   type ConversationState,
+  type CurrentSource,
   type GrantLease,
   type LeaseKind,
 } from './workspace-conversation.ts'
@@ -26,7 +27,6 @@ import {
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
-import type { GitWorkspace } from './workspace-git.ts'
 import { assertDestinationUnchanged, isWithin, resolveWriteDestination } from './workspace-paths.ts'
 import {
   getTask,
@@ -47,9 +47,10 @@ import {
   type BindingRecord,
   type UseRecord,
 } from './workspace-records.ts'
-import { newId, now, transaction } from './workspace-sqlite.ts'
+import { transaction } from './workspace-sqlite.ts'
+import { newId, now } from './workspace-platform.ts'
 
-export const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
+const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<string>()
   owners.add(attachment.token)
   attachment.state.leaseAttachments.set(grant.useId, owners)
@@ -58,12 +59,7 @@ export const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant):
 export const currentSource = (
   authority: WorkspaceAuthority,
   state: ConversationState
-): {
-  repo: WorkspaceId
-  binding: BindingRecord
-  workspace: WorkspaceRecord
-  git: GitWorkspace
-} => {
+): CurrentSource => {
   const binding =
     state.pending !== undefined && state.pending.phase === 'confirmed'
       ? state.pending.targetBinding
@@ -88,10 +84,11 @@ const validateWithinGrant = (
     requireReview('Scoped operation grant was not issued to this attachment')
   const lease = validateGrant(authority, attachment.state, grant)
   const result = inDb(authority, grant.repositoryId, db => {
-    const workspace = getWorkspace(db, grant.workspaceId)
-    const use = getUse(db, grant.useId)
-    if (workspace === undefined || use === undefined)
-      requireReview('Scoped operation grant has no live workspace use')
+    const { workspace, use } = fencedUse(
+      db,
+      grant,
+      'Scoped operation grant has no live workspace use'
+    )
     if (use.effect !== undefined || use.execution !== undefined)
       invalid('A scoped operation must be admitted within an ordinary workspace grant')
     if (use.access !== grant.access || use.stage === 'quiescent')
@@ -105,6 +102,16 @@ const validateWithinGrant = (
 }
 
 export const authorizeOperation = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  operation: WorkspaceOperation
+): WorkspaceAuthorization => {
+  const result = admit(authority, attachment, operation)
+  if (result.kind === 'ready') claimGrant(attachment, result.grant)
+  return result
+}
+
+const admit = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
   operation: WorkspaceOperation
@@ -123,32 +130,20 @@ export const authorizeOperation = (
   if (!isWithin(source.workspace.path, cwd))
     invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
   if (operation.kind === 'read') {
-    const ready = authorizeRead(
-      authority,
-      state,
-      source.repo,
-      source.workspace,
-      source.binding,
-      cwd
-    )
+    const ready = authorizeRead(authority, state, source, cwd)
     if (operation.execution === undefined) return ready
     const base = state.leases.get(ready.grant.useId)
     if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
     return executionUse(authority, state, base, operation.execution)
   }
-  if (operation.kind === 'delegated-write') {
-    const taskId = source.binding.taskId ?? newId()
-    return allocateWorkspace(
+  if (operation.kind === 'delegated-write')
+    return allocateDelegatedWorkspace(
       authority,
       state,
-      source.repo,
-      source.workspace,
-      source.git,
-      taskId,
-      true,
+      source,
+      source.binding.taskId ?? newId(),
       operation.execution
     )
-  }
   const existing = state.writeGrant
   if (
     existing !== undefined &&
@@ -162,16 +157,7 @@ export const authorizeOperation = (
   }
   const reservation = inDb(authority, source.repo, db => getReservation(db, source.workspace.id))
   if (reservation !== undefined && reservation.taskId !== source.binding.taskId)
-    return allocateWorkspace(
-      authority,
-      state,
-      source.repo,
-      source.workspace,
-      source.git,
-      source.binding.taskId ?? newId(),
-      false,
-      operation.execution
-    )
+    return isolateContendedWriter(authority, state, source, source.binding.taskId ?? newId())
   const activeWrites = inDb(authority, source.repo, db =>
     getUseRows(db, source.workspace.id).filter(use => use.access === 'write' && isActiveUse(use))
   )
@@ -179,16 +165,7 @@ export const authorizeOperation = (
   if (foreignActive) {
     if (source.binding.taskId !== undefined)
       blocked(`The selected task has an unresolved writer use: ${source.workspace.path}`)
-    return allocateWorkspace(
-      authority,
-      state,
-      source.repo,
-      source.workspace,
-      source.git,
-      newId(),
-      false,
-      operation.execution
-    )
+    return isolateContendedWriter(authority, state, source, newId())
   }
   let gates: PathGates
   try {
@@ -200,16 +177,7 @@ export const authorizeOperation = (
       source.binding.taskId !== undefined
     )
       throw cause
-    return allocateWorkspace(
-      authority,
-      state,
-      source.repo,
-      source.workspace,
-      source.git,
-      newId(),
-      false,
-      operation.execution
-    )
+    return isolateContendedWriter(authority, state, source, newId())
   }
   try {
     const taskId = source.binding.taskId ?? newId()
@@ -371,11 +339,14 @@ const authorizeScoped = (
 const authorizeRead = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  repo: WorkspaceId,
-  workspace: WorkspaceRecord,
-  binding: BindingRecord,
+  source: CurrentSource,
   cwd: string
 ): WorkspaceAuthorization & { readonly kind: 'ready' } => {
+  const { repo, workspace, binding } = source
+  const ready = (grant: WorkspaceGrant): WorkspaceAuthorization & { readonly kind: 'ready' } => {
+    const warning = writerWarning(authority, state, repo, workspace.id)
+    return { kind: 'ready', grant, ...(warning === undefined ? {} : { warning }) }
+  }
   for (const lease of state.leases.values()) {
     if (
       !lease.released &&
@@ -384,13 +355,7 @@ const authorizeRead = (
       lease.grant.workspaceId === workspace.id &&
       lease.grant.revision === binding.revision
     )
-      return {
-        kind: 'ready',
-        grant: lease.grant,
-        ...(writerWarning(authority, state, repo, workspace.id) === undefined
-          ? {}
-          : { warning: writerWarning(authority, state, repo, workspace.id) }),
-      }
+      return ready(lease.grant)
   }
   const gates = acquirePathGates(authority.paths, workspace.path, false)
   try {
@@ -420,8 +385,7 @@ const authorizeRead = (
       released: false,
     }
     state.leases.set(use.id, lease)
-    const warning = writerWarning(authority, state, repo, workspace.id)
-    return { kind: 'ready', grant, ...(warning === undefined ? {} : { warning }) }
+    return ready(grant)
   } catch (cause) {
     releaseGates(gates)
     throw cause

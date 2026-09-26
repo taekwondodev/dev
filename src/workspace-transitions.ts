@@ -48,7 +48,8 @@ import {
   type UseRecord,
   type OperationRecord,
 } from './workspace-records.ts'
-import { newId, now, errorText, transaction } from './workspace-sqlite.ts'
+import { errorText, transaction } from './workspace-sqlite.ts'
+import { newId, now } from './workspace-platform.ts'
 
 export const resolveSelection = (
   authority: WorkspaceAuthority,

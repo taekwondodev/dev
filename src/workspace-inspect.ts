@@ -12,7 +12,8 @@ import {
   isActiveUse,
   type OperationRecord,
 } from './workspace-records.ts'
-import { errorText, effectiveUid, rows, textField } from './workspace-sqlite.ts'
+import { errorText, rows, textField } from './workspace-sqlite.ts'
+import { effectiveUid } from './workspace-platform.ts'
 import { hasErrorCode } from './workspace-paths.ts'
 
 const logAvailability = (path: string): boolean | undefined => {
@@ -170,7 +171,6 @@ export const inspectWorkspaces = (
           ...(reservation === undefined
             ? {}
             : { taskId: reservation.taskId, reservationId: reservation.id }),
-          ...(reservation === undefined ? {} : { taskLabel: reservation.taskId }),
           workspaceId: workspace.id,
           path: workspace.path,
           origin: workspace.origin,

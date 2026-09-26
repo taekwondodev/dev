@@ -6,11 +6,7 @@ import {
   validateWorkspace,
   type WorkspaceAuthority,
 } from './workspace-authority.ts'
-import {
-  settleDependentsFirst,
-  type ConversationState,
-  type PendingTransition,
-} from './workspace-conversation.ts'
+import { settleDependentsFirst, type ConversationState } from './workspace-conversation.ts'
 import {
   blocked,
   invalid,
@@ -39,7 +35,8 @@ import {
   type WorkspaceRecord,
   type BindingRecord,
 } from './workspace-records.ts'
-import { now, hash, transaction } from './workspace-sqlite.ts'
+import { transaction } from './workspace-sqlite.ts'
+import { now, hash } from './workspace-platform.ts'
 import { resolveSelection } from './workspace-transitions.ts'
 
 const conversationRecord = (
@@ -181,7 +178,7 @@ export const attachConversation = (
     } else {
       const git = canonicalGitWorkspace(input.cwd)
       repoId = authority.registerRepository(git)
-      const workspace = registerWorkspace(authority, repoId, git, 'pre-existing')
+      const workspace = registerWorkspace(authority, repoId, git)
       const actualCwd = realpathSync(resolve(input.cwd))
       if (!isWithin(workspace.path, actualCwd))
         invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
@@ -253,8 +250,7 @@ const retireUnstartedTransition = (authority: WorkspaceAuthority, operationId: s
 const registerWorkspace = (
   authority: WorkspaceAuthority,
   repo: WorkspaceId,
-  git: GitWorkspace,
-  origin: 'pre-existing' | 'managed'
+  git: GitWorkspace
 ): WorkspaceRecord => {
   return inDb(
     authority,
@@ -269,7 +265,7 @@ const registerWorkspace = (
             requireReview(`Workspace allocation is unresolved: ${existing.path}`)
           return existing
         }
-        const record = makeWorkspaceRecord(repo, git, origin)
+        const record = makeWorkspaceRecord(repo, git, 'pre-existing')
         putWorkspace(db, record)
         return record
       }),
@@ -290,11 +286,10 @@ const ensureNoUnresolvedUse = (
 
 export const settleClosingState = (
   authority: WorkspaceAuthority,
-  state: ConversationState,
-  pending: PendingTransition | undefined
+  state: ConversationState
 ): void => {
   state.closing = true
-  const preserved = pending?.targetLease.useId
+  const preserved = state.pending?.targetLease.useId
   const leases = [...state.leases.values()]
   const closing = leases.flatMap(lease => {
     if (lease.useId === preserved) return []

@@ -9,14 +9,17 @@ import {
   type WorkspaceId,
 } from './workspace-domain.ts'
 import type { PathGates } from './workspace-gates.ts'
+import type { GitWorkspace } from './workspace-git.ts'
 import {
   activeDependentUses,
   getUse,
   saveUse,
   type BindingRecord,
   type UseRecord,
+  type WorkspaceRecord,
 } from './workspace-records.ts'
-import { now, transaction } from './workspace-sqlite.ts'
+import { transaction } from './workspace-sqlite.ts'
+import { now } from './workspace-platform.ts'
 
 export type LeaseKind =
   | { readonly kind: 'ordinary' }
@@ -37,6 +40,12 @@ export type GrantLease = LeaseKind & {
 export type ScopedLease = Extract<GrantLease, { readonly withinUseId: WorkspaceId }>
 export const isScoped = (lease: GrantLease): lease is ScopedLease =>
   lease.kind === 'native-file-write' || lease.kind === 'opaque'
+export interface CurrentSource {
+  readonly repo: WorkspaceId
+  readonly binding: BindingRecord
+  readonly workspace: WorkspaceRecord
+  readonly git: GitWorkspace
+}
 export interface GateIntent {
   readonly repositoryId: WorkspaceId
   readonly workspaceId: WorkspaceId

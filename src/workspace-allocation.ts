@@ -3,11 +3,12 @@ import { join } from 'node:path'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   assertNoLiveExecution,
-  type GrantLease,
-  type GateIntent,
-  type HeldPathGate,
-  type PendingTransition,
   type ConversationState,
+  type CurrentSource,
+  type GateIntent,
+  type GrantLease,
+  type HeldPathGate,
+  type LeaseKind,
 } from './workspace-conversation.ts'
 import {
   requireReview,
@@ -27,7 +28,6 @@ import {
   assertManagedCheckoutSupported,
   canonicalGitWorkspace,
   currentCommit,
-  type GitWorkspace,
 } from './workspace-git.ts'
 import { canonicalPathSlot, lstatIfExists } from './workspace-paths.ts'
 import {
@@ -50,15 +50,8 @@ import {
   type UseRecord,
   type OperationRecord,
 } from './workspace-records.ts'
-import {
-  newId,
-  now,
-  errorText,
-  fsyncPath,
-  fsyncParent,
-  privateDirectory,
-  transaction,
-} from './workspace-sqlite.ts'
+import { errorText, transaction } from './workspace-sqlite.ts'
+import { newId, now, fsyncPath, fsyncParent, privateDirectory } from './workspace-platform.ts'
 
 const releaseLocalGates = (state: ConversationState): GateIntent[] => {
   const intents: GateIntent[] = []
@@ -172,29 +165,51 @@ const orderedAllocationGates = (
   }
 }
 
-export const allocateWorkspace = (
+interface Allocation {
+  readonly source: CurrentSource
+  readonly taskId: WorkspaceId
+  readonly workspace: WorkspaceRecord
+  readonly reservation: ReservationRecord
+  readonly intent: OperationRecord
+  readonly confirmed: OperationRecord
+  readonly gates: PathGates
+}
+
+const allocatedUse = (
+  state: ConversationState,
+  allocation: Allocation,
+  bindingRevision: number,
+  execution: WorkspaceExecution | undefined
+): UseRecord => ({
+  id: newId(),
+  workspaceId: allocation.workspace.id,
+  taskId: allocation.taskId,
+  reservationId: allocation.reservation.id,
+  acquisitionId: allocation.intent.acquisitionId,
+  access: 'write',
+  stage: 'authorized',
+  ...(execution === undefined ? {} : { execution }),
+  processes: [],
+  incarnation: state.incarnation,
+  bindingRevision,
+  revision: 0,
+  createdAt: now(),
+  updatedAt: now(),
+})
+
+const allocateWorktree = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  sourceRepo: WorkspaceId,
-  sourceWorkspace: WorkspaceRecord,
-  sourceGit: GitWorkspace,
+  source: CurrentSource,
   taskId: WorkspaceId,
-  delegated: boolean,
-  execution?: WorkspaceExecution
+  reason: 'delegated-writer' | 'checkout-contention',
+  admitWriter: (allocation: Allocation) => WorkspaceAuthorization
 ): WorkspaceAuthorization => {
-  const previousWriteGrant = state.writeGrant
-  if (!delegated)
-    assertNoLiveExecution(
-      authority,
-      state,
-      { workspaceId: sourceWorkspace.id },
-      'moved to a separate worktree'
-    )
   const workspaceIdValue = newId()
   const allocationId = newId()
   const reservationId = newId()
   const acquisitionId = newId()
-  const destinationParent = join(authority.paths.worktrees, sourceRepo)
+  const destinationParent = join(authority.paths.worktrees, source.repo)
   privateDirectory(authority.paths.worktrees, true)
   privateDirectory(destinationParent, true)
   const destination = join(destinationParent, workspaceIdValue)
@@ -206,7 +221,7 @@ export const allocateWorkspace = (
 
   // Taken before the local path gates are released: it never waits, so a contended
   // structure gate fails here with the conversation's admission intact.
-  const structure = acquireStructureGate(authority.paths, sourceGit, sourceRepo)
+  const structure = acquireStructureGate(authority.paths, source.git, source.repo)
   state.parked = true
   let gateIntents: GateIntent[] = []
   let pathGates:
@@ -222,54 +237,54 @@ export const allocateWorkspace = (
     pathGates = orderedAllocationGates(
       authority,
       state,
-      sourceRepo,
-      sourceWorkspace,
+      source.repo,
+      source.workspace,
       { id: workspaceIdValue, path: destination },
       gateIntents
     )
     state.extraGates.push(...pathGates.extras)
-    const commit = currentCommit(sourceGit)
+    const commit = currentCommit(source.git)
     const intent = {
       id: allocationId,
       kind: 'allocation',
       phase: 'intent',
-      repositoryId: sourceRepo,
+      repositoryId: source.repo,
       workspaceId: workspaceIdValue,
       taskId,
       reservationId,
       acquisitionId,
-      sourceRepositoryId: sourceRepo,
-      sourceWorkspaceId: sourceWorkspace.id,
-      sourcePath: sourceWorkspace.path,
+      sourceRepositoryId: source.repo,
+      sourceWorkspaceId: source.workspace.id,
+      sourcePath: source.workspace.path,
       sourceCommit: commit,
       targetPath: destination,
       conversationKey: state.key,
       expectedBindingRevision: state.binding.revision,
-      reason: delegated ? 'delegated-writer' : 'checkout-contention',
+      reason,
       createdAt: now(),
     } satisfies OperationRecord
     operation = intent
-    inDb(authority, sourceRepo, db =>
+    inDb(authority, source.repo, db =>
       transaction(db, () => {
         const binding = getBinding(db, state.key)
         if (
           binding === undefined ||
           binding.revision !== state.binding.revision ||
-          binding.workspaceId !== sourceWorkspace.id
+          binding.workspaceId !== source.workspace.id
         )
           requireReview('Conversation binding changed before worktree allocation')
         const task = getTask(db, taskId)
         if (task === undefined)
-          putTask(db, { id: taskId, repositoryId: sourceRepo, revision: 0, createdAt: now() })
+          putTask(db, { id: taskId, repositoryId: source.repo, revision: 0, createdAt: now() })
         putOperation(db, intent)
       })
     )
-    assertManagedCheckoutSupported(sourceGit, commit)
+    assertManagedCheckoutSupported(source.git, commit)
     const started: OperationRecord = { ...intent, phase: 'started' }
     operation = started
-    inDb(authority, sourceRepo, db => transaction(db, () => saveOperation(db, started)))
+    inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, started)))
 
-    const createdGit = addDetachedWorktree(sourceGit, destination, commit)
+    const createdGit = addDetachedWorktree(source.git, destination, commit)
     const rootFd = openSync(
       createdGit.path,
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
@@ -286,141 +301,36 @@ export const allocateWorkspace = (
     const actual = canonicalGitWorkspace(destination)
     if (
       actual.head !== commit ||
-      actual.commonPath !== sourceGit.commonPath ||
-      !sameIdentity(actual.commonIdentity, sourceGit.commonIdentity)
+      actual.commonPath !== source.git.commonPath ||
+      !sameIdentity(actual.commonIdentity, source.git.commonIdentity)
     )
       requireReview(`Git did not publish the exact requested detached worktree: ${destination}`)
-    const workspace = makeWorkspaceRecord(
-      sourceRepo,
-      actual,
-      'managed',
-      workspaceIdValue,
-      allocationId
-    )
-    const reservation: ReservationRecord = {
-      id: reservationId,
+    return admitWriter({
+      source,
       taskId,
-      workspaceId: workspaceIdValue,
-      acquisitionId,
-      revision: 0,
-      createdAt: now(),
-    }
-    const use = {
-      id: newId(),
-      workspaceId: workspaceIdValue,
-      taskId,
-      reservationId,
-      acquisitionId,
-      access: 'write',
-      stage: 'authorized',
-      ...(delegated && execution !== undefined ? { execution } : {}),
-      processes: [],
-      incarnation: state.incarnation,
-      bindingRevision: state.binding.revision + (delegated ? 0 : 1),
-      revision: 0,
-      createdAt: now(),
-      updatedAt: now(),
-    } satisfies UseRecord
-    const completed: OperationRecord = {
-      ...started,
-      phase: 'confirmed',
-      result: `Observed detached worktree at ${destination}`,
-    }
-    if (!delegated) {
-      const handoffId = newId()
-      const targetBinding: BindingRecord = {
-        ...state.binding,
+      workspace: makeWorkspaceRecord(
+        source.repo,
+        actual,
+        'managed',
+        workspaceIdValue,
+        allocationId
+      ),
+      reservation: {
+        id: reservationId,
         taskId,
         workspaceId: workspaceIdValue,
-        cwd: destination,
-        revision: state.binding.revision + 1,
-        pendingOperationId: handoffId,
-      }
-      const handoffOperation: OperationRecord = {
-        id: handoffId,
-        kind: 'handoff',
-        phase: 'intent',
-        repositoryId: sourceRepo,
-        workspaceId: workspaceIdValue,
-        taskId,
-        reservationId,
         acquisitionId,
-        sourceRepositoryId: sourceRepo,
-        sourceWorkspaceId: sourceWorkspace.id,
-        sourcePath: sourceWorkspace.path,
-        sourceCommit: commit,
-        targetPath: destination,
-        conversationKey: state.key,
-        expectedBindingRevision: state.binding.revision,
-        reason: 'isolate-contended-writer',
+        revision: 0,
         createdAt: now(),
-      }
-      const grant = toGrant(authority, sourceRepo, workspace, use, destination, 'write')
-      const handoff: WorkspaceHandoff = {
-        operationId: handoffId,
-        from: toBinding(state.binding),
-        target: grant,
-        reason:
-          'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied.',
-      }
-      const targetLease: GrantLease = {
-        grant,
-        repositoryId: sourceRepo,
-        useId: use.id,
-        gates: pathGates.target,
-        kind: 'ordinary',
-        released: false,
-      }
-      state.leases.set(use.id, targetLease)
-      state.writeGrant = grant
-      inDb(authority, sourceRepo, db =>
-        transaction(db, () => {
-          putWorkspace(db, workspace)
-          putReservation(db, reservation)
-          putUse(db, use)
-          saveOperation(db, completed)
-          putOperation(db, handoffOperation)
-          const current = getBinding(db, state.key)
-          if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('Conversation binding changed before handoff publication')
-          putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
-        })
-      )
-      const transition: PendingTransition = {
-        handoff,
-        sourceRepositoryId: sourceRepo,
-        targetRepositoryId: sourceRepo,
-        targetBinding,
-        targetLease,
-        previousWriteGrant,
-        phase: 'intent',
-      }
-      state.pending = transition
-      state.parked = true
-      return { kind: 'rebind', handoff }
-    }
-    const grant = toGrant(authority, sourceRepo, workspace, use, destination, 'write')
-    const lease: GrantLease = {
-      grant,
-      repositoryId: sourceRepo,
-      useId: use.id,
+      },
+      intent,
+      confirmed: {
+        ...started,
+        phase: 'confirmed',
+        result: `Observed detached worktree at ${destination}`,
+      },
       gates: pathGates.target,
-      ...(execution === undefined
-        ? { kind: 'ordinary' as const }
-        : { kind: 'execution' as const, execution }),
-      released: false,
-    }
-    state.leases.set(use.id, lease)
-    inDb(authority, sourceRepo, db =>
-      transaction(db, () => {
-        putWorkspace(db, workspace)
-        putReservation(db, reservation)
-        putUse(db, use)
-        saveOperation(db, completed)
-      })
-    )
-    state.parked = false
-    return { kind: 'ready', grant }
+    })
   } catch (cause) {
     if (pathGates !== undefined) releaseGates(pathGates.target)
     if (operation?.phase === 'started') {
@@ -430,7 +340,7 @@ export const allocateWorkspace = (
         result: `Allocation outcome requires observation: ${errorText(cause)}`,
       }
       try {
-        inDb(authority, sourceRepo, db => transaction(db, () => saveOperation(db, unresolved)))
+        inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, unresolved)))
       } catch {
         /* retain the durable started intent */
       }
@@ -445,7 +355,7 @@ export const allocateWorkspace = (
         result: `Allocation stopped before any Git effect: ${errorText(cause)}`,
       }
       try {
-        inDb(authority, sourceRepo, db => transaction(db, () => saveOperation(db, stopped)))
+        inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, stopped)))
       } catch {
         /* an intent that was never recorded needs no result */
       }
@@ -464,4 +374,119 @@ export const allocateWorkspace = (
       /* a failed release blocks later structural acquisition at the SQLite gate */
     }
   }
+}
+
+export const allocateDelegatedWorkspace = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  source: CurrentSource,
+  taskId: WorkspaceId,
+  execution: WorkspaceExecution | undefined
+): WorkspaceAuthorization =>
+  allocateWorktree(authority, state, source, taskId, 'delegated-writer', allocation => {
+    const use = allocatedUse(state, allocation, state.binding.revision, execution)
+    const grant = toGrant(
+      authority,
+      source.repo,
+      allocation.workspace,
+      use,
+      allocation.intent.targetPath,
+      'write'
+    )
+    const kind: LeaseKind =
+      execution === undefined ? { kind: 'ordinary' } : { kind: 'execution', execution }
+    state.leases.set(use.id, {
+      ...kind,
+      grant,
+      repositoryId: source.repo,
+      useId: use.id,
+      gates: allocation.gates,
+      released: false,
+    })
+    inDb(authority, source.repo, db =>
+      transaction(db, () => {
+        putWorkspace(db, allocation.workspace)
+        putReservation(db, allocation.reservation)
+        putUse(db, use)
+        saveOperation(db, allocation.confirmed)
+      })
+    )
+    state.parked = false
+    return { kind: 'ready', grant }
+  })
+
+export const isolateContendedWriter = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  source: CurrentSource,
+  taskId: WorkspaceId
+): WorkspaceAuthorization => {
+  const previousWriteGrant = state.writeGrant
+  assertNoLiveExecution(
+    authority,
+    state,
+    { workspaceId: source.workspace.id },
+    'moved to a separate worktree'
+  )
+  return allocateWorktree(authority, state, source, taskId, 'checkout-contention', allocation => {
+    const destination = allocation.intent.targetPath
+    const handoffOperation: OperationRecord = {
+      ...allocation.intent,
+      id: newId(),
+      kind: 'handoff',
+      reason: 'isolate-contended-writer',
+      createdAt: now(),
+    }
+    const targetBinding: BindingRecord = {
+      ...state.binding,
+      taskId,
+      workspaceId: allocation.workspace.id,
+      cwd: destination,
+      revision: state.binding.revision + 1,
+      pendingOperationId: handoffOperation.id,
+    }
+    const use = allocatedUse(state, allocation, targetBinding.revision, undefined)
+    const grant = toGrant(authority, source.repo, allocation.workspace, use, destination, 'write')
+    const handoff: WorkspaceHandoff = {
+      operationId: handoffOperation.id,
+      from: toBinding(state.binding),
+      target: grant,
+      reason:
+        'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied.',
+    }
+    const targetLease: GrantLease = {
+      grant,
+      repositoryId: source.repo,
+      useId: use.id,
+      gates: allocation.gates,
+      kind: 'ordinary',
+      released: false,
+    }
+    state.leases.set(use.id, targetLease)
+    state.writeGrant = grant
+    inDb(authority, source.repo, db =>
+      transaction(db, () => {
+        putWorkspace(db, allocation.workspace)
+        putReservation(db, allocation.reservation)
+        putUse(db, use)
+        saveOperation(db, allocation.confirmed)
+        putOperation(db, handoffOperation)
+        const current = getBinding(db, state.key)
+        if (current === undefined || current.revision !== state.binding.revision)
+          requireReview('Conversation binding changed before handoff publication')
+        putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
+      })
+    )
+    state.pending = {
+      handoff,
+      sourceRepositoryId: source.repo,
+      targetRepositoryId: source.repo,
+      targetBinding,
+      targetLease,
+      previousWriteGrant,
+      phase: 'intent',
+    }
+    state.parked = true
+    return { kind: 'rebind', handoff }
+  })
 }
