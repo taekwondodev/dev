@@ -1,5 +1,7 @@
-// One definition shared by the PTY stub and the contract check keeps the stub from
-// drifting silently; the real return types make a contract change fail typecheck.
+// One definition shared by the PTY stub and the contract check keeps the stub from drifting
+// silently. Each factory's literal satisfies its seam type, so a missing, misspelled or
+// mistyped field fails typecheck; the guard below also fails it when a seam type gains an
+// optional field the stub does not produce.
 import type {
   WorkspaceBinding,
   WorkspaceConversation,
@@ -27,63 +29,79 @@ export const makeFixtureGrant = (input: {
   readonly cwd: string
   readonly sequence: number
   readonly path?: string
-}): WorkspaceGrant => ({
-  namespaceId: input.namespaceId,
-  repositoryId: input.descriptor.repoId,
-  workspaceId: input.descriptor.workspaceId,
-  useId: fixtureId(input.sequence),
-  acquisitionId: fixtureId(input.sequence + 1),
-  reservationId: fixtureId(input.sequence + 2),
-  taskId: input.descriptor.taskId,
-  revision: input.sequence - 1000,
-  cwd: input.cwd,
-  checkout: input.descriptor.path,
-  access: input.access,
-  origin: input.descriptor.origin,
-  ...(input.path === undefined ? {} : { path: input.path }),
-})
+}) =>
+  ({
+    namespaceId: input.namespaceId,
+    repositoryId: input.descriptor.repoId,
+    workspaceId: input.descriptor.workspaceId,
+    useId: fixtureId(input.sequence),
+    acquisitionId: fixtureId(input.sequence + 1),
+    reservationId: fixtureId(input.sequence + 2),
+    taskId: input.descriptor.taskId,
+    revision: input.sequence - 1000,
+    cwd: input.cwd,
+    checkout: input.descriptor.path,
+    access: input.access,
+    origin: input.descriptor.origin,
+    ...(input.path === undefined ? {} : { path: input.path }),
+  }) satisfies WorkspaceGrant
 
 export const makeFixtureView = (input: {
   readonly descriptor: FixtureDescriptor
   readonly outcome: WorkspaceView['outcome']
   readonly reservationId: string
-}): WorkspaceView => ({
-  repositoryId: input.descriptor.repoId,
-  taskId: input.descriptor.taskId,
-  taskLabel: input.descriptor.label,
-  workspaceId: input.descriptor.workspaceId,
-  path: input.descriptor.path,
-  origin: input.descriptor.origin,
-  reservationId: input.reservationId,
-  outcome: input.outcome,
-  reason: input.outcome === 'active' ? 'fixture active use' : 'fixture retained workspace',
-  nextAction:
-    input.outcome === 'active'
-      ? 'wait for the current use'
-      : 'resume with the exact task and workspace ID',
-  uses: [],
-  pending: [],
-})
+}) =>
+  ({
+    repositoryId: input.descriptor.repoId,
+    taskId: input.descriptor.taskId,
+    taskLabel: input.descriptor.label,
+    workspaceId: input.descriptor.workspaceId,
+    path: input.descriptor.path,
+    origin: input.descriptor.origin,
+    reservationId: input.reservationId,
+    outcome: input.outcome,
+    reason: input.outcome === 'active' ? 'fixture active use' : 'fixture retained workspace',
+    nextAction:
+      input.outcome === 'active'
+        ? 'wait for the current use'
+        : 'resume with the exact task and workspace ID',
+    uses: [],
+    pending: [],
+  }) satisfies WorkspaceView
 
 export const makeFixtureBinding = (input: {
   readonly conversation: WorkspaceConversation
   readonly descriptor: FixtureDescriptor
-}): WorkspaceBinding => ({
-  conversation: input.conversation,
-  taskId: input.descriptor.taskId,
-  workspaceId: input.descriptor.workspaceId,
-  cwd: input.descriptor.path,
-  revision: 0,
-})
+}) =>
+  ({
+    conversation: input.conversation,
+    taskId: input.descriptor.taskId,
+    workspaceId: input.descriptor.workspaceId,
+    cwd: input.descriptor.path,
+    revision: 0,
+  }) satisfies WorkspaceBinding
 
 export const makeFixtureHandoff = (input: {
   readonly operationId: string
   readonly from: WorkspaceBinding
   readonly target: WorkspaceGrant
   readonly reason: string
-}): WorkspaceHandoff => ({
-  operationId: input.operationId,
-  from: { ...input.from },
-  target: input.target,
-  reason: input.reason,
-})
+}) =>
+  ({
+    operationId: input.operationId,
+    from: { ...input.from },
+    target: input.target,
+    reason: input.reason,
+  }) satisfies WorkspaceHandoff
+
+// True only when the factory's literal carries every key of the seam type, optional ones
+// included; the annotation below turns a false into a type error.
+type ProducesEvery<Produced, Seam> = [Exclude<keyof Seam, keyof Produced>] extends [never]
+  ? true
+  : false
+export const stubProducesEveryField: {
+  readonly grant: ProducesEvery<ReturnType<typeof makeFixtureGrant>, WorkspaceGrant>
+  readonly view: ProducesEvery<ReturnType<typeof makeFixtureView>, WorkspaceView>
+  readonly binding: ProducesEvery<ReturnType<typeof makeFixtureBinding>, WorkspaceBinding>
+  readonly handoff: ProducesEvery<ReturnType<typeof makeFixtureHandoff>, WorkspaceHandoff>
+} = { grant: true, view: true, binding: true, handoff: true }

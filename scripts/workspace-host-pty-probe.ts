@@ -416,7 +416,7 @@ const makeAttachment = (
   conversation: WorkspaceConversation,
   attached: FixtureDescriptor
 ): WorkspaceAttachment => {
-  let binding = makeFixtureBinding({ conversation, descriptor: attached })
+  let binding: WorkspaceBinding = makeFixtureBinding({ conversation, descriptor: attached })
   let pending: WorkspaceHandoff | undefined
   const owned = new Set<string>()
   const liveExecution = (): string | undefined => {
@@ -432,7 +432,7 @@ const makeAttachment = (
     }
     return undefined
   }
-  const fixture = {
+  const rules = {
     async authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization> {
       const scope: UseScope =
         operation.effect ?? (operation.delegated === true ? 'delegated' : 'ordinary')
@@ -568,12 +568,12 @@ const makeAttachment = (
     get binding() {
       return binding
     },
-    authorize: operation => fromAsync(() => fixture.authorize(operation)),
-    select: selection => fromAsync(() => fixture.select(selection)),
-    reportExecution: (grant, fact) => fromAsync(() => fixture.reportExecution(grant, fact)),
+    authorize: operation => fromAsync(() => rules.authorize(operation)),
+    select: selection => fromAsync(() => rules.select(selection)),
+    reportExecution: (grant, fact) => fromAsync(() => rules.reportExecution(grant, fact)),
     handoff: (transition, replace) =>
       fromAsync(() =>
-        fixture.handoff(transition, target => Effect.runPromise(Effect.orDie(replace(target))))
+        rules.handoff(transition, target => Effect.runPromise(Effect.orDie(replace(target))))
       ),
     close: Effect.sync(() => {
       timeline.push({ kind: 'attachment-closed', workspaceId: attached.workspaceId })
