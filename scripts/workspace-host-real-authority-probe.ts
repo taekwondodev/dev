@@ -22,9 +22,9 @@ import type {
 import { createWorkExtension } from '../src/work-extension.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
-import { createWorkspaceHost } from '../src/workspace-host.ts'
+import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
-import { Effect } from 'effect'
+import { Effect, Exit, Scope } from 'effect'
 
 interface AssistantEventStream {
   push(event: unknown): void
@@ -235,13 +235,18 @@ const hostAttachment = await lifecycle.attach({
   },
   cwd: lead,
 })
-const workspaceHost = createWorkspaceHost({
-  lifecycle: lifecycle.effect,
-  attachment: hostAttachment.effect,
-  dataHome,
-  openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
-  repositoryRoot: gitRoot,
-})
+const hostScope = Scope.makeUnsafe()
+const workspaceHost = await Effect.runPromise(
+  Scope.provide(hostScope)(
+    makeWorkspaceHost({
+      lifecycle: lifecycle.effect,
+      attachment: hostAttachment.effect,
+      dataHome,
+      openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
+      repositoryRoot: cwd => Effect.promise(() => gitRoot(cwd)),
+    })
+  )
+)
 
 const observer: ExtensionFactory = (api: ExtensionAPI) => {
   api.registerTool({
@@ -553,7 +558,8 @@ assert.ok(
 const stoppedUse = (await managedUses()).find(item => item.id === survivorUse.id)
 assert.equal(stoppedUse?.stage, 'quiescent', stoppedUse?.reason)
 assert.match(stoppedUse?.reason ?? '', /observed gone/)
-await workspaceHost.close()
+await Effect.runPromise(workspaceHost.close)
+await Effect.runPromise(Scope.close(hostScope, Exit.void))
 await squatter.close()
 await lifecycle.close()
 assert.equal(runFailure, undefined)

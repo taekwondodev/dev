@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { Effect } from 'effect'
+import { Effect, Exit, Scope } from 'effect'
 import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 import type {
@@ -56,7 +56,7 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import { createWorkspaceHost } from '../src/workspace-host.ts'
+import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
 import {
   fixtureId as id,
@@ -1120,18 +1120,23 @@ const initialManager = pi.SessionManager.create(lead, sessionDir)
 const initialSessionId = initialManager.getSessionId()
 const initialSessionFile = initialManager.getSessionFile()
 assert.ok(initialSessionFile)
-const workspaceHost = createWorkspaceHost({
-  lifecycle,
-  attachment: await Effect.runPromise(
-    lifecycle.attach({
-      conversation: { sessionId: initialSessionId, sessionFile: initialSessionFile, dataHome },
-      cwd: lead,
+const hostScope = Scope.makeUnsafe()
+const workspaceHost = await Effect.runPromise(
+  Scope.provide(hostScope)(
+    makeWorkspaceHost({
+      lifecycle,
+      attachment: await Effect.runPromise(
+        lifecycle.attach({
+          conversation: { sessionId: initialSessionId, sessionFile: initialSessionFile, dataHome },
+          cwd: lead,
+        })
+      ),
+      dataHome,
+      openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
+      repositoryRoot: cwd => Effect.succeed(resolve(cwd)),
     })
-  ),
-  dataHome,
-  openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
-  repositoryRoot: async cwd => resolve(cwd),
-})
+  )
+)
 
 const observer =
   (cwd: string, projectTrust: ProjectTrustContext) =>
@@ -2036,7 +2041,8 @@ const report = {
 }
 mode.stop('transcript')
 await activeRuntime.dispose()
-await workspaceHost.close()
+await Effect.runPromise(workspaceHost.close)
+await Effect.runPromise(Scope.close(hostScope, Exit.void))
 void runPromise
 assert.equal(runFailure, undefined)
 writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`)

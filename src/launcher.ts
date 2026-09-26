@@ -2,7 +2,7 @@
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Effect, Option, Schema, type Scope } from 'effect'
+import { Cause, Effect, Exit, Option, Schema, type Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
 import {
@@ -29,8 +29,9 @@ import { acquireRuntime } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
 import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
 import type { WorkspaceLifecycle } from './workspace-domain.ts'
-import { createWorkspaceHost, type WorkspaceHost } from './workspace-host.ts'
+import { makeWorkspaceHost, type WorkspaceHost } from './workspace-host.ts'
 import {
+  attemptCommand,
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
   chooseResumeCandidate,
@@ -377,16 +378,17 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
     let workspaceLifecycle: WorkspaceLifecycle | undefined
     let workspaceResume: ReturnType<typeof chooseResumeCandidate> | undefined
     if (options.workspaceArgs !== undefined) {
-      try {
-        workspaceCommand = parseWorkspaceCommand(options.workspaceArgs)
-      } catch (error) {
-        const exitCode = error instanceof WorkspaceCommandError ? error.exitCode : 2
+      const { workspaceArgs } = options
+      const parsed = yield* Effect.exit(attemptCommand(() => parseWorkspaceCommand(workspaceArgs)))
+      if (Exit.isFailure(parsed)) {
+        const error = Cause.squash(parsed.cause)
         yield* Effect.sync(() => {
           process.stderr.write(`${messageOf(error)}\n`)
-          process.exitCode = exitCode
+          process.exitCode = error instanceof WorkspaceCommandError ? error.exitCode : 2
         })
         return
       }
+      workspaceCommand = parsed.value
       if (
         options.saveProfile !== undefined ||
         options.resume !== undefined ||
@@ -447,20 +449,20 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
             toLauncherError(error, 'Cannot inspect retained workspace candidates')
           )
         )
-      try {
-        workspaceResume = chooseResumeCandidate(
-          views,
-          resumeCommand.taskId,
-          resumeCommand.workspaceId
+      const chosen = yield* Effect.exit(
+        attemptCommand(() =>
+          chooseResumeCandidate(views, resumeCommand.taskId, resumeCommand.workspaceId)
         )
-      } catch (error) {
-        const exitCode = error instanceof WorkspaceCommandError ? error.exitCode : 1
+      )
+      if (Exit.isFailure(chosen)) {
+        const error = Cause.squash(chosen.cause)
         yield* Effect.sync(() => {
           process.stderr.write(`${messageOf(error)}\n`)
-          process.exitCode = exitCode
+          process.exitCode = error instanceof WorkspaceCommandError ? error.exitCode : 1
         })
         return
       }
+      workspaceResume = chosen.value
     }
 
     const launchCwd = workspaceResume?.view.path ?? options.cwd
@@ -582,16 +584,14 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
           message: 'Reopened Pi session changed conversation identity',
         })
     }
-    const workspaceHost = yield* fromSync('Cannot create workspace host', () =>
-      createWorkspaceHost({
-        lifecycle: workspaceLifecycle!,
-        attachment,
-        dataHome,
-        openSessionManager: (file, cwdOverride) =>
-          api.SessionManager.open(file, sessionsPath, cwdOverride),
-        repositoryRoot: cwd => Effect.runPromise(gitRoot(cwd)),
-      })
-    )
+    const workspaceHost = yield* makeWorkspaceHost({
+      lifecycle: workspaceLifecycle,
+      attachment,
+      dataHome,
+      openSessionManager: (file, cwdOverride) =>
+        api.SessionManager.open(file, sessionsPath, cwdOverride),
+      repositoryRoot: gitRoot,
+    })
     const effectiveSelection =
       resolve(effectiveCwd) === resolve(launchCwd)
         ? selection
@@ -635,7 +635,7 @@ const run = (argv: readonly string[], dependencies: LauncherDependencies) =>
     const sessionProgram = Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.acquireRelease(Effect.succeed(workspaceHost), host =>
-          fromPromise('Cannot close workspace host', () => host.close()).pipe(Effect.orDie)
+          host.close.pipe(Effect.orDie)
         )
         const runtime = yield* Effect.acquireRelease(
           fromPromise('Cannot create Pi runtime', () =>

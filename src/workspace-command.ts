@@ -34,6 +34,20 @@ export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandEr
 const usage = (message: string): WorkspaceCommandError =>
   new WorkspaceCommandError({ message, exitCode: 2 })
 
+// Command parsing and selection report only WorkspaceCommandError; anything else is a bug
+// and keeps the generic failure code.
+export const attemptCommand = <A>(run: () => A): Effect.Effect<A, WorkspaceCommandError> =>
+  Effect.try({
+    try: run,
+    catch: cause =>
+      cause instanceof WorkspaceCommandError
+        ? cause
+        : new WorkspaceCommandError({
+            message: cause instanceof Error ? cause.message : String(cause),
+            exitCode: 1,
+          }),
+  })
+
 const isWorkspaceId = Schema.is(WorkspaceId)
 const exactId = (value: string | undefined, name: string): string => {
   if (value === undefined || !isWorkspaceId(value))
