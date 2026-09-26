@@ -131,6 +131,10 @@ const WS_RESUME_A = id(16)
 const WS_RESUME_C = id(17)
 const WS_DELEGATED = id(18)
 const NAMESPACE_ID = id(32)
+// The PTY driver types these identities; it reads them here instead of keeping copies.
+process.stdout.write(
+  `\nDEV36_INPUTS ${JSON.stringify({ TASK_LEAD, TASK_RESUME, TASK_FAIL, WS_RESUME_A, WS_RESUME_C, WS_FAIL })}\n`
+)
 
 const initProject = (path: string, label: string): void => {
   mkdir(join(path, '.pi', 'extensions'))
