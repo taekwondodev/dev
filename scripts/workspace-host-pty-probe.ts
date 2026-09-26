@@ -572,10 +572,21 @@ const listResult = await Effect.runPromise(
 const inspectResult = await Effect.runPromise(
   runReadOnlyWorkspaceCommand(lifecycle, { kind: 'inspect', taskId: TASK_LEAD })
 )
+// A workspace listing reads as its unindented lines: headers and one row per workspace.
+const headings = (text: string): readonly string[] =>
+  text.split('\n').filter(line => !line.startsWith(' '))
+const row = (taskId: string, workspaceId: string, current = false): string =>
+  `task ${taskId} — workspace ${workspaceId}${current ? ' [current binding]' : ''}`
 assert.equal(listResult.exitCode, 0)
-assert.match(listResult.stdout ?? '', /workspace/)
+assert.deepEqual(
+  headings(listResult.stdout ?? ''),
+  [`Workspace list for repository ${lead}:`, row(TASK_LEAD, WS_LEAD)],
+  'the list shows only the workspaces of the repository at its cwd'
+)
 assert.equal(inspectResult.exitCode, 0)
-assert.match(inspectResult.stdout ?? '', new RegExp(TASK_LEAD))
+assert.deepEqual(headings(inspectResult.stdout ?? ''), [
+  `Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`,
+])
 assert.equal(attachCalls.length, 0, 'read-only commands do not bind or attach a task')
 
 const offlineModel: Model<'openai-completions'> = {
@@ -1766,7 +1777,24 @@ assert.deepEqual(
 )
 assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB)))
 assert.ok(inspections.some(input => input.taskId === TASK_LEAD))
-assert.ok(hostMessages.some(message => /workspace/i.test(message)))
+const switchedTo = (workspaceId: string, cwd: string): string =>
+  `Workspace is now ${workspaceId} at ${cwd}. The blocked operation was not replayed.`
+assert.deepEqual(
+  hostMessages.map(headings),
+  [
+    [switchedTo(WS_A, targetA)],
+    [switchedTo(WS_B, targetB)],
+    [
+      `Workspace list for repository ${targetB}:`,
+      `Current binding: ${WS_B}`,
+      `Effective cwd: ${targetB}`,
+      row(TASK_B, WS_B, true),
+    ],
+    [`Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`],
+    [switchedTo(WS_RESUME_A, targetA)],
+  ],
+  'the TUI showed each confirmed switch, the /workspace list and the /workspace inspect output'
+)
 assert.ok(terminalInputs.length > 0)
 assert.equal(processResults.size, 3)
 
