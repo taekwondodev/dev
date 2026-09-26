@@ -55,6 +55,7 @@ import {
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
 import { createWorkspaceHost } from '../src/workspace-host.ts'
+import { resolveWriteDestination } from '../src/workspace-paths.ts'
 import {
   fixtureId as id,
   makeFixtureBinding,
@@ -322,7 +323,9 @@ const authorizeScoped = (
     checkout,
     operation.access,
     cwd,
-    operation.path === undefined ? undefined : resolve(cwd, operation.path)
+    operation.path === undefined
+      ? undefined
+      : resolveWriteDestination(checkout.path, cwd, operation.path)
   )
   return {
     kind: 'ready',
