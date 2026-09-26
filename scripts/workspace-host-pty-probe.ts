@@ -12,15 +12,14 @@ import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
-import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionFactory,
   ExtensionHandler,
-  ProjectTrustContext,
   RegisteredCommand,
   ToolCallEvent,
   ToolCallEventResult,
@@ -36,7 +35,10 @@ import type {
 } from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
 import { errorText } from '../src/error-text.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../src/work-child-workspace.ts'
-import { createWorkExtension, type WorkExtension } from '../src/work-extension.ts'
+import { makeRuntimeFactory } from '../src/launcher.ts'
+import { getProfile } from '../src/profiles.ts'
+import { acquireRuntime } from '../src/runtime-coordination.ts'
+import { createSessionGuard } from '../src/session-guard.ts'
 import {
   chooseResumeCandidate,
   parseWorkspaceCommand,
@@ -62,7 +64,11 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost, noUiTrustContext, workControlsOf } from '../src/workspace-host.ts'
+import {
+  makeWorkspaceHost,
+  type WorkspaceHost,
+  type WorkspaceWorkControls,
+} from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
 import { loadInstalledPi } from './workspace-check-support.ts'
 import {
@@ -94,7 +100,8 @@ const reportPath = join(fixture, 'report.json')
 const mkdir = (path: string): void => {
   mkdirSync(path, { recursive: true })
 }
-for (const path of [sessionDir, agentDir, dataHome, join(fixture, 'home')]) mkdir(path)
+for (const path of [sessionDir, agentDir, dataHome, join(fixture, 'home', '.agents', 'skills')])
+  mkdir(path)
 process.env.HOME = join(fixture, 'home')
 process.env.PI_CODING_AGENT_DIR = agentDir
 process.env.PI_OFFLINE = '1'
@@ -105,8 +112,7 @@ globalThis.fetch = async () => {
   throw new Error('Network is disabled by the dev36 host fixture')
 }
 
-const { pi, importFromPi } = await loadInstalledPi()
-const trustResolver = await importFromPi<typeof PiProjectTrust>('dist/core/project-trust.js')
+const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const eventStreams = await importFromPi<typeof PiEventStream>(
   'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
@@ -171,6 +177,9 @@ const delegatedDescriptor = descriptor(
 )
 const descriptors = [leadDescriptor, aDescriptor, bDescriptor, cDescriptor, failDescriptor]
 for (const item of [...descriptors, delegatedDescriptor]) initProject(item.path, item.label)
+// Every fixture project carries an extension that must not load, so each is recorded untrusted.
+const trustStore = new pi.ProjectTrustStore(agentDir)
+for (const item of [...descriptors, delegatedDescriptor]) trustStore.set(item.path, false)
 const descriptorByPath = new Map(
   [...descriptors, delegatedDescriptor].map(item => [resolve(item.path), item])
 )
@@ -986,7 +995,7 @@ const runtimeSnapshots: {
 }[] = []
 const pendingEditorSnapshots: { readonly cwd: string; readonly editor: string }[] = []
 const toolRegistryByPath = new Map<string, ToolInfo[]>()
-const preparedWorkExtensions: { readonly cwd: string; readonly work: WorkExtension }[] = []
+let workControls: WorkspaceWorkControls | undefined
 const processResults = new Map<string, WorkResult>()
 const terminalInputs: string[] = []
 let confirmCount = 0
@@ -1150,8 +1159,14 @@ const shadowRead =
   }
 
 const observer =
-  (cwd: string, projectTrust: ProjectTrustContext) =>
+  (cwd: string) =>
   (api: ExtensionAPI): void => {
+    // Pi asks extensions first, with the trust context the runtime was built with; an undecided
+    // answer leaves the decision to the recorded distrust.
+    api.on('project_trust', (event, context) => {
+      projectTrustContexts.push({ cwd: event.cwd, mode: context.mode, hasUI: context.hasUI })
+      return { trusted: 'undecided' }
+    })
     api.on('session_start', (_event, context) => {
       runtimeSnapshots.push({
         cwd: context.cwd,
@@ -1160,11 +1175,6 @@ const observer =
         shutdownEntries: context.sessionManager
           .getEntries()
           .filter(entry => entry.type === 'custom' && entry.customType === 'dev36/shutdown').length,
-      })
-      projectTrustContexts.push({
-        cwd: context.cwd,
-        mode: projectTrust.mode,
-        hasUI: projectTrust.hasUI,
       })
       if (context.cwd === lead) runStarted.settle()
       toolRegistryByPath.set(resolve(context.cwd), api.getAllTools())
@@ -1229,79 +1239,44 @@ const observer =
     })
   }
 
-const runtimeFactory: Pi.CreateAgentSessionRuntimeFactory = async options => {
-  const { attachment, cwd, sessionManager } = await Effect.runPromise(
-    workspaceHost.prepareRuntime({ sessionManager: options.sessionManager, cwd: options.cwd })
-  )
-  const work = createWorkExtension({
-    dataHome,
-    profile: 'general',
-    workspace: { lifecycle, attachment },
-    isWorkspaceParked: workspaceHost.isParked,
-  })
-  preparedWorkExtensions.push({ cwd, work })
-  workspaceHost.setWorkControls(workControlsOf(work))
-  const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: false })
-  const trustStore = new pi.ProjectTrustStore(agentDir)
-  trustStore.set(cwd, false)
-  const projectTrustContext =
-    options.projectTrustContext?.cwd === cwd ? options.projectTrustContext : noUiTrustContext(cwd)
-  const services = await pi.createAgentSessionServices({
-    cwd,
-    agentDir,
-    settingsManager,
-    modelRuntime,
-    resourceLoaderOptions: {
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      extensionFactories: [
-        { name: 'dev36:observer', factory: observer(cwd, projectTrustContext) },
-        { name: 'dev:work', factory: work.factory },
-        { name: 'dev:workspace-host', factory: instrumentHost(workspaceHost.extensionFactory) },
+// The host keeps the controls of each runtime's background work; the probe reads the same ones.
+const runtimeHost: WorkspaceHost = new Proxy(workspaceHost, {
+  get(target, key) {
+    if (key === 'setWorkControls')
+      return (controls: WorkspaceWorkControls) => {
+        workControls = controls
+        target.setWorkControls(controls)
+      }
+    const value: unknown = Reflect.get(target, key)
+    return typeof value === 'function' ? value.bind(target) : value
+  },
+})
+const guard = createSessionGuard(
+  await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
+)
+const runtimeFactory = await Effect.runPromise(
+  Effect.gen(function* () {
+    return yield* makeRuntimeFactory({
+      api: pi,
+      packageRoot: packageInfo.root,
+      dataHome,
+      profile: yield* getProfile('general'),
+      guard,
+      workspaceHost: runtimeHost,
+      lifecycle,
+      modelRuntime: Effect.succeed(modelRuntime),
+      model: offlineModel,
+      extensions: (dev, cwd) => [
+        { name: 'dev36:observer', factory: observer(cwd) },
+        ...dev.map(item =>
+          item.name === 'dev:workspace-host'
+            ? { ...item, factory: instrumentHost(item.factory) }
+            : item
+        ),
       ],
-    },
-    resourceLoaderReloadOptions: {
-      resolveProjectTrust: ({ extensionsResult }) =>
-        trustResolver.resolveProjectTrusted({
-          cwd,
-          trustStore,
-          defaultProjectTrust: settingsManager.getDefaultProjectTrust(),
-          extensionsResult,
-          projectTrustContext,
-        }),
-    },
-  })
-  const result = await pi.createAgentSessionFromServices({
-    services,
-    sessionManager,
-    sessionStartEvent: options.sessionStartEvent,
-    model: offlineModel,
-    thinkingLevel: 'off',
-    tools: ['read', 'write', 'edit', 'bash', 'work', 'fixture_custom_write'],
-    customTools: [
-      pi.defineTool(
-        pi.createBashToolDefinition(cwd, {
-          operations: workspaceHost.shellOperations,
-          commandPrefix: settingsManager.getShellCommandPrefix(),
-        })
-      ),
-      pi.defineTool(
-        pi.createWriteToolDefinition(cwd, { operations: workspaceHost.writeOperations })
-      ),
-      pi.defineTool(pi.createEditToolDefinition(cwd, { operations: workspaceHost.editOperations })),
-    ],
-  })
-  await Effect.runPromise(workspaceHost.commitRuntime(attachment))
-  work.bindSession(result.session)
-  assert.equal(
-    workspaceHost.attachment,
-    attachment,
-    'runtime committed the exact prepareRuntime attachment'
-  )
-  return { ...result, services, diagnostics: services.diagnostics }
-}
-
+    })
+  }).pipe(Effect.provide(NodeServices.layer))
+)
 const activeRuntime = await pi.createAgentSessionRuntime(runtimeFactory, {
   cwd: lead,
   agentDir,
@@ -1309,6 +1284,7 @@ const activeRuntime = await pi.createAgentSessionRuntime(runtimeFactory, {
 })
 runtime = activeRuntime
 workspaceHost.bindRuntime(activeRuntime)
+guard.bind(activeRuntime)
 
 // A failed run must still leave evidence and must not leak the detached process groups
 // (a backgrounded `sleep 600`, WorkOwner loops) that only a later host transition would stop.
@@ -1432,8 +1408,10 @@ assert.ok(workLogs)
 await poll('real WorkOwner process output', () =>
   readFileSync(workLogs, 'utf8').includes('dev36-work-owner-started') ? true : undefined
 )
-const activeWork = preparedWorkExtensions.findLast(item => item.cwd === targetB)?.work
-assert.ok(activeWork)
+const runningAttempts = async (): Promise<readonly string[]> => {
+  assert.ok(workControls, 'the runtime handed its background-work controls to the host')
+  return (await Effect.runPromise(workControls.running)).map(item => item.attemptId)
+}
 const cancelledWork = async (attemptId: string) => {
   const [use] = usesWhere(
     item => item.scope === 'opaque' && executionOf(item.operation)?.attemptId === attemptId
@@ -1441,7 +1419,7 @@ const cancelledWork = async (attemptId: string) => {
   assert.ok(use, `attempt ${attemptId} was admitted as an opaque scoped use`)
   const terminal = await poll(`settled attempt ${attemptId}`, async () => {
     const last = use.facts.at(-1)
-    const running = (await activeWork.runningWork()).some(item => item.attemptId === attemptId)
+    const running = (await runningAttempts()).includes(attemptId)
     return !running && (last?.kind === 'quiescent' || last?.kind === 'unknown') ? last : undefined
   })
   assert.deepEqual(factKinds(use).slice(0, 3), ['launch-intent', 'spawned', 'started'])
@@ -1477,7 +1455,7 @@ const [retainedUse] = usesWhere(
 )
 assert.ok(retainedUse, 'the retained WorkOwner launch was admitted as an opaque scoped use')
 assert.ok(
-  (await activeWork.runningWork()).some(item => item.attemptId === retainedProcess.id),
+  (await runningAttempts()).includes(retainedProcess.id),
   'the retained process is still running when the resume starts'
 )
 

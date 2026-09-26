@@ -14,17 +14,20 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 import type {
   ExtensionAPI,
   ExtensionFactory,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import { createWorkExtension } from '../src/work-extension.ts'
+import { makeRuntimeFactory } from '../src/launcher.ts'
+import { getProfile } from '../src/profiles.ts'
+import { acquireRuntime } from '../src/runtime-coordination.ts'
+import { createSessionGuard } from '../src/session-guard.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost, noUiTrustContext, workControlsOf } from '../src/workspace-host.ts'
+import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import { loadInstalledPi } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
+import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 
 interface AssistantEventStream {
@@ -35,8 +38,7 @@ interface EventStreamModule {
   createAssistantMessageEventStream(): AssistantEventStream
 }
 
-const { pi, importFromPi } = await loadInstalledPi()
-const trustResolver = await importFromPi<typeof PiProjectTrust>('dist/core/project-trust.js')
+const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const eventStreamModule = await importFromPi<EventStreamModule>(
   'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
@@ -72,7 +74,7 @@ process.env.HOME = join(fixture, 'home')
 process.env.PI_CODING_AGENT_DIR = agentDir
 process.env.PI_OFFLINE = '1'
 process.env.PI_TELEMETRY_DISABLED = '1'
-mkdir(process.env.HOME)
+mkdir(join(process.env.HOME, '.agents', 'skills'))
 let networkAttempts = 0
 globalThis.fetch = async () => {
   networkAttempts += 1
@@ -282,75 +284,32 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
   })
 }
 
-const runtime = await pi.createAgentSessionRuntime(
-  async options => {
-    const prepared = await Effect.runPromise(
-      workspaceHost.prepareRuntime({ sessionManager: options.sessionManager, cwd: options.cwd })
-    )
-    const { attachment, cwd, sessionManager } = prepared
-    const work = createWorkExtension({
-      dataHome,
-      profile: 'general',
-      workspace: { lifecycle: lifecycle.effect, attachment },
-      isWorkspaceParked: workspaceHost.isParked,
-    })
-    workspaceHost.setWorkControls(workControlsOf(work))
-    const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: false })
-    const trustStore = new pi.ProjectTrustStore(agentDir)
-    trustStore.set(cwd, false)
-    const projectTrustContext = options.projectTrustContext ?? noUiTrustContext(cwd)
-    const services = await pi.createAgentSessionServices({
-      cwd,
-      agentDir,
-      settingsManager,
-      modelRuntime,
-      resourceLoaderOptions: {
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        extensionFactories: [
-          { name: 'probe:observer', factory: observer },
-          { name: 'dev:work', factory: work.factory },
-          { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
-        ],
-      },
-      resourceLoaderReloadOptions: {
-        resolveProjectTrust: ({ extensionsResult }) =>
-          trustResolver.resolveProjectTrusted({
-            cwd,
-            trustStore,
-            defaultProjectTrust: settingsManager.getDefaultProjectTrust(),
-            extensionsResult,
-            projectTrustContext: { ...projectTrustContext, cwd },
-          }),
-      },
-    })
-    const result = await pi.createAgentSessionFromServices({
-      services,
-      sessionManager,
-      sessionStartEvent: options.sessionStartEvent,
-      model: offlineModel,
-      thinkingLevel: 'off',
-      tools: ['read', 'write', 'edit', 'bash', 'work', 'probe_unverified'],
-      customTools: [
-        pi.defineTool(
-          pi.createBashToolDefinition(cwd, { operations: workspaceHost.shellOperations })
-        ),
-        pi.defineTool(
-          pi.createWriteToolDefinition(cwd, { operations: workspaceHost.writeOperations })
-        ),
-        pi.defineTool(
-          pi.createEditToolDefinition(cwd, { operations: workspaceHost.editOperations })
-        ),
-      ],
-    })
-    await Effect.runPromise(workspaceHost.commitRuntime(attachment))
-    work.bindSession(result.session)
-    return { ...result, services, diagnostics: services.diagnostics }
-  },
-  { cwd: lead, agentDir, sessionManager: initialManager }
+const guard = createSessionGuard(
+  await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
 )
+const runtimeFactory = await Effect.runPromise(
+  Effect.gen(function* () {
+    return yield* makeRuntimeFactory({
+      api: pi,
+      packageRoot: packageInfo.root,
+      dataHome,
+      profile: yield* getProfile('general'),
+      guard,
+      workspaceHost,
+      lifecycle: lifecycle.effect,
+      modelRuntime: Effect.succeed(modelRuntime),
+      model: offlineModel,
+      extensions: dev => [{ name: 'probe:observer', factory: observer }, ...dev],
+    })
+  }).pipe(Effect.provide(NodeServices.layer))
+)
+const runtime = await pi.createAgentSessionRuntime(runtimeFactory, {
+  cwd: lead,
+  agentDir,
+  sessionManager: initialManager,
+})
 workspaceHost.bindRuntime(runtime)
+guard.bind(runtime)
 const bindingBeforeRefusal = structuredClone(workspaceHost.attachment.binding)
 
 const within = <A>(promise: Promise<A>, ms: number, what: string) =>

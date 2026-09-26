@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Effect, Option, Schema, type Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
-import type { AgentSessionServices } from '@earendil-works/pi-coding-agent'
+import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
   defaultDataHome,
   globalPiAgentDir,
@@ -67,6 +67,10 @@ type RuntimeFactory = Parameters<PiApi['createAgentSessionRuntime']>[0]
 type RuntimeFactoryOptions = Parameters<RuntimeFactory>[0]
 type RuntimeFactoryResult = Awaited<ReturnType<RuntimeFactory>>
 type AgentRuntime = Awaited<ReturnType<PiApi['createAgentSessionRuntime']>>
+type ModelRuntime = Awaited<ReturnType<PiApi['ModelRuntime']['create']>>
+type SessionModel = Parameters<PiApi['createAgentSessionFromServices']>[0]['model']
+type SessionGuard = ReturnType<typeof createSessionGuard>
+type NamedExtension = Extract<InlineExtension, { readonly factory: unknown }>
 type SessionManager = RuntimeFactoryOptions['sessionManager']
 type SessionEntry = ReturnType<SessionManager['getEntries']>[number]
 type CustomSessionEntry = Extract<SessionEntry, { type: 'custom' }>
@@ -198,16 +202,26 @@ const validateDiagnostics = (
   }
 }
 
+// What every Pi runtime of a dev session is built from. The offline probes replace the model
+// and observe dev's extensions; the launcher leaves the model to Pi's settings.
+export interface RuntimeParts {
+  readonly api: PiApi
+  readonly packageRoot: string
+  readonly dataHome: string
+  readonly profile: Profile
+  readonly guard: SessionGuard
+  readonly workspaceHost: WorkspaceHost
+  readonly lifecycle: WorkspaceLifecycle
+  readonly modelRuntime?: Effect.Effect<ModelRuntime, LauncherError>
+  readonly model?: SessionModel
+  readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
+}
+
 const createRuntime = Effect.fnUntraced(function* (
-  api: PiApi,
-  packageRoot: string,
-  dataHome: string,
-  profile: Profile,
-  guard: ReturnType<typeof createSessionGuard>,
-  workspaceHost: WorkspaceHost,
-  lifecycle: WorkspaceLifecycle,
+  parts: RuntimeParts,
   runtimeOptions: RuntimeFactoryOptions
 ): Effect.fn.Return<RuntimeFactoryResult, LauncherError, FileSystem.FileSystem> {
+  const { api, packageRoot, dataHome, profile, guard, workspaceHost, lifecycle } = parts
   const { attachment, cwd, sessionManager } = yield* workspaceHost
     .prepareRuntime({ sessionManager: runtimeOptions.sessionManager, cwd: runtimeOptions.cwd })
     .pipe(
@@ -247,20 +261,27 @@ const createRuntime = Effect.fnUntraced(function* (
     runtimeOptions.projectTrustContext?.cwd === cwd
       ? runtimeOptions.projectTrustContext
       : noUiTrustContext(cwd)
-  const services = yield* fromPromise('Cannot create Pi session services', async () =>
+  const modelRuntime = yield* (
+    parts.modelRuntime ??
+      fromPromise('Cannot create Pi model runtime', () =>
+        api.ModelRuntime.create({ authPath: globalPiAuthPath() })
+      )
+  )
+  const extensions: readonly NamedExtension[] = [
+    { name: 'dev:session-guard', factory: guard.factory },
+    { name: 'dev:work', factory: work.factory },
+    { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
+  ]
+  const services = yield* fromPromise('Cannot create Pi session services', () =>
     api.createAgentSessionServices({
       cwd,
       agentDir: runtimeOptions.agentDir,
       settingsManager,
-      modelRuntime: await api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
+      modelRuntime,
       resourceLoaderOptions: {
         additionalSkillPaths: [...resources.skillPaths],
         appendSystemPrompt: [profile.guidance],
-        extensionFactories: [
-          { name: 'dev:session-guard', factory: guard.factory },
-          { name: 'dev:work', factory: work.factory },
-          { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
-        ],
+        extensionFactories: [...(parts.extensions?.(extensions, cwd) ?? extensions)],
       },
       resourceLoaderReloadOptions: {
         resolveProjectTrust: ({ extensionsResult }) =>
@@ -279,6 +300,7 @@ const createRuntime = Effect.fnUntraced(function* (
       services,
       sessionManager,
       sessionStartEvent: runtimeOptions.sessionStartEvent,
+      ...(parts.model === undefined ? {} : { model: parts.model }),
       customTools: [
         api.defineTool(
           api.createBashToolDefinition(cwd, {
@@ -305,6 +327,15 @@ const createRuntime = Effect.fnUntraced(function* (
   })
   return { ...result, services, diagnostics: services.diagnostics }
 })
+
+export const makeRuntimeFactory = (
+  parts: RuntimeParts
+): Effect.Effect<RuntimeFactory, never, FileSystem.FileSystem> =>
+  Effect.map(
+    Effect.context<FileSystem.FileSystem>(),
+    context => runtimeOptions =>
+      Effect.runPromiseWith(context)(createRuntime(parts, runtimeOptions))
+  )
 
 const disposeRuntime = (runtime: AgentRuntime): Effect.Effect<void, never> =>
   fromPromise('Cannot dispose Pi runtime', () => runtime.dispose()).pipe(Effect.orDie)
@@ -356,7 +387,8 @@ const installSignalHandlers = (
     }
   })
 
-// The only way to supply another authority than the fixed one of ADR 0003.
+// Besides `makeRuntimeFactory`, the only way to supply another authority than the fixed one of
+// ADR 0003.
 export interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
 }
@@ -592,20 +624,15 @@ const run = Effect.fnUntraced(function* (
         source: effectiveSelection.source,
       })
     })
-  const context = yield* Effect.context<FileSystem.FileSystem>()
-  const createRuntimeFactory: RuntimeFactory = runtimeOptions =>
-    Effect.runPromiseWith(context)(
-      createRuntime(
-        api,
-        packageInfo.root,
-        dataHome,
-        profile,
-        guard,
-        workspaceHost,
-        workspaceLifecycle!,
-        runtimeOptions
-      )
-    )
+  const createRuntimeFactory = yield* makeRuntimeFactory({
+    api,
+    packageRoot: packageInfo.root,
+    dataHome,
+    profile,
+    guard,
+    workspaceHost,
+    lifecycle: workspaceLifecycle,
+  })
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(Effect.succeed(workspaceHost), host =>
