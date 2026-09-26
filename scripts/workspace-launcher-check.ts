@@ -16,7 +16,7 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { loadInstalledPi } from './workspace-check-support.ts'
+import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
@@ -51,7 +51,7 @@ const authorityFiles = (root: string) =>
     .toSorted()
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
-const checks: string[] = []
+const { claim, passed } = makeClaims()
 try {
   const repo = join(sandbox, 'repo')
   const dataHome = join(sandbox, 'data')
@@ -198,12 +198,11 @@ try {
           env: { ...process.env, PI_OFFLINE: '1', LAUNCHER_CHECK_ROOT: authorityRoot, ...env },
           timeout: 60000,
         },
-        (error, stdout, stderr) =>
-          resolveRun({
-            code: error === null ? 0 : typeof error.code === 'number' ? error.code : null,
-            stdout,
-            stderr,
-          })
+        (error, stdout, stderr) => {
+          // An exit status is a number; a signal or a failed spawn leaves no status to report.
+          const status = error === null ? 0 : error.code
+          resolveRun({ code: typeof status === 'number' ? status : null, stdout, stderr })
+        }
       )
     })
   const resumeArgs = (resumed: string) => [
@@ -214,59 +213,69 @@ try {
     '--profile',
     'general',
   ]
-  const outcome = await runLauncher(resumeArgs(sessionFile))
-  assert.equal(outcome.code, 1, outcome.stderr)
-  assert.match(outcome.stderr, /no longer exists and is not recreated/)
-  assert.ok(outcome.stderr.includes(sessionFile), outcome.stderr)
-  assert.match(outcome.stderr, /dev --cwd PATH/)
-  assert.equal(
-    createHash('sha256').update(readFileSync(sessionFile)).digest('hex'),
-    historyBefore,
-    'the conversation file and its history are unchanged'
-  )
-  assert.ok(!existsSync(allocated.grant.checkout), 'the removed workspace was not recreated')
-  checks.push(
-    'dev --resume of a conversation whose workspace was removed exits 1, names the unchanged conversation file and points to dev --cwd PATH, without recreating the workspace'
-  )
-
-  const withdrawal = await runLauncher(resumeArgs(switchFile), { STOP_AFTER_ATTACH: '1' })
-  assert.equal(withdrawal.code, 1, withdrawal.stderr)
-  assert.match(withdrawal.stderr, /launcher check stops after attach/)
-  assert.deepEqual(JSON.parse(withdrawal.stdout.trim().split('\n').at(-1) ?? '{}'), {
-    workspaceId: switchSource,
-  })
-  const afterWithdrawal = await openLifecycle({ root: authorityRoot })
-  try {
-    assert.notEqual(
-      (await afterWithdrawal.inspect({}))
-        .flatMap(view => view.pending)
-        .find(item => item.id === unstarted.operationId)?.stage,
-      'intent'
-    )
-    const reopened = await afterWithdrawal.attach({ conversation: switchConversation, cwd: repo })
-    assert.equal(reopened.binding.workspaceId, switchSource, 'the withdrawal was durable')
-    await reopened.close()
-  } finally {
-    await afterWithdrawal.close()
-  }
-  checks.push(
-    'dev --resume of a conversation whose host died withdraws its switch that never reached that host, returning it durably to the last confirmed workspace'
+  await claim(
+    'dev --resume of a conversation whose workspace was removed exits 1, names the unchanged conversation file and points to dev --cwd PATH, without recreating the workspace',
+    async () => {
+      const outcome = await runLauncher(resumeArgs(sessionFile))
+      assert.equal(outcome.code, 1, outcome.stderr)
+      assert.match(outcome.stderr, /no longer exists and is not recreated/)
+      assert.ok(outcome.stderr.includes(sessionFile), outcome.stderr)
+      assert.match(outcome.stderr, /dev --cwd PATH/)
+      assert.equal(
+        createHash('sha256').update(readFileSync(sessionFile)).digest('hex'),
+        historyBefore,
+        'the conversation file and its history are unchanged'
+      )
+      assert.ok(!existsSync(allocated.grant.checkout), 'the removed workspace was not recreated')
+    }
   )
 
-  // A lifecycle in this process keeps the conversation live, as another installation would.
-  const liveElsewhere = await openLifecycle({ root: authorityRoot })
-  const liveConversation = await liveElsewhere.attach({
-    conversation: switchConversation,
-    cwd: repo,
-  })
-  const refused = await runLauncher(resumeArgs(switchFile), { STOP_AFTER_ATTACH: '1' })
-  await liveConversation.close()
-  await liveElsewhere.close()
-  assert.equal(refused.code, 1, refused.stderr)
-  assert.match(refused.stderr, /open in another dev session/)
-  assert.ok(refused.stderr.includes(switchFile), refused.stderr)
-  checks.push(
-    'dev --resume of a conversation live in another lifecycle on the same authority exits 1 with guidance instead of taking it over'
+  await claim(
+    'dev --resume of a conversation whose host died withdraws its switch that never reached that host, returning it durably to the last confirmed workspace',
+    async () => {
+      const withdrawal = await runLauncher(resumeArgs(switchFile), { STOP_AFTER_ATTACH: '1' })
+      assert.equal(withdrawal.code, 1, withdrawal.stderr)
+      assert.match(withdrawal.stderr, /launcher check stops after attach/)
+      assert.deepEqual(JSON.parse(withdrawal.stdout.trim().split('\n').at(-1) ?? '{}'), {
+        workspaceId: switchSource,
+      })
+      const afterWithdrawal = await openLifecycle({ root: authorityRoot })
+      try {
+        assert.equal(
+          (await afterWithdrawal.inspect({}))
+            .flatMap(view => view.pending)
+            .find(item => item.id === unstarted.operationId)?.stage,
+          undefined,
+          'the unstarted switch was withdrawn, so it is no longer pending'
+        )
+        const reopened = await afterWithdrawal.attach({
+          conversation: switchConversation,
+          cwd: repo,
+        })
+        assert.equal(reopened.binding.workspaceId, switchSource, 'the withdrawal was durable')
+        await reopened.close()
+      } finally {
+        await afterWithdrawal.close()
+      }
+    }
+  )
+
+  await claim(
+    'dev --resume of a conversation live in another lifecycle on the same authority exits 1 with guidance instead of taking it over',
+    async () => {
+      // A lifecycle in this process keeps the conversation live, as another installation would.
+      const liveElsewhere = await openLifecycle({ root: authorityRoot })
+      const liveConversation = await liveElsewhere.attach({
+        conversation: switchConversation,
+        cwd: repo,
+      })
+      const refused = await runLauncher(resumeArgs(switchFile), { STOP_AFTER_ATTACH: '1' })
+      await liveConversation.close()
+      await liveElsewhere.close()
+      assert.equal(refused.code, 1, refused.stderr)
+      assert.match(refused.stderr, /open in another dev session/)
+      assert.ok(refused.stderr.includes(switchFile), refused.stderr)
+    }
   )
 
   // Read-only commands answer from the authority as they find it. They run with a data
@@ -320,33 +329,40 @@ try {
 
   const absentParent = join(sandbox, 'absent-authority')
   const absentRoot = join(absentParent, 'root')
-  const outsideGit = await readOnly(absentRoot, ['--cwd', notGit, 'workspace', 'list'])
-  assert.equal(outsideGit.code, 2, outsideGit.stderr)
-  assert.equal(outsideGit.stdout, '', 'nothing is listed for a directory outside Git')
-  assert.equal(
-    outsideGit.stderr,
-    'Workspace list requires a Git repository; pass --cwd PATH to a Git checkout.\n'
-  )
-  checks.push(
-    'dev workspace list outside a Git repository lists nothing, exits 2 and points to --cwd PATH'
+  await claim(
+    'dev workspace list outside a Git repository lists nothing, exits 2 and points to --cwd PATH',
+    async () => {
+      const outsideGit = await readOnly(absentRoot, ['--cwd', notGit, 'workspace', 'list'])
+      assert.equal(outsideGit.code, 2, outsideGit.stderr)
+      assert.equal(outsideGit.stdout, '', 'nothing is listed for a directory outside Git')
+      assert.equal(
+        outsideGit.stderr,
+        'Workspace list requires a Git repository; pass --cwd PATH to a Git checkout.\n'
+      )
+    }
   )
 
-  const emptyList = await readOnly(absentRoot, ['--cwd', repo, 'workspace'])
-  assert.equal(emptyList.code, 0, emptyList.stderr)
-  assert.equal(
-    emptyList.stdout,
-    `Workspace list for repository ${repo}:\nNo workspace records were found.\n`
-  )
-  const absentTask = randomUUID()
-  const emptyInspect = await readOnly(absentRoot, ['workspace', 'inspect', absentTask])
-  assert.equal(emptyInspect.code, 0, emptyInspect.stderr)
-  assert.equal(emptyInspect.stdout, `No workspace records exist for exact task ${absentTask}.\n`)
-  assert.ok(
-    !existsSync(absentParent),
-    'reading an authority that does not exist provisions nothing'
-  )
-  checks.push(
-    'dev workspace and dev workspace inspect <task> against an authority that does not exist yet report no records, exit 0 and create neither the root nor its parent'
+  await claim(
+    'dev workspace and dev workspace inspect <task> against an authority that does not exist yet report no records, exit 0 and create neither the root nor its parent',
+    async () => {
+      const emptyList = await readOnly(absentRoot, ['--cwd', repo, 'workspace'])
+      assert.equal(emptyList.code, 0, emptyList.stderr)
+      assert.equal(
+        emptyList.stdout,
+        `Workspace list for repository ${repo}:\nNo workspace records were found.\n`
+      )
+      const absentTask = randomUUID()
+      const emptyInspect = await readOnly(absentRoot, ['workspace', 'inspect', absentTask])
+      assert.equal(emptyInspect.code, 0, emptyInspect.stderr)
+      assert.equal(
+        emptyInspect.stdout,
+        `No workspace records exist for exact task ${absentTask}.\n`
+      )
+      assert.ok(
+        !existsSync(absentParent),
+        'reading an authority that does not exist provisions nothing'
+      )
+    }
   )
 
   const inspectTask = async (cwd: string, grant: typeof secondGrant, repository: string) => {
@@ -367,71 +383,89 @@ try {
       [`  path: ${repository}`]
     )
   }
-  await inspectTask(notGit, secondGrant, secondRepo)
-  await inspectTask(secondRepo, firstGrant, repo)
-  const nearMiss = `${secondGrant.taskId.slice(0, -1)}${secondGrant.taskId.endsWith('0') ? '1' : '0'}`
-  const missed = await readOnly(inspectRoot, ['workspace', 'inspect', nearMiss])
-  assert.equal(missed.code, 0, missed.stderr)
-  assert.equal(missed.stdout, `No workspace records exist for exact task ${nearMiss}.\n`)
-  checks.push(
-    'dev workspace inspect <task> finds exactly that task in whichever of two repositories holds it, from a non-Git or another repository launch directory, and a task ID differing in one character finds nothing'
-  )
-  const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'])
-  assert.equal(malformed.code, 2, malformed.stderr)
-  assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace/)
-  assert.ok(malformed.stderr.includes('not-a-task-id'), malformed.stderr)
-  checks.push(
-    'dev workspace inspect with a malformed task ID is a usage error: exit 2 naming the bad argument, before the authority is asked'
-  )
-
-  const catalogPath = join(inspectRoot, 'catalog.sqlite')
-  const setCatalogPayload = (payload: string) => {
-    const catalog = new DatabaseSync(catalogPath)
-    try {
-      const row = catalog
-        .prepare('SELECT payload FROM repositories WHERE id=?')
-        .get(secondGrant.repositoryId)
-      if (typeof row?.payload !== 'string') throw new Error('The catalog fixture row is missing')
-      catalog
-        .prepare('UPDATE repositories SET payload=? WHERE id=?')
-        .run(payload, secondGrant.repositoryId)
-      return row.payload
-    } finally {
-      catalog.close()
+  await claim(
+    'dev workspace inspect <task> finds exactly that task in whichever of two repositories holds it, from a non-Git or another repository launch directory, and a task ID differing in one character finds nothing',
+    async () => {
+      await inspectTask(notGit, secondGrant, secondRepo)
+      await inspectTask(secondRepo, firstGrant, repo)
+      const nearMiss = `${secondGrant.taskId.slice(0, -1)}${secondGrant.taskId.endsWith('0') ? '1' : '0'}`
+      const missed = await readOnly(inspectRoot, ['workspace', 'inspect', nearMiss])
+      assert.equal(missed.code, 0, missed.stderr)
+      assert.equal(missed.stdout, `No workspace records exist for exact task ${nearMiss}.\n`)
     }
-  }
-  const intactPayload = setCatalogPayload('[]')
-  const damaged = authorityFiles(inspectRoot)
-  for (const args of [
-    ['--cwd', secondRepo, 'workspace', 'list'],
-    ['--cwd', notGit, 'workspace', 'inspect', secondGrant.taskId],
-  ]) {
-    const reported = await readOnly(inspectRoot, args)
-    assert.equal(reported.code, 1, `${args.join(' ')}: ${reported.stderr}`)
-    assert.equal(reported.stdout, '', 'a damaged authority is not presented as a listing')
-    assert.match(reported.stderr, /^Workspace inspection failed: .*catalog/)
-  }
-  assert.deepEqual(authorityFiles(inspectRoot), damaged, 'the damaged authority is left as found')
-  setCatalogPayload(intactPayload)
-  await inspectTask(notGit, secondGrant, secondRepo)
-  checks.push(
-    'dev workspace list and inspect <task> report a corrupt catalog with exit 1 and no listing, leave every authority file byte-identical, and after repair the same records answer again, so nothing was reinitialized'
+  )
+  await claim(
+    'dev workspace inspect with a malformed task ID is a usage error: exit 2 naming the bad argument, before the authority is asked',
+    async () => {
+      const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'])
+      assert.equal(malformed.code, 2, malformed.stderr)
+      assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace/)
+      assert.ok(malformed.stderr.includes('not-a-task-id'), malformed.stderr)
+    }
   )
 
-  assert.ok(!existsSync(unusedDataHome), 'no read-only command resolved a data home')
-  assert.deepEqual(pathsUnder(readOnlyHome), [], 'no read-only command created Pi state in HOME')
-  assert.deepEqual(
-    pathsUnder(sandbox).filter(path => path.endsWith('.jsonl')),
-    jsonlBefore,
-    'no read-only command created a Pi session file'
+  await claim(
+    'dev workspace list and inspect <task> report a corrupt catalog with exit 1 and no listing, leave every authority file byte-identical, and after repair the same records answer again, so nothing was reinitialized',
+    async () => {
+      const catalogPath = join(inspectRoot, 'catalog.sqlite')
+      const setCatalogPayload = (payload: string) => {
+        const catalog = new DatabaseSync(catalogPath)
+        try {
+          const row = catalog
+            .prepare('SELECT payload FROM repositories WHERE id=?')
+            .get(secondGrant.repositoryId)
+          if (typeof row?.payload !== 'string')
+            throw new Error('The catalog fixture row is missing')
+          catalog
+            .prepare('UPDATE repositories SET payload=? WHERE id=?')
+            .run(payload, secondGrant.repositoryId)
+          return row.payload
+        } finally {
+          catalog.close()
+        }
+      }
+      const intactPayload = setCatalogPayload('[]')
+      const damaged = authorityFiles(inspectRoot)
+      for (const args of [
+        ['--cwd', secondRepo, 'workspace', 'list'],
+        ['--cwd', notGit, 'workspace', 'inspect', secondGrant.taskId],
+      ]) {
+        const reported = await readOnly(inspectRoot, args)
+        assert.equal(reported.code, 1, `${args.join(' ')}: ${reported.stderr}`)
+        assert.equal(reported.stdout, '', 'a damaged authority is not presented as a listing')
+        assert.match(reported.stderr, /^Workspace inspection failed: .*catalog/)
+      }
+      assert.deepEqual(
+        authorityFiles(inspectRoot),
+        damaged,
+        'the damaged authority is left as found'
+      )
+      setCatalogPayload(intactPayload)
+      await inspectTask(notGit, secondGrant, secondRepo)
+    }
   )
-  checks.push(
-    'no read-only workspace command creates an authority root, a data home, Pi state or a session file'
+
+  await claim(
+    'no read-only workspace command creates an authority root, a data home, Pi state or a session file',
+    () => {
+      assert.ok(!existsSync(unusedDataHome), 'no read-only command resolved a data home')
+      assert.deepEqual(
+        pathsUnder(readOnlyHome),
+        [],
+        'no read-only command created Pi state in HOME'
+      )
+      assert.deepEqual(
+        pathsUnder(sandbox).filter(path => path.endsWith('.jsonl')),
+        jsonlBefore,
+        'no read-only command created a Pi session file'
+      )
+    }
   )
   console.log(
     JSON.stringify(
       {
-        checks,
+        result: 'passed',
+        checks: passed,
         limitation:
           'The launcher runs with a lifecycle injected on a temporary authority root; the fixed per-account root is not touched.',
       },
