@@ -1,161 +1,167 @@
-# Handoff: #36 workspace admission, committed locally, remaining gaps in progress
+# Handoff: #36 workspace admission, review fixes integrated, full suite not yet rerun
 
 ## Resume
 
-- `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. State OPEN by user decision until the PR exists. #37 (release and cleanup) is out of scope.
-- `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. The detached worktree `/Users/taekwondodev/.hermes/cache/scratch/dev-36-authority` (HEAD `4772677`) is still registered; retain it. The `dev-36-host` worktree named by an earlier handoff no longer exists and is not registered; nothing depends on it. Unrelated prunable registrations under `/private/tmp` and `/private/var/folders` are untouched.
-- `snapshot`: 2026-09-26 evening. `git log 4772677..HEAD` holds local, unpushed commits: `670eded` (pre-existing docs), `338ddc1` (the feature), the work-order steps 0 to 6, and `05d3afa`, which fixes the blockers of the first final review round. The full suite was green at `05d3afa`. Two agents work in worktrees under `/Users/taekwondodev/.claude/jobs/c41321db/tmp/`: `wt-engine` (branch `feat/36-review-engine`) and `wt-effect` (branch `feat/36-review-effect`), both based on `05d3afa`, each with `node_modules` symlinked into this checkout.
-- `phase`: `dev-cycle` step 7, the final three-axis review. Round 1 ran at `f7cb3b4`. Its blockers are fixed in `05d3afa`; its smells and one `consider` item are being fixed by user decision (see _Remaining work_). A round-2 review of every affected axis follows, then step 8 (push and PR).
-- `authorization`: user instructions of 2026-09-26. Done: local commits, and the #36 evidence comment with the issue kept open. At the end, after the full independent review, push the branch and open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link; the user merges, which closes #36. Do not merge or close #36 yourself. #37 is unauthorized. Never push directly to `main`. Do not reset, rebase or clean the branch. Keep `docs/agents/triage-labels.md` unformatted and out of scope.
-- `next_action`: when both worktree agents report, review their commits, cherry-pick them onto `feat/36-workspace-admission`, resolve the overlap (the engine agent changes `authorize(...)` shapes and ID types that the Effect-layer agent's files call), unify the error-text helper, rerun the full suite, remove both worktrees and branches, then run the test-tooling smell group and the round-2 review.
+- `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. The issue is OPEN by user decision until the PR exists; the evidence comment is already posted ([link](https://github.com/taekwondodev/dev/issues/36#issuecomment-5844741850)). #37 (release and cleanup) is out of scope.
+- `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. It is the only registered worktree; the scratch worktrees used earlier (`dev-36-authority`, `wt-*`) are gone.
+- `snapshot`: 2026-09-26 night. HEAD `69d8362426ae691add8c18a4e1a59359dc990029`, working tree clean, 35 local unpushed commits over `main` (`4772677`). The last 11 commits (`a663588` to `69d8362`) integrate two parallel review-fix branches and were checked only with `npx tsc --noEmit -p .` (0 errors), `npx oxfmt --check src scripts` and `git diff --check`. The full suite was last green at `05d3afa`.
+- `phase`: `dev-cycle` step 7, the final three-axis review, now between round 1 and round 2. Owning skills: `dev-cycle`, then `code-review` for round 2 and `pr` for delivery.
+- `authorization`: user instructions of 2026-09-26.
+  - Local commits: authorized.
+  - At the end, after the final review converges: push the branch and open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link. The user merges, which closes #36; do not merge or close #36 yourself.
+  - Never push directly to `main`; #37 is unauthorized.
+  - Do not reset, rebase or clean the branch; keep `docs/agents/triage-labels.md` unformatted and out of scope.
+  - The user stopped the previous session before the suite rerun and asked to continue from this handoff.
+- `next_action`: run the full suite on HEAD with `TMPDIR` set to a private temporary directory: `npm run lint`, `npm run smoke`, `npm run workspace:check`, `npm run workspace:tui`, `npx oxfmt --check src scripts`, `git diff --check`, then `pgrep -fl "dev-shell|sleep 60"` for leaked processes, then confirm `~/Library/Application Support/dev` still does not exist. Fix anything red with a regression, and commit.
 - `required_inputs`:
   - `session-pickup`: `/Users/taekwondodev/Developer/skills/skills/session-pickup/SKILL.md`
   - `dev-cycle`: `/Users/taekwondodev/Developer/skills/skills/dev-cycle/SKILL.md`
-  - `grilling`: `/Users/taekwondodev/Developer/skills/skills/grilling/SKILL.md`
-  - `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/adr/0005-scoped-runtime-coordination.md`.
-- `done_when`: every step of the work order is implemented with mutation-verified regressions, the full suite is green, the final three-axis review converges, and the PR is open and linked from #36.
-- `stop_when`: a decision is unanswered; any check turns red when rerun; a new review finding is classed blocking; any step would push, open a PR, close #36, start #37, touch the real authority root `~/Library/Application Support/dev/workspace-authority/`, `~/.pi` or credentials.
+  - `AGENTS.md`, and `node_modules/effect/AGENTS.md` before writing Effect code (project rule).
+  - `docs/adr/0005-scoped-runtime-coordination.md` (scoped operations, Effect boundary, executable extensions) and `docs/DEVELOPMENT.md` (checks, module ownership).
+- `done_when`: every command in `next_action` passes on the same commit (lint with 0 errors and 0 effect messages, both PTY probes `passed_marker: true` with no missing actions, no leaked process, real authority root absent), with any fix committed.
+- `stop_when`:
+  - a failure that needs a behavior or scope decision;
+  - a review finding classed blocking that cannot be fixed without one;
+  - any step that would merge, close #36, start #37 or push to `main`;
+  - any step that would touch the real authority root `~/Library/Application Support/dev/workspace-authority/`, `~/.pi` or credentials (every check uses temporary roots; the launcher only runs through the injected-lifecycle seam or with a disposable `HOME`).
 
 ## Retained context
 
-**User decisions taken in this session (2026-09-25/26).** Each is recorded in ADR 0005 unless noted. Do not reopen them silently.
+**Implementation decisions (2026-09-25/26), recorded in ADR 0005 unless noted. Do not reopen them silently.**
 
-1. The opaque fence is scoped to its checkout (#27 contention unit). The repository structure gate serializes only dev's own Git structural effects.
-2. A shell use ends on observed cessation of its process group and tracked descendants. A process that detaches into a new session or group escapes: accepted residual, also for delegated children, whose Pi shell starts every command with `setsid`.
-3. The recovery verb for `unknown` uses is deferred; `unknown` stays absorbing and blocks its checkout for writers.
-4. The lead tool gate classifies by verified effect. Bash, `!` and `!!` run through the dev shell adapter; read, grep, find and ls are reads; write and edit are native writes performed by dev's operations; an unrecorded tool is refused without ending the turn.
-5. The authority root is fixed per OS account with no runtime override; only code importing `src/launcher.ts` can inject another lifecycle (the test seam).
-6. The user trusts their own `.pi/`: dev defers to Pi's folder trust and has no `project_trust` handler (ADR 0005, Executable extensions).
+1. The opaque fence is scoped to its checkout (#27 contention unit); the repository structure gate serializes only dev's own Git structural effects.
+2. A shell use ends on observed cessation of its process group and tracked descendants. A process that detaches into a new session escapes; the residual is accepted, also for delegated children.
+3. No recovery verb for `unknown` yet; `unknown` is absorbing and blocks its checkout for writers.
+4. The lead tool gate classifies by verified effect. Bash, `!` and `!!` run through dev's shell; read, grep, find and ls are reads; write and edit are native writes; an unrecorded tool is refused without ending the turn.
+5. The authority root is fixed per OS account (ADR 0003); only code importing `src/launcher.ts` can inject another lifecycle.
+6. Dev defers to Pi's folder trust for the user's own `.pi/` (ADR 0005, Executable extensions).
 7. Delegated children keep the coarse workspace grain.
-8. Known limit: a mixed batch that parks the host costs one extra fenced model request. The ADR records the abort-based fix and what it requires.
-9. A contended write is refused with guidance, not isolated, while the conversation's own process is live in the checkout it would leave.
-10. Shells are stopped at every session end or replacement except `/reload`.
+8. Accepted known limit: a mixed batch that parks the host costs one extra fenced model request (the ADR records the abort-based fix).
+9. A contended write is refused with guidance while the conversation's own process is live in the checkout it would leave.
+10. Shells stop at every session end or replacement except `/reload`.
 11. Native writes to distinct destinations may be in flight together.
-12. Worktrees left reserved by a withdrawn automatic switch are documented until #37.
+12. Worktrees left by a withdrawn automatic switch stay reserved until #37.
 
-**Review history.** Rounds 1 and 2 ran three isolated axes (Spec, Adversarial, Standards). Round 2 did not converge, so the findings went to the user, who gave decisions 1 to 12. Round 3, one agent over three axes, found an `act_on` regression: any attach auto-withdrew another process's pending switch. Round 4 fixed it with the explicit `withdrawUnstartedSwitch` attach option, which only the launcher passes for `--resume`/`--continue` after claiming the conversation. A targeted round-4 review (Standards and Adversarial on `round4.diff`) found one `hard` issue (missing regressions) and several `consider` findings. Round 5 fixed all of them:
+**Grilling decisions of 2026-09-26, implemented:**
 
-- the selection attach path now refuses a pending switch like the plain path;
-- the controller settles a launch whose identity was never acknowledged as `launch-failed` instead of `unknown`;
-- the native write identity folds through upper case (ß/ss, ſ/s, ς/σ, ﬀ/ff) and is stored once per write;
-- the host routes a failed settle of a refused write to the notifier;
-- acquisition and probe share one presence gate path;
-- the ADR and `COMMANDS-TERMINAL.md` state that conversation claims are per installation.
+- A conversation gate in the account-wide authority, keyed by session file and session ID (not data home).
+- Each opening of a conversation holds an incarnation gate whose token every use records, so `inspect` names uses left by ended sessions even after the conversation is resumed.
+- Any attach that wins the conversation gate withdraws a switch that never reached the host, TUI `/resume` included.
+- The Pi-facing layer runs in Effect (ADR 0005 "Effect boundary").
+- Every review smell group is fixed before the PR.
+- Delivery is by PR.
 
-Each round-5 fix has a regression that was observed failing under a mutation reverting it. **The round-5 fixes were not re-reviewed by an independent reviewer.**
+**Final review round 1** ran at `f7cb3b4` with three isolated reviewers (Spec, Adversarial, Standards).
 
-**Non-blocking smells routed to the user, not acted on:**
+Blockers, all fixed in `05d3afa` with regressions observed failing under a mutation that reverts each fix:
 
-- the withdraw permission is a bare boolean instead of a branded claim value;
-- dead distinctions: `native-read`, `unbounded`, `sourceCwd`;
-- the controller and the shell adapter duplicate the observation loop and retry policy;
-- the PTY probe stub mirrors engine rules;
-- the two Python PTY drivers are near-identical;
-- the probes load Pi through the `node_modules` link instead of `src/pi-runtime.ts`;
-- path canonicalization exists in three copies (engine, child validator, native-write module);
-- the 14 `smell` findings of the first review: `workspace-engine.ts` size and responsibilities, four error models, misleading helper names, CLI IDs validated by hand, and self-graded claim lists.
+- the conversation gate was keyed by data home;
+- the `inspect` docs were stale;
+- TUI `/resume` of a conversation live elsewhere made Pi exit with no cleanup; it now notifies and cancels;
+- the shell's final `quiescent` report had lost its retry (the controller's final report now retries too);
+- hand-written error-code guards;
+- code comments restating ADR text.
+
+The remaining two Standards blockers, validate-once and host Promise APIs, went to worktree agents together with the smell groups, and are integrated at `81150f9..8be1e48` and `a663588..7c2c50f`.
+
+**What the integrated branches changed (check these in round 2):**
+
+- Engine (`81150f9..8be1e48`):
+  - RPC inputs are decoded once, at the worker;
+  - `WorkspaceOperation` and grant leases are tagged unions, callers build `{ kind: ... }`;
+  - IDs are branded (`WorkspaceId`, `newId()`);
+  - each schema is defined once in `src/workspace-domain.ts`;
+  - duplicated engine checks are extracted;
+  - dead code is gone (`allocateDetachedWorktree`, `taskLabel`), as is the attachment/engine middle-man layer, so the worker dispatches through `engine.run`;
+  - `allocateWorkspace` is split in two;
+  - generic helpers moved to `src/workspace-platform.ts`, and `AuthorityPaths` to `src/workspace-authority-root.ts`.
+  - Deviations the agent reported:
+    - one merged "unsupported format" message for the protocol gate;
+    - `holdGates` applies the allocation identity check;
+    - `settleClosingState` settles every lease before releasing any gate;
+    - `canonicalRoot` resolves through `realpathSync.native`;
+    - extra keys on an operation are stripped by the protocol decode rather than refused.
+- Effect layer (`a663588..7c2c50f`):
+  - `prepareRuntime` and `commitRuntime` are Effects;
+  - `WorkspaceWorkControls` are Effects built by `workControlsOf`, and a failing control is a notice;
+  - `Effect.fnUntraced` throughout;
+  - native writes settle on `Deferred`s and run through the host's runtime;
+  - handoffs fork into a scoped `FiberSet`;
+  - command parsers return `Effect` failures, and unexpected exceptions stay defects;
+  - one `sameConversation`, one `noUiTrustContext`;
+  - Pi types imported from the package root;
+  - two new checks: failing work controls, and `dev --probe-runtime` through the real runtime factory with a disposable `HOME`.
+- Integration (`69d8362` and conflict resolutions):
+  - `exactId` is an Effect decoding the branded ID;
+  - the host and shell `authorize` calls use the union shapes;
+  - one `errorText` in `src/error-text.ts` for every workspace module.
+  - Error-text copies remain in older modules outside the #36 diff (`preferences.ts`, `profiles.ts`, `work-dispatch.ts`, `work-controller.ts`, `work-extension.ts`, `pi-child.ts`, `runtime-coordination.ts`, `session-guard.ts`, `work-protocol.ts`); out of scope unless the user asks.
+
+**Noted, not changed:** the controller now settles an unacknowledged launch before the root-reuse check, so a reused root after a gated launch settles as `launch-failed` instead of `unknown`; the root never released user code.
 
 ## Evidence and gaps
 
-**Checks observed on tree `e8c4f1f6`**, with `TMPDIR` set to a job-private directory:
+| Check                                           | Commit                         | Result                                              | Source            |
+| ----------------------------------------------- | ------------------------------ | --------------------------------------------------- | ----------------- |
+| `tsc`, `oxfmt --check`, `git diff --check`      | `69d8362`                      | pass                                                | observed          |
+| lint, smoke, `workspace:check`, `workspace:tui` | `69d8362`                      | **not run** (user instruction)                      | required next     |
+| full suite, as in `next_action`                 | `05d3afa`                      | pass, 0 effect messages, no leaks, real root absent | observed          |
+| full suite in the engine worktree               | `3744a55` (before integration) | pass                                                | reported by agent |
+| full suite in the Effect worktree               | `1744ed4` (before integration) | pass                                                | reported by agent |
 
-| Check                           | Result                                                                                                                              |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run lint`                  | exit 0: 0 errors, 4 pre-existing effect-tsgo messages. The remaining oxlint warnings predate this round.                            |
-| `npm run smoke`                 | exit 0                                                                                                                              |
-| `npm run workspace:check`       | exit 0: 31 authority, 16 process, 4 contract and 2 launcher claims                                                                  |
-| `npm run workspace:tui`         | exit 0: stub-lifecycle PTY probe and real-authority PTY probe both `passed_marker: true`, `missing_actions: []`, 0 network attempts |
-| `npx oxfmt --check src scripts` | clean                                                                                                                               |
-| `git diff --check`              | clean                                                                                                                               |
-| leaked processes                | none (`pgrep`)                                                                                                                      |
+Integration conflict resolutions were not exercised by any test yet.
 
-`npm run format:check` fails only on `docs/agents/triage-labels.md`, deliberately.
+**Regressions added in `05d3afa`**, each observed failing under a mutation reverting its fix:
 
-**Round-5 mutation checks, observed:**
+- held-conversation switch cancelled (real TUI probe and stub probe);
+- shell and controller final-report retry (process check);
+- same conversation file under two data homes refused;
+- gate kept while the last attachment closes with a pending switch;
+- `inspect` naming a dead session's use after the conversation is resumed (authority check).
 
-- Removing the controller's unrecorded-launch settle makes the process check fail with `unknown` instead of `quiescent`.
-- Lowercase-only folding makes it miss `STRASSE.txt` against `straße.txt`.
-- Restoring the old selection path makes the authority check's attach succeed ("Missing expected rejection").
-- Dropping the launcher flag makes the launcher check fail with the "unfinished workspace switch" refusal.
+**Acceptance (#36).** As of `05d3afa` every criterion is met or met with an accepted limit. The accounting published in the #36 comment still holds, with these closures since then:
 
-**#36 acceptance accounting** (criteria in the issue body, numbered in order):
+- AC 4: a second installation with its own data home is refused.
+- AC 8: a refused allocation and a held-conversation switch both run in the real TUI against the real authority.
+- AC 9: terminal edges are covered by the launcher check (no-Git list, absent versus corrupt authority, cross-repository inspect, malformed ID exits 2).
+- `/reload` keeping shells and a WorkOwner pre-spawn failure are now tested.
 
-| AC                                                                  | Status                     | Evidence                                                                                                                                                                                                                                                                | Gap or limit                                                                                                                              |
-| ------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 authorize before execution, atomic admission                      | met                        | authority: foreign writer and paused reservation isolate into an exact-HEAD worktree without transferring staged, untracked or ignored data. Real probe: contended write blocked, rebound, not replayed. Process: missing authority blocks with no fallback.            | A custom tool with no recorded effect is refused rather than admitted (decision 4).                                                       |
-| 2 readers, delegated writers, independent progress, structural gate | met                        | authority: a reader in a second process is warned; delegated writers get distinct worktrees; linked worktrees progress; the structure gate serializes only dev allocation. Real probe: the read warning reaches the tool result.                                        | Fence is checkout-scoped (decision 1).                                                                                                    |
-| 3 distinct IDs, surviving facts, WorkOwner authority                | met                        | authority: uncertainty and reservations survive close and reopen. Process: separate task and use attribution; log expiry leaves the use stage unchanged.                                                                                                                | None beyond the review smells.                                                                                                            |
-| 4 shared namespace, identity, storage                               | met with limit             | Fixed per-account root with no data-home input. authority: non-private and symlinked roots rejected; synced, network and non-APFS/HFS storage refused; cross-process provisioning converges. Process: hard-linked destinations rejected.                                | Two real installations were never driven. Conversation claims are per installation (recorded).                                            |
-| 5 durability                                                        | met within the amendment   | Engine asserts `synchronous=FULL` and `fullfsync=ON` on every open. authority: corrupt payloads reported, worker death and lost commit acknowledgment keep the durable use.                                                                                             | No power-loss proof (accepted). No fault test injects a wrong effective pragma.                                                           |
-| 6 launch barrier and observed cessation                             | met with accepted residual | process: shell and controller launch barriers, descendants tracked until gone, aborts before release never run, lossy controller reports settle as never launched. authority: `unknown` absorbs; stale reports cannot release a later use.                              | `setsid` escape (decision 2).                                                                                                             |
-| 7 real-adapter boundaries and recovery                              | met with deferred verb     | authority: lost acknowledgments, a pending handoff reopens only at its target, a withdrawn switch keeps the last binding, a switch is refused while a process is live. launcher: `dev --resume` withdraws an unstarted switch durably.                                  | No recovery verb for `unknown` (decision 3).                                                                                              |
-| 8 real Pi TUI                                                       | met with limits            | Stub probe (real TUI, stub lifecycle): `!!`, pending input, genuine cancel, provider escape, repeated rebind, resume failure and refusal, selector escape. Real-authority probe: contended rebind, write batch, duplicate refusal, read warnings, unverified tool, `!`. | Creation and rebind failures are driven only against the stub lifecycle. One extra parked request is accepted (decision 8).               |
-| 9 command families                                                  | partly re-verified         | Stub probe: list, inspect and resume grammar, multi-workspace ambiguity, exit 0 paths, read-only commands attach nothing. authority: corrupt payloads reported, inspection read-only.                                                                                   | This session did not re-verify no-Git listing, empty versus corrupt authority at the terminal, or cross-repository exact-task inspection. |
-| 10 resume and selection                                             | met                        | authority: no auto-selection, exact selection with fresh acquisition, removed workspace refused without recreation. launcher: removed-workspace guidance with unchanged history. Stub probe: resume flows. The launcher attaches before building the runtime (source).  | None known.                                                                                                                               |
-| 11 old leases replaced                                              | met                        | `background-work.md` and ADR 0005 describe the single authority. process: no old-lease fallback. `smoke` green.                                                                                                                                                         | Tests use temporary roots only; the real root, `~/.pi` and credentials were never touched.                                                |
-| 12 docs and checks                                                  | met                        | Updated: ADR 0002, ADR 0005, `CONTEXT.md`, `DEVELOPMENT.md`, both `COMMANDS-*`, `background-work.md`. Checks as above.                                                                                                                                                  | Competing installations not driven (AC4).                                                                                                 |
+Remaining limits for the PR body:
 
-**Other gaps, observed or known:**
+- no power-loss proof;
+- `setsid` escape;
+- no recovery verb for `unknown`;
+- the extra parked request;
+- creation failure during a rebind driven only against the stub lifecycle.
 
-- `/reload` keeping shells alive has no dedicated test (verified from source only).
-- A WorkOwner failure before spawn is not exercised end to end.
-- `inspect` can label a workspace `active` while a live session co-exists with abandoned uses; the label then hides them.
-- Round-4 reproductions live under `/Users/taekwondodev/.hermes/cache/scratch/review4/` and expire with scratch pruning.
+**Round-1 review evidence.** Reproductions are under `/Users/taekwondodev/.hermes/cache/scratch/review-final/{spec,adversarial,standards}/`; they expire with scratch pruning. The round-1 diff is `/Users/taekwondodev/.hermes/cache/scratch/dev36-final/final.diff`.
 
 ## Remaining work
 
-Decisions from the 2026-09-26 grilling, all answered by the user:
-
-- Add a per-conversation gate to the authority. Every use records its conversation. Any attach that wins the gate may withdraw an unstarted switch: the `withdrawUnstartedSwitch` option disappears, and TUI `/resume` can withdraw too. `inspect` names the uses of dead conversations. This fixes cross-installation resume (conversation claims are per installation) and the `active` label hiding abandoned uses.
-- Fix every smell group before the PR: dead code, duplicated logic, test tooling, and the first review's smells still present.
-- Port the Pi-facing layer to Effect: authority client, shell, native writes and host. Promise stays only at Pi's hook points.
-- Run a final full independent review (Spec, Adversarial, Standards) on everything after round 4.
-- Deliver as push plus PR with `Closes #36`; the user merges.
-
-Work order, confirmed by the user: 0. Background evidence task, `scripts/` only: AC 9 terminal edges, AC 4 root resolution across installations, `/reload` keeping shells, WorkOwner pre-spawn failure, AC 8 rebind failure against the real authority.
-
-1. Dead code: remove `native-read`, the child's `unbounded` operation and the unused `sourceCwd`.
-2. Per-conversation gate, as decided above, with ADR 0005 and command docs updated.
-3. Split `workspace-engine.ts` (4,462 lines) into modules:
-   - store (SQLite, records, codecs);
-   - gates (presence, writer, structure, conversation);
-   - path identity (one validator replacing the engine, child and native-write copies);
-   - admission;
-   - transitions (attach, select, handoff, allocation);
-   - inspect.
-
-   In the same step:
-   - rename `columns` to `rows`, `valueOf` to `decodeOrFail`, `review` to `requireReview`;
-   - use one error model, tagged outcomes at the authority, one CLI error type, and have the launcher narrow with `instanceof` instead of duck-typing `exitCode`;
-   - decode CLI IDs with `WorkspaceId`;
-   - filter inspect views once and share the empty-result sentence.
-
-4. Port the authority client, shell, native writes and host to Effect. Use one observation loop and one retry policy, shared with the controller.
-5. Test tooling:
-   - one Python PTY driver;
-   - probes load Pi through `src/pi-runtime.ts`;
-   - less stub logic, with the contract check reduced to compile-time guards where types suffice;
-   - authority-check claims bound to the assertions that prove them;
-   - fault injection through an injectable seam that asserts it fired, instead of prototype patching.
-6. ADRs: record the Effect boundary and the conversation gate; keep each rule in either the ADR or the code comment, not both.
-7. Full suite, then the final three-axis review; fix until it converges or show remaining findings to the user.
-8. Push, open the PR with `Closes #36`, comment on #36 with the PR link.
-
-Final review, round 1 (at `f7cb3b4`; three isolated reviewers):
-
-- Blockers, all fixed in `05d3afa` with mutation-verified regressions:
-  - Spec: the conversation gate was keyed by data home; the `inspect` docs were stale.
-  - Adversarial `act_on`: TUI `/resume` of a conversation live elsewhere made Pi exit; the shell's final quiescent report lost its retry.
-  - Standards `hard`: Effect-layer Promise APIs (moved to the worktree agent), duplicated validation (moved to the worktree agent), hand-written error-code guards, comments restating ADR text.
-- User decisions of 2026-09-26 evening: fix all four smell groups (types and schemas, duplication and dead code, Effect idioms, test tools), and give each use the incarnation of the conversation opening that created it, so `inspect` names uses left by ended sessions even after the conversation is resumed (done in `05d3afa`).
-- Noted, not changed: the controller now settles an unacknowledged launch before the root-reuse check, so a reused root after a gated launch settles as `launch-failed` instead of `unknown` (the root never released user code).
-
-Later, not authorized now: #37 release and cleanup, including the worktrees left by withdrawn switches; a recovery verb for `unknown` (#34 excludes repair verbs from the first version); the abort-based fix for the mixed-batch limit.
+1. Full suite on HEAD (`next_action`); fix red.
+2. The test-tools smell group, chosen by the user. Mutation-verify every rewritten assertion.
+   - The stub lifecycle in `scripts/workspace-host-pty-probe.ts` still copies the engine's scoped rules and execution stage machine. Record facts instead, keep the fact-sequence assertions, and leave rule enforcement to the real-authority probe.
+   - Both probes rebuild their own copy of the launcher's runtime factory. Export it from `src/launcher.ts` with injectable model, lifecycle and extensions and use it in both, or record the limit in `docs/DEVELOPMENT.md`.
+   - The real-authority probe prints a static claim list; use `makeClaims` from `scripts/workspace-check-support.ts`.
+   - `scripts/run-workspace-pty-probes.py` hard-codes the stub's fixture IDs; let the probe print what the driver must type.
+   - The stub patches `process.send` and `process.connected` globally and casts a fake `ExtensionAPI`; test the child gate through an injectable IPC seam.
+   - Replace weak assertions such as `/workspace/i` with specific text.
+3. Rerun the full suite; update `HANDOFF.md`.
+4. Final review round 2 with `code-review`: three isolated reviewers on `git diff f7cb3b4 HEAD`, rechecking the round-1 findings and the integration deviations listed above. Fix blockers and rerun affected axes. If round 2 does not converge, show the remaining findings to the user (procedure rule).
+5. Delivery with the `pr` skill:
+   - push `feat/36-workspace-admission`;
+   - open a PR to `main` with `Closes #36`, evidence, decisions and limits;
+   - comment on #36 with the PR link;
+   - leave the merge to the user.
 
 Whole-task completion: PR open and linked from #36, merged by the user.
 
+Later, not authorized: #37 (release and cleanup, including worktrees left by withdrawn switches); a recovery verb for `unknown`; the abort-based fix for the mixed-batch limit.
+
 ## Sources
 
-- #36 body and comments (via `docs/agents/issue-tracker.md`): canonical acceptance. Linked resolutions #27, #28, #30, #31, #34; amendments [durability](https://github.com/taekwondodev/dev/issues/31#issuecomment-5810802846) and [extension policy](https://github.com/taekwondodev/dev/issues/36#issuecomment-5815706403). Read when writing the closure comment.
-- Review diffs: `/Users/taekwondodev/.hermes/cache/scratch/dev36-final/round4.diff` (round-4 changes from tree `a81f3151`) and `round5.diff` (round 5, `a81f3151` to `e8c4f1f6`). Read if a further review is requested.
-- Suite outputs from this session are in the job's temporary directory and are not retained; rerun `npm run workspace:check` and `npm run workspace:tui` for fresh evidence.
+- #36 body and comments (read with `gh`, see `docs/agents/issue-tracker.md`): canonical acceptance, with linked resolutions #27, #28, #30, #31, #34 and the amendments on durability (https://github.com/taekwondodev/dev/issues/31#issuecomment-5810802846) and on the extension policy (https://github.com/taekwondodev/dev/issues/36#issuecomment-5815706403). Read for round 2 (Spec) and for the PR body.
+- `/Users/taekwondodev/.claude/skills/code-review/SKILL.md` and `references/result-contract.md`: read before round 2.
+- `/Users/taekwondodev/.claude/skills/testing/SKILL.md`: read before the test-tools group.
+- `/Users/taekwondodev/.claude/skills/pr/SKILL.md`: read before delivery.
+- Memory notes in `/Users/taekwondodev/.claude/projects/-Users-taekwondodev-Developer-dev/memory/`: the user wants Effect used uniformly and prefers fixing review smells in the same delivery.
