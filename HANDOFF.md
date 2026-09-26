@@ -4,10 +4,10 @@
 
 - `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. State OPEN by user decision until the PR exists. #37 (release and cleanup) is out of scope.
 - `workspace`: `/Users/taekwondodev/Developer/dev`, branch `feat/36-workspace-admission`. The detached worktree `/Users/taekwondodev/.hermes/cache/scratch/dev-36-authority` (HEAD `4772677`) is still registered; retain it. The `dev-36-host` worktree named by an earlier handoff no longer exists and is not registered; nothing depends on it. Unrelated prunable registrations under `/private/tmp` and `/private/var/folders` are untouched.
-- `snapshot`: 2026-09-26 afternoon. `git log 4772677..HEAD` holds local, unpushed commits: `670eded` (pre-existing docs), `338ddc1` (the feature), then one commit per work-order step through `be70a20` (steps 0 to 4 and 6, plus `9893b6f`, a fix for a refused allocation that parked the conversation, found by the step-0 evidence task). The full suite was green at `be70a20`. Step 5 runs in the worktree `/Users/taekwondodev/.claude/jobs/c41321db/tmp/wt-test-tooling` on branch `feat/36-test-tooling` (its `node_modules` is a symlink into this checkout).
-- `phase`: `dev-cycle` implementation of the work order decided in the 2026-09-26 grilling (see _Remaining work_). Steps 0 to 4 and 6 are committed; step 5 (test tooling) is in progress in the worktree above; then step 7 (full suite and three-axis review) and step 8 (push and PR).
+- `snapshot`: 2026-09-26 evening. `git log 4772677..HEAD` holds local, unpushed commits: `670eded` (pre-existing docs), `338ddc1` (the feature), the work-order steps 0 to 6, and `05d3afa`, which fixes the blockers of the first final review round. The full suite was green at `05d3afa`. Two agents work in worktrees under `/Users/taekwondodev/.claude/jobs/c41321db/tmp/`: `wt-engine` (branch `feat/36-review-engine`) and `wt-effect` (branch `feat/36-review-effect`), both based on `05d3afa`, each with `node_modules` symlinked into this checkout.
+- `phase`: `dev-cycle` step 7, the final three-axis review. Round 1 ran at `f7cb3b4`. Its blockers are fixed in `05d3afa`; its smells and one `consider` item are being fixed by user decision (see _Remaining work_). A round-2 review of every affected axis follows, then step 8 (push and PR).
 - `authorization`: user instructions of 2026-09-26. Done: local commits, and the #36 evidence comment with the issue kept open. At the end, after the full independent review, push the branch and open a PR to `main` whose body says `Closes #36`, then comment on #36 with the PR link; the user merges, which closes #36. Do not merge or close #36 yourself. #37 is unauthorized. Never push directly to `main`. Do not reset, rebase or clean the branch. Keep `docs/agents/triage-labels.md` unformatted and out of scope.
-- `next_action`: when step 5 reports, review its commits, cherry-pick them onto `feat/36-workspace-admission` (resolving conflicts in the probes, which the host port also touched), rerun the full suite, remove the worktree and branch, then start step 7.
+- `next_action`: when both worktree agents report, review their commits, cherry-pick them onto `feat/36-workspace-admission`, resolve the overlap (the engine agent changes `authorize(...)` shapes and ID types that the Effect-layer agent's files call), unify the error-text helper, rerun the full suite, remove both worktrees and branches, then run the test-tooling smell group and the round-2 review.
 - `required_inputs`:
   - `session-pickup`: `/Users/taekwondodev/Developer/skills/skills/session-pickup/SKILL.md`
   - `dev-cycle`: `/Users/taekwondodev/Developer/skills/skills/dev-cycle/SKILL.md`
@@ -140,6 +140,15 @@ Work order, confirmed by the user: 0. Background evidence task, `scripts/` only:
 6. ADRs: record the Effect boundary and the conversation gate; keep each rule in either the ADR or the code comment, not both.
 7. Full suite, then the final three-axis review; fix until it converges or show remaining findings to the user.
 8. Push, open the PR with `Closes #36`, comment on #36 with the PR link.
+
+Final review, round 1 (at `f7cb3b4`; three isolated reviewers):
+
+- Blockers, all fixed in `05d3afa` with mutation-verified regressions:
+  - Spec: the conversation gate was keyed by data home; the `inspect` docs were stale.
+  - Adversarial `act_on`: TUI `/resume` of a conversation live elsewhere made Pi exit; the shell's final quiescent report lost its retry.
+  - Standards `hard`: Effect-layer Promise APIs (moved to the worktree agent), duplicated validation (moved to the worktree agent), hand-written error-code guards, comments restating ADR text.
+- User decisions of 2026-09-26 evening: fix all four smell groups (types and schemas, duplication and dead code, Effect idioms, test tools), and give each use the incarnation of the conversation opening that created it, so `inspect` names uses left by ended sessions even after the conversation is resumed (done in `05d3afa`).
+- Noted, not changed: the controller now settles an unacknowledged launch before the root-reuse check, so a reused root after a gated launch settles as `launch-failed` instead of `unknown` (the root never released user code).
 
 Later, not authorized now: #37 release and cleanup, including the worktrees left by withdrawn switches; a recovery verb for `unknown` (#34 excludes repair verbs from the first version); the abort-based fix for the mixed-batch limit.
 
