@@ -8,7 +8,6 @@ import {
   FileSystem,
   Layer,
   Queue,
-  Schedule,
   Semaphore,
   Schema,
 } from 'effect'
@@ -62,10 +61,12 @@ import { compactText, makeWorkStore, type WorkStore } from './work-store.ts'
 import { parseChildMessage } from './work-protocol.ts'
 import { globalPiAgentDir } from './preferences.ts'
 import {
+  observeFamily,
   processGate,
   processGateScript,
-  readProcessTable,
+  processTable,
   rootIdentityReused,
+  transientRetry,
 } from './process-family.ts'
 import {
   WorkspaceError,
@@ -257,14 +258,6 @@ const artifactState = (cwd: string): Effect.Effect<ArtifactState, never> =>
     })),
     Effect.orElseSucceed(() => ({ unavailable: true as const }))
   )
-
-const processTable = Effect.tryPromise({
-  try: readProcessTable,
-  catch: cause => new WorkError({ message: errorMessage(cause), cause }),
-})
-
-// One failed `ps` or report must not become an absorbing `unknown` use.
-const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 
 const abortChild = (child: ChildProcess | undefined, gate: Writable | undefined): void => {
   try {
@@ -1005,7 +998,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               ),
             catch: cause => new WorkError({ message: errorMessage(cause), cause }),
           })
-          const initialTable = yield* processTable
+          const initialTable = yield* processTable.pipe(Effect.mapError(toFailure))
           const root = initialTable.find(item => item.pid === childPid)
           const known = ownedProcesses(initialTable, childPid, [])
           if (
@@ -1255,34 +1248,23 @@ class WorkOwnerImpl implements WorkOwnerService {
               )
             return
           }
-          const table = yield* processTable.pipe(Effect.retry(transientRetry))
-          const root = job.lifecycle.rootProcess()
-          if (rootIdentityReused(table, root, hasProcessExitEvidence(job))) {
-            yield* self.failObservation(
-              job,
-              new Error('Root process identity was reused; cleanup is unknown')
-            )
-            return
-          }
-          const known = ownedProcesses(
-            table,
-            job.lifecycle.pid(),
-            job.lifecycle.knownProcesses(),
-            root
-          )
           yield* self
             .settleUnrecordedLaunch(job, 'The launch failed before user code was released')
             .pipe(Effect.retry(transientRetry))
-          const observations = yield* Schema.decodeUnknownEffect(
-            Schema.Array(WorkspaceProcessSchema)
-          )(known).pipe(Effect.mapError(toFailure))
-          const signature = JSON.stringify(observations)
-          if (signature !== job.observedProcesses) {
-            yield* self
-              .reportWorkspace(job, { kind: 'observed', processes: observations })
-              .pipe(Effect.retry(transientRetry))
-            job.observedProcesses = signature
-          }
+          const family = yield* observeFamily(
+            {
+              pid: job.lifecycle.pid(),
+              root: job.lifecycle.rootProcess(),
+              known: job.lifecycle.knownProcesses(),
+              reported: job.observedProcesses,
+            },
+            {
+              rootExited: hasProcessExitEvidence(job),
+              report: processes => self.reportWorkspace(job, { kind: 'observed', processes }),
+            }
+          )
+          job.observedProcesses = family.reported
+          const { known } = family
           yield* self.commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
           if (known.length === 0) {
             yield* self.finish(job)
