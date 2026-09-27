@@ -19,10 +19,14 @@ import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
-import { deferred, makeClaims, waitFor, within } from './workspace-check-support.ts'
+import { deferred, makeClaims, waitUntil, within } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../src/workspace-native-write.ts'
-import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
+import {
+  WorkspaceError,
+  type WorkspaceAttachment,
+  type WorkspaceView,
+} from '../src/workspace-domain.ts'
 import type { AttemptView } from '../src/work-domain.ts'
 
 const exec = promisify(execFile)
@@ -272,28 +276,22 @@ try {
         .flatMap(view => view.uses)
         .filter(use => use.effect === 'opaque' && use.execution?.taskKey === 'lead-shell')
     const settled = (count: number) =>
-      waitFor(
+      waitUntil(
         `${count} shell uses to settle`,
-        async () => {
-          const uses = await shellUses()
-          return uses.length === count && uses.every(use => use.stage === 'quiescent')
-            ? uses
-            : undefined
-        },
-        { attempts: 60, observed: shellUses }
+        shellUses,
+        uses => uses.length === count && uses.every(use => use.stage === 'quiescent'),
+        { attempts: 60 }
       )
-    const taskUse = async (taskKey: string) =>
-      (await authority.inspect({ taskId: grant.taskId }))
-        .flatMap(view => view.uses)
-        .find(item => item.execution?.taskKey === taskKey)
     const settledUse = (taskKey: string) =>
-      waitFor(
+      waitUntil(
         `the ${taskKey} use to settle`,
-        async () => {
-          const use = await taskUse(taskKey)
-          return use?.stage === 'quiescent' || use?.stage === 'unknown' ? use : undefined
-        },
-        { attempts: 60, observed: () => taskUse(taskKey) }
+        async () =>
+          (await authority.inspect({ taskId: grant.taskId }))
+            .flatMap(view => view.uses)
+            .find(item => item.execution?.taskKey === taskKey),
+        (use): use is WorkspaceView['uses'][number] =>
+          use?.stage === 'quiescent' || use?.stage === 'unknown',
+        { attempts: 60 }
       )
     const silent = { onData: () => undefined }
     await claim(
@@ -481,13 +479,12 @@ try {
           (await authority.inspect({ taskId: grant.taskId })).find(
             view => view.workspaceId === grant.workspaceId
           )
-        const view = await waitFor(
+        const view = await waitUntil(
           'the running command to be observed',
-          async () => {
-            const current = await checkout()
-            return current?.uses.some(use => use.stage === 'observed') ? current : undefined
-          },
-          { attempts: 40, intervalMs: 100, observed: checkout }
+          checkout,
+          (current): current is WorkspaceView =>
+            current?.uses.some(use => use.stage === 'observed') === true,
+          { attempts: 40, intervalMs: 100 }
         )
         assert.equal(view.outcome, 'active', view.reason)
         await running

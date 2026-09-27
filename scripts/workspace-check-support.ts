@@ -61,24 +61,45 @@ export const deferred = <A>() => {
   return { promise, resolve: (value: A) => settle.resolve?.(value) }
 }
 
-export const waitFor = async <A>(
+export interface WaitTiming {
+  readonly attempts?: number
+  readonly intervalMs?: number
+}
+
+// A timeout reports the last value read, so a failed wait shows the state it stopped on.
+export async function waitUntil<A, B extends A>(
   what: string,
-  probe: () => A | undefined | Promise<A | undefined>,
-  options: {
-    readonly attempts?: number
-    readonly intervalMs?: number
-    readonly observed?: () => unknown
-  } = {}
-): Promise<A> => {
-  const { attempts = 80, intervalMs = 250, observed } = options
+  read: () => A | Promise<A>,
+  done: (value: A) => value is B,
+  timing?: WaitTiming
+): Promise<B>
+export async function waitUntil<A>(
+  what: string,
+  read: () => A | Promise<A>,
+  done: (value: A) => boolean,
+  timing?: WaitTiming
+): Promise<A>
+export async function waitUntil<A>(
+  what: string,
+  read: () => A | Promise<A>,
+  done: (value: A) => boolean,
+  { attempts = 80, intervalMs = 250 }: WaitTiming = {}
+): Promise<A> {
+  let last: A | undefined
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const value = await probe()
-    if (value !== undefined) return value
+    last = await read()
+    if (done(last)) return last
     await sleep(intervalMs)
   }
-  const last = observed === undefined ? '' : `; last observed: ${JSON.stringify(await observed())}`
-  throw new Error(`timed out: ${what}${last}`)
+  const shown = last === undefined ? '' : `; last read: ${JSON.stringify(last)}`
+  throw new Error(`timed out: ${what}${shown}`)
 }
+
+export const waitFor = <A>(
+  what: string,
+  probe: () => A | undefined | Promise<A | undefined>,
+  timing?: WaitTiming
+): Promise<A> => waitUntil(what, probe, (value): value is A => value !== undefined, timing)
 
 export const within = <A>(promise: Promise<A>, ms: number, what: string): Promise<A> =>
   Promise.race([

@@ -31,6 +31,8 @@ import {
   toolCall,
   waitFor,
   type ScriptedContent,
+  type WaitTiming,
+  within,
 } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
@@ -102,16 +104,21 @@ const storedConversation = (offline: OfflineModel, cwd: string, directory = sess
   if (file === undefined) throw new Error('Pi did not persist the stored conversation')
   return { manager, file }
 }
+const rewriteHeader = (
+  file: string,
+  edit: (header: Record<string, unknown>) => Record<string, unknown>,
+  target = file
+) => {
+  const [header = '', ...rest] = readFileSync(file, 'utf8').split('\n')
+  writeFileSync(target, [JSON.stringify(edit(JSON.parse(header))), ...rest].join('\n'))
+}
 // Pi writes a fork's parent path into its header, so a fork copied from another machine names a
 // parent that does not exist here.
-const orphanFork = (file: string) => {
-  const [header = '', ...rest] = readFileSync(file, 'utf8').split('\n')
-  const parentSession = join(fixture, 'elsewhere', 'sessions', 'parent.jsonl')
-  writeFileSync(
-    file,
-    [JSON.stringify({ ...JSON.parse(header), parentSession }), ...rest].join('\n')
-  )
-}
+const orphanFork = (file: string) =>
+  rewriteHeader(file, header => ({
+    ...header,
+    parentSession: join(fixture, 'elsewhere', 'sessions', 'parent.jsonl'),
+  }))
 const toolResults = (runtime: Pi.AgentSessionRuntime) => (toolCallId: string) => {
   const found = runtime.session.sessionManager
     .getEntries()
@@ -167,6 +174,17 @@ const overriding = (
         ? overrides[key as keyof WorkspaceAttachment]
         : Reflect.get(target, key, target),
   })
+const attachLeadConversation = async () => {
+  const manager = pi.SessionManager.create(lead, sessionDir)
+  const conversation = conversationAt(manager)
+  const attached = await lifecycle.attach({ conversation, cwd: lead })
+  return { manager, conversation, attached }
+}
+const unparked = (
+  host: { readonly isParked: () => boolean },
+  what: string,
+  timing: WaitTiming = { attempts: 40, intervalMs: 50 }
+) => waitFor(what, () => (host.isParked() ? undefined : true), timing)
 const pendingAtLead = async () =>
   (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending)
 
@@ -178,9 +196,8 @@ try {
       toolCall('write-after', 'write', { path: 'after.txt', content: 'after the rebind\n' }),
     ],
   ])
-  const manager = pi.SessionManager.create(lead, sessionDir)
-  const attachment = await lifecycle.attach({ conversation: conversationAt(manager), cwd: lead })
-  const opened = await openLeadHost({ attachment: attachment.effect, manager, offline })
+  const { manager, attached } = await attachLeadConversation()
+  const opened = await openLeadHost({ attachment: attached.effect, manager, offline })
   const { host, runtime } = opened
   const result = toolResults(runtime)
   await runtime.session.prompt('Run the tests in the background.')
@@ -254,12 +271,10 @@ try {
       mkdirSync(outside)
       mkdirSync(exported)
       const copied = storedConversation(offline, outside, exported)
-      const [header = '', ...rest] = readFileSync(copied.file, 'utf8').split('\n')
-      const { cwd: _cwd, ...headerWithoutCwd } = JSON.parse(header) as { readonly cwd: string }
       const blankFirst = join(exported, 'blank-first-line.jsonl')
-      writeFileSync(blankFirst, ['', header, ...rest].join('\n'))
+      writeFileSync(blankFirst, `\n${readFileSync(copied.file, 'utf8')}`)
       const noCwd = join(exported, 'no-cwd.jsonl')
-      writeFileSync(noCwd, [JSON.stringify(headerWithoutCwd), ...rest].join('\n'))
+      rewriteHeader(copied.file, ({ cwd: _cwd, ...header }) => header, noCwd)
       const current = runtime.session.sessionManager.getSessionId()
       const launchDirectory = process.cwd()
       for (const [file, directory] of [
@@ -313,11 +328,7 @@ try {
       assert.deepEqual(await runtime.importFromJsonl(copied.file), { cancelled: false })
       assert.equal(host.attachment.binding.conversation.sessionId, copied.manager.getSessionId())
       assert.equal(runtime.session.sessionManager.getSessionId(), copied.manager.getSessionId())
-      await waitFor(
-        'the host to leave the parked state',
-        () => (host.isParked() ? undefined : true),
-        { attempts: 40, intervalMs: 50 }
-      )
+      await unparked(host, 'the host to leave the parked state')
     }
   )
   await opened.close()
@@ -327,9 +338,9 @@ try {
       const stored = storedConversation(offline, lead)
       orphanFork(stored.file)
       const reopened = pi.SessionManager.open(stored.file, sessionDir)
-      const attached = await lifecycle.attach({ conversation: conversationAt(reopened), cwd: lead })
+      const orphan = await lifecycle.attach({ conversation: conversationAt(reopened), cwd: lead })
       const started = await openLeadHost({
-        attachment: attached.effect,
+        attachment: orphan.effect,
         manager: reopened,
         offline,
       })
@@ -359,9 +370,11 @@ try {
           [[workProcess]]
         )
         const other = storedConversation(racing, lead)
-        const raceManager = pi.SessionManager.create(lead, sessionDir)
-        const raceConversation = conversationAt(raceManager)
-        const raced = await lifecycle.attach({ conversation: raceConversation, cwd: lead })
+        const {
+          manager: raceManager,
+          conversation: raceConversation,
+          attached: raced,
+        } = await attachLeadConversation()
         let started: Promise<unknown> | undefined
         let runtimeRef: Pi.AgentSessionRuntime | undefined
         const replacements = {
@@ -403,13 +416,13 @@ try {
         runtimeRef = race.runtime
         try {
           await race.runtime.session.prompt('Run the tests in the background.')
-          await waitFor('the replacement', () => started)
-          assert.deepEqual(await started, { cancelled: false })
-          await waitFor(
-            'the next session to leave the parked state',
-            () => (race.host.isParked() ? undefined : true),
-            { attempts: 40, intervalMs: 50 }
+          await waitFor('the replacement to start', () =>
+            started === undefined ? undefined : true
           )
+          const replacing = started
+          assert.ok(replacing)
+          assert.deepEqual(await within(replacing, 20000, 'the replacement'), { cancelled: false })
+          await unparked(race.host, 'the next session to leave the parked state')
           const before = steps.calls()
           await race.runtime.session.prompt('Are you there?')
           await race.runtime.session.waitForIdle()
@@ -429,13 +442,15 @@ try {
     id: string,
     handoff: (
       quitter: WorkspaceAttachment,
-      quit: Effect.Effect<void>
+      quitNow: Effect.Effect<void>
     ) => WorkspaceAttachment['handoff']
   ) => {
-    const { offline: quitting } = await offlineScript(id, [[workProcess]])
-    const quitManager = pi.SessionManager.create(lead, sessionDir)
-    const quitConversation = conversationAt(quitManager)
-    const quitter = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
+    const { offline: quitModel } = await offlineScript(id, [[workProcess]])
+    const {
+      manager: quitManager,
+      conversation: quitConversation,
+      attached: quitter,
+    } = await attachLeadConversation()
     let disposing: Promise<void> | undefined
     let runtimeRef: Pi.AgentSessionRuntime | undefined
     let closedOnQuit = false
@@ -443,7 +458,7 @@ try {
       disposing = runtimeRef?.dispose()
       await sleep(100)
     })
-    const quit = await openLeadHost({
+    const quitting = await openLeadHost({
       attachment: overriding(quitter.effect, {
         close: quitter.effect.close.pipe(
           Effect.tap(() =>
@@ -455,14 +470,16 @@ try {
         handoff: handoff(quitter.effect, quitNow),
       }),
       manager: quitManager,
-      offline: quitting,
+      offline: quitModel,
     })
-    runtimeRef = quit.runtime
-    await quit.runtime.session.prompt('Run the tests in the background.')
-    await waitFor('the quit', () => (disposing === undefined ? undefined : true))
-    await disposing
+    runtimeRef = quitting.runtime
+    await quitting.runtime.session.prompt('Run the tests in the background.')
+    await waitFor('the quit to start', () => (disposing === undefined ? undefined : true))
+    const disposed = disposing
+    assert.ok(disposed)
+    await within(disposed, 20000, 'the quit')
     assert.ok(closedOnQuit, 'the quit alone closed the attachment')
-    await quit.close()
+    await quitting.close()
     assert.deepEqual(await pendingAtLead(), [], 'the switch is settled, not left unknown')
     const resumed = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
     assert.equal(resolve(resumed.binding.cwd), resolve(lead), 'the last binding was kept')
@@ -473,8 +490,8 @@ try {
     () =>
       quitDuringHandoff(
         'host-session-quit',
-        (quitter, quit) => (transition, replace) =>
-          quitter.handoff(transition, grant => quit.pipe(Effect.andThen(replace(grant))))
+        (quitter, quitNow) => (transition, replace) =>
+          quitter.handoff(transition, grant => quitNow.pipe(Effect.andThen(replace(grant))))
       )
   )
   await claim(
@@ -482,8 +499,8 @@ try {
     () =>
       quitDuringHandoff(
         'host-session-quit-refused',
-        (quitter, quit) => transition =>
-          quit.pipe(
+        (quitter, quitNow) => transition =>
+          quitNow.pipe(
             // The authority withdraws a switch it refuses, then reports it blocked.
             Effect.andThen(quitter.handoff(transition, () => Effect.succeed('cancelled' as const))),
             Effect.andThen(
@@ -501,11 +518,7 @@ try {
     'a /reload that lands after the authority started a switch, before the host acted, does not leave the switch unknown: it completes in the reloaded session',
     async () => {
       const { offline: reloading } = await offlineScript('host-session-reload', [[workProcess]])
-      const reloadManager = pi.SessionManager.create(lead, sessionDir)
-      const reloader = await lifecycle.attach({
-        conversation: conversationAt(reloadManager),
-        cwd: lead,
-      })
+      const { manager: reloadManager, attached: reloader } = await attachLeadConversation()
       let runtimeRef: Pi.AgentSessionRuntime | undefined
       let reloaded = false
       const reload = await openLeadHost({
@@ -525,10 +538,7 @@ try {
       try {
         await reload.runtime.session.prompt('Run the tests in the background.')
         await waitFor('the reload', () => (reloaded ? true : undefined))
-        await waitFor('the switch to finish', () => (reload.host.isParked() ? undefined : true), {
-          attempts: 80,
-          intervalMs: 100,
-        })
+        await unparked(reload.host, 'the switch to finish', { attempts: 80, intervalMs: 100 })
         assert.notEqual(resolve(reload.runtime.cwd), resolve(lead), 'the switch completed')
         assert.deepEqual(await pendingAtLead(), [], 'the switch is not left unknown')
       } finally {
