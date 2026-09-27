@@ -567,10 +567,14 @@ assert.equal(
 )
 const leadScope = { repositoryRoot: Effect.succeed(lead) }
 const listResult = await Effect.runPromise(
-  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'list' }, leadScope)
+  runReadOnlyWorkspaceCommand(Effect.succeed(lifecycle), { kind: 'list' }, leadScope)
 )
 const inspectResult = await Effect.runPromise(
-  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'inspect', taskId: TASK_LEAD }, leadScope)
+  runReadOnlyWorkspaceCommand(
+    Effect.succeed(lifecycle),
+    { kind: 'inspect', taskId: TASK_LEAD },
+    leadScope
+  )
 )
 const headings = (text: string): readonly string[] =>
   text.split('\n').filter(line => !line.startsWith(' '))

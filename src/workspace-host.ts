@@ -1070,10 +1070,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
       if (command.kind === 'resume') return yield* resumeInTui(command, context)
-      const result = yield* runReadOnlyWorkspaceCommand(options.lifecycle, command, {
-        repositoryRoot: options.repositoryRoot(context.cwd),
-        binding: { workspaceId: activeAttachment.binding.workspaceId, cwd: context.cwd },
-      })
+      const result = yield* runReadOnlyWorkspaceCommand(
+        Effect.succeed(options.lifecycle),
+        command,
+        {
+          repositoryRoot: options.repositoryRoot(context.cwd),
+          current: { workspaceId: activeAttachment.binding.workspaceId, effectiveCwd: context.cwd },
+        }
+      )
       display(api, context, result.text)
     },
     (effect, api, _args, context) =>

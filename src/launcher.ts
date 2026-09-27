@@ -420,11 +420,9 @@ const run = Effect.fnUntraced(function* (
       return
     }
     if (command.kind !== 'resume') {
-      const result = yield* runReadOnlyWorkspaceCommand(
-        yield* dependencies.workspaceLifecycle,
-        command,
-        { repositoryRoot: gitRoot(options.cwd) }
-      )
+      const result = yield* runReadOnlyWorkspaceCommand(dependencies.workspaceLifecycle, command, {
+        repositoryRoot: gitRoot(options.cwd),
+      })
       yield* Effect.sync(() => {
         ;(result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.text}\n`)
         process.exitCode = result.exitCode

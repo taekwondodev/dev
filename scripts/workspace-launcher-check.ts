@@ -179,6 +179,11 @@ try {
       root === undefined || root.length === 0
         ? Effect.die(new Error('the launcher check requires a temporary authority root'))
         : makeWorkspaceLifecycle({ root }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                if (process.env.REPORT_OPEN === '1') process.stderr.write('authority opened\\n')
+              })
+            ),
             Effect.map(lifecycle =>
               process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
             )
@@ -334,20 +339,27 @@ try {
   assert.notEqual(firstGrant.repositoryId, secondGrant.repositoryId)
 
   const jsonlBefore = pathsUnder(sandbox).filter(path => path.endsWith('.jsonl'))
-  const readOnly = (root: string, args: readonly string[]) =>
+  const readOnly = (
+    root: string,
+    args: readonly string[],
+    env: Readonly<Record<string, string>> = {}
+  ) =>
     runLauncher(args, {
       LAUNCHER_CHECK_ROOT: root,
       DEV_DATA_HOME: unusedDataHome,
       HOME: readOnlyHome,
       ...ceiling,
+      ...env,
     })
 
   const absentParent = join(sandbox, 'absent-authority')
   const absentRoot = join(absentParent, 'root')
   await claim(
-    'dev workspace list outside a Git repository lists nothing, exits 2 and points to --cwd PATH',
+    'dev workspace list outside a Git repository lists nothing, exits 2, points to --cwd PATH and never opens the authority',
     async () => {
-      const outsideGit = await readOnly(absentRoot, ['--cwd', notGit, 'workspace', 'list'])
+      const outsideGit = await readOnly(absentRoot, ['--cwd', notGit, 'workspace', 'list'], {
+        REPORT_OPEN: '1',
+      })
       assert.equal(outsideGit.code, 2, outsideGit.stderr)
       assert.equal(outsideGit.stdout, '', 'nothing is listed for a directory outside Git')
       assert.equal(

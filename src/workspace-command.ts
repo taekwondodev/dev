@@ -16,16 +16,16 @@ export type WorkspaceCommand =
       readonly workspaceId?: WorkspaceId
     }
 
-export type ReadOnlyWorkspaceCommand = Exclude<WorkspaceCommand, { readonly kind: 'resume' }>
+type ReadOnlyWorkspaceCommand = Exclude<WorkspaceCommand, { readonly kind: 'resume' }>
 
 export interface WorkspaceCommandResult {
   readonly exitCode: 0 | 1 | 2
   readonly text: string
 }
 
-export interface WorkspaceListScope {
+interface WorkspaceListScope {
   readonly repositoryRoot: Effect.Effect<string | undefined>
-  readonly binding?: { readonly workspaceId: string; readonly cwd: string }
+  readonly current?: { readonly workspaceId: WorkspaceId; readonly effectiveCwd: string }
 }
 
 export interface ResumeCandidate {
@@ -132,17 +132,17 @@ const formatWorkspaceViews = (views: readonly WorkspaceView[]): string => {
 const formatWorkspaceList = (
   views: readonly WorkspaceView[],
   repositoryRoot: string,
-  binding: WorkspaceListScope['binding']
+  current: WorkspaceListScope['current']
 ): string => {
   const rows = sortedViews(views)
   const header = [
     `Workspace list for repository ${repositoryRoot}:`,
-    ...(binding === undefined
+    ...(current === undefined
       ? []
-      : [`Current binding: ${binding.workspaceId}`, `Effective cwd: ${binding.cwd}`]),
+      : [`Current binding: ${current.workspaceId}`, `Effective cwd: ${current.effectiveCwd}`]),
   ]
   if (rows.length === 0) return `${header.join('\n')}\nNo workspace records were found.`
-  return [...header, ...rows.flatMap(view => viewText(view, binding?.workspaceId))].join('\n')
+  return [...header, ...rows.flatMap(view => viewText(view, current?.workspaceId))].join('\n')
 }
 
 export const resumeCandidates = (
@@ -191,12 +191,13 @@ export const chooseResumeCandidate = Effect.fnUntraced(function* (
 })
 
 export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
-  function* (
-    lifecycle: WorkspaceLifecycle,
+  function* <R>(
+    openLifecycle: Effect.Effect<WorkspaceLifecycle, never, R>,
     command: ReadOnlyWorkspaceCommand,
     scope: WorkspaceListScope
-  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError> {
+  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError, R> {
     if (command.kind === 'inspect') {
+      const lifecycle = yield* openLifecycle
       const views = yield* lifecycle.inspect({ taskId: command.taskId })
       return {
         exitCode: 0,
@@ -212,8 +213,9 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
         exitCode: 2,
         text: 'Workspace list requires a Git repository; run dev from a Git checkout or pass --cwd PATH.',
       }
+    const lifecycle = yield* openLifecycle
     const views = yield* lifecycle.inspect({ cwd: repositoryRoot })
-    return { exitCode: 0, text: formatWorkspaceList(views, repositoryRoot, scope.binding) }
+    return { exitCode: 0, text: formatWorkspaceList(views, repositoryRoot, scope.current) }
   },
   Effect.catch(cause =>
     Effect.succeed<WorkspaceCommandResult>({

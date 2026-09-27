@@ -391,7 +391,9 @@ const readOnly = (args: readonly string[]) => {
   const command = Effect.runSync(parseWorkspaceCommand(args))
   if (command.kind === 'resume') throw new Error('Expected a read-only workspace command')
   return Effect.runPromise(
-    runReadOnlyWorkspaceCommand(lifecycle.effect, command, { repositoryRoot: Effect.succeed(lead) })
+    runReadOnlyWorkspaceCommand(Effect.succeed(lifecycle.effect), command, {
+      repositoryRoot: Effect.succeed(lead),
+    })
   )
 }
 await claim(
