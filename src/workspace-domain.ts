@@ -7,11 +7,19 @@ export const WorkspaceId = Schema.String.check(
 export type WorkspaceId = typeof WorkspaceId.Type
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()('WorkspaceError', {
-  outcome: Schema.Literals(['blocked', 'review-required', 'invalid', 'unavailable', 'ambiguous']),
+  outcome: Schema.Literals([
+    'blocked',
+    'review-required',
+    'invalid',
+    'unavailable',
+    'ambiguous',
+    'closed',
+  ]),
   message: Schema.String,
 }) {}
 
-export const attachmentClosedMessage = 'Workspace attachment is closed'
+export const attachmentClosed = (): WorkspaceError =>
+  new WorkspaceError({ outcome: 'closed', message: 'Workspace attachment is closed' })
 
 export function fail(outcome: WorkspaceError['outcome'], message: string): never {
   throw new WorkspaceError({ outcome, message })

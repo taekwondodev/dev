@@ -6,7 +6,7 @@ import {
   validateDurableGrant,
 } from './workspace-admission.ts'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
-import { attachmentClosedMessage, WorkspaceError } from './workspace-domain.ts'
+import { attachmentClosed, WorkspaceError } from './workspace-domain.ts'
 import { WorkspaceEngine, type EngineAttachment } from './workspace-engine.ts'
 import { inspectWorkspaces } from './workspace-inspect.ts'
 import {
@@ -77,8 +77,7 @@ if (port !== null && engine !== undefined) {
 
   const requireAttachment = (id: number): EngineAttachment => {
     const attachment = attachments.get(id)
-    if (attachment === undefined)
-      throw new WorkspaceError({ outcome: 'blocked', message: attachmentClosedMessage })
+    if (attachment === undefined) throw attachmentClosed()
     return attachment
   }
 

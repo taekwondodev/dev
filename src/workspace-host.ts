@@ -24,7 +24,6 @@ import {
   type WorkspaceCommand,
 } from './workspace-command.ts'
 import {
-  attachmentClosedMessage,
   WorkspaceError,
   type WorkspaceAttachment,
   type WorkspaceBinding,
@@ -34,7 +33,8 @@ import {
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
-import { canonicalSessionFile, decodeWriteOperand } from './workspace-paths.ts'
+import { canonicalSlot, decodeWriteOperand } from './workspace-paths.ts'
+import { lstatIfExists } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
@@ -171,14 +171,23 @@ const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostE
 
 // The authority answers `blocked` to a switch it refused before the host acted, having
 // already withdrawn it and kept the last confirmed binding.
-// A closed attachment refuses every request, the withdrawal included, which leaves the switch
-// with the authority.
 const isWithdrawn = (error: unknown): boolean =>
-  error instanceof WorkspaceError &&
-  error.outcome === 'blocked' &&
-  error.message !== attachmentClosedMessage
+  error instanceof WorkspaceError && error.outcome === 'blocked'
 
-const sessionKey = (file: string, id: string): string => `${canonicalSessionFile(file)}\0${id}`
+// The authority keys a conversation by its canonical file, Pi by the path it was given. Paths
+// also reach the host from conversation headers and user input; one that cannot be resolved
+// keeps its absolute spelling, which names no live conversation, and the authority refuses it
+// if it is ever attached.
+const conversationFile = (file: string): string => {
+  const absolute = resolve(file)
+  try {
+    return canonicalSlot(absolute, lstatIfExists(absolute))
+  } catch {
+    return absolute
+  }
+}
+
+const sessionKey = (file: string, id: string): string => `${conversationFile(file)}\0${id}`
 
 const identityOf = (
   manager: Pick<SessionManager, 'getSessionId' | 'getSessionFile'>
@@ -191,7 +200,7 @@ export const sameConversation = (a: ConversationIdentity, b: ConversationIdentit
   a.sessionId === b.sessionId &&
   a.sessionFile !== undefined &&
   b.sessionFile !== undefined &&
-  canonicalSessionFile(a.sessionFile) === canonicalSessionFile(b.sessionFile)
+  conversationFile(a.sessionFile) === conversationFile(b.sessionFile)
 
 export const noUiTrustContext = (cwd: string): ProjectTrustContext => ({
   cwd,
@@ -379,9 +388,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const background = yield* FiberSet.make<void>()
   const runInBackground = yield* FiberSet.runtime(background)()
   // Starts once the Pi call that requested it has returned.
-  const runDeferred = (effect: Effect.Effect<void>): void => {
+  const runDeferred = (effect: Effect.Effect<void>) =>
     runInBackground(Effect.yieldNow.pipe(Effect.andThen(effect)))
-  }
 
   // A copied conversation is attached only after Pi tears the current session down, where a
   // refusal is fatal, so a working directory outside Git is refused before. A missing one is
@@ -554,8 +562,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
     )
 
-  const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
-    if (pending !== transition || reached(transition, 'switch-started')) return
+  const performHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (transition.transitionSource !== activeAttachment) {
       pending = undefined
       parked = false
@@ -601,7 +608,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         pending = undefined
         parked = false
         queueReevaluation(transition)
-      }).pipe(Effect.ensuring(Deferred.succeed(transition.settled, undefined)))
+      })
     )
     if (Exit.isSuccess(performed)) return
     const error = Cause.squash(performed.cause)
@@ -635,11 +642,34 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
   })
 
+  // A quit waits for `settled`, so it completes only once the handoff's outcome is recorded.
+  const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
+    if (pending !== transition || reached(transition, 'switch-started')) return
+    yield* performHandoff(transition).pipe(
+      Effect.ensuring(Deferred.succeed(transition.settled, undefined))
+    )
+  })
+
   const scheduleHandoff = (transition: PendingTransition): void => {
     if (reached(transition, 'scheduled')) return
     transition.stage = 'scheduled'
     runDeferred(performPendingHandoff(transition))
   }
+
+  const makeTransition = (
+    handoff: WorkspaceHandoff,
+    origin: PendingTransition['origin'],
+    context: ExtensionContext,
+    stage: PendingTransition['stage']
+  ): PendingTransition => ({
+    handoff,
+    origin,
+    surface: surfaceOf(context),
+    settled: Deferred.makeUnsafe<void>(),
+    transitionSource: activeAttachment,
+    stage,
+    capturedInput: false,
+  })
 
   const requestHandoff = (
     handoff: WorkspaceHandoff,
@@ -651,22 +681,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     // A rebind that reaches the host while Pi replaces the session, or from an attachment that
     // is no longer active, would run against the wrong runtime, so the authority takes it back.
     if (pending || parked || replacing || source !== activeAttachment) {
-      withdrawals.set(
-        source,
-        runInBackground(Effect.yieldNow.pipe(Effect.andThen(withdrawOrReport(source, handoff))))
-      )
+      withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
       return
     }
     parked = true
-    const transition: PendingTransition = {
-      handoff,
-      origin,
-      surface: surfaceOf(context),
-      settled: Deferred.makeUnsafe<void>(),
-      transitionSource: activeAttachment,
-      stage: 'requested',
-      capturedInput: false,
-    }
+    const transition = makeTransition(handoff, origin, context, 'requested')
     pending = transition
     if (immediate) scheduleHandoff(transition)
   }
@@ -874,7 +893,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const key = sessionKey(file, identity.sessionId)
     const parent = manager.getHeader()?.parentSession
     const forkOfActive =
-      parent !== undefined && canonicalSessionFile(parent) === activeConversation.sessionFile
+      parent !== undefined && conversationFile(parent) === activeConversation.sessionFile
     const reopenTarget = pendingReopen
     const reopen = reopenTarget !== undefined && sameConversation(reopenTarget, identity)
     if (reopen) {
@@ -961,8 +980,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   ) {
     const source = options.resolveImportPath(inputPath)
     const sessionDir = runtime?.session.sessionManager.getSessionDir()
-    if (sessionDir !== undefined && resolve(sessionDir, basename(source)) === source)
-      return yield* switchSession(rawSwitch, source, undefined)
+    // A missing file is left to Pi, which reports it and keeps the current session.
+    const stored =
+      sessionDir !== undefined &&
+      resolve(sessionDir, basename(source)) === source &&
+      (yield* Effect.sync(() => existsSync(source)))
+    if (stored) return yield* switchSession(rawSwitch, source, undefined)
     return yield* guardedReplacement(
       { cancelled: true },
       Effect.gen(function* () {
@@ -1012,7 +1035,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         )
         return { cancelled: true }
       }
-      if (activeConversation.sessionFile === canonicalSessionFile(file))
+      if (activeConversation.sessionFile === conversationFile(file))
         pendingReopen = {
           sessionFile: file,
           sessionId: id,
@@ -1224,15 +1247,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return
       }
       parked = true
-      const transition: PendingTransition = {
-        handoff: selected.value,
-        origin: 'command',
-        surface: surfaceOf(context),
-        settled: Deferred.makeUnsafe<void>(),
-        transitionSource: activeAttachment,
-        stage: 'scheduled',
-        capturedInput: false,
-      }
+      const transition = makeTransition(selected.value, 'command', context, 'scheduled')
       pending = transition
       capturePendingInput(context)
       yield* performPendingHandoff(transition)
