@@ -102,6 +102,7 @@ interface PendingTransition {
   readonly handoff: WorkspaceHandoff
   readonly origin: 'tool-call' | 'user-bash' | 'command'
   readonly surface: Surface
+  readonly settled: Deferred.Deferred<void>
   readonly transitionSource: WorkspaceAttachment
   stage: TransitionStage
   capturedInput: boolean
@@ -344,7 +345,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let invokingHandoffSwitch = false
   let replacing = false
   let quitting = false
-  let handoffSettled: Deferred.Deferred<void> | undefined
   const withdrawals = new Map<WorkspaceAttachment, Fiber.Fiber<void>>()
   let workControls: WorkspaceWorkControls | undefined
   let runtimePreparationSerial = 0
@@ -572,7 +572,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       parked = false
       return yield* withdrawOrReport(transition.transitionSource, transition.handoff)
     }
-    const settled = yield* Deferred.make<void>()
     const performed = yield* Effect.exit(
       Effect.gen(function* () {
         capturePendingInput(transition.surface)
@@ -586,7 +585,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         }
         let callbackResult: 'confirmed' | 'cancelled' | undefined
         transition.stage = 'handoff-sent'
-        handoffSettled = settled
         yield* transition.transitionSource.handoff(transition.handoff, target =>
           replaceSession(transition, identity, target, outcome => {
             callbackResult = outcome
@@ -614,7 +612,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         pending = undefined
         parked = false
         queueReevaluation(transition)
-      }).pipe(Effect.ensuring(Deferred.succeed(settled, undefined)))
+      }).pipe(Effect.ensuring(Deferred.succeed(transition.settled, undefined)))
     )
     if (Exit.isSuccess(performed)) return
     const error = Cause.squash(performed.cause)
@@ -675,6 +673,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       handoff,
       origin,
       surface: surfaceOf(context),
+      settled: Deferred.makeUnsafe<void>(),
       transitionSource: activeAttachment,
       stage: 'requested',
       capturedInput: false,
@@ -1125,9 +1124,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (reached(pending, 'switch-started')) return
     // The authority's callback answers `cancelled` while quitting, since the host has not
     // acted, so waiting for it settles the switch instead of leaving it unknown.
-    if (reached(pending, 'handoff-sent') && handoffSettled !== undefined)
-      yield* Deferred.await(handoffSettled)
-    if (reached(pending, 'handoff-sent')) return
+    const inFlight = pending
+    if (inFlight !== undefined && reached(inFlight, 'handoff-sent')) {
+      yield* Deferred.await(inFlight.settled)
+      if (pending === inFlight) return
+    }
     if (pending) {
       const withdrawn = yield* Effect.exit(withdraw(pending.transitionSource, pending.handoff))
       if (Exit.isFailure(withdrawn)) {
@@ -1238,6 +1239,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         handoff: selected.value,
         origin: 'command',
         surface: surfaceOf(context),
+        settled: Deferred.makeUnsafe<void>(),
         transitionSource: activeAttachment,
         stage: 'scheduled',
         capturedInput: false,
