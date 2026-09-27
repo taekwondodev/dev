@@ -14,7 +14,6 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import type * as Pi from '@earendil-works/pi-coding-agent'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -27,24 +26,24 @@ import { createSessionGuard } from '../src/session-guard.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { loadInstalledPi, loadPiPaths, makeClaims, waitFor } from './workspace-check-support.ts'
+import {
+  deferred,
+  loadInstalledPi,
+  loadPiPaths,
+  makeClaims,
+  makeOfflineModel,
+  replay,
+  type ScriptedContent,
+  toolCall,
+  waitFor,
+  within,
+} from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 
-interface AssistantEventStream {
-  push(event: unknown): void
-  end(): void
-}
-interface EventStreamModule {
-  createAssistantMessageEventStream(): AssistantEventStream
-}
-
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const piPaths = await loadPiPaths(packageInfo.root)
-const eventStreamModule = await importFromPi<EventStreamModule>(
-  'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
-)
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-real-authority-')))
 const lead = join(fixture, 'projects', 'lead')
@@ -104,47 +103,8 @@ assert.equal(resolve(squatterAdmission.grant.checkout), resolve(lead))
 const squatterTaskId = squatterAdmission.grant.taskId
 if (squatterTaskId === undefined) throw new Error('A real write grant carries a task identity')
 
-type SessionModel = NonNullable<
-  Parameters<(typeof Pi)['createAgentSessionFromServices']>[0]['model']
->
-const offlineModel: SessionModel = {
-  id: 'real-authority',
-  name: 'Offline real-authority probe',
-  api: 'openai-completions',
-  provider: 'real-authority-offline',
-  baseUrl: 'http://127.0.0.1:9/v1',
-  reasoning: false,
-  input: ['text'],
-  contextWindow: 200000,
-  maxTokens: 1000,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-}
-const assistantMessage = (content: readonly unknown[], stopReason: string) => ({
-  role: 'assistant',
-  content,
-  api: offlineModel.api,
-  provider: offlineModel.provider,
-  model: offlineModel.id,
-  stopReason,
-  timestamp: Date.now(),
-  usage: {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
-})
-const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
-  type: 'toolCall',
-  id,
-  name,
-  arguments: args,
-})
-
 const lateMarker = 'late.txt'
-const script: readonly (readonly unknown[])[] = [
+const script: readonly ScriptedContent[] = [
   [
     toolCall('filtered-write', 'write', {
       path: 'filtered.txt',
@@ -171,75 +131,25 @@ const script: readonly (readonly unknown[])[] = [
   [{ type: 'text', text: 'Real-authority host seam probe completed.' }],
 ]
 let providerCall = 0
-let resolveRefusalEnded: () => void = () => undefined
-const refusalEnded = new Promise<void>(resolveEnd => {
-  resolveRefusalEnded = resolveEnd
+const {
+  model: offlineModel,
+  modelRuntime,
+  assistantMessage,
+} = await makeOfflineModel({
+  pi,
+  importFromPi,
+  fixture,
+  id: 'real-authority',
+  stream: replay(() => {
+    const content = script[Math.min(providerCall, script.length - 1)] ?? []
+    providerCall += 1
+    return content
+  }, 40),
 })
-let resolveFinished: () => void = () => undefined
-const finished = new Promise<void>(resolveFinish => {
-  resolveFinished = resolveFinish
-})
-let resolveLeadStarted: () => void = () => undefined
-const leadStarted = new Promise<void>(resolveStart => {
-  resolveLeadStarted = resolveStart
-})
-let resolveReloaded: () => void = () => undefined
-const reloaded = new Promise<void>(resolveReload => {
-  resolveReloaded = resolveReload
-})
-
-function scriptedStream(
-  _model: unknown,
-  _context: unknown,
-  options?: { readonly signal?: AbortSignal }
-) {
-  const content = script[Math.min(providerCall, script.length - 1)] ?? []
-  providerCall += 1
-  const stream = eventStreamModule.createAssistantMessageEventStream()
-  const message = assistantMessage(content, providerCall < script.length ? 'toolUse' : 'stop')
-  const timer = setTimeout(() => {
-    stream.push({ type: 'done', reason: message.stopReason, message })
-    stream.end()
-  }, 40)
-  options?.signal?.addEventListener(
-    'abort',
-    () => {
-      clearTimeout(timer)
-      stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
-      stream.end()
-    },
-    { once: true }
-  )
-  return stream
-}
-
-const modelRuntime = await pi.ModelRuntime.create({
-  authPath: join(fixture, 'never-created-auth.json'),
-  modelsPath: join(fixture, 'never-created-models.json'),
-  allowModelNetwork: false,
-  refreshOnCreate: false,
-})
-modelRuntime.registerProvider('real-authority-offline', {
-  name: offlineModel.name,
-  api: offlineModel.api,
-  baseUrl: offlineModel.baseUrl,
-  apiKey: 'offline',
-  authHeader: false,
-  models: [
-    {
-      id: offlineModel.id,
-      name: offlineModel.name,
-      api: offlineModel.api,
-      baseUrl: offlineModel.baseUrl,
-      reasoning: false,
-      input: ['text'],
-      contextWindow: offlineModel.contextWindow,
-      maxTokens: offlineModel.maxTokens,
-      cost: offlineModel.cost,
-    },
-  ],
-  streamSimple: scriptedStream as never,
-})
+const refusalEnded = deferred<void>()
+const finished = deferred<void>()
+const leadStarted = deferred<void>()
+const reloaded = deferred<void>()
 
 const initialManager = pi.SessionManager.create(lead, sessionDir)
 const initialSessionFile = initialManager.getSessionFile()
@@ -261,7 +171,7 @@ const workspaceHost = await Effect.runPromise(
       dataHome,
       openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
       repositoryRoot: cwd => Effect.promise(() => gitRoot(cwd)),
-      resolveImportPath: input => piPaths.resolvePath(input),
+      resolveImportPath: piPaths,
     })
   )
 )
@@ -278,13 +188,13 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
     },
   })
   api.on('session_start', (event, context) => {
-    if (resolve(context.cwd) === resolve(lead)) resolveLeadStarted()
-    if (event.reason === 'reload') resolveReloaded()
+    if (resolve(context.cwd) === resolve(lead)) leadStarted.resolve()
+    if (event.reason === 'reload') reloaded.resolve()
   })
   api.on('agent_end', event => {
     const last = event.messages.findLast(message => message.role === 'assistant')
-    if (providerCall === 1) resolveRefusalEnded()
-    if (providerCall >= script.length && last?.stopReason === 'stop') resolveFinished()
+    if (providerCall === 1) refusalEnded.resolve()
+    if (providerCall >= script.length && last?.stopReason === 'stop') finished.resolve()
   })
 }
 
@@ -360,14 +270,6 @@ workspaceHost.bindRuntime(runtime)
 guard.bind(runtime)
 const bindingBeforeRefusal = structuredClone(workspaceHost.attachment.binding)
 
-const within = <A>(promise: Promise<A>, ms: number, what: string) =>
-  Promise.race([
-    promise,
-    sleep(ms, undefined, { ref: false }).then(() => {
-      throw new Error(`timed out: ${what}`)
-    }),
-  ])
-
 const mode = new pi.InteractiveMode(runtime, {
   initialMessage: 'Run the real-authority host seam probe.',
   startupDiagnostics: [],
@@ -377,7 +279,7 @@ void mode.run().catch((cause: unknown) => {
   runFailure = cause
 })
 
-await within(leadStarted, 30000, 'lead session_start')
+await within(leadStarted.promise, 30000, 'lead session_start')
 assert.equal(resolve(runtime.cwd), resolve(lead))
 const { claim, passed } = makeClaims()
 
@@ -432,7 +334,7 @@ const SHELL_GONE = 'The shell process group and every tracked descendant were ob
 
 // The first contended write needs a managed worktree of the filtered commit: the authority
 // refuses it before any Git effect, and the host reports that without leaving its binding.
-await within(refusalEnded, 30000, 'the turn with the refused allocation to end')
+await within(refusalEnded.promise, 30000, 'the turn with the refused allocation to end')
 await claim(
   'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI and changes nothing: the binding is kept, neither the write nor the filter runs, and no worktree or pending operation is left',
   async () => {
@@ -460,7 +362,7 @@ git(['commit', '--quiet', '-m', 'real-authority fixture'], lead)
 const leadCommit = git(['rev-parse', 'HEAD'], lead)
 signal('READY_FOR_NEXT_CALL')
 
-await within(finished, 90000, 'scripted turns to finish')
+await within(finished.promise, 90000, 'scripted turns to finish')
 signal('TURNS_FINISHED')
 
 const { binding } = workspaceHost.attachment
@@ -554,23 +456,7 @@ await claim('a tool without a verified workspace effect is refused without endin
 // Another lifecycle on this authority keeps a second conversation live, as another installation
 // would. Switching this runtime to it must be cancelled, never failed: Pi exits on a failure.
 const heldManager = pi.SessionManager.create(lead, sessionDir)
-const heldReply: Parameters<Pi.SessionManager['appendMessage']>[0] = {
-  role: 'assistant',
-  content: [{ type: 'text', text: 'held conversation' }],
-  api: offlineModel.api,
-  provider: offlineModel.provider,
-  model: offlineModel.id,
-  stopReason: 'stop',
-  timestamp: Date.now(),
-  usage: {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
-}
+const heldReply = assistantMessage([{ type: 'text', text: 'held conversation' }], 'stop')
 heldManager.appendMessage(heldReply)
 const heldFile = heldManager.getSessionFile()
 if (heldFile === undefined) throw new Error('Pi did not persist the held conversation')
@@ -720,7 +606,7 @@ const survivorUse = await waitFor('the live shell use', async () =>
   )
 )
 signal('READY_FOR_RELOAD')
-await within(reloaded, 60000, 'the /reload session restart')
+await within(reloaded.promise, 60000, 'the /reload session restart')
 await sleep(1500)
 await claim(
   'a /reload typed in the TUI keeps a live lead shell family and its open use',

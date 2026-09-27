@@ -4,14 +4,13 @@ import { pathToFileURL } from 'node:url'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
-import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
 import type * as PiEventStream from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 import type {
   AssistantMessage,
   Model,
 } from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
 import { makeRuntimeFactory } from '../src/launcher.ts'
-import { loadPi, type PiApi } from '../src/pi-runtime.ts'
+import { loadPi, loadPiPathResolver, type PiApi } from '../src/pi-runtime.ts'
 import { getProfile } from '../src/profiles.ts'
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { createSessionGuard } from '../src/session-guard.ts'
@@ -51,8 +50,8 @@ export const loadInstalledPi = async () => {
   return { pi: api, packageInfo, importFromPi }
 }
 
-export const loadPiPaths = (packageRoot: string): Promise<typeof PiPaths> =>
-  import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href)
+export const loadPiPaths = (packageRoot: string): Promise<(input: string) => string> =>
+  Effect.runPromise(loadPiPathResolver(packageRoot))
 
 export const deferred = <A>() => {
   const settle: { resolve?: (value: A) => void } = {}
@@ -64,7 +63,7 @@ export const deferred = <A>() => {
 
 export const waitFor = async <A>(
   what: string,
-  probe: () => Promise<A | undefined>,
+  probe: () => A | undefined | Promise<A | undefined>,
   attempts = 80,
   intervalMs = 250
 ): Promise<A> => {
@@ -76,6 +75,14 @@ export const waitFor = async <A>(
   throw new Error(`timed out: ${what}`)
 }
 
+export const within = <A>(promise: Promise<A>, ms: number, what: string): Promise<A> =>
+  Promise.race([
+    promise,
+    sleep(ms, undefined, { ref: false }).then(() => {
+      throw new Error(`timed out: ${what}`)
+    }),
+  ])
+
 export type ScriptedContent = AssistantMessage['content']
 
 export const toolCall = (
@@ -84,12 +91,50 @@ export const toolCall = (
   args: Extract<ScriptedContent[number], { type: 'toolCall' }>['arguments']
 ): ScriptedContent[number] => ({ type: 'toolCall', id, name, arguments: args })
 
+export type StreamSimple = NonNullable<Pi.ProviderConfig['streamSimple']>
+export interface ScriptedStreamParts {
+  readonly assistantMessage: (
+    content: ScriptedContent,
+    stopReason: AssistantMessage['stopReason']
+  ) => AssistantMessage
+  readonly eventStreams: typeof PiEventStream
+}
+
+// Replays one scripted reply per provider request and, like a real provider, ends a reply
+// that Pi aborts before it is delivered.
+export const replay =
+  (next: () => ScriptedContent, delayMs = 10) =>
+  ({ assistantMessage, eventStreams }: ScriptedStreamParts): StreamSimple =>
+  (_model, _context, options) => {
+    const content = next()
+    const stopReason = content.some(part => part.type === 'toolCall') ? 'toolUse' : 'stop'
+    const stream = eventStreams.createAssistantMessageEventStream()
+    const timer = setTimeout(() => {
+      stream.push({
+        type: 'done',
+        reason: stopReason,
+        message: assistantMessage(content, stopReason),
+      })
+      stream.end()
+    }, delayMs)
+    options?.signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
+        stream.end()
+      },
+      { once: true }
+    )
+    return stream
+  }
+
 export const makeOfflineModel = async (input: {
   readonly pi: PiApi
   readonly importFromPi: <Module>(path: string) => Promise<Module>
   readonly fixture: string
   readonly id: string
-  readonly next: () => ScriptedContent
+  readonly stream: (parts: ScriptedStreamParts) => StreamSimple
 }) => {
   const model: Model<'openai-completions'> = {
     id: input.id,
@@ -126,20 +171,7 @@ export const makeOfflineModel = async (input: {
   const eventStreams = await input.importFromPi<typeof PiEventStream>(
     'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
   )
-  const streamSimple: NonNullable<Pi.ProviderConfig['streamSimple']> = () => {
-    const content = input.next()
-    const stopReason = content.some(part => part.type === 'toolCall') ? 'toolUse' : 'stop'
-    const stream = eventStreams.createAssistantMessageEventStream()
-    setTimeout(() => {
-      stream.push({
-        type: 'done',
-        reason: stopReason,
-        message: assistantMessage(content, stopReason),
-      })
-      stream.end()
-    }, 10)
-    return stream
-  }
+  const streamSimple = input.stream({ assistantMessage, eventStreams })
   const modelRuntime = await input.pi.ModelRuntime.create({
     authPath: join(input.fixture, 'never-created-auth.json'),
     modelsPath: join(input.fixture, 'never-created-models.json'),
@@ -169,58 +201,63 @@ export const openHostRuntime = async (input: {
   readonly manager: Pi.SessionManager
   readonly cwd: string
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
-  readonly offline?: Awaited<ReturnType<typeof makeOfflineModel>>
+  readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
 }) => {
-  const piPaths = await loadPiPaths(input.packageRoot)
+  const resolveImportPath = await loadPiPaths(input.packageRoot)
   const scope = Scope.makeUnsafe()
-  const host = await Effect.runPromise(
-    Scope.provide(scope)(
-      makeWorkspaceHost({
-        lifecycle: input.lifecycle,
-        attachment: input.attachment,
-        dataHome: input.dataHome,
-        openSessionManager: (file, cwd) =>
-          input.pi.SessionManager.open(file, input.sessionDir, cwd),
-        repositoryRoot: input.repositoryRoot,
-        resolveImportPath: path => piPaths.resolvePath(path),
-      })
+  try {
+    const host = await Effect.runPromise(
+      Scope.provide(scope)(
+        makeWorkspaceHost({
+          lifecycle: input.lifecycle,
+          attachment: input.attachment,
+          dataHome: input.dataHome,
+          openSessionManager: (file, cwd) =>
+            input.pi.SessionManager.open(file, input.sessionDir, cwd),
+          repositoryRoot: input.repositoryRoot,
+          resolveImportPath,
+        })
+      )
     )
-  )
-  const guard = createSessionGuard(
-    await Effect.runPromise(Scope.provide(scope)(acquireRuntime(input.dataHome)))
-  )
-  const runtimeFactory = await Effect.runPromise(
-    Effect.gen(function* () {
-      return yield* makeRuntimeFactory({
-        api: input.pi,
-        packageRoot: input.packageRoot,
-        dataHome: input.dataHome,
-        profile: yield* getProfile('general'),
-        guard,
-        workspaceHost: host,
-        lifecycle: input.lifecycle,
-        ...(input.offline === undefined
-          ? {}
-          : {
-              modelRuntime: Effect.succeed(input.offline.modelRuntime),
-              model: input.offline.model,
-            }),
-      })
-    }).pipe(Effect.provide(NodeServices.layer))
-  )
-  const runtime = await input.pi.createAgentSessionRuntime(runtimeFactory, {
-    cwd: input.cwd,
-    agentDir: input.agentDir,
-    sessionManager: input.manager,
-  })
-  host.bindRuntime(runtime)
-  guard.bind(runtime)
-  return {
-    host,
-    runtime,
-    close: async () => {
-      await runtime.dispose()
-      await Effect.runPromise(Scope.close(scope, Exit.void))
-    },
+    const guard = createSessionGuard(
+      await Effect.runPromise(Scope.provide(scope)(acquireRuntime(input.dataHome)))
+    )
+    const runtimeFactory = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* makeRuntimeFactory({
+          api: input.pi,
+          packageRoot: input.packageRoot,
+          dataHome: input.dataHome,
+          profile: yield* getProfile('general'),
+          guard,
+          workspaceHost: host,
+          lifecycle: input.lifecycle,
+          ...(input.offline === undefined
+            ? {}
+            : {
+                modelRuntime: Effect.succeed(input.offline.modelRuntime),
+                model: input.offline.model,
+              }),
+        })
+      }).pipe(Effect.provide(NodeServices.layer))
+    )
+    const runtime = await input.pi.createAgentSessionRuntime(runtimeFactory, {
+      cwd: input.cwd,
+      agentDir: input.agentDir,
+      sessionManager: input.manager,
+    })
+    host.bindRuntime(runtime)
+    guard.bind(runtime)
+    return {
+      host,
+      runtime,
+      close: async () => {
+        await runtime.dispose()
+        await Effect.runPromise(Scope.close(scope, Exit.void))
+      },
+    }
+  } catch (cause) {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+    throw cause
   }
 }

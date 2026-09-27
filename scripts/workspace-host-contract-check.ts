@@ -71,19 +71,20 @@ const lifecycle: WorkspaceLifecycle = {
   validate: () => Effect.void,
 }
 
-const opened = await openHostRuntime({
-  pi,
-  packageRoot: packageInfo.root,
-  lifecycle,
-  attachment,
-  dataHome,
-  sessionDir,
-  agentDir,
-  manager,
-  cwd: current.path,
-  repositoryRoot: cwd => Effect.succeed(cwd),
-})
+let opened: Awaited<ReturnType<typeof openHostRuntime>> | undefined
 try {
+  opened = await openHostRuntime({
+    pi,
+    packageRoot: packageInfo.root,
+    lifecycle,
+    attachment,
+    dataHome,
+    sessionDir,
+    agentDir,
+    manager,
+    cwd: current.path,
+    repositoryRoot: cwd => Effect.succeed(cwd),
+  })
   const { host, runtime } = opened
   const notices: { readonly message: string; readonly level: string | undefined }[] = []
   const handlerErrors: string[] = []
@@ -166,7 +167,7 @@ try {
     }
   )
 } finally {
-  await opened.close()
+  await opened?.close()
   rmSync(fixture, { recursive: true, force: true })
 }
 

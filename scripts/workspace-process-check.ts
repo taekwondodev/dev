@@ -279,14 +279,28 @@ try {
       (await authority.inspect({ taskId: grant.taskId }))
         .flatMap(view => view.uses)
         .filter(use => use.effect === 'opaque' && use.execution?.taskKey === 'lead-shell')
-    const settled = async (count: number) => {
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        const uses = await shellUses()
-        if (uses.length === count && uses.every(use => use.stage === 'quiescent')) return uses
-        await new Promise(resolveWait => setTimeout(resolveWait, 250))
-      }
-      throw new Error(`Shell uses did not settle: ${JSON.stringify(await shellUses())}`)
-    }
+    const settled = (count: number) =>
+      waitFor(
+        `${count} shell uses to settle`,
+        async () => {
+          const uses = await shellUses()
+          return uses.length === count && uses.every(use => use.stage === 'quiescent')
+            ? uses
+            : undefined
+        },
+        60
+      )
+    const settledUse = (taskKey: string) =>
+      waitFor(
+        `the ${taskKey} use to settle`,
+        async () => {
+          const use = (await authority.inspect({ taskId: grant.taskId }))
+            .flatMap(view => view.uses)
+            .find(item => item.execution?.taskKey === taskKey)
+          return use?.stage === 'quiescent' || use?.stage === 'unknown' ? use : undefined
+        },
+        60
+      )
     const silent = { onData: () => undefined }
     await claim(
       'a lead shell returns its output and exit status when the shell exits, and its use ends only after a backgrounded descendant is observed gone',
@@ -612,16 +626,9 @@ try {
             ),
             /injected lost identity report/
           )
-          let lossyUse
-          for (let attempt = 0; attempt < 60; attempt += 1) {
-            lossyUse = (await authority.inspect({ taskId: grant.taskId }))
-              .flatMap(view => view.uses)
-              .find(use => use.execution?.taskKey === 'lossy-launch')
-            if (lossyUse?.stage === 'quiescent' || lossyUse?.stage === 'unknown') break
-            await new Promise(resolveWait => setTimeout(resolveWait, 250))
-          }
-          assert.equal(lossyUse?.stage, 'quiescent', JSON.stringify(lossyUse))
-          assert.match(lossyUse?.reason ?? '', /^launch-failed: /)
+          const lossyUse = await settledUse('lossy-launch')
+          assert.equal(lossyUse.stage, 'quiescent', JSON.stringify(lossyUse))
+          assert.match(lossyUse.reason ?? '', /^launch-failed: /)
           assert.equal(launchFailedReports, 2)
           assert.ok(!existsSync(lossyMarker), 'the failed launch never released user code')
           assert.equal((await attachment.authorize({ kind: 'write' })).kind, 'ready')
@@ -660,15 +667,8 @@ try {
           await flakyRuntime.runPromise(
             ownerEffect(owner => owner.startProcess({ taskId: 'flaky-final', command: 'true' }))
           )
-          let finalUse
-          for (let attempt = 0; attempt < 60; attempt += 1) {
-            finalUse = (await authority.inspect({ taskId: grant.taskId }))
-              .flatMap(view => view.uses)
-              .find(use => use.execution?.taskKey === 'flaky-final')
-            if (finalUse?.stage === 'quiescent' || finalUse?.stage === 'unknown') break
-            await new Promise(resolveWait => setTimeout(resolveWait, 250))
-          }
-          assert.equal(finalUse?.stage, 'quiescent', JSON.stringify(finalUse))
+          const finalUse = await settledUse('flaky-final')
+          assert.equal(finalUse.stage, 'quiescent', JSON.stringify(finalUse))
           assert.equal(refused, 1)
         } finally {
           await flakyRuntime.dispose()
@@ -724,17 +724,10 @@ try {
             1,
             'the launch intent was recorded before the failure'
           )
-          let lockedUse
-          for (let attempt = 0; attempt < 60; attempt += 1) {
-            lockedUse = (await authority.inspect({ taskId: grant.taskId }))
-              .flatMap(view => view.uses)
-              .find(use => use.execution?.taskKey === 'locked-log-launch')
-            if (lockedUse?.stage === 'quiescent' || lockedUse?.stage === 'unknown') break
-            await new Promise(resolveWait => setTimeout(resolveWait, 250))
-          }
-          assert.equal(lockedUse?.stage, 'quiescent', JSON.stringify(lockedUse))
+          const lockedUse = await settledUse('locked-log-launch')
+          assert.equal(lockedUse.stage, 'quiescent', JSON.stringify(lockedUse))
           assert.match(
-            lockedUse?.reason ?? '',
+            lockedUse.reason ?? '',
             /^launch-failed: The launch failed before user code was released: .*(EACCES|permission denied)/i
           )
           assert.ok(!existsSync(lockedMarker), 'no user code ran')

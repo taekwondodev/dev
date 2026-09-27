@@ -27,6 +27,7 @@ import {
   makeClaims,
   makeOfflineModel,
   openHostRuntime,
+  replay,
   toolCall,
   waitFor,
   type ScriptedContent,
@@ -132,7 +133,7 @@ try {
     importFromPi,
     fixture,
     id: 'host-session',
-    next: lead1.next,
+    stream: replay(lead1.next),
   })
   const manager = pi.SessionManager.create(lead, sessionDir)
   const attachment = await lifecycle.attach({ conversation: conversationAt(manager), cwd: lead })
@@ -274,7 +275,7 @@ try {
           importFromPi,
           fixture,
           id: `host-session-${replacement}-${order}`,
-          next: steps.next,
+          stream: replay(steps.next),
         })
         const other = storedConversation(racing, lead)
         const raceManager = pi.SessionManager.create(lead, sessionDir)
@@ -359,7 +360,7 @@ try {
         importFromPi,
         fixture,
         id: 'host-session-quit',
-        next: steps.next,
+        stream: replay(steps.next),
       })
       const quitManager = pi.SessionManager.create(lead, sessionDir)
       const quitConversation = conversationAt(quitManager)
@@ -427,7 +428,7 @@ try {
         importFromPi,
         fixture,
         id: 'host-session-reload',
-        next: steps.next,
+        stream: replay(steps.next),
       })
       const reloadManager = pi.SessionManager.create(lead, sessionDir)
       const reloadConversation = conversationAt(reloadManager)

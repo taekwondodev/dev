@@ -13,7 +13,6 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
-import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -27,11 +26,7 @@ import type {
   UserBashEventResult,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import type { AgentSessionRuntime } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
-import type * as PiEventStream from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
-import type {
-  AssistantMessage,
-  Model,
-} from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
+import type { AssistantMessage } from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
 import { errorText } from '../src/error-text.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../src/work-child-workspace.ts'
 import { makeRuntimeFactory } from '../src/launcher.ts'
@@ -68,7 +63,17 @@ import {
   type WorkspaceWorkControls,
 } from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
-import { deferred, loadInstalledPi, loadPiPaths } from './workspace-check-support.ts'
+import {
+  deferred,
+  loadInstalledPi,
+  loadPiPaths,
+  makeOfflineModel,
+  type ScriptedStreamParts,
+  type StreamSimple,
+  toolCall,
+  waitFor,
+  within,
+} from './workspace-check-support.ts'
 import {
   fixtureId as id,
   makeFixtureBinding,
@@ -112,9 +117,6 @@ globalThis.fetch = async () => {
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const piPaths = await loadPiPaths(packageInfo.root)
-const eventStreams = await importFromPi<typeof PiEventStream>(
-  'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
-)
 
 const TASK_LEAD = id(1)
 const TASK_A = id(2)
@@ -324,10 +326,10 @@ const authorizeScoped = (
   owned: Set<string>,
   operation: ScopedOperation
 ): WorkspaceAuthorization => {
-  const { within } = operation
-  const checkout = descriptorByPath.get(resolve(within.checkout))
+  const { within: parent } = operation
+  const checkout = descriptorByPath.get(resolve(parent.checkout))
   if (checkout === undefined) throw new Error('within grant names an unknown fixture checkout')
-  const cwd = resolve(operation.cwd ?? within.cwd)
+  const cwd = resolve(operation.cwd ?? parent.cwd)
   const grant = grantFor(
     checkout,
     'write',
@@ -340,7 +342,7 @@ const authorizeScoped = (
     kind: 'ready',
     grant: issue(
       owned,
-      { ...grant, acquisitionId: within.acquisitionId, reservationId: within.reservationId },
+      { ...grant, acquisitionId: parent.acquisitionId, reservationId: parent.reservationId },
       operation,
       operation.kind
     ),
@@ -593,44 +595,6 @@ assert.deepEqual(headings(inspectResult.text), [
 ])
 assert.equal(attachCalls.length, 0, 'read-only commands do not bind or attach a task')
 
-const offlineModel: Model<'openai-completions'> = {
-  id: 'dev36-offline-tui',
-  name: 'Offline dev36 host fixture',
-  api: 'openai-completions',
-  provider: 'dev36-offline',
-  baseUrl: 'http://127.0.0.1:9/v1',
-  reasoning: false,
-  input: ['text'],
-  contextWindow: 200000,
-  maxTokens: 1000,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-}
-const assistantMessage = (
-  content: AssistantMessage['content'],
-  stopReason: AssistantMessage['stopReason']
-): AssistantMessage => ({
-  role: 'assistant',
-  content,
-  api: offlineModel.api,
-  provider: offlineModel.provider,
-  model: offlineModel.id,
-  stopReason,
-  timestamp: Date.now(),
-  usage: {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
-})
-
-const toolCall = (
-  callId: string,
-  name: string,
-  args: Extract<AssistantMessage['content'][number], { type: 'toolCall' }>['arguments']
-): AssistantMessage['content'][number] => ({ type: 'toolCall', id: callId, name, arguments: args })
 const finalText = [{ type: 'text' as const, text: 'Offline host integration fixture completed.' }]
 const readAgents = (callId: string) => toolCall(callId, 'read', { path: 'AGENTS.md' })
 const workProcess = (callId: string, taskId: string) =>
@@ -773,65 +737,46 @@ let scriptIndex = 0
 let lastStep = ''
 let runtime: AgentSessionRuntime | undefined
 
-const scriptedStream: NonNullable<Pi.ProviderConfig['streamSimple']> = (
-  _model,
-  context,
-  options
-) => {
-  const parked = workspaceHost.isParked()
-  const step = parked ? staleContinuation : (script[scriptIndex++] ?? extraStep)
-  lastStep = step.id
-  providerCalls.push({ step: step.id, cwd: runtime?.cwd, parked, context: JSON.stringify(context) })
-  const stream = eventStreams.createAssistantMessageEventStream()
-  const message = assistantMessage(step.content, step.stopReason)
-  if (step.id === 'escape-stream') process.stdout.write('\nDEV36_CANCEL_PROVIDER_STARTED\n')
-  const timer = setTimeout(() => {
-    stream.push(
-      step.stopReason === 'aborted'
-        ? { type: 'error', reason: 'aborted', error: message }
-        : { type: 'done', reason: step.stopReason, message }
-    )
-    stream.end()
-  }, step.delayMs)
-  options?.signal?.addEventListener(
-    'abort',
-    () => {
-      clearTimeout(timer)
-      stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
+const scriptedStream =
+  ({ assistantMessage, eventStreams }: ScriptedStreamParts): StreamSimple =>
+  (_model, context, options) => {
+    const parked = workspaceHost.isParked()
+    const step = parked ? staleContinuation : (script[scriptIndex++] ?? extraStep)
+    lastStep = step.id
+    providerCalls.push({
+      step: step.id,
+      cwd: runtime?.cwd,
+      parked,
+      context: JSON.stringify(context),
+    })
+    const stream = eventStreams.createAssistantMessageEventStream()
+    const message = assistantMessage(step.content, step.stopReason)
+    if (step.id === 'escape-stream') process.stdout.write('\nDEV36_CANCEL_PROVIDER_STARTED\n')
+    const timer = setTimeout(() => {
+      stream.push(
+        step.stopReason === 'aborted'
+          ? { type: 'error', reason: 'aborted', error: message }
+          : { type: 'done', reason: step.stopReason, message }
+      )
       stream.end()
-    },
-    { once: true }
-  )
-  return stream
-}
+    }, step.delayMs)
+    options?.signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
+        stream.end()
+      },
+      { once: true }
+    )
+    return stream
+  }
 
-const modelRuntime = await pi.ModelRuntime.create({
-  authPath: join(fixture, 'never-created-auth.json'),
-  modelsPath: join(fixture, 'never-created-models.json'),
-  allowModelNetwork: false,
-  refreshOnCreate: false,
-})
-modelRuntime.registerProvider(offlineModel.provider, {
-  name: offlineModel.name,
-  api: offlineModel.api,
-  baseUrl: offlineModel.baseUrl,
-  apiKey: 'offline-fixture',
-  authHeader: false,
-  models: [
-    {
-      id: offlineModel.id,
-      name: offlineModel.name,
-      api: offlineModel.api,
-      baseUrl: offlineModel.baseUrl,
-      reasoning: false,
-      input: ['text'],
-      contextWindow: offlineModel.contextWindow,
-      maxTokens: offlineModel.maxTokens,
-      cost: offlineModel.cost,
-    },
-  ],
-  streamSimple: scriptedStream,
-})
+const {
+  model: offlineModel,
+  modelRuntime,
+  assistantMessage,
+} = await makeOfflineModel({ pi, importFromPi, fixture, id: 'dev36-tui', stream: scriptedStream })
 
 const runStarted = deferred<void>()
 const selectorOpen = deferred<void>()
@@ -1026,7 +971,7 @@ const workspaceHost = await Effect.runPromise(
       dataHome,
       openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
       repositoryRoot: cwd => Effect.succeed(resolve(cwd)),
-      resolveImportPath: input => piPaths.resolvePath(input),
+      resolveImportPath: piPaths,
     })
   )
 )
@@ -1218,26 +1163,6 @@ const runPromise = mode.run().catch((cause: unknown) => {
   runFailure = cause
 })
 
-const within = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> =>
-  Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), ms).unref()
-    }),
-  ])
-const poll = async <T>(
-  what: string,
-  read: () => T | undefined | Promise<T | undefined>,
-  ms = 15000
-): Promise<T> => {
-  const until = Date.now() + ms
-  for (;;) {
-    const value = await read()
-    if (value !== undefined) return value
-    if (Date.now() > until) throw new Error(`Timed out waiting for ${what}`)
-    await new Promise(accept => setTimeout(accept, 50))
-  }
-}
 const marker = (name: string): void => {
   process.stdout.write(`\n${name}\n`)
 }
@@ -1271,10 +1196,12 @@ await within(runStarted.promise, 15000, 'actual TUI session_start')
 
 await within(mainTurnDone.promise, 90000, 'fresh target decisions and final model response')
 marker('DEV36_READY_FOR_BASH')
-await poll('first user bash history entry', () => (bashHistory().length >= 1 ? true : undefined))
+await waitFor('first user bash history entry', () => (bashHistory().length >= 1 ? true : undefined))
 marker('DEV36_BASH_RESULT_1')
-await poll('second user bash history entry', () => (bashHistory().length >= 2 ? true : undefined))
-const userShellUses = await poll('user shell uses to settle', () => {
+await waitFor('second user bash history entry', () =>
+  bashHistory().length >= 2 ? true : undefined
+)
+const userShellUses = await waitFor('user shell uses to settle', () => {
   const settled = shellUses().slice(1)
   return settled.length === 2 && settled.every(settledShell) ? settled : undefined
 })
@@ -1293,7 +1220,7 @@ const [workLaunch] = workUse.facts
 assert.ok(workLaunch?.kind === 'launch-intent')
 const workLogs = workLaunch.execution.logs
 assert.ok(workLogs)
-await poll('real WorkOwner process output', () =>
+await waitFor('real WorkOwner process output', () =>
   readFileSync(workLogs, 'utf8').includes('dev36-work-owner-started') ? true : undefined
 )
 const runningAttempts = async (): Promise<readonly string[]> => {
@@ -1305,7 +1232,7 @@ const cancelledWork = async (attemptId: string) => {
     item => item.scope === 'opaque' && executionOf(item.operation)?.attemptId === attemptId
   )
   assert.ok(use, `attempt ${attemptId} was admitted as an opaque scoped use`)
-  const terminal = await poll(`settled attempt ${attemptId}`, async () => {
+  const terminal = await waitFor(`settled attempt ${attemptId}`, async () => {
     const last = use.facts.at(-1)
     const running = (await runningAttempts()).includes(attemptId)
     return !running && (last?.kind === 'quiescent' || last?.kind === 'unknown') ? last : undefined
