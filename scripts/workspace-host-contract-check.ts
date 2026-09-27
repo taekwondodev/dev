@@ -1,16 +1,16 @@
-// The PTY probe's stub lifecycle is hand-written for fault injection. Its factories are typed
-// against the seam (workspace-host-fixture-shapes.ts), so the compiler already rejects a
-// missing, mistyped or unproduced field. This check adds what types cannot: every shape the
-// stub produces decodes with the schemas the lifecycle client applies to authority
-// responses (ID formats, non-empty strings, revision bounds), and decoding keeps every field
-// the stub sets.
+// Drives the host's `/workspace` command through a real Pi session for the failures the TUI
+// probe does not inject: each must reach the user as a notice, never as a rejected handler.
 import assert from 'node:assert/strict'
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  RegisteredCommand,
-} from '@earendil-works/pi-coding-agent'
-import { Effect, Exit, Schema, Scope } from 'effect'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { NodeServices } from '@effect/platform-node'
+import { Effect, Exit, Scope } from 'effect'
+import { makeRuntimeFactory } from '../src/launcher.ts'
+import { getProfile } from '../src/profiles.ts'
+import { acquireRuntime } from '../src/runtime-coordination.ts'
+import { createSessionGuard } from '../src/session-guard.ts'
+import { WorkError } from '../src/work-domain.ts'
 import {
   WorkspaceError,
   type WorkspaceAttachment,
@@ -18,190 +18,146 @@ import {
   type WorkspaceSelection,
 } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { WorkError } from '../src/work-domain.ts'
-import { WorkspaceRpcResponseSchema } from '../src/workspace-protocol.ts'
-import { makeClaims } from './workspace-check-support.ts'
+import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import {
   fixtureId,
   makeFixtureBinding,
-  makeFixtureGrant,
-  makeFixtureHandoff,
   makeFixtureView,
   type FixtureDescriptor,
 } from './workspace-host-fixture-shapes.ts'
 
-const decodeResponse = Schema.decodeSync(WorkspaceRpcResponseSchema)
-// A response the client would accept from the authority, returned unchanged by decoding.
-const acceptedUnchanged = (response: typeof WorkspaceRpcResponseSchema.Encoded): void => {
-  assert.deepEqual(decodeResponse(response), response)
-}
-
-const { claim, passed } = makeClaims()
-const namespaceId = fixtureId(32)
+const { pi, packageInfo } = await loadInstalledPi()
+const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-host-contract-')))
+const sessionDir = join(fixture, 'sessions')
+const agentDir = join(fixture, 'agent')
+const dataHome = join(fixture, 'data')
 const descriptor = (origin: FixtureDescriptor['origin']): FixtureDescriptor => ({
   repoId: fixtureId(41),
   taskId: fixtureId(1),
   workspaceId: fixtureId(origin === 'managed' ? 12 : 11),
-  path: `/fixture/projects/${origin}`,
+  path: join(fixture, 'projects', origin),
   origin,
   label: 'contract-check',
 })
-const conversation = {
-  sessionId: 'contract-check-session',
-  sessionFile: '/fixture/sessions/contract-check.jsonl',
-  dataHome: '/fixture/data',
+const current = descriptor('pre-existing')
+const target = descriptor('managed')
+for (const path of [sessionDir, agentDir, current.path, join(fixture, 'home', '.agents', 'skills')])
+  mkdirSync(path, { recursive: true })
+mkdirSync(dataHome, { mode: 0o700 })
+process.env.HOME = join(fixture, 'home')
+process.env.PI_CODING_AGENT_DIR = agentDir
+process.env.PI_OFFLINE = '1'
+process.env.PI_TELEMETRY_DISABLED = '1'
+
+const { claim, passed } = makeClaims()
+const manager = pi.SessionManager.create(current.path, sessionDir)
+const sessionFile = manager.getSessionFile()
+if (sessionFile === undefined) throw new Error('Pi did not name the session file')
+const conversation = { sessionId: manager.getSessionId(), sessionFile, dataHome }
+const selections: WorkspaceSelection[] = []
+const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this check' })
+const attachment: WorkspaceAttachment = {
+  binding: makeFixtureBinding({ conversation, descriptor: current }),
+  authorize: () => Effect.fail(refused),
+  select: selection => {
+    selections.push(selection)
+    return Effect.fail(refused)
+  },
+  reportExecution: () => Effect.void,
+  handoff: () => Effect.void,
+  close: Effect.void,
+}
+const retained = makeFixtureView({
+  descriptor: target,
+  outcome: 'preserved-for-resume',
+  reservationId: fixtureId(112),
+})
+const lifecycle: WorkspaceLifecycle = {
+  attach: () => Effect.fail(refused),
+  inspect: () => Effect.succeed([retained]),
+  validate: () => Effect.void,
 }
 
-await claim(
-  'every grant shape the stub issues (read and write, pre-existing and managed, with and without a native-write destination) decodes as an authorization response and keeps every field',
-  () => {
-    let sequence = 1000
-    for (const origin of ['pre-existing', 'managed'] as const)
-      for (const access of ['read', 'write'] as const)
-        for (const path of [undefined, `/fixture/projects/${origin}/file.txt`]) {
-          sequence += 10
-          const grant = makeFixtureGrant({
-            namespaceId,
-            descriptor: descriptor(origin),
-            access,
-            cwd: descriptor(origin).path,
-            sequence,
-            ...(path === undefined ? {} : { path }),
-          })
-          acceptedUnchanged({
-            id: sequence,
-            ok: true,
-            op: 'authorize',
-            value: { kind: 'ready', grant },
-          })
-          acceptedUnchanged({
-            id: sequence + 1,
-            ok: true,
-            op: 'authorize',
-            value: { kind: 'ready', grant, warning: 'fixture writer warning' },
-          })
-        }
-  }
-)
-
-await claim(
-  'the stub binding and its rebind handoff decode as attach, select and rebind responses and keep every field',
-  () => {
-    const binding = makeFixtureBinding({ conversation, descriptor: descriptor('pre-existing') })
-    const handoff = makeFixtureHandoff({
-      operationId: fixtureId(900001),
-      from: binding,
-      target: makeFixtureGrant({
-        namespaceId,
-        descriptor: descriptor('managed'),
-        access: 'write',
-        cwd: descriptor('managed').path,
-        sequence: 2000,
-      }),
-      reason: 'fixture competing writer required an isolated workspace',
-    })
-    acceptedUnchanged({ id: 1, ok: true, op: 'attach', value: { attachmentId: 1, binding } })
-    acceptedUnchanged({ id: 2, ok: true, op: 'select', value: handoff })
-    acceptedUnchanged({ id: 3, ok: true, op: 'authorize', value: { kind: 'rebind', handoff } })
-  }
-)
-
-await claim(
-  'the stub views for the outcomes it renders decode as an inspect response and keep every field',
-  () => {
-    acceptedUnchanged({
-      id: 1,
-      ok: true,
-      op: 'inspect',
-      value: (['active', 'preserved-for-resume'] as const).map(outcome =>
-        makeFixtureView({
-          descriptor: descriptor('managed'),
-          outcome,
-          reservationId: fixtureId(111),
-        })
-      ),
-    })
-  }
-)
-
-await claim(
-  "the host's /workspace handler reports session-owned work it cannot list or stop, and a malformed command, as notices without selecting a workspace or rejecting Pi's handler",
-  async () => {
-    const current = descriptor('pre-existing')
-    const target = descriptor('managed')
-    const selections: WorkspaceSelection[] = []
-    const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this claim' })
-    const attachment: WorkspaceAttachment = {
-      binding: makeFixtureBinding({ conversation, descriptor: current }),
-      authorize: () => Effect.fail(refused),
-      select: selection => {
-        selections.push(selection)
-        return Effect.fail(refused)
+const hostScope = Scope.makeUnsafe()
+try {
+  const host = await Effect.runPromise(
+    Scope.provide(hostScope)(
+      makeWorkspaceHost({
+        lifecycle,
+        attachment,
+        dataHome,
+        openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
+        repositoryRoot: cwd => Effect.succeed(cwd),
+      })
+    )
+  )
+  const guard = createSessionGuard(
+    await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
+  )
+  const runtimeFactory = await Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* makeRuntimeFactory({
+        api: pi,
+        packageRoot: packageInfo.root,
+        dataHome,
+        profile: yield* getProfile('general'),
+        guard,
+        workspaceHost: host,
+        lifecycle,
+      })
+    }).pipe(Effect.provide(NodeServices.layer))
+  )
+  const runtime = await pi.createAgentSessionRuntime(runtimeFactory, {
+    cwd: current.path,
+    agentDir,
+    sessionManager: manager,
+  })
+  host.bindRuntime(runtime)
+  guard.bind(runtime)
+  const notices: { readonly message: string; readonly level: string | undefined }[] = []
+  const handlerErrors: string[] = []
+  await runtime.session.bindExtensions({
+    uiContext: {
+      ...runtime.session.extensionRunner.getUIContext(),
+      notify: (message, level) => {
+        notices.push({ message, level })
       },
-      reportExecution: () => Effect.void,
-      handoff: () => Effect.void,
-      close: Effect.void,
-    }
-    const lifecycle: WorkspaceLifecycle = {
-      attach: () => Effect.fail(refused),
-      inspect: () =>
-        Effect.succeed([
-          makeFixtureView({
-            descriptor: target,
-            outcome: 'preserved-for-resume',
-            reservationId: fixtureId(112),
-          }),
-        ]),
-      validate: () => Effect.void,
-    }
-    const notices: { readonly message: string; readonly level: string | undefined }[] = []
-    const displayed: unknown[] = []
-    let workspaceCommand: RegisteredCommand['handler'] | undefined
-    const api = {
-      on: () => undefined,
-      getAllTools: () => [],
-      sendMessage: (message: { readonly content: unknown }) => {
-        displayed.push(message.content)
-      },
-      registerCommand: (name: string, command: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
-        if (name === 'workspace') workspaceCommand = command.handler
-      },
-    } as unknown as ExtensionAPI
-    const context = {
-      cwd: current.path,
-      hasUI: true,
-      ui: {
-        notify: (message: string, level?: string) => notices.push({ message, level }),
-        select: async () => undefined,
-        confirm: async () => true,
-        getEditorText: () => '',
-        setEditorText: () => undefined,
-      },
-    } as unknown as ExtensionCommandContext
-    const scope = Scope.makeUnsafe()
-    try {
-      const host = await Effect.runPromise(
-        Scope.provide(scope)(
-          makeWorkspaceHost({
-            lifecycle,
-            attachment,
-            dataHome: conversation.dataHome,
-            openSessionManager: () => {
-              throw new Error('not used by this claim')
-            },
-            repositoryRoot: cwd => Effect.succeed(cwd),
-          })
-        )
+      confirm: async () => true,
+    },
+    onError: error => {
+      handlerErrors.push(error.error)
+    },
+  })
+  const displayed = () =>
+    runtime.session.sessionManager
+      .getEntries()
+      .flatMap(entry =>
+        entry.type === 'custom_message' && entry.customType === 'dev/workspace'
+          ? [entry.content]
+          : []
       )
-      host.extensionFactory(api)
-      assert.ok(workspaceCommand, 'the host registered /workspace')
-      const resume = `resume ${target.taskId} --workspace ${target.workspaceId}`
+  const resume = `/workspace resume ${target.taskId} --workspace ${target.workspaceId}`
 
+  await claim(
+    'a /workspace resume whose session-owned work cannot be listed is reported as a notice',
+    async () => {
       host.setWorkControls({
         running: Effect.fail(new WorkError({ message: 'fixture listing failed' })),
         stopAll: () => Effect.void,
       })
-      await workspaceCommand(resume, context)
+      await runtime.session.prompt(resume)
+      assert.deepEqual(notices.splice(0), [
+        {
+          message:
+            'Session-owned work could not be listed, so no switch was started: fixture listing failed',
+          level: 'error',
+        },
+      ])
+    }
+  )
+  await claim(
+    'a confirmed /workspace resume whose session-owned work cannot be stopped is reported as a notice',
+    async () => {
       host.setWorkControls({
         running: Effect.succeed([
           {
@@ -214,31 +170,35 @@ await claim(
         ]),
         stopAll: () => Effect.fail(new WorkError({ message: 'fixture stop failed' })),
       })
-      await workspaceCommand(resume, context)
-      await workspaceCommand('switch', context)
-
-      assert.deepEqual(notices, [
-        {
-          message:
-            'Session-owned work could not be listed, so no switch was started: fixture listing failed',
-          level: 'error',
-        },
+      await runtime.session.prompt(resume)
+      assert.deepEqual(notices.splice(0), [
         {
           message:
             'Session-owned work could not be stopped, so no switch was started: fixture stop failed',
           level: 'error',
         },
       ])
-      assert.deepEqual(selections, [], 'no workspace was selected')
-      assert.equal(host.isParked(), false, 'the host was not parked')
-      assert.deepEqual(displayed, [
-        'Unknown workspace command "switch". Use list, inspect <task>, or resume <task> [--workspace <workspace>].',
-      ])
-    } finally {
-      await Effect.runPromise(Scope.close(scope, Exit.void))
     }
-  }
-)
+  )
+  await claim('a malformed /workspace command is shown with its usage', async () => {
+    await runtime.session.prompt('/workspace switch')
+    assert.deepEqual(displayed(), [
+      'Unknown workspace command "switch". Use list, inspect <task>, or resume <task> [--workspace <workspace>].',
+    ])
+  })
+  await claim(
+    "none of these commands selected a workspace, parked the host or rejected Pi's handler",
+    () => {
+      assert.deepEqual(selections, [])
+      assert.equal(host.isParked(), false)
+      assert.deepEqual(handlerErrors, [])
+    }
+  )
+  await runtime.dispose()
+} finally {
+  await Effect.runPromise(Scope.close(hostScope, Exit.void))
+  rmSync(fixture, { recursive: true, force: true })
+}
 
 console.log(
   JSON.stringify(
@@ -246,7 +206,7 @@ console.log(
       result: 'passed',
       checks: passed,
       limitation:
-        'Schema conformance and command-failure notices only; it does not drive the Pi TUI. The stub renders no use or pending rows. workspace-host-real-authority-probe.ts drives the same host against the real authority through grants, native-write grants, a rebind handoff, bindings and inspect views with real use rows.',
+        'Command-failure notices through a headless Pi session with a stub lifecycle. The TUI probes drive the successful switches, and every stub value is decoded as it is made.',
     },
     null,
     2

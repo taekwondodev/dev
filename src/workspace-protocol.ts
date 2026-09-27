@@ -134,7 +134,7 @@ const FailureSchema = Schema.Struct({
   outcome: Outcome,
   message: Schema.NonEmptyString,
 })
-export const WorkspaceRpcResponseSchema = Schema.Union([SuccessSchema, FailureSchema])
+const WorkspaceRpcResponseSchema = Schema.Union([SuccessSchema, FailureSchema])
 
 const BindingUpdateSchema = Schema.Struct({
   attachmentId: AttachmentId,
