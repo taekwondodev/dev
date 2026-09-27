@@ -157,6 +157,13 @@ const runChild = (code: string): Promise<string> =>
         : reject(new Error(`Child failed (${codeValue}): ${stderr}`))
     )
   })
+const deferred = <A>() => {
+  const settle: { resolve?: (value: A) => void } = {}
+  const promise = new Promise<A>(resolvePromise => {
+    settle.resolve = resolvePromise
+  })
+  return { promise, resolve: (value: A) => settle.resolve?.(value) }
+}
 const processExecution = (name: string): WorkspaceExecution => ({
   sessionId: `${name}-session`,
   taskKey: `${name}-task`,
@@ -1940,25 +1947,20 @@ try {
         (await switching.inspect({ cwd: switchingRepo }))
           .flatMap(view => view.pending)
           .find(item => item.id === handoff.operationId)?.stage
-      let reachedHost: () => void = () => undefined
-      const hostReached = new Promise<void>(resolveReached => {
-        reachedHost = resolveReached
+      const hostReached = deferred<void>()
+      const switchFinished = deferred<'confirmed'>()
+      const firstSwitch = mover.handoff(handoff, () => {
+        hostReached.resolve()
+        return switchFinished.promise
       })
-      let finishSwitch: (outcome: 'confirmed') => void = () => undefined
-      const first = mover.handoff(handoff, () => {
-        reachedHost()
-        return new Promise(resolveSwitch => {
-          finishSwitch = resolveSwitch
-        })
-      })
-      await hostReached
+      await hostReached.promise
       await expectWorkspaceError(
         mover.handoff(handoff, async () => 'cancelled'),
         'review-required'
       )
       assert.equal(await stage(), 'started', 'the switch is still recorded as started')
-      finishSwitch('confirmed')
-      await first
+      switchFinished.resolve('confirmed')
+      await firstSwitch
       assert.equal(mover.binding.workspaceId, handoff.target.workspaceId)
       assert.equal(await stage(), undefined, 'the confirmed switch is no longer pending')
       await mover.close()
