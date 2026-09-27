@@ -1,9 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fsyncSync, mkdirSync, openSync } from 'node:fs'
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname } from 'node:path'
+import { Predicate } from 'effect'
 import { unavailable, WorkspaceId } from './workspace-domain.ts'
-import { hasErrorCode, lstatIfExists } from './workspace-paths.ts'
+
+export const hasErrorCode = (cause: unknown, code: string): boolean =>
+  Predicate.hasProperty(cause, 'code') && cause.code === code
+
+export const lstatIfExists = (path: string) => {
+  try {
+    return lstatSync(path)
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT')) return undefined
+    throw cause
+  }
+}
 
 export const newId = (): WorkspaceId => WorkspaceId.make(randomUUID())
 export const now = (): number => Date.now()

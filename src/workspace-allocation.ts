@@ -29,7 +29,7 @@ import {
   canonicalGitWorkspace,
   currentCommit,
 } from './workspace-git.ts'
-import { canonicalPathSlot, lstatIfExists } from './workspace-paths.ts'
+import { canonicalPathSlot } from './workspace-paths.ts'
 import {
   sameIdentity,
   getTask,
@@ -52,7 +52,14 @@ import {
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { transaction } from './workspace-sqlite.ts'
-import { newId, now, fsyncPath, fsyncParent, privateDirectory } from './workspace-platform.ts'
+import {
+  newId,
+  now,
+  fsyncPath,
+  fsyncParent,
+  lstatIfExists,
+  privateDirectory,
+} from './workspace-platform.ts'
 
 const releaseLocalGates = (state: ConversationState): GateIntent[] => {
   const intents: GateIntent[] = []

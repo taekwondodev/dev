@@ -12,7 +12,7 @@ import {
   WorkspaceId,
 } from './workspace-domain.ts'
 import type { GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot, lstatIfExists, sqliteCode } from './workspace-paths.ts'
+import { canonicalPathSlot } from './workspace-paths.ts'
 import {
   PROTOCOL_VERSION,
   SCHEMA_VERSION,
@@ -24,9 +24,10 @@ import {
   schemaCatalog,
   expectedCatalog,
   createPublishedDatabase,
+  sqliteBusy,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
-import { hash, privateDirectory, privateFile } from './workspace-platform.ts'
+import { hash, lstatIfExists, privateDirectory, privateFile } from './workspace-platform.ts'
 
 const SHARED_GATE_WAIT_MS = 250
 
@@ -79,7 +80,7 @@ const holdLock = (lock: {
   } catch (cause) {
     db?.close()
     if (cause instanceof WorkspaceError) throw cause
-    if (sqliteCode(cause) === 5 || sqliteCode(cause) === 6) blocked(lock.busy)
+    if (sqliteBusy(cause)) blocked(lock.busy)
     unavailable(`Cannot acquire ${lock.name.toLowerCase()} ${lock.path}: ${errorText(cause)}`)
   }
 }

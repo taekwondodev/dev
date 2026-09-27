@@ -1,25 +1,9 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { Predicate, Schema } from 'effect'
+import { Schema } from 'effect'
 import { blocked, invalid, requireReview } from './workspace-domain.ts'
+import { lstatIfExists } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
-
-// Node reports system call failures with a string `code`, SQLite with a numeric `errcode`.
-export const hasErrorCode = (cause: unknown, code: string): boolean =>
-  Predicate.hasProperty(cause, 'code') && cause.code === code
-export const sqliteCode = (cause: unknown): number | undefined =>
-  Predicate.hasProperty(cause, 'errcode') && Predicate.isNumber(cause.errcode)
-    ? cause.errcode & 255
-    : undefined
-
-export const lstatIfExists = (path: string) => {
-  try {
-    return lstatSync(path)
-  } catch (cause) {
-    if (hasErrorCode(cause, 'ENOENT')) return undefined
-    throw cause
-  }
-}
 
 export const isWithin = (root: string, path: string): boolean => {
   const rel = relative(root, path)

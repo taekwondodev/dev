@@ -11,11 +11,26 @@ import {
 } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, join } from 'node:path'
-import { Schema } from 'effect'
+import { Predicate, Schema } from 'effect'
 import { blocked, invalid, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
-import { hasErrorCode, lstatIfExists, sqliteCode } from './workspace-paths.ts'
-import { effectiveUid, fsyncParent, privateDirectory, privateFile } from './workspace-platform.ts'
+import {
+  effectiveUid,
+  fsyncParent,
+  hasErrorCode,
+  lstatIfExists,
+  privateDirectory,
+  privateFile,
+} from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
+
+export const sqliteCode = (cause: unknown): number | undefined =>
+  Predicate.hasProperty(cause, 'errcode') && Predicate.isNumber(cause.errcode)
+    ? cause.errcode & 255
+    : undefined
+export const sqliteBusy = (cause: unknown): boolean => {
+  const code = sqliteCode(cause)
+  return code === 5 || code === 6
+}
 
 export const PROTOCOL_VERSION = 1
 export const SCHEMA_VERSION = 3
@@ -368,8 +383,7 @@ export const openRecordDb = (
     }
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    if (sqliteCode(cause) === 5 || sqliteCode(cause) === 6)
-      blocked(`Workspace authority database is busy: ${path}`)
+    if (sqliteBusy(cause)) blocked(`Workspace authority database is busy: ${path}`)
     unavailable(`Cannot open workspace authority database ${path}: ${errorText(cause)}`)
   }
 }

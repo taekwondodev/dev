@@ -17,7 +17,7 @@ import {
 } from './workspace-domain.ts'
 import { acquirePathGates, acquireConversationPresence, releaseGates } from './workspace-gates.ts'
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot, isWithin, lstatIfExists } from './workspace-paths.ts'
+import { canonicalPathSlot, isWithin } from './workspace-paths.ts'
 import {
   matchesGitWorkspace,
   getWorkspace,
@@ -36,7 +36,7 @@ import {
   type BindingRecord,
 } from './workspace-records.ts'
 import { transaction } from './workspace-sqlite.ts'
-import { now, hash } from './workspace-platform.ts'
+import { now, hash, lstatIfExists } from './workspace-platform.ts'
 import { resolveSelection } from './workspace-transitions.ts'
 
 const conversationRecord = (

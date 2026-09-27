@@ -27,7 +27,8 @@ export interface ControllerChannel {
   removeListener(event: 'disconnect', listener: () => void): unknown
 }
 
-const unavailable = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
+const unavailableError = (message: string) =>
+  new WorkspaceError({ outcome: 'unavailable', message })
 
 export const validateWorkspaceWritePath = (
   grant: WorkspaceGrant,
@@ -48,7 +49,7 @@ export const checkChildWorkspace = (
 ): Effect.Effect<void, WorkspaceError> =>
   Effect.callback<void, WorkspaceError>(resume => {
     if (!channel.connected || channel.send === undefined) {
-      resume(Effect.fail(unavailable('Workspace controller IPC is unavailable')))
+      resume(Effect.fail(unavailableError('Workspace controller IPC is unavailable')))
       return
     }
     const requestId = newId()
@@ -61,7 +62,7 @@ export const checkChildWorkspace = (
       resume(result)
     }
     const onDisconnect = (): void =>
-      settle(Effect.fail(unavailable('Workspace controller disconnected')))
+      settle(Effect.fail(unavailableError('Workspace controller disconnected')))
     const onMessage = (raw: unknown): void => {
       const reply = decodeReply(raw)
       if (
@@ -85,16 +86,17 @@ export const checkChildWorkspace = (
     channel.once('disconnect', onDisconnect)
     try {
       channel.send({ type: 'workspace-check', requestId, useId: grant.useId, operation }, cause => {
-        if (cause !== null) settle(Effect.fail(unavailable(errorText(cause))))
+        if (cause !== null) settle(Effect.fail(unavailableError(errorText(cause))))
       })
     } catch (cause) {
-      settle(Effect.fail(unavailable(errorText(cause))))
+      settle(Effect.fail(unavailableError(errorText(cause))))
     }
     return Effect.sync(cleanup)
   }).pipe(
     Effect.timeoutOrElse({
       duration: '10 seconds',
-      orElse: () => Effect.fail(unavailable('Workspace authorization acknowledgment unavailable')),
+      orElse: () =>
+        Effect.fail(unavailableError('Workspace authorization acknowledgment unavailable')),
     })
   )
 

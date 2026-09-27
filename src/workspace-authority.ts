@@ -20,13 +20,7 @@ import {
 } from './workspace-gates.ts'
 import { authorityPaths, type AuthorityPaths } from './workspace-authority-root.ts'
 import type { GitWorkspace } from './workspace-git.ts'
-import {
-  canonicalPath,
-  hasErrorCode,
-  isWithin,
-  lstatIfExists,
-  sqliteCode,
-} from './workspace-paths.ts'
+import { canonicalPath, isWithin } from './workspace-paths.ts'
 import {
   RepositoryCatalogSchema,
   getWorkspace,
@@ -53,6 +47,7 @@ import {
   databaseFile,
   openRecordDb,
   transaction,
+  sqliteCode,
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
@@ -60,6 +55,8 @@ import {
   newId,
   fsyncPath,
   fsyncParent,
+  hasErrorCode,
+  lstatIfExists,
   privateDirectory,
   ensureDirectoryPath,
 } from './workspace-platform.ts'

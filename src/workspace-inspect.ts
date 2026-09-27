@@ -14,8 +14,7 @@ import {
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { rows, textField } from './workspace-sqlite.ts'
-import { effectiveUid } from './workspace-platform.ts'
-import { hasErrorCode } from './workspace-paths.ts'
+import { effectiveUid, hasErrorCode } from './workspace-platform.ts'
 
 const logAvailability = (path: string): boolean | undefined => {
   try {
