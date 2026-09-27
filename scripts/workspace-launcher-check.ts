@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,6 +18,8 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import { Effect, Exit, Scope } from 'effect'
+import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
@@ -193,9 +197,14 @@ try {
       disableErrorReporting: true,
     })
   `
+  // A claim that times out leaves its launches running, and Node exits before their timeouts.
+  const launches = new Set<ReturnType<typeof execFile>>()
+  process.on('exit', () => {
+    for (const launch of launches) launch.kill('SIGKILL')
+  })
   const runLauncher = (args: readonly string[], env: Readonly<Record<string, string>> = {}) =>
     new Promise<{ code: number | null; stdout: string; stderr: string }>(resolveRun => {
-      execFile(
+      const launch = execFile(
         process.execPath,
         ['--input-type=module', '-e', driver, '--', ...args],
         {
@@ -204,11 +213,13 @@ try {
           timeout: 60000,
         },
         (error, stdout, stderr) => {
+          launches.delete(launch)
           // An exit status is a number; a signal or a failed spawn leaves no status to report.
           const status = error === null ? 0 : error.code
           resolveRun({ code: typeof status === 'number' ? status : null, stdout, stderr })
         }
       )
+      launches.add(launch)
     })
   const resumeArgs = (resumed: string) => [
     '--resume',
@@ -512,6 +523,55 @@ try {
       outcome.stderr
     )
   })
+  await claim(
+    'dev --resume of a dangling link is refused by the authority, which keeps the history and points to dev --cwd PATH',
+    async () => {
+      const target = join(sandbox, 'nowhere.jsonl')
+      const dangling = join(dataHome, 'sessions', 'dangling.jsonl')
+      symlinkSync(target, dangling)
+      const outcome = await runLauncher(resumeArgs(dangling), { STOP_AFTER_ATTACH: '1' })
+      assert.equal(outcome.code, 1, outcome.stderr)
+      assert.match(outcome.stderr, /Conversation file is not a regular, uniquely linked file/)
+      assert.match(outcome.stderr, /dev --cwd PATH/)
+      assert.ok(!existsSync(target), 'the link target was not created')
+    }
+  )
+
+  const caseHome = join(sandbox, 'case-data')
+  mkdirSync(caseHome, { mode: 0o700 })
+  const held = pi.SessionManager.create(repo, join(caseHome, 'sessions'))
+  held.appendMessage(user)
+  held.appendMessage(assistant)
+  const heldFile = held.getSessionFile()
+  if (heldFile === undefined) throw new Error('Pi did not persist the held conversation')
+  const respelled = (path: string) => join(sandbox, relative(sandbox, path).toUpperCase())
+  if (existsSync(respelled(heldFile)))
+    await claim(
+      'on a volume that ignores case, dev refuses a conversation another dev session holds, named through another spelling of its file or of its data home',
+      async () => {
+        const copied = join(caseHome, 'sessions', 'same-session.jsonl')
+        copyFileSync(heldFile, copied)
+        const holding = Scope.makeUnsafe()
+        try {
+          const lease = await Effect.runPromise(Scope.provide(holding)(acquireRuntime(caseHome)))
+          await Effect.runPromise(lease.protect({ path: heldFile, sessionId: held.getSessionId() }))
+          for (const resumed of [respelled(heldFile), respelled(copied)]) {
+            const outcome = await runLauncher(
+              ['--resume', resumed, '--data-home', respelled(caseHome), '--profile', 'general'],
+              { STOP_AFTER_ATTACH: '1' }
+            )
+            assert.equal(outcome.code, 1, outcome.stderr)
+            assert.match(
+              outcome.stderr,
+              /This conversation is already open in another dev session/,
+              resumed
+            )
+          }
+        } finally {
+          await Effect.runPromise(Scope.close(holding, Exit.void))
+        }
+      }
+    )
   console.log(
     JSON.stringify(
       {
