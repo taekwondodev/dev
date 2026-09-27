@@ -68,7 +68,7 @@ import {
   type WorkspaceWorkControls,
 } from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
-import { loadInstalledPi } from './workspace-check-support.ts'
+import { deferred, loadInstalledPi } from './workspace-check-support.ts'
 import {
   fixtureId as id,
   makeFixtureBinding,
@@ -832,29 +832,18 @@ modelRuntime.registerProvider(offlineModel.provider, {
   streamSimple: scriptedStream,
 })
 
-interface Deferred {
-  readonly promise: Promise<void>
-  readonly settle: () => void
-}
-const deferred = (): Deferred => {
-  let settle!: () => void
-  const promise = new Promise<void>(resolvePromise => {
-    settle = resolvePromise
-  })
-  return { promise, settle }
-}
-const runStarted = deferred()
-const selectorOpen = deferred()
-const confirmOpen = deferred()
-const mainTurnDone = deferred()
-const backgroundTurnDone = deferred()
-const abortedWithoutEscape = deferred()
-const workToolReturned = deferred()
-const retainedTurnDone = deferred()
-const terminalEscape = deferred()
-const commandDone = new Map<string, Deferred>()
+const runStarted = deferred<void>()
+const selectorOpen = deferred<void>()
+const confirmOpen = deferred<void>()
+const mainTurnDone = deferred<void>()
+const backgroundTurnDone = deferred<void>()
+const abortedWithoutEscape = deferred<void>()
+const workToolReturned = deferred<void>()
+const retainedTurnDone = deferred<void>()
+const terminalEscape = deferred<void>()
+const commandDone = new Map<string, ReturnType<typeof deferred<void>>>()
 const waitForCommand = (key: string): Promise<void> => {
-  const existing = commandDone.get(key) ?? deferred()
+  const existing = commandDone.get(key) ?? deferred<void>()
   commandDone.set(key, existing)
   return existing.promise
 }
@@ -940,14 +929,14 @@ const observeUi = <C extends ExtensionContext>(context: C): C => {
       if (key === 'select')
         return async (...args: Parameters<typeof target.select>) => {
           process.stdout.write('\nDEV36_SELECTOR_OPEN\n')
-          selectorOpen.settle()
+          selectorOpen.resolve()
           return target.select(...args)
         }
       if (key === 'confirm')
         return async (...args: Parameters<typeof target.confirm>) => {
           timeline.push({ kind: 'confirm', title: args[0], message: args[1] })
           process.stdout.write(`\nDEV36_CONFIRM_SWITCH_OPEN_${++confirmCount}\n`)
-          confirmOpen.settle()
+          confirmOpen.resolve()
           return target.confirm(...args)
         }
       const value: unknown = Reflect.get(target, key)
@@ -976,9 +965,9 @@ const wrapWorkspaceCommand = (
     workspaceCommandCount.set(action, count)
     process.stdout.write(`\nDEV36_COMMAND_DONE:${action}:${count}\n`)
     const key = `${action}:${count}`
-    const waiter = commandDone.get(key) ?? deferred()
+    const waiter = commandDone.get(key) ?? deferred<void>()
     commandDone.set(key, waiter)
-    waiter.settle()
+    waiter.resolve()
   },
 })
 
@@ -1073,12 +1062,12 @@ const observer =
           .getEntries()
           .filter(entry => entry.type === 'custom' && entry.customType === 'dev36/shutdown').length,
       })
-      if (context.cwd === lead) runStarted.settle()
+      if (context.cwd === lead) runStarted.resolve()
       toolRegistryByPath.set(resolve(context.cwd), api.getAllTools())
       context.ui.onTerminalInput(data => {
         if (data === '\u001b' || data === '\u001b[27u') {
           terminalInputs.push(data)
-          terminalEscape.settle()
+          terminalEscape.resolve()
         }
         return undefined
       })
@@ -1093,14 +1082,14 @@ const observer =
       const stopReason = last?.role === 'assistant' ? last.stopReason : undefined
       if (!mainTurnWasDone && lastStep === 'main-done' && stopReason === 'stop') {
         mainTurnWasDone = true
-        mainTurnDone.settle()
+        mainTurnDone.resolve()
       }
-      if (lastStep === 'background-done' && stopReason === 'stop') backgroundTurnDone.settle()
-      if (lastStep === 'retained-done' && stopReason === 'stop') retainedTurnDone.settle()
+      if (lastStep === 'background-done' && stopReason === 'stop') backgroundTurnDone.resolve()
+      if (lastStep === 'retained-done' && stopReason === 'stop') retainedTurnDone.resolve()
       if (lastStep === 'agent-abort' && stopReason === 'aborted' && terminalInputs.length === 0)
         setImmediate(() => {
           assert.equal(terminalInputs.length, 0, 'model abort was not caused by a terminal Escape')
-          abortedWithoutEscape.settle()
+          abortedWithoutEscape.resolve()
         })
     })
     api.on('tool_result', event => {
@@ -1117,7 +1106,7 @@ const observer =
           `WorkOwner returned an unexpected result: ${text}`
         )
         processResults.set(event.toolCallId, { id: parsed.id, status: parsed.status })
-        if (event.toolCallId === 'work-owner-process') workToolReturned.settle()
+        if (event.toolCallId === 'work-owner-process') workToolReturned.resolve()
       }
     })
     api.on('session_shutdown', event => {

@@ -19,7 +19,7 @@ import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
-import { makeClaims } from './workspace-check-support.ts'
+import { makeClaims, waitFor } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../src/workspace-native-write.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
@@ -473,17 +473,16 @@ try {
           (await authority.inspect({ taskId: grant.taskId })).find(
             view => view.workspaceId === grant.workspaceId
           )
-        let view = await checkout()
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          if (view?.uses.some(use => use.stage === 'observed')) break
-          await new Promise(resolveWait => setTimeout(resolveWait, 100))
-          view = await checkout()
-        }
-        assert.ok(
-          view?.uses.some(use => use.stage === 'observed'),
-          'the command was observed'
+        const view = await waitFor(
+          'the running command to be observed',
+          async () => {
+            const current = await checkout()
+            return current?.uses.some(use => use.stage === 'observed') ? current : undefined
+          },
+          40,
+          100
         )
-        assert.equal(view?.outcome, 'active', view?.reason)
+        assert.equal(view.outcome, 'active', view.reason)
         await running
         await settled(11)
         await observingShell.stop()

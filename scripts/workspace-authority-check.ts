@@ -32,7 +32,7 @@ import {
   WorkspaceWorkerMessageSchema,
   type WorkspaceRpcOperation,
 } from '../src/workspace-protocol.ts'
-import { makeClaims } from './workspace-check-support.ts'
+import { deferred, makeClaims } from './workspace-check-support.ts'
 import {
   openLifecycle,
   type TestAttachment,
@@ -158,13 +158,6 @@ const runChild = (code: string): Promise<string> =>
         : reject(new Error(`Child failed (${codeValue}): ${stderr}`))
     )
   })
-const deferred = <A>() => {
-  const settle: { resolve?: (value: A) => void } = {}
-  const promise = new Promise<A>(resolvePromise => {
-    settle.resolve = resolvePromise
-  })
-  return { promise, resolve: (value: A) => settle.resolve?.(value) }
-}
 const processExecution = (name: string): WorkspaceExecution => ({
   sessionId: `${name}-session`,
   taskKey: `${name}-task`,

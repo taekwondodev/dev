@@ -3,12 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NodeServices } from '@effect/platform-node'
-import { Effect, Exit, Scope } from 'effect'
-import { makeRuntimeFactory } from '../src/launcher.ts'
-import { getProfile } from '../src/profiles.ts'
-import { acquireRuntime } from '../src/runtime-coordination.ts'
-import { createSessionGuard } from '../src/session-guard.ts'
+import { Effect } from 'effect'
 import { WorkError } from '../src/work-domain.ts'
 import {
   WorkspaceError,
@@ -16,8 +11,7 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceSelection,
 } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
+import { loadInstalledPi, makeClaims, openHostRuntime } from './workspace-check-support.ts'
 import {
   fixtureId,
   makeFixtureBinding,
@@ -77,42 +71,20 @@ const lifecycle: WorkspaceLifecycle = {
   validate: () => Effect.void,
 }
 
-const hostScope = Scope.makeUnsafe()
+const opened = await openHostRuntime({
+  pi,
+  packageRoot: packageInfo.root,
+  lifecycle,
+  attachment,
+  dataHome,
+  sessionDir,
+  agentDir,
+  manager,
+  cwd: current.path,
+  repositoryRoot: cwd => Effect.succeed(cwd),
+})
 try {
-  const host = await Effect.runPromise(
-    Scope.provide(hostScope)(
-      makeWorkspaceHost({
-        lifecycle,
-        attachment,
-        dataHome,
-        openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
-        repositoryRoot: cwd => Effect.succeed(cwd),
-      })
-    )
-  )
-  const guard = createSessionGuard(
-    await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
-  )
-  const runtimeFactory = await Effect.runPromise(
-    Effect.gen(function* () {
-      return yield* makeRuntimeFactory({
-        api: pi,
-        packageRoot: packageInfo.root,
-        dataHome,
-        profile: yield* getProfile('general'),
-        guard,
-        workspaceHost: host,
-        lifecycle,
-      })
-    }).pipe(Effect.provide(NodeServices.layer))
-  )
-  const runtime = await pi.createAgentSessionRuntime(runtimeFactory, {
-    cwd: current.path,
-    agentDir,
-    sessionManager: manager,
-  })
-  host.bindRuntime(runtime)
-  guard.bind(runtime)
+  const { host, runtime } = opened
   const notices: { readonly message: string; readonly level: string | undefined }[] = []
   const handlerErrors: string[] = []
   await runtime.session.bindExtensions({
@@ -193,9 +165,8 @@ try {
       assert.deepEqual(handlerErrors, [])
     }
   )
-  await runtime.dispose()
 } finally {
-  await Effect.runPromise(Scope.close(hostScope, Exit.void))
+  await opened.close()
   rmSync(fixture, { recursive: true, force: true })
 }
 

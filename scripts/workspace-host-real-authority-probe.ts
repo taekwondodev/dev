@@ -27,7 +27,7 @@ import { createSessionGuard } from '../src/session-guard.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
+import { loadInstalledPi, makeClaims, waitFor } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
@@ -365,14 +365,6 @@ const within = <A>(promise: Promise<A>, ms: number, what: string) =>
       throw new Error(`timed out: ${what}`)
     }),
   ])
-const waitFor = async <A>(what: string, probe: () => Promise<A | undefined>): Promise<A> => {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const value = await probe()
-    if (value !== undefined) return value
-    await sleep(250)
-  }
-  throw new Error(`timed out: ${what}`)
-}
 
 const mode = new pi.InteractiveMode(runtime, {
   initialMessage: 'Run the real-authority host seam probe.',
