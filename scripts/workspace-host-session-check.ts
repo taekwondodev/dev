@@ -1,6 +1,6 @@
-// A background process asks the authority for the lead's write grant from inside the work
-// tool, outside the host's own tool decision, so only this path shows whether the host learns
-// of a rebind the authority answers there.
+// Session flows the TUI probes do not reach, against the real authority: a background process
+// asks for the lead's write grant from inside the work tool, outside the host's own tool
+// decision, and Pi forks or imports a conversation through runtime paths other than /resume.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import {
@@ -41,7 +41,7 @@ const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const eventStreamModule = await importFromPi<EventStreamModule>(
   'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
-const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-work-rebind-')))
+const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-host-session-')))
 const lead = join(fixture, 'lead')
 const sessionDir = join(fixture, 'sessions')
 const agentDir = join(fixture, 'agent')
@@ -237,6 +237,58 @@ try {
       assert.equal(result('write-after')?.isError, false, text('write-after'))
       assert.equal(readFileSync(join(runtime.cwd, 'after.txt'), 'utf8'), 'after the rebind\n')
       assert.ok(!existsSync(join(lead, 'after.txt')), 'the held checkout was not written')
+    }
+  )
+  await claim(
+    'a fork after the rebind continues in the managed worktree the conversation moved to, not the checkout its copied header names',
+    async () => {
+      const managedCwd = runtime.cwd
+      const parentId = runtime.session.sessionManager.getSessionId()
+      const leaf = runtime.session.sessionManager.getLeafId()
+      if (leaf === null) throw new Error('The rebound conversation has no leaf to fork')
+      assert.equal((await runtime.fork(leaf, { position: 'at' })).cancelled, false)
+      assert.notEqual(runtime.session.sessionManager.getSessionId(), parentId)
+      assert.equal(resolve(runtime.cwd), resolve(managedCwd))
+      assert.equal(resolve(host.attachment.binding.cwd), resolve(managedCwd))
+    }
+  )
+  await claim(
+    'importing a stored conversation that another dev session keeps live is cancelled before Pi tears the current session down',
+    async () => {
+      const heldManager = pi.SessionManager.create(lead, sessionDir)
+      heldManager.appendMessage({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'held conversation' }],
+        api: offlineModel.api,
+        provider: offlineModel.provider,
+        model: offlineModel.id,
+        stopReason: 'stop',
+        timestamp: Date.now(),
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      })
+      const heldFile = heldManager.getSessionFile()
+      if (heldFile === undefined) throw new Error('Pi did not persist the held conversation')
+      const holder = await openLifecycle({ root: join(fixture, 'authority') })
+      const held = await holder.attach({
+        conversation: { sessionId: heldManager.getSessionId(), sessionFile: heldFile, dataHome },
+        cwd: lead,
+      })
+      try {
+        const current = runtime.session.sessionManager.getSessionId()
+        assert.deepEqual(await runtime.importFromJsonl(heldFile), { cancelled: true })
+        assert.equal(runtime.session.sessionManager.getSessionId(), current)
+        assert.equal(host.isParked(), false, 'a refused import leaves the host usable')
+      } finally {
+        await held.close()
+        await holder.close()
+      }
     }
   )
   await runtime.dispose()

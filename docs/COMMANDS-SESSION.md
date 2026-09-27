@@ -134,7 +134,7 @@ Apre l'albero della conversazione per navigare tra i suoi rami. La navigazione i
 /fork
 ```
 
-Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione. Come `/new`, termina i processi delle shell della sessione che lasci.
+Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione, che continua nel workspace attuale della conversazione di partenza, anche se nel frattempo è stata spostata in un altro worktree. Come `/new`, termina i processi delle shell della sessione che lasci.
 
 ```text
 /compact

@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import type {
   AgentSessionRuntime,
   BashOperations,
@@ -759,6 +759,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       return yield* hostFailure('Workspace-bound runtime requires a persisted Pi session file')
     let manager = input.sessionManager
     const key = sessionKey(file, identity.sessionId)
+    const parent = manager.getHeader()?.parentSession
+    const forkOfActive =
+      parent !== undefined && resolve(parent) === resolve(activeConversation.sessionFile)
     const reopenTarget = pendingReopen
     const reopen = reopenTarget !== undefined && sameConversation(reopenTarget, identity)
     if (reopen) {
@@ -773,9 +776,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
     const staged = stagedAttachments.get(key)
     const canReuse = !reopen && !staged && sameConversation(activeConversation, identity)
+    // A fork continues the history of the conversation it leaves, so it starts in that
+    // conversation's current workspace rather than the cwd recorded in the copied header.
     const resolved = yield* attachForManager(
       manager,
-      input.cwd,
+      forkOfActive ? activeAttachment.binding.cwd : input.cwd,
       staged ?? (canReuse ? activeAttachment : undefined)
     )
     if (staged) stagedAttachments.delete(key)
@@ -811,8 +816,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
   })
 
-  // Wraps Pi's own session switching (`/resume`, `/new`, `/fork`), so the target
-  // conversation is attached to the authority before Pi replaces the runtime.
+  // Wraps Pi's `/resume`, and an import of a conversation already stored in the session
+  // directory, so the target is attached to the authority before Pi replaces the runtime.
   const switchSession = Effect.fnUntraced(function* (
     rawSwitch: AgentSessionRuntime['switchSession'],
     sessionFile: string,
@@ -1106,6 +1111,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawSwitch = nextRuntime.switchSession.bind(nextRuntime)
       nextRuntime.switchSession = (sessionFile, switchOptions) =>
         runPromise(switchSession(rawSwitch, sessionFile, switchOptions))
+      const rawImport = nextRuntime.importFromJsonl.bind(nextRuntime)
+      nextRuntime.importFromJsonl = (inputPath, cwdOverride) => {
+        const source = resolve(inputPath)
+        const stored = resolve(nextRuntime.session.sessionManager.getSessionDir(), basename(source))
+        return stored === source
+          ? runPromise(switchSession(rawSwitch, source, undefined))
+          : rawImport(inputPath, cwdOverride)
+      }
     },
     setWorkControls(controls) {
       workControls = controls
