@@ -1,9 +1,15 @@
-// One definition shared by the PTY stub and the contract check keeps the stub from drifting
-// silently. Each factory's literal satisfies its seam type, so a missing, misspelled or
-// mistyped field fails typecheck; the guard below also fails it when a seam type gains an
-// optional field the stub does not produce.
+// The stub lifecycle bypasses the client that decodes every authority response, so each
+// factory decodes what it makes: every value the stub hands the host meets the same ID, path and
+// bound checks, and decoding strips nothing it sets. Each literal also satisfies its seam type,
+// and the guard below fails typecheck when a seam type gains a field the stub does not produce.
+import assert from 'node:assert/strict'
+import { Schema } from 'effect'
 import {
+  WorkspaceBindingSchema,
+  WorkspaceGrantSchema,
+  WorkspaceHandoffSchema,
   WorkspaceId,
+  WorkspaceViewSchema,
   type WorkspaceBinding,
   type WorkspaceConversation,
   type WorkspaceGrant,
@@ -23,6 +29,14 @@ export interface FixtureDescriptor {
 export const fixtureId = (n: number): WorkspaceId =>
   WorkspaceId.make(`00000000-0000-4000-8000-${String(n).padStart(12, '0')}`)
 
+const conforming =
+  <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
+  <A extends S['Type']>(value: A): A => {
+    assert.deepEqual(Schema.decodeUnknownSync(schema)(value), value)
+    return value
+  }
+const conformingGrant = conforming(WorkspaceGrantSchema)
+
 export const makeFixtureGrant = (input: {
   readonly namespaceId: WorkspaceId
   readonly descriptor: FixtureDescriptor
@@ -31,7 +45,7 @@ export const makeFixtureGrant = (input: {
   readonly sequence: number
   readonly path?: string
 }) =>
-  ({
+  conformingGrant({
     namespaceId: input.namespaceId,
     repositoryId: input.descriptor.repoId,
     workspaceId: input.descriptor.workspaceId,
@@ -45,14 +59,14 @@ export const makeFixtureGrant = (input: {
     access: input.access,
     origin: input.descriptor.origin,
     ...(input.path === undefined ? {} : { path: input.path }),
-  }) satisfies WorkspaceGrant
+  } satisfies WorkspaceGrant)
 
 export const makeFixtureView = (input: {
   readonly descriptor: FixtureDescriptor
   readonly outcome: WorkspaceView['outcome']
   readonly reservationId: WorkspaceId
 }) =>
-  ({
+  conforming(WorkspaceViewSchema)({
     repositoryId: input.descriptor.repoId,
     taskId: input.descriptor.taskId,
     workspaceId: input.descriptor.workspaceId,
@@ -67,19 +81,19 @@ export const makeFixtureView = (input: {
         : 'resume with the exact task and workspace ID',
     uses: [],
     pending: [],
-  }) satisfies WorkspaceView
+  } satisfies WorkspaceView)
 
 export const makeFixtureBinding = (input: {
   readonly conversation: WorkspaceConversation
   readonly descriptor: FixtureDescriptor
 }) =>
-  ({
+  conforming(WorkspaceBindingSchema)({
     conversation: input.conversation,
     taskId: input.descriptor.taskId,
     workspaceId: input.descriptor.workspaceId,
     cwd: input.descriptor.path,
     revision: 0,
-  }) satisfies WorkspaceBinding
+  } satisfies WorkspaceBinding)
 
 export const makeFixtureHandoff = (input: {
   readonly operationId: WorkspaceId
@@ -87,12 +101,12 @@ export const makeFixtureHandoff = (input: {
   readonly target: WorkspaceGrant
   readonly reason: string
 }) =>
-  ({
+  conforming(WorkspaceHandoffSchema)({
     operationId: input.operationId,
     from: { ...input.from },
     target: input.target,
     reason: input.reason,
-  }) satisfies WorkspaceHandoff
+  } satisfies WorkspaceHandoff)
 
 // True only when the factory's literal carries every key of the seam type, optional ones
 // included; the annotation below turns a false into a type error.
