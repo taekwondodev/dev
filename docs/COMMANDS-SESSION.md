@@ -140,7 +140,7 @@ Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git wo
 /import <file.jsonl>
 ```
 
-Sostituisce la sessione corrente con una conversazione salvata. Se il file è già tra le sessioni di `dev`, vale come `/resume`: se la conversazione è aperta in un'altra sessione, l'import viene rifiutato. Se è una copia la cui cartella di lavoro non sta in un checkout Git, viene rifiutato prima di chiudere la sessione corrente e il file resta intatto.
+Sostituisce la sessione corrente con una conversazione salvata. Se il file è già tra le sessioni di `dev`, vale come `/resume`: se la conversazione è aperta in un'altra sessione, l'import viene rifiutato. Se è una copia la cui cartella di lavoro non sta in un checkout Git, viene rifiutato prima di chiudere la sessione corrente e il file resta intatto. Se invece la cartella è in un checkout che l'autorità rifiuta, per esempio perché è stato sostituito, la sessione corrente è già chiusa quando arriva il rifiuto: è un limite noto.
 
 ```text
 /compact
