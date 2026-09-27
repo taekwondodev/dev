@@ -17,10 +17,10 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
-import type {
-  WorkspaceAttachment,
-  WorkspaceAuthorization,
+import {
   WorkspaceError,
+  type WorkspaceAttachment,
+  type WorkspaceAuthorization,
 } from '../src/workspace-domain.ts'
 import {
   loadInstalledPi,
@@ -78,17 +78,39 @@ const scripted = (steps: readonly ScriptedContent[]) => {
     next: (): ScriptedContent => steps[calls++] ?? [{ type: 'text', text: 'done' }],
   }
 }
+type OfflineModel = Awaited<ReturnType<typeof makeOfflineModel>>
+const offlineScript = async (id: string, steps: readonly ScriptedContent[]) => {
+  const script = scripted(steps)
+  const offline = await makeOfflineModel({
+    pi,
+    importFromPi,
+    fixture,
+    id,
+    stream: replay(script.next),
+  })
+  return { script, offline }
+}
 const workProcess = toolCall('work-process', 'work', {
   action: 'process',
   taskId: 'tests',
   command: 'true',
 })
-const storedConversation = (offline: Awaited<ReturnType<typeof makeOfflineModel>>, cwd: string) => {
-  const manager = pi.SessionManager.create(cwd, sessionDir)
+const storedConversation = (offline: OfflineModel, cwd: string, directory = sessionDir) => {
+  const manager = pi.SessionManager.create(cwd, directory)
   manager.appendMessage(offline.assistantMessage([{ type: 'text', text: 'stored' }], 'stop'))
   const file = manager.getSessionFile()
   if (file === undefined) throw new Error('Pi did not persist the stored conversation')
   return { manager, file }
+}
+// Pi writes a fork's parent path into its header, so a fork copied from another machine names a
+// parent that does not exist here.
+const orphanFork = (file: string) => {
+  const [header = '', ...rest] = readFileSync(file, 'utf8').split('\n')
+  const parentSession = join(fixture, 'elsewhere', 'sessions', 'parent.jsonl')
+  writeFileSync(
+    file,
+    [JSON.stringify({ ...JSON.parse(header), parentSession }), ...rest].join('\n')
+  )
 }
 const toolResults = (runtime: Pi.AgentSessionRuntime) => (toolCallId: string) => {
   const found = runtime.session.sessionManager
@@ -119,41 +141,50 @@ const conversationAt = (manager: Pi.SessionManager) => {
   if (sessionFile === undefined) throw new Error('Pi did not name the session file')
   return { sessionId: manager.getSessionId(), sessionFile, dataHome }
 }
+const openLeadHost = (input: {
+  readonly attachment: WorkspaceAttachment
+  readonly manager: Pi.SessionManager
+  readonly offline: OfflineModel
+}) =>
+  openHostRuntime({
+    pi,
+    packageRoot: packageInfo.root,
+    lifecycle: lifecycle.effect,
+    dataHome,
+    sessionDir,
+    agentDir,
+    cwd: lead,
+    repositoryRoot,
+    ...input,
+  })
+const overriding = (
+  attachment: WorkspaceAttachment,
+  overrides: Partial<WorkspaceAttachment>
+): WorkspaceAttachment =>
+  new Proxy(attachment, {
+    get: (target, key) =>
+      Object.hasOwn(overrides, key)
+        ? overrides[key as keyof WorkspaceAttachment]
+        : Reflect.get(target, key, target),
+  })
+const pendingAtLead = async () =>
+  (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending)
 
 try {
-  const lead1 = scripted([
+  const { script: lead1, offline } = await offlineScript('host-session', [
     [workProcess],
     [
       toolCall('read-after', 'read', { path: 'AGENTS.md' }),
       toolCall('write-after', 'write', { path: 'after.txt', content: 'after the rebind\n' }),
     ],
   ])
-  const offline = await makeOfflineModel({
-    pi,
-    importFromPi,
-    fixture,
-    id: 'host-session',
-    stream: replay(lead1.next),
-  })
   const manager = pi.SessionManager.create(lead, sessionDir)
   const attachment = await lifecycle.attach({ conversation: conversationAt(manager), cwd: lead })
-  const opened = await openHostRuntime({
-    pi,
-    packageRoot: packageInfo.root,
-    lifecycle: lifecycle.effect,
-    attachment: attachment.effect,
-    dataHome,
-    sessionDir,
-    agentDir,
-    manager,
-    cwd: lead,
-    repositoryRoot,
-    offline,
-  })
+  const opened = await openLeadHost({ attachment: attachment.effect, manager, offline })
   const { host, runtime } = opened
   const result = toolResults(runtime)
   await runtime.session.prompt('Run the tests in the background.')
-  await waitFor('the scripted turns', async () => (lead1.calls() >= 3 ? true : undefined))
+  await waitFor('the scripted turns', () => (lead1.calls() >= 3 ? true : undefined))
   await runtime.session.waitForIdle()
 
   await claim(
@@ -167,11 +198,7 @@ try {
       assert.notEqual(resolve(runtime.cwd), resolve(lead), 'the lead left the held checkout')
       assert.equal(git(['rev-parse', 'HEAD'], runtime.cwd), leadCommit)
       assert.equal(host.isParked(), false, 'the host completed the switch')
-      assert.deepEqual(
-        (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
-        [],
-        'no switch is left pending'
-      )
+      assert.deepEqual(await pendingAtLead(), [], 'no switch is left pending')
     }
   )
   await claim(
@@ -226,11 +253,8 @@ try {
       const exported = join(fixture, 'exported')
       mkdirSync(outside)
       mkdirSync(exported)
-      const copied = pi.SessionManager.create(outside, exported)
-      copied.appendMessage(offline.assistantMessage([{ type: 'text', text: 'exported' }], 'stop'))
-      const copiedFile = copied.getSessionFile()
-      if (copiedFile === undefined) throw new Error('Pi did not persist the exported conversation')
-      const [header = '', ...rest] = readFileSync(copiedFile, 'utf8').split('\n')
+      const copied = storedConversation(offline, outside, exported)
+      const [header = '', ...rest] = readFileSync(copied.file, 'utf8').split('\n')
       const { cwd: _cwd, ...headerWithoutCwd } = JSON.parse(header) as { readonly cwd: string }
       const blankFirst = join(exported, 'blank-first-line.jsonl')
       writeFileSync(blankFirst, ['', header, ...rest].join('\n'))
@@ -239,7 +263,7 @@ try {
       const current = runtime.session.sessionManager.getSessionId()
       const launchDirectory = process.cwd()
       for (const [file, directory] of [
-        [copiedFile, launchDirectory],
+        [copied.file, launchDirectory],
         [blankFirst, launchDirectory],
         [noCwd, outside],
       ] as const) {
@@ -256,27 +280,84 @@ try {
       assert.equal(host.isParked(), false)
     }
   )
+  await claim(
+    'importing a path in the session directory that does not exist, or a dangling link there, is left to Pi, which reports it and keeps the current session; resuming the dangling link is cancelled',
+    async () => {
+      const current = runtime.session.sessionManager.getSessionId()
+      const missing = join(sessionDir, 'typo-does-not-exist.jsonl')
+      const dangling = join(sessionDir, 'dangling.jsonl')
+      symlinkSync(join(fixture, 'nowhere.jsonl'), dangling)
+      for (const named of [missing, dangling])
+        await assert.rejects(
+          runtime.importFromJsonl(named),
+          { name: 'SessionImportFileNotFoundError' },
+          named
+        )
+      assert.deepEqual(await runtime.switchSession(dangling), { cancelled: true })
+      assert.equal(runtime.session.sessionManager.getSessionId(), current)
+      assert.ok(!existsSync(missing), 'no conversation was created at the missing path')
+      assert.equal(host.isParked(), false)
+    }
+  )
+  await claim(
+    'a conversation whose header names a parent that does not exist here, such as a fork copied from another machine, can be resumed and imported as a copy',
+    async () => {
+      const stored = storedConversation(offline, lead)
+      orphanFork(stored.file)
+      assert.deepEqual(await runtime.switchSession(stored.file), { cancelled: false })
+      assert.equal(host.attachment.binding.conversation.sessionId, stored.manager.getSessionId())
+      const exported = join(fixture, 'exported-fork')
+      mkdirSync(exported)
+      const copied = storedConversation(offline, lead, exported)
+      orphanFork(copied.file)
+      assert.deepEqual(await runtime.importFromJsonl(copied.file), { cancelled: false })
+      assert.equal(host.attachment.binding.conversation.sessionId, copied.manager.getSessionId())
+      assert.equal(runtime.session.sessionManager.getSessionId(), copied.manager.getSessionId())
+      await waitFor(
+        'the host to leave the parked state',
+        () => (host.isParked() ? undefined : true),
+        { attempts: 40, intervalMs: 50 }
+      )
+    }
+  )
   await opened.close()
+  await claim(
+    'dev starts on a conversation whose header names a parent that does not exist here',
+    async () => {
+      const stored = storedConversation(offline, lead)
+      orphanFork(stored.file)
+      const reopened = pi.SessionManager.open(stored.file, sessionDir)
+      const attached = await lifecycle.attach({ conversation: conversationAt(reopened), cwd: lead })
+      const started = await openLeadHost({
+        attachment: attached.effect,
+        manager: reopened,
+        offline,
+      })
+      try {
+        assert.equal(started.runtime.session.sessionManager.getSessionId(), reopened.getSessionId())
+        assert.equal(started.host.isParked(), false)
+      } finally {
+        await started.close()
+      }
+    }
+  )
 
   // Pi replaces the session while the work tool is still being admitted: its teardown waits
   // for the running tool, so the rebind reaches the host during the replacement.
-  for (const [replacement, order] of [
-    ['new', 'before'],
-    ['resume', 'before'],
-    ['resume', 'after'],
-    ['import', 'after'],
+  for (const [replacement, order, withdrawalDelayMs] of [
+    ['new', 'before', 0],
+    ['resume', 'before', 0],
+    ['resume', 'after', 0],
+    ['import', 'after', 0],
+    ['new', 'before', 1500],
   ] as const)
     await claim(
-      `a /${replacement} that starts ${order} a contended work call's admission request withdraws the rebind: the next session stays usable and the old conversation can be resumed`,
+      `a /${replacement} that starts ${order} a contended work call's admission request withdraws the rebind${withdrawalDelayMs > 0 ? ' even when the withdrawal outlasts the replacement' : ''}: the next session stays usable and the old conversation can be resumed`,
       async () => {
-        const steps = scripted([[workProcess]])
-        const racing = await makeOfflineModel({
-          pi,
-          importFromPi,
-          fixture,
-          id: `host-session-${replacement}-${order}`,
-          stream: replay(steps.next),
-        })
+        const { script: steps, offline: racing } = await offlineScript(
+          `host-session-${replacement}-${order}-${withdrawalDelayMs}`,
+          [[workProcess]]
+        )
         const other = storedConversation(racing, lead)
         const raceManager = pi.SessionManager.create(lead, sessionDir)
         const raceConversation = conversationAt(raceManager)
@@ -306,43 +387,34 @@ try {
           started === undefined && operation.kind === 'write'
             ? racingAdmission[order](raced.effect.authorize(operation))
             : raced.effect.authorize(operation)
-        const admitting: WorkspaceAttachment = new Proxy(raced.effect, {
-          get: (target, key) =>
-            key === 'authorize' ? authorize : Reflect.get(target, key, target),
-        })
-        const race = await openHostRuntime({
-          pi,
-          packageRoot: packageInfo.root,
-          lifecycle: lifecycle.effect,
-          attachment: admitting,
-          dataHome,
-          sessionDir,
-          agentDir,
+        // The rebind is only ever withdrawn here, so a slow handoff is a slow withdrawal.
+        const slowWithdrawal: WorkspaceAttachment['handoff'] = (transition, replace) =>
+          Effect.sleep(withdrawalDelayMs).pipe(
+            Effect.andThen(raced.effect.handoff(transition, replace))
+          )
+        const race = await openLeadHost({
+          attachment: overriding(
+            raced.effect,
+            withdrawalDelayMs > 0 ? { authorize, handoff: slowWithdrawal } : { authorize }
+          ),
           manager: raceManager,
-          cwd: lead,
-          repositoryRoot,
           offline: racing,
         })
         runtimeRef = race.runtime
         try {
           await race.runtime.session.prompt('Run the tests in the background.')
-          await waitFor('the replacement', async () => started)
+          await waitFor('the replacement', () => started)
           assert.deepEqual(await started, { cancelled: false })
           await waitFor(
             'the next session to leave the parked state',
-            async () => (race.host.isParked() ? undefined : true),
-            40,
-            50
+            () => (race.host.isParked() ? undefined : true),
+            { attempts: 40, intervalMs: 50 }
           )
           const before = steps.calls()
           await race.runtime.session.prompt('Are you there?')
           await race.runtime.session.waitForIdle()
           assert.ok(steps.calls() > before, 'a prompt in the next session reaches the model')
-          assert.deepEqual(
-            (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
-            [],
-            'the withdrawn switch is not left pending'
-          )
+          assert.deepEqual(await pendingAtLead(), [], 'the withdrawn switch is not left pending')
           const resumed = await lifecycle.attach({ conversation: raceConversation, cwd: lead })
           assert.equal(resolve(resumed.binding.cwd), resolve(lead))
           await resumed.close()
@@ -351,24 +423,28 @@ try {
         }
       }
     )
-  await claim(
-    'a quit that lands after the authority started a switch, before the host acted, records the switch as cancelled and leaves the conversation resumable',
-    async () => {
-      const steps = scripted([[workProcess]])
-      const quitting = await makeOfflineModel({
-        pi,
-        importFromPi,
-        fixture,
-        id: 'host-session-quit',
-        stream: replay(steps.next),
-      })
-      const quitManager = pi.SessionManager.create(lead, sessionDir)
-      const quitConversation = conversationAt(quitManager)
-      const quitter = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
-      let disposing: Promise<void> | undefined
-      let runtimeRef: Pi.AgentSessionRuntime | undefined
-      let closedOnQuit = false
-      const quitDuringCallback: Partial<WorkspaceAttachment> = {
+
+  // Pi exits right after the quit, so the quit itself must close the attachment.
+  const quitDuringHandoff = async (
+    id: string,
+    handoff: (
+      quitter: WorkspaceAttachment,
+      quit: Effect.Effect<void>
+    ) => WorkspaceAttachment['handoff']
+  ) => {
+    const { offline: quitting } = await offlineScript(id, [[workProcess]])
+    const quitManager = pi.SessionManager.create(lead, sessionDir)
+    const quitConversation = conversationAt(quitManager)
+    const quitter = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
+    let disposing: Promise<void> | undefined
+    let runtimeRef: Pi.AgentSessionRuntime | undefined
+    let closedOnQuit = false
+    const quitNow = Effect.promise(async () => {
+      disposing = runtimeRef?.dispose()
+      await sleep(100)
+    })
+    const quit = await openLeadHost({
+      attachment: overriding(quitter.effect, {
         close: quitter.effect.close.pipe(
           Effect.tap(() =>
             Effect.sync(() => {
@@ -376,105 +452,85 @@ try {
             })
           )
         ),
-        handoff: (transition, replace) =>
-          quitter.effect.handoff(transition, grant =>
-            Effect.promise(async () => {
-              disposing = runtimeRef?.dispose()
-              await sleep(100)
-            }).pipe(Effect.andThen(replace(grant)))
-          ),
-      }
-      const handingOff: WorkspaceAttachment = new Proxy(quitter.effect, {
-        get: (target, key) =>
-          key === 'close' || key === 'handoff'
-            ? quitDuringCallback[key]
-            : Reflect.get(target, key, target),
-      })
-      const quit = await openHostRuntime({
-        pi,
-        packageRoot: packageInfo.root,
-        lifecycle: lifecycle.effect,
-        attachment: handingOff,
-        dataHome,
-        sessionDir,
-        agentDir,
-        manager: quitManager,
-        cwd: lead,
-        repositoryRoot,
-        offline: quitting,
-      })
-      runtimeRef = quit.runtime
-      await quit.runtime.session.prompt('Run the tests in the background.')
-      await waitFor('the quit', async () => (disposing === undefined ? undefined : true))
-      await disposing
-      assert.ok(closedOnQuit, 'the quit alone closed the attachment, as Pi exits right after it')
-      await quit.close()
-      assert.deepEqual(
-        (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
-        [],
-        'the switch is settled, not left unknown'
+        handoff: handoff(quitter.effect, quitNow),
+      }),
+      manager: quitManager,
+      offline: quitting,
+    })
+    runtimeRef = quit.runtime
+    await quit.runtime.session.prompt('Run the tests in the background.')
+    await waitFor('the quit', () => (disposing === undefined ? undefined : true))
+    await disposing
+    assert.ok(closedOnQuit, 'the quit alone closed the attachment')
+    await quit.close()
+    assert.deepEqual(await pendingAtLead(), [], 'the switch is settled, not left unknown')
+    const resumed = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
+    assert.equal(resolve(resumed.binding.cwd), resolve(lead), 'the last binding was kept')
+    await resumed.close()
+  }
+  await claim(
+    'a quit that lands after the authority started a switch, before the host acted, records the switch as cancelled and leaves the conversation resumable',
+    () =>
+      quitDuringHandoff(
+        'host-session-quit',
+        (quitter, quit) => (transition, replace) =>
+          quitter.handoff(transition, grant => quit.pipe(Effect.andThen(replace(grant))))
       )
-      const resumed = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
-      assert.equal(resolve(resumed.binding.cwd), resolve(lead), 'the last binding was kept')
-      await resumed.close()
-    }
+  )
+  await claim(
+    'a quit during the authority handoff call that the authority refuses before calling the host back still closes the attachment and leaves the conversation resumable',
+    () =>
+      quitDuringHandoff(
+        'host-session-quit-refused',
+        (quitter, quit) => transition =>
+          quit.pipe(
+            // The authority withdraws a switch it refuses, then reports it blocked.
+            Effect.andThen(quitter.handoff(transition, () => Effect.succeed('cancelled' as const))),
+            Effect.andThen(
+              Effect.fail(
+                new WorkspaceError({
+                  outcome: 'blocked',
+                  message: 'Workspace transition refused before the host acted',
+                })
+              )
+            )
+          )
+      )
   )
   await claim(
     'a /reload that lands after the authority started a switch, before the host acted, does not leave the switch unknown: it completes in the reloaded session',
     async () => {
-      const steps = scripted([[workProcess]])
-      const reloading = await makeOfflineModel({
-        pi,
-        importFromPi,
-        fixture,
-        id: 'host-session-reload',
-        stream: replay(steps.next),
-      })
+      const { offline: reloading } = await offlineScript('host-session-reload', [[workProcess]])
       const reloadManager = pi.SessionManager.create(lead, sessionDir)
-      const reloadConversation = conversationAt(reloadManager)
-      const reloader = await lifecycle.attach({ conversation: reloadConversation, cwd: lead })
+      const reloader = await lifecycle.attach({
+        conversation: conversationAt(reloadManager),
+        cwd: lead,
+      })
       let runtimeRef: Pi.AgentSessionRuntime | undefined
       let reloaded = false
-      const reloadDuringCallback: WorkspaceAttachment['handoff'] = (transition, replace) =>
-        reloader.effect.handoff(transition, grant =>
-          Effect.promise(async () => {
-            await runtimeRef?.session.reload()
-            reloaded = true
-          }).pipe(Effect.andThen(replace(grant)))
-        )
-      const handingOff: WorkspaceAttachment = new Proxy(reloader.effect, {
-        get: (target, key) =>
-          key === 'handoff' ? reloadDuringCallback : Reflect.get(target, key, target),
-      })
-      const reload = await openHostRuntime({
-        pi,
-        packageRoot: packageInfo.root,
-        lifecycle: lifecycle.effect,
-        attachment: handingOff,
-        dataHome,
-        sessionDir,
-        agentDir,
+      const reload = await openLeadHost({
+        attachment: overriding(reloader.effect, {
+          handoff: (transition, replace) =>
+            reloader.effect.handoff(transition, grant =>
+              Effect.promise(async () => {
+                await runtimeRef?.session.reload()
+                reloaded = true
+              }).pipe(Effect.andThen(replace(grant)))
+            ),
+        }),
         manager: reloadManager,
-        cwd: lead,
-        repositoryRoot,
         offline: reloading,
       })
       runtimeRef = reload.runtime
       try {
         await reload.runtime.session.prompt('Run the tests in the background.')
-        await waitFor('the reload', async () => (reloaded ? true : undefined))
-        await waitFor(
-          'the switch to finish',
-          async () => (reload.host.isParked() ? undefined : true),
-          80,
-          100
-        )
+        await waitFor('the reload', () => (reloaded ? true : undefined))
+        await waitFor('the switch to finish', () => (reload.host.isParked() ? undefined : true), {
+          attempts: 80,
+          intervalMs: 100,
+        })
         assert.notEqual(resolve(reload.runtime.cwd), resolve(lead), 'the switch completed')
-        assert.deepEqual(
-          (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
-          [],
-          'the switch is not left unknown'
-        )
+        assert.deepEqual(await pendingAtLead(), [], 'the switch is not left unknown')
       } finally {
         await reload.close()
       }

@@ -29,7 +29,7 @@ import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import {
   deferred,
   loadInstalledPi,
-  loadPiPaths,
+  loadImportPathResolver,
   makeClaims,
   makeOfflineModel,
   replay,
@@ -43,7 +43,7 @@ import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
-const piPaths = await loadPiPaths(packageInfo.root)
+const resolveImportPath = await loadImportPathResolver(packageInfo.root)
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-real-authority-')))
 const lead = join(fixture, 'projects', 'lead')
@@ -171,7 +171,7 @@ const workspaceHost = await Effect.runPromise(
       dataHome,
       openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
       repositoryRoot: cwd => Effect.promise(() => gitRoot(cwd)),
-      resolveImportPath: piPaths,
+      resolveImportPath,
     })
   )
 )
@@ -626,8 +626,9 @@ await claim(
   async () => {
     assert.ok(alive(survivorPid), 'the live shell family is still running when the session ends')
     await runtime.dispose()
-    for (let attempt = 0; attempt < 20 && alive(survivorPid); attempt += 1) await sleep(250)
-    assert.ok(!alive(survivorPid), 'ending the session stops the live shell family')
+    await waitFor('the live shell family to stop', () => (alive(survivorPid) ? undefined : true), {
+      attempts: 20,
+    })
     survivorStopped = true
     assert.ok(
       Date.now() - survivorLaunchedAt < (survivorSeconds - 10) * 1000,

@@ -19,7 +19,7 @@ import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
-import { makeClaims, waitFor } from './workspace-check-support.ts'
+import { deferred, makeClaims, waitFor, within } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../src/workspace-native-write.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../src/workspace-domain.ts'
@@ -155,10 +155,7 @@ try {
     if (resumed.kind !== 'ready') throw new Error('Unexpected resume handoff')
     const { grant } = resumed
 
-    let deliver!: (attempt: AttemptView) => void
-    const outcome = new Promise<AttemptView>(accept => {
-      deliver = accept
-    })
+    const outcome = deferred<AttemptView>()
     const runtime = ManagedRuntime.make(
       makeWorkOwnerLayer({
         dataHome,
@@ -170,13 +167,9 @@ try {
           attachment: attachment.effect,
           requestRebind: unexpectedRebind,
         },
-        onOutcome: attempt => deliver(attempt),
+        onOutcome: attempt => outcome.resolve(attempt),
       })
     )
-    let deadline: NodeJS.Timeout | undefined
-    const timeout = new Promise<never>((_accept, reject) => {
-      deadline = setTimeout(() => reject(new Error('No process outcome within 20 seconds')), 20000)
-    })
     try {
       const descendantMarker = join(root, 'descendant-finished')
       const { started, terminal } = await claim(
@@ -196,7 +189,7 @@ try {
           assert.equal(launched.workspaceId, grant.workspaceId)
           assert.ok(launched.workspaceUseId)
           assert.notEqual(launched.workspaceUseId, grant.useId)
-          const finished = await Promise.race([outcome, timeout])
+          const finished = await within(outcome.promise, 20000, 'a process outcome')
           assert.equal(finished.status, 'completed')
           const log = await runtime.runPromise(
             ownerEffect(owner => owner.readLog({ id: finished.id, stream: 'stdout' }))
@@ -237,7 +230,6 @@ try {
         }
       )
     } finally {
-      clearTimeout(deadline)
       await runtime.dispose()
     }
     await claim(
@@ -288,18 +280,20 @@ try {
             ? uses
             : undefined
         },
-        60
+        { attempts: 60, observed: shellUses }
       )
+    const taskUse = async (taskKey: string) =>
+      (await authority.inspect({ taskId: grant.taskId }))
+        .flatMap(view => view.uses)
+        .find(item => item.execution?.taskKey === taskKey)
     const settledUse = (taskKey: string) =>
       waitFor(
         `the ${taskKey} use to settle`,
         async () => {
-          const use = (await authority.inspect({ taskId: grant.taskId }))
-            .flatMap(view => view.uses)
-            .find(item => item.execution?.taskKey === taskKey)
+          const use = await taskUse(taskKey)
           return use?.stage === 'quiescent' || use?.stage === 'unknown' ? use : undefined
         },
-        60
+        { attempts: 60, observed: () => taskUse(taskKey) }
       )
     const silent = { onData: () => undefined }
     await claim(
@@ -493,8 +487,7 @@ try {
             const current = await checkout()
             return current?.uses.some(use => use.stage === 'observed') ? current : undefined
           },
-          40,
-          100
+          { attempts: 40, intervalMs: 100, observed: checkout }
         )
         assert.equal(view.outcome, 'active', view.reason)
         await running

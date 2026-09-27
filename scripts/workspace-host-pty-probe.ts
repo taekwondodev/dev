@@ -26,7 +26,6 @@ import type {
   UserBashEventResult,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import type { AgentSessionRuntime } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
-import type { AssistantMessage } from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
 import { errorText } from '../src/error-text.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../src/work-child-workspace.ts'
 import { makeRuntimeFactory } from '../src/launcher.ts'
@@ -65,9 +64,11 @@ import {
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
 import {
   deferred,
+  emitReply,
   loadInstalledPi,
-  loadPiPaths,
+  loadImportPathResolver,
   makeOfflineModel,
+  type ScriptedReply,
   type ScriptedStreamParts,
   type StreamSimple,
   toolCall,
@@ -116,7 +117,7 @@ globalThis.fetch = async () => {
 }
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
-const piPaths = await loadPiPaths(packageInfo.root)
+const resolveImportPath = await loadImportPathResolver(packageInfo.root)
 
 const TASK_LEAD = id(1)
 const TASK_A = id(2)
@@ -605,11 +606,8 @@ const workProcess = (callId: string, taskId: string) =>
     cwd: targetB,
   })
 
-interface ScriptStep {
+interface ScriptStep extends ScriptedReply {
   readonly id: string
-  readonly content: AssistantMessage['content']
-  readonly stopReason: 'toolUse' | 'stop' | 'aborted'
-  readonly delayMs: number
 }
 const script: readonly ScriptStep[] = [
   {
@@ -738,7 +736,7 @@ let lastStep = ''
 let runtime: AgentSessionRuntime | undefined
 
 const scriptedStream =
-  ({ assistantMessage, eventStreams }: ScriptedStreamParts): StreamSimple =>
+  (parts: ScriptedStreamParts): StreamSimple =>
   (_model, context, options) => {
     const parked = workspaceHost.isParked()
     const step = parked ? staleContinuation : (script[scriptIndex++] ?? extraStep)
@@ -749,27 +747,8 @@ const scriptedStream =
       parked,
       context: JSON.stringify(context),
     })
-    const stream = eventStreams.createAssistantMessageEventStream()
-    const message = assistantMessage(step.content, step.stopReason)
     if (step.id === 'escape-stream') process.stdout.write('\nDEV36_CANCEL_PROVIDER_STARTED\n')
-    const timer = setTimeout(() => {
-      stream.push(
-        step.stopReason === 'aborted'
-          ? { type: 'error', reason: 'aborted', error: message }
-          : { type: 'done', reason: step.stopReason, message }
-      )
-      stream.end()
-    }, step.delayMs)
-    options?.signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
-        stream.end()
-      },
-      { once: true }
-    )
-    return stream
+    return emitReply(parts, step, options?.signal)
   }
 
 const {
@@ -971,7 +950,7 @@ const workspaceHost = await Effect.runPromise(
       dataHome,
       openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
       repositoryRoot: cwd => Effect.succeed(resolve(cwd)),
-      resolveImportPath: piPaths,
+      resolveImportPath,
     })
   )
 )

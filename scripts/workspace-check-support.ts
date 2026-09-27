@@ -50,7 +50,7 @@ export const loadInstalledPi = async () => {
   return { pi: api, packageInfo, importFromPi }
 }
 
-export const loadPiPaths = (packageRoot: string): Promise<(input: string) => string> =>
+export const loadImportPathResolver = (packageRoot: string): Promise<(input: string) => string> =>
   Effect.runPromise(loadPiPathResolver(packageRoot))
 
 export const deferred = <A>() => {
@@ -64,15 +64,20 @@ export const deferred = <A>() => {
 export const waitFor = async <A>(
   what: string,
   probe: () => A | undefined | Promise<A | undefined>,
-  attempts = 80,
-  intervalMs = 250
+  options: {
+    readonly attempts?: number
+    readonly intervalMs?: number
+    readonly observed?: () => unknown
+  } = {}
 ): Promise<A> => {
+  const { attempts = 80, intervalMs = 250, observed } = options
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const value = await probe()
     if (value !== undefined) return value
     await sleep(intervalMs)
   }
-  throw new Error(`timed out: ${what}`)
+  const last = observed === undefined ? '' : `; last observed: ${JSON.stringify(await observed())}`
+  throw new Error(`timed out: ${what}${last}`)
 }
 
 export const within = <A>(promise: Promise<A>, ms: number, what: string): Promise<A> =>
@@ -100,33 +105,47 @@ export interface ScriptedStreamParts {
   readonly eventStreams: typeof PiEventStream
 }
 
-// Replays one scripted reply per provider request and, like a real provider, ends a reply
-// that Pi aborts before it is delivered.
+export interface ScriptedReply {
+  readonly content: ScriptedContent
+  readonly stopReason: 'toolUse' | 'stop' | 'aborted'
+  readonly delayMs: number
+}
+
+// Like a real provider, a reply that Pi aborts before delivery ends as aborted.
+export const emitReply = (
+  { assistantMessage, eventStreams }: ScriptedStreamParts,
+  reply: ScriptedReply,
+  signal: AbortSignal | undefined
+) => {
+  const stream = eventStreams.createAssistantMessageEventStream()
+  const message = assistantMessage(reply.content, reply.stopReason)
+  const timer = setTimeout(() => {
+    stream.push(
+      reply.stopReason === 'aborted'
+        ? { type: 'error', reason: 'aborted', error: message }
+        : { type: 'done', reason: reply.stopReason, message }
+    )
+    stream.end()
+  }, reply.delayMs)
+  signal?.addEventListener(
+    'abort',
+    () => {
+      clearTimeout(timer)
+      stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
+      stream.end()
+    },
+    { once: true }
+  )
+  return stream
+}
+
 export const replay =
   (next: () => ScriptedContent, delayMs = 10) =>
-  ({ assistantMessage, eventStreams }: ScriptedStreamParts): StreamSimple =>
+  (parts: ScriptedStreamParts): StreamSimple =>
   (_model, _context, options) => {
     const content = next()
     const stopReason = content.some(part => part.type === 'toolCall') ? 'toolUse' : 'stop'
-    const stream = eventStreams.createAssistantMessageEventStream()
-    const timer = setTimeout(() => {
-      stream.push({
-        type: 'done',
-        reason: stopReason,
-        message: assistantMessage(content, stopReason),
-      })
-      stream.end()
-    }, delayMs)
-    options?.signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
-        stream.end()
-      },
-      { once: true }
-    )
-    return stream
+    return emitReply(parts, { content, stopReason, delayMs }, options?.signal)
   }
 
 export const makeOfflineModel = async (input: {
@@ -203,7 +222,7 @@ export const openHostRuntime = async (input: {
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
   readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
 }) => {
-  const resolveImportPath = await loadPiPaths(input.packageRoot)
+  const resolveImportPath = await loadImportPathResolver(input.packageRoot)
   const scope = Scope.makeUnsafe()
   try {
     const host = await Effect.runPromise(
