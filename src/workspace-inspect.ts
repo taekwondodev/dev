@@ -156,7 +156,7 @@ export const inspectWorkspaces = (
           identityReason = errorText(cause)
         }
         const unresolved = pending.some(operation => operation.stage !== 'intent')
-        const unknown = uses.some(use => use.stage === 'unknown' || use.stage === 'observed')
+        const unknown = uses.some(use => use.stage === 'unknown')
         const live = uses.some(use => isActiveUse(use))
         const { outcome, reason, nextAction } = assessWorkspace({
           identityReason,

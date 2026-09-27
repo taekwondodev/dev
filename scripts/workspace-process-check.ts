@@ -460,6 +460,36 @@ try {
       }
     )
 
+    await claim(
+      "inspection reports a checkout as active while a live session's shell command runs there, not as unresolved",
+      async () => {
+        const observingShell = await openShell(async shellCwd => {
+          const writer = await attachment.authorize({ kind: 'write', cwd: shellCwd })
+          if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
+          return { attachment: attachment.effect, grant: writer.grant }
+        })
+        const running = observingShell.operations.exec('sleep 2', grant.cwd, silent)
+        const checkout = async () =>
+          (await authority.inspect({ taskId: grant.taskId })).find(
+            view => view.workspaceId === grant.workspaceId
+          )
+        let view = await checkout()
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          if (view?.uses.some(use => use.stage === 'observed')) break
+          await new Promise(resolveWait => setTimeout(resolveWait, 100))
+          view = await checkout()
+        }
+        assert.ok(
+          view?.uses.some(use => use.stage === 'observed'),
+          'the command was observed'
+        )
+        assert.equal(view?.outcome, 'active', view?.reason)
+        await running
+        await settled(11)
+        await observingShell.stop()
+      }
+    )
+
     const nativeWrites = makeNativeWrites({
       runPromise: Effect.runPromise,
       onError: message => {
