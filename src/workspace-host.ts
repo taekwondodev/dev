@@ -106,8 +106,12 @@ interface HostToolCallEvent {
 }
 
 type Admission =
-  | { readonly grant: WorkspaceGrant; readonly warning?: string; readonly blocked?: undefined }
-  | { readonly grant?: undefined; readonly blocked: string }
+  | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant; readonly warning?: string }
+  | { readonly kind: 'refused'; readonly reason: string }
+
+type WriterAdmission =
+  | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant }
+  | { readonly kind: 'refused'; readonly refusal: ToolCallEventResult }
 
 type ResumeCommand = Extract<WorkspaceCommand, { readonly kind: 'resume' }>
 
@@ -569,24 +573,33 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const authorization = Effect.fnUntraced(
     function* (
       context: ExtensionContext,
-      access: 'read' | 'write',
+      access: WorkspaceGrant['access'],
       cwd: string,
       origin: 'tool-call' | 'user-bash' = 'tool-call'
     ): Effect.fn.Return<Admission, WorkspaceError> {
       if (parked)
-        return { blocked: 'Workspace host is parked during a transition; no operation started.' }
+        return {
+          kind: 'refused',
+          reason: 'Workspace host is parked during a transition; no operation started.',
+        }
       const result = yield* activeAttachment.authorize({ kind: access, cwd })
       if (result.kind === 'rebind') {
         requestHandoff(result.handoff, origin, context, origin === 'user-bash')
         return {
-          blocked: `Workspace admission requires a host rebind: ${result.handoff.reason}. The operation was not executed.`,
+          kind: 'refused',
+          reason: `Workspace admission requires a host rebind: ${result.handoff.reason}. The operation was not executed.`,
         }
       }
-      return { grant: result.grant, ...(result.warning ? { warning: result.warning } : {}) }
+      return {
+        kind: 'admitted',
+        grant: result.grant,
+        ...(result.warning ? { warning: result.warning } : {}),
+      }
     },
     Effect.catchCause(cause =>
       Effect.succeed<Admission>({
-        blocked: `Workspace admission failed closed: ${errorText(Cause.squash(cause))}`,
+        kind: 'refused',
+        reason: `Workspace admission failed closed: ${errorText(Cause.squash(cause))}`,
       })
     )
   )
@@ -607,27 +620,26 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   }
 
   const admitWriter = (context: ExtensionContext) =>
-    Effect.map(
-      authorization(context, 'write', context.cwd),
-      (
-        admitted
-      ): { readonly grant: WorkspaceGrant } | { readonly refusal: ToolCallEventResult } => {
-        if (!admitted.grant)
-          return { refusal: { block: true, terminate: true, reason: admitted.blocked } }
-        const mismatch = validateNativeGrant(admitted.grant, context, 'write')
-        if (mismatch) {
-          parked = true
-          return { refusal: { block: true, terminate: true, reason: mismatch } }
+    Effect.map(authorization(context, 'write', context.cwd), (admitted): WriterAdmission => {
+      if (admitted.kind === 'refused')
+        return {
+          kind: 'refused',
+          refusal: { block: true, terminate: true, reason: admitted.reason },
         }
-        return { grant: admitted.grant }
+      const mismatch = validateNativeGrant(admitted.grant, context, 'write')
+      if (mismatch) {
+        parked = true
+        return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
       }
-    )
+      return { kind: 'admitted', grant: admitted.grant }
+    })
 
   const admitRead = (toolCallId: string, context: ExtensionContext) =>
     Effect.map(
       authorization(context, 'read', context.cwd),
       (admitted): ToolCallEventResult | undefined => {
-        if (!admitted.grant) return { block: true, terminate: true, reason: admitted.blocked }
+        if (admitted.kind === 'refused')
+          return { block: true, terminate: true, reason: admitted.reason }
         const mismatch = validateNativeGrant(admitted.grant, context, 'read')
         if (mismatch) {
           parked = true
@@ -648,7 +660,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     context: ExtensionContext
   ): Effect.fn.Return<ToolCallEventResult | undefined> {
     const writer = yield* admitWriter(context)
-    if ('refusal' in writer) return writer.refusal
+    if (writer.kind === 'refused') return writer.refusal
     const attachment = activeAttachment
     return yield* Effect.gen(function* () {
       const path = yield* Effect.try({
@@ -717,7 +729,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return admitRead(event.toolCallId, context)
       case 'workspace-shell':
         return Effect.map(admitWriter(context), writer =>
-          'refusal' in writer ? writer.refusal : undefined
+          writer.kind === 'refused' ? writer.refusal : undefined
         )
       case 'native-write':
         return admitNativeWrite(event, context)
@@ -1143,11 +1155,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       api.on('user_bash', (event, context) =>
         runPromise(
           Effect.map(authorization(context, 'write', event.cwd, 'user-bash'), admitted =>
-            admitted.grant
+            admitted.kind === 'admitted'
               ? { operations: shell.operations }
               : {
                   result: {
-                    output: admitted.blocked,
+                    output: admitted.reason,
                     exitCode: 1,
                     cancelled: false,
                     truncated: false,
