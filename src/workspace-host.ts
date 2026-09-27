@@ -85,14 +85,18 @@ export interface WorkspaceHost {
   readonly close: Effect.Effect<void, WorkspaceError>
 }
 
+const TRANSITION_STAGES = ['requested', 'scheduled', 'handoff-sent', 'switch-started'] as const
+type TransitionStage = (typeof TRANSITION_STAGES)[number]
+const reached = (transition: PendingTransition | undefined, stage: TransitionStage): boolean =>
+  transition !== undefined &&
+  TRANSITION_STAGES.indexOf(transition.stage) >= TRANSITION_STAGES.indexOf(stage)
+
 interface PendingTransition {
   readonly handoff: WorkspaceHandoff
   readonly origin: 'tool-call' | 'user-bash' | 'command'
   readonly context: ExtensionContext
   readonly transitionSource: WorkspaceAttachment
-  scheduled: boolean
-  handoffSent: boolean
-  switchStarted: boolean
+  stage: TransitionStage
   capturedInput: boolean
 }
 
@@ -379,7 +383,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     target: WorkspaceGrant,
     settle: (outcome: 'confirmed' | 'cancelled') => void
   ): Effect.fn.Return<'confirmed' | 'cancelled', WorkspaceHostError> {
-    transition.switchStarted = true
+    transition.stage = 'switch-started'
     const currentRuntime = runtime
     if (!currentRuntime)
       return yield* hostFailure('Pi runtime disappeared before workspace replacement')
@@ -460,7 +464,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       .pipe(Effect.catchIf(isWithdrawn, () => Effect.void))
 
   const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
-    if (pending !== transition || transition.switchStarted) return
+    if (pending !== transition || reached(transition, 'switch-started')) return
     const performed = yield* Effect.exit(
       Effect.gen(function* () {
         capturePendingInput(transition.context)
@@ -472,7 +476,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           minimumEntries: runtime?.session.sessionManager.getEntries().length ?? 0,
         }
         let callbackResult: 'confirmed' | 'cancelled' | undefined
-        transition.handoffSent = true
+        transition.stage = 'handoff-sent'
         yield* transition.transitionSource.handoff(transition.handoff, target =>
           replaceSession(transition, identity, target, outcome => {
             callbackResult = outcome
@@ -503,7 +507,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
     if (Exit.isSuccess(performed)) return
     const error = Cause.squash(performed.cause)
-    if (transition.switchStarted) {
+    if (reached(transition, 'switch-started')) {
       process.stderr.write(
         `Workspace handoff is unresolved; this session remains parked. ${errorText(error)}\n`
       )
@@ -512,7 +516,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     // The host never acted, so the authority can keep the last confirmed binding.
     const alreadyWithdrawn = isWithdrawn(error) ? Effect.void : Effect.fail(error)
     const withdrawn = yield* Effect.exit(
-      transition.handoffSent ? alreadyWithdrawn : withdrawUnstarted(transition)
+      reached(transition, 'handoff-sent') ? alreadyWithdrawn : withdrawUnstarted(transition)
     )
     if (Exit.isFailure(withdrawn)) {
       process.stderr.write(
@@ -532,8 +536,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   })
 
   const scheduleHandoff = (transition: PendingTransition): void => {
-    if (transition.scheduled) return
-    transition.scheduled = true
+    if (reached(transition, 'scheduled')) return
+    transition.stage = 'scheduled'
     runDeferred(performPendingHandoff(transition))
   }
 
@@ -550,9 +554,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       origin,
       context,
       transitionSource: activeAttachment,
-      scheduled: false,
-      handoffSent: false,
-      switchStarted: false,
+      stage: 'requested',
       capturedInput: false,
     }
     pending = transition
@@ -932,7 +934,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const close = Effect.gen(function* () {
     if (closed) return
     closed = true
-    if (pending?.switchStarted) return
+    if (reached(pending, 'switch-started')) return
     yield* nativeWrites.settle
     yield* shell.stop
     for (const attachment of stagedAttachments.values()) yield* closeAttachmentOnce(attachment)
@@ -945,7 +947,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const sessionShutdown = Effect.fnUntraced(function* (reason: string) {
     yield* nativeWrites.settle
     if (reason !== 'reload') yield* shell.stop
-    if (reason !== 'quit' || pending?.handoffSent) return
+    if (reason !== 'quit' || reached(pending, 'handoff-sent')) return
     if (pending) {
       const withdrawn = yield* Effect.exit(withdrawUnstarted(pending))
       if (Exit.isFailure(withdrawn)) {
@@ -1057,9 +1059,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         origin: 'command',
         context,
         transitionSource: activeAttachment,
-        scheduled: true,
-        handoffSent: false,
-        switchStarted: false,
+        stage: 'scheduled',
         capturedInput: false,
       }
       pending = transition
