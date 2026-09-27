@@ -34,7 +34,7 @@ import {
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
-import { canonicalFileSlot, decodeWriteOperand } from './workspace-paths.ts'
+import { canonicalConversationFile, decodeWriteOperand } from './workspace-paths.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
@@ -180,7 +180,7 @@ const isWithdrawn = (error: unknown): boolean =>
 // if it is ever attached.
 const conversationFile = (file: string): string => {
   try {
-    return canonicalFileSlot(file)
+    return canonicalConversationFile(file)
   } catch {
     return resolve(file)
   }

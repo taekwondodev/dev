@@ -61,7 +61,7 @@ import {
   type WorkspaceHost,
   type WorkspaceWorkControls,
 } from '../src/workspace-host.ts'
-import { resolveWriteDestination } from '../src/workspace-paths.ts'
+import { canonicalConversationFile, resolveWriteDestination } from '../src/workspace-paths.ts'
 import {
   deferred,
   emitReply,
@@ -413,8 +413,8 @@ const makeAttachment = (
     ): Promise<void> {
       assert.equal(transition.from.conversation.sessionId, conversation.sessionId)
       assert.equal(
-        resolve(transition.from.conversation.sessionFile),
-        resolve(conversation.sessionFile)
+        transition.from.conversation.sessionFile,
+        canonicalConversationFile(conversation.sessionFile)
       )
       handoffs.push(transition)
       const target = allDescriptors.find(item => item.workspaceId === transition.target.workspaceId)
@@ -1664,7 +1664,7 @@ assert.ok(
   handoffs.every(
     item =>
       item.from.conversation.sessionId === initialSessionId &&
-      resolve(item.from.conversation.sessionFile) === resolve(initialSessionFile)
+      item.from.conversation.sessionFile === canonicalConversationFile(initialSessionFile)
   )
 )
 assert.deepEqual(

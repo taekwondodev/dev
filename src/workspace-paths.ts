@@ -13,14 +13,20 @@ export const isWithin = (root: string, path: string): boolean => {
 // A missing final component keeps its spelling under the canonical parent, so a removed
 // checkout keeps the slot it had and a conversation file not yet written is named as Pi will
 // write it.
-export const canonicalSlot = (absolute: string, info: Stats | undefined): string =>
-  info === undefined
-    ? resolve(realpathSync(dirname(absolute)), basename(absolute))
-    : realpathSync(absolute)
+const slotThrough =
+  (realpath: (path: string) => string) =>
+  (absolute: string, info: Stats | undefined): string =>
+    info === undefined
+      ? resolve(realpath(dirname(absolute)), basename(absolute))
+      : realpath(absolute)
+const canonicalSlot = slotThrough(realpathSync)
+// On a case-insensitive volume every spelling opens the same conversation file, so its slot
+// takes the spelling stored on disk.
+export const conversationFileSlot = slotThrough(realpathSync.native)
 
-export const canonicalFileSlot = (file: string): string => {
+export const canonicalConversationFile = (file: string): string => {
   const absolute = resolve(file)
-  return canonicalSlot(absolute, lstatIfExists(absolute))
+  return conversationFileSlot(absolute, lstatIfExists(absolute))
 }
 
 export const canonicalPathSlot = (path: string): string => {

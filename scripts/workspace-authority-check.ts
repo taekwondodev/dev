@@ -1521,6 +1521,38 @@ try {
     }
   )
 
+  const spelled = conversation('case-spelling')
+  const respelledHome = join(sandbox, 'DATA-CASE-SPELLING')
+  const respelled = {
+    ...spelled,
+    sessionFile: join(respelledHome, 'SESSION.JSONL'),
+    dataHome: respelledHome,
+  }
+  if (existsSync(respelled.sessionFile))
+    await claim(
+      'on a volume that ignores case, a live conversation named in another case is the same conversation: its attach is refused, and once free it keeps the stored spelling',
+      async () => {
+        const caseRoot = join(sandbox, 'case-spelling-authority')
+        const holder = await openLifecycle({ root: caseRoot })
+        const other = await openLifecycle({ root: caseRoot })
+        try {
+          const holding = await holder.attach({ conversation: spelled, cwd: fenceRepo })
+          const { conversation: stored } = holding.binding
+          await expectWorkspaceError(
+            other.attach({ conversation: respelled, cwd: fenceRepo }),
+            'blocked'
+          )
+          await holding.close()
+          const reopened = await other.attach({ conversation: respelled, cwd: fenceRepo })
+          assert.equal(reopened.binding.conversation.sessionFile, stored.sessionFile)
+          assert.equal(reopened.binding.conversation.dataHome, stored.dataHome)
+          await reopened.close()
+        } finally {
+          await holder.close()
+          await other.close()
+        }
+      }
+    )
   await claim(
     'while a conversation is live, an attach from another lifecycle on the same authority is refused, with or without a selection, under another data home, and after its host closed its last attachment with the switch pending, and its switch stays with the live host; once the host is gone, any attach withdraws the switch that never reached it, keeping the last confirmed workspace or binding the selected one, and frees the unused target',
     async () => {

@@ -15,7 +15,7 @@ import {
   type WorkspaceHandoff,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import { canonicalFileSlot } from '../src/workspace-paths.ts'
+import { canonicalConversationFile } from '../src/workspace-paths.ts'
 
 export interface FixtureDescriptor {
   readonly repoId: WorkspaceId
@@ -90,7 +90,9 @@ export const makeFixtureBinding = (input: {
   conforming(WorkspaceBindingSchema)({
     conversation: {
       ...input.conversation,
-      sessionFile: CanonicalSessionFile.make(canonicalFileSlot(input.conversation.sessionFile)),
+      sessionFile: CanonicalSessionFile.make(
+        canonicalConversationFile(input.conversation.sessionFile)
+      ),
     },
     taskId: input.descriptor.taskId,
     workspaceId: input.descriptor.workspaceId,

@@ -19,7 +19,7 @@ import {
 } from './workspace-domain.ts'
 import { acquirePathGates, acquireConversationPresence, releaseGates } from './workspace-gates.ts'
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot, canonicalSlot, isWithin } from './workspace-paths.ts'
+import { canonicalPathSlot, conversationFileSlot, isWithin } from './workspace-paths.ts'
 import {
   matchesGitWorkspace,
   getWorkspace,
@@ -55,8 +55,8 @@ const conversationRecord = (
     (!sessionInfo.isFile() || sessionInfo.isSymbolicLink() || sessionInfo.nlink !== 1)
   )
     requireReview(`Conversation file is not a regular, uniquely linked file: ${sessionPath}`)
-  const sessionFile = CanonicalSessionFile.make(canonicalSlot(sessionPath, sessionInfo))
-  const dataHome = realpathSync(resolve(input.dataHome))
+  const sessionFile = CanonicalSessionFile.make(conversationFileSlot(sessionPath, sessionInfo))
+  const dataHome = realpathSync.native(resolve(input.dataHome))
   if (!statSync(dataHome).isDirectory())
     invalid(`Conversation data home is not a directory: ${dataHome}`)
   const conversation = { sessionId: input.sessionId, sessionFile, dataHome }
