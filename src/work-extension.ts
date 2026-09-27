@@ -1,4 +1,4 @@
-import { Effect, ManagedRuntime, Schema } from 'effect'
+import { Cause, Effect, ManagedRuntime, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { WorkOwner, makeWorkOwnerLayer } from './work-controller.ts'
 import {
@@ -308,7 +308,9 @@ export const createWorkExtension = ({
       setImmediate(() => {
         if (context === current && sessionOwner === currentOwner)
           Effect.runFork(
-            updateStatus(current).pipe(Effect.catch(cause => Effect.sync(() => notifyError(cause))))
+            updateStatus(current).pipe(
+              Effect.catchCause(cause => Effect.sync(() => notifyError(Cause.squash(cause))))
+            )
           )
       })
   }
