@@ -1,7 +1,5 @@
-# Drives the workspace host probes through the real Pi TUI in a pseudo-terminal. Python only
-# because Node has no built-in pseudo-terminal; each probe is TypeScript and describes here only
-# the keys a user types when it prints a marker. Keys name the fixture values a probe prints at
-# its inputs marker as {FIELDS}, so no fixture identity is copied here.
+# Python only because Node has no built-in pseudo-terminal. Keys name the fixture values a probe
+# prints at its inputs marker as {FIELDS}, so no fixture identity is copied here.
 import json
 import os
 import pty

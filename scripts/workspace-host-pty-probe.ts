@@ -205,9 +205,8 @@ const displacements = new Map([
 ])
 
 type UseScope = 'ordinary' | 'delegated' | WorkspaceEffect
-// The stub issues grants and records what the host reports; the rules that decide whether a
-// report is legal belong to the real authority, which workspace-authority-check.ts and the
-// real-authority probe exercise.
+// The stub does not judge reports: whether one is legal is the real authority's rule, which
+// workspace-authority-check.ts and the real-authority probe exercise.
 interface FixtureUse {
   readonly grant: WorkspaceGrant
   readonly operation: WorkspaceOperation
@@ -1133,7 +1132,7 @@ const observer =
     })
   }
 
-// The host keeps the controls of each runtime's background work; the probe reads the same ones.
+// Only the host receives each runtime's work controls, so the probe takes them at the handover.
 const runtimeHost: WorkspaceHost = new Proxy(workspaceHost, {
   get(target, key) {
     if (key === 'setWorkControls')
@@ -1833,7 +1832,6 @@ class GrantingController extends EventEmitter implements ControllerChannel {
     return true
   }
 }
-// The gate runs in a real Pi session, loaded as a read-only child loads it.
 const childRead = async (grant: WorkspaceGrant, extensions: readonly ExtensionFactory[]) => {
   const controller = new GrantingController()
   const services = await pi.createAgentSessionServices({

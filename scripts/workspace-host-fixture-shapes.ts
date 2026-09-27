@@ -1,7 +1,5 @@
 // The stub lifecycle bypasses the client that decodes every authority response, so each
-// factory decodes what it makes: every value the stub hands the host meets the same ID, path and
-// bound checks, and decoding strips nothing it sets. Each literal also satisfies its seam type,
-// and the guard below fails typecheck when a seam type gains a field the stub does not produce.
+// factory decodes what it makes.
 import assert from 'node:assert/strict'
 import { Schema } from 'effect'
 import {

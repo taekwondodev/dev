@@ -141,7 +141,6 @@ const identityOf = (
   sessionFile: manager.getSessionFile(),
 })
 
-// A conversation without a persisted session file matches none.
 export const sameConversation = (a: ConversationIdentity, b: ConversationIdentity): boolean =>
   a.sessionId === b.sessionId &&
   a.sessionFile !== undefined &&
@@ -372,8 +371,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
   })
 
-  // Runs the switch the authority granted: the host shuts the outgoing session down and
-  // reopens it at the target inside the authority's callback, which records the outcome.
   const replaceSession = Effect.fnUntraced(function* (
     transition: PendingTransition,
     identity: { readonly sessionId: string; readonly sessionFile: string },

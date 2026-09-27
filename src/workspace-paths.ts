@@ -88,7 +88,7 @@ const writeDestination = (checkout: string, absolute: string): string => {
   return path
 }
 
-// Returns the exact destination to write; ADR 0005 names every boundary that calls it.
+// ADR 0005, scoped workspace operations.
 export const resolveWriteDestination = (
   checkout: string,
   cwd: string,

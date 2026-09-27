@@ -1566,7 +1566,6 @@ try {
         'intent',
         'an attach refused while the conversation is live elsewhere leaves its switch to that host'
       )
-      // Another installation has its own data home, but the same conversation file.
       const otherDataHome = join(sandbox, 'other-installation-data')
       mkdirSync(otherDataHome, { recursive: true })
       await expectWorkspaceError(

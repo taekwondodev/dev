@@ -1,5 +1,5 @@
-// Drives the host's `/workspace` command through a real Pi session for the failures the TUI
-// probe does not inject: each must reach the user as a notice, never as a rejected handler.
+// Covers the `/workspace` failures the TUI probe does not inject: each must reach the user as a
+// notice, never as a rejected Pi handler.
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
