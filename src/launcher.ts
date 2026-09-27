@@ -2,7 +2,7 @@
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Effect, Option, Schema, type Scope } from 'effect'
+import { Cause, Effect, Option, Schema, type Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
@@ -344,6 +344,13 @@ const runInteractive = (api: PiApi, runtime: AgentRuntime): Effect.Effect<void, 
     new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] }).run()
   )
 
+const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
+  Effect.catchCause(effect, cause =>
+    Effect.sync(() => {
+      process.stderr.write(`${errorText(Cause.squash(cause))}\n`)
+    })
+  )
+
 interface SignalHandlers {
   readonly remove: () => void
 }
@@ -353,27 +360,21 @@ const installSignalHandlers = (
   release: Effect.Effect<void, never>
 ): Effect.Effect<SignalHandlers> =>
   Effect.sync(() => {
-    const terminate = async (exitCode: number): Promise<void> => {
-      try {
-        await Effect.runPromise(disposeRuntime(runtime))
-      } catch (error) {
-        process.stderr.write(`${errorText(error)}\n`)
-      } finally {
-        try {
-          await Effect.runPromise(release)
-        } catch (error) {
-          process.stderr.write(`${errorText(error)}\n`)
-        }
-        process.exitCode = exitCode
-        process.exit(exitCode)
-      }
+    const terminate = (exitCode: number): void => {
+      Effect.runFork(
+        reported(disposeRuntime(runtime)).pipe(
+          Effect.andThen(reported(release)),
+          Effect.andThen(
+            Effect.sync(() => {
+              process.exitCode = exitCode
+              process.exit(exitCode)
+            })
+          )
+        )
+      )
     }
-    const onInterrupt = (): void => {
-      void terminate(130)
-    }
-    const onTerminate = (): void => {
-      void terminate(1)
-    }
+    const onInterrupt = (): void => terminate(130)
+    const onTerminate = (): void => terminate(1)
     process.once('SIGTERM', onTerminate)
     process.once('SIGINT', onInterrupt)
     process.once('SIGHUP', onTerminate)
