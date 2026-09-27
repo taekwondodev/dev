@@ -153,6 +153,25 @@ const gateDirectory = (
   return directory
 }
 
+const verifyGateMarker = (
+  db: DatabaseSync,
+  path: string,
+  kind: string,
+  identityPath: string,
+  key: string
+): void => {
+  const marker = first(db, 'SELECT version, kind, path, key FROM gate_marker WHERE id=1')
+  if (
+    numberField(marker, 'version') !== PROTOCOL_VERSION ||
+    textField(marker, 'kind') !== kind ||
+    textField(marker, 'path') !== identityPath ||
+    textField(marker, 'key') !== key
+  )
+    requireReview(
+      `Workspace gate identity was replaced or does not match its canonical path: ${path}`
+    )
+}
+
 const acquireGate = (
   path: string,
   kind: string,
@@ -176,18 +195,7 @@ const acquireGate = (
     name: 'Workspace gate',
     waitMs: exclusive ? 0 : SHARED_GATE_WAIT_MS,
     exclusive,
-    verifyMarker: db => {
-      const marker = first(db, 'SELECT version, kind, path, key FROM gate_marker WHERE id=1')
-      if (
-        numberField(marker, 'version') !== PROTOCOL_VERSION ||
-        textField(marker, 'kind') !== kind ||
-        textField(marker, 'path') !== identityPath ||
-        textField(marker, 'key') !== key
-      )
-        requireReview(
-          `Workspace gate identity was replaced or does not match its canonical path: ${path}`
-        )
-    },
+    verifyMarker: db => verifyGateMarker(db, path, kind, identityPath, key),
     verifyHeld: db => {
       if (textField(first(db, 'SELECT kind FROM gate_marker WHERE id=1'), 'kind') !== kind)
         requireReview(`Workspace gate marker changed while acquiring ${path}`)
@@ -280,8 +288,11 @@ export const acquireConversationPresence = (
       release: () => {
         try {
           releaseIncarnation()
-          // An incarnation token is never reused, so its gate can go once released.
-          rmSync(directory, { recursive: true, force: true })
+          try {
+            rmSync(directory, { recursive: true, force: true })
+          } catch {
+            /* a leftover directory reads as a released incarnation */
+          }
         } finally {
           releaseConversation()
         }
@@ -293,15 +304,28 @@ export const acquireConversationPresence = (
   }
 }
 
+// Inspection must not write to the authority, and its owner removes the gate once released, so
+// the probe opens only an existing file, read-only: its read is refused while the owner holds
+// the exclusive lock, and a file removed meanwhile is a released incarnation.
 export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId): boolean => {
   const path = incarnationGate(paths, incarnation)
-  if (lstatIfExists(path) === undefined) return false
+  const removed = () => lstatIfExists(path) === undefined
+  if (removed()) return false
+  let db: DatabaseSync | undefined
   try {
-    acquireGate(path, 'incarnation', incarnation, incarnation, true)()
+    privateFile(path)
+    db = new DatabaseSync(path, { readOnly: true, timeout: 0, allowExtension: false })
+    if (!lockFormatSupported(db, GATE_SQL))
+      unavailable(`Workspace gate has an unsupported format: ${path}`)
+    verifyGateMarker(db, path, 'incarnation', incarnation, incarnation)
     return false
   } catch (cause) {
-    if (cause instanceof WorkspaceError && cause.outcome === 'blocked') return true
-    throw cause
+    if (sqliteBusy(cause)) return true
+    if (removed()) return false
+    if (cause instanceof WorkspaceError) throw cause
+    return unavailable(`Cannot probe workspace gate ${path}: ${errorText(cause)}`)
+  } finally {
+    db?.close()
   }
 }
 export const releaseGates = (gates: PathGates): void => {

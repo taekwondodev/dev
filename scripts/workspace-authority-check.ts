@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -99,6 +100,7 @@ const { claim, passed } = makeClaims()
 const repo = join(sandbox, 'repo')
 const root = join(sandbox, 'authority')
 const moduleUrl = new URL('./workspace-test-lifecycle.ts', import.meta.url).href
+const srcUrl = (module: string) => JSON.stringify(new URL(`../src/${module}`, import.meta.url).href)
 mkdirSync(repo)
 const git = (args: readonly string[], cwd = repo): string => {
   const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' })
@@ -1789,6 +1791,80 @@ try {
         otherHome,
       ])
         assert.ok(!inside(excluded, fromFirst), `the default root is not under ${excluded}`)
+    }
+  )
+
+  const raceRoot = join(sandbox, 'incarnation-race')
+  const raceToken = join(sandbox, 'incarnation-race-token')
+  const raceDone = join(sandbox, 'incarnation-race-done')
+  await claim(
+    'inspection probing an incarnation from other processes while its owner acquires and releases it writes nothing to the authority and never makes the release fail',
+    async () => {
+      mkdirSync(raceRoot, { mode: 0o700 })
+      await runChild(`
+        import { WorkspaceAuthority } from ${srcUrl('workspace-authority.ts')}
+        new WorkspaceAuthority(${JSON.stringify(raceRoot)}).initialize()
+      `)
+      const owner = runChild(`
+        import { renameSync, writeFileSync } from 'node:fs'
+        import { authorityPaths } from ${srcUrl('workspace-authority-root.ts')}
+        import { acquireConversationPresence } from ${srcUrl('workspace-gates.ts')}
+        const paths = authorityPaths(${JSON.stringify(raceRoot)})
+        const errors = []
+        for (let cycle = 0; cycle < 600; cycle += 1) {
+          try {
+            const presence = acquireConversationPresence(paths, 'race-' + (cycle % 4))
+            writeFileSync(${JSON.stringify(`${raceToken}.next`)}, presence.incarnation)
+            renameSync(${JSON.stringify(`${raceToken}.next`)}, ${JSON.stringify(raceToken)})
+            const until = performance.now() + 1
+            while (performance.now() < until) {}
+            presence.release()
+          } catch (error) {
+            errors.push(String(error.message))
+          }
+        }
+        writeFileSync(${JSON.stringify(raceDone)}, '')
+        console.log(JSON.stringify({ errors: errors.slice(0, 5), failed: errors.length }))
+      `)
+      const inspector = () =>
+        runChild(`
+          import { existsSync, readFileSync } from 'node:fs'
+          import { authorityPaths } from ${srcUrl('workspace-authority-root.ts')}
+          import { incarnationHeld } from ${srcUrl('workspace-gates.ts')}
+          const paths = authorityPaths(${JSON.stringify(raceRoot)})
+          const errors = []
+          let held = 0
+          while (!existsSync(${JSON.stringify(raceDone)})) {
+            if (!existsSync(${JSON.stringify(raceToken)})) continue
+            try {
+              if (incarnationHeld(paths, readFileSync(${JSON.stringify(raceToken)}, 'utf8'))) held += 1
+            } catch (error) {
+              errors.push(String(error.message))
+            }
+          }
+          console.log(JSON.stringify({ errors: errors.slice(0, 5), failed: errors.length, held }))
+        `)
+      const [ownerResult, ...inspectorResults] = (
+        await Promise.all([owner, inspector(), inspector()])
+      ).map(
+        output =>
+          JSON.parse(output) as {
+            readonly errors: readonly string[]
+            readonly failed: number
+            readonly held?: number
+          }
+      )
+      assert.deepEqual(ownerResult, { errors: [], failed: 0 }, 'every release succeeded')
+      for (const result of inspectorResults) {
+        assert.deepEqual([result.failed, result.errors], [0, []], 'every probe answered')
+        assert.ok((result.held ?? 0) > 0, 'the probes observed a live incarnation')
+      }
+      const incarnations = join(raceRoot, 'gates', 'incarnations')
+      assert.deepEqual(
+        existsSync(incarnations) ? readdirSync(incarnations) : [],
+        [],
+        'no incarnation gate was left or recreated'
+      )
     }
   )
 
