@@ -84,7 +84,6 @@ export const toolCall = (
   args: Extract<ScriptedContent[number], { type: 'toolCall' }>['arguments']
 ): ScriptedContent[number] => ({ type: 'toolCall', id, name, arguments: args })
 
-// Offline and scripted, so a check spends no credentials and needs no network.
 export const makeOfflineModel = async (input: {
   readonly pi: PiApi
   readonly importFromPi: <Module>(path: string) => Promise<Module>
@@ -159,7 +158,6 @@ export const makeOfflineModel = async (input: {
   return { model, modelRuntime, assistantMessage }
 }
 
-// A Pi runtime built by the launcher's own factory around a host the check controls.
 export const openHostRuntime = async (input: {
   readonly pi: PiApi
   readonly packageRoot: string

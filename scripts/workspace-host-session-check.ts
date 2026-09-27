@@ -66,7 +66,6 @@ const repositoryRoot = (cwd: string) =>
     }
   })
 
-// Each runtime replays its own steps and then answers with text.
 const scripted = (steps: readonly ScriptedContent[]) => {
   let calls = 0
   return {
