@@ -165,6 +165,9 @@ const sessionFileCwd = (file: string): string => {
   }
   return process.cwd()
 }
+// Pi's own errors pass through unchanged as defects, since its TUI recovers from some by their
+// class and the host handles none of them.
+const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(call)
 const pendingSwitchNotice =
   'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
 const unresolvedSwitchNotice =
@@ -925,9 +928,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
     return true
   })
-  // Pi's own errors pass through unchanged as defects, since its TUI recovers from some by
-  // their class and the host handles none of them.
-  const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(call)
   const guardedReplacement = <A, E>(
     cancelled: A,
     replace: Effect.Effect<A, E>

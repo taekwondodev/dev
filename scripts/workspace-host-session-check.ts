@@ -17,7 +17,11 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
-import type { WorkspaceAttachment } from '../src/workspace-domain.ts'
+import type {
+  WorkspaceAttachment,
+  WorkspaceAuthorization,
+  WorkspaceError,
+} from '../src/workspace-domain.ts'
 import {
   loadInstalledPi,
   makeClaims,
@@ -278,30 +282,32 @@ try {
         const raced = await lifecycle.attach({ conversation: raceConversation, cwd: lead })
         let started: Promise<unknown> | undefined
         let runtimeRef: Pi.AgentSessionRuntime | undefined
-        const replace = () =>
-          replacement === 'new'
-            ? runtimeRef?.newSession()
-            : replacement === 'resume'
-              ? runtimeRef?.switchSession(other.file)
-              : runtimeRef?.importFromJsonl(other.file)
+        const replacements = {
+          new: () => runtimeRef?.newSession(),
+          resume: () => runtimeRef?.switchSession(other.file),
+          import: () => runtimeRef?.importFromJsonl(other.file),
+        }
+        const racingAdmission = {
+          before: (authorizing: Effect.Effect<WorkspaceAuthorization, WorkspaceError>) =>
+            Effect.promise(async () => {
+              started = replacements[replacement]()
+              await sleep(150)
+            }).pipe(Effect.andThen(authorizing)),
+          after: (authorizing: Effect.Effect<WorkspaceAuthorization, WorkspaceError>) =>
+            Effect.promise(async () => {
+              const admitted = Effect.runPromise(authorizing)
+              await Promise.resolve()
+              started = replacements[replacement]()
+              return admitted
+            }),
+        }
+        const authorize: WorkspaceAttachment['authorize'] = operation =>
+          started === undefined && operation.kind === 'write'
+            ? racingAdmission[order](raced.effect.authorize(operation))
+            : raced.effect.authorize(operation)
         const admitting: WorkspaceAttachment = new Proxy(raced.effect, {
           get: (target, key) =>
-            key === 'authorize'
-              ? (operation: Parameters<WorkspaceAttachment['authorize']>[0]) =>
-                  started === undefined && operation.kind === 'write'
-                    ? order === 'before'
-                      ? Effect.promise(async () => {
-                          started = replace()
-                          await sleep(150)
-                        }).pipe(Effect.andThen(target.authorize(operation)))
-                      : Effect.promise(async () => {
-                          const admitted = Effect.runPromise(target.authorize(operation))
-                          await Promise.resolve()
-                          started = replace()
-                          return admitted
-                        })
-                    : target.authorize(operation)
-              : Reflect.get(target, key, target),
+            key === 'authorize' ? authorize : Reflect.get(target, key, target),
         })
         const race = await openHostRuntime({
           pi,
@@ -361,25 +367,27 @@ try {
       let disposing: Promise<void> | undefined
       let runtimeRef: Pi.AgentSessionRuntime | undefined
       let closedOnQuit = false
+      const quitDuringCallback: Partial<WorkspaceAttachment> = {
+        close: quitter.effect.close.pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              closedOnQuit = true
+            })
+          )
+        ),
+        handoff: (transition, replace) =>
+          quitter.effect.handoff(transition, grant =>
+            Effect.promise(async () => {
+              disposing = runtimeRef?.dispose()
+              await sleep(100)
+            }).pipe(Effect.andThen(replace(grant)))
+          ),
+      }
       const handingOff: WorkspaceAttachment = new Proxy(quitter.effect, {
         get: (target, key) =>
-          key === 'close'
-            ? target.close.pipe(
-                Effect.tap(() =>
-                  Effect.sync(() => {
-                    closedOnQuit = true
-                  })
-                )
-              )
-            : key === 'handoff'
-              ? (...[transition, replace]: Parameters<WorkspaceAttachment['handoff']>) =>
-                  target.handoff(transition, grant =>
-                    Effect.promise(async () => {
-                      disposing = runtimeRef?.dispose()
-                      await sleep(100)
-                    }).pipe(Effect.andThen(replace(grant)))
-                  )
-              : Reflect.get(target, key, target),
+          key === 'close' || key === 'handoff'
+            ? quitDuringCallback[key]
+            : Reflect.get(target, key, target),
       })
       const quit = await openHostRuntime({
         pi,
