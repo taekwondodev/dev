@@ -44,8 +44,7 @@ const destinationIdentity = (path: string): string =>
 const NO_FOLLOW_WRITE =
   constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW
 
-// Start and completion are reported where ADR 0005 places them: from inside the write, and
-// by this module at shutdown, after which Pi no longer reports a call's end.
+// ADR 0005, scoped workspace operations.
 export const makeNativeWrites = (options: {
   readonly runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
   readonly onError: (message: string) => void

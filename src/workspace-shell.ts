@@ -348,7 +348,6 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
 
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>())
   return {
-    // Pi calls the adapter with Promises; everything behind this point runs in Effect.
     operations: {
       exec: (command, cwd, options) => runPromise(execute(command, cwd, options)),
     },

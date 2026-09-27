@@ -67,9 +67,6 @@ export interface WorkspaceWorkControls {
   readonly stopAll: (reason: string) => Effect.Effect<void, WorkspaceHostError>
 }
 
-// Pi calls in through the extension handlers, `switchSession` and the tool operation adapters,
-// which run the Effect programs below with the host's context. The launcher's runtime factory
-// yields `prepareRuntime` and `commitRuntime` directly.
 export interface WorkspaceHost {
   readonly extensionFactory: (api: ExtensionAPI) => void
   readonly attachment: WorkspaceAttachment
@@ -197,8 +194,7 @@ const display = (api: ExtensionAPI, context: ExtensionContext, message: string):
 const noReplayMessage = (handoff: WorkspaceHandoff): string =>
   `Workspace admission changed after ${handoff.reason}. The prior operation was blocked and was not replayed. Current workspace: ${handoff.target.workspaceId} at ${handoff.target.cwd}. Re-evaluate the user's request using this new context; do not repeat the blocked tool payload.`
 
-// A tool is classified by what its implementation does, recorded here after review under
-// the executable-extension policy in ADR 0005, never by its name alone.
+// ADR 0005, executable extensions.
 type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner'
 
 function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
