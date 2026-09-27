@@ -2,7 +2,7 @@ import { inDb, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   blocked,
   requireReview,
-  type WorkspaceConversation,
+  type BoundConversation,
   type WorkspaceExecution,
   type WorkspaceGrant,
   type WorkspaceHandoff,
@@ -66,7 +66,7 @@ export interface PendingTransition {
 }
 export interface ConversationState {
   readonly key: string
-  readonly conversation: WorkspaceConversation
+  readonly conversation: BoundConversation
   binding: BindingRecord
   repositoryId: WorkspaceId
   readonly leases: Map<WorkspaceId, GrantLease>

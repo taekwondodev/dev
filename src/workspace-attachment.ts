@@ -11,6 +11,8 @@ import {
   blocked,
   invalid,
   requireReview,
+  type BoundConversation,
+  CanonicalSessionFile,
   type WorkspaceConversation,
   type WorkspaceId,
   type WorkspaceSelection,
@@ -42,7 +44,7 @@ import { resolveSelection } from './workspace-transitions.ts'
 const conversationRecord = (
   input: WorkspaceConversation
 ): {
-  readonly conversation: WorkspaceConversation
+  readonly conversation: BoundConversation
   readonly key: string
   readonly identity: string
 } => {
@@ -53,7 +55,7 @@ const conversationRecord = (
     (!sessionInfo.isFile() || sessionInfo.isSymbolicLink() || sessionInfo.nlink !== 1)
   )
     requireReview(`Conversation file is not a regular, uniquely linked file: ${sessionPath}`)
-  const sessionFile = canonicalSlot(sessionPath, sessionInfo)
+  const sessionFile = CanonicalSessionFile.make(canonicalSlot(sessionPath, sessionInfo))
   const dataHome = realpathSync(resolve(input.dataHome))
   if (!statSync(dataHome).isDirectory())
     invalid(`Conversation data home is not a directory: ${dataHome}`)

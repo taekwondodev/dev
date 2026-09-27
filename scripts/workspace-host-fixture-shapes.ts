@@ -1,8 +1,10 @@
 // The stub lifecycle bypasses the client that decodes every authority response, so each
 // factory decodes what it makes.
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import { Schema } from 'effect'
 import {
+  CanonicalSessionFile,
   WorkspaceBindingSchema,
   WorkspaceGrantSchema,
   WorkspaceHandoffSchema,
@@ -14,6 +16,8 @@ import {
   type WorkspaceHandoff,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
+import { canonicalSlot } from '../src/workspace-paths.ts'
+import { lstatIfExists } from '../src/workspace-platform.ts'
 
 export interface FixtureDescriptor {
   readonly repoId: WorkspaceId
@@ -86,7 +90,16 @@ export const makeFixtureBinding = (input: {
   readonly descriptor: FixtureDescriptor
 }) =>
   conforming(WorkspaceBindingSchema)({
-    conversation: input.conversation,
+    // The authority binds a conversation by its canonical file.
+    conversation: {
+      ...input.conversation,
+      sessionFile: CanonicalSessionFile.make(
+        canonicalSlot(
+          resolve(input.conversation.sessionFile),
+          lstatIfExists(resolve(input.conversation.sessionFile))
+        )
+      ),
+    },
     taskId: input.descriptor.taskId,
     workspaceId: input.descriptor.workspaceId,
     cwd: input.descriptor.path,

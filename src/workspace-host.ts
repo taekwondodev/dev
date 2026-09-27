@@ -27,6 +27,7 @@ import {
   WorkspaceError,
   type WorkspaceAttachment,
   type WorkspaceBinding,
+  type BoundConversation,
   type WorkspaceConversation,
   type WorkspaceGrant,
   type WorkspaceHandoff,
@@ -195,6 +196,12 @@ const identityOf = (
   sessionId: manager.getSessionId(),
   sessionFile: manager.getSessionFile(),
 })
+
+// The authority canonicalized the bound file, so only Pi's side is resolved.
+const isBoundTo = (bound: BoundConversation, identity: ConversationIdentity): boolean =>
+  bound.sessionId === identity.sessionId &&
+  identity.sessionFile !== undefined &&
+  conversationFile(identity.sessionFile) === bound.sessionFile
 
 export const sameConversation = (a: ConversationIdentity, b: ConversationIdentity): boolean =>
   a.sessionId === b.sessionId &&
@@ -479,7 +486,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       restoreInput(fresh)
       const { binding } = activeAttachment
       if (
-        !sameConversation(binding.conversation, identityOf(fresh.sessionManager)) ||
+        !isBoundTo(binding.conversation, identityOf(fresh.sessionManager)) ||
         binding.workspaceId !== transition.handoff.target.workspaceId ||
         resolve(binding.cwd) !== resolve(fresh.cwd)
       ) {
@@ -508,7 +515,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
     const current = activeAttachment.binding
     if (
-      !sameConversation(current.conversation, identity) ||
+      !isBoundTo(current.conversation, identity) ||
       current.workspaceId !== target.workspaceId ||
       resolve(current.cwd) !== resolve(target.cwd) ||
       resolve(currentRuntime.cwd) !== resolve(target.cwd)
@@ -562,7 +569,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
     )
 
-  const performHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
+  const runHostHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (transition.transitionSource !== activeAttachment) {
       pending = undefined
       parked = false
@@ -645,7 +652,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   // A quit waits for `settled`, so it completes only once the handoff's outcome is recorded.
   const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (pending !== transition || reached(transition, 'switch-started')) return
-    yield* performHandoff(transition).pipe(
+    yield* runHostHandoff(transition).pipe(
       Effect.ensuring(Deferred.succeed(transition.settled, undefined))
     )
   })
@@ -907,7 +914,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         )
     }
     const staged = stagedAttachments.get(key)
-    const canReuse = !reopen && !staged && sameConversation(activeConversation, identity)
+    const canReuse = !reopen && !staged && isBoundTo(activeConversation, identity)
     // A fork continues the history of the conversation it leaves, so it starts in that
     // conversation's current workspace rather than the cwd recorded in the copied header.
     const resolved = yield* attachForManager(
@@ -928,7 +935,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const previous = activeAttachment
     const nextIdentity = attachment.binding.conversation
     preparedAttachments.delete(attachment)
-    const continuing = sameConversation(activeConversation, nextIdentity)
+    const continuing =
+      activeConversation.sessionId === nextIdentity.sessionId &&
+      activeConversation.sessionFile === nextIdentity.sessionFile
     activeAttachment = attachment
     activeConversation = nextIdentity
     activeManager = runtime?.session.sessionManager
@@ -1028,7 +1037,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const id = targetManager.getSessionId()
       target = { sessionId: id, sessionFile: file }
       stagedKey = sessionKey(file, id)
-      if (sameConversation(activeConversation, target)) {
+      if (isBoundTo(activeConversation, target)) {
         notify(
           currentContext,
           'This Pi conversation is already active; its workspace binding is unchanged.'

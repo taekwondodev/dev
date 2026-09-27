@@ -53,6 +53,14 @@ export const WorkspaceConversationSchema = Schema.Struct({
   dataHome: Schema.NonEmptyString,
 })
 export type WorkspaceConversation = typeof WorkspaceConversationSchema.Type
+// Pi may name one conversation file through a symbolic link or before it is written, so a Pi path
+// matches a bound conversation only once canonicalized.
+export const CanonicalSessionFile = Schema.NonEmptyString.pipe(Schema.brand('CanonicalSessionFile'))
+export const BoundConversationSchema = Schema.Struct({
+  ...WorkspaceConversationSchema.fields,
+  sessionFile: CanonicalSessionFile,
+})
+export type BoundConversation = typeof BoundConversationSchema.Type
 
 export const WorkspaceSelectionSchema = Schema.Struct({
   taskId: WorkspaceId,
@@ -106,7 +114,7 @@ export type WorkspaceGrant = typeof WorkspaceGrantSchema.Type
 export const sameGrant = Schema.toEquivalence(WorkspaceGrantSchema)
 
 export const WorkspaceBindingSchema = Schema.Struct({
-  conversation: WorkspaceConversationSchema,
+  conversation: BoundConversationSchema,
   taskId: Schema.optional(WorkspaceId),
   workspaceId: WorkspaceId,
   cwd: AbsolutePath,
