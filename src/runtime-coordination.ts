@@ -10,11 +10,11 @@ import {
   realpathSync,
   unlinkSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { Effect, Predicate, Schema, Semaphore, type Scope } from 'effect'
-import { canonicalConversationFile } from './workspace-paths.ts'
+import { canonicalConversationFile, conversationFileSlot } from './workspace-paths.ts'
 
 export class CoordinationError extends Schema.TaggedError<CoordinationError>()(
   'CoordinationError',
@@ -62,8 +62,10 @@ const privateDirectory = (path: string): void => {
 }
 
 const canonicalConversation = (path: string): string => {
-  const canonical = canonicalConversationFile(path)
-  if (!existsSync(canonical)) return canonical
+  const absolute = resolve(path)
+  // A dangling link is keyed like a missing file, so the authority refuses it with its guidance.
+  if (!existsSync(absolute)) return conversationFileSlot(absolute, undefined)
+  const canonical = canonicalConversationFile(absolute)
   const info = lstatSync(canonical)
   if (!info.isFile() || info.nlink !== 1)
     throw new Error(`Conversation must be a regular file without hard links: ${path}`)
