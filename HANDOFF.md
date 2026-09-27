@@ -1,5 +1,11 @@
 # Handoff: #36 workspace admission, final review round 2 paused with verified blockers
 
+## Progress 2026-09-27 (session 2)
+
+- User decisions (structured question, 2026-09-27): fix all four smell groups (S1/S2/S5/S6, S3/S4/S7/S9, S8 + work-extension Promise seam, S10); J1 = origin-aware texts, keep the model turn; J2 = post a separate correcting comment on #36 at delivery, besides the PR-link comment.
+- Done, each with regression or mutation evidence: B1 `c373657`, B2 `589a73b`, B3 `a9a9d9e`, B4 `829469b`, B5 named locations `9794b97`, B7 `9372d1f`, J1 `0cc6c1b`, B6 `281f405`, S1 `54ed687` + `4dfc87e`, S2 (+ launcher casts of S7) `4dfc87e`, S5/S6 `ff52fb3`. Suite green at `ff52fb3` (authority, process, contract, launcher checks, both PTY probes, lint, format).
+- Next: S3/S4/S7/S9, then S8 + Promise seam, then S10, then the full comment sweep of `git diff f7cb3b4 HEAD` (rest of B5), full suite, round-2 re-review.
+
 ## Resume
 
 - `task`: [#36](https://github.com/taekwondodev/dev/issues/36), coordinate task-owned workspace admission and conversation continuity. The issue is OPEN by user decision until the PR exists. #37 (release and cleanup) is out of scope.
