@@ -63,8 +63,8 @@ export interface WorkspaceWorkStatus {
 }
 
 export interface WorkspaceWorkControls {
-  readonly running: Effect.Effect<readonly WorkspaceWorkStatus[], WorkspaceHostError>
-  readonly stopAll: (reason: string) => Effect.Effect<void, WorkspaceHostError>
+  readonly running: Effect.Effect<readonly WorkspaceWorkStatus[], { readonly message: string }>
+  readonly stopAll: (reason: string) => Effect.Effect<void, { readonly message: string }>
 }
 
 export interface WorkspaceHost {
@@ -126,16 +126,6 @@ const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostE
     try: operation,
     catch: cause => hostFailure(errorText(cause)),
   })
-
-// Background work still answers with Promises; its controls are wrapped once, where they are
-// handed to the host.
-export const workControlsOf = (work: {
-  readonly runningWork: () => Promise<readonly WorkspaceWorkStatus[]>
-  readonly stopAll: (reason: string) => Promise<void>
-}): WorkspaceWorkControls => ({
-  running: fromPi(() => work.runningWork()),
-  stopAll: reason => fromPi(() => work.stopAll(reason)),
-})
 
 // The authority answers `blocked` to a switch it refused before the host acted, having
 // already withdrawn it and kept the last confirmed binding.

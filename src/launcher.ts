@@ -35,7 +35,6 @@ import {
   makeWorkspaceHost,
   noUiTrustContext,
   sameConversation,
-  workControlsOf,
   type WorkspaceHost,
 } from './workspace-host.ts'
 import {
@@ -245,7 +244,7 @@ const createRuntime = Effect.fnUntraced(function* (
       isWorkspaceParked: workspaceHost.isParked,
     })
   )
-  yield* Effect.sync(() => workspaceHost.setWorkControls(workControlsOf(work)))
+  yield* Effect.sync(() => workspaceHost.setWorkControls(work))
   const trustResolver: typeof PiProjectTrust = yield* fromPromise(
     'Cannot load Pi project-trust resolver',
     async () =>

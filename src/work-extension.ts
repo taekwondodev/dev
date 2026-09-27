@@ -17,6 +17,7 @@ import {
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from './workspace-domain.ts'
+import { errorText } from './error-text.ts'
 
 const WorkInputSchema = Schema.Struct({
   action: Schema.Literals(['process', 'delegate', 'dispatch', 'list', 'inspect', 'cancel']),
@@ -141,16 +142,17 @@ const outcomeAttempts = (
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
   readonly bindSession: (session: WorkSession) => void
-  readonly runningWork: () => Promise<
+  readonly running: Effect.Effect<
     readonly {
       readonly taskId: string
       readonly attemptId: string
       readonly kind: 'process' | 'agent'
       readonly status: string
       readonly cwd: string
-    }[]
+    }[],
+    WorkFailure
   >
-  readonly stopAll: (reason: string) => Promise<void>
+  readonly stopAll: (reason: string) => Effect.Effect<void, WorkFailure>
   readonly close: (reason?: string) => Promise<void>
 }
 
@@ -217,18 +219,21 @@ export const createWorkExtension = ({
         return sessionOwner.runtime
       },
       catch: cause =>
-        cause instanceof WorkError
-          ? cause
-          : new WorkError({
-              message: cause instanceof Error ? cause.message : String(cause),
-              cause,
-            }),
+        cause instanceof WorkError ? cause : new WorkError({ message: errorText(cause), cause }),
     })
 
+  const runOwned = <A>(
+    ctx: Pi.ExtensionContext,
+    effect: Effect.Effect<A, WorkFailure, WorkOwner>
+  ): Effect.Effect<A, WorkFailure> =>
+    ownerRuntime(ctx).pipe(
+      Effect.flatMap(runtime => runtime.contextEffect),
+      Effect.flatMap(services => Effect.provideContext(effect, services))
+    )
   const run = <A>(
     ctx: Pi.ExtensionContext,
     effect: Effect.Effect<A, WorkFailure, WorkOwner>
-  ): Promise<A> => Effect.runPromise(ownerRuntime(ctx)).then(runtime => runtime.runPromise(effect))
+  ): Promise<A> => Effect.runPromise(runOwned(ctx, effect))
 
   const showStatus = async (ctx: Pi.ExtensionContext): Promise<void> => {
     if (!ctx.hasUI) return
@@ -290,14 +295,23 @@ export const createWorkExtension = ({
     if (context?.hasUI) context.ui.notify(`Background work: ${message}`, 'error')
   }
 
-  const interrupt = async (ctx: Pi.ExtensionContext, reason: string): Promise<void> => {
-    pending.clear()
-    await run(
-      ctx,
-      withOwner(owner => owner.interrupt(reason))
+  const interruptOwned = (ctx: Pi.ExtensionContext, reason: string) =>
+    Effect.sync(() => pending.clear()).pipe(
+      Effect.andThen(
+        runOwned(
+          ctx,
+          withOwner(owner => owner.interrupt(reason))
+        )
+      ),
+      Effect.andThen(
+        Effect.tryPromise({
+          try: () => showStatus(ctx),
+          catch: cause => new WorkError({ message: errorText(cause), cause }),
+        })
+      )
     )
-    await showStatus(ctx)
-  }
+  const interrupt = (ctx: Pi.ExtensionContext, reason: string): Promise<void> =>
+    Effect.runPromise(interruptOwned(ctx, reason))
 
   const deliveryScope = (): DeliveryScope | undefined =>
     sessionOwner?._tag === 'active' && session !== undefined && context !== undefined
@@ -570,32 +584,38 @@ export const createWorkExtension = ({
       return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
     })
 
-  const runningWork: WorkExtension['runningWork'] = async () => {
+  const running: WorkExtension['running'] = Effect.suspend(() => {
     const current = context
-    if (!current || sessionOwner?._tag !== 'active') return []
-    const snapshot = await run(
+    if (!current || sessionOwner?._tag !== 'active') return Effect.succeed([])
+    return runOwned(
       current,
       withOwner(owner => owner.snapshot)
-    )
-    return snapshot.records
-      .filter(
-        record =>
-          record.status === 'running' || record.status === 'waiting' || record.status === 'unknown'
+    ).pipe(
+      Effect.map(snapshot =>
+        snapshot.records
+          .filter(
+            record =>
+              record.status === 'running' ||
+              record.status === 'waiting' ||
+              record.status === 'unknown'
+          )
+          .map(record => ({
+            taskId: record.owner.taskId,
+            attemptId: record.id,
+            kind: record.kind,
+            status: record.status,
+            cwd: record.cwd,
+          }))
       )
-      .map(record => ({
-        taskId: record.owner.taskId,
-        attemptId: record.id,
-        kind: record.kind,
-        status: record.status,
-        cwd: record.cwd,
-      }))
-  }
+    )
+  })
 
-  const stopAll: WorkExtension['stopAll'] = async reason => {
-    const current = context
-    if (!current || sessionOwner?._tag !== 'active') return
-    await interrupt(current, reason)
-  }
+  const stopAll: WorkExtension['stopAll'] = reason =>
+    Effect.suspend(() => {
+      const current = context
+      if (!current || sessionOwner?._tag !== 'active') return Effect.void
+      return interruptOwned(current, reason)
+    })
 
   const bindSession = (value: WorkSession): void => {
     removeSessionListener?.()
@@ -767,7 +787,7 @@ export const createWorkExtension = ({
   return {
     factory,
     bindSession,
-    runningWork,
+    running,
     stopAll,
     close,
   }

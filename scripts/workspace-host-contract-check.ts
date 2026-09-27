@@ -17,7 +17,8 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceSelection,
 } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost, workControlsOf } from '../src/workspace-host.ts'
+import { makeWorkspaceHost } from '../src/workspace-host.ts'
+import { WorkError } from '../src/work-domain.ts'
 import { WorkspaceRpcResponseSchema } from '../src/workspace-protocol.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import {
@@ -196,27 +197,23 @@ await claim(
       assert.ok(workspaceCommand, 'the host registered /workspace')
       const resume = `resume ${target.taskId} --workspace ${target.workspaceId}`
 
-      host.setWorkControls(
-        workControlsOf({
-          runningWork: () => Promise.reject(new Error('fixture listing failed')),
-          stopAll: async () => undefined,
-        })
-      )
+      host.setWorkControls({
+        running: Effect.fail(new WorkError({ message: 'fixture listing failed' })),
+        stopAll: () => Effect.void,
+      })
       await workspaceCommand(resume, context)
-      host.setWorkControls(
-        workControlsOf({
-          runningWork: async () => [
-            {
-              taskId: 'fixture-work',
-              attemptId: 'fixture-attempt',
-              kind: 'process',
-              status: 'running',
-              cwd: current.path,
-            },
-          ],
-          stopAll: () => Promise.reject(new Error('fixture stop failed')),
-        })
-      )
+      host.setWorkControls({
+        running: Effect.succeed([
+          {
+            taskId: 'fixture-work',
+            attemptId: 'fixture-attempt',
+            kind: 'process',
+            status: 'running',
+            cwd: current.path,
+          },
+        ]),
+        stopAll: () => Effect.fail(new WorkError({ message: 'fixture stop failed' })),
+      })
       await workspaceCommand(resume, context)
       await workspaceCommand('switch', context)
 
