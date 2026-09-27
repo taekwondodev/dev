@@ -12,8 +12,10 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
+import type { WorkspaceAttachment } from '../src/workspace-domain.ts'
 import {
   loadInstalledPi,
   makeClaims,
@@ -194,6 +196,83 @@ try {
     }
   )
   await opened.close()
+
+  // Pi replaces the session while the work tool is still being admitted: its teardown waits
+  // for the running tool, so the rebind reaches the host during the replacement.
+  for (const replacement of ['new', 'resume'] as const)
+    await claim(
+      `a /${replacement} that starts while a contended work call is being admitted withdraws the rebind: the next session stays usable and the old conversation can be resumed`,
+      async () => {
+        const steps = scripted([[workProcess]])
+        const racing = await makeOfflineModel({
+          pi,
+          importFromPi,
+          fixture,
+          id: `host-session-${replacement}`,
+          next: steps.next,
+        })
+        const other = storedConversation(racing, lead)
+        const raceManager = pi.SessionManager.create(lead, sessionDir)
+        const raceConversation = conversationAt(raceManager)
+        const raced = await lifecycle.attach({ conversation: raceConversation, cwd: lead })
+        let started: Promise<unknown> | undefined
+        let runtimeRef: Pi.AgentSessionRuntime | undefined
+        const admitting: WorkspaceAttachment = new Proxy(raced.effect, {
+          get: (target, key) =>
+            key === 'authorize'
+              ? (operation: Parameters<WorkspaceAttachment['authorize']>[0]) =>
+                  started === undefined && operation.kind === 'write'
+                    ? Effect.promise(async () => {
+                        started =
+                          replacement === 'new'
+                            ? runtimeRef?.newSession()
+                            : runtimeRef?.switchSession(other.file)
+                        await sleep(150)
+                      }).pipe(Effect.andThen(target.authorize(operation)))
+                    : target.authorize(operation)
+              : Reflect.get(target, key, target),
+        })
+        const race = await openHostRuntime({
+          pi,
+          packageRoot: packageInfo.root,
+          lifecycle: lifecycle.effect,
+          attachment: admitting,
+          dataHome,
+          sessionDir,
+          agentDir,
+          manager: raceManager,
+          cwd: lead,
+          repositoryRoot,
+          offline: racing,
+        })
+        runtimeRef = race.runtime
+        try {
+          await race.runtime.session.prompt('Run the tests in the background.')
+          await waitFor('the replacement', async () => started)
+          assert.deepEqual(await started, { cancelled: false })
+          await waitFor(
+            'the next session to leave the parked state',
+            async () => (race.host.isParked() ? undefined : true),
+            40,
+            50
+          )
+          const before = steps.calls()
+          await race.runtime.session.prompt('Are you there?')
+          await race.runtime.session.waitForIdle()
+          assert.ok(steps.calls() > before, 'a prompt in the next session reaches the model')
+          assert.deepEqual(
+            (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
+            [],
+            'the withdrawn switch is not left pending'
+          )
+          const resumed = await lifecycle.attach({ conversation: raceConversation, cwd: lead })
+          assert.equal(resolve(resumed.binding.cwd), resolve(lead))
+          await resumed.close()
+        } finally {
+          await race.close()
+        }
+      }
+    )
 } finally {
   await squatter.close()
   await lifecycle.close()

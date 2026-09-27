@@ -74,7 +74,11 @@ export interface WorkspaceHost {
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
   isParked(): boolean
-  requestRebind(handoff: WorkspaceHandoff, context: ExtensionContext): void
+  requestRebind(
+    handoff: WorkspaceHandoff,
+    source: WorkspaceAttachment,
+    context: ExtensionContext
+  ): void
   prepareRuntime(input: {
     readonly sessionManager: SessionManager
     readonly cwd: string
@@ -127,6 +131,8 @@ interface ConversationIdentity {
 }
 
 const hostFailure = (message: string) => new WorkspaceHostError({ message })
+const pendingSwitchNotice =
+  'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
   Effect.tryPromise({
     try: operation,
@@ -283,6 +289,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let closed = false
   let pending: PendingTransition | undefined
   let invokingHandoffSwitch = false
+  let replacing = false
   let workControls: WorkspaceWorkControls | undefined
   let runtimePreparationSerial = 0
   let pendingReopen:
@@ -458,13 +465,30 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
   }
 
-  const withdrawUnstarted = (transition: PendingTransition) =>
-    transition.transitionSource
-      .handoff(transition.handoff, () => Effect.succeed('cancelled' as const))
+  const withdraw = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
+    source
+      .handoff(handoff, () => Effect.succeed('cancelled' as const))
       .pipe(Effect.catchIf(isWithdrawn, () => Effect.void))
+  const withdrawOrReport = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
+    withdraw(source, handoff).pipe(
+      Effect.catch(error =>
+        Effect.sync(() =>
+          notify(
+            currentContext,
+            `Workspace handoff could not be withdrawn; the conversation stays parked in the authority. ${error.message}`,
+            'error'
+          )
+        )
+      )
+    )
 
   const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (pending !== transition || reached(transition, 'switch-started')) return
+    if (transition.transitionSource !== activeAttachment) {
+      pending = undefined
+      parked = false
+      return yield* withdrawOrReport(transition.transitionSource, transition.handoff)
+    }
     const performed = yield* Effect.exit(
       Effect.gen(function* () {
         capturePendingInput(transition.context)
@@ -516,7 +540,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     // The host never acted, so the authority can keep the last confirmed binding.
     const alreadyWithdrawn = isWithdrawn(error) ? Effect.void : Effect.fail(error)
     const withdrawn = yield* Effect.exit(
-      reached(transition, 'handoff-sent') ? alreadyWithdrawn : withdrawUnstarted(transition)
+      reached(transition, 'handoff-sent')
+        ? alreadyWithdrawn
+        : withdraw(transition.transitionSource, transition.handoff)
     )
     if (Exit.isFailure(withdrawn)) {
       process.stderr.write(
@@ -545,9 +571,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     handoff: WorkspaceHandoff,
     origin: PendingTransition['origin'],
     context: ExtensionContext,
-    immediate: boolean
+    immediate: boolean,
+    source: WorkspaceAttachment = activeAttachment
   ): void => {
-    if (pending) return
+    // A rebind that reaches the host while Pi replaces the session, or from an attachment that
+    // is no longer active, would run against the wrong runtime, so the authority takes it back.
+    if (pending || parked || replacing || source !== activeAttachment) {
+      runDeferred(withdrawOrReport(source, handoff))
+      return
+    }
     parked = true
     const transition: PendingTransition = {
       handoff,
@@ -827,7 +859,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     switchOptions: Parameters<AgentSessionRuntime['switchSession']>[1]
   ) {
     if (invokingHandoffSwitch) return yield* fromPi(() => rawSwitch(sessionFile, switchOptions))
-    if (parked || pending) return { cancelled: true }
+    if (parked || pending) {
+      notify(currentContext, pendingSwitchNotice, 'warning')
+      return { cancelled: true }
+    }
     const previousSerial = runtimePreparationSerial
     let staged: WorkspaceAttachment | undefined
     let stagedKey: string | undefined
@@ -949,7 +984,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (reason !== 'reload') yield* shell.stop
     if (reason !== 'quit' || reached(pending, 'handoff-sent')) return
     if (pending) {
-      const withdrawn = yield* Effect.exit(withdrawUnstarted(pending))
+      const withdrawn = yield* Effect.exit(withdraw(pending.transitionSource, pending.handoff))
       if (Exit.isFailure(withdrawn)) {
         parked = true
         notify(
@@ -1104,7 +1139,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
     isParked: () => parked,
-    requestRebind: (handoff, context) => requestHandoff(handoff, 'tool-call', context, false),
+    requestRebind: (handoff, source, context) =>
+      requestHandoff(handoff, 'tool-call', context, false, source),
     prepareRuntime,
     commitRuntime,
     bindRuntime(nextRuntime) {
@@ -1113,13 +1149,35 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawSwitch = nextRuntime.switchSession.bind(nextRuntime)
       nextRuntime.switchSession = (sessionFile, switchOptions) =>
         runPromise(switchSession(rawSwitch, sessionFile, switchOptions))
+      const refusedWhileSwitching = (): boolean => {
+        if (!parked && !pending) return false
+        notify(currentContext, pendingSwitchNotice, 'warning')
+        return true
+      }
+      const replacingDuring = <A>(replace: () => Promise<A>): Promise<A> => {
+        replacing = true
+        return replace().finally(() => {
+          replacing = false
+        })
+      }
+      const rawNew = nextRuntime.newSession.bind(nextRuntime)
+      nextRuntime.newSession = newOptions =>
+        refusedWhileSwitching()
+          ? Promise.resolve({ cancelled: true })
+          : replacingDuring(() => rawNew(newOptions))
+      const rawFork = nextRuntime.fork.bind(nextRuntime)
+      nextRuntime.fork = (entryId, forkOptions) =>
+        refusedWhileSwitching()
+          ? Promise.resolve({ cancelled: true })
+          : replacingDuring(() => rawFork(entryId, forkOptions))
       const rawImport = nextRuntime.importFromJsonl.bind(nextRuntime)
       nextRuntime.importFromJsonl = (inputPath, cwdOverride) => {
         const source = resolve(inputPath)
         const stored = resolve(nextRuntime.session.sessionManager.getSessionDir(), basename(source))
-        return stored === source
-          ? runPromise(switchSession(rawSwitch, source, undefined))
-          : rawImport(inputPath, cwdOverride)
+        if (stored === source) return runPromise(switchSession(rawSwitch, source, undefined))
+        return refusedWhileSwitching()
+          ? Promise.resolve({ cancelled: true })
+          : replacingDuring(() => rawImport(inputPath, cwdOverride))
       }
     },
     setWorkControls(controls) {

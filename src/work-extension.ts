@@ -172,7 +172,11 @@ export const createWorkExtension = ({
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
-    readonly requestRebind: (handoff: WorkspaceHandoff, context: Pi.ExtensionContext) => void
+    readonly requestRebind: (
+      handoff: WorkspaceHandoff,
+      source: WorkspaceAttachment,
+      context: Pi.ExtensionContext
+    ) => void
   }
   readonly isWorkspaceParked: () => boolean
 }): WorkExtension => {
@@ -205,7 +209,8 @@ export const createWorkExtension = ({
               workspace: {
                 lifecycle: workspace.lifecycle,
                 attachment: workspace.attachment,
-                requestRebind: handoff => workspace.requestRebind(handoff, context ?? ctx),
+                requestRebind: handoff =>
+                  workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
               },
               onChange: () => scheduleStatus(),
               onOutcome: attempt => {
