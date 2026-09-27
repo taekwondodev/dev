@@ -116,7 +116,7 @@ Mostra informazioni e statistiche della sessione Pi corrente. Per i lavori deleg
 /new
 ```
 
-Avvia una nuova sessione. Il lavoro in background legato alla precedente viene interrotto, non trasferito alla nuova; anche i processi lanciati dalle shell della sessione precedente (bash del lead e comandi `!`), compresi quelli in background, vengono terminati.
+Avvia una nuova sessione. Il lavoro in background legato alla precedente viene interrotto, non trasferito alla nuova; anche i processi lanciati dalle shell della sessione precedente (bash del lead e comandi `!`), compresi quelli in background, vengono terminati. Se l'autorità dei workspace rifiuta la nuova conversazione, la sessione precedente è già chiusa quando arriva il rifiuto: è un limite noto, raro perché richiede un guasto dell'autorità.
 
 ```text
 /resume
@@ -134,7 +134,7 @@ Apre l'albero della conversazione per navigare tra i suoi rami. La navigazione i
 /fork
 ```
 
-Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione, che parte nel workspace attuale della conversazione di partenza, anche se nel frattempo è stata spostata in un altro worktree. Il fork è però una conversazione nuova e non eredita il task: se quel workspace appartiene al task della conversazione di partenza, la prima scrittura del fork lo sposta in un worktree nuovo creato dal commit corrente, senza i file non committati, che restano alla conversazione di partenza. Committa prima di `/fork` se vuoi portarli con te. Come `/new`, termina i processi delle shell della sessione che lasci. Mentre è in corso un cambio di workspace, `/new`, `/fork`, `/resume` e `/import` vengono rifiutati con un avviso.
+Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione, che parte nel workspace attuale della conversazione di partenza, anche se nel frattempo è stata spostata in un altro worktree. Il fork è però una conversazione nuova e non eredita il task: se quel workspace appartiene al task della conversazione di partenza, la prima scrittura del fork lo sposta in un worktree nuovo creato dal commit corrente, senza i file non committati, che restano alla conversazione di partenza. Committa prima di `/fork` se vuoi portarli con te. Come `/new`, termina i processi delle shell della sessione che lasci, e un rifiuto dell'autorità arriva quando la sessione è già chiusa. Mentre è in corso un cambio di workspace, `/new`, `/fork`, `/resume` e `/import` vengono rifiutati con un avviso.
 
 ```text
 /import <file.jsonl>
