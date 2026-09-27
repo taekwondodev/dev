@@ -301,7 +301,9 @@ export const createWorkExtension = ({
     if (current !== undefined)
       setImmediate(() => {
         if (context === current && sessionOwner === currentOwner)
-          void Effect.runPromise(updateStatus(current)).catch(notifyError)
+          Effect.runFork(
+            updateStatus(current).pipe(Effect.catch(cause => Effect.sync(() => notifyError(cause))))
+          )
       })
   }
 
