@@ -8,6 +8,8 @@ Read [AGENTS.md](../AGENTS.md), [CONTEXT.md](../CONTEXT.md), and the ADRs applic
 
 Use the shared `dev-cycle` workflow rather than duplicating its rules here. Consult [references](references.md) when choosing Pi APIs, and verify the installed package before relying on an API shape.
 
+For a clean or isolated setup, verify that the installed Pi loader can discover and invoke the required shared skills.
+
 ```bash
 cd ~/Developer/dev
 npm ci
@@ -29,10 +31,15 @@ Checks and setup regenerate an ignored module-resolution link to the declaration
 - `src/pi-runtime.ts` resolves the installed global Pi SDK and its declarations.
 - `src/preferences.ts` owns private data paths, the global Pi auth path and profile preferences.
 - `src/profiles.ts` composes selected guidance and skill paths; portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
+- `src/workspace-*.ts` implement the workspace authority: the engine's guarded entry point and its modules (platform helpers, SQLite, records, gates, authority root and catalog, conversation state, admission, allocation, transitions, attachment, inspect), the worker and its Effect client, Git and path identity, the lead shell, native writes and the Pi host integration. `src/error-text.ts` is the one error-to-text helper. `src/process-family.ts` holds the process table, launch gate and family observation step shared with background work. Read [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) before changing admission, shells or the tool gate, and its [Effect boundary](adr/0005-scoped-runtime-coordination.md#effect-boundary) before adding Promise code.
 - `src/work-*.ts` and `src/pi-child.ts` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership, and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) for the lifecycle authority and transactional storage contract.
 - `config/crew-dispatch.json` is versioned policy; `.dev/` is private dev state and `~/.pi/agent/auth.json` is the shared Pi credential store. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
 
-The shared workflow library remains external and authoritative under [ADR 0001](adr/0001-shared-workflow-library-source-of-truth.md). Updating this integration does not authorize edits to other profiles, credentials or shared assets.
+## Private-state relocation
+
+Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home, and leave historical conversation text unchanged. Credentials, other profiles and shared assets remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries).
+
+Git exclusion is not access control: keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance checks](COMMANDS-TERMINAL.md#manutenzione-dalla-cartella-di-installazione).
 
 ## Existing verification commands
 
@@ -44,6 +51,13 @@ npm run smoke
 `lint` checks TypeScript, dedicated Effect diagnostics in strict mode, then Oxlint, propagating each failure. It does not fix or format source. In particular, `floatingEffect` is an error at the terminal boundary, not merely an editor diagnostic. `lint:fix` and `format` are separate opt-in mutations; `format:check` checks formatting without writing. Oxlint remains unpatched. The TypeScript-only capitalization/error-constructor exceptions accommodate Effect's Schema and service factories; Effect diagnostics still check their usage.
 
 The smoke command checks launcher diagnostics with temporary private storage; it is not evidence of a successful model response.
+
+```bash
+npm run workspace:check
+npm run workspace:tui
+```
+
+`workspace:check` exercises the workspace authority, real process adapters, the host's `/workspace` failure notices and its session flows (a background process's rebind, fork and import) in headless Pi sessions, and the launcher on disposable storage under the system temporary directory; the launcher check injects a lifecycle through `launch` instead of opening the fixed per-account authority. `workspace:tui` drives the real Pi TUI in a pseudo-terminal, once against a stub lifecycle for fault injection and once against the real authority. Both build every runtime with the launcher's `makeRuntimeFactory`, replacing only the model with an offline scripted one and adding an observer extension. One driver, `scripts/run-workspace-pty-probes.py`, runs both from a table of the keys each probe expects at its markers, filled with the fixture identities the probe prints; pass `stub` or `real` to run one. It is Python only because Node has no built-in pseudo-terminal; everything it drives is TypeScript. Neither probe touches the real workspace authority, credentials or the network.
 
 ```bash
 npm run dev:probe

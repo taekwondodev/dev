@@ -10,7 +10,7 @@ Sostituisci `<id>` con l'identificativo del tentativo mostrato da `/work`.
 /work
 ```
 
-Mostra i tentativi della sessione e il loro stato. Per i writer con worktree registrato mostra anche il percorso e il promemoria di pulizia: `blocked` se terminazione o rilascio della prenotazione non sono confermati, `review-required` se occorre verificarne integrazione e uso attuale prima dell'eventuale rimozione. Non significa “puoi cancellarlo”. Equivale a `/work list`.
+Mostra i tentativi della sessione e il loro stato. Per i writer con worktree registrato mostra anche il percorso e un promemoria: `blocked` finché l'uso del workspace non è risolto, altrimenti `review-required`, perché prenotazione e file restano conservati indipendentemente dal tentativo. Non significa “puoi cancellarlo”. Equivale a `/work list`.
 
 ```text
 /work dispatch
@@ -56,6 +56,28 @@ Interrompe tutti i tentativi della sessione attiva e invalida la consegna dei lo
 
 Per **avviare** un comando in background o un figlio, chiedilo al lead in linguaggio naturale: l'agente usa il tool `work` con i parametri necessari. Non esiste un comando `/work start`.
 
+## Workspace: comandi di dev
+
+```text
+/workspace
+```
+
+Elenca task e workspace del repository corrente, segnando il binding attuale e la directory effettiva. Equivale a `/workspace list`.
+
+```text
+/workspace inspect <task>
+```
+
+Mostra i workspace noti di quel task esatto con usi, operazioni in sospeso e prossima azione sicura. Un workspace con usi lasciati aperti da una sessione dev terminata appare come `blocked` e ne elenca gli usi. Non modifica nulla.
+
+```text
+/workspace resume <task> --workspace <workspace>
+```
+
+Sposta la conversazione corrente sul workspace conservato di quel task, senza importare altre conversazioni e senza trasferire file. Se il task ha più workspace e ometti `--workspace`, apre un selettore; Esc annulla senza effetti. Se in questa conversazione ci sono lavori o comandi shell ancora attivi, chiede conferma perché verranno fermati prima del cambio.
+
+I comandi `!` e `!!` e il tool bash del lead girano nel workspace della conversazione tramite la shell di dev: il checkout resta occupato finché i processi avviati non risultano terminati. Un processo che si stacca in una nuova sessione sfugge a questa osservazione. Finché un processo della conversazione è vivo, il cambio di workspace e lo spostamento in un worktree separato vengono rifiutati con la guida per attenderlo o fermarlo con `/work stop`. Una lettura accanto a un writer mostra un avviso. I tool che dev non ha classificato per effetto vengono rifiutati con un motivo visibile. Le estensioni e i pacchetti in `.pi/` di una cartella fidata vengono caricati secondo il trust di Pi.
+
 ## Sessione e modello: comandi nativi di Pi
 
 Questi sono i principali comandi nativi, verificati nell'installazione Pi 0.86.1; non sono aggiunte di `dev`.
@@ -94,13 +116,13 @@ Mostra informazioni e statistiche della sessione Pi corrente. Per i lavori deleg
 /new
 ```
 
-Avvia una nuova sessione. Il lavoro in background legato alla precedente viene interrotto, non trasferito alla nuova.
+Avvia una nuova sessione. Il lavoro in background legato alla precedente viene interrotto, non trasferito alla nuova; anche i processi lanciati dalle shell della sessione precedente (bash del lead e comandi `!`), compresi quelli in background, vengono terminati. Se l'autorità dei workspace rifiuta la nuova conversazione, la sessione precedente è già chiusa quando arriva il rifiuto: è un limite noto, raro perché richiede un guasto dell'autorità.
 
 ```text
 /resume
 ```
 
-Apre la selezione di un'altra sessione da riprendere. Il cambio interrompe il lavoro in background della sessione che stai lasciando.
+Apre la selezione di un'altra sessione da riprendere. Il cambio interrompe il lavoro in background e termina i processi delle shell della sessione che stai lasciando. Se la conversazione ripresa ha uno switch di workspace mai arrivato all'host, lo ritira e riparte dall'ultimo workspace confermato. Se la conversazione è ancora aperta in un'altra sessione di `dev`, anche di un'altra installazione, `/resume` viene rifiutato. Se il workspace legato alla conversazione, o la sua cartella di lavoro, è stato rimosso, `/resume` viene rifiutato senza ricrearlo. In entrambi i casi resti nella sessione corrente e l'avviso indica il file della conversazione, la cui cronologia resta intatta, e suggerisce di ripartire da un checkout esistente con `dev --cwd PATH`.
 
 ```text
 /tree
@@ -112,7 +134,13 @@ Apre l'albero della conversazione per navigare tra i suoi rami. La navigazione i
 /fork
 ```
 
-Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione.
+Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione, che parte nel workspace attuale della conversazione di partenza, anche se nel frattempo è stata spostata in un altro worktree. Il fork è però una conversazione nuova e non eredita il task: se quel workspace appartiene al task della conversazione di partenza, la prima scrittura del fork lo sposta in un worktree nuovo creato dal commit corrente, senza i file non committati, che restano alla conversazione di partenza. Committa prima di `/fork` se vuoi portarli con te. Come `/new`, termina i processi delle shell della sessione che lasci, e un rifiuto dell'autorità arriva quando la sessione è già chiusa. Mentre è in corso un cambio di workspace, `/new`, `/fork`, `/resume` e `/import` vengono rifiutati con un avviso.
+
+```text
+/import <file.jsonl>
+```
+
+Sostituisce la sessione corrente con una conversazione salvata. Se il file è già tra le sessioni di `dev`, vale come `/resume`: se la conversazione è aperta in un'altra sessione, l'import viene rifiutato. Se è una copia la cui cartella di lavoro non sta in un checkout Git, viene rifiutato prima di chiudere la sessione corrente e il file resta intatto. Se invece la cartella è in un checkout che l'autorità rifiuta, per esempio perché è stato sostituito, la sessione corrente è già chiusa quando arriva il rifiuto: è un limite noto.
 
 ```text
 /compact
@@ -124,7 +152,7 @@ Compatta il contesto della conversazione corrente tramite Pi.
 /reload
 ```
 
-Ricarica scorciatoie, estensioni, skill, prompt, temi e file di contesto. Non aggiorna il codice del checkout: per quello esiste `npm run update` nel terminale.
+Ricarica scorciatoie, estensioni, skill, prompt, temi e file di contesto. Non aggiorna il codice del checkout: per quello esiste `npm run update` nel terminale. I processi delle shell restano vivi e osservati; i lavori di `/work` invece vengono chiusi.
 
 ```text
 /hotkeys
@@ -136,4 +164,4 @@ Mostra le scorciatoie da tastiera disponibili.
 /quit
 ```
 
-Chiude Pi ed esegue lo shutdown del runtime, richiedendo l'arresto dei lavori posseduti. Non elimina le cartelle dei worktree né annulla le modifiche.
+Chiude Pi ed esegue lo shutdown del runtime, richiedendo l'arresto dei lavori posseduti e terminando i processi delle shell, anche in background. Non elimina le cartelle dei worktree né annulla le modifiche.

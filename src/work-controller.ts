@@ -16,16 +16,16 @@ import { createHash, randomUUID } from 'node:crypto'
 import { execFile, fork, spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { Writable } from 'node:stream'
+import type { Writable } from 'node:stream'
 import { promisify } from 'node:util'
 import {
   WorkDispatchError,
   WorkError,
+  WorkRebindRequired,
   WorkPersistenceError,
   WorkProtocolError,
   WorkSetupError,
-  AttemptId as AttemptIdSchema,
-  SessionId as SessionIdSchema,
+  asAttemptId,
   asGenerationId,
   asSessionId,
   asTaskId,
@@ -61,6 +61,23 @@ import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.t
 import { compactText, makeWorkStore, type WorkStore } from './work-store.ts'
 import { parseChildMessage } from './work-protocol.ts'
 import { globalPiAgentDir } from './preferences.ts'
+import {
+  observeFamily,
+  processGate,
+  processGateScript,
+  processTable,
+  rootIdentityReused,
+  transientRetry,
+} from './process-family.ts'
+import {
+  WorkspaceError,
+  WorkspaceProcessSchema,
+  type WorkspaceAttachment,
+  type WorkspaceExecutionFact,
+  type WorkspaceGrant,
+  type WorkspaceHandoff,
+  type WorkspaceLifecycle,
+} from './workspace-domain.ts'
 
 const execFilePromise = promisify(execFile)
 
@@ -78,8 +95,9 @@ interface Job {
   child?: ChildProcess
   gate?: Writable
   executionReleased: boolean
-  lease?: string
-  leaseRoot?: string
+  readonly workspace: WorkspaceGrant
+  observedProcesses?: string
+  workspaceLaunch: 'identity-unrecorded' | 'identity-recorded' | 'settled'
 }
 
 export interface WorkOwnerOptions {
@@ -87,6 +105,11 @@ export interface WorkOwnerOptions {
   readonly cwd: string
   readonly sessionId: string
   readonly profile: string
+  readonly workspace?: {
+    readonly lifecycle: WorkspaceLifecycle
+    readonly attachment: WorkspaceAttachment
+    readonly requestRebind: (handoff: WorkspaceHandoff) => void
+  }
   readonly onChange?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
 }
@@ -97,6 +120,7 @@ const errorMessage = (cause: unknown): string =>
 const toFailure = (cause: unknown): WorkFailure => {
   if (
     cause instanceof WorkError ||
+    cause instanceof WorkRebindRequired ||
     cause instanceof WorkDispatchError ||
     cause instanceof WorkPersistenceError ||
     cause instanceof WorkProtocolError ||
@@ -111,64 +135,6 @@ const requiredString = (value: string | undefined, name: string): string => {
   return value
 }
 
-const WriterLeaseSchema = Schema.Struct({
-  id: AttemptIdSchema,
-  controllerPid: Schema.Int,
-  cwd: Schema.String,
-  sessionId: SessionIdSchema,
-})
-type WriterLease = typeof WriterLeaseSchema.Type
-
-const writerLeaseMatches = (actual: WriterLease, expected: WriterLease): boolean =>
-  actual.id === expected.id &&
-  actual.controllerPid === expected.controllerPid &&
-  actual.cwd === expected.cwd &&
-  actual.sessionId === expected.sessionId
-
-const parseWriterLease = (value: string): WriterLease | undefined => {
-  try {
-    return Schema.decodeUnknownSync(WriterLeaseSchema)(JSON.parse(value))
-  } catch {
-    return undefined
-  }
-}
-
-const releaseWriterLease = (
-  fs: FileSystem.FileSystem,
-  path: string,
-  expected: WriterLease | undefined
-): Effect.Effect<string | undefined, never> =>
-  Effect.gen(function* () {
-    if (expected === undefined)
-      return `Writer lease retained: ${path}; expected owner is unavailable, inspect current worktree use`
-    const exists = yield* Effect.result(fs.exists(path))
-    if (exists._tag === 'Failure')
-      return `Writer lease retained: ${path}; existence could not be verified: ${errorMessage(exists.failure)}`
-    if (!exists.success)
-      return `Writer lease missing before release: ${path}; inspect current worktree use`
-    const info = yield* Effect.result(fs.stat(path))
-    if (info._tag === 'Failure')
-      return `Writer lease retained: ${path}; owner could not be verified: ${errorMessage(info.failure)}`
-    if (info.success.type !== 'File')
-      return `Writer lease retained: ${path}; expected a regular lease file, inspect current worktree use`
-    const contents = yield* Effect.result(fs.readFileString(path))
-    if (contents._tag === 'Failure')
-      return `Writer lease retained: ${path}; owner could not be read: ${errorMessage(contents.failure)}`
-    const actual = parseWriterLease(contents.success)
-    if (actual === undefined || !writerLeaseMatches(actual, expected))
-      return `Writer lease replaced or malformed: ${path}; inspect current worktree use`
-    const confirmedContents = yield* Effect.result(fs.readFileString(path))
-    if (confirmedContents._tag === 'Failure')
-      return `Writer lease retained: ${path}; owner could not be reverified: ${errorMessage(confirmedContents.failure)}`
-    const confirmed = parseWriterLease(confirmedContents.success)
-    if (confirmed === undefined || !writerLeaseMatches(confirmed, expected))
-      return `Writer lease replaced during release: ${path}; inspect current worktree use`
-    const removed = yield* Effect.result(fs.remove(path))
-    if (removed._tag === 'Failure')
-      return `Writer lease retained: ${path}: ${errorMessage(removed.failure)}`
-    return undefined
-  })
-
 const worktreeReminder = (record: AttemptRecord) => {
   if (!record.worktreePath) return undefined
   const blocked =
@@ -179,8 +145,8 @@ const worktreeReminder = (record: AttemptRecord) => {
     path: record.worktreePath,
     cleanup: blocked ? ('blocked' as const) : ('review-required' as const),
     guidance: blocked
-      ? 'Termination or reservation release is not confirmed. Do not remove this worktree.'
-      : 'Verify and integrate or preserve changes, check current worktree use, then seek authorization for removal. Dev does not delete worktrees; never force removal.',
+      ? 'Workspace use is unresolved. Preserve the worktree and inspect the durable task.'
+      : 'The task reservation and files are retained independently of this attempt. Inspect or explicitly resume the workspace; never force removal.',
   }
 }
 
@@ -297,38 +263,6 @@ const artifactState = (cwd: string): Effect.Effect<ArtifactState, never> =>
     Effect.orElseSucceed(() => ({ unavailable: true as const }))
   )
 
-const processTable = Effect.tryPromise({
-  try: async () => {
-    const { stdout } = await execFilePromise('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 2000,
-    })
-    return stdout.split('\n').flatMap(line => {
-      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/)
-      return !match || match[4].startsWith('Z')
-        ? []
-        : [
-            {
-              pid: Number(match[1]),
-              parent: Number(match[2]),
-              group: Number(match[3]),
-              birth: match[5],
-            },
-          ]
-    })
-  },
-  catch: cause => new WorkError({ message: errorMessage(cause), cause }),
-})
-
-const processGateScript = 'IFS= read -r _ <&3 || exit 125; exec 3<&-; exec /bin/bash -c "$1"'
-
-const processGate = (child: ChildProcess): Writable => {
-  const [, , , descriptor] = child.stdio
-  if (!(descriptor instanceof Writable)) throw new Error('Process execution gate is unavailable')
-  descriptor.on('error', () => undefined)
-  return descriptor
-}
-
 const abortChild = (child: ChildProcess | undefined, gate: Writable | undefined): void => {
   try {
     gate?.destroy()
@@ -339,16 +273,6 @@ const abortChild = (child: ChildProcess | undefined, gate: Writable | undefined)
     child.kill('SIGKILL')
   } catch {}
 }
-
-const rootIdentityReused = (
-  table: readonly ProcessObservation[],
-  root: ProcessObservation | undefined,
-  exited: boolean
-): boolean =>
-  root !== undefined &&
-  table.some(
-    item => item.pid === root.pid && (root.birth === undefined ? exited : item.birth !== root.birth)
-  )
 
 const hasProcessExitEvidence = (job: Job): boolean =>
   job.lifecycle.hasExited() ||
@@ -382,6 +306,7 @@ class WorkOwnerImpl implements WorkOwnerService {
   private readonly cwd: string
   private readonly dataHome: string
   private readonly profile: string
+  private readonly workspace: WorkOwnerOptions['workspace']
   private readonly onChange: () => void
   private readonly onOutcome: (attempt: AttemptView) => void
   private readonly store: WorkStore
@@ -402,6 +327,7 @@ class WorkOwnerImpl implements WorkOwnerService {
     this.cwd = resolve(options.cwd)
     this.dataHome = resolve(options.dataHome)
     this.profile = options.profile
+    this.workspace = options.workspace
     this.onChange = options.onChange ?? (() => undefined)
     this.onOutcome = options.onOutcome ?? (() => undefined)
   }
@@ -622,8 +548,49 @@ class WorkOwnerImpl implements WorkOwnerService {
     const self = this
     return Effect.gen(function* () {
       const reservation = yield* self.reserve(request.taskId, request.kind)
+      let grant: WorkspaceGrant | undefined
+      let installed = false
       const result = yield* Effect.gen(function* () {
-        const cwd = yield* self.resolveCwd(request.cwd)
+        const requestedCwd = yield* self.resolveCwd(request.cwd)
+        const id = asAttemptId(randomUUID())
+        const { workspace } = self
+        if (workspace === undefined)
+          return yield* new WorkError({
+            message: 'Workspace authority is unavailable; no work was started',
+          })
+        const execution = {
+          sessionId: reservation.sessionId,
+          taskKey: reservation.taskId,
+          attemptId: id,
+          generation: reservation.generation,
+          logs: self.store.plannedLogPath(id, 'stdout'),
+        }
+        const admission = yield* Effect.gen(function* () {
+          const allocated = yield* workspace.attachment.authorize(
+            request.kind === 'process'
+              ? { kind: 'write', cwd: requestedCwd }
+              : {
+                  kind: request.access === 'read-only' ? 'read' : 'delegated-write',
+                  cwd: requestedCwd,
+                  execution,
+                }
+          )
+          if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
+          return yield* workspace.attachment.authorize({
+            kind: 'opaque',
+            within: allocated.grant,
+            execution,
+          })
+        }).pipe(Effect.mapError(toFailure))
+        if (admission.kind === 'rebind') {
+          workspace.requestRebind(admission.handoff)
+          return yield* new WorkRebindRequired({
+            message: `Workspace handoff required before starting work: ${admission.handoff.reason}. No command was executed; obtain a fresh host tool decision.`,
+          })
+        }
+        const { grant: selected } = admission
+        grant = selected
+        const { cwd } = selected
         const artifactAtStart = yield* artifactState(cwd)
         yield* self.assertPrepared(
           reservation.sessionId,
@@ -631,10 +598,15 @@ class WorkOwnerImpl implements WorkOwnerService {
           reservation.taskId,
           request.kind
         )
-        const record = yield* self.store.create({
+        const record = yield* self.store.create(id, {
           kind: request.kind,
           cwd,
           controllerPid: process.pid,
+          workflowTaskId: grant.taskId,
+          workspaceId: grant.workspaceId,
+          workspaceUseId: grant.useId,
+          workspaceAcquisitionId: grant.acquisitionId,
+          ...(grant.origin === 'managed' ? { worktreePath: grant.checkout } : {}),
           owner: {
             sessionId: reservation.sessionId,
             taskId: reservation.taskId,
@@ -660,6 +632,8 @@ class WorkOwnerImpl implements WorkOwnerService {
           settled,
           events,
           executionReleased: false,
+          workspace: grant,
+          workspaceLaunch: 'identity-unrecorded',
         }
         yield* self.admission.withPermit(
           Effect.try({
@@ -671,6 +645,7 @@ class WorkOwnerImpl implements WorkOwnerService {
                 request.kind
               )
               self.active.set(record.id, job)
+              installed = true
               self.latest.set(reservation.taskId, record.id)
             },
             catch: cause => new WorkError({ message: errorMessage(cause), cause }),
@@ -680,7 +655,21 @@ class WorkOwnerImpl implements WorkOwnerService {
           .launch(job, request, cwd, reservation.generation)
           .pipe(Effect.ensuring(Deferred.succeed(prepared, undefined)))
         return viewOf(job.lifecycle.snapshot())
-      }).pipe(Effect.ensuring(Effect.sync(() => self.reservations.delete(reservation.taskId))))
+      }).pipe(
+        Effect.tapError(() => {
+          const selected = grant
+          const { workspace } = self
+          return !installed && selected !== undefined && workspace !== undefined
+            ? workspace.attachment
+                .reportExecution(selected, {
+                  kind: 'launch-failed',
+                  reason: 'Admission ended before any process was spawned',
+                })
+                .pipe(Effect.mapError(toFailure))
+            : Effect.void
+        }),
+        Effect.ensuring(Effect.sync(() => self.reservations.delete(reservation.taskId)))
+      )
       return result
     }).pipe(Effect.uninterruptible, Effect.mapError(toFailure))
   }
@@ -904,34 +893,19 @@ class WorkOwnerImpl implements WorkOwnerService {
     const self = this
     let stdout: number | undefined
     let stderr: number | undefined
-    let acquiredLease: { readonly path: string; readonly root: string } | undefined
     const { token } = job.lifecycle
     const launchCore = Effect.gen(function* () {
       const record = job.lifecycle.snapshot()
-      if (request.kind === 'agent' && request.access === 'write') {
-        yield* self.assertPrepared(
-          token.sessionId,
-          generation,
-          record.owner.taskId,
-          request.kind,
-          record.id
-        )
-        const lease = yield* self.writerLease(cwd, record.id)
-        acquiredLease = lease
-        yield* self.withPreparedPermit(
-          token.sessionId,
-          generation,
-          record.owner.taskId,
-          request.kind,
-          record.id,
-          Effect.gen(function* () {
-            job.lease = lease.path
-            job.leaseRoot = lease.root
-            const outcome = job.lifecycle.transition.setLease(token, lease.root)
-            if (outcome.changed) yield* self.store.save(outcome.snapshot)
-          })
-        )
-      }
+      yield* self.reportWorkspace(job, {
+        kind: 'launch-intent',
+        execution: {
+          sessionId: record.owner.sessionId,
+          taskKey: record.owner.taskId,
+          attemptId: record.id,
+          generation: record.owner.generation,
+          logs: self.store.logPath(record.id, 'stdout'),
+        },
+      })
       yield* self.withPreparedPermit(
         token.sessionId,
         generation,
@@ -1027,7 +1001,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               ),
             catch: cause => new WorkError({ message: errorMessage(cause), cause }),
           })
-          const initialTable = yield* processTable
+          const initialTable = yield* processTable.pipe(Effect.mapError(toFailure))
           const root = initialTable.find(item => item.pid === childPid)
           const known = ownedProcesses(initialTable, childPid, [])
           if (
@@ -1039,15 +1013,21 @@ class WorkOwnerImpl implements WorkOwnerService {
               message: 'Child root identity could not be captured before execution release',
             })
           yield* self.commitUnlocked(job, () => job.lifecycle.transition.processes(token, known))
+          const processIdentity = yield* Schema.decodeEffect(WorkspaceProcessSchema)(root).pipe(
+            Effect.mapError(toFailure)
+          )
+          yield* self.reportWorkspace(job, { kind: 'spawned', process: processIdentity })
+          job.workspaceLaunch = 'identity-recorded'
+          yield* self.reportWorkspace(job, { kind: 'started' })
           if (job.gate !== undefined) {
             const { gate } = job
+            job.executionReleased = true
             yield* Effect.try({
               try: () => gate.end('\n'),
               catch: cause => new WorkError({ message: errorMessage(cause), cause }),
             })
             job.gate = undefined
           }
-          job.executionReleased = true
         })
       )
       if (request.kind === 'agent')
@@ -1058,6 +1038,7 @@ class WorkOwnerImpl implements WorkOwnerService {
           request.kind,
           record.id,
           Effect.gen(function* () {
+            job.executionReleased = true
             yield* sendIpc(child, {
               type: 'start',
               request: {
@@ -1069,11 +1050,11 @@ class WorkOwnerImpl implements WorkOwnerService {
                 prompt: request.prompt,
                 skills: request.skills,
                 owner: record.owner,
+                workspace: job.workspace,
                 model: request.selection?.model,
                 effort: request.selection?.effort,
               },
             })
-            job.executionReleased = true
           })
         )
       yield* self.withPreparedPermit(
@@ -1089,7 +1070,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       )
       self.onChange()
     }).pipe(
-      Effect.catch(error => self.failLaunch(job, error, acquiredLease)),
+      Effect.catch(error => self.failLaunch(job, error)),
       Effect.ensuring(
         Effect.sync(() => {
           if (stdout !== undefined) closeSync(stdout)
@@ -1100,11 +1081,7 @@ class WorkOwnerImpl implements WorkOwnerService {
     return launchCore
   }
 
-  private failLaunch(
-    job: Job,
-    cause: unknown,
-    lease: { readonly path: string; readonly root: string } | undefined
-  ): Effect.Effect<never, WorkFailure> {
+  private failLaunch(job: Job, cause: unknown): Effect.Effect<never, WorkFailure> {
     // oxlint-disable-next-line typescript/no-this-alias
     const self = this
     return Effect.gen(function* () {
@@ -1113,14 +1090,14 @@ class WorkOwnerImpl implements WorkOwnerService {
         const { gate } = job
         job.gate = undefined
         yield* Effect.sync(() => abortChild(job.child, gate))
-      }
-      if (job.lease === undefined && lease !== undefined) {
-        job.lease = lease.path
-        job.leaseRoot = lease.root
-        yield* self.commitBestEffort(job, () =>
-          job.lifecycle.transition.setLease(token, lease.root)
+        yield* Effect.ignore(
+          self.settleUnrecordedLaunch(
+            job,
+            `The launch failed before user code was released: ${errorMessage(cause)}`
+          )
         )
       }
+
       yield* self.commitBestEffort(job, () =>
         job.lifecycle.transition.processError(token, errorMessage(cause))
       )
@@ -1157,6 +1134,43 @@ class WorkOwnerImpl implements WorkOwnerService {
         cwd: record.cwd,
         sessionDir: join(self.dataHome, 'child-sessions'),
       }).pipe(Effect.mapError(toFailure))
+      if (message.type === 'workspace-check') {
+        const { workspace } = self
+        const { child } = job
+        if (workspace === undefined || child === undefined)
+          return yield* new WorkError({ message: 'Child workspace owner is unavailable' })
+        const checked = yield* Effect.result(
+          Effect.gen(function* () {
+            if (
+              message.useId !== job.workspace.useId ||
+              (message.operation !== 'read' && job.workspace.access !== 'write')
+            )
+              return yield* new WorkError({
+                message: 'Child workspace grant does not match the requested operation',
+              })
+            yield* workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure))
+            yield* Effect.try({
+              try: () =>
+                self.assertPreparedUnsafe(
+                  token.sessionId,
+                  token.generation,
+                  record.owner.taskId,
+                  record.kind,
+                  record.id
+                ),
+              catch: toFailure,
+            })
+          })
+        )
+        yield* sendIpc(child, {
+          type: 'workspace-checked',
+          requestId: message.requestId,
+          useId: job.workspace.useId,
+          allowed: checked._tag === 'Success',
+          ...(checked._tag === 'Failure' ? { reason: errorMessage(checked.failure) } : {}),
+        })
+        return
+      }
       if (message.type === 'ready' || message.type === 'progress') {
         const outcome = yield* self.commitCurrentBestEffort(job, token, () =>
           job.lifecycle.transition.progress(token, {
@@ -1240,21 +1254,23 @@ class WorkOwnerImpl implements WorkOwnerService {
               )
             return
           }
-          const table = yield* processTable
-          const root = job.lifecycle.rootProcess()
-          if (rootIdentityReused(table, root, hasProcessExitEvidence(job))) {
-            yield* self.failObservation(
-              job,
-              new Error('Root process identity was reused; cleanup is unknown')
-            )
-            return
-          }
-          const known = ownedProcesses(
-            table,
-            job.lifecycle.pid(),
-            job.lifecycle.knownProcesses(),
-            root
+          yield* self
+            .settleUnrecordedLaunch(job, 'The launch failed before user code was released')
+            .pipe(Effect.retry(transientRetry))
+          const family = yield* observeFamily(
+            {
+              pid: job.lifecycle.pid(),
+              root: job.lifecycle.rootProcess(),
+              known: job.lifecycle.knownProcesses(),
+              reported: job.observedProcesses,
+            },
+            {
+              rootExited: hasProcessExitEvidence(job),
+              report: processes => self.reportWorkspace(job, { kind: 'observed', processes }),
+            }
           )
+          job.observedProcesses = family.reported
+          const { known } = family
           yield* self.commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
           if (known.length === 0) {
             yield* self.finish(job)
@@ -1271,11 +1287,40 @@ class WorkOwnerImpl implements WorkOwnerService {
     )
   }
 
+  // A launch whose identity the authority never acknowledged is settled as never launched,
+  // since its user code was not released. Only the authority's refusal proves the identity
+  // was recorded after all, and then the family is observed like any other.
+  private settleUnrecordedLaunch(job: Job, reason: string): Effect.Effect<void, WorkFailure> {
+    if (job.workspaceLaunch !== 'identity-unrecorded') return Effect.void
+    return this.reportWorkspace(job, { kind: 'launch-failed', reason }).pipe(
+      Effect.map(() => {
+        job.workspaceLaunch = 'settled'
+      }),
+      Effect.catchIf(
+        failure =>
+          failure.cause instanceof WorkspaceError && failure.cause.outcome === 'review-required',
+        () =>
+          Effect.sync(() => {
+            job.workspaceLaunch = 'identity-recorded'
+          })
+      )
+    )
+  }
+
   private failObservation(job: Job, cause: unknown): Effect.Effect<void, never> {
     // oxlint-disable-next-line typescript/no-this-alias
     const self = this
     const { token } = job.lifecycle
     return Effect.gen(function* () {
+      yield* self.reportWorkspace(job, { kind: 'unknown', reason: errorMessage(cause) }).pipe(
+        Effect.catch(error =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `Workspace uncertainty could not be recorded: ${errorMessage(error)}\n`
+            )
+          })
+        )
+      )
       if (job.lifecycle.isTerminal()) {
         if (cause instanceof WorkPersistenceError) yield* self.notePersistenceFailure(job, cause)
         yield* Queue.shutdown(job.events).pipe(Effect.ignore)
@@ -1309,21 +1354,21 @@ class WorkOwnerImpl implements WorkOwnerService {
       if (!job.lifecycle.isActive()) return
       const record = job.lifecycle.snapshot()
       let cleanupError: string | undefined
-      const { lease } = job
-      if (lease !== undefined) {
-        const expectedRoot = job.leaseRoot ?? record.worktreePath
-        const expectedOwner =
-          expectedRoot === undefined
-            ? undefined
-            : {
-                id: record.id,
-                controllerPid: record.controllerPid,
-                cwd: expectedRoot,
-                sessionId: self.sessionId,
-              }
-        const releaseError = yield* releaseWriterLease(self.fs, lease, expectedOwner)
-        if (releaseError !== undefined) cleanupError = releaseError
-      }
+      const observation = yield* Effect.result(
+        self
+          .reportWorkspace(
+            job,
+            job.workspaceLaunch === 'identity-recorded'
+              ? {
+                  kind: 'quiescent',
+                  reason: 'The owned process group and every tracked descendant were observed gone',
+                }
+              : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
+          )
+          .pipe(Effect.retry(transientRetry))
+      )
+      if (observation._tag === 'Failure') cleanupError = errorMessage(observation.failure)
+
       const completedAt = yield* Clock.currentTimeMillis
       const artifactAtCompletion = yield* artifactState(record.cwd)
       const changedDuringRun = changedArtifact(record.artifactAtStart, artifactAtCompletion)
@@ -1522,49 +1567,17 @@ class WorkOwnerImpl implements WorkOwnerService {
     })
   }
 
-  private writerLease(
-    cwd: string,
-    id: AttemptId
-  ): Effect.Effect<{ readonly path: string; readonly root: string }, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const [root, common, primary, gitDir, leadRoot] = yield* Effect.all([
-        git(cwd, ['rev-parse', '--show-toplevel']),
-        git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']),
-        git(self.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']),
-        git(cwd, ['rev-parse', '--absolute-git-dir']),
-        git(self.cwd, ['rev-parse', '--show-toplevel']),
-      ])
-      const worktreeRoot = yield* self.fs.realPath(root)
-      const primaryRoot = yield* self.fs.realPath(leadRoot)
-      const commonRoot = yield* self.fs.realPath(common)
-      const primaryCommon = yield* self.fs.realPath(primary)
-      const absoluteGitDir = yield* self.fs.realPath(gitDir)
-      if (
-        worktreeRoot === primaryRoot ||
-        commonRoot !== primaryCommon ||
-        absoluteGitDir === commonRoot
-      ) {
-        return yield* new WorkError({
-          message:
-            'A writer needs a separate linked worktree of the lead repository, never its primary checkout',
-        })
-      }
-      const directory = join(self.dataHome, 'work', 'writers')
-      yield* self.fs.makeDirectory(directory, { recursive: true, mode: 0o700 })
-      yield* self.fs.chmod(directory, 0o700)
-      const path = join(
-        directory,
-        `${createHash('sha256').update(worktreeRoot).digest('hex')}.lock`
-      )
-      yield* self.fs.writeFileString(
-        path,
-        JSON.stringify({ id, controllerPid: process.pid, cwd: root, sessionId: self.sessionId }),
-        { flag: 'wx', mode: 0o600 }
-      )
-      return { path, root: worktreeRoot }
-    }).pipe(Effect.mapError(cause => new WorkError({ message: errorMessage(cause), cause })))
+  private reportWorkspace(
+    job: Job,
+    fact: WorkspaceExecutionFact
+  ): Effect.Effect<void, WorkFailure> {
+    const { workspace } = this
+    if (workspace === undefined)
+      return Effect.fail(new WorkError({ message: 'Workspace authority is unavailable' }))
+    if (job.workspaceLaunch === 'settled') return Effect.void
+    return workspace.attachment
+      .reportExecution(job.workspace, fact)
+      .pipe(Effect.mapError(toFailure))
   }
 
   private recordFor(id: AttemptId): Effect.Effect<AttemptRecord, WorkFailure> {

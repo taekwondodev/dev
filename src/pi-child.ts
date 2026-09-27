@@ -12,6 +12,8 @@ import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi, type PiApi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getProfile } from './profiles.ts'
+import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
+import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError>()('ChildError', {
   message: Schema.String,
@@ -43,13 +45,6 @@ const SAFE_GIT_OPTIONS = [
   'protocol.allow=never',
 ] as const
 
-const AbsolutePath = Schema.NonEmptyString.pipe(
-  Schema.check(
-    Schema.makeFilter(value =>
-      isAbsolute(value) && !value.includes('\0') ? undefined : 'must be an absolute path'
-    )
-  )
-)
 const OwnerAttemptId = Schema.NonEmptyString.pipe(Schema.brand('dev/child/AttemptId'))
 
 export const ChildRequestEnvelope = Schema.Struct({
@@ -58,6 +53,7 @@ export const ChildRequestEnvelope = Schema.Struct({
   profile: Schema.NonEmptyString,
   sessionDir: AbsolutePath,
   access: Schema.Literals(ACCESS_MODES),
+  workspace: WorkspaceGrantSchema,
   prompt: Schema.NonEmptyString,
   owner: Schema.Struct({
     sessionId: SessionId,
@@ -182,6 +178,12 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
   )
   const fs = yield* FileSystem.FileSystem
   const cwdExists = yield* fs.exists(request.cwd).pipe(Effect.mapError(toChildError))
+  if (
+    request.workspace.cwd !== request.cwd ||
+    request.workspace.access !== (request.access === 'write' ? 'write' : 'read')
+  )
+    return yield* new ChildError({ message: 'Child request does not match its workspace grant' })
+  yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
       message: `request.cwd must be an existing directory: ${request.cwd}`,
@@ -754,6 +756,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
           ].filter(Boolean),
           ...(skillSelection.filter ? { skillsOverride: skillSelection.filter } : {}),
           noExtensions: request.access === 'read-only',
+          extensionFactories: [
+            { name: 'dev:child-workspace', factory: childWorkspaceExtension(request.workspace) },
+          ],
         },
       }),
     catch: toChildError,

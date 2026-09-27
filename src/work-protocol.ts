@@ -1,5 +1,6 @@
 import { Effect, Predicate, Schema } from 'effect'
 import { relative, isAbsolute } from 'node:path'
+import { WorkspaceId } from './workspace-domain.ts'
 import {
   ContextUsageSchema,
   ChildResourcesSchema,
@@ -94,6 +95,12 @@ export const ChildMessageSchema = Schema.Union([
   ReadyMessageSchema,
   ProgressMessageSchema,
   ResultMessageSchema,
+  Schema.Struct({
+    type: Schema.Literal('workspace-check'),
+    requestId: WorkspaceId,
+    useId: WorkspaceId,
+    operation: Schema.Literals(['read', 'write']),
+  }),
 ])
 
 export type ChildMessage = typeof ChildMessageSchema.Type
@@ -118,6 +125,7 @@ const validateMessageContext = (
   message: ChildMessage,
   options: { readonly cwd: string; readonly sessionDir: string }
 ): ChildMessage => {
+  if (message.type === 'workspace-check') return message
   if (message.sessionFile !== undefined)
     validateSessionFile(message.sessionFile, options.sessionDir)
   if (message.resources !== undefined) validateResources(message.resources, options.cwd)

@@ -80,22 +80,23 @@ tool boundary, not an OS sandbox. Project instructions and the base Pi prompt
 remain in place; profile guidance and requested skills are composed
 explicitly. A child is not given the lead's conversation.
 
-For a writer, prepare a separate linked worktree of the lead repository and pass
-its directory. The controller refuses the lead checkout, the primary checkout,
-a different repository and a worktree already leased by another dev attempt in
-the same data home. It does not create or remove worktrees and cannot constrain
-an arbitrary shell to that directory. Never use this as isolation from hostile
-code or another process operating outside this controller.
+Every launch is admitted by the workspace authority before it spawns. A delegated
+writer receives its own managed worktree, created at the exact current commit of
+the lead checkout without copying modified, untracked or ignored files, and a
+task reservation that outlives the attempt. A background command runs in the lead
+checkout under the lead's writer admission. Either use ends only when the owned
+process group and every tracked descendant are observed gone; a process that
+detaches into its own session escapes that observation, and lost observation
+leaves the workspace blocked. This coordinates cooperating dev runtimes. It
+cannot constrain an arbitrary shell to its directory and is not isolation from
+hostile code or processes outside dev.
 
-Once a writer reservation succeeds, the attempt records the verified worktree
-root, even when its working directory is a subdirectory. `/work`, inspection and
-automatic outcomes expose that root with a cleanup reminder. `blocked` means
-termination or reservation release is unconfirmed; `review-required` means the
-lead must verify current use and integrate or preserve changes before considering
-user-authorized removal. Neither status authorizes deletion. Dev never removes
-the worktree, and the recorded path is not a live existence or exclusivity check.
-Older attempts without a recorded root do not invent one. The reminder follows
-attempt retention; it is not a global inventory of all worktrees.
+The attempt records the managed worktree path. `/work`, inspection and automatic
+outcomes show it with a reminder: `blocked` while the workspace use is unresolved,
+otherwise `review-required`, because the reservation and files are retained
+independently of the attempt. Neither status authorizes deletion. Dev never
+removes the worktree, and the recorded path is not a live existence or
+exclusivity check. Use `dev workspace inspect <task>` for the durable state.
 
 The `work` tool description teaches this protocol to the lead in every dev
 session; outcome messages repeat the relevant cleanup guidance. No per-project
@@ -113,8 +114,8 @@ outcome; signal delivery alone is insufficient. Esc while the lead is running
 also interrupts related work; use `/work stop` while idle.
 Separate dev TUI sessions can run concurrently on different conversations. A
 cancelled switch or fork preview does not close the current session's work;
-confirmed shutdown still does. Conversation ownership does not widen writer
-worktree leases into an OS isolation boundary. See [ADR 0005](adr/0005-scoped-runtime-coordination.md).
+confirmed shutdown still does. Workspace admission coordinates these sessions;
+it is not an OS isolation boundary. See [ADR 0005](adr/0005-scoped-runtime-coordination.md).
 
 Subscription-exhaustion reports block new agents and automatic continuation.
 Existing local commands may finish, and their outcomes still arrive automatically
@@ -168,9 +169,9 @@ from a live WAL store and assume it is a complete backup.
 
 After a crash, retained records describe observations, not a survival guarantee.
 An absent PID does not reveal an exit code; a present PID does not prove identity.
-Reopening never restarts work or kills a recovered PID. An unresolved writer
-lease is retained conservatively; inspect its record and actual processes before
-manually releasing its path. Recovery guidance can consume `list`, `inspect`,
+Reopening never restarts work or kills a recovered PID. An unresolved workspace
+use is retained conservatively and keeps its workspace blocked for writers; no
+recovery command exists yet. Recovery guidance can consume `list`, `inspect`,
 log references and process observations without a second workflow database.
 
 Artifact comparisons cover tracked Git changes. Untracked files, unavailable Git

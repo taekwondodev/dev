@@ -1,4 +1,4 @@
-import { Effect, ManagedRuntime, Schema } from 'effect'
+import { Cause, Effect, ManagedRuntime, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { WorkOwner, makeWorkOwnerLayer } from './work-controller.ts'
 import {
@@ -14,8 +14,15 @@ import {
   type WorkFailure,
   type WorkOwnerService,
   type WorkSetupError,
+  type WorkSnapshot,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
+import type {
+  WorkspaceAttachment,
+  WorkspaceHandoff,
+  WorkspaceLifecycle,
+} from './workspace-domain.ts'
+import { errorText } from './error-text.ts'
 
 const WorkInputSchema = Schema.Struct({
   action: Schema.Literals(['process', 'delegate', 'dispatch', 'list', 'inspect', 'cancel']),
@@ -101,6 +108,10 @@ const withOwner = <A>(
 const summary = (record: AttemptView) => ({
   id: record.id,
   taskId: record.owner.taskId,
+  workflowTaskId: record.workflowTaskId,
+  workspaceId: record.workspaceId,
+  workspaceUseId: record.workspaceUseId,
+  cwd: record.cwd,
   status: record.status,
   kind: record.kind,
   worktree: record.worktree,
@@ -136,15 +147,38 @@ const outcomeAttempts = (
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
   readonly bindSession: (session: WorkSession) => void
+  readonly running: Effect.Effect<
+    readonly {
+      readonly taskId: string
+      readonly attemptId: string
+      readonly kind: 'process' | 'agent'
+      readonly status: string
+      readonly cwd: string
+    }[],
+    WorkFailure
+  >
+  readonly stopAll: (reason: string) => Effect.Effect<void, WorkFailure>
   readonly close: (reason?: string) => Promise<void>
 }
 
 export const createWorkExtension = ({
   dataHome,
   profile,
+  workspace,
+  isWorkspaceParked,
 }: {
   readonly dataHome: string
   readonly profile: string
+  readonly workspace: {
+    readonly lifecycle: WorkspaceLifecycle
+    readonly attachment: WorkspaceAttachment
+    readonly requestRebind: (
+      handoff: WorkspaceHandoff,
+      source: WorkspaceAttachment,
+      context: Pi.ExtensionContext
+    ) => void
+  }
+  readonly isWorkspaceParked: () => boolean
 }): WorkExtension => {
   let sessionOwner: OwnerState | undefined
   let session: WorkSession | undefined
@@ -155,6 +189,7 @@ export const createWorkExtension = ({
   let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
   let deliveryScheduled = false
   const pending = new Map<AttemptId, PendingOutcome>()
+  const rebindRefusals = new Set<string>()
 
   const ownerRuntime = (
     ctx: Pi.ExtensionContext
@@ -171,6 +206,12 @@ export const createWorkExtension = ({
               profile,
               cwd: ctx.cwd,
               sessionId,
+              workspace: {
+                lifecycle: workspace.lifecycle,
+                attachment: workspace.attachment,
+                requestRebind: handoff =>
+                  workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
+              },
               onChange: () => scheduleStatus(),
               onOutcome: attempt => {
                 if (
@@ -194,25 +235,23 @@ export const createWorkExtension = ({
         return sessionOwner.runtime
       },
       catch: cause =>
-        cause instanceof WorkError
-          ? cause
-          : new WorkError({
-              message: cause instanceof Error ? cause.message : String(cause),
-              cause,
-            }),
+        cause instanceof WorkError ? cause : new WorkError({ message: errorText(cause), cause }),
     })
 
+  const runOwned = <A>(
+    ctx: Pi.ExtensionContext,
+    effect: Effect.Effect<A, WorkFailure, WorkOwner>
+  ): Effect.Effect<A, WorkFailure> =>
+    ownerRuntime(ctx).pipe(
+      Effect.flatMap(runtime => runtime.contextEffect),
+      Effect.flatMap(services => Effect.provideContext(effect, services))
+    )
   const run = <A>(
     ctx: Pi.ExtensionContext,
     effect: Effect.Effect<A, WorkFailure, WorkOwner>
-  ): Promise<A> => Effect.runPromise(ownerRuntime(ctx)).then(runtime => runtime.runPromise(effect))
+  ): Promise<A> => Effect.runPromise(runOwned(ctx, effect))
 
-  const showStatus = async (ctx: Pi.ExtensionContext): Promise<void> => {
-    if (!ctx.hasUI) return
-    const snapshot = await run(
-      ctx,
-      withOwner(owner => owner.snapshot)
-    )
+  const statusText = (snapshot: WorkSnapshot): string | undefined => {
     const counts = new Map<string, number>()
     for (const record of snapshot.records)
       counts.set(record.status, (counts.get(record.status) ?? 0) + 1)
@@ -238,8 +277,7 @@ export const createWorkExtension = ({
         return `${record.owner.taskId}: ${record.model ?? 'model pending'} context ${pressure}`
       })
       .join(' · ')
-    ctx.ui.setStatus(
-      'dev/work',
+    return (
       [
         states,
         models,
@@ -251,6 +289,17 @@ export const createWorkExtension = ({
         .join(' | ') || undefined
     )
   }
+  const updateStatus = (ctx: Pi.ExtensionContext): Effect.Effect<void, WorkFailure> =>
+    ctx.hasUI
+      ? runOwned(
+          ctx,
+          withOwner(owner => owner.snapshot)
+        ).pipe(
+          Effect.flatMap(snapshot =>
+            Effect.sync(() => ctx.ui.setStatus('dev/work', statusText(snapshot)))
+          )
+        )
+      : Effect.void
 
   const scheduleStatus = (): void => {
     const current = context
@@ -258,7 +307,11 @@ export const createWorkExtension = ({
     if (current !== undefined)
       setImmediate(() => {
         if (context === current && sessionOwner === currentOwner)
-          void showStatus(current).catch(notifyError)
+          Effect.runFork(
+            updateStatus(current).pipe(
+              Effect.catchCause(cause => Effect.sync(() => notifyError(Cause.squash(cause))))
+            )
+          )
       })
   }
 
@@ -267,14 +320,18 @@ export const createWorkExtension = ({
     if (context?.hasUI) context.ui.notify(`Background work: ${message}`, 'error')
   }
 
-  const interrupt = async (ctx: Pi.ExtensionContext, reason: string): Promise<void> => {
-    pending.clear()
-    await run(
-      ctx,
-      withOwner(owner => owner.interrupt(reason))
+  const interruptOwned = (ctx: Pi.ExtensionContext, reason: string) =>
+    Effect.sync(() => pending.clear()).pipe(
+      Effect.andThen(
+        runOwned(
+          ctx,
+          withOwner(owner => owner.interrupt(reason))
+        )
+      ),
+      Effect.andThen(updateStatus(ctx))
     )
-    await showStatus(ctx)
-  }
+  const interrupt = (ctx: Pi.ExtensionContext, reason: string): Promise<void> =>
+    Effect.runPromise(interruptOwned(ctx, reason))
 
   const deliveryScope = (): DeliveryScope | undefined =>
     sessionOwner?._tag === 'active' && session !== undefined && context !== undefined
@@ -384,6 +441,7 @@ export const createWorkExtension = ({
       items,
       canReactivate:
         reactivation === 'ready' &&
+        !isWorkspaceParked() &&
         !status.agentsBlocked &&
         items.every(
           ({ item, publication }) => publication.state === 'ready' && !item.attempt.deliveryError
@@ -461,6 +519,10 @@ export const createWorkExtension = ({
 
   const execute = (input: WorkInput): Effect.Effect<unknown, WorkFailure, WorkOwner> =>
     withOwner(owner => {
+      if (isWorkspaceParked() && (input.action === 'process' || input.action === 'delegate'))
+        return Effect.fail(
+          new WorkError({ message: 'Workspace host is parked; no background work was started' })
+        )
       if (input.action === 'process') {
         const request: ProcessStartRequest = {
           taskId: input.taskId ?? '',
@@ -542,6 +604,39 @@ export const createWorkExtension = ({
       return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
     })
 
+  const running: WorkExtension['running'] = Effect.suspend(() => {
+    const current = context
+    if (!current || sessionOwner?._tag !== 'active') return Effect.succeed([])
+    return runOwned(
+      current,
+      withOwner(owner => owner.snapshot)
+    ).pipe(
+      Effect.map(snapshot =>
+        snapshot.records
+          .filter(
+            record =>
+              record.status === 'running' ||
+              record.status === 'waiting' ||
+              record.status === 'unknown'
+          )
+          .map(record => ({
+            taskId: record.owner.taskId,
+            attemptId: record.id,
+            kind: record.kind,
+            status: record.status,
+            cwd: record.cwd,
+          }))
+      )
+    )
+  })
+
+  const stopAll: WorkExtension['stopAll'] = reason =>
+    Effect.suspend(() => {
+      const current = context
+      if (!current || sessionOwner?._tag !== 'active') return Effect.void
+      return interruptOwned(current, reason)
+    })
+
   const bindSession = (value: WorkSession): void => {
     removeSessionListener?.()
     session = value
@@ -598,7 +693,7 @@ export const createWorkExtension = ({
           { triggerTurn: false }
         )
       }
-      await showStatus(ctx)
+      await Effect.runPromise(updateStatus(ctx))
     })
     pi.on('agent_before_settle', async (event, ctx) => {
       idleDeliveryReady = false
@@ -640,7 +735,7 @@ export const createWorkExtension = ({
     })
     pi.on('agent_end', async event => {
       const last = event.messages.findLast(message => message.role === 'assistant')
-      if (last?.stopReason === 'aborted' && context !== undefined) {
+      if (last?.stopReason === 'aborted' && context !== undefined && !isWorkspaceParked()) {
         if (reactivation !== 'suspended') reactivation = 'awaiting-success'
         await interrupt(context, 'lead agent interrupted')
       }
@@ -668,16 +763,33 @@ export const createWorkExtension = ({
       name: 'work',
       label: 'Background work',
       description:
-        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId identifies the workflow task; each launch creates a distinct attempt. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; writers require a pre-created separate linked worktree. worktree.path records its verified root. Cleanup blocked means termination or reservation release is unconfirmed; review-required asks for evaluation, not deletion. Report retained worktrees in your handoff, verify current use and preserve or integrate changes before user-authorized removal; never force removal. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
+        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId is a controller-local key, distinct from the durable workflowTaskId; each launch creates an attempt and a workspace use. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; WorkspaceLifecycle allocates a distinct workspace for each delegated writer without copying dirty files. Admission may require a host rebind: no command then runs, and a fresh decision is required. worktree.path records the managed checkout. A workspace use ends only when the whole owned process group is observed gone; a process that detaches into its own session escapes that observation, and lost observation leaves the workspace blocked for explicit recovery. Report retained workspaces in your handoff; do not release reservations or remove worktrees through this tool. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
       parameters,
-      async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
-        const result = await run(ctx, decodeInput(input).pipe(Effect.flatMap(execute)))
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result ?? {}) }],
-          details: result ?? {},
-        }
-      },
+      execute: (toolCallId, input, _signal, _onUpdate, ctx) =>
+        Effect.runPromise(
+          runOwned(ctx, decodeInput(input).pipe(Effect.flatMap(execute))).pipe(
+            Effect.map(result => ({
+              content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}) }],
+              details: result ?? {},
+            })),
+            Effect.catchTag('WorkRebindRequired', refusal =>
+              Effect.sync(() => {
+                rebindRefusals.add(toolCallId)
+                return {
+                  content: [{ type: 'text' as const, text: refusal.message }],
+                  details: {},
+                  terminate: true,
+                }
+              })
+            )
+          )
+        ),
     })
+    // Pi ends a batch only on results that ask to terminate, and a thrown error cannot, so the
+    // rebind refusal returns normally and is marked an error here (ADR 0005, known limit).
+    pi.on('tool_result', event =>
+      rebindRefusals.delete(event.toolCallId) ? { isError: true } : undefined
+    )
     pi.registerCommand('work', {
       description:
         'Background work: list | dispatch | stop [attempt] | inspect <attempt> [stdout|stderr|result] [offset]',
@@ -712,6 +824,8 @@ export const createWorkExtension = ({
   return {
     factory,
     bindSession,
+    running,
+    stopAll,
     close,
   }
 }

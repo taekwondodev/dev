@@ -1,41 +1,9 @@
 # ADR 0003: Version dispatch and keep private runtime data local
 
-Status: accepted by the user's follow-up to issue #12.
+Version dispatch with the implementation and resolve it from the installed module, independently of the working project and data home. Keep private runtime state in checkout-local, Git-ignored `.dev/` by default; data-home overrides change private storage only. This makes clones reproduce model policy without distributing history or credentials, and lets code updates change policy without moving private data. Invalid dispatch must fail explicitly rather than silently substitute a model policy.
 
-## Decision
+Authentication is account-wide: global Pi, dev and its children share `~/.pi/agent/auth.json`, independently of data-home overrides. Keeping one canonical credential store avoids copies drifting apart when the user logs in from either environment.
 
-Keep `config/crew-dispatch.json` in the dev checkout and version it with the
-implementation. Resolve it relative to the installed module, never relative to
-the edited project or the runtime data home. A missing or invalid dispatch file
-must not silently replace the configured model policy.
+Workspace ownership is the narrow exception to checkout-local runtime storage. The [approved authority](https://github.com/taekwondodev/dev/issues/31#issuecomment-5798717688) uses `<OS-account home>/Library/Application Support/dev/workspace-authority/`, obtained from the OS account rather than `HOME`, installation location or a data-home override. Compatible installations must discover the same reservations and stable gates, otherwise changing data home could admit competing writers. Managed worktrees live under that authority; existing checkouts, Pi conversations, credentials and other profiles are not relocated. Initial support is local, non-synchronized macOS storage, not multi-machine coordination.
 
-Keep dev-local settings, preferences, sessions, logs, caches and work
-reservations inside checkout-local `.dev/`, with `/.dev/` excluded by
-`.gitignore`. Pi authentication is account-wide, so both global Pi and dev use
-the canonical `~/.pi/agent/auth.json`; it is not copied into `.dev/` or changed
-by `DEV_DATA_HOME` and `--data-home`. Those options remain explicit overrides
-for dev-private storage only. Children receive the resolved data home from the
-lead but use the same global Pi auth path. Shared workflow rules remain in
-their existing library.
-
-## Consequences
-
-- Clones reproduce model routing but do not receive credentials or history.
-- Switching between global Pi and dev no longer requires separate auth files;
-  `/login` updates the shared canonical file.
-- Updating or rolling back code can change dispatch policy, not private data.
-- Maintenance conservatively requires the explicit `/.dev/` ignore rule, no
-  negation rules and no tracked `.dev/` contents in the target revision when
-  local `.dev/` exists. Crossing the previous layout requires explicit
-  private-data relocation first.
-- Ignoring a directory is not an access-control boundary. Never force-add it;
-  arbitrary explicit data-home overrides need their own storage protection.
-- Migration requires stopped runtimes, a metadata inventory and preservation
-  of file permissions. Move only dev-owned state; do not read credential
-  contents, rewrite conversations or migrate other profiles.
-- Operational pointers into the moved data home need relocation. Historical
-  conversation text remains unchanged, including any old paths it mentions.
-
-This supersedes the earlier placement of dispatch and private state together
-outside the checkout. It does not change ADR 0001's shared-workflow ownership
-or ADR 0002's process ownership and cancellation model.
+The [dispatch and storage decision](https://github.com/taekwondodev/dev/issues/12#issuecomment-5730822083) supersedes the former external data-home layout. [Shared authentication](https://github.com/taekwondodev/dev/commit/9e7feb3ca51e3835c2f6800e2591c540567b42b0) is the subsequent credential-boundary decision. Before relocating state, read [private-state relocation](../DEVELOPMENT.md#private-state-relocation); before changing revisions, read [maintenance](../COMMANDS-TERMINAL.md#manutenzione-dalla-cartella-di-installazione).

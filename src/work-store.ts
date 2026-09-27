@@ -4,11 +4,9 @@ import { constants } from 'node:fs'
 import { lstat, mkdir, open as openNative, readdir, rm } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { randomUUID } from 'node:crypto'
 import {
   WorkPersistenceError,
   AttemptRecordSchema,
-  asAttemptId,
   isAttemptId,
   type AttemptId,
   type AttemptRecord,
@@ -38,6 +36,10 @@ type AttemptRecordCreateFields = Pick<AttemptRecord, 'kind' | 'cwd' | 'controlle
       | 'access'
       | 'selection'
       | 'worktreePath'
+      | 'workflowTaskId'
+      | 'workspaceId'
+      | 'workspaceUseId'
+      | 'workspaceAcquisitionId'
       | 'artifactAtStart'
       | 'artifactAtCompletion'
       | 'changedDuringRun'
@@ -124,7 +126,9 @@ const safeRecord = (value: unknown): AttemptRecord => {
   if (
     record.id !== record.owner.attemptId ||
     (record.worktreePath !== undefined &&
-      (record.kind !== 'agent' || record.access !== 'write' || !isAbsolute(record.worktreePath))) ||
+      (!isAbsolute(record.worktreePath) ||
+        record.workspaceId === undefined ||
+        record.workspaceUseId === undefined)) ||
     !Number.isSafeInteger(record.revision) ||
     record.revision < 0 ||
     !Number.isFinite(record.startedAt) ||
@@ -513,6 +517,7 @@ class WorkerClient {
 
 export interface WorkStore {
   readonly create: (
+    id: AttemptId,
     fields: AttemptRecordCreateFields & {
       readonly owner: Omit<OwnerIdentity, 'attemptId'> & { readonly attemptId?: never }
     }
@@ -526,6 +531,7 @@ export interface WorkStore {
     },
     WorkPersistenceError
   >
+  readonly plannedLogPath: (id: AttemptId, stream: LogStream) => string
   readonly logPath: (id: AttemptId, stream: LogStream) => string
   readonly saveResult: (id: AttemptId, text: string) => Effect.Effect<void, WorkPersistenceError>
   readonly readLog: (
@@ -563,6 +569,7 @@ class WorkStoreImpl implements WorkStore {
   }
 
   create(
+    id: AttemptId,
     fields: AttemptRecordCreateFields & {
       readonly owner: Omit<OwnerIdentity, 'attemptId'> & { readonly attemptId?: never }
     }
@@ -578,7 +585,6 @@ class WorkStoreImpl implements WorkStore {
     return Effect.gen(function* () {
       if (snapshot.owner.sessionId !== self.sessionId)
         return yield* persistenceError(new WorkerRpcError('session-mismatch'))
-      const id = asAttemptId(randomUUID())
       const startedAt = yield* Clock.currentTimeMillis
       const record = yield* Effect.try({
         try: () =>
@@ -668,10 +674,17 @@ class WorkStoreImpl implements WorkStore {
     )
   }
 
-  logPath(id: AttemptId, stream: LogStream): string {
-    if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream) || !this.authorized.has(id))
+  // A recovery locator can be recorded before admission creates the transient
+  // attempt. It conveys no permission to open a log or read another session.
+  plannedLogPath(id: AttemptId, stream: LogStream): string {
+    if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
       throw new Error('Choose a valid attempt and log stream')
     return join(this.root, id, LOG_FILES[stream])
+  }
+
+  logPath(id: AttemptId, stream: LogStream): string {
+    if (!this.authorized.has(id)) throw new Error('Choose a valid attempt and log stream')
+    return this.plannedLogPath(id, stream)
   }
 
   saveResult(id: AttemptId, text: string): Effect.Effect<void, WorkPersistenceError> {

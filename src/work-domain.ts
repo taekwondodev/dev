@@ -168,6 +168,10 @@ const AttemptRecordFactFields = {
   access: Schema.optional(WorkAccessSchema),
   selection: Schema.optional(retainedFields(DispatchProfileSchema)),
   worktreePath: Schema.optional(Schema.String),
+  workflowTaskId: Schema.optional(Schema.String),
+  workspaceId: Schema.optional(Schema.String),
+  workspaceUseId: Schema.optional(Schema.String),
+  workspaceAcquisitionId: Schema.optional(Schema.String),
   artifactAtStart: Schema.optional(ArtifactStateSchema),
   artifactAtCompletion: Schema.optional(ArtifactStateSchema),
   changedDuringRun: Schema.optional(Schema.Union([Schema.Boolean, Schema.Literal('unknown')])),
@@ -341,8 +345,14 @@ export class WorkDispatchError extends Schema.TaggedError<WorkDispatchError>()(
   }
 ) {}
 
+export class WorkRebindRequired extends Schema.TaggedError<WorkRebindRequired>()(
+  'WorkRebindRequired',
+  { message: Schema.String }
+) {}
+
 export type WorkFailure =
   | WorkError
+  | WorkRebindRequired
   | WorkSetupError
   | WorkPersistenceError
   | WorkProtocolError

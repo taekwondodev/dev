@@ -56,7 +56,6 @@ export interface AttemptLifecycle {
   readonly rootProcess: () => ProcessObservation | undefined
   readonly transition: {
     readonly spawn: (token: AttemptLifecycleToken, pid: number) => LifecycleTransition
-    readonly setLease: (token: AttemptLifecycleToken, root: string) => LifecycleTransition
     readonly progress: (
       token: AttemptLifecycleToken,
       facts: AttemptProgressFacts
@@ -240,10 +239,6 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
         }
         return didChange
       })
-    },
-    setLease(eventToken: AttemptLifecycleToken, root: string): LifecycleTransition {
-      if (!active(eventToken)) return rejected()
-      return changed(() => put('worktreePath', root))
     },
     progress(eventToken: AttemptLifecycleToken, facts: AttemptProgressFacts): LifecycleTransition {
       if (
@@ -458,9 +453,10 @@ export const ownedProcesses = (
   } else if (
     currentRoot === undefined &&
     rememberedRoot !== undefined &&
-    rememberedRoot.birth !== undefined &&
-    known.some(item => sameIdentity(item, rememberedRoot))
+    rememberedRoot.birth !== undefined
   ) {
+    // The exited root's group stays ours until it is observed empty: while any member
+    // lives, no new process can take its ID, so a member reparented away is still found.
     for (const item of table) {
       if (item.group === rememberedRoot.group && !blocked.has(item.pid) && !selected.has(item.pid))
         selected.set(item.pid, item)

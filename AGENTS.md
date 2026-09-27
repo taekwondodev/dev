@@ -77,7 +77,3 @@ See `docs/agents/triage-labels.md`.
 
 This is a single-context repository. Read `CONTEXT.md` and applicable ADRs
 before changing related behavior. See `docs/agents/domain.md`.
-
-The glossary and domain terms are in `CONTEXT.md`. The decision to keep shared
-workflow guidance in the shared library is in
-`docs/adr/0001-shared-workflow-library-source-of-truth.md`.

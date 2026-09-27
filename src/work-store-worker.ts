@@ -211,7 +211,9 @@ const validRecord = (record: AttemptRecord): AttemptRecord => {
   if (
     record.id !== record.owner.attemptId ||
     (record.worktreePath !== undefined &&
-      (record.kind !== 'agent' || record.access !== 'write' || !isAbsolute(record.worktreePath))) ||
+      (!isAbsolute(record.worktreePath) ||
+        record.workspaceId === undefined ||
+        record.workspaceUseId === undefined)) ||
     !Number.isSafeInteger(record.revision) ||
     record.revision < 0 ||
     !Number.isFinite(record.startedAt) ||
