@@ -162,7 +162,7 @@ export const selectWorkspace = (
     from: toBinding(state.binding),
     target: grant,
     reason:
-      'Explicit task selection. The existing workspace and its contents will be used; no files are transferred.',
+      'Explicit task selection. The existing workspace and its contents will be used; no files are transferred',
   }
   const targetLease: GrantLease = {
     grant,

@@ -699,6 +699,10 @@ try {
         taskId: delegatedGrant.taskId!,
         workspaceId: delegatedGrant.workspaceId,
       })
+      assert.equal(
+        transition.reason,
+        'Explicit task selection. The existing workspace and its contents will be used; no files are transferred'
+      )
       await handoffSession.close()
       const reopenedHandoff = await reopened.attach({
         conversation: conversation('handoff-session'),
