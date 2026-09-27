@@ -10,10 +10,11 @@ import {
   realpathSync,
   unlinkSync,
 } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { Effect, Predicate, Schema, Semaphore, type Scope } from 'effect'
+import { canonicalConversationFile } from './workspace-paths.ts'
 
 export class CoordinationError extends Schema.TaggedError<CoordinationError>()(
   'CoordinationError',
@@ -61,9 +62,8 @@ const privateDirectory = (path: string): void => {
 }
 
 const canonicalConversation = (path: string): string => {
-  const absolute = resolve(path)
-  if (!existsSync(absolute)) return join(realpathSync(dirname(absolute)), basename(absolute))
-  const canonical = realpathSync(absolute)
+  const canonical = canonicalConversationFile(path)
+  if (!existsSync(canonical)) return canonical
   const info = lstatSync(canonical)
   if (!info.isFile() || info.nlink !== 1)
     throw new Error(`Conversation must be a regular file without hard links: ${path}`)
@@ -134,7 +134,7 @@ const prepareCoordination = (): string => {
 const makeRuntimeLease = (dataHome: string): RuntimeLease => {
   const root = prepareCoordination()
   mkdirSync(dataHome, { recursive: true, mode: 0o700 })
-  const home = realpathSync(dataHome)
+  const home = realpathSync.native(dataHome)
   const releaseInstallation = lockDatabase(
     join(root, 'installation.sqlite'),
     true,
