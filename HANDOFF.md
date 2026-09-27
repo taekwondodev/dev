@@ -3,8 +3,9 @@
 ## Progress 2026-09-27 (session 2)
 
 - User decisions (structured question, 2026-09-27): fix all four smell groups (S1/S2/S5/S6, S3/S4/S7/S9, S8 + work-extension Promise seam, S10); J1 = origin-aware texts, keep the model turn; J2 = post a separate correcting comment on #36 at delivery, besides the PR-link comment.
-- Done, each with regression or mutation evidence: B1 `c373657`, B2 `589a73b`, B3 `a9a9d9e`, B4 `829469b`, B5 named locations `9794b97`, B7 `9372d1f`, J1 `0cc6c1b`, B6 `281f405`, S1 `54ed687` + `4dfc87e`, S2 (+ launcher casts of S7) `4dfc87e`, S5/S6 `ff52fb3`. Suite green at `ff52fb3` (authority, process, contract, launcher checks, both PTY probes, lint, format).
-- Next: S3/S4/S7/S9, then S8 + Promise seam, then S10, then the full comment sweep of `git diff f7cb3b4 HEAD` (rest of B5), full suite, round-2 re-review.
+- Done, each with regression or mutation evidence: B1 `c373657`, B2 `589a73b`, B3 `a9a9d9e`, B4 `829469b`, B5 `9794b97` + sweep `6400145`, B7 `9372d1f`, J1 `0cc6c1b`, B6 `281f405`; S1 `54ed687` + `4dfc87e`; S2 and the launcher casts of S7 `4dfc87e`; S5/S6 `ff52fb3`; S3/S4/S9 `e363006`; S7 `fef9c60`; Promise seam `9ee33b4`; S8 `76f72a1` (PTY signal probe: TERM 1, INT 130, HUP 1, identical to the pre-change tree); S10 `b1a30fa` + `8921046`.
+- Full suite green at `6400145`: lint (0 errors, 0 Effect messages, 19 pre-existing oxlint warnings), smoke, workspace:check, workspace:tui (both `passed_marker: true`, no missing actions), oxfmt, diff --check, no stray processes, real authority root absent.
+- Next: round-2 re-review (Adversarial in full on `f7cb3b4..HEAD`, reproducing the incarnation race from scratch since its scratch files were pruned; Standards and Spec on `39c3234..HEAD`), then delivery.
 
 ## Resume
 
