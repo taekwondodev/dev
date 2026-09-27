@@ -81,7 +81,6 @@ const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
 })
 const script: readonly (readonly unknown[])[] = [
   [toolCall('work-process', 'work', { action: 'process', taskId: 'tests', command: 'true' })],
-  [toolCall('stale-read', 'read', { path: 'AGENTS.md' })],
   [
     toolCall('read-after', 'read', { path: 'AGENTS.md' }),
     toolCall('write-after', 'write', { path: 'after.txt', content: 'after the rebind\n' }),
@@ -227,10 +226,9 @@ try {
     }
   )
   await claim(
-    'the one request Pi still makes in the old context is fenced, and after the rebind the lead reads and writes in the managed worktree',
+    'the refused work call ends the batch as an error, so Pi makes no request in the old context: the next one reads and writes in the managed worktree',
     () => {
-      assert.equal(result('stale-read')?.isError, true)
-      assert.equal(text('stale-read'), 'Workspace host is parked; stale tools are blocked.')
+      assert.equal(providerCall, script.length, 'no model request was spent in the old context')
       assert.equal(result('read-after')?.isError, false, text('read-after'))
       assert.equal(result('write-after')?.isError, false, text('write-after'))
       assert.equal(readFileSync(join(runtime.cwd, 'after.txt'), 'utf8'), 'after the rebind\n')

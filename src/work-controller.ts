@@ -21,6 +21,7 @@ import { promisify } from 'node:util'
 import {
   WorkDispatchError,
   WorkError,
+  WorkRebindRequired,
   WorkPersistenceError,
   WorkProtocolError,
   WorkSetupError,
@@ -119,6 +120,7 @@ const errorMessage = (cause: unknown): string =>
 const toFailure = (cause: unknown): WorkFailure => {
   if (
     cause instanceof WorkError ||
+    cause instanceof WorkRebindRequired ||
     cause instanceof WorkDispatchError ||
     cause instanceof WorkPersistenceError ||
     cause instanceof WorkProtocolError ||
@@ -582,7 +584,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         }).pipe(Effect.mapError(toFailure))
         if (admission.kind === 'rebind') {
           workspace.requestRebind(admission.handoff)
-          return yield* new WorkError({
+          return yield* new WorkRebindRequired({
             message: `Workspace handoff required before starting work: ${admission.handoff.reason}. No command was executed; obtain a fresh host tool decision.`,
           })
         }

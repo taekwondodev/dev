@@ -185,6 +185,7 @@ export const createWorkExtension = ({
   let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
   let deliveryScheduled = false
   const pending = new Map<AttemptId, PendingOutcome>()
+  const rebindRefusals = new Set<string>()
 
   const ownerRuntime = (
     ctx: Pi.ExtensionContext
@@ -757,14 +758,31 @@ export const createWorkExtension = ({
       description:
         'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId is a controller-local key, distinct from the durable workflowTaskId; each launch creates an attempt and a workspace use. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; WorkspaceLifecycle allocates a distinct workspace for each delegated writer without copying dirty files. Admission may require a host rebind: no command then runs, and a fresh decision is required. worktree.path records the managed checkout. A workspace use ends only when the whole owned process group is observed gone; a process that detaches into its own session escapes that observation, and lost observation leaves the workspace blocked for explicit recovery. Report retained workspaces in your handoff; do not release reservations or remove worktrees through this tool. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
       parameters,
-      async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
-        const result = await run(ctx, decodeInput(input).pipe(Effect.flatMap(execute)))
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result ?? {}) }],
-          details: result ?? {},
-        }
-      },
+      execute: (toolCallId, input, _signal, _onUpdate, ctx) =>
+        Effect.runPromise(
+          runOwned(ctx, decodeInput(input).pipe(Effect.flatMap(execute))).pipe(
+            Effect.map(result => ({
+              content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}) }],
+              details: result ?? {},
+            })),
+            Effect.catchTag('WorkRebindRequired', refusal =>
+              Effect.sync(() => {
+                rebindRefusals.add(toolCallId)
+                return {
+                  content: [{ type: 'text' as const, text: refusal.message }],
+                  details: {},
+                  terminate: true,
+                }
+              })
+            )
+          )
+        ),
     })
+    // Pi ends a batch only on results that ask to terminate, and a thrown error cannot, so the
+    // rebind refusal returns normally and is marked an error here (ADR 0005, known limit).
+    pi.on('tool_result', event =>
+      rebindRefusals.delete(event.toolCallId) ? { isError: true } : undefined
+    )
     pi.registerCommand('work', {
       description:
         'Background work: list | dispatch | stop [attempt] | inspect <attempt> [stdout|stderr|result] [offset]',

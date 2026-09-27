@@ -345,8 +345,14 @@ export class WorkDispatchError extends Schema.TaggedError<WorkDispatchError>()(
   }
 ) {}
 
+export class WorkRebindRequired extends Schema.TaggedError<WorkRebindRequired>()(
+  'WorkRebindRequired',
+  { message: Schema.String }
+) {}
+
 export type WorkFailure =
   | WorkError
+  | WorkRebindRequired
   | WorkSetupError
   | WorkPersistenceError
   | WorkProtocolError
