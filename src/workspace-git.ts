@@ -1,23 +1,26 @@
 import { realpathSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { basename, isAbsolute, resolve } from 'node:path'
+import { Option, Schema } from 'effect'
 import { WorkspaceError } from './workspace-domain.ts'
 
-export interface FileIdentity {
-  readonly device: string
-  readonly inode: string
-}
-
-export interface GitWorkspace {
-  readonly path: string
-  readonly identity: FileIdentity
-  readonly commonPath: string
-  readonly commonIdentity: FileIdentity
-  readonly gitAdminPath: string
-  readonly gitAdminIdentity: FileIdentity
-  readonly objectFormat: string
-  readonly head: string
-}
+export const FileIdentitySchema = Schema.Struct({
+  device: Schema.NonEmptyString,
+  inode: Schema.NonEmptyString,
+})
+const GitWorkspaceSchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  identity: FileIdentitySchema,
+  commonPath: Schema.NonEmptyString,
+  commonIdentity: FileIdentitySchema,
+  gitAdminPath: Schema.NonEmptyString,
+  gitAdminIdentity: FileIdentitySchema,
+  objectFormat: Schema.NonEmptyString,
+  head: Schema.String,
+})
+export type FileIdentity = typeof FileIdentitySchema.Type
+export type GitWorkspace = typeof GitWorkspaceSchema.Type
+const decodeGitWorkspace = Schema.decodeUnknownOption(GitWorkspaceSchema)
 
 // Git refusals and failures leave dev's own state unchanged, so the authority reports them
 // as blocked rather than as a separate error model.
@@ -90,7 +93,7 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   } catch {
     head = ''
   }
-  return {
+  const workspace = decodeGitWorkspace({
     path: checkout,
     identity: physicalIdentity(checkout),
     commonPath: common,
@@ -99,7 +102,9 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
     gitAdminIdentity: physicalIdentity(admin),
     objectFormat,
     head,
-  }
+  })
+  if (Option.isNone(workspace)) throw gitBlocked(`Git described an invalid checkout at ${checkout}`)
+  return workspace.value
 }
 
 export const currentCommit = (workspace: GitWorkspace): string => {

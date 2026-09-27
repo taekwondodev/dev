@@ -10,24 +10,17 @@ import {
   WorkspaceProcessSchema,
   type WorkspaceBinding,
 } from './workspace-domain.ts'
-import { canonicalGitWorkspace, type FileIdentity, type GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot } from './workspace-paths.ts'
 import {
-  encode,
-  parseRecord,
-  rows,
-  first,
-  textField,
-  numberField,
-  decodeOrFail,
-} from './workspace-sqlite.ts'
+  canonicalGitWorkspace,
+  FileIdentitySchema,
+  type FileIdentity,
+  type GitWorkspace,
+} from './workspace-git.ts'
+import { canonicalPathSlot } from './workspace-paths.ts'
+import { encode, parseRecord, rows, first, textField, numberField } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
-const PhysicalSchema = Schema.Struct({
-  device: Schema.NonEmptyString,
-  inode: Schema.NonEmptyString,
-})
 const TaskSchema = Schema.Struct({
   id: WorkspaceId,
   repositoryId: WorkspaceId,
@@ -49,11 +42,11 @@ const WorkspaceSchema = Schema.Struct({
   repositoryId: WorkspaceId,
   path: Schema.NonEmptyString,
   pathKey: Schema.NonEmptyString,
-  physical: PhysicalSchema,
+  physical: FileIdentitySchema,
   gitAdminPath: Schema.NonEmptyString,
-  gitAdmin: PhysicalSchema,
+  gitAdmin: FileIdentitySchema,
   commonPath: Schema.NonEmptyString,
-  common: PhysicalSchema,
+  common: FileIdentitySchema,
   objectFormat: Schema.NonEmptyString,
   origin: Schema.Literals(['pre-existing', 'managed']),
   status: Schema.Literals(['provisioning', 'ready']),
@@ -151,13 +144,11 @@ export const getTask = (db: DatabaseSync, id: string): TaskRecord | undefined =>
     requireReview(`Task columns disagree with payload: ${id}`)
   return value
 }
-// Writers validate because records carry Git and filesystem values that no boundary decoded.
 export const putTask = (db: DatabaseSync, value: TaskRecord): void => {
-  const checked = decodeOrFail(TaskSchema, value, 'task record')
   db.prepare('INSERT INTO tasks(id, revision, payload) VALUES(?,?,?)').run(
-    checked.id,
-    checked.revision,
-    encode(checked)
+    value.id,
+    value.revision,
+    encode(value)
   )
 }
 export const getWorkspace = (db: DatabaseSync, id: string): WorkspaceRecord | undefined => {
@@ -184,17 +175,16 @@ export const getWorkspaceByPath = (db: DatabaseSync, path: string): WorkspaceRec
   return row === undefined ? undefined : getWorkspace(db, textField(row, 'id'))
 }
 export const putWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
-  const checked = decodeOrFail(WorkspaceSchema, value, 'workspace record')
   db.prepare(
     'INSERT INTO workspaces(id,path_key,path,origin,status,revision,payload) VALUES(?,?,?,?,?,?,?)'
   ).run(
-    checked.id,
-    checked.pathKey,
-    checked.path,
-    checked.origin,
-    checked.status,
-    checked.revision,
-    encode(checked)
+    value.id,
+    value.pathKey,
+    value.path,
+    value.origin,
+    value.status,
+    value.revision,
+    encode(value)
   )
 }
 export const getReservation = (
@@ -223,32 +213,30 @@ export const getReservationById = (db: DatabaseSync, id: string): ReservationRec
   return row === undefined ? undefined : getReservation(db, textField(row, 'workspace_id'))
 }
 export const putReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  const checked = decodeOrFail(ReservationSchema, value, 'reservation record')
   db.prepare(
     'INSERT INTO reservations(id,workspace_id,task_id,acquisition_id,revision,payload) VALUES(?,?,?,?,?,?)'
   ).run(
-    checked.id,
-    checked.workspaceId,
-    checked.taskId,
-    checked.acquisitionId ?? null,
-    checked.revision,
-    encode(checked)
+    value.id,
+    value.workspaceId,
+    value.taskId,
+    value.acquisitionId ?? null,
+    value.revision,
+    encode(value)
   )
 }
 export const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  const checked = decodeOrFail(ReservationSchema, value, 'reservation record')
   db.prepare(
     'UPDATE reservations SET task_id=?,acquisition_id=?,revision=?,payload=? WHERE id=? AND workspace_id=?'
   ).run(
-    checked.taskId,
-    checked.acquisitionId ?? null,
-    checked.revision,
-    encode(checked),
-    checked.id,
-    checked.workspaceId
+    value.taskId,
+    value.acquisitionId ?? null,
+    value.revision,
+    encode(value),
+    value.id,
+    value.workspaceId
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Reservation disappeared: ${checked.id}`)
+    requireReview(`Reservation disappeared: ${value.id}`)
 }
 export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undefined => {
   const row = first(
@@ -268,14 +256,13 @@ export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undef
   return value
 }
 export const putBinding = (db: DatabaseSync, value: BindingRecord): void => {
-  const checked = decodeOrFail(BindingSchema, value, 'conversation binding')
   db.prepare(`INSERT INTO bindings(conversation_key,workspace_id,task_id,revision,payload) VALUES(?,?,?,?,?)
     ON CONFLICT(conversation_key) DO UPDATE SET workspace_id=excluded.workspace_id,task_id=excluded.task_id,revision=excluded.revision,payload=excluded.payload`).run(
-    checked.key,
-    checked.workspaceId,
-    checked.taskId ?? null,
-    checked.revision,
-    encode(checked)
+    value.key,
+    value.workspaceId,
+    value.taskId ?? null,
+    value.revision,
+    encode(value)
   )
 }
 export const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
@@ -300,45 +287,43 @@ export const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
   return value
 }
 export const putUse = (db: DatabaseSync, value: UseRecord): void => {
-  const checked = decodeOrFail(UseSchema, value, 'workspace use')
   db.prepare(
     'INSERT INTO uses(id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,revision,payload) VALUES(?,?,?,?,?,?,?,?,?)'
   ).run(
-    checked.id,
-    checked.workspaceId,
-    checked.taskId ?? null,
-    checked.reservationId ?? null,
-    checked.acquisitionId ?? null,
-    checked.access,
-    checked.stage,
-    checked.revision,
-    encode(checked)
+    value.id,
+    value.workspaceId,
+    value.taskId ?? null,
+    value.reservationId ?? null,
+    value.acquisitionId ?? null,
+    value.access,
+    value.stage,
+    value.revision,
+    encode(value)
   )
 }
 export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
-  const checked = decodeOrFail(UseSchema, value, 'workspace use')
   // Every settling route writes through here, so the absorbing `unknown` and dependent
   // rules of ADR 0005 cannot be bypassed by a new route.
-  const stored = getUse(db, checked.id)
-  if (stored?.stage === 'unknown' && checked.stage !== 'unknown')
-    requireReview(`Workspace use ${checked.id} is unknown; only explicit recovery can resolve it`)
-  if (checked.stage === 'quiescent')
-    assertNoActiveDependentUseInDb(db, checked.id, `Cannot settle workspace use ${checked.id}`)
+  const stored = getUse(db, value.id)
+  if (stored?.stage === 'unknown' && value.stage !== 'unknown')
+    requireReview(`Workspace use ${value.id} is unknown; only explicit recovery can resolve it`)
+  if (value.stage === 'quiescent')
+    assertNoActiveDependentUseInDb(db, value.id, `Cannot settle workspace use ${value.id}`)
   db.prepare(
     'UPDATE uses SET workspace_id=?,task_id=?,reservation_id=?,acquisition_id=?,access=?,stage=?,revision=?,payload=? WHERE id=?'
   ).run(
-    checked.workspaceId,
-    checked.taskId ?? null,
-    checked.reservationId ?? null,
-    checked.acquisitionId ?? null,
-    checked.access,
-    checked.stage,
-    checked.revision,
-    encode(checked),
-    checked.id
+    value.workspaceId,
+    value.taskId ?? null,
+    value.reservationId ?? null,
+    value.acquisitionId ?? null,
+    value.access,
+    value.stage,
+    value.revision,
+    encode(value),
+    value.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace use disappeared: ${checked.id}`)
+    requireReview(`Workspace use disappeared: ${value.id}`)
 }
 export const getOperation = (db: DatabaseSync, id: string): OperationRecord | undefined => {
   const row = first(
@@ -360,36 +345,34 @@ export const getOperation = (db: DatabaseSync, id: string): OperationRecord | un
   return value
 }
 export const putOperation = (db: DatabaseSync, value: OperationRecord): void => {
-  const checked = decodeOrFail(OperationSchema, value, 'workspace operation')
   db.prepare(
     'INSERT INTO operations(id,kind,phase,workspace_id,task_id,revision,created_at,payload) VALUES(?,?,?,?,?,?,?,?)'
   ).run(
-    checked.id,
-    checked.kind,
-    checked.phase,
-    checked.workspaceId,
-    checked.taskId,
-    checked.expectedBindingRevision,
-    checked.createdAt,
-    encode(checked)
+    value.id,
+    value.kind,
+    value.phase,
+    value.workspaceId,
+    value.taskId,
+    value.expectedBindingRevision,
+    value.createdAt,
+    encode(value)
   )
 }
 export const saveOperation = (db: DatabaseSync, value: OperationRecord): void => {
-  const checked = decodeOrFail(OperationSchema, value, 'workspace operation')
   db.prepare(
     'UPDATE operations SET kind=?,phase=?,workspace_id=?,task_id=?,revision=?,created_at=?,payload=? WHERE id=?'
   ).run(
-    checked.kind,
-    checked.phase,
-    checked.workspaceId,
-    checked.taskId,
-    checked.expectedBindingRevision,
-    checked.createdAt,
-    encode(checked),
-    checked.id
+    value.kind,
+    value.phase,
+    value.workspaceId,
+    value.taskId,
+    value.expectedBindingRevision,
+    value.createdAt,
+    encode(value),
+    value.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace operation disappeared: ${checked.id}`)
+    requireReview(`Workspace operation disappeared: ${value.id}`)
 }
 export const getUseRows = (db: DatabaseSync, workspaceIdValue: string): UseRecord[] =>
   rows(db, 'SELECT id FROM uses WHERE workspace_id=? ORDER BY id', workspaceIdValue)
