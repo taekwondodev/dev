@@ -202,8 +202,8 @@ const validateDiagnostics = (
   }
 }
 
-// What every Pi runtime of a dev session is built from. The offline probes replace the model
-// and observe dev's extensions; the launcher leaves the model to Pi's settings.
+// The offline probes replace the model and observe dev's extensions; the launcher leaves the
+// model to Pi's settings.
 export interface RuntimeParts {
   readonly api: PiApi
   readonly packageRoot: string

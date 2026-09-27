@@ -3,9 +3,7 @@
 // missing, mistyped or unproduced field. This check adds what types cannot: every shape the
 // stub produces decodes with the schemas the lifecycle client applies to authority
 // responses (ID formats, non-empty strings, revision bounds), and decoding keeps every field
-// the stub sets. It also drives the host's `/workspace` handler on the same shapes for the
-// failures the TUI probe does not inject: each must reach the user as a notice, never as a
-// rejected Pi handler.
+// the stub sets.
 import assert from 'node:assert/strict'
 import type {
   ExtensionAPI,

@@ -285,7 +285,6 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
   })
 }
 
-// The host notifies through the context Pi hands its handlers; the probe keeps each message.
 const notices: string[] = []
 const bound = (target: object, key: string | symbol): unknown => {
   const value: unknown = Reflect.get(target, key)

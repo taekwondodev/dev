@@ -236,7 +236,6 @@ export const acquireStructureGate = (
     true
   )
 }
-// The conversation and incarnation gates of ADR 0005, scoped workspace operations.
 const conversationGate = (
   paths: AuthorityPaths,
   identity: string

@@ -572,7 +572,6 @@ const listResult = await Effect.runPromise(
 const inspectResult = await Effect.runPromise(
   runReadOnlyWorkspaceCommand(lifecycle, { kind: 'inspect', taskId: TASK_LEAD })
 )
-// A workspace listing reads as its unindented lines: headers and one row per workspace.
 const headings = (text: string): readonly string[] =>
   text.split('\n').filter(line => !line.startsWith(' '))
 const row = (taskId: string, workspaceId: string, current = false): string =>
@@ -1798,7 +1797,6 @@ assert.deepEqual(
 assert.ok(terminalInputs.length > 0)
 assert.equal(processResults.size, 3)
 
-// A delegated child asks its controller before every tool call; this one grants each check.
 class GrantingController extends EventEmitter implements ControllerChannel {
   readonly connected = true
   readonly operations: string[] = []

@@ -337,7 +337,6 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
     requireReview(`Workspace ${kind} database is corrupt: ${path}`)
   databaseFile(path)
 }
-// A missing database is created only when the caller supplies its initial rows.
 export const openRecordDb = (
   path: string,
   kind: 'catalog' | 'shard',

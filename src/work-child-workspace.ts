@@ -18,7 +18,6 @@ const readTools = new Set(['read', 'grep', 'find', 'ls'])
 
 type WorkspaceCheck = Extract<ChildMessage, { readonly type: 'workspace-check' }>
 
-// The IPC link to the controller that owns the child's grant: the child's own process.
 export interface ControllerChannel {
   readonly connected: boolean
   send?(message: WorkspaceCheck, callback: (error: Error | null) => void): boolean
