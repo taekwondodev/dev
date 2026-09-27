@@ -1918,6 +1918,55 @@ try {
     }
   )
 
+  await claim(
+    'a second handoff of a switch already under way, as a quit would send, is refused for review instead of recording the switch as cancelled, and the switch still completes',
+    async () => {
+      const switchingRepo = join(sandbox, 'double-handoff-repo')
+      initRepository(switchingRepo, 'tracked.txt', 'double handoff fixture\n')
+      const switching = await openLifecycle({ root })
+      const holder = await switching.attach({
+        conversation: conversation('double-handoff-holder'),
+        cwd: switchingRepo,
+      })
+      assert.equal((await holder.authorize({ kind: 'write' })).kind, 'ready')
+      const mover = await switching.attach({
+        conversation: conversation('double-handoff-mover'),
+        cwd: switchingRepo,
+      })
+      const admission = await mover.authorize({ kind: 'write' })
+      if (admission.kind !== 'rebind') throw new Error('The contended writer was not isolated')
+      const { handoff } = admission
+      const stage = async () =>
+        (await switching.inspect({ cwd: switchingRepo }))
+          .flatMap(view => view.pending)
+          .find(item => item.id === handoff.operationId)?.stage
+      let reachedHost: () => void = () => undefined
+      const hostReached = new Promise<void>(resolveReached => {
+        reachedHost = resolveReached
+      })
+      let finishSwitch: (outcome: 'confirmed') => void = () => undefined
+      const first = mover.handoff(handoff, () => {
+        reachedHost()
+        return new Promise(resolveSwitch => {
+          finishSwitch = resolveSwitch
+        })
+      })
+      await hostReached
+      await expectWorkspaceError(
+        mover.handoff(handoff, async () => 'cancelled'),
+        'review-required'
+      )
+      assert.equal(await stage(), 'started', 'the switch is still recorded as started')
+      finishSwitch('confirmed')
+      await first
+      assert.equal(mover.binding.workspaceId, handoff.target.workspaceId)
+      assert.equal(await stage(), undefined, 'the confirmed switch is no longer pending')
+      await mover.close()
+      await holder.close()
+      await switching.close()
+    }
+  )
+
   console.log(
     JSON.stringify(
       { result: 'passed', checks: passed, authorityRoot: root, fixtureRepository: repo },

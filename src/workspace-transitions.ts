@@ -241,6 +241,10 @@ export const performHandoff = async (
     !sameBinding(pending.handoff.from, transition.from)
   )
     requireReview('Workspace handoff token is stale or belongs to another transition')
+  if (pending.phase !== 'intent')
+    requireReview(
+      `Workspace handoff ${transition.operationId} already reached the host; it needs review, not withdrawal`
+    )
   let operation: OperationRecord
   try {
     validateGrant(authority, state, pending.handoff.target)

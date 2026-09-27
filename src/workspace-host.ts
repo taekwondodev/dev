@@ -91,6 +91,7 @@ interface PendingTransition {
   readonly context: ExtensionContext
   readonly transitionSource: WorkspaceAttachment
   scheduled: boolean
+  handoffSent: boolean
   switchStarted: boolean
   capturedInput: boolean
 }
@@ -460,7 +461,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
 
   const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (pending !== transition || transition.switchStarted) return
-    let handoffCalled = false
     const performed = yield* Effect.exit(
       Effect.gen(function* () {
         capturePendingInput(transition.context)
@@ -472,7 +472,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           minimumEntries: runtime?.session.sessionManager.getEntries().length ?? 0,
         }
         let callbackResult: 'confirmed' | 'cancelled' | undefined
-        handoffCalled = true
+        transition.handoffSent = true
         yield* transition.transitionSource.handoff(transition.handoff, target =>
           replaceSession(transition, identity, target, outcome => {
             callbackResult = outcome
@@ -512,7 +512,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     // The host never acted, so the authority can keep the last confirmed binding.
     const alreadyWithdrawn = isWithdrawn(error) ? Effect.void : Effect.fail(error)
     const withdrawn = yield* Effect.exit(
-      handoffCalled ? alreadyWithdrawn : withdrawUnstarted(transition)
+      transition.handoffSent ? alreadyWithdrawn : withdrawUnstarted(transition)
     )
     if (Exit.isFailure(withdrawn)) {
       process.stderr.write(
@@ -551,6 +551,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       context,
       transitionSource: activeAttachment,
       scheduled: false,
+      handoffSent: false,
       switchStarted: false,
       capturedInput: false,
     }
@@ -944,8 +945,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const sessionShutdown = Effect.fnUntraced(function* (reason: string) {
     yield* nativeWrites.settle
     if (reason !== 'reload') yield* shell.stop
-    if (reason !== 'quit' || pending?.switchStarted) return
-    if (pending && !pending.switchStarted) {
+    if (reason !== 'quit' || pending?.handoffSent) return
+    if (pending) {
       const withdrawn = yield* Effect.exit(withdrawUnstarted(pending))
       if (Exit.isFailure(withdrawn)) {
         parked = true
@@ -1057,6 +1058,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         context,
         transitionSource: activeAttachment,
         scheduled: true,
+        handoffSent: false,
         switchStarted: false,
         capturedInput: false,
       }
