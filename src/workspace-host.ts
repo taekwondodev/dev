@@ -16,10 +16,9 @@ import type { ReplacedSessionContext } from '../node_modules/@earendil-works/pi-
 import { errorText } from './error-text.ts'
 import {
   chooseResumeCandidate,
-  formatWorkspaceInspect,
-  formatWorkspaceList,
   parseWorkspaceCommand,
   resumeCandidates,
+  runReadOnlyWorkspaceCommand,
   type ResumeCandidate,
   type WorkspaceCommand,
 } from './workspace-command.ts'
@@ -1072,42 +1071,16 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
       if (command.kind === 'resume') return yield* resumeInTui(command, context)
-      const repositoryRoot =
-        command.kind === 'list' ? yield* options.repositoryRoot(context.cwd) : undefined
-      if (command.kind === 'list' && repositoryRoot === undefined) {
-        display(
-          api,
-          context,
-          'Workspace list requires a Git repository; switch to a Git checkout before listing.'
-        )
-        return
-      }
-      const views = yield* options.lifecycle.inspect(
-        command.kind === 'inspect' ? { taskId: command.taskId } : { cwd: repositoryRoot! }
-      )
-      display(
-        api,
-        context,
-        command.kind === 'inspect'
-          ? formatWorkspaceInspect(views, command.taskId)
-          : formatWorkspaceList(views, repositoryRoot!, {
-              currentWorkspaceId: activeAttachment.binding.workspaceId,
-              effectiveCwd: context.cwd,
-            })
-      )
+      const result = yield* runReadOnlyWorkspaceCommand(options.lifecycle, command, {
+        repositoryRoot: options.repositoryRoot(context.cwd),
+        binding: { workspaceId: activeAttachment.binding.workspaceId, cwd: context.cwd },
+      })
+      display(api, context, result.text)
     },
     (effect, api, _args, context) =>
       effect.pipe(
-        Effect.catch(error =>
-          Effect.sync(() =>
-            display(
-              api,
-              context,
-              error._tag === 'WorkspaceCommandError'
-                ? error.message
-                : `Workspace command failed: ${error.message}`
-            )
-          )
+        Effect.catchTag('WorkspaceCommandError', error =>
+          Effect.sync(() => display(api, context, error.message))
         )
       )
   )

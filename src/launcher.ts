@@ -42,7 +42,6 @@ import {
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
   chooseResumeCandidate,
-  type WorkspaceCommand,
 } from './workspace-command.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 
@@ -401,11 +400,10 @@ const run = Effect.fnUntraced(function* (
   const options = yield* parseArgs(argv)
   if (options.help) return yield* printHelp()
 
-  let workspaceCommand: WorkspaceCommand | undefined
   let workspaceLifecycle: WorkspaceLifecycle | undefined
   let workspaceResume: Effect.Success<ReturnType<typeof chooseResumeCandidate>> | undefined
   if (options.workspaceArgs !== undefined) {
-    workspaceCommand = yield* parseWorkspaceCommand(options.workspaceArgs)
+    const command = yield* parseWorkspaceCommand(options.workspaceArgs)
     if (
       options.saveProfile !== undefined ||
       options.resume !== undefined ||
@@ -421,26 +419,14 @@ const run = Effect.fnUntraced(function* (
       })
       return
     }
-    if (workspaceCommand.kind !== 'resume') {
-      const listRoot = workspaceCommand.kind === 'list' ? yield* gitRoot(options.cwd) : undefined
-      if (workspaceCommand.kind === 'list' && listRoot === undefined) {
-        yield* Effect.sync(() => {
-          process.stderr.write(
-            `Workspace list requires a Git repository; pass --cwd PATH to a Git checkout.\n`
-          )
-          process.exitCode = 2
-        })
-        return
-      }
-      workspaceLifecycle = yield* dependencies.workspaceLifecycle
+    if (command.kind !== 'resume') {
       const result = yield* runReadOnlyWorkspaceCommand(
-        workspaceLifecycle,
-        workspaceCommand as Exclude<WorkspaceCommand, { readonly kind: 'resume' }>,
-        workspaceCommand!.kind === 'list' ? { cwd: listRoot } : {}
+        yield* dependencies.workspaceLifecycle,
+        command,
+        { repositoryRoot: gitRoot(options.cwd) }
       )
       yield* Effect.sync(() => {
-        if (result.stdout !== undefined) process.stdout.write(`${result.stdout}\n`)
-        if (result.stderr !== undefined) process.stderr.write(`${result.stderr}\n`)
+        ;(result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.text}\n`)
         process.exitCode = result.exitCode
       })
       return
@@ -455,19 +441,14 @@ const run = Effect.fnUntraced(function* (
       return
     }
     workspaceLifecycle = yield* dependencies.workspaceLifecycle
-    const resumeCommand = workspaceCommand as Extract<WorkspaceCommand, { readonly kind: 'resume' }>
     const views = yield* workspaceLifecycle
-      .inspect({ taskId: resumeCommand.taskId })
+      .inspect({ taskId: command.taskId })
       .pipe(
         Effect.mapError(error =>
           toLauncherError(error, 'Cannot inspect retained workspace candidates')
         )
       )
-    workspaceResume = yield* chooseResumeCandidate(
-      views,
-      resumeCommand.taskId,
-      resumeCommand.workspaceId
-    )
+    workspaceResume = yield* chooseResumeCandidate(views, command.taskId, command.workspaceId)
   }
 
   const launchCwd = workspaceResume?.view.path ?? options.cwd

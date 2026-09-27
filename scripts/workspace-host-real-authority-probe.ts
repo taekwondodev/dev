@@ -390,25 +390,27 @@ const { claim, passed } = makeClaims()
 const readOnly = (args: readonly string[]) => {
   const command = Effect.runSync(parseWorkspaceCommand(args))
   if (command.kind === 'resume') throw new Error('Expected a read-only workspace command')
-  return Effect.runPromise(runReadOnlyWorkspaceCommand(lifecycle.effect, command, { cwd: lead }))
+  return Effect.runPromise(
+    runReadOnlyWorkspaceCommand(lifecycle.effect, command, { repositoryRoot: Effect.succeed(lead) })
+  )
 }
 await claim(
   "the read-only list and inspect commands answer from the real authority with the squatter's workspace and its write use",
   async () => {
     const listResult = await readOnly([])
     const inspectResult = await readOnly(['inspect', squatterTaskId])
-    assert.equal(listResult.exitCode, 0, listResult.stderr ?? '')
-    assert.equal(inspectResult.exitCode, 0, inspectResult.stderr ?? '')
+    assert.equal(listResult.exitCode, 0, listResult.text)
+    assert.equal(inspectResult.exitCode, 0, inspectResult.text)
     const squatterRow = `task ${squatterTaskId} — workspace ${squatterAdmission.grant.workspaceId}`
     assert.deepEqual(
-      (listResult.stdout ?? '').split('\n').filter(line => !line.startsWith(' ')),
+      listResult.text.split('\n').filter(line => !line.startsWith(' ')),
       [`Workspace list for repository ${lead}:`, squatterRow]
     )
-    const inspected = (inspectResult.stdout ?? '').split('\n')
+    const inspected = inspectResult.text.split('\n')
     assert.equal(inspected[0], `Workspace records for exact task ${squatterTaskId}: ${squatterRow}`)
     assert.ok(
       inspected.some(line => line.startsWith(`  use ${squatterAdmission.grant.useId}: write, `)),
-      inspectResult.stdout
+      inspectResult.text
     )
   }
 )

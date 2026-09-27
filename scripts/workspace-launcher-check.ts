@@ -352,7 +352,7 @@ try {
       assert.equal(outsideGit.stdout, '', 'nothing is listed for a directory outside Git')
       assert.equal(
         outsideGit.stderr,
-        'Workspace list requires a Git repository; pass --cwd PATH to a Git checkout.\n'
+        'Workspace list requires a Git repository; run dev from a Git checkout or pass --cwd PATH.\n'
       )
     }
   )

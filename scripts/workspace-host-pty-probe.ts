@@ -566,11 +566,12 @@ assert.equal(
   Effect.runSync(chooseResumeCandidate(resumeViews, TASK_RESUME, WS_RESUME_C)).view.workspaceId,
   WS_RESUME_C
 )
+const leadScope = { repositoryRoot: Effect.succeed(lead) }
 const listResult = await Effect.runPromise(
-  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'list' }, { cwd: lead })
+  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'list' }, leadScope)
 )
 const inspectResult = await Effect.runPromise(
-  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'inspect', taskId: TASK_LEAD })
+  runReadOnlyWorkspaceCommand(lifecycle, { kind: 'inspect', taskId: TASK_LEAD }, leadScope)
 )
 const headings = (text: string): readonly string[] =>
   text.split('\n').filter(line => !line.startsWith(' '))
@@ -578,12 +579,12 @@ const row = (taskId: string, workspaceId: string, current = false): string =>
   `task ${taskId} — workspace ${workspaceId}${current ? ' [current binding]' : ''}`
 assert.equal(listResult.exitCode, 0)
 assert.deepEqual(
-  headings(listResult.stdout ?? ''),
+  headings(listResult.text),
   [`Workspace list for repository ${lead}:`, row(TASK_LEAD, WS_LEAD)],
   'the list shows only the workspaces of the repository at its cwd'
 )
 assert.equal(inspectResult.exitCode, 0)
-assert.deepEqual(headings(inspectResult.stdout ?? ''), [
+assert.deepEqual(headings(inspectResult.text), [
   `Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`,
 ])
 assert.equal(attachCalls.length, 0, 'read-only commands do not bind or attach a task')
