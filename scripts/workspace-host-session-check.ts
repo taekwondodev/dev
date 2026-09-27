@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { basename, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
@@ -21,6 +21,7 @@ import {
   WorkspaceError,
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
+  type WorkspaceLifecycle,
 } from '../src/workspace-domain.ts'
 import {
   loadInstalledPi,
@@ -152,27 +153,26 @@ const openLeadHost = (input: {
   readonly attachment: WorkspaceAttachment
   readonly manager: Pi.SessionManager
   readonly offline: OfflineModel
+  readonly lifecycle?: WorkspaceLifecycle
+  readonly dataHome?: string
 }) =>
   openHostRuntime({
     pi,
     packageRoot: packageInfo.root,
-    lifecycle: lifecycle.effect,
-    dataHome,
     sessionDir,
     agentDir,
     cwd: lead,
     repositoryRoot,
-    ...input,
+    attachment: input.attachment,
+    manager: input.manager,
+    offline: input.offline,
+    lifecycle: input.lifecycle ?? lifecycle.effect,
+    dataHome: input.dataHome ?? dataHome,
   })
-const overriding = (
-  attachment: WorkspaceAttachment,
-  overrides: Partial<WorkspaceAttachment>
-): WorkspaceAttachment =>
-  new Proxy(attachment, {
-    get: (target, key) =>
-      Object.hasOwn(overrides, key)
-        ? overrides[key as keyof WorkspaceAttachment]
-        : Reflect.get(target, key, target),
+const overriding = <T extends object>(target: T, overrides: Partial<T>): T =>
+  new Proxy(target, {
+    get: (source, key) =>
+      Object.hasOwn(overrides, key) ? overrides[key as keyof T] : Reflect.get(source, key, source),
   })
 const attachLeadConversation = async () => {
   const manager = pi.SessionManager.create(lead, sessionDir)
@@ -352,6 +352,55 @@ try {
       }
     }
   )
+
+  const stored = storedConversation(offline, lead)
+  const respelledFile = join(fixture, 'SESSIONS', basename(stored.file).toUpperCase())
+  if (existsSync(respelledFile))
+    await claim(
+      'on a volume that ignores case, dev opened on another spelling of a conversation file and data home attaches it once, and /resume of either spelling reports it already active',
+      async () => {
+        const respelledHome = join(fixture, 'DATA')
+        const respelledManager = pi.SessionManager.open(respelledFile, sessionDir)
+        const respelled = await lifecycle.attach({
+          conversation: {
+            sessionId: respelledManager.getSessionId(),
+            sessionFile: respelledFile,
+            dataHome: respelledHome,
+          },
+          cwd: lead,
+        })
+        let attaches = 0
+        const counting = overriding(lifecycle.effect, {
+          attach: input => {
+            attaches += 1
+            return lifecycle.effect.attach(input)
+          },
+        })
+        const spelled = await openLeadHost({
+          attachment: respelled.effect,
+          manager: respelledManager,
+          offline,
+          lifecycle: counting,
+          dataHome: respelledHome,
+        })
+        try {
+          assert.equal(attaches, 0, 'the runtime kept the attachment dev opened')
+          for (const spelling of [stored.file, respelledFile])
+            assert.deepEqual(
+              await spelled.runtime.switchSession(spelling),
+              { cancelled: true },
+              spelling
+            )
+          assert.equal(attaches, 0, 'neither spelling attached the conversation again')
+          assert.equal(
+            spelled.runtime.session.sessionManager.getSessionId(),
+            respelledManager.getSessionId()
+          )
+        } finally {
+          await spelled.close()
+        }
+      }
+    )
 
   // Pi replaces the session while the work tool is still being admitted: its teardown waits
   // for the running tool, so the rebind reaches the host during the replacement.
