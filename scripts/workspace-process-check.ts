@@ -42,6 +42,7 @@ const withReport = (
   reportExecution,
 })
 const lost = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
+const unexpectedRebind = (): never => assert.fail('no process check expects a workspace rebind')
 const root = await realpath(await mkdtemp(join(tmpdir(), 'dev-workspace-process-')))
 const { claim, passed } = makeClaims()
 try {
@@ -164,7 +165,11 @@ try {
         cwd: grant.cwd,
         sessionId,
         profile: 'general',
-        workspace: { lifecycle: authority.effect, attachment: attachment.effect },
+        workspace: {
+          lifecycle: authority.effect,
+          attachment: attachment.effect,
+          requestRebind: unexpectedRebind,
+        },
         onOutcome: attempt => deliver(attempt),
       })
     )
@@ -558,7 +563,11 @@ try {
             cwd: grant.cwd,
             sessionId,
             profile: 'general',
-            workspace: { lifecycle: authority.effect, attachment: lossyAttachment },
+            workspace: {
+              lifecycle: authority.effect,
+              attachment: lossyAttachment,
+              requestRebind: unexpectedRebind,
+            },
           })
         )
         const lossyMarker = join(root, 'lossy-launch-ran')
@@ -611,7 +620,11 @@ try {
             cwd: grant.cwd,
             sessionId,
             profile: 'general',
-            workspace: { lifecycle: authority.effect, attachment: flaky },
+            workspace: {
+              lifecycle: authority.effect,
+              attachment: flaky,
+              requestRebind: unexpectedRebind,
+            },
           })
         )
         try {
@@ -657,7 +670,11 @@ try {
             cwd: grant.cwd,
             sessionId,
             profile: 'general',
-            workspace: { lifecycle: authority.effect, attachment: lockingAttachment },
+            workspace: {
+              lifecycle: authority.effect,
+              attachment: lockingAttachment,
+              requestRebind: unexpectedRebind,
+            },
           })
         )
         const lockedMarker = join(root, 'locked-log-launch-ran')

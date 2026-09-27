@@ -17,7 +17,11 @@ import {
   type WorkSnapshot,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
-import type { WorkspaceAttachment, WorkspaceLifecycle } from './workspace-domain.ts'
+import type {
+  WorkspaceAttachment,
+  WorkspaceHandoff,
+  WorkspaceLifecycle,
+} from './workspace-domain.ts'
 import { errorText } from './error-text.ts'
 
 const WorkInputSchema = Schema.Struct({
@@ -168,6 +172,7 @@ export const createWorkExtension = ({
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
+    readonly requestRebind: (handoff: WorkspaceHandoff, context: Pi.ExtensionContext) => void
   }
   readonly isWorkspaceParked: () => boolean
 }): WorkExtension => {
@@ -196,7 +201,11 @@ export const createWorkExtension = ({
               profile,
               cwd: ctx.cwd,
               sessionId,
-              workspace,
+              workspace: {
+                lifecycle: workspace.lifecycle,
+                attachment: workspace.attachment,
+                requestRebind: handoff => workspace.requestRebind(handoff, context ?? ctx),
+              },
               onChange: () => scheduleStatus(),
               onOutcome: attempt => {
                 if (

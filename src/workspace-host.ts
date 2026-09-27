@@ -74,6 +74,7 @@ export interface WorkspaceHost {
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
   isParked(): boolean
+  requestRebind(handoff: WorkspaceHandoff, context: ExtensionContext): void
   prepareRuntime(input: {
     readonly sessionManager: SessionManager
     readonly cwd: string
@@ -1096,6 +1097,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
     isParked: () => parked,
+    requestRebind: (handoff, context) => requestHandoff(handoff, 'tool-call', context, false),
     prepareRuntime,
     commitRuntime,
     bindRuntime(nextRuntime) {

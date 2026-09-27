@@ -74,6 +74,7 @@ import {
   type WorkspaceAttachment,
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
+  type WorkspaceHandoff,
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 
@@ -106,6 +107,7 @@ export interface WorkOwnerOptions {
   readonly workspace?: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
+    readonly requestRebind: (handoff: WorkspaceHandoff) => void
   }
   readonly onChange?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
@@ -578,10 +580,12 @@ class WorkOwnerImpl implements WorkOwnerService {
             execution,
           })
         }).pipe(Effect.mapError(toFailure))
-        if (admission.kind === 'rebind')
+        if (admission.kind === 'rebind') {
+          workspace.requestRebind(admission.handoff)
           return yield* new WorkError({
             message: `Workspace handoff required before starting work: ${admission.handoff.reason}. No command was executed; obtain a fresh host tool decision.`,
           })
+        }
         const { grant: selected } = admission
         grant = selected
         const { cwd } = selected

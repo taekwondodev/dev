@@ -240,7 +240,7 @@ const createRuntime = Effect.fnUntraced(function* (
     createWorkExtension({
       dataHome,
       profile: profile.name,
-      workspace: { lifecycle, attachment },
+      workspace: { lifecycle, attachment, requestRebind: workspaceHost.requestRebind },
       isWorkspaceParked: workspaceHost.isParked,
     })
   )
