@@ -134,7 +134,13 @@ Apre l'albero della conversazione per navigare tra i suoi rami. La navigazione i
 /fork
 ```
 
-Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione, che continua nel workspace attuale della conversazione di partenza, anche se nel frattempo è stata spostata in un altro worktree. Come `/new`, termina i processi delle shell della sessione che lasci.
+Crea una nuova sessione a partire da un messaggio precedente. Non crea un Git worktree: qui “fork” riguarda la conversazione, che parte nel workspace attuale della conversazione di partenza, anche se nel frattempo è stata spostata in un altro worktree. Il fork è però una conversazione nuova e non eredita il task: se quel workspace appartiene al task della conversazione di partenza, la prima scrittura del fork lo sposta in un worktree nuovo creato dal commit corrente, senza i file non committati, che restano alla conversazione di partenza. Committa prima di `/fork` se vuoi portarli con te. Come `/new`, termina i processi delle shell della sessione che lasci. Mentre è in corso un cambio di workspace, `/new`, `/fork`, `/resume` e `/import` vengono rifiutati con un avviso.
+
+```text
+/import <file.jsonl>
+```
+
+Sostituisce la sessione corrente con una conversazione salvata. Se il file è già tra le sessioni di `dev`, vale come `/resume`: se la conversazione è aperta in un'altra sessione, l'import viene rifiutato. Se è una copia la cui cartella di lavoro non sta in un checkout Git, viene rifiutato prima di chiudere la sessione corrente e il file resta intatto.
 
 ```text
 /compact
