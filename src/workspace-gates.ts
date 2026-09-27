@@ -32,16 +32,38 @@ const SHARED_GATE_WAIT_MS = 250
 
 export type GateRelease = () => void
 
-const openLockDatabase = (path: string, waitMs: number): DatabaseSync => {
-  const db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
-  // A waiting acquirer only ever waits out a momentary probe, never a holder.
-  db.exec(`PRAGMA busy_timeout = ${waitMs}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`)
-  return db
-}
 const lockFormatSupported = (db: DatabaseSync, ddl: string): boolean =>
   textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase() === 'delete' &&
   numberField(first(db, 'PRAGMA user_version'), 'user_version') === SCHEMA_VERSION &&
   schemaCatalog(db) === expectedCatalog(ddl)
+
+// The caller owns the returned handle.
+const openLock = (lock: {
+  readonly path: string
+  readonly name: 'Workspace gate' | 'Workspace protocol gate'
+  readonly ddl: string
+  readonly waitMs: number
+  readonly readOnly?: boolean
+}): DatabaseSync => {
+  privateFile(lock.path)
+  const db = new DatabaseSync(lock.path, {
+    readOnly: lock.readOnly === true,
+    timeout: 0,
+    allowExtension: false,
+  })
+  try {
+    // A waiting acquirer only ever waits out a momentary probe, never a holder.
+    db.exec(
+      `PRAGMA busy_timeout = ${lock.waitMs}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`
+    )
+    if (!lockFormatSupported(db, lock.ddl))
+      unavailable(`${lock.name} has an unsupported format: ${lock.path}`)
+    return db
+  } catch (cause) {
+    db.close()
+    throw cause
+  }
+}
 
 // The open transaction is the lock, so closing the database is the release.
 const holdLock = (lock: {
@@ -55,12 +77,9 @@ const holdLock = (lock: {
   readonly busy: string
   readonly releaseFailure: string
 }): GateRelease => {
-  privateFile(lock.path)
   let db: DatabaseSync | undefined
   try {
-    db = openLockDatabase(lock.path, lock.waitMs)
-    if (!lockFormatSupported(db, lock.ddl))
-      unavailable(`${lock.name} has an unsupported format: ${lock.path}`)
+    db = openLock(lock)
     lock.verifyMarker(db)
     db.exec(lock.exclusive ? 'BEGIN EXCLUSIVE' : 'BEGIN')
     lock.verifyHeld(db)
@@ -93,12 +112,9 @@ export const createProtocolDatabase = (path: string, namespaceId: WorkspaceId): 
   })
 
 export const validateProtocol = (path: string): WorkspaceId => {
-  privateFile(path)
   let db: DatabaseSync | undefined
   try {
-    db = openLockDatabase(path, 0)
-    if (!lockFormatSupported(db, PROTOCOL_SQL))
-      unavailable(`Workspace protocol gate has an unsupported format: ${path}`)
+    db = openLock({ path, name: 'Workspace protocol gate', ddl: PROTOCOL_SQL, waitMs: 0 })
     const row = first(db, 'SELECT version, namespace_id FROM protocol_marker WHERE id = 1')
     if (numberField(row, 'version') !== PROTOCOL_VERSION)
       unavailable(`Workspace protocol version mismatch at ${path}`)
@@ -153,40 +169,35 @@ const gateDirectory = (
   return directory
 }
 
-const verifyGateMarker = (
-  db: DatabaseSync,
-  path: string,
-  kind: string,
-  identityPath: string,
-  key: string
-): void => {
+type GateKind = 'use' | 'writer' | 'structure' | 'conversation' | 'incarnation'
+interface GateIdentity {
+  readonly kind: GateKind
+  readonly path: string
+  readonly key: string
+}
+
+const verifyGateMarker = (db: DatabaseSync, path: string, identity: GateIdentity): void => {
   const marker = first(db, 'SELECT version, kind, path, key FROM gate_marker WHERE id=1')
   if (
     numberField(marker, 'version') !== PROTOCOL_VERSION ||
-    textField(marker, 'kind') !== kind ||
-    textField(marker, 'path') !== identityPath ||
-    textField(marker, 'key') !== key
+    textField(marker, 'kind') !== identity.kind ||
+    textField(marker, 'path') !== identity.path ||
+    textField(marker, 'key') !== identity.key
   )
     requireReview(
       `Workspace gate identity was replaced or does not match its canonical path: ${path}`
     )
 }
 
-const acquireGate = (
-  path: string,
-  kind: string,
-  identityPath: string,
-  key: string,
-  exclusive: boolean
-): GateRelease => {
+const acquireGate = (path: string, identity: GateIdentity, exclusive: boolean): GateRelease => {
   privateDirectory(dirname(path), false)
   if (lstatIfExists(path) === undefined)
     createPublishedDatabase(path, 'gate', db => {
       db.prepare('INSERT INTO gate_marker(id, version, kind, path, key) VALUES(1, ?, ?, ?, ?)').run(
         PROTOCOL_VERSION,
-        kind,
-        identityPath,
-        key
+        identity.kind,
+        identity.path,
+        identity.key
       )
     })
   return holdLock({
@@ -195,12 +206,12 @@ const acquireGate = (
     name: 'Workspace gate',
     waitMs: exclusive ? 0 : SHARED_GATE_WAIT_MS,
     exclusive,
-    verifyMarker: db => verifyGateMarker(db, path, kind, identityPath, key),
+    verifyMarker: db => verifyGateMarker(db, path, identity),
     verifyHeld: db => {
-      if (textField(first(db, 'SELECT kind FROM gate_marker WHERE id=1'), 'kind') !== kind)
+      if (textField(first(db, 'SELECT kind FROM gate_marker WHERE id=1'), 'kind') !== identity.kind)
         requireReview(`Workspace gate marker changed while acquiring ${path}`)
     },
-    busy: `Workspace ${kind === 'use' ? 'presence' : kind} gate is busy: ${identityPath}`,
+    busy: `Workspace ${identity.kind === 'use' ? 'presence' : identity.kind} gate is busy: ${identity.path}`,
     releaseFailure: `Cannot release workspace gate ${path}`,
   })
 }
@@ -217,12 +228,20 @@ export const acquirePathGates = (
   const canonical = canonicalPathSlot(path)
   const key = hash(canonical)
   const directory = gateDirectory(paths, 'paths', key)
-  const presence = acquireGate(join(directory, 'use.sqlite'), 'use', canonical, key, false)
+  const presence = acquireGate(
+    join(directory, 'use.sqlite'),
+    { kind: 'use', path: canonical, key },
+    false
+  )
   try {
     if (!writer) return { use: presence }
     return {
       use: presence,
-      writer: acquireGate(join(directory, 'writer.sqlite'), 'writer', canonical, key, true),
+      writer: acquireGate(
+        join(directory, 'writer.sqlite'),
+        { kind: 'writer', path: canonical, key },
+        true
+      ),
     }
   } catch (cause) {
     presence()
@@ -238,9 +257,7 @@ export const acquireStructureGate = (
   const directory = gateDirectory(paths, 'repos', key)
   return acquireGate(
     join(directory, 'structure.sqlite'),
-    'structure',
-    repository.commonPath,
-    key,
+    { kind: 'structure', path: repository.commonPath, key },
     true
   )
 }
@@ -253,6 +270,11 @@ const conversationGate = (
 }
 const incarnationGate = (paths: AuthorityPaths, incarnation: WorkspaceId): string =>
   join(paths.gates, 'incarnations', incarnation, 'incarnation.sqlite')
+const incarnationIdentity = (incarnation: WorkspaceId): GateIdentity => ({
+  kind: 'incarnation',
+  path: incarnation,
+  key: incarnation,
+})
 
 export interface ConversationPresence {
   readonly incarnation: WorkspaceId
@@ -267,7 +289,11 @@ export const acquireConversationPresence = (
   gateDirectory(paths, 'conversations', gate.key)
   let releaseConversation: GateRelease
   try {
-    releaseConversation = acquireGate(gate.path, 'conversation', identity, gate.key, true)
+    releaseConversation = acquireGate(
+      gate.path,
+      { kind: 'conversation', path: identity, key: gate.key },
+      true
+    )
   } catch (cause) {
     if (cause instanceof WorkspaceError && cause.outcome === 'blocked')
       blocked('This conversation is open in another dev session; close it there first')
@@ -278,9 +304,7 @@ export const acquireConversationPresence = (
   try {
     const releaseIncarnation = acquireGate(
       incarnationGate(paths, incarnation),
-      'incarnation',
-      incarnation,
-      incarnation,
+      incarnationIdentity(incarnation),
       true
     )
     return {
@@ -313,11 +337,8 @@ export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId)
   if (removed()) return false
   let db: DatabaseSync | undefined
   try {
-    privateFile(path)
-    db = new DatabaseSync(path, { readOnly: true, timeout: 0, allowExtension: false })
-    if (!lockFormatSupported(db, GATE_SQL))
-      unavailable(`Workspace gate has an unsupported format: ${path}`)
-    verifyGateMarker(db, path, 'incarnation', incarnation, incarnation)
+    db = openLock({ path, name: 'Workspace gate', ddl: GATE_SQL, waitMs: 0, readOnly: true })
+    verifyGateMarker(db, path, incarnationIdentity(incarnation))
     return false
   } catch (cause) {
     if (sqliteBusy(cause)) return true
