@@ -18,6 +18,11 @@ export const canonicalSlot = (absolute: string, info: Stats | undefined): string
     ? resolve(realpathSync(dirname(absolute)), basename(absolute))
     : realpathSync(absolute)
 
+export const canonicalFileSlot = (file: string): string => {
+  const absolute = resolve(file)
+  return canonicalSlot(absolute, lstatIfExists(absolute))
+}
+
 export const canonicalPathSlot = (path: string): string => {
   const absolute = resolve(path)
   const info = lstatIfExists(absolute)

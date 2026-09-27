@@ -34,8 +34,7 @@ import {
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
-import { canonicalSlot, decodeWriteOperand } from './workspace-paths.ts'
-import { lstatIfExists } from './workspace-platform.ts'
+import { canonicalFileSlot, decodeWriteOperand } from './workspace-paths.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
@@ -180,11 +179,10 @@ const isWithdrawn = (error: unknown): boolean =>
 // keeps its absolute spelling, which names no live conversation, and the authority refuses it
 // if it is ever attached.
 const conversationFile = (file: string): string => {
-  const absolute = resolve(file)
   try {
-    return canonicalSlot(absolute, lstatIfExists(absolute))
+    return canonicalFileSlot(file)
   } catch {
-    return absolute
+    return resolve(file)
   }
 }
 
@@ -197,7 +195,6 @@ const identityOf = (
   sessionFile: manager.getSessionFile(),
 })
 
-// The authority canonicalized the bound file, so only Pi's side is resolved.
 const isBoundTo = (bound: BoundConversation, identity: ConversationIdentity): boolean =>
   bound.sessionId === identity.sessionId &&
   identity.sessionFile !== undefined &&

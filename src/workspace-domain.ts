@@ -56,7 +56,7 @@ export type WorkspaceConversation = typeof WorkspaceConversationSchema.Type
 // Pi may name one conversation file through a symbolic link or before it is written, so a Pi path
 // matches a bound conversation only once canonicalized.
 export const CanonicalSessionFile = Schema.NonEmptyString.pipe(Schema.brand('CanonicalSessionFile'))
-export const BoundConversationSchema = Schema.Struct({
+const BoundConversationSchema = Schema.Struct({
   ...WorkspaceConversationSchema.fields,
   sessionFile: CanonicalSessionFile,
 })

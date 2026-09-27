@@ -66,7 +66,6 @@ export interface WaitTiming {
   readonly intervalMs?: number
 }
 
-// A timeout reports the last value read, so a failed wait shows the state it stopped on.
 export async function waitUntil<A, B extends A>(
   what: string,
   read: () => A | Promise<A>,
