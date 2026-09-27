@@ -41,7 +41,7 @@ const assessWorkspace = (input: {
   readonly unresolved: boolean
   readonly unknown: boolean
   readonly live: boolean
-  readonly abandoned: readonly string[]
+  readonly abandoned: () => readonly string[]
   readonly reserved: boolean
 }): Pick<WorkspaceView, 'outcome' | 'reason' | 'nextAction'> => {
   const operation =
@@ -60,12 +60,13 @@ const assessWorkspace = (input: {
       reason: operation ?? 'A persisted workspace use is unresolved.',
       nextAction: 'Wait for a directly observed safe boundary or require explicit recovery.',
     }
-  if (input.abandoned.length > 0)
+  const abandoned = input.abandoned()
+  if (abandoned.length > 0)
     return {
       outcome: 'blocked',
       reason:
         operation ??
-        `Uses ${input.abandoned.join(', ')} were left unsettled by dev sessions that have ended; processes they started may still run.`,
+        `Uses ${abandoned.join(', ')} were left unsettled by dev sessions that have ended; processes they started may still run.`,
       nextAction:
         'Do not reuse it for writing; explicit recovery of abandoned uses is not available yet.',
     }
@@ -163,17 +164,15 @@ export const inspectWorkspaces = (
           unresolved,
           unknown,
           live,
-          abandoned:
-            identityReason === undefined && !unknown
-              ? uses
-                  .filter(
-                    use =>
-                      isActiveUse(use) &&
-                      !incarnationHeld(authority.paths, use.incarnation) &&
-                      stillActive(db, use.id)
-                  )
-                  .map(use => use.id)
-              : [],
+          abandoned: () =>
+            uses
+              .filter(
+                use =>
+                  isActiveUse(use) &&
+                  !incarnationHeld(authority.paths, use.incarnation) &&
+                  stillActive(db, use.id)
+              )
+              .map(use => use.id),
           reserved: reservation !== undefined,
         })
         views.push({
