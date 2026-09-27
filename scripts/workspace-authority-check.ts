@@ -100,7 +100,8 @@ const { claim, passed } = makeClaims()
 const repo = join(sandbox, 'repo')
 const root = join(sandbox, 'authority')
 const moduleUrl = new URL('./workspace-test-lifecycle.ts', import.meta.url).href
-const srcUrl = (module: string) => JSON.stringify(new URL(`../src/${module}`, import.meta.url).href)
+const srcSpecifier = (module: string) =>
+  JSON.stringify(new URL(`../src/${module}`, import.meta.url).href)
 mkdirSync(repo)
 const git = (args: readonly string[], cwd = repo): string => {
   const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' })
@@ -1809,13 +1810,13 @@ try {
     async () => {
       mkdirSync(raceRoot, { mode: 0o700 })
       await runChild(`
-        import { WorkspaceAuthority } from ${srcUrl('workspace-authority.ts')}
+        import { WorkspaceAuthority } from ${srcSpecifier('workspace-authority.ts')}
         new WorkspaceAuthority(${JSON.stringify(raceRoot)}).initialize()
       `)
       const owner = runChild(`
         import { renameSync, writeFileSync } from 'node:fs'
-        import { authorityPaths } from ${srcUrl('workspace-authority-root.ts')}
-        import { acquireConversationPresence } from ${srcUrl('workspace-gates.ts')}
+        import { authorityPaths } from ${srcSpecifier('workspace-authority-root.ts')}
+        import { acquireConversationPresence } from ${srcSpecifier('workspace-gates.ts')}
         const paths = authorityPaths(${JSON.stringify(raceRoot)})
         const errors = []
         for (let cycle = 0; cycle < 600; cycle += 1) {
@@ -1836,8 +1837,8 @@ try {
       const inspector = () =>
         runChild(`
           import { existsSync, readFileSync } from 'node:fs'
-          import { authorityPaths } from ${srcUrl('workspace-authority-root.ts')}
-          import { incarnationHeld } from ${srcUrl('workspace-gates.ts')}
+          import { authorityPaths } from ${srcSpecifier('workspace-authority-root.ts')}
+          import { incarnationHeld } from ${srcSpecifier('workspace-gates.ts')}
           const paths = authorityPaths(${JSON.stringify(raceRoot)})
           const errors = []
           let held = 0
