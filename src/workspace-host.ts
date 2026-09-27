@@ -388,9 +388,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       (yield* Effect.try({ try: () => sessionFileCwd(source), catch: () => undefined }).pipe(
         Effect.orElseSucceed(() => undefined)
       ))
-    if (cwd === undefined || !(yield* Effect.sync(() => existsSync(cwd)))) return undefined
-    if ((yield* options.repositoryRoot(cwd)) !== undefined) return undefined
-    return `The session was not imported: its working directory is not inside a Git checkout: ${cwd}\n${keptConversationGuidance(source)}`
+    if (cwd === undefined) return undefined
+    const resolved = options.resolveImportPath(cwd)
+    if (!(yield* Effect.sync(() => existsSync(resolved)))) return undefined
+    if ((yield* options.repositoryRoot(resolved)) !== undefined) return undefined
+    return `The session was not imported: its working directory is not inside a Git checkout: ${resolved}\n${keptConversationGuidance(source)}`
   })
 
   const closeAttachmentOnce = (attachment: WorkspaceAttachment) =>
@@ -548,6 +550,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       parked = false
       return yield* withdrawOrReport(transition.transitionSource, transition.handoff)
     }
+    const settled = yield* Deferred.make<void>()
     const performed = yield* Effect.exit(
       Effect.gen(function* () {
         capturePendingInput(transition.context)
@@ -561,15 +564,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         }
         let callbackResult: 'confirmed' | 'cancelled' | undefined
         transition.stage = 'handoff-sent'
-        const settled = yield* Deferred.make<void>()
         handoffSettled = settled
-        yield* transition.transitionSource
-          .handoff(transition.handoff, target =>
-            replaceSession(transition, identity, target, outcome => {
-              callbackResult = outcome
-            })
-          )
-          .pipe(Effect.ensuring(Deferred.succeed(settled, undefined)))
+        yield* transition.transitionSource.handoff(transition.handoff, target =>
+          replaceSession(transition, identity, target, outcome => {
+            callbackResult = outcome
+          })
+        )
         pendingReopen = undefined
         if (callbackResult === 'cancelled') {
           pending = undefined
@@ -592,7 +592,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         pending = undefined
         parked = false
         queueReevaluation(transition)
-      })
+      }).pipe(Effect.ensuring(Deferred.succeed(settled, undefined)))
     )
     if (Exit.isSuccess(performed)) return
     const error = Cause.squash(performed.cause)
@@ -973,6 +973,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   ) {
     if (invokingHandoffSwitch) return yield* fromPi(() => rawSwitch(sessionFile, switchOptions))
     if (yield* refusedWhileSwitching) return { cancelled: true }
+    replacing = true
     const previousSerial = runtimePreparationSerial
     let staged: WorkspaceAttachment | undefined
     let stagedKey: string | undefined
@@ -1071,6 +1072,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           } else {
             parked = true
           }
+        })
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          replacing = false
         })
       )
     )
@@ -1266,6 +1272,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawSwitch = nextRuntime.switchSession.bind(nextRuntime)
       nextRuntime.switchSession = (sessionFile, switchOptions) =>
         runPromise(switchSession(rawSwitch, sessionFile, switchOptions))
+      const rawDispose = nextRuntime.dispose.bind(nextRuntime)
+      nextRuntime.dispose = () => {
+        quitting = true
+        return rawDispose()
+      }
       const rawNew = nextRuntime.newSession.bind(nextRuntime)
       nextRuntime.newSession = newOptions =>
         runPromise(

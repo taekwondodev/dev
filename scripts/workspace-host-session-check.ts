@@ -255,16 +255,21 @@ try {
 
   // Pi replaces the session while the work tool is still being admitted: its teardown waits
   // for the running tool, so the rebind reaches the host during the replacement.
-  for (const replacement of ['new', 'resume'] as const)
+  for (const [replacement, order] of [
+    ['new', 'before'],
+    ['resume', 'before'],
+    ['resume', 'after'],
+    ['import', 'after'],
+  ] as const)
     await claim(
-      `a /${replacement} that starts while a contended work call is being admitted withdraws the rebind: the next session stays usable and the old conversation can be resumed`,
+      `a /${replacement} that starts ${order} a contended work call's admission request withdraws the rebind: the next session stays usable and the old conversation can be resumed`,
       async () => {
         const steps = scripted([[workProcess]])
         const racing = await makeOfflineModel({
           pi,
           importFromPi,
           fixture,
-          id: `host-session-${replacement}`,
+          id: `host-session-${replacement}-${order}`,
           next: steps.next,
         })
         const other = storedConversation(racing, lead)
@@ -273,18 +278,28 @@ try {
         const raced = await lifecycle.attach({ conversation: raceConversation, cwd: lead })
         let started: Promise<unknown> | undefined
         let runtimeRef: Pi.AgentSessionRuntime | undefined
+        const replace = () =>
+          replacement === 'new'
+            ? runtimeRef?.newSession()
+            : replacement === 'resume'
+              ? runtimeRef?.switchSession(other.file)
+              : runtimeRef?.importFromJsonl(other.file)
         const admitting: WorkspaceAttachment = new Proxy(raced.effect, {
           get: (target, key) =>
             key === 'authorize'
               ? (operation: Parameters<WorkspaceAttachment['authorize']>[0]) =>
                   started === undefined && operation.kind === 'write'
-                    ? Effect.promise(async () => {
-                        started =
-                          replacement === 'new'
-                            ? runtimeRef?.newSession()
-                            : runtimeRef?.switchSession(other.file)
-                        await sleep(150)
-                      }).pipe(Effect.andThen(target.authorize(operation)))
+                    ? order === 'before'
+                      ? Effect.promise(async () => {
+                          started = replace()
+                          await sleep(150)
+                        }).pipe(Effect.andThen(target.authorize(operation)))
+                      : Effect.promise(async () => {
+                          const admitted = Effect.runPromise(target.authorize(operation))
+                          await Promise.resolve()
+                          started = replace()
+                          return admitted
+                        })
                     : target.authorize(operation)
               : Reflect.get(target, key, target),
         })
@@ -345,17 +360,26 @@ try {
       const quitter = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
       let disposing: Promise<void> | undefined
       let runtimeRef: Pi.AgentSessionRuntime | undefined
+      let closedOnQuit = false
       const handingOff: WorkspaceAttachment = new Proxy(quitter.effect, {
         get: (target, key) =>
-          key === 'handoff'
-            ? (...[transition, replace]: Parameters<WorkspaceAttachment['handoff']>) =>
-                target.handoff(transition, grant =>
-                  Effect.promise(async () => {
-                    disposing = runtimeRef?.dispose()
-                    await sleep(100)
-                  }).pipe(Effect.andThen(replace(grant)))
+          key === 'close'
+            ? target.close.pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    closedOnQuit = true
+                  })
                 )
-            : Reflect.get(target, key, target),
+              )
+            : key === 'handoff'
+              ? (...[transition, replace]: Parameters<WorkspaceAttachment['handoff']>) =>
+                  target.handoff(transition, grant =>
+                    Effect.promise(async () => {
+                      disposing = runtimeRef?.dispose()
+                      await sleep(100)
+                    }).pipe(Effect.andThen(replace(grant)))
+                  )
+              : Reflect.get(target, key, target),
       })
       const quit = await openHostRuntime({
         pi,
@@ -374,6 +398,7 @@ try {
       await quit.runtime.session.prompt('Run the tests in the background.')
       await waitFor('the quit', async () => (disposing === undefined ? undefined : true))
       await disposing
+      assert.ok(closedOnQuit, 'the quit alone closed the attachment, as Pi exits right after it')
       await quit.close()
       assert.deepEqual(
         (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
