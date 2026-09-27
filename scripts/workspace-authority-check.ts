@@ -1868,6 +1868,56 @@ try {
     }
   )
 
+  await claim(
+    'an inspection racing a conversation that closes cleanly never reports its settled uses as left by an ended session',
+    async () => {
+      const closingRepo = join(sandbox, 'clean-close-repo')
+      initRepository(closingRepo, 'tracked.txt', 'clean close fixture\n')
+      const closingDone = join(sandbox, 'clean-close-done')
+      const closing = conversation('clean-close')
+      const registering = await openLifecycle({ root })
+      await (await registering.attach({ conversation: closing, cwd: closingRepo })).close()
+      await registering.close()
+      const owner = runChild(`
+        import { writeFileSync } from 'node:fs'
+        import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+        const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
+        const conversation = ${JSON.stringify(closing)}
+        for (let cycle = 0; cycle < 150; cycle += 1) {
+          const attachment = await lifecycle.attach({ conversation, cwd: ${JSON.stringify(closingRepo)} })
+          await attachment.authorize({ kind: 'write' })
+          await attachment.close()
+        }
+        await lifecycle.close()
+        writeFileSync(${JSON.stringify(closingDone)}, '')
+      `)
+      const inspector = () =>
+        runChild(`
+          import { existsSync } from 'node:fs'
+          import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+          const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
+          const abandoned = []
+          let inspections = 0
+          while (!existsSync(${JSON.stringify(closingDone)})) {
+            for (const view of await lifecycle.inspect({ cwd: ${JSON.stringify(closingRepo)} }))
+              if (view.reason.includes('left unsettled')) abandoned.push(view.reason)
+            inspections += 1
+          }
+          await lifecycle.close()
+          console.log(JSON.stringify({ abandoned: abandoned.slice(0, 3), inspections }))
+        `)
+      const [, ...inspected] = await Promise.all([owner, inspector(), inspector()])
+      for (const output of inspected) {
+        const result = JSON.parse(output) as {
+          readonly abandoned: readonly string[]
+          readonly inspections: number
+        }
+        assert.deepEqual(result.abandoned, [], 'no settled use was reported as abandoned')
+        assert.ok(result.inspections > 0, 'the inspector raced the closing conversation')
+      }
+    }
+  )
+
   console.log(
     JSON.stringify(
       { result: 'passed', checks: passed, authorityRoot: root, fixtureRepository: repo },

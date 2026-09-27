@@ -1,4 +1,5 @@
 import { lstatSync, realpathSync } from 'node:fs'
+import type { DatabaseSync } from 'node:sqlite'
 import { inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import { requireReview, type WorkspaceId, type WorkspaceView } from './workspace-domain.ts'
 import { incarnationHeld } from './workspace-gates.ts'
@@ -7,6 +8,7 @@ import {
   getWorkspace,
   getReservation,
   getOperation,
+  getUse,
   getUseRows,
   isActiveUse,
   type OperationRecord,
@@ -86,6 +88,13 @@ const assessWorkspace = (input: {
   }
 }
 
+// An owner settles its uses before it releases its incarnation, so a use read before the probe
+// found the gate free counts as abandoned only if it is still active afterwards.
+const stillActive = (db: DatabaseSync, useId: WorkspaceId): boolean => {
+  const current = getUse(db, useId)
+  return current !== undefined && isActiveUse(current)
+}
+
 export const inspectWorkspaces = (
   authority: WorkspaceAuthority,
   input: { readonly cwd?: string; readonly taskId?: WorkspaceId }
@@ -155,10 +164,13 @@ export const inspectWorkspaces = (
           unknown,
           live,
           abandoned:
-            identityReason === undefined
+            identityReason === undefined && !unknown
               ? uses
                   .filter(
-                    use => isActiveUse(use) && !incarnationHeld(authority.paths, use.incarnation)
+                    use =>
+                      isActiveUse(use) &&
+                      !incarnationHeld(authority.paths, use.incarnation) &&
+                      stillActive(db, use.id)
                   )
                   .map(use => use.id)
               : [],
