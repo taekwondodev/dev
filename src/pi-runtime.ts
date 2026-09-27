@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Config, Effect, FileSystem, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import type * as PiSessions from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
+import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
 
 export type PiApi = typeof Pi
 
@@ -104,6 +105,17 @@ export const findRecentSession = Effect.fnUntraced(function* (
     try: () => sessions.findMostRecentSession(sessionsPath, cwd) ?? undefined,
     catch: cause => new PiError({ message: 'Cannot find recent Pi session', cause }),
   })
+})
+
+// ADR 0005: /import is classified with Pi's own path resolution.
+export const loadPiPathResolver = Effect.fnUntraced(function* (packageRoot: string) {
+  const paths: typeof PiPaths = yield* Effect.tryPromise({
+    try: () => import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href),
+    catch: cause => new PiError({ message: 'Cannot load Pi path resolution', cause }),
+  })
+  if (typeof paths.resolvePath !== 'function')
+    return yield* new PiError({ message: 'Installed Pi does not provide its path resolution' })
+  return (input: string): string => paths.resolvePath(input)
 })
 
 export const linkPiDeclarations = Effect.gen(function* () {

@@ -23,7 +23,7 @@ import {
   type Profile,
 } from './profiles.ts'
 import { errorText } from './error-text.ts'
-import { findRecentSession, loadPi, type PiApi } from './pi-runtime.ts'
+import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
@@ -43,7 +43,6 @@ import {
   chooseResumeCandidate,
 } from './workspace-command.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
-import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
 
 export class LauncherError extends Schema.TaggedError<LauncherError>()('LauncherError', {
   message: Schema.String,
@@ -571,12 +570,8 @@ const run = Effect.fnUntraced(function* (
         message: 'Reopened Pi session changed conversation identity',
       })
   }
-  const piPaths: typeof PiPaths = yield* fromPromise(
-    'Cannot load Pi path resolver',
-    async () =>
-      import(pathToFileURL(resolve(packageInfo.root, 'dist/utils/paths.js')).href) as Promise<
-        typeof PiPaths
-      >
+  const resolveImportPath = yield* loadPiPathResolver(packageInfo.root).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot load Pi path resolution'))
   )
   const workspaceHost = yield* makeWorkspaceHost({
     lifecycle: workspaceLifecycle,
@@ -585,7 +580,7 @@ const run = Effect.fnUntraced(function* (
     openSessionManager: (file, cwdOverride) =>
       api.SessionManager.open(file, sessionsPath, cwdOverride),
     repositoryRoot: gitRoot,
-    resolveImportPath: input => piPaths.resolvePath(input),
+    resolveImportPath,
   })
   const effectiveSelection =
     resolve(effectiveCwd) === resolve(launchCwd)
