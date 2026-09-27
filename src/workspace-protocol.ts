@@ -79,10 +79,6 @@ const WorkspaceRpcInputSchema = Schema.Union([
 
 export type WorkspaceRpcInput = typeof WorkspaceRpcInputSchema.Type
 export type WorkspaceRpcOperation = WorkspaceRpcInput['op']
-export interface WorkspaceRpcEnvelope {
-  readonly id: number
-  readonly request: WorkspaceRpcInput
-}
 
 export interface WorkspaceRpcResults {
   readonly attach: { readonly attachmentId: number; readonly binding: WorkspaceBinding }
@@ -95,8 +91,6 @@ export interface WorkspaceRpcResults {
   readonly validate: null
   readonly close: null
 }
-
-export type WorkspaceRpcResult = WorkspaceRpcResults[WorkspaceRpcOperation]
 
 const EnvelopeSchema = Schema.Struct({ id: RpcId, request: Schema.Unknown })
 const SuccessSchema = Schema.Union([
@@ -168,7 +162,7 @@ const CallbackResultSchema = Schema.Struct({
   outcome: Schema.optional(Schema.Literals(['confirmed', 'cancelled'])),
 })
 
-export const WorkspaceParentMessageSchema = Schema.Union([EnvelopeSchema, CallbackResultSchema])
+const WorkspaceParentMessageSchema = Schema.Union([EnvelopeSchema, CallbackResultSchema])
 export const WorkspaceWorkerMessageSchema = Schema.Union([
   ReadyMessageSchema,
   StartupFailureSchema,
@@ -176,23 +170,13 @@ export const WorkspaceWorkerMessageSchema = Schema.Union([
   BindingsMessageSchema,
   WorkspaceRpcResponseSchema,
 ])
-export const WorkspaceWorkerDataSchema = Schema.Struct({
+const WorkspaceWorkerDataSchema = Schema.Struct({
   root: Schema.optional(Schema.NonEmptyString),
 })
 
 export type WorkspaceWorkerMessage = typeof WorkspaceWorkerMessageSchema.Type
-export type WorkspaceRpcSuccess = Extract<
-  typeof WorkspaceRpcResponseSchema.Type,
-  { readonly ok: true }
->
-export type WorkspaceRpcFailure = Extract<
-  typeof WorkspaceRpcResponseSchema.Type,
-  { readonly ok: false }
->
-export type WorkspaceHostCallback = typeof HostCallbackSchema.Type
-export type WorkspaceBindingUpdate = typeof BindingUpdateSchema.Type
-export type WorkspaceParentMessage = typeof WorkspaceParentMessageSchema.Type
-export type WorkspaceWorkerData = typeof WorkspaceWorkerDataSchema.Type
+type WorkspaceParentMessage = typeof WorkspaceParentMessageSchema.Type
+type WorkspaceWorkerData = typeof WorkspaceWorkerDataSchema.Type
 
 export const decodeWorkspaceParentMessage = (value: unknown): WorkspaceParentMessage =>
   Schema.decodeUnknownSync(WorkspaceParentMessageSchema)(value)
