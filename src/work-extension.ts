@@ -14,6 +14,7 @@ import {
   type WorkFailure,
   type WorkOwnerService,
   type WorkSetupError,
+  type WorkSnapshot,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from './workspace-domain.ts'
@@ -235,12 +236,7 @@ export const createWorkExtension = ({
     effect: Effect.Effect<A, WorkFailure, WorkOwner>
   ): Promise<A> => Effect.runPromise(runOwned(ctx, effect))
 
-  const showStatus = async (ctx: Pi.ExtensionContext): Promise<void> => {
-    if (!ctx.hasUI) return
-    const snapshot = await run(
-      ctx,
-      withOwner(owner => owner.snapshot)
-    )
+  const statusText = (snapshot: WorkSnapshot): string | undefined => {
     const counts = new Map<string, number>()
     for (const record of snapshot.records)
       counts.set(record.status, (counts.get(record.status) ?? 0) + 1)
@@ -266,8 +262,7 @@ export const createWorkExtension = ({
         return `${record.owner.taskId}: ${record.model ?? 'model pending'} context ${pressure}`
       })
       .join(' · ')
-    ctx.ui.setStatus(
-      'dev/work',
+    return (
       [
         states,
         models,
@@ -279,6 +274,17 @@ export const createWorkExtension = ({
         .join(' | ') || undefined
     )
   }
+  const updateStatus = (ctx: Pi.ExtensionContext): Effect.Effect<void, WorkFailure> =>
+    ctx.hasUI
+      ? runOwned(
+          ctx,
+          withOwner(owner => owner.snapshot)
+        ).pipe(
+          Effect.flatMap(snapshot =>
+            Effect.sync(() => ctx.ui.setStatus('dev/work', statusText(snapshot)))
+          )
+        )
+      : Effect.void
 
   const scheduleStatus = (): void => {
     const current = context
@@ -286,7 +292,7 @@ export const createWorkExtension = ({
     if (current !== undefined)
       setImmediate(() => {
         if (context === current && sessionOwner === currentOwner)
-          void showStatus(current).catch(notifyError)
+          void Effect.runPromise(updateStatus(current)).catch(notifyError)
       })
   }
 
@@ -303,12 +309,7 @@ export const createWorkExtension = ({
           withOwner(owner => owner.interrupt(reason))
         )
       ),
-      Effect.andThen(
-        Effect.tryPromise({
-          try: () => showStatus(ctx),
-          catch: cause => new WorkError({ message: errorText(cause), cause }),
-        })
-      )
+      Effect.andThen(updateStatus(ctx))
     )
   const interrupt = (ctx: Pi.ExtensionContext, reason: string): Promise<void> =>
     Effect.runPromise(interruptOwned(ctx, reason))
@@ -673,7 +674,7 @@ export const createWorkExtension = ({
           { triggerTurn: false }
         )
       }
-      await showStatus(ctx)
+      await Effect.runPromise(updateStatus(ctx))
     })
     pi.on('agent_before_settle', async (event, ctx) => {
       idleDeliveryReady = false
