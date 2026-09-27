@@ -65,7 +65,7 @@ const ValidateRequestSchema = Schema.Struct({
 })
 const CloseRequestSchema = Schema.Struct({ op: Schema.Literal('close') })
 
-export const WorkspaceRpcInputSchema = Schema.Union([
+const WorkspaceRpcInputSchema = Schema.Union([
   AttachRequestSchema,
   AuthorizeRequestSchema,
   SelectRequestSchema,
@@ -98,7 +98,7 @@ export interface WorkspaceRpcResults {
 
 export type WorkspaceRpcResult = WorkspaceRpcResults[WorkspaceRpcOperation]
 
-const EnvelopeSchema = Schema.Struct({ id: RpcId, request: WorkspaceRpcInputSchema })
+const EnvelopeSchema = Schema.Struct({ id: RpcId, request: Schema.Unknown })
 const SuccessSchema = Schema.Union([
   Schema.Struct({
     id: RpcId,
@@ -196,6 +196,7 @@ export type WorkspaceWorkerData = typeof WorkspaceWorkerDataSchema.Type
 
 export const decodeWorkspaceParentMessage = (value: unknown): WorkspaceParentMessage =>
   Schema.decodeUnknownSync(WorkspaceParentMessageSchema)(value)
+export const decodeWorkspaceRpcInput = Schema.decodeUnknownOption(WorkspaceRpcInputSchema)
 export const decodeWorkspaceWorkerMessage = (value: unknown): WorkspaceWorkerMessage =>
   Schema.decodeUnknownSync(WorkspaceWorkerMessageSchema)(value)
 export const decodeWorkspaceWorkerData = (value: unknown): WorkspaceWorkerData =>

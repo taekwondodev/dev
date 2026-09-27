@@ -1,5 +1,5 @@
 import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threads'
-import { Deferred, Duration, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
+import { Deferred, Duration, Effect, Exit, FiberSet, type Scope } from 'effect'
 import {
   WorkspaceError,
   type HostReplace,
@@ -9,7 +9,6 @@ import {
 } from './workspace-domain.ts'
 import {
   decodeWorkspaceWorkerMessage,
-  WorkspaceRpcInputSchema,
   type WorkspaceRpcInput,
   type WorkspaceRpcOperation,
   type WorkspaceRpcResults,
@@ -265,9 +264,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       return yield* unavailable('Workspace authority worker request limit reached')
     if (hostReplace !== undefined && input.op !== 'handoff')
       return yield* invalid('Host callback supplied for a non-handoff operation')
-    const request = yield* Schema.decodeUnknownEffect(WorkspaceRpcInputSchema)(input).pipe(
-      Effect.mapError(() => invalid('Workspace worker request is invalid'))
-    )
+    const request: WorkspaceRpcInput = input
     const id = yield* nextId()
     const callbackId = request.op === 'handoff' ? request.callbackId : undefined
     if (hostReplace !== undefined && callbackId !== undefined) {

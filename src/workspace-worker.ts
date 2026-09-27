@@ -1,4 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
+import { Option } from 'effect'
 import {
   authorizeOperation,
   reportExecutionFact,
@@ -11,6 +12,7 @@ import { inspectWorkspaces } from './workspace-inspect.ts'
 import {
   decodeWorkspaceWorkerData,
   decodeWorkspaceParentMessage,
+  decodeWorkspaceRpcInput,
   type WorkspaceRpcInput,
   type WorkspaceRpcOperation,
   type WorkspaceRpcResults,
@@ -247,7 +249,15 @@ if (port !== null && engine !== undefined) {
         )
         return
       }
-      const operation = handleRpc(message.id, message.request)
+      const request = decodeWorkspaceRpcInput(message.request)
+      if (Option.isNone(request)) {
+        failResponse(
+          message.id,
+          new WorkspaceError({ outcome: 'invalid', message: 'Workspace worker request is invalid' })
+        )
+        return
+      }
+      const operation = handleRpc(message.id, request.value)
       activeRequests.set(message.id, operation)
       void operation.finally(() => activeRequests.delete(message.id))
     } catch {
