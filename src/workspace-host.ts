@@ -901,6 +901,50 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
   })
 
+  const refusedWhileSwitching = Effect.sync(() => {
+    if (!parked && !pending) return false
+    notify(currentContext, pendingSwitchNotice, 'warning')
+    return true
+  })
+  // Pi's own errors pass through unchanged as defects, since its TUI recovers from some by
+  // their class and the host handles none of them.
+  const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(call)
+  const guardedReplacement = <A, E>(
+    cancelled: A,
+    replace: Effect.Effect<A, E>
+  ): Effect.Effect<A, E> =>
+    Effect.gen(function* () {
+      if (yield* refusedWhileSwitching) return cancelled
+      replacing = true
+      return yield* replace.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            replacing = false
+          })
+        )
+      )
+    })
+  const importConversation = Effect.fnUntraced(function* (
+    rawSwitch: AgentSessionRuntime['switchSession'],
+    rawImport: AgentSessionRuntime['importFromJsonl'],
+    inputPath: string,
+    cwdOverride: string | undefined
+  ) {
+    const source = options.resolveImportPath(inputPath)
+    const sessionDir = runtime?.session.sessionManager.getSessionDir()
+    if (sessionDir !== undefined && resolve(sessionDir, basename(source)) === source)
+      return yield* switchSession(rawSwitch, source, undefined)
+    return yield* guardedReplacement(
+      { cancelled: true },
+      Effect.gen(function* () {
+        const refusal = yield* importOutsideCheckout(source, cwdOverride)
+        if (refusal === undefined) return yield* piCall(() => rawImport(inputPath, cwdOverride))
+        notify(currentContext, refusal, 'warning')
+        return { cancelled: true }
+      })
+    )
+  })
+
   // Wraps Pi's `/resume`, and an import of a conversation already stored in the session
   // directory, so the target is attached to the authority before Pi replaces the runtime.
   const switchSession = Effect.fnUntraced(function* (
@@ -909,10 +953,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     switchOptions: Parameters<AgentSessionRuntime['switchSession']>[1]
   ) {
     if (invokingHandoffSwitch) return yield* fromPi(() => rawSwitch(sessionFile, switchOptions))
-    if (parked || pending) {
-      notify(currentContext, pendingSwitchNotice, 'warning')
-      return { cancelled: true }
-    }
+    if (yield* refusedWhileSwitching) return { cancelled: true }
     const previousSerial = runtimePreparationSerial
     let staged: WorkspaceAttachment | undefined
     let stagedKey: string | undefined
@@ -1206,39 +1247,25 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawSwitch = nextRuntime.switchSession.bind(nextRuntime)
       nextRuntime.switchSession = (sessionFile, switchOptions) =>
         runPromise(switchSession(rawSwitch, sessionFile, switchOptions))
-      const refusedWhileSwitching = (): boolean => {
-        if (!parked && !pending) return false
-        notify(currentContext, pendingSwitchNotice, 'warning')
-        return true
-      }
-      const replacingDuring = <A>(replace: () => Promise<A>): Promise<A> => {
-        replacing = true
-        return replace().finally(() => {
-          replacing = false
-        })
-      }
       const rawNew = nextRuntime.newSession.bind(nextRuntime)
       nextRuntime.newSession = newOptions =>
-        refusedWhileSwitching()
-          ? Promise.resolve({ cancelled: true })
-          : replacingDuring(() => rawNew(newOptions))
+        runPromise(
+          guardedReplacement(
+            { cancelled: true },
+            piCall(() => rawNew(newOptions))
+          )
+        )
       const rawFork = nextRuntime.fork.bind(nextRuntime)
       nextRuntime.fork = (entryId, forkOptions) =>
-        refusedWhileSwitching()
-          ? Promise.resolve({ cancelled: true })
-          : replacingDuring(() => rawFork(entryId, forkOptions))
+        runPromise(
+          guardedReplacement(
+            { cancelled: true },
+            piCall(() => rawFork(entryId, forkOptions))
+          )
+        )
       const rawImport = nextRuntime.importFromJsonl.bind(nextRuntime)
-      nextRuntime.importFromJsonl = (inputPath, cwdOverride) => {
-        const source = options.resolveImportPath(inputPath)
-        const stored = resolve(nextRuntime.session.sessionManager.getSessionDir(), basename(source))
-        if (stored === source) return runPromise(switchSession(rawSwitch, source, undefined))
-        if (refusedWhileSwitching()) return Promise.resolve({ cancelled: true })
-        return runPromise(importOutsideCheckout(source, cwdOverride)).then(refusal => {
-          if (refusal === undefined) return replacingDuring(() => rawImport(inputPath, cwdOverride))
-          notify(currentContext, refusal, 'warning')
-          return { cancelled: true }
-        })
-      }
+      nextRuntime.importFromJsonl = (inputPath, cwdOverride) =>
+        runPromise(importConversation(rawSwitch, rawImport, inputPath, cwdOverride))
     },
     setWorkControls(controls) {
       workControls = controls
