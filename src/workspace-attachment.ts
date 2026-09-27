@@ -174,6 +174,10 @@ export const attachConversation = (
           `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
         )
       validateWorkspace(authority, workspace)
+      if (lstatIfExists(binding.cwd)?.isDirectory() !== true)
+        requireReview(
+          `The working directory bound to this conversation no longer exists and is not recreated: ${binding.cwd}`
+        )
     } else {
       const git = canonicalGitWorkspace(input.cwd)
       repoId = authority.registerRepository(git)

@@ -602,28 +602,36 @@ await claim(
 )
 await held.close()
 
+const boundConversation = async (checkout: string, cwd: string) => {
+  mkdir(cwd)
+  writeFileSync(join(checkout, 'AGENTS.md'), 'real-authority probe: bound conversation\n')
+  git(['init', '--quiet', '-b', 'main'], checkout)
+  git(['config', 'user.email', 'real-authority@example.invalid'], checkout)
+  git(['config', 'user.name', 'real authority probe'], checkout)
+  git(['add', 'AGENTS.md'], checkout)
+  git(['commit', '--quiet', '-m', 'bound conversation fixture'], checkout)
+  const manager = pi.SessionManager.create(cwd, sessionDir)
+  manager.appendMessage(heldReply)
+  const file = manager.getSessionFile()
+  if (file === undefined) throw new Error('Pi did not persist the bound conversation')
+  const owner = await holder.attach({
+    conversation: { sessionId: manager.getSessionId(), sessionFile: file, dataHome },
+    cwd,
+  })
+  assert.equal(resolve(owner.binding.cwd), resolve(cwd))
+  await owner.close()
+  return file
+}
 const removed = join(fixture, 'projects', 'removed')
-mkdir(removed)
-writeFileSync(join(removed, 'AGENTS.md'), 'real-authority probe: removed\n')
-git(['init', '--quiet', '-b', 'main'], removed)
-git(['config', 'user.email', 'real-authority@example.invalid'], removed)
-git(['config', 'user.name', 'real authority probe'], removed)
-git(['add', 'AGENTS.md'], removed)
-git(['commit', '--quiet', '-m', 'removed checkout fixture'], removed)
-const removedManager = pi.SessionManager.create(removed, sessionDir)
-removedManager.appendMessage(heldReply)
-const removedFile = removedManager.getSessionFile()
-if (removedFile === undefined)
-  throw new Error('Pi did not persist the removed-checkout conversation')
-const removedOwner = await holder.attach({
-  conversation: { sessionId: removedManager.getSessionId(), sessionFile: removedFile, dataHome },
-  cwd: removed,
-})
-assert.equal(resolve(removedOwner.binding.cwd), resolve(removed))
-await removedOwner.close()
+const removedFile = await boundConversation(removed, removed)
+const nested = join(fixture, 'projects', 'nested')
+const nestedCwd = join(nested, 'sub')
+const nestedFile = await boundConversation(nested, nestedCwd)
 await holder.close()
 rmSync(removed, { recursive: true, force: true })
+rmSync(nestedCwd, { recursive: true, force: true })
 const removedBytes = readFileSync(removedFile)
+const nestedBytes = readFileSync(nestedFile)
 await claim(
   'switching the TUI runtime to a conversation whose workspace was removed is cancelled with a notice naming its unchanged file and the next safe action; the file stays byte-identical and the checkout is not recreated',
   async () => {
@@ -637,6 +645,21 @@ await claim(
     ])
     assert.deepEqual(readFileSync(removedFile), removedBytes, 'the conversation file is unchanged')
     assert.ok(!existsSync(removed), 'the removed checkout is not recreated')
+  }
+)
+await claim(
+  "switching the TUI runtime to a conversation whose bound working directory was removed from a checkout that remains is cancelled with the same notice, instead of the missing directory failing Pi's switch fatally",
+  async () => {
+    const sessionBeforeNestedSwitch = runtime.session.sessionManager.getSessionId()
+    const noticesBefore = notices.length
+    assert.deepEqual(await runtime.switchSession(nestedFile), { cancelled: true })
+    assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeNestedSwitch)
+    assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
+    assert.deepEqual(notices.slice(noticesBefore), [
+      `The session was not switched: The working directory bound to this conversation no longer exists and is not recreated: ${nestedCwd}\n${keptConversation(nestedFile)}`,
+    ])
+    assert.deepEqual(readFileSync(nestedFile), nestedBytes, 'the conversation file is unchanged')
+    assert.ok(!existsSync(nestedCwd), 'the removed directory is not recreated')
   }
 )
 
