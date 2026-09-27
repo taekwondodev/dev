@@ -215,7 +215,7 @@ try {
     }
   )
   await claim(
-    'importing a copied conversation whose working directory is not inside a Git checkout is cancelled before Pi tears the current session down',
+    'importing a copied conversation whose working directory, read as Pi reads it, is not inside a Git checkout is cancelled before Pi tears the current session down',
     async () => {
       const outside = join(fixture, 'outside-git')
       const exported = join(fixture, 'exported')
@@ -225,12 +225,30 @@ try {
       copied.appendMessage(offline.assistantMessage([{ type: 'text', text: 'exported' }], 'stop'))
       const copiedFile = copied.getSessionFile()
       if (copiedFile === undefined) throw new Error('Pi did not persist the exported conversation')
-      const bytes = readFileSync(copiedFile)
+      const [header = '', ...rest] = readFileSync(copiedFile, 'utf8').split('\n')
+      const { cwd: _cwd, ...headerWithoutCwd } = JSON.parse(header) as { readonly cwd: string }
+      const blankFirst = join(exported, 'blank-first-line.jsonl')
+      writeFileSync(blankFirst, ['', header, ...rest].join('\n'))
+      const noCwd = join(exported, 'no-cwd.jsonl')
+      writeFileSync(noCwd, [JSON.stringify(headerWithoutCwd), ...rest].join('\n'))
       const current = runtime.session.sessionManager.getSessionId()
-      assert.deepEqual(await runtime.importFromJsonl(copiedFile), { cancelled: true })
+      const launchDirectory = process.cwd()
+      for (const [file, directory] of [
+        [copiedFile, launchDirectory],
+        [blankFirst, launchDirectory],
+        [noCwd, outside],
+      ] as const) {
+        const bytes = readFileSync(file)
+        process.chdir(directory)
+        try {
+          assert.deepEqual(await runtime.importFromJsonl(file), { cancelled: true }, file)
+        } finally {
+          process.chdir(launchDirectory)
+        }
+        assert.deepEqual(readFileSync(file), bytes, `${file} is unchanged`)
+      }
       assert.equal(runtime.session.sessionManager.getSessionId(), current)
       assert.equal(host.isParked(), false)
-      assert.deepEqual(readFileSync(copiedFile), bytes, 'the exported file is unchanged')
     }
   )
   await opened.close()

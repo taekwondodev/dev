@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
+import { Cause, Deferred, Effect, Exit, FiberSet, Option, Schema, type Scope } from 'effect'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import type {
@@ -133,9 +133,13 @@ interface ConversationIdentity {
 }
 
 const hostFailure = (message: string) => new WorkspaceHostError({ message })
-// ADR 0005: the first line of a Pi session file is its header.
+const decodeSessionLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 const decodeSessionHeader = Schema.decodeUnknownOption(
-  Schema.Struct({ type: Schema.Literal('session'), cwd: Schema.NonEmptyString })
+  Schema.Struct({
+    type: Schema.Literal('session'),
+    id: Schema.String,
+    cwd: Schema.optional(Schema.Unknown),
+  })
 )
 // The authority records a conversation by its canonical file, Pi by the path it was given.
 const canonicalFile = (file: string): string => {
@@ -148,17 +152,23 @@ const canonicalFile = (file: string): string => {
     return absolute
   }
 }
-const sessionHeaderCwd = (file: string): string | undefined => {
-  try {
-    const [header = ''] = readFileSync(file, 'utf8').split('\n', 1)
-    const decoded = decodeSessionHeader(JSON.parse(header))
-    return decoded._tag === 'Some' ? decoded.value.cwd : undefined
-  } catch {
-    return undefined
+// ADR 0005: as Pi opens a session file, its header is the first line that parses, blank and
+// malformed lines skipped, and a header without a cwd falls back to the process cwd.
+const sessionFileCwd = (file: string): string => {
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const entry = decodeSessionLine(line)
+    if (Option.isNone(entry) || !entry.value) continue
+    const header = decodeSessionHeader(entry.value)
+    return Option.isSome(header) && typeof header.value.cwd === 'string'
+      ? header.value.cwd
+      : process.cwd()
   }
+  return process.cwd()
 }
 const pendingSwitchNotice =
   'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
+const unresolvedSwitchNotice =
+  'An earlier workspace switch is unresolved and needs explicit recovery, which dev does not offer yet, so the session was not replaced; quit dev to leave it.'
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
   Effect.tryPromise({
     try: operation,
@@ -373,10 +383,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     source: string,
     cwdOverride: string | undefined
   ): Effect.fn.Return<string | undefined> {
-    const cwd = cwdOverride ?? sessionHeaderCwd(source)
-    if (cwd === undefined || !existsSync(cwd)) return undefined
+    const cwd =
+      cwdOverride ??
+      (yield* Effect.try({ try: () => sessionFileCwd(source), catch: () => undefined }).pipe(
+        Effect.orElseSucceed(() => undefined)
+      ))
+    if (cwd === undefined || !(yield* Effect.sync(() => existsSync(cwd)))) return undefined
     if ((yield* options.repositoryRoot(cwd)) !== undefined) return undefined
-    return `The session was not imported: its working directory is not inside a Git checkout: ${cwd}\nThe file is unchanged: ${source}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
+    return `The session was not imported: its working directory is not inside a Git checkout: ${cwd}\n${keptConversationGuidance(source)}`
   })
 
   const closeAttachmentOnce = (attachment: WorkspaceAttachment) =>
@@ -539,6 +553,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         capturePendingInput(transition.context)
         yield* assertSessionIdle
         yield* shell.stop
+        if (pending !== transition || quitting) return
         const identity = yield* currentSessionIdentity
         pendingReopen = {
           ...identity,
@@ -902,8 +917,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   })
 
   const refusedWhileSwitching = Effect.sync(() => {
-    if (!parked && !pending) return false
-    notify(currentContext, pendingSwitchNotice, 'warning')
+    if (pending === undefined) return false
+    notify(
+      currentContext,
+      reached(pending, 'switch-started') ? unresolvedSwitchNotice : pendingSwitchNotice,
+      'warning'
+    )
     return true
   })
   // Pi's own errors pass through unchanged as defects, since its TUI recovers from some by
