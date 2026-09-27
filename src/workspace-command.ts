@@ -159,7 +159,7 @@ const choicesText = (candidates: readonly ResumeCandidate[]): string =>
 export const chooseResumeCandidate = Effect.fnUntraced(function* (
   exactTaskViews: readonly WorkspaceView[],
   taskId: WorkspaceId,
-  requestedWorkspaceId?: string
+  requestedWorkspaceId?: WorkspaceId
 ): Effect.fn.Return<ResumeCandidate, WorkspaceCommandError> {
   const candidates = resumeCandidates(exactTaskViews, taskId)
   if (requestedWorkspaceId !== undefined) {

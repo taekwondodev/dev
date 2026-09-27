@@ -12,7 +12,7 @@ import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi, type PiApi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getProfile } from './profiles.ts'
-import { WorkspaceGrantSchema } from './workspace-domain.ts'
+import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError>()('ChildError', {
@@ -45,13 +45,6 @@ const SAFE_GIT_OPTIONS = [
   'protocol.allow=never',
 ] as const
 
-const AbsolutePath = Schema.NonEmptyString.pipe(
-  Schema.check(
-    Schema.makeFilter(value =>
-      isAbsolute(value) && !value.includes('\0') ? undefined : 'must be an absolute path'
-    )
-  )
-)
 const OwnerAttemptId = Schema.NonEmptyString.pipe(Schema.brand('dev/child/AttemptId'))
 
 export const ChildRequestEnvelope = Schema.Struct({

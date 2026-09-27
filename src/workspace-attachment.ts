@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from 'node:fs'
-import { basename, dirname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import {
   inDb,
   findBinding,
@@ -73,9 +73,8 @@ export const attachConversation = (
     cwd: string
     selection?: WorkspaceSelection
   }
-): { readonly state: ConversationState; readonly targetOperationId?: string } => {
+): { readonly state: ConversationState; readonly targetOperationId?: WorkspaceId } => {
   authority.initialize()
-  if (!isAbsolute(input.cwd)) invalid('Workspace cwd must be absolute')
   const normalized = conversationRecord(input.conversation)
   const live = states.get(normalized.key)
   if (live !== undefined) {
@@ -213,7 +212,10 @@ export const attachConversation = (
   }
 }
 
-const retireUnstartedTransition = (authority: WorkspaceAuthority, operationId: string): boolean => {
+const retireUnstartedTransition = (
+  authority: WorkspaceAuthority,
+  operationId: WorkspaceId
+): boolean => {
   let withdrawn = false
   for (const repository of authority.listRepositories()) {
     inDb(authority, repository.id, db =>
@@ -277,7 +279,7 @@ const registerWorkspace = (
 const ensureNoUnresolvedUse = (
   authority: WorkspaceAuthority,
   repo: WorkspaceId,
-  workspaceIdValue: string
+  workspaceIdValue: WorkspaceId
 ): void => {
   const active = inDb(authority, repo, db => getUseRows(db, workspaceIdValue).filter(isActiveUse))
   if (active.length > 0)

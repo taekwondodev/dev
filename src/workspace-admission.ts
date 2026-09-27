@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
-import { isAbsolute, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { allocateDelegatedWorkspace, isolateContendedWriter } from './workspace-allocation.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
@@ -51,7 +51,7 @@ import { transaction } from './workspace-sqlite.ts'
 import { newId, now } from './workspace-platform.ts'
 
 const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
-  const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<string>()
+  const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<WorkspaceId>()
   owners.add(attachment.token)
   attachment.state.leaseAttachments.set(grant.useId, owners)
 }
@@ -120,8 +120,6 @@ const admit = (
   const state = attachment.state
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
-  if (operation.cwd !== undefined && !isAbsolute(operation.cwd))
-    invalid('Operation cwd must be absolute')
   if (operation.kind === 'native-file-write' || operation.kind === 'opaque')
     return authorizeScoped(authority, attachment, operation)
   const source = currentSource(authority, state)
@@ -396,7 +394,7 @@ const writerWarning = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   repo: WorkspaceId,
-  workspaceIdValue: string
+  workspaceIdValue: WorkspaceId
 ): string | undefined => {
   if (
     inDb(authority, repo, db =>
@@ -523,7 +521,7 @@ export const validateDurableGrant = (
   })
   if (grant.checkout !== workspace.path || grant.origin !== workspace.origin)
     requireReview('Workspace grant checkout fields were altered')
-  if (!isAbsolute(grant.cwd) || !isWithin(workspace.path, grant.cwd))
+  if (!isWithin(workspace.path, grant.cwd))
     requireReview('Workspace grant cwd escapes its checkout')
   let actualCwd: string
   try {

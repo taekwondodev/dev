@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
@@ -27,7 +26,7 @@ import {
   sqliteBusy,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
-import { hash, lstatIfExists, privateDirectory, privateFile } from './workspace-platform.ts'
+import { hash, lstatIfExists, newId, privateDirectory, privateFile } from './workspace-platform.ts'
 
 const SHARED_GATE_WAIT_MS = 250
 
@@ -244,11 +243,11 @@ const conversationGate = (
   const key = hash(identity)
   return { key, path: join(paths.gates, 'conversations', key, 'conversation.sqlite') }
 }
-const incarnationGate = (paths: AuthorityPaths, incarnation: string): string =>
+const incarnationGate = (paths: AuthorityPaths, incarnation: WorkspaceId): string =>
   join(paths.gates, 'incarnations', incarnation, 'incarnation.sqlite')
 
 export interface ConversationPresence {
-  readonly incarnation: string
+  readonly incarnation: WorkspaceId
   readonly release: GateRelease
 }
 
@@ -266,7 +265,7 @@ export const acquireConversationPresence = (
       blocked('This conversation is open in another dev session; close it there first')
     throw cause
   }
-  const incarnation = randomUUID()
+  const incarnation = newId()
   const directory = gateDirectory(paths, 'incarnations', incarnation)
   try {
     const releaseIncarnation = acquireGate(
@@ -294,7 +293,7 @@ export const acquireConversationPresence = (
   }
 }
 
-export const incarnationHeld = (paths: AuthorityPaths, incarnation: string): boolean => {
+export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId): boolean => {
   const path = incarnationGate(paths, incarnation)
   if (lstatIfExists(path) === undefined) return false
   try {

@@ -1,5 +1,6 @@
 import { Schema } from 'effect'
 import {
+  AbsolutePath,
   WorkspaceAuthorizationSchema,
   WorkspaceBindingSchema,
   WorkspaceConversationSchema,
@@ -25,7 +26,7 @@ const Outcome = WorkspaceError.fields.outcome
 const AttachRequestSchema = Schema.Struct({
   op: Schema.Literal('attach'),
   conversation: WorkspaceConversationSchema,
-  cwd: Schema.NonEmptyString,
+  cwd: AbsolutePath,
   selection: Schema.optional(WorkspaceSelectionSchema),
 })
 const AuthorizeRequestSchema = Schema.Struct({
@@ -56,7 +57,7 @@ const CloseAttachmentRequestSchema = Schema.Struct({
 })
 const InspectRequestSchema = Schema.Struct({
   op: Schema.Literal('inspect'),
-  cwd: Schema.optional(Schema.NonEmptyString),
+  cwd: Schema.optional(AbsolutePath),
   taskId: Schema.optional(WorkspaceId),
 })
 const ValidateRequestSchema = Schema.Struct({

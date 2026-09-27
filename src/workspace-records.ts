@@ -3,12 +3,16 @@ import { Schema } from 'effect'
 import {
   blocked,
   requireReview,
+  Revision,
+  WorkspaceAccessSchema,
   WorkspaceBindingSchema,
   WorkspaceEffectSchema,
   WorkspaceExecutionSchema,
   WorkspaceId,
+  WorkspaceOriginSchema,
   WorkspaceProcessSchema,
   type WorkspaceBinding,
+  type WorkspaceOrigin,
 } from './workspace-domain.ts'
 import {
   canonicalGitWorkspace,
@@ -24,7 +28,7 @@ import { newId, now, hash } from './workspace-platform.ts'
 const TaskSchema = Schema.Struct({
   id: WorkspaceId,
   repositoryId: WorkspaceId,
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  revision: Revision,
   createdAt: Schema.Finite,
 })
 export const RepositoryCatalogSchema = Schema.Struct({
@@ -35,7 +39,7 @@ export const RepositoryCatalogSchema = Schema.Struct({
   objectFormat: Schema.NonEmptyString,
   state: Schema.Literals(['provisioning', 'ready']),
   provisionId: WorkspaceId,
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  revision: Revision,
 })
 const WorkspaceSchema = Schema.Struct({
   id: WorkspaceId,
@@ -48,10 +52,10 @@ const WorkspaceSchema = Schema.Struct({
   commonPath: Schema.NonEmptyString,
   common: FileIdentitySchema,
   objectFormat: Schema.NonEmptyString,
-  origin: Schema.Literals(['pre-existing', 'managed']),
+  origin: WorkspaceOriginSchema,
   status: Schema.Literals(['provisioning', 'ready']),
   allocationOperationId: Schema.optional(WorkspaceId),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  revision: Revision,
   createdAt: Schema.Finite,
 })
 const ReservationSchema = Schema.Struct({
@@ -59,7 +63,7 @@ const ReservationSchema = Schema.Struct({
   taskId: WorkspaceId,
   workspaceId: WorkspaceId,
   acquisitionId: Schema.optional(WorkspaceId),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  revision: Revision,
   createdAt: Schema.Finite,
 })
 export const BindingSchema = Schema.Struct({
@@ -74,7 +78,7 @@ export const UseSchema = Schema.Struct({
   taskId: Schema.optional(WorkspaceId),
   reservationId: Schema.optional(WorkspaceId),
   acquisitionId: Schema.optional(WorkspaceId),
-  access: Schema.Literals(['read', 'write']),
+  access: WorkspaceAccessSchema,
   stage: Schema.Literals([
     'authorized',
     'operation-started',
@@ -91,9 +95,9 @@ export const UseSchema = Schema.Struct({
   execution: Schema.optional(WorkspaceExecutionSchema),
   processes: Schema.Array(WorkspaceProcessSchema),
   reason: Schema.optional(Schema.String),
-  incarnation: Schema.NonEmptyString,
-  bindingRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  incarnation: WorkspaceId,
+  bindingRevision: Revision,
+  revision: Revision,
   createdAt: Schema.Finite,
   updatedAt: Schema.Finite,
 })
@@ -119,7 +123,7 @@ export const OperationSchema = Schema.Struct({
   sourceCommit: Schema.optional(Schema.String),
   targetPath: Schema.NonEmptyString,
   conversationKey: Schema.NonEmptyString,
-  expectedBindingRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  expectedBindingRevision: Revision,
   reason: Schema.NonEmptyString,
   createdAt: Schema.Finite,
   result: Schema.optional(Schema.String),
@@ -411,7 +415,7 @@ export const assertWithinLiveInDb = (db: DatabaseSync, use: UseRecord): void => 
 export const makeWorkspaceRecord = (
   repositoryId: WorkspaceId,
   git: GitWorkspace,
-  origin: 'pre-existing' | 'managed',
+  origin: WorkspaceOrigin,
   id = newId(),
   allocationOperationId?: WorkspaceId
 ): WorkspaceRecord => ({

@@ -911,7 +911,7 @@ try {
   )
 
   await claim(
-    'scoped operations are admitted only within an ordinary grant, and the worker refuses a shell without process identity and keeps serving',
+    'scoped operations are admitted only within an ordinary grant, and the worker refuses a shell without process identity or a relative cwd and keeps serving',
     async () => {
       const nativeInsideNative = ready(
         await scopedPrimary.authorize({
@@ -950,6 +950,10 @@ try {
           kind: 'opaque',
           within: primaryGrant,
         } as unknown as WorkspaceOperation),
+        'invalid'
+      )
+      await expectWorkspaceError(
+        scopedPrimary.authorize({ kind: 'read', cwd: 'tracked' }),
         'invalid'
       )
       assert.equal((await scopedPrimary.authorize({ kind: 'read' })).kind, 'ready')

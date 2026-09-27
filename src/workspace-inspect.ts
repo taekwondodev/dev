@@ -1,7 +1,6 @@
 import { lstatSync, realpathSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
 import { inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
-import { invalid, requireReview, type WorkspaceId, type WorkspaceView } from './workspace-domain.ts'
+import { requireReview, type WorkspaceId, type WorkspaceView } from './workspace-domain.ts'
 import { incarnationHeld } from './workspace-gates.ts'
 import { canonicalGitWorkspace } from './workspace-git.ts'
 import {
@@ -95,7 +94,6 @@ export const inspectWorkspaces = (
   if (namespace === undefined) return []
   let repositoryFilter: WorkspaceId | undefined
   if (input.cwd !== undefined) {
-    if (!isAbsolute(input.cwd)) invalid('Inspection cwd must be absolute')
     repositoryFilter = authority.findRepository(canonicalGitWorkspace(input.cwd))
     if (repositoryFilter === undefined) return []
   }

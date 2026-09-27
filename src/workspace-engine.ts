@@ -6,6 +6,7 @@ import {
   WorkspaceError,
   type WorkspaceBinding,
   type WorkspaceConversation,
+  type WorkspaceId,
   type WorkspaceSelection,
 } from './workspace-domain.ts'
 import { toBinding } from './workspace-records.ts'
@@ -15,10 +16,10 @@ import { newId } from './workspace-platform.ts'
 export class EngineAttachment implements AttachmentHandle {
   readonly state: ConversationState
   readonly token = newId()
-  private readonly targetOperationId: string | undefined
+  private readonly targetOperationId: WorkspaceId | undefined
   closed = false
 
-  constructor(state: ConversationState, targetOperationId: string | undefined) {
+  constructor(state: ConversationState, targetOperationId: WorkspaceId | undefined) {
     this.state = state
     this.targetOperationId = targetOperationId
     state.refs += 1

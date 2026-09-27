@@ -69,29 +69,29 @@ export interface ConversationState {
   readonly conversation: WorkspaceConversation
   binding: BindingRecord
   repositoryId: WorkspaceId
-  readonly leases: Map<string, GrantLease>
-  readonly leaseAttachments: Map<string, Set<string>>
+  readonly leases: Map<WorkspaceId, GrantLease>
+  readonly leaseAttachments: Map<WorkspaceId, Set<WorkspaceId>>
   readonly extraGates: HeldPathGate[]
   refs: number
   parked: boolean
   closing: boolean
   pending?: PendingTransition
   writeGrant?: WorkspaceGrant
-  readonly incarnation: string
+  readonly incarnation: WorkspaceId
   readonly releaseConversation: () => void
 }
 
 export interface AttachmentHandle {
   readonly state: ConversationState
-  readonly token: string
+  readonly token: WorkspaceId
   assertOpen(): void
 }
 
 export const outgoingUses = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  sourceWorkspaceId: string,
-  excludeUseId?: string
+  sourceWorkspaceId: WorkspaceId,
+  excludeUseId?: WorkspaceId
 ): { readonly lease: GrantLease; readonly use: UseRecord }[] => {
   return [...state.leases.values()]
     .filter(lease => lease.grant.workspaceId === sourceWorkspaceId && lease.useId !== excludeUseId)
@@ -145,7 +145,7 @@ export const settleDependentsFirst = (
 export const assertNoLiveExecution = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  source: { readonly workspaceId: string },
+  source: { readonly workspaceId: WorkspaceId },
   action: string
 ): void => {
   const live = outgoingUses(authority, state, source.workspaceId).find(

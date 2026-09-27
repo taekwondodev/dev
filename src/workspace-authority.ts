@@ -562,7 +562,7 @@ export const toGrant = (
   workspace: WorkspaceRecord,
   use: UseRecord,
   cwd: string,
-  access: 'read' | 'write'
+  access: WorkspaceGrant['access']
 ): WorkspaceGrant => ({
   namespaceId: authority.initialize(),
   repositoryId: repo,

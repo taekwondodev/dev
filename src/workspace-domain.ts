@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path'
 import { type Effect, Schema } from 'effect'
 
 export const WorkspaceId = Schema.String.check(
@@ -29,7 +30,12 @@ export function ambiguous(message: string): never {
   return fail('ambiguous', message)
 }
 
-const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+export const Revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+export const AbsolutePath = Schema.NonEmptyString.check(
+  Schema.makeFilter(value =>
+    isAbsolute(value) && !value.includes('\0') ? undefined : 'must be an absolute path'
+  )
+)
 
 export const WorkspaceConversationSchema = Schema.Struct({
   sessionId: Schema.NonEmptyString,
@@ -65,8 +71,9 @@ export type WorkspaceProcess = typeof WorkspaceProcessSchema.Type
 export const WorkspaceEffectSchema = Schema.Literals(['native-file-write', 'opaque'])
 export type WorkspaceEffect = typeof WorkspaceEffectSchema.Type
 
-const WorkspaceAccessSchema = Schema.Literals(['read', 'write'])
-const WorkspaceOriginSchema = Schema.Literals(['pre-existing', 'managed'])
+export const WorkspaceAccessSchema = Schema.Literals(['read', 'write'])
+export const WorkspaceOriginSchema = Schema.Literals(['pre-existing', 'managed'])
+export type WorkspaceOrigin = typeof WorkspaceOriginSchema.Type
 
 export const WorkspaceGrantSchema = Schema.Struct({
   namespaceId: WorkspaceId,
@@ -76,9 +83,9 @@ export const WorkspaceGrantSchema = Schema.Struct({
   acquisitionId: Schema.optional(WorkspaceId),
   reservationId: Schema.optional(WorkspaceId),
   taskId: Schema.optional(WorkspaceId),
-  revision: NonNegativeInt,
-  cwd: Schema.NonEmptyString,
-  checkout: Schema.NonEmptyString,
+  revision: Revision,
+  cwd: AbsolutePath,
+  checkout: AbsolutePath,
   access: WorkspaceAccessSchema,
   origin: WorkspaceOriginSchema,
   // The destination the authority validated for a native file write. The executor opens
@@ -92,8 +99,8 @@ export const WorkspaceBindingSchema = Schema.Struct({
   conversation: WorkspaceConversationSchema,
   taskId: Schema.optional(WorkspaceId),
   workspaceId: WorkspaceId,
-  cwd: Schema.NonEmptyString,
-  revision: NonNegativeInt,
+  cwd: AbsolutePath,
+  revision: Revision,
 })
 export type WorkspaceBinding = typeof WorkspaceBindingSchema.Type
 export const sameBinding = Schema.toEquivalence(WorkspaceBindingSchema)
@@ -121,20 +128,20 @@ export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 export const WorkspaceOperationSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literals(['read', 'write', 'delegated-write']),
-    cwd: Schema.optional(Schema.NonEmptyString),
+    cwd: Schema.optional(AbsolutePath),
     execution: Schema.optional(WorkspaceExecutionSchema),
   }),
   Schema.Struct({
     kind: Schema.Literal('native-file-write'),
     within: WorkspaceGrantSchema,
     path: Schema.NonEmptyString,
-    cwd: Schema.optional(Schema.NonEmptyString),
+    cwd: Schema.optional(AbsolutePath),
   }),
   Schema.Struct({
     kind: Schema.Literal('opaque'),
     within: WorkspaceGrantSchema,
     execution: WorkspaceExecutionSchema,
-    cwd: Schema.optional(Schema.NonEmptyString),
+    cwd: Schema.optional(AbsolutePath),
   }),
 ])
 export type WorkspaceOperation = typeof WorkspaceOperationSchema.Type
