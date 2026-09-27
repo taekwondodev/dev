@@ -37,7 +37,6 @@ const lockFormatSupported = (db: DatabaseSync, ddl: string): boolean =>
   numberField(first(db, 'PRAGMA user_version'), 'user_version') === SCHEMA_VERSION &&
   schemaCatalog(db) === expectedCatalog(ddl)
 
-// The caller owns the returned handle.
 const openLock = (lock: {
   readonly path: string
   readonly name: 'Workspace gate' | 'Workspace protocol gate'

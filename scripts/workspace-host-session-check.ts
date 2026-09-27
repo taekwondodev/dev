@@ -1,6 +1,4 @@
-// Session flows the TUI probes do not reach, against the real authority: a background process
-// asks for the lead's write grant from inside the work tool, outside the host's own tool
-// decision, and Pi forks or imports a conversation through runtime paths other than /resume.
+// The TUI probes reach none of these session flows.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import {
