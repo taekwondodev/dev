@@ -17,11 +17,13 @@ import { createSessionGuard } from '../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
 
+class TimedOut extends Error {}
+
 export const within = <A>(promise: Promise<A>, ms: number, what: string): Promise<A> =>
   Promise.race([
     promise,
     sleep(ms, undefined, { ref: false }).then(() => {
-      throw new Error(`timed out: ${what}`)
+      throw new TimedOut(`timed out: ${what}`)
     }),
   ])
 
@@ -44,7 +46,16 @@ export const makeClaims = (defaultLimitMs = CLAIM_LIMIT_MS): Claims => {
     passed,
     async claim(text, assertions, limitMs = defaultLimitMs) {
       if (passed.includes(text)) throw new Error(`Claim recorded twice: ${text}`)
-      const value = await within(Promise.resolve().then(assertions), limitMs, `claim: ${text}`)
+      // The claim's own cleanup never runs after a timeout, so a later cleanup failure could
+      // replace the timeout in the report.
+      const value = await within(
+        Promise.resolve().then(assertions),
+        limitMs,
+        `claim: ${text}`
+      ).catch((cause: unknown) => {
+        if (cause instanceof TimedOut) process.stderr.write(`${cause.message}\n`)
+        throw cause
+      })
       passed.push(text)
       return value
     },

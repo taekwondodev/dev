@@ -137,12 +137,19 @@ const expectWorkspaceError = async (
 const switchStage = async (reader: TestLifecycle, operationId: string) =>
   (await reader.inspect({})).flatMap(view => view.pending).find(item => item.id === operationId)
     ?.stage
+// A claim that times out leaves its children running, and Node exits without the claim's cleanup.
+const children = new Set<ReturnType<typeof spawn>>()
+process.on('exit', () => {
+  for (const child of children) child.kill('SIGKILL')
+})
 const runChild = (code: string): Promise<string> =>
   new Promise((resolveOutput, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
       cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    children.add(child)
+    child.once('close', () => children.delete(child))
     let stdout = ''
     let stderr = ''
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
