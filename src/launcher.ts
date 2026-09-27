@@ -31,6 +31,7 @@ import { createSessionGuard } from './session-guard.ts'
 import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
 import type { WorkspaceLifecycle } from './workspace-domain.ts'
 import {
+  keptConversationGuidance,
   makeWorkspaceHost,
   noUiTrustContext,
   sameConversation,
@@ -570,7 +571,7 @@ const run = Effect.fnUntraced(function* (
       Effect.mapError(
         error =>
           new LauncherError({
-            message: `Cannot attach this conversation to a workspace: ${error.message}\nThe conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`,
+            message: `Cannot attach this conversation to a workspace: ${error.message}\n${keptConversationGuidance(sessionFile)}`,
             cause: error,
           })
       )

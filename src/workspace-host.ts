@@ -210,6 +210,9 @@ const switchNotices = (
       }
 }
 
+export const keptConversationGuidance = (sessionFile: string): string =>
+  `The conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
+
 // ADR 0005, executable extensions.
 type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner'
 
@@ -865,7 +868,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         clearReopen()
         notify(
           currentContext,
-          `The session was not switched: ${errorText(Cause.squash(attached.cause))}`,
+          `The session was not switched: ${errorText(Cause.squash(attached.cause))}\n${keptConversationGuidance(file)}`,
           'warning'
         )
         return { cancelled: true }

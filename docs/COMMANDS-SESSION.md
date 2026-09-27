@@ -122,7 +122,7 @@ Avvia una nuova sessione. Il lavoro in background legato alla precedente viene i
 /resume
 ```
 
-Apre la selezione di un'altra sessione da riprendere. Il cambio interrompe il lavoro in background e termina i processi delle shell della sessione che stai lasciando. Se la conversazione ripresa ha uno switch di workspace mai arrivato all'host, lo ritira e riparte dall'ultimo workspace confermato. Se la conversazione è ancora aperta in un'altra sessione di `dev`, anche di un'altra installazione, `/resume` viene rifiutato.
+Apre la selezione di un'altra sessione da riprendere. Il cambio interrompe il lavoro in background e termina i processi delle shell della sessione che stai lasciando. Se la conversazione ripresa ha uno switch di workspace mai arrivato all'host, lo ritira e riparte dall'ultimo workspace confermato. Se la conversazione è ancora aperta in un'altra sessione di `dev`, anche di un'altra installazione, `/resume` viene rifiutato. Se il workspace legato alla conversazione è stato rimosso, `/resume` viene rifiutato senza ricrearlo. In entrambi i casi resti nella sessione corrente e l'avviso indica il file della conversazione, la cui cronologia resta intatta, e suggerisce di ripartire da un checkout esistente con `dev --cwd PATH`.
 
 ```text
 /tree

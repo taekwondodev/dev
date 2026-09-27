@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -580,6 +581,8 @@ const held = await holder.attach({
   conversation: { sessionId: heldManager.getSessionId(), sessionFile: heldFile, dataHome },
   cwd: lead,
 })
+const keptConversation = (file: string) =>
+  `The conversation file is unchanged and keeps its history: ${file}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
 await claim(
   'switching the TUI runtime to a conversation that another lifecycle keeps live is cancelled with a notice, leaving the session and host usable, instead of failing, which Pi treats as fatal',
   async () => {
@@ -589,12 +592,49 @@ await claim(
     assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeHeldSwitch)
     assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
     assert.deepEqual(notices.slice(noticesBefore), [
-      'The session was not switched: This conversation is open in another dev session; close it there first',
+      `The session was not switched: This conversation is open in another dev session; close it there first\n${keptConversation(heldFile)}`,
     ])
   }
 )
 await held.close()
+
+const removed = join(fixture, 'projects', 'removed')
+mkdir(removed)
+writeFileSync(join(removed, 'AGENTS.md'), 'real-authority probe: removed\n')
+git(['init', '--quiet', '-b', 'main'], removed)
+git(['config', 'user.email', 'real-authority@example.invalid'], removed)
+git(['config', 'user.name', 'real authority probe'], removed)
+git(['add', 'AGENTS.md'], removed)
+git(['commit', '--quiet', '-m', 'removed checkout fixture'], removed)
+const removedManager = pi.SessionManager.create(removed, sessionDir)
+removedManager.appendMessage(heldReply)
+const removedFile = removedManager.getSessionFile()
+if (removedFile === undefined)
+  throw new Error('Pi did not persist the removed-checkout conversation')
+const removedOwner = await holder.attach({
+  conversation: { sessionId: removedManager.getSessionId(), sessionFile: removedFile, dataHome },
+  cwd: removed,
+})
+assert.equal(resolve(removedOwner.binding.cwd), resolve(removed))
+await removedOwner.close()
 await holder.close()
+rmSync(removed, { recursive: true, force: true })
+const removedBytes = readFileSync(removedFile)
+await claim(
+  'switching the TUI runtime to a conversation whose workspace was removed is cancelled with a notice naming its unchanged file and the next safe action; the file stays byte-identical and the checkout is not recreated',
+  async () => {
+    const sessionBeforeRemovedSwitch = runtime.session.sessionManager.getSessionId()
+    const noticesBefore = notices.length
+    assert.deepEqual(await runtime.switchSession(removedFile), { cancelled: true })
+    assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeRemovedSwitch)
+    assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
+    assert.deepEqual(notices.slice(noticesBefore), [
+      `The session was not switched: The workspace bound to this conversation no longer exists and is not recreated: ${removed}\n${keptConversation(removedFile)}`,
+    ])
+    assert.deepEqual(readFileSync(removedFile), removedBytes, 'the conversation file is unchanged')
+    assert.ok(!existsSync(removed), 'the removed checkout is not recreated')
+  }
+)
 
 signal('READY_FOR_USER_BASH')
 await claim(
