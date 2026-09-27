@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
+import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
 import type * as PiEventStream from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 import type {
   AssistantMessage,
@@ -49,6 +50,9 @@ export const loadInstalledPi = async () => {
     import(pathToFileURL(join(packageInfo.root, path)).href)
   return { pi: api, packageInfo, importFromPi }
 }
+
+export const loadPiPaths = (packageRoot: string): Promise<typeof PiPaths> =>
+  import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href)
 
 export const deferred = <A>() => {
   const settle: { resolve?: (value: A) => void } = {}
@@ -169,6 +173,7 @@ export const openHostRuntime = async (input: {
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
   readonly offline?: Awaited<ReturnType<typeof makeOfflineModel>>
 }) => {
+  const piPaths = await loadPiPaths(input.packageRoot)
   const scope = Scope.makeUnsafe()
   const host = await Effect.runPromise(
     Scope.provide(scope)(
@@ -179,6 +184,7 @@ export const openHostRuntime = async (input: {
         openSessionManager: (file, cwd) =>
           input.pi.SessionManager.open(file, input.sessionDir, cwd),
         repositoryRoot: input.repositoryRoot,
+        resolveImportPath: path => piPaths.resolvePath(path),
       })
     )
   )

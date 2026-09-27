@@ -27,7 +27,7 @@ import { createSessionGuard } from '../src/session-guard.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
 import type { WorkspaceView } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { loadInstalledPi, makeClaims, waitFor } from './workspace-check-support.ts'
+import { loadInstalledPi, loadPiPaths, makeClaims, waitFor } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
@@ -41,6 +41,7 @@ interface EventStreamModule {
 }
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
+const piPaths = await loadPiPaths(packageInfo.root)
 const eventStreamModule = await importFromPi<EventStreamModule>(
   'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
@@ -260,6 +261,7 @@ const workspaceHost = await Effect.runPromise(
       dataHome,
       openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
       repositoryRoot: cwd => Effect.promise(() => gitRoot(cwd)),
+      resolveImportPath: input => piPaths.resolvePath(input),
     })
   )
 )

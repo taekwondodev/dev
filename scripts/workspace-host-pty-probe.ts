@@ -68,7 +68,7 @@ import {
   type WorkspaceWorkControls,
 } from '../src/workspace-host.ts'
 import { resolveWriteDestination } from '../src/workspace-paths.ts'
-import { deferred, loadInstalledPi } from './workspace-check-support.ts'
+import { deferred, loadInstalledPi, loadPiPaths } from './workspace-check-support.ts'
 import {
   fixtureId as id,
   makeFixtureBinding,
@@ -111,6 +111,7 @@ globalThis.fetch = async () => {
 }
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
+const piPaths = await loadPiPaths(packageInfo.root)
 const eventStreams = await importFromPi<typeof PiEventStream>(
   'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 )
@@ -1025,6 +1026,7 @@ const workspaceHost = await Effect.runPromise(
       dataHome,
       openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
       repositoryRoot: cwd => Effect.succeed(resolve(cwd)),
+      resolveImportPath: input => piPaths.resolvePath(input),
     })
   )
 )

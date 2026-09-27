@@ -1,5 +1,6 @@
 import { Cause, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
-import { basename, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import type {
   AgentSessionRuntime,
   BashOperations,
@@ -46,6 +47,7 @@ export interface WorkspaceHostOptions {
   readonly dataHome: string
   readonly openSessionManager: (sessionFile: string, cwdOverride?: string) => SessionManager
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
+  readonly resolveImportPath: (input: string) => string
 }
 
 export interface RuntimeWorkspace {
@@ -131,6 +133,30 @@ interface ConversationIdentity {
 }
 
 const hostFailure = (message: string) => new WorkspaceHostError({ message })
+// ADR 0005: the first line of a Pi session file is its header.
+const decodeSessionHeader = Schema.decodeUnknownOption(
+  Schema.Struct({ type: Schema.Literal('session'), cwd: Schema.NonEmptyString })
+)
+// The authority records a conversation by its canonical file, Pi by the path it was given.
+const canonicalFile = (file: string): string => {
+  const absolute = resolve(file)
+  try {
+    return existsSync(absolute)
+      ? realpathSync(absolute)
+      : join(realpathSync(dirname(absolute)), basename(absolute))
+  } catch {
+    return absolute
+  }
+}
+const sessionHeaderCwd = (file: string): string | undefined => {
+  try {
+    const [header = ''] = readFileSync(file, 'utf8').split('\n', 1)
+    const decoded = decodeSessionHeader(JSON.parse(header))
+    return decoded._tag === 'Some' ? decoded.value.cwd : undefined
+  } catch {
+    return undefined
+  }
+}
 const pendingSwitchNotice =
   'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
@@ -157,7 +183,7 @@ export const sameConversation = (a: ConversationIdentity, b: ConversationIdentit
   a.sessionId === b.sessionId &&
   a.sessionFile !== undefined &&
   b.sessionFile !== undefined &&
-  resolve(a.sessionFile) === resolve(b.sessionFile)
+  canonicalFile(a.sessionFile) === canonicalFile(b.sessionFile)
 
 export const noUiTrustContext = (cwd: string): ProjectTrustContext => ({
   cwd,
@@ -337,6 +363,19 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const runDeferred = (effect: Effect.Effect<void>): void => {
     runInBackground(Effect.yieldNow.pipe(Effect.andThen(effect)))
   }
+
+  // A copied conversation is attached only after Pi tears the current session down, where a
+  // refusal is fatal, so a working directory outside Git is refused before. A missing one is
+  // left to Pi, which asks for another before teardown.
+  const importOutsideCheckout = Effect.fnUntraced(function* (
+    source: string,
+    cwdOverride: string | undefined
+  ): Effect.fn.Return<string | undefined> {
+    const cwd = cwdOverride ?? sessionHeaderCwd(source)
+    if (cwd === undefined || !existsSync(cwd)) return undefined
+    if ((yield* options.repositoryRoot(cwd)) !== undefined) return undefined
+    return `The session was not imported: its working directory is not inside a Git checkout: ${cwd}\nThe file is unchanged: ${source}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
+  })
 
   const closeAttachmentOnce = (attachment: WorkspaceAttachment) =>
     Effect.suspend(() => {
@@ -796,7 +835,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const key = sessionKey(file, identity.sessionId)
     const parent = manager.getHeader()?.parentSession
     const forkOfActive =
-      parent !== undefined && resolve(parent) === resolve(activeConversation.sessionFile)
+      parent !== undefined && canonicalFile(parent) === activeConversation.sessionFile
     const reopenTarget = pendingReopen
     const reopen = reopenTarget !== undefined && sameConversation(reopenTarget, identity)
     if (reopen) {
@@ -1172,12 +1211,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           : replacingDuring(() => rawFork(entryId, forkOptions))
       const rawImport = nextRuntime.importFromJsonl.bind(nextRuntime)
       nextRuntime.importFromJsonl = (inputPath, cwdOverride) => {
-        const source = resolve(inputPath)
+        const source = options.resolveImportPath(inputPath)
         const stored = resolve(nextRuntime.session.sessionManager.getSessionDir(), basename(source))
         if (stored === source) return runPromise(switchSession(rawSwitch, source, undefined))
-        return refusedWhileSwitching()
-          ? Promise.resolve({ cancelled: true })
-          : replacingDuring(() => rawImport(inputPath, cwdOverride))
+        if (refusedWhileSwitching()) return Promise.resolve({ cancelled: true })
+        return runPromise(importOutsideCheckout(source, cwdOverride)).then(refusal => {
+          if (refusal === undefined) return replacingDuring(() => rawImport(inputPath, cwdOverride))
+          notify(currentContext, refusal, 'warning')
+          return { cancelled: true }
+        })
       }
     },
     setWorkControls(controls) {

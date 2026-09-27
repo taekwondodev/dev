@@ -8,10 +8,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
@@ -30,11 +32,17 @@ import { openLifecycle } from './workspace-test-lifecycle.ts'
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-host-session-')))
 const lead = join(fixture, 'lead')
-const sessionDir = join(fixture, 'sessions')
+const sessionDir = join(fixture, 'sessions-link')
 const agentDir = join(fixture, 'agent')
 const dataHome = join(fixture, 'data')
-for (const path of [lead, sessionDir, agentDir, join(fixture, 'home', '.agents', 'skills')])
+for (const path of [
+  lead,
+  join(fixture, 'sessions'),
+  agentDir,
+  join(fixture, 'home', '.agents', 'skills'),
+])
   mkdirSync(path, { recursive: true })
+symlinkSync(join(fixture, 'sessions'), sessionDir)
 mkdirSync(dataHome, { mode: 0o700 })
 process.env.HOME = join(fixture, 'home')
 process.env.PI_CODING_AGENT_DIR = agentDir
@@ -49,7 +57,14 @@ writeFileSync(join(lead, 'AGENTS.md'), 'host session check\n')
 git(['add', 'AGENTS.md'])
 git(['commit', '--quiet', '-m', 'host session fixture'])
 const leadCommit = git(['rev-parse', 'HEAD'])
-const repositoryRoot = (cwd: string) => Effect.succeed(git(['rev-parse', '--show-toplevel'], cwd))
+const repositoryRoot = (cwd: string) =>
+  Effect.sync(() => {
+    try {
+      return git(['rev-parse', '--show-toplevel'], cwd)
+    } catch {
+      return undefined
+    }
+  })
 
 // Each runtime replays its own steps and then answers with text.
 const scripted = (steps: readonly ScriptedContent[]) => {
@@ -179,20 +194,44 @@ try {
     }
   )
   await claim(
-    'importing a stored conversation that another dev session keeps live is cancelled before Pi tears the current session down',
+    'importing a stored conversation that another dev session keeps live, named by path, ~/ path or file URL, is cancelled before Pi tears the current session down',
     async () => {
       const held = storedConversation(offline, lead)
       const holder = await openLifecycle({ root: join(fixture, 'authority') })
       const holding = await holder.attach({ conversation: conversationAt(held.manager), cwd: lead })
       try {
         const current = runtime.session.sessionManager.getSessionId()
-        assert.deepEqual(await runtime.importFromJsonl(held.file), { cancelled: true })
+        for (const named of [
+          held.file,
+          `~/${relative(homedir(), held.file)}`,
+          pathToFileURL(held.file).href,
+        ])
+          assert.deepEqual(await runtime.importFromJsonl(named), { cancelled: true }, named)
         assert.equal(runtime.session.sessionManager.getSessionId(), current)
         assert.equal(host.isParked(), false, 'a refused import leaves the host usable')
       } finally {
         await holding.close()
         await holder.close()
       }
+    }
+  )
+  await claim(
+    'importing a copied conversation whose working directory is not inside a Git checkout is cancelled before Pi tears the current session down',
+    async () => {
+      const outside = join(fixture, 'outside-git')
+      const exported = join(fixture, 'exported')
+      mkdirSync(outside)
+      mkdirSync(exported)
+      const copied = pi.SessionManager.create(outside, exported)
+      copied.appendMessage(offline.assistantMessage([{ type: 'text', text: 'exported' }], 'stop'))
+      const copiedFile = copied.getSessionFile()
+      if (copiedFile === undefined) throw new Error('Pi did not persist the exported conversation')
+      const bytes = readFileSync(copiedFile)
+      const current = runtime.session.sessionManager.getSessionId()
+      assert.deepEqual(await runtime.importFromJsonl(copiedFile), { cancelled: true })
+      assert.equal(runtime.session.sessionManager.getSessionId(), current)
+      assert.equal(host.isParked(), false)
+      assert.deepEqual(readFileSync(copiedFile), bytes, 'the exported file is unchanged')
     }
   )
   await opened.close()
