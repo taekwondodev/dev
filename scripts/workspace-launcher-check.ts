@@ -488,6 +488,30 @@ try {
       )
     }
   )
+  await claim('dev stops with the reason when the installed Pi fails to load', async () => {
+    const brokenPi = join(sandbox, 'broken-pi')
+    mkdirSync(join(brokenPi, 'bin'), { recursive: true })
+    writeFileSync(
+      join(brokenPi, 'package.json'),
+      JSON.stringify({
+        name: '@earendil-works/pi-coding-agent',
+        version: '0.0.0',
+        main: 'index.js',
+      })
+    )
+    writeFileSync(join(brokenPi, 'index.js'), "throw new Error('broken fixture Pi')\n")
+    writeFileSync(join(brokenPi, 'bin', 'pi'), '#!/bin/sh\n', { mode: 0o755 })
+    const outcome = await runLauncher(['--data-home', dataHome, '--profile', 'general'], {
+      DEV_PI_EXECUTABLE: join(brokenPi, 'bin', 'pi'),
+    })
+    assert.equal(outcome.code, 1, outcome.stderr)
+    assert.ok(
+      outcome.stderr.includes(
+        `Cannot load Pi from ${join(brokenPi, 'index.js')}: broken fixture Pi`
+      ),
+      outcome.stderr
+    )
+  })
   console.log(
     JSON.stringify(
       {

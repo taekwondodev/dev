@@ -479,9 +479,7 @@ const run = Effect.fnUntraced(function* (
   }
   const lease = yield* acquireRuntime(dataHome)
   const guard = createSessionGuard(lease)
-  const { api, packageInfo } = yield* loadPi.pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load Pi'))
-  )
+  const { api, packageInfo } = yield* loadPi
   const sessionsPath = yield* sessionDir(dataHome).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
   )

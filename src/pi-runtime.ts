@@ -14,6 +14,10 @@ export class PiError extends Schema.TaggedError<PiError>()('PiError', {
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
+// Launch prints only the message, so a loader failure carries its cause's text.
+const loadFailure = (what: string) => (cause: unknown) =>
+  new PiError({ message: `${what}: ${errorText(cause)}`, cause })
+
 const Manifest = Schema.Struct({
   name: Schema.String,
   version: Schema.String,
@@ -65,7 +69,7 @@ export const resolvePiPackage = Effect.gen(function* () {
   })
 }).pipe(
   Effect.mapError(cause =>
-    cause instanceof PiError ? cause : new PiError({ message: cause.message, cause })
+    cause instanceof PiError ? cause : loadFailure('Cannot resolve the installed Pi package')(cause)
   )
 )
 
@@ -73,7 +77,7 @@ export const loadPi = Effect.gen(function* () {
   const packageInfo = yield* resolvePiPackage
   const api: PiApi = yield* Effect.tryPromise({
     try: () => import(pathToFileURL(packageInfo.entry).href),
-    catch: cause => new PiError({ message: `Cannot load Pi from ${packageInfo.entry}`, cause }),
+    catch: loadFailure(`Cannot load Pi from ${packageInfo.entry}`),
   })
   for (const name of [
     'createAgentSessionServices',
@@ -96,7 +100,7 @@ export const findRecentSession = Effect.fnUntraced(function* (
 ) {
   const sessions: typeof PiSessions = yield* Effect.tryPromise({
     try: () => import(pathToFileURL(join(packageRoot, 'dist/core/session-manager.js')).href),
-    catch: cause => new PiError({ message: 'Cannot load Pi recent-session discovery', cause }),
+    catch: loadFailure('Cannot load Pi recent-session discovery'),
   })
   if (typeof sessions.findMostRecentSession !== 'function')
     return yield* new PiError({
@@ -104,7 +108,7 @@ export const findRecentSession = Effect.fnUntraced(function* (
     })
   return yield* Effect.try({
     try: () => sessions.findMostRecentSession(sessionsPath, cwd) ?? undefined,
-    catch: cause => new PiError({ message: 'Cannot find recent Pi session', cause }),
+    catch: loadFailure('Cannot find recent Pi session'),
   })
 })
 
@@ -112,8 +116,7 @@ export const findRecentSession = Effect.fnUntraced(function* (
 export const loadPiPathResolver = Effect.fnUntraced(function* (packageRoot: string) {
   const paths: typeof PiPaths = yield* Effect.tryPromise({
     try: () => import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href),
-    catch: cause =>
-      new PiError({ message: `Cannot load Pi path resolution: ${errorText(cause)}`, cause }),
+    catch: loadFailure('Cannot load Pi path resolution'),
   })
   if (typeof paths.resolvePath !== 'function')
     return yield* new PiError({ message: 'Installed Pi does not provide its path resolution' })
