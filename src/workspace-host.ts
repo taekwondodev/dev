@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
+import { Cause, Deferred, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import type {
@@ -316,6 +316,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let pending: PendingTransition | undefined
   let invokingHandoffSwitch = false
   let replacing = false
+  let quitting = false
+  let handoffSettled: Deferred.Deferred<void> | undefined
   let workControls: WorkspaceWorkControls | undefined
   let runtimePreparationSerial = 0
   let pendingReopen:
@@ -429,6 +431,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     target: WorkspaceGrant,
     settle: (outcome: 'confirmed' | 'cancelled') => void
   ): Effect.fn.Return<'confirmed' | 'cancelled', WorkspaceHostError> {
+    if (quitting) {
+      settle('cancelled')
+      return 'cancelled'
+    }
     transition.stage = 'switch-started'
     const currentRuntime = runtime
     if (!currentRuntime)
@@ -540,15 +546,20 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         }
         let callbackResult: 'confirmed' | 'cancelled' | undefined
         transition.stage = 'handoff-sent'
-        yield* transition.transitionSource.handoff(transition.handoff, target =>
-          replaceSession(transition, identity, target, outcome => {
-            callbackResult = outcome
-          })
-        )
+        const settled = yield* Deferred.make<void>()
+        handoffSettled = settled
+        yield* transition.transitionSource
+          .handoff(transition.handoff, target =>
+            replaceSession(transition, identity, target, outcome => {
+              callbackResult = outcome
+            })
+          )
+          .pipe(Effect.ensuring(Deferred.succeed(settled, undefined)))
         pendingReopen = undefined
         if (callbackResult === 'cancelled') {
           pending = undefined
           parked = false
+          if (quitting) return
           restoreInput(transition.context)
           notify(
             transition.context,
@@ -1019,9 +1030,16 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   })
 
   const sessionShutdown = Effect.fnUntraced(function* (reason: string) {
+    if (reason === 'quit') quitting = true
     yield* nativeWrites.settle
     if (reason !== 'reload') yield* shell.stop
-    if (reason !== 'quit' || reached(pending, 'handoff-sent')) return
+    if (reason !== 'quit') return
+    if (reached(pending, 'switch-started')) return
+    // The authority's callback answers `cancelled` while quitting, since the host has not
+    // acted, so waiting for it settles the switch instead of leaving it unknown.
+    if (reached(pending, 'handoff-sent') && handoffSettled !== undefined)
+      yield* Deferred.await(handoffSettled)
+    if (reached(pending, 'handoff-sent')) return
     if (pending) {
       const withdrawn = yield* Effect.exit(withdraw(pending.transitionSource, pending.handoff))
       if (Exit.isFailure(withdrawn)) {

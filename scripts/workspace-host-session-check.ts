@@ -312,6 +312,62 @@ try {
         }
       }
     )
+  await claim(
+    'a quit that lands after the authority started a switch, before the host acted, records the switch as cancelled and leaves the conversation resumable',
+    async () => {
+      const steps = scripted([[workProcess]])
+      const quitting = await makeOfflineModel({
+        pi,
+        importFromPi,
+        fixture,
+        id: 'host-session-quit',
+        next: steps.next,
+      })
+      const quitManager = pi.SessionManager.create(lead, sessionDir)
+      const quitConversation = conversationAt(quitManager)
+      const quitter = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
+      let disposing: Promise<void> | undefined
+      let runtimeRef: Pi.AgentSessionRuntime | undefined
+      const handingOff: WorkspaceAttachment = new Proxy(quitter.effect, {
+        get: (target, key) =>
+          key === 'handoff'
+            ? (...[transition, replace]: Parameters<WorkspaceAttachment['handoff']>) =>
+                target.handoff(transition, grant =>
+                  Effect.promise(async () => {
+                    disposing = runtimeRef?.dispose()
+                    await sleep(100)
+                  }).pipe(Effect.andThen(replace(grant)))
+                )
+            : Reflect.get(target, key, target),
+      })
+      const quit = await openHostRuntime({
+        pi,
+        packageRoot: packageInfo.root,
+        lifecycle: lifecycle.effect,
+        attachment: handingOff,
+        dataHome,
+        sessionDir,
+        agentDir,
+        manager: quitManager,
+        cwd: lead,
+        repositoryRoot,
+        offline: quitting,
+      })
+      runtimeRef = quit.runtime
+      await quit.runtime.session.prompt('Run the tests in the background.')
+      await waitFor('the quit', async () => (disposing === undefined ? undefined : true))
+      await disposing
+      await quit.close()
+      assert.deepEqual(
+        (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
+        [],
+        'the switch is settled, not left unknown'
+      )
+      const resumed = await lifecycle.attach({ conversation: quitConversation, cwd: lead })
+      assert.equal(resolve(resumed.binding.cwd), resolve(lead), 'the last binding was kept')
+      await resumed.close()
+    }
+  )
 } finally {
   await squatter.close()
   await lifecycle.close()
