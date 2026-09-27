@@ -11,6 +11,8 @@ export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()('Worksp
   message: Schema.String,
 }) {}
 
+export const attachmentClosedMessage = 'Workspace attachment is closed'
+
 export function fail(outcome: WorkspaceError['outcome'], message: string): never {
   throw new WorkspaceError({ outcome, message })
 }

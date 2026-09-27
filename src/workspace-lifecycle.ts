@@ -1,6 +1,7 @@
 import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threads'
 import { Deferred, Duration, Effect, Exit, FiberSet, type Scope } from 'effect'
 import {
+  attachmentClosedMessage,
   WorkspaceError,
   type HostReplace,
   type WorkspaceAttachment,
@@ -46,7 +47,7 @@ const invalidError = (message: string): WorkspaceError =>
   new WorkspaceError({ outcome: 'invalid', message })
 const closedAttachment = new WorkspaceError({
   outcome: 'blocked',
-  message: 'Workspace attachment is closed',
+  message: attachmentClosedMessage,
 })
 const byteLength = (value: unknown): number => {
   try {

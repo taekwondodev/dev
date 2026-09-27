@@ -418,6 +418,67 @@ try {
       await resumed.close()
     }
   )
+  await claim(
+    'a /reload that lands after the authority started a switch, before the host acted, does not leave the switch unknown: it completes in the reloaded session',
+    async () => {
+      const steps = scripted([[workProcess]])
+      const reloading = await makeOfflineModel({
+        pi,
+        importFromPi,
+        fixture,
+        id: 'host-session-reload',
+        next: steps.next,
+      })
+      const reloadManager = pi.SessionManager.create(lead, sessionDir)
+      const reloadConversation = conversationAt(reloadManager)
+      const reloader = await lifecycle.attach({ conversation: reloadConversation, cwd: lead })
+      let runtimeRef: Pi.AgentSessionRuntime | undefined
+      let reloaded = false
+      const reloadDuringCallback: WorkspaceAttachment['handoff'] = (transition, replace) =>
+        reloader.effect.handoff(transition, grant =>
+          Effect.promise(async () => {
+            await runtimeRef?.session.reload()
+            reloaded = true
+          }).pipe(Effect.andThen(replace(grant)))
+        )
+      const handingOff: WorkspaceAttachment = new Proxy(reloader.effect, {
+        get: (target, key) =>
+          key === 'handoff' ? reloadDuringCallback : Reflect.get(target, key, target),
+      })
+      const reload = await openHostRuntime({
+        pi,
+        packageRoot: packageInfo.root,
+        lifecycle: lifecycle.effect,
+        attachment: handingOff,
+        dataHome,
+        sessionDir,
+        agentDir,
+        manager: reloadManager,
+        cwd: lead,
+        repositoryRoot,
+        offline: reloading,
+      })
+      runtimeRef = reload.runtime
+      try {
+        await reload.runtime.session.prompt('Run the tests in the background.')
+        await waitFor('the reload', async () => (reloaded ? true : undefined))
+        await waitFor(
+          'the switch to finish',
+          async () => (reload.host.isParked() ? undefined : true),
+          80,
+          100
+        )
+        assert.notEqual(resolve(reload.runtime.cwd), resolve(lead), 'the switch completed')
+        assert.deepEqual(
+          (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending),
+          [],
+          'the switch is not left unknown'
+        )
+      } finally {
+        await reload.close()
+      }
+    }
+  )
 } finally {
   await squatter.close()
   await lifecycle.close()

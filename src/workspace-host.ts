@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, FiberSet, Option, Schema, type Scope } from 'effect'
+import { Cause, Deferred, Effect, Exit, Fiber, FiberSet, Option, Schema, type Scope } from 'effect'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import type {
@@ -24,6 +24,7 @@ import {
   type WorkspaceCommand,
 } from './workspace-command.ts'
 import {
+  attachmentClosedMessage,
   WorkspaceError,
   type WorkspaceAttachment,
   type WorkspaceBinding,
@@ -100,7 +101,7 @@ const reached = (transition: PendingTransition | undefined, stage: TransitionSta
 interface PendingTransition {
   readonly handoff: WorkspaceHandoff
   readonly origin: 'tool-call' | 'user-bash' | 'command'
-  readonly context: ExtensionContext
+  readonly surface: Surface
   readonly transitionSource: WorkspaceAttachment
   stage: TransitionStage
   capturedInput: boolean
@@ -180,8 +181,12 @@ const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostE
 
 // The authority answers `blocked` to a switch it refused before the host acted, having
 // already withdrawn it and kept the last confirmed binding.
+// A closed attachment refuses every request, the withdrawal included, which leaves the switch
+// with the authority.
 const isWithdrawn = (error: unknown): boolean =>
-  error instanceof WorkspaceError && error.outcome === 'blocked'
+  error instanceof WorkspaceError &&
+  error.outcome === 'blocked' &&
+  error.message !== attachmentClosedMessage
 
 const sessionKey = (file: string, id: string): string => `${resolve(file)}\0${id}`
 
@@ -210,13 +215,22 @@ export const noUiTrustContext = (cwd: string): ProjectTrustContext => ({
   },
 })
 
-const trustContextFor = (context: ExtensionContext | undefined, cwd: string): ProjectTrustContext =>
+// A /reload during a switch makes every context captured before it throw, so a transition keeps
+// only these parts, read while its context was live.
+type Surface = Pick<ExtensionContext, 'mode' | 'hasUI' | 'ui'>
+const surfaceOf = (context: ExtensionContext): Surface => ({
+  mode: context.mode,
+  hasUI: context.hasUI,
+  ui: context.ui,
+})
+
+const trustContextFor = (context: Surface | undefined, cwd: string): ProjectTrustContext =>
   context
     ? { cwd, mode: context.mode, hasUI: context.hasUI, ui: context.ui }
     : noUiTrustContext(cwd)
 
 const notify = (
-  context: ExtensionContext | undefined,
+  context: Pick<ExtensionContext, 'hasUI' | 'ui'> | undefined,
   message: string,
   level: 'info' | 'warning' | 'error' = 'info'
 ): void => {
@@ -331,6 +345,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let replacing = false
   let quitting = false
   let handoffSettled: Deferred.Deferred<void> | undefined
+  const withdrawals = new Map<WorkspaceAttachment, Fiber.Fiber<void>>()
   let workControls: WorkspaceWorkControls | undefined
   let runtimePreparationSerial = 0
   let pendingReopen:
@@ -402,7 +417,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     Effect.suspend(() => {
       if (closedAttachments.has(attachment)) return Effect.void
       closedAttachments.add(attachment)
-      return attachment.close
+      const withdrawal = withdrawals.get(attachment)
+      withdrawals.delete(attachment)
+      return (withdrawal === undefined ? Effect.void : Fiber.await(withdrawal)).pipe(
+        Effect.andThen(attachment.close)
+      )
     })
 
   const currentSessionIdentity = Effect.suspend(() => {
@@ -413,7 +432,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     return Effect.succeed({ sessionId: manager.getSessionId(), sessionFile })
   })
 
-  const capturePendingInput = (context: ExtensionContext): void => {
+  const capturePendingInput = (context: Surface): void => {
     if (pending?.capturedInput) return
     const session = runtime?.session
     if (session) {
@@ -428,7 +447,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (pending) pending.capturedInput = true
   }
 
-  const restoreInput = (context: ExtensionContext | undefined): void => {
+  const restoreInput = (context: Surface | undefined): void => {
     if (!preservedInput.length || !context?.hasUI) return
     context.ui.setEditorText(preservedInput.splice(0).join('\n\n'))
   }
@@ -458,7 +477,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const currentRuntime = runtime
     if (!currentRuntime)
       return yield* hostFailure('Pi runtime disappeared before workspace replacement')
-    const trustSnapshot = trustContextFor(transition.context, transition.handoff.target.cwd)
+    const trustSnapshot = trustContextFor(transition.surface, transition.handoff.target.cwd)
     const withSession = async (fresh: ReplacedSessionContext): Promise<void> => {
       restoreInput(fresh)
       const { binding } = activeAttachment
@@ -556,7 +575,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const settled = yield* Deferred.make<void>()
     const performed = yield* Effect.exit(
       Effect.gen(function* () {
-        capturePendingInput(transition.context)
+        capturePendingInput(transition.surface)
         yield* assertSessionIdle
         yield* shell.stop
         if (pending !== transition || quitting) return
@@ -578,9 +597,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           pending = undefined
           parked = false
           if (quitting) return
-          restoreInput(transition.context)
+          restoreInput(transition.surface)
           notify(
-            transition.context,
+            transition.surface,
             'Workspace switch was cancelled; the current binding was preserved.',
             'info'
           )
@@ -621,9 +640,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     pendingReopen = undefined
     pending = undefined
     parked = false
-    restoreInput(transition.context)
+    restoreInput(transition.surface)
     notify(
-      transition.context,
+      transition.surface,
       `Workspace switch was not performed; the current workspace is kept. ${errorText(error)}`,
       'warning'
     )
@@ -645,14 +664,17 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     // A rebind that reaches the host while Pi replaces the session, or from an attachment that
     // is no longer active, would run against the wrong runtime, so the authority takes it back.
     if (pending || parked || replacing || source !== activeAttachment) {
-      runDeferred(withdrawOrReport(source, handoff))
+      withdrawals.set(
+        source,
+        runInBackground(Effect.yieldNow.pipe(Effect.andThen(withdrawOrReport(source, handoff))))
+      )
       return
     }
     parked = true
     const transition: PendingTransition = {
       handoff,
       origin,
-      context,
+      surface: surfaceOf(context),
       transitionSource: activeAttachment,
       stage: 'requested',
       capturedInput: false,
@@ -1215,7 +1237,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const transition: PendingTransition = {
         handoff: selected.value,
         origin: 'command',
-        context,
+        surface: surfaceOf(context),
         transitionSource: activeAttachment,
         stage: 'scheduled',
         capturedInput: false,

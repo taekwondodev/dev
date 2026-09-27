@@ -2,6 +2,7 @@ import { attachConversation, settleClosingState } from './workspace-attachment.t
 import { WorkspaceAuthority } from './workspace-authority.ts'
 import type { AttachmentHandle, ConversationState } from './workspace-conversation.ts'
 import {
+  attachmentClosedMessage,
   blocked,
   WorkspaceError,
   type WorkspaceBinding,
@@ -34,7 +35,7 @@ export class EngineAttachment implements AttachmentHandle {
     )
   }
   assertOpen(): void {
-    if (this.closed) blocked('Workspace attachment is closed')
+    if (this.closed) blocked(attachmentClosedMessage)
   }
 }
 
