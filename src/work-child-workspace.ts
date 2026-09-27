@@ -30,10 +30,17 @@ export interface ControllerChannel {
 
 const unavailable = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
 
-export const validateWorkspaceWritePath = async (
+export const validateWorkspaceWritePath = (
   grant: WorkspaceGrant,
   input: unknown
-): Promise<string> => resolveWriteDestination(grant.checkout, grant.cwd, decodeWriteOperand(input))
+): Effect.Effect<string, WorkspaceError> =>
+  Effect.try({
+    try: () => resolveWriteDestination(grant.checkout, grant.cwd, decodeWriteOperand(input)),
+    catch: cause =>
+      cause instanceof WorkspaceError
+        ? cause
+        : new WorkspaceError({ outcome: 'invalid', message: errorText(cause) }),
+  })
 
 export const checkChildWorkspace = (
   grant: WorkspaceGrant,
@@ -111,10 +118,7 @@ export const childWorkspaceExtension =
               message: 'Child workspace is read-only',
             })
           if (builtin && (event.toolName === 'write' || event.toolName === 'edit'))
-            yield* Effect.tryPromise({
-              try: () => validateWorkspaceWritePath(grant, event.input),
-              catch: cause => new WorkspaceError({ outcome: 'invalid', message: errorText(cause) }),
-            })
+            yield* validateWorkspaceWritePath(grant, event.input)
           yield* checkChildWorkspace(grant, read ? 'read' : 'write', channel)
           return undefined
         }).pipe(Effect.catch(error => Effect.succeed({ block: true, reason: error.message })))

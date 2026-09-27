@@ -80,47 +80,34 @@ try {
     if (admission.kind !== 'ready') throw new Error('Unexpected fixture handoff')
     const checkoutGrant = admission.grant
     assert.equal(checkoutGrant.cwd, cwd)
+    const validatePath = (path: string) =>
+      Effect.runPromise(validateWorkspaceWritePath(checkoutGrant, { path }))
     await claim(
       'native writes reject traversal, escaping links, Git admin and hard-linked destinations',
       async () => {
-        await validateWorkspaceWritePath(checkoutGrant, { path: 'new/directory/file.txt' })
-        await assert.rejects(
-          validateWorkspaceWritePath(checkoutGrant, { path: '../escape.txt' }),
-          /traverse/
-        )
+        await validatePath('new/directory/file.txt')
+        await assert.rejects(validatePath('../escape.txt'), /traverse/)
         for (const path of [
           '@../escape.txt',
           '~/escape.txt',
           'file:///escape.txt',
           '\u00a0alias/file.txt',
         ])
-          await assert.rejects(validateWorkspaceWritePath(checkoutGrant, { path }), /literal/)
-        await assert.rejects(
-          validateWorkspaceWritePath(checkoutGrant, { path: '.git/config' }),
-          /administrative/
-        )
+          await assert.rejects(validatePath(path), /literal/)
+        await assert.rejects(validatePath('.git/config'), /administrative/)
         const outside = join(root, 'outside')
         await mkdir(outside)
         await symlink(outside, join(cwd, 'escape'))
-        await assert.rejects(
-          validateWorkspaceWritePath(checkoutGrant, { path: 'escape/file.txt' }),
-          /escapes/
-        )
+        await assert.rejects(validatePath('escape/file.txt'), /escapes/)
         // Raw `..` after a link: lexical resolution reports a path inside the checkout while
         // the builtin tool, handing the operand to the kernel, would write through the link.
         for (const path of ['escape/../file.txt', 'escape/../../file.txt', './escape/../file.txt'])
-          await assert.rejects(validateWorkspaceWritePath(checkoutGrant, { path }), /traverse/)
+          await assert.rejects(validatePath(path), /traverse/)
         assert.ok(!existsSync(join(outside, 'file.txt')))
         await link(join(cwd, 'tracked.txt'), join(cwd, 'hardlink.txt'))
         await mkdir(join(cwd, 'nested', '.git'), { recursive: true })
-        await assert.rejects(
-          validateWorkspaceWritePath(checkoutGrant, { path: 'nested/file.txt' }),
-          /nested repository/
-        )
-        await assert.rejects(
-          validateWorkspaceWritePath(checkoutGrant, { path: 'hardlink.txt' }),
-          /hard links/
-        )
+        await assert.rejects(validatePath('nested/file.txt'), /nested repository/)
+        await assert.rejects(validatePath('hardlink.txt'), /hard links/)
       }
     )
     await claim('a child without its live controller cannot authorize a write', async () => {
