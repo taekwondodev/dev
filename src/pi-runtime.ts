@@ -5,6 +5,7 @@ import { Config, Effect, FileSystem, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import type * as PiSessions from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
 import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
+import { errorText } from './error-text.ts'
 
 export type PiApi = typeof Pi
 
@@ -111,7 +112,8 @@ export const findRecentSession = Effect.fnUntraced(function* (
 export const loadPiPathResolver = Effect.fnUntraced(function* (packageRoot: string) {
   const paths: typeof PiPaths = yield* Effect.tryPromise({
     try: () => import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href),
-    catch: cause => new PiError({ message: 'Cannot load Pi path resolution', cause }),
+    catch: cause =>
+      new PiError({ message: `Cannot load Pi path resolution: ${errorText(cause)}`, cause }),
   })
   if (typeof paths.resolvePath !== 'function')
     return yield* new PiError({ message: 'Installed Pi does not provide its path resolution' })

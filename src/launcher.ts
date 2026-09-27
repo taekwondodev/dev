@@ -570,9 +570,7 @@ const run = Effect.fnUntraced(function* (
         message: 'Reopened Pi session changed conversation identity',
       })
   }
-  const resolveImportPath = yield* loadPiPathResolver(packageInfo.root).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load Pi path resolution'))
-  )
+  const resolveImportPath = yield* loadPiPathResolver(packageInfo.root)
   const workspaceHost = yield* makeWorkspaceHost({
     lifecycle: workspaceLifecycle,
     attachment,
