@@ -868,6 +868,7 @@ interface WorkResult {
 }
 const hostBlocks: HostBlock[] = []
 const hostMessages: string[] = []
+const handoffMessages: string[] = []
 const userBashDecisions: {
   readonly event: UserBashEvent
   readonly executed: boolean
@@ -988,8 +989,11 @@ const instrumentHost =
           if (property === 'sendMessage')
             return (...args: Parameters<ExtensionAPI['sendMessage']>) => {
               const [message] = args
-              if (message.customType === 'dev/workspace' && typeof message.content === 'string')
-                hostMessages.push(message.content)
+              if (typeof message.content === 'string') {
+                if (message.customType === 'dev/workspace') hostMessages.push(message.content)
+                if (message.customType === 'dev/workspace-handoff')
+                  handoffMessages.push(message.content)
+              }
               return target.sendMessage(...args)
             }
           if (property === 'on')
@@ -1778,6 +1782,17 @@ assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB
 assert.ok(inspections.some(input => input.taskId === TASK_LEAD))
 const switchedTo = (workspaceId: string, cwd: string): string =>
   `Workspace is now ${workspaceId} at ${cwd}. The blocked operation was not replayed.`
+const reevaluate = (reason: string, workspaceId: string, cwd: string): string =>
+  `Workspace admission changed after ${reason}. The prior operation was blocked and was not replayed. Current workspace: ${workspaceId} at ${cwd}. Re-evaluate the user's request using this new context; do not repeat the blocked tool payload.`
+assert.deepEqual(
+  handoffMessages,
+  [
+    reevaluate('fixture competing writer required an isolated workspace', WS_A, targetA),
+    reevaluate('fixture repeated contention required another isolated workspace', WS_B, targetB),
+    `The user switched this conversation's workspace with /workspace resume: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Continue the conversation in this new context.`,
+  ],
+  'the model was told why each switch happened, and only blocked operations were called blocked'
+)
 assert.deepEqual(
   hostMessages.map(headings),
   [
@@ -1790,7 +1805,7 @@ assert.deepEqual(
       row(TASK_B, WS_B, true),
     ],
     [`Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`],
-    [switchedTo(WS_RESUME_A, targetA)],
+    [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
   ],
   'the TUI showed each confirmed switch, the /workspace list and the /workspace inspect output'
 )

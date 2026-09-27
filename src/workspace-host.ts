@@ -26,6 +26,7 @@ import {
 import {
   WorkspaceError,
   type WorkspaceAttachment,
+  type WorkspaceBinding,
   type WorkspaceConversation,
   type WorkspaceGrant,
   type WorkspaceHandoff,
@@ -191,8 +192,23 @@ const display = (api: ExtensionAPI, context: ExtensionContext, message: string):
   }
 }
 
-const noReplayMessage = (handoff: WorkspaceHandoff): string =>
-  `Workspace admission changed after ${handoff.reason}. The prior operation was blocked and was not replayed. Current workspace: ${handoff.target.workspaceId} at ${handoff.target.cwd}. Re-evaluate the user's request using this new context; do not repeat the blocked tool payload.`
+const switchNotices = (
+  { origin, handoff }: PendingTransition,
+  binding: WorkspaceBinding
+): { readonly user: string; readonly model: string; readonly unqueued: string } => {
+  const current = `Current workspace: ${handoff.target.workspaceId} at ${handoff.target.cwd}.`
+  return origin === 'command'
+    ? {
+        user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}.`,
+        model: `The user switched this conversation's workspace with /workspace resume: ${handoff.reason}. ${current} Continue the conversation in this new context.`,
+        unqueued: 'Submit a new prompt.',
+      }
+    : {
+        user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}. The blocked operation was not replayed.`,
+        model: `Workspace admission changed after ${handoff.reason}. The prior operation was blocked and was not replayed. ${current} Re-evaluate the user's request using this new context; do not repeat the blocked tool payload.`,
+        unqueued: 'The blocked request was not replayed; submit a new prompt.',
+      }
+}
 
 // ADR 0005, executable extensions.
 type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner'
@@ -426,27 +442,19 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
       return
     }
+    const notices = switchNotices(transition, activeAttachment.binding)
     try {
-      const { binding } = activeAttachment
       api.sendMessage(
-        {
-          customType: 'dev/workspace',
-          content: `Workspace is now ${binding.workspaceId} at ${binding.cwd}. The blocked operation was not replayed.`,
-          display: true,
-        },
+        { customType: 'dev/workspace', content: notices.user, display: true },
         { triggerTurn: false }
       )
       api.sendMessage(
-        {
-          customType: 'dev/workspace-handoff',
-          content: noReplayMessage(transition.handoff),
-          display: true,
-        },
+        { customType: 'dev/workspace-handoff', content: notices.model, display: true },
         { triggerTurn: true, deliverAs: 'followUp' }
       )
     } catch (error) {
       process.stderr.write(
-        `Workspace switch completed, but fresh re-evaluation was not queued: ${errorText(error)}. The blocked request was not replayed; submit a new prompt.\n`
+        `Workspace switch completed, but fresh re-evaluation was not queued: ${errorText(error)}. ${notices.unqueued}\n`
       )
     }
   }
