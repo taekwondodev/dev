@@ -10,6 +10,15 @@ export const isWithin = (root: string, path: string): boolean => {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
+// The authority records a conversation by this file, Pi by the path it was given, which may
+// pass through a symbolic link or name a file not yet written.
+export const canonicalSessionFile = (file: string): string => {
+  const absolute = resolve(file)
+  return lstatIfExists(absolute) === undefined
+    ? resolve(realpathSync(dirname(absolute)), basename(absolute))
+    : realpathSync(absolute)
+}
+
 // A checkout's stable path slot: a missing final component keeps its spelling under the
 // canonical parent, so a removed checkout keeps the slot it had.
 export const canonicalPathSlot = (path: string): string => {

@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import {
   inDb,
   findBinding,
@@ -17,7 +17,7 @@ import {
 } from './workspace-domain.ts'
 import { acquirePathGates, acquireConversationPresence, releaseGates } from './workspace-gates.ts'
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot, isWithin } from './workspace-paths.ts'
+import { canonicalPathSlot, canonicalSessionFile, isWithin } from './workspace-paths.ts'
 import {
   matchesGitWorkspace,
   getWorkspace,
@@ -48,12 +48,12 @@ const conversationRecord = (
 } => {
   const sessionPath = resolve(input.sessionFile)
   const sessionInfo = lstatIfExists(sessionPath)
-  let sessionFile: string
-  if (sessionInfo !== undefined) {
-    if (!sessionInfo.isFile() || sessionInfo.isSymbolicLink() || sessionInfo.nlink !== 1)
-      requireReview(`Conversation file is not a regular, uniquely linked file: ${sessionPath}`)
-    sessionFile = realpathSync(sessionPath)
-  } else sessionFile = resolve(realpathSync(dirname(sessionPath)), basename(sessionPath))
+  if (
+    sessionInfo !== undefined &&
+    (!sessionInfo.isFile() || sessionInfo.isSymbolicLink() || sessionInfo.nlink !== 1)
+  )
+    requireReview(`Conversation file is not a regular, uniquely linked file: ${sessionPath}`)
+  const sessionFile = canonicalSessionFile(sessionPath)
   const dataHome = realpathSync(resolve(input.dataHome))
   if (!statSync(dataHome).isDirectory())
     invalid(`Conversation data home is not a directory: ${dataHome}`)

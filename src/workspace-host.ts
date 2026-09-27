@@ -1,6 +1,6 @@
 import { Cause, Deferred, Effect, Exit, Fiber, FiberSet, Option, Schema, type Scope } from 'effect'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
 import type {
   AgentSessionRuntime,
   BashOperations,
@@ -34,7 +34,7 @@ import {
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
-import { decodeWriteOperand } from './workspace-paths.ts'
+import { canonicalSessionFile, decodeWriteOperand } from './workspace-paths.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
@@ -143,17 +143,6 @@ const decodeSessionHeader = Schema.decodeUnknownOption(
     cwd: Schema.optional(Schema.Unknown),
   })
 )
-// The authority records a conversation by its canonical file, Pi by the path it was given.
-const canonicalFile = (file: string): string => {
-  const absolute = resolve(file)
-  try {
-    return existsSync(absolute)
-      ? realpathSync(absolute)
-      : join(realpathSync(dirname(absolute)), basename(absolute))
-  } catch {
-    return absolute
-  }
-}
 // ADR 0005: as Pi opens a session file, its header is the first line that parses, blank and
 // malformed lines skipped, and a header without a cwd falls back to the process cwd.
 const sessionFileCwd = (file: string): string => {
@@ -189,7 +178,7 @@ const isWithdrawn = (error: unknown): boolean =>
   error.outcome === 'blocked' &&
   error.message !== attachmentClosedMessage
 
-const sessionKey = (file: string, id: string): string => `${resolve(file)}\0${id}`
+const sessionKey = (file: string, id: string): string => `${canonicalSessionFile(file)}\0${id}`
 
 const identityOf = (
   manager: Pick<SessionManager, 'getSessionId' | 'getSessionFile'>
@@ -202,7 +191,7 @@ export const sameConversation = (a: ConversationIdentity, b: ConversationIdentit
   a.sessionId === b.sessionId &&
   a.sessionFile !== undefined &&
   b.sessionFile !== undefined &&
-  canonicalFile(a.sessionFile) === canonicalFile(b.sessionFile)
+  canonicalSessionFile(a.sessionFile) === canonicalSessionFile(b.sessionFile)
 
 export const noUiTrustContext = (cwd: string): ProjectTrustContext => ({
   cwd,
@@ -885,7 +874,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const key = sessionKey(file, identity.sessionId)
     const parent = manager.getHeader()?.parentSession
     const forkOfActive =
-      parent !== undefined && canonicalFile(parent) === activeConversation.sessionFile
+      parent !== undefined && canonicalSessionFile(parent) === activeConversation.sessionFile
     const reopenTarget = pendingReopen
     const reopen = reopenTarget !== undefined && sameConversation(reopenTarget, identity)
     if (reopen) {
@@ -1023,7 +1012,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         )
         return { cancelled: true }
       }
-      if (resolve(activeConversation.sessionFile) === resolve(file))
+      if (activeConversation.sessionFile === canonicalSessionFile(file))
         pendingReopen = {
           sessionFile: file,
           sessionId: id,
