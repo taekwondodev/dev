@@ -51,7 +51,6 @@ const openLock = (lock: {
     allowExtension: false,
   })
   try {
-    // A waiting acquirer only ever waits out a momentary probe, never a holder.
     db.exec(
       `PRAGMA busy_timeout = ${lock.waitMs}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`
     )
@@ -64,7 +63,6 @@ const openLock = (lock: {
   }
 }
 
-// The open transaction is the lock, so closing the database is the release.
 const holdLock = (lock: {
   readonly path: string
   readonly ddl: string
@@ -219,10 +217,11 @@ export interface PathGates {
   readonly use: GateRelease
   readonly writer?: GateRelease
 }
+export type PathGateMode = 'reader' | 'writer' | 'removal'
 export const acquirePathGates = (
   paths: AuthorityPaths,
   path: string,
-  writer: boolean
+  mode: PathGateMode
 ): PathGates => {
   const canonical = canonicalPathSlot(path)
   const key = hash(canonical)
@@ -230,10 +229,10 @@ export const acquirePathGates = (
   const presence = acquireGate(
     join(directory, 'use.sqlite'),
     { kind: 'use', path: canonical, key },
-    false
+    mode === 'removal'
   )
   try {
-    if (!writer) return { use: presence }
+    if (mode === 'reader') return { use: presence }
     return {
       use: presence,
       writer: acquireGate(
@@ -249,7 +248,7 @@ export const acquirePathGates = (
 }
 export const acquireStructureGate = (
   paths: AuthorityPaths,
-  repository: GitWorkspace,
+  repository: Pick<GitWorkspace, 'commonPath'>,
   repositoryId: WorkspaceId
 ): GateRelease => {
   const key = repositoryId
@@ -313,9 +312,7 @@ export const acquireConversationPresence = (
           releaseIncarnation()
           try {
             rmSync(directory, { recursive: true, force: true })
-          } catch {
-            /* a leftover directory reads as a released incarnation */
-          }
+          } catch {}
         } finally {
           releaseConversation()
         }
@@ -327,9 +324,6 @@ export const acquireConversationPresence = (
   }
 }
 
-// Inspection must not write to the authority, and its owner removes the gate once released, so
-// the probe opens only an existing file, read-only: its read is refused while the owner holds
-// the exclusive lock, and a file removed meanwhile is a released incarnation.
 export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId): boolean => {
   const path = incarnationGate(paths, incarnation)
   const removed = () => lstatIfExists(path) === undefined

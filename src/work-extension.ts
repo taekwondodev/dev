@@ -365,8 +365,7 @@ export const createWorkExtension = ({
   ): Promise<void> => {
     acknowledge(scope)
     const message = cause instanceof Error ? cause.message : String(cause)
-    // Reserve the whole failure batch before suspending. A stale inspection or
-    // acknowledgement must not overwrite a newer send's reservation.
+
     const failed = reserve(
       reservations.filter(item => isReserved(scope, item)),
       'recording-failure'
@@ -385,7 +384,6 @@ export const createWorkExtension = ({
     )
   }
 
-  // A proposed draft is checked only after its dispatch had a chance to commit.
   const reconcileSubmitted = async (scope: DeliveryScope): Promise<void> => {
     acknowledge(scope)
     const submitted = publications().filter(item => item.publication.state === 'submitted')
@@ -415,7 +413,6 @@ export const createWorkExtension = ({
     }
   }
 
-  // No asynchronous gap between this live owner check and reserving publication.
   const selectBatch = (
     scope: DeliveryScope,
     candidates: readonly PublicationReservation[],
@@ -471,8 +468,7 @@ export const createWorkExtension = ({
     const { items, canReactivate } = selectBatch(scope, candidates)
     if (items.length === 0) return
     const sending = reserve(items, 'sending')
-    // A triggered send may await the entire next lead run. Its reservation must
-    // not block that run's boundary from publishing other completed attempts.
+
     void scope.session
       .sendCustomMessage(outcomeMessage(items.map(({ item }) => item.attempt)), {
         triggerTurn: canReactivate,
@@ -645,8 +641,6 @@ export const createWorkExtension = ({
       if (session !== value) return
       if (event.type === 'agent_start') idleDeliveryReady = false
       else if (event.type === 'agent_settled') {
-        // Unlike the extension event, this fires after ALL settlement handlers.
-        // The scheduled callback runs outside Pi's deferred-send window.
         idleDeliveryReady = true
         scheduleDelivery()
       }
@@ -697,7 +691,7 @@ export const createWorkExtension = ({
     })
     pi.on('agent_before_settle', async (event, ctx) => {
       idleDeliveryReady = false
-      // Pi has already finished native retry/compaction recovery at this boundary.
+
       if (event.outcome === 'error') reactivation = 'suspended'
       else if (reactivation !== 'suspended')
         reactivation = event.outcome === 'completed' ? 'ready' : 'awaiting-success'
@@ -785,8 +779,7 @@ export const createWorkExtension = ({
           )
         ),
     })
-    // Pi ends a batch only on results that ask to terminate, and a thrown error cannot, so the
-    // rebind refusal returns normally and is marked an error here (ADR 0005, known limit).
+
     pi.on('tool_result', event =>
       rebindRefusals.delete(event.toolCallId) ? { isError: true } : undefined
     )

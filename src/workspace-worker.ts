@@ -19,6 +19,13 @@ import {
   type WorkspaceWorkerMessage,
 } from './workspace-protocol.ts'
 import { performHandoff, selectWorkspace } from './workspace-transitions.ts'
+import { makeGitHubReader } from './workspace-evidence.ts'
+import {
+  recordPublication,
+  recordRuleApproval,
+  recordTarget,
+} from './workspace-evidence-records.ts'
+import { checkTask, releaseWorkspace, type EvidenceReaders } from './workspace-release.ts'
 import { errorText } from './error-text.ts'
 
 const MAX_ATTACHMENTS = 256
@@ -68,6 +75,8 @@ const startEngine = (): WorkspaceEngine | undefined => {
 }
 
 const engine = startEngine()
+
+const readers = (): EvidenceReaders => ({ github: makeGitHubReader() })
 if (port !== null && engine !== undefined) {
   let nextAttachmentId = 0
   const attachments = new Map<number, EngineAttachment>()
@@ -166,6 +175,28 @@ if (port !== null && engine !== undefined) {
       case 'validate':
         await engine.run(authority => validateDurableGrant(authority, request.grant))
         return null
+      case 'check':
+        return await engine.run(authority =>
+          checkTask(
+            authority,
+            request.taskId,
+            readers(),
+            engine.incarnationOf(request.ownConversation)
+          )
+        )
+      case 'release':
+        return await engine.run(authority =>
+          releaseWorkspace(authority, request.request, readers())
+        )
+      case 'record-target':
+        await engine.run(authority => recordTarget(authority, request.taskId, request.target))
+        return null
+      case 'record-publication':
+        await engine.run(authority => recordPublication(authority, request.reference))
+        return null
+      case 'record-rule-approval':
+        await engine.run(authority => recordRuleApproval(authority, request.approval))
+        return null
       case 'close': {
         if (closing) return null
         closing = true
@@ -209,8 +240,6 @@ if (port !== null && engine !== undefined) {
       if (request.op === 'close') port.close()
     } catch (cause) {
       if (executionSucceeded) {
-        // A committed operation whose success payload could not be delivered is
-        // ambiguous. Exit without retrying or replacing the durable use claim.
         port.close()
         return
       }

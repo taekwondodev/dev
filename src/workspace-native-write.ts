@@ -33,18 +33,12 @@ export interface NativeWrites {
 
 const SETTLE_WAIT = Duration.seconds(2)
 
-// macOS volumes ignore case and normalization by default. Folding through upper case also
-// catches expansions that lowercasing misses, such as ß and ss; any spelling this fold
-// still separates is admitted as a distinct destination.
 const destinationIdentity = (path: string): string =>
   path.normalize('NFC').toUpperCase().toLowerCase().normalize('NFC')
 
-// Only the destination's final component is opened without following links; the
-// authority re-resolves its ancestors at the start boundary just before.
 const NO_FOLLOW_WRITE =
   constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW
 
-// ADR 0005, scoped workspace operations.
 export const makeNativeWrites = (options: {
   readonly runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
   readonly onError: (message: string) => void
@@ -92,9 +86,6 @@ export const makeNativeWrites = (options: {
     }
   })
 
-  // Pi calls these operations with Promises. A filesystem failure reaches Pi's tool as the
-  // original Node error, so it is carried as a defect rather than translated. An operation
-  // counts as in flight from the moment it passes the closing check, so `settle` waits for it.
   const operate = <A>(
     path: string,
     role: 'destination' | 'parent',

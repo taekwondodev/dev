@@ -333,14 +333,12 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   get snapshot(): Effect.Effect<WorkSnapshot, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const listed = yield* self.store.list
+    return Effect.gen({ self: this }, function* () {
+      const listed = yield* this.store.list
       const records = listed.records
-        .filter(record => record.owner.sessionId === self.sessionId)
+        .filter(record => record.owner.sessionId === this.sessionId)
         .map(record => {
-          const job = self.active.get(record.id)
+          const job = this.active.get(record.id)
           if (job) return viewOf(job.lifecycle.snapshot())
           if (record.completedAt !== undefined) return viewOf(record)
           return viewOf({
@@ -350,7 +348,7 @@ class WorkOwnerImpl implements WorkOwnerService {
             recovery: 'Retained facts only; no restart authorized',
           })
         })
-      return { records, unavailable: listed.unavailable, agentsBlocked: self.state.exhausted }
+      return { records, unavailable: listed.unavailable, agentsBlocked: this.state.exhausted }
     }).pipe(Effect.mapError(toFailure))
   }
 
@@ -369,9 +367,7 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   startAgent(request: AgentStartRequest): Effect.Effect<AttemptView, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       if (request.access !== 'read-only' && request.access !== 'write') {
         return yield* new WorkError({ message: 'Delegate access must be read-only or write' })
       }
@@ -386,41 +382,37 @@ class WorkOwnerImpl implements WorkOwnerService {
         return yield* new WorkError({ message: 'skills must contain skill names' })
       }
       const selection = yield* resolveDispatch(request).pipe(
-        Effect.provideService(FileSystem.FileSystem, self.fs),
+        Effect.provideService(FileSystem.FileSystem, this.fs),
         Effect.mapError(toFailure)
       )
-      return yield* self.start({ kind: 'agent', ...request, selection })
+      return yield* this.start({ kind: 'agent', ...request, selection })
     }).pipe(Effect.mapError(toFailure))
   }
 
   cancel(id: AttemptId, reason = 'cancelled'): Effect.Effect<AttemptView, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     return Effect.uninterruptible(
-      Effect.gen(function* () {
-        const job = self.active.get(id)
+      Effect.gen({ self: this }, function* () {
+        const job = this.active.get(id)
         if (!job)
           return yield* new WorkError({
             message: 'Attempt is not owned by this live session; inspect retained facts instead',
           })
         yield* Deferred.await(job.prepared)
         if (job.lifecycle.isTerminal()) return yield* Deferred.await(job.settled)
-        return yield* self.cancelJob(job, reason)
+        return yield* this.cancelJob(job, reason)
       })
     ).pipe(Effect.mapError(toFailure))
   }
 
   inspect(id: AttemptId): Effect.Effect<AttemptDescription, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const record = yield* self.recordFor(id)
+    return Effect.gen({ self: this }, function* () {
+      const record = yield* this.recordFor(id)
       const current = yield* artifactState(record.cwd)
       const staleArtifact = changedArtifact(record.artifactAtCompletion, current)
       const streams: readonly LogRequest['stream'][] =
         record.kind === 'agent' ? ['result', 'stderr'] : ['stdout', 'stderr']
       const logs = yield* Effect.forEach(streams, stream =>
-        self.store.readLog(id, stream, undefined, 6000).pipe(
+        this.store.readLog(id, stream, undefined, 6000).pipe(
           Effect.map(log => ({
             ...log,
             stream,
@@ -457,54 +449,48 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   recordDeliveryFailure(id: AttemptId, message: string): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const job = self.active.get(id)
+    return Effect.gen({ self: this }, function* () {
+      const job = this.active.get(id)
       if (job !== undefined) {
-        yield* self.commit(job, () =>
+        yield* this.commit(job, () =>
           job.lifecycle.transition.deliveryError(job.lifecycle.token, message)
         )
-        self.onChange()
+        this.onChange()
         return
       }
-      const record = yield* self.recordFor(id)
+      const record = yield* this.recordFor(id)
       if (record.revision >= Number.MAX_SAFE_INTEGER)
         return yield* new WorkError({ message: 'Attempt revision exhausted' })
-      yield* self.store.save({
+      yield* this.store.save({
         ...record,
         deliveryError: message,
         revision: record.revision + 1,
       })
-      self.onChange()
+      this.onChange()
     }).pipe(Effect.mapError(toFailure))
   }
 
   interrupt(reason = 'interrupted'): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const previous = yield* self.admission.withPermit(
+    return Effect.gen({ self: this }, function* () {
+      const previous = yield* this.admission.withPermit(
         Effect.sync(() => {
-          self.state.generation = asGenerationId(randomUUID())
-          return [...self.active.keys()]
+          this.state.generation = asGenerationId(randomUUID())
+          return [...this.active.keys()]
         })
       )
-      yield* self.cancelMany(previous, reason)
+      yield* this.cancelMany(previous, reason)
     }).pipe(Effect.mapError(toFailure))
   }
 
   exhaust(except?: AttemptId): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      yield* self.admission.withPermit(
+    return Effect.gen({ self: this }, function* () {
+      yield* this.admission.withPermit(
         Effect.sync(() => {
-          self.state.exhausted = true
+          this.state.exhausted = true
         })
       )
-      yield* self.cancelMany(
-        [...self.active.values()]
+      yield* this.cancelMany(
+        [...this.active.values()]
           .filter(job => {
             const record = job.lifecycle.snapshot()
             return record.kind === 'agent' && record.id !== except
@@ -516,24 +502,20 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   close(reason = 'session ended'): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      yield* self.admission.withPermit(
+    return Effect.gen({ self: this }, function* () {
+      yield* this.admission.withPermit(
         Effect.sync(() => {
-          self.state.closed = true
-          self.state.generation = asGenerationId(randomUUID())
+          this.state.closed = true
+          this.state.generation = asGenerationId(randomUUID())
         })
       )
-      yield* self.cancelMany([...self.active.keys()], reason)
+      yield* this.cancelMany([...this.active.keys()], reason)
     }).pipe(Effect.mapError(toFailure))
   }
 
   private cancelMany(ids: readonly AttemptId[], reason: string): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const outcomes = yield* Effect.forEach(ids, id => Effect.result(self.cancel(id, reason)), {
+    return Effect.gen({ self: this }, function* () {
+      const outcomes = yield* Effect.forEach(ids, id => Effect.result(this.cancel(id, reason)), {
         concurrency: 'unbounded',
       })
       const failure = outcomes.find(outcome => outcome._tag === 'Failure')
@@ -544,16 +526,14 @@ class WorkOwnerImpl implements WorkOwnerService {
   private start(
     request: StartRequest & { readonly selection?: DispatchProfile }
   ): Effect.Effect<AttemptView, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const reservation = yield* self.reserve(request.taskId, request.kind)
+    return Effect.gen({ self: this }, function* () {
+      const reservation = yield* this.reserve(request.taskId, request.kind)
       let grant: WorkspaceGrant | undefined
       let installed = false
-      const result = yield* Effect.gen(function* () {
-        const requestedCwd = yield* self.resolveCwd(request.cwd)
+      const result = yield* Effect.gen({ self: this }, function* () {
+        const requestedCwd = yield* this.resolveCwd(request.cwd)
         const id = asAttemptId(randomUUID())
-        const { workspace } = self
+        const { workspace } = this
         if (workspace === undefined)
           return yield* new WorkError({
             message: 'Workspace authority is unavailable; no work was started',
@@ -563,9 +543,9 @@ class WorkOwnerImpl implements WorkOwnerService {
           taskKey: reservation.taskId,
           attemptId: id,
           generation: reservation.generation,
-          logs: self.store.plannedLogPath(id, 'stdout'),
+          logs: this.store.plannedLogPath(id, 'stdout'),
         }
-        const admission = yield* Effect.gen(function* () {
+        const admission = yield* Effect.gen({ self: this }, function* () {
           const allocated = yield* workspace.attachment.authorize(
             request.kind === 'process'
               ? { kind: 'write', cwd: requestedCwd }
@@ -592,13 +572,13 @@ class WorkOwnerImpl implements WorkOwnerService {
         grant = selected
         const { cwd } = selected
         const artifactAtStart = yield* artifactState(cwd)
-        yield* self.assertPrepared(
+        yield* this.assertPrepared(
           reservation.sessionId,
           reservation.generation,
           reservation.taskId,
           request.kind
         )
-        const record = yield* self.store.create(id, {
+        const record = yield* this.store.create(id, {
           kind: request.kind,
           cwd,
           controllerPid: process.pid,
@@ -617,7 +597,7 @@ class WorkOwnerImpl implements WorkOwnerService {
             : {}),
           artifactAtStart,
         })
-        yield* self.assertPrepared(
+        yield* this.assertPrepared(
           reservation.sessionId,
           reservation.generation,
           reservation.taskId,
@@ -635,30 +615,30 @@ class WorkOwnerImpl implements WorkOwnerService {
           workspace: grant,
           workspaceLaunch: 'identity-unrecorded',
         }
-        yield* self.admission.withPermit(
+        yield* this.admission.withPermit(
           Effect.try({
             try: () => {
-              self.assertPreparedUnsafe(
+              this.assertPreparedUnsafe(
                 reservation.sessionId,
                 reservation.generation,
                 reservation.taskId,
                 request.kind
               )
-              self.active.set(record.id, job)
+              this.active.set(record.id, job)
               installed = true
-              self.latest.set(reservation.taskId, record.id)
+              this.latest.set(reservation.taskId, record.id)
             },
             catch: cause => new WorkError({ message: errorMessage(cause), cause }),
           })
         )
-        yield* self
-          .launch(job, request, cwd, reservation.generation)
-          .pipe(Effect.ensuring(Deferred.succeed(prepared, undefined)))
+        yield* this.launch(job, request, cwd, reservation.generation).pipe(
+          Effect.ensuring(Deferred.succeed(prepared, undefined))
+        )
         return viewOf(job.lifecycle.snapshot())
       }).pipe(
         Effect.tapError(() => {
           const selected = grant
-          const { workspace } = self
+          const { workspace } = this
           return !installed && selected !== undefined && workspace !== undefined
             ? workspace.attachment
                 .reportExecution(selected, {
@@ -668,7 +648,7 @@ class WorkOwnerImpl implements WorkOwnerService {
                 .pipe(Effect.mapError(toFailure))
             : Effect.void
         }),
-        Effect.ensuring(Effect.sync(() => self.reservations.delete(reservation.taskId)))
+        Effect.ensuring(Effect.sync(() => this.reservations.delete(reservation.taskId)))
       )
       return result
     }).pipe(Effect.uninterruptible, Effect.mapError(toFailure))
@@ -681,27 +661,25 @@ class WorkOwnerImpl implements WorkOwnerService {
     { readonly generation: GenerationId; readonly sessionId: SessionId; readonly taskId: TaskId },
     WorkFailure
   > {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return self.admission.withPermit(
+    return this.admission.withPermit(
       Effect.try({
         try: () => {
           if (process.platform === 'win32')
             throw new Error(
               'Background work currently requires POSIX process observation and signals'
             )
-          if (self.state.closed) throw new Error('This work owner has shut down')
-          if (kind === 'agent' && self.state.exhausted)
+          if (this.state.closed) throw new Error('This work owner has shut down')
+          if (kind === 'agent' && this.state.exhausted)
             throw new Error('Subscription exhausted; no new agents may start in this session')
           const typed = asTaskId(requiredString(taskId, 'taskId'))
           if (
-            self.reservations.has(typed) ||
-            [...self.active.values()].some(job => job.lifecycle.snapshot().owner.taskId === typed)
+            this.reservations.has(typed) ||
+            [...this.active.values()].some(job => job.lifecycle.snapshot().owner.taskId === typed)
           ) {
             throw new Error('This task already has an active attempt')
           }
-          self.reservations.add(typed)
-          return { generation: self.state.generation, sessionId: self.sessionId, taskId: typed }
+          this.reservations.add(typed)
+          return { generation: this.state.generation, sessionId: this.sessionId, taskId: typed }
         },
         catch: cause => new WorkError({ message: errorMessage(cause), cause }),
       })
@@ -715,11 +693,9 @@ class WorkOwnerImpl implements WorkOwnerService {
     kind: WorkKind,
     except?: AttemptId
   ): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return self.admission.withPermit(
+    return this.admission.withPermit(
       Effect.try({
-        try: () => self.assertPreparedUnsafe(sessionId, generation, taskId, kind, except),
+        try: () => this.assertPreparedUnsafe(sessionId, generation, taskId, kind, except),
         catch: cause => new WorkError({ message: errorMessage(cause), cause }),
       })
     )
@@ -758,12 +734,10 @@ class WorkOwnerImpl implements WorkOwnerService {
     except: AttemptId,
     effect: Effect.Effect<A, WorkFailure>
   ): Effect.Effect<A, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return self.admission.withPermit(
-      Effect.gen(function* () {
+    return this.admission.withPermit(
+      Effect.gen({ self: this }, function* () {
         yield* Effect.try({
-          try: () => self.assertPreparedUnsafe(sessionId, generation, taskId, kind, except),
+          try: () => this.assertPreparedUnsafe(sessionId, generation, taskId, kind, except),
           catch: cause => new WorkError({ message: errorMessage(cause), cause }),
         })
         return yield* effect
@@ -775,17 +749,15 @@ class WorkOwnerImpl implements WorkOwnerService {
     job: Job,
     transition: () => LifecycleTransition
   ): Effect.Effect<LifecycleTransition, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       const outcome = yield* Effect.try({
         try: transition,
         catch: cause => new WorkError({ message: errorMessage(cause), cause }),
       })
       if (outcome.changed) {
-        yield* self.store.save(outcome.snapshot)
+        yield* this.store.save(outcome.snapshot)
         if (outcome.resultText !== undefined)
-          yield* self.store.saveResult(outcome.snapshot.id, outcome.resultText)
+          yield* this.store.saveResult(outcome.snapshot.id, outcome.resultText)
       }
       return outcome
     })
@@ -795,9 +767,7 @@ class WorkOwnerImpl implements WorkOwnerService {
     job: Job,
     transition: () => LifecycleTransition
   ): Effect.Effect<LifecycleTransition, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return self.admission.withPermit(self.commitUnlocked(job, transition))
+    return this.admission.withPermit(this.commitUnlocked(job, transition))
   }
 
   private commitCurrent(
@@ -805,26 +775,22 @@ class WorkOwnerImpl implements WorkOwnerService {
     token: AttemptLifecycle['token'],
     transition: () => LifecycleTransition
   ): Effect.Effect<LifecycleTransition | undefined, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return self.admission.withPermit(
-      Effect.gen(function* () {
+    return this.admission.withPermit(
+      Effect.gen({ self: this }, function* () {
         if (
-          self.state.closed ||
-          self.state.generation !== token.generation ||
+          this.state.closed ||
+          this.state.generation !== token.generation ||
           !job.lifecycle.isActive() ||
           job.lifecycle.hasResult()
         )
           return undefined
-        return yield* self.commitUnlocked(job, transition)
+        return yield* this.commitUnlocked(job, transition)
       })
     )
   }
 
   private notePersistenceFailure(job: Job, cause: unknown): Effect.Effect<void, never> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return self.admission.withPermit(
+    return this.admission.withPermit(
       Effect.sync(() => {
         job.lifecycle.transition.persistenceError(job.lifecycle.token, errorMessage(cause))
       })
@@ -835,13 +801,11 @@ class WorkOwnerImpl implements WorkOwnerService {
     job: Job,
     transition: () => LifecycleTransition
   ): Effect.Effect<LifecycleTransition, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const result = yield* Effect.result(self.commit(job, transition))
+    return Effect.gen({ self: this }, function* () {
+      const result = yield* Effect.result(this.commit(job, transition))
       if (result._tag === 'Success') return result.success
       if (!(result.failure instanceof WorkPersistenceError)) return yield* result.failure
-      yield* self.notePersistenceFailure(job, result.failure)
+      yield* this.notePersistenceFailure(job, result.failure)
       return {
         accepted: true,
         changed: true,
@@ -860,13 +824,11 @@ class WorkOwnerImpl implements WorkOwnerService {
     token: AttemptLifecycle['token'],
     transition: () => LifecycleTransition
   ): Effect.Effect<LifecycleTransition | undefined, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const result = yield* Effect.result(self.commitCurrent(job, token, transition))
+    return Effect.gen({ self: this }, function* () {
+      const result = yield* Effect.result(this.commitCurrent(job, token, transition))
       if (result._tag === 'Success') return result.success
       if (!(result.failure instanceof WorkPersistenceError)) return yield* result.failure
-      yield* self.notePersistenceFailure(job, result.failure)
+      yield* this.notePersistenceFailure(job, result.failure)
       return {
         accepted: true,
         changed: true,
@@ -889,24 +851,22 @@ class WorkOwnerImpl implements WorkOwnerService {
     cwd: string,
     generation: GenerationId
   ): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     let stdout: number | undefined
     let stderr: number | undefined
     const { token } = job.lifecycle
-    const launchCore = Effect.gen(function* () {
+    const launchCore = Effect.gen({ self: this }, function* () {
       const record = job.lifecycle.snapshot()
-      yield* self.reportWorkspace(job, {
+      yield* this.reportWorkspace(job, {
         kind: 'launch-intent',
         execution: {
           sessionId: record.owner.sessionId,
           taskKey: record.owner.taskId,
           attemptId: record.id,
           generation: record.owner.generation,
-          logs: self.store.logPath(record.id, 'stdout'),
+          logs: this.store.logPath(record.id, 'stdout'),
         },
       })
-      yield* self.withPreparedPermit(
+      yield* this.withPreparedPermit(
         token.sessionId,
         generation,
         record.owner.taskId,
@@ -914,13 +874,13 @@ class WorkOwnerImpl implements WorkOwnerService {
         record.id,
         Effect.try({
           try: () => {
-            stdout = openSync(self.store.logPath(record.id, 'stdout'), 'wx', 0o600)
-            stderr = openSync(self.store.logPath(record.id, 'stderr'), 'wx', 0o600)
+            stdout = openSync(this.store.logPath(record.id, 'stdout'), 'wx', 0o600)
+            stderr = openSync(this.store.logPath(record.id, 'stderr'), 'wx', 0o600)
           },
           catch: cause => new WorkError({ message: errorMessage(cause), cause }),
         })
       )
-      const child = yield* self.withPreparedPermit(
+      const child = yield* this.withPreparedPermit(
         token.sessionId,
         generation,
         record.owner.taskId,
@@ -935,7 +895,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               detached: true,
               env: {
                 ...process.env,
-                DEV_DATA_HOME: self.dataHome,
+                DEV_DATA_HOME: this.dataHome,
                 PI_CODING_AGENT_DIR: globalPiAgentDir(),
               },
             }
@@ -987,12 +947,12 @@ class WorkOwnerImpl implements WorkOwnerService {
         else message = 'Child exited before PID was available'
         return yield* new WorkError({ message })
       }
-      yield* self.commit(job, () => job.lifecycle.transition.spawn(token, childPid))
-      yield* self.admission.withPermit(
-        Effect.gen(function* () {
+      yield* this.commit(job, () => job.lifecycle.transition.spawn(token, childPid))
+      yield* this.admission.withPermit(
+        Effect.gen({ self: this }, function* () {
           yield* Effect.try({
             try: () =>
-              self.assertPreparedUnsafe(
+              this.assertPreparedUnsafe(
                 token.sessionId,
                 generation,
                 record.owner.taskId,
@@ -1012,13 +972,13 @@ class WorkOwnerImpl implements WorkOwnerService {
             return yield* new WorkError({
               message: 'Child root identity could not be captured before execution release',
             })
-          yield* self.commitUnlocked(job, () => job.lifecycle.transition.processes(token, known))
+          yield* this.commitUnlocked(job, () => job.lifecycle.transition.processes(token, known))
           const processIdentity = yield* Schema.decodeEffect(WorkspaceProcessSchema)(root).pipe(
             Effect.mapError(toFailure)
           )
-          yield* self.reportWorkspace(job, { kind: 'spawned', process: processIdentity })
+          yield* this.reportWorkspace(job, { kind: 'spawned', process: processIdentity })
           job.workspaceLaunch = 'identity-recorded'
-          yield* self.reportWorkspace(job, { kind: 'started' })
+          yield* this.reportWorkspace(job, { kind: 'started' })
           if (job.gate !== undefined) {
             const { gate } = job
             job.executionReleased = true
@@ -1031,21 +991,21 @@ class WorkOwnerImpl implements WorkOwnerService {
         })
       )
       if (request.kind === 'agent')
-        yield* self.withPreparedPermit(
+        yield* this.withPreparedPermit(
           token.sessionId,
           generation,
           record.owner.taskId,
           request.kind,
           record.id,
-          Effect.gen(function* () {
+          Effect.gen({ self: this }, function* () {
             job.executionReleased = true
             yield* sendIpc(child, {
               type: 'start',
               request: {
-                dataHome: self.dataHome,
+                dataHome: this.dataHome,
                 cwd,
-                profile: self.profile,
-                sessionDir: join(self.dataHome, 'child-sessions'),
+                profile: this.profile,
+                sessionDir: join(this.dataHome, 'child-sessions'),
                 access: request.access,
                 prompt: request.prompt,
                 skills: request.skills,
@@ -1057,20 +1017,20 @@ class WorkOwnerImpl implements WorkOwnerService {
             })
           })
         )
-      yield* self.withPreparedPermit(
+      yield* this.withPreparedPermit(
         token.sessionId,
         generation,
         record.owner.taskId,
         request.kind,
         record.id,
-        Effect.gen(function* () {
-          yield* self.store.save(job.lifecycle.snapshot())
-          yield* Effect.forkIn(self.scope)(self.waitForOwnedExit(job))
+        Effect.gen({ self: this }, function* () {
+          yield* this.store.save(job.lifecycle.snapshot())
+          yield* Effect.forkIn(this.scope)(this.waitForOwnedExit(job))
         })
       )
-      self.onChange()
+      this.onChange()
     }).pipe(
-      Effect.catch(error => self.failLaunch(job, error)),
+      Effect.catch(error => this.failLaunch(job, error)),
       Effect.ensuring(
         Effect.sync(() => {
           if (stdout !== undefined) closeSync(stdout)
@@ -1082,36 +1042,34 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   private failLaunch(job: Job, cause: unknown): Effect.Effect<never, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       const { token } = job.lifecycle
       if (!job.executionReleased) {
         const { gate } = job
         job.gate = undefined
         yield* Effect.sync(() => abortChild(job.child, gate))
         yield* Effect.ignore(
-          self.settleUnrecordedLaunch(
+          this.settleUnrecordedLaunch(
             job,
             `The launch failed before user code was released: ${errorMessage(cause)}`
           )
         )
       }
 
-      yield* self.commitBestEffort(job, () =>
+      yield* this.commitBestEffort(job, () =>
         job.lifecycle.transition.processError(token, errorMessage(cause))
       )
       if (job.lifecycle.isActive()) {
         if (job.child === undefined || job.child.pid === undefined) {
-          yield* self.commitBestEffort(job, () => job.lifecycle.transition.exit(token, null, null))
-          yield* self.finish(job).pipe(Effect.catch(error => self.failObservation(job, error)))
+          yield* this.commitBestEffort(job, () => job.lifecycle.transition.exit(token, null, null))
+          yield* this.finish(job).pipe(Effect.catch(error => this.failObservation(job, error)))
         } else {
           yield* Effect.scoped(
-            Effect.gen(function* () {
-              yield* Effect.forkScoped(self.waitForOwnedExit(job))
-              yield* self.cancelJob(job, 'launch failed')
+            Effect.gen({ self: this }, function* () {
+              yield* Effect.forkScoped(this.waitForOwnedExit(job))
+              yield* this.cancelJob(job, 'launch failed')
             })
-          ).pipe(Effect.catch(error => self.failObservation(job, error)))
+          ).pipe(Effect.catch(error => this.failObservation(job, error)))
         }
       }
       return yield* new WorkError({ message: errorMessage(cause), cause })
@@ -1119,28 +1077,26 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   private childMessage(job: Job, raw: unknown): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     const { token } = job.lifecycle
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       if (
         !job.lifecycle.isActive() ||
         job.lifecycle.hasResult() ||
-        token.generation !== self.state.generation
+        token.generation !== this.state.generation
       )
         return
       const record = job.lifecycle.snapshot()
       const message = yield* parseChildMessage(raw, {
         cwd: record.cwd,
-        sessionDir: join(self.dataHome, 'child-sessions'),
+        sessionDir: join(this.dataHome, 'child-sessions'),
       }).pipe(Effect.mapError(toFailure))
       if (message.type === 'workspace-check') {
-        const { workspace } = self
+        const { workspace } = this
         const { child } = job
         if (workspace === undefined || child === undefined)
           return yield* new WorkError({ message: 'Child workspace owner is unavailable' })
         const checked = yield* Effect.result(
-          Effect.gen(function* () {
+          Effect.gen({ self: this }, function* () {
             if (
               message.useId !== job.workspace.useId ||
               (message.operation !== 'read' && job.workspace.access !== 'write')
@@ -1151,7 +1107,7 @@ class WorkOwnerImpl implements WorkOwnerService {
             yield* workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure))
             yield* Effect.try({
               try: () =>
-                self.assertPreparedUnsafe(
+                this.assertPreparedUnsafe(
                   token.sessionId,
                   token.generation,
                   record.owner.taskId,
@@ -1172,7 +1128,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         return
       }
       if (message.type === 'ready' || message.type === 'progress') {
-        const outcome = yield* self.commitCurrentBestEffort(job, token, () =>
+        const outcome = yield* this.commitCurrentBestEffort(job, token, () =>
           job.lifecycle.transition.progress(token, {
             ...(message.model === undefined ? {} : { model: message.model }),
             ...(message.effort === undefined ? {} : { effort: message.effort }),
@@ -1182,9 +1138,9 @@ class WorkOwnerImpl implements WorkOwnerService {
             ...(message.usage === undefined ? {} : { usage: message.usage }),
           })
         )
-        if (outcome !== undefined) self.onChange()
+        if (outcome !== undefined) this.onChange()
       } else {
-        const outcome = yield* self.commitCurrentBestEffort(job, token, () =>
+        const outcome = yield* this.commitCurrentBestEffort(job, token, () =>
           job.lifecycle.transition.result(token, {
             ...(message.model === undefined ? {} : { model: message.model }),
             ...(message.effort === undefined ? {} : { effort: message.effort }),
@@ -1201,45 +1157,43 @@ class WorkOwnerImpl implements WorkOwnerService {
         )
         if (outcome === undefined) return
         if (outcome.accepted && (outcome.quotaExhausted || quotaExhausted(message.error)))
-          yield* self.exhaust(record.id)
-        self.onChange()
+          yield* this.exhaust(record.id)
+        this.onChange()
       }
     }).pipe(
       Effect.catch(error =>
-        Effect.gen(function* () {
+        Effect.gen({ self: this }, function* () {
           const message = errorMessage(error)
-          const outcome = yield* self.commitCurrentBestEffort(job, token, () =>
+          const outcome = yield* this.commitCurrentBestEffort(job, token, () =>
             error instanceof WorkProtocolError
               ? job.lifecycle.transition.rejectedMessage(token, message)
               : job.lifecycle.transition.persistenceError(token, message)
           )
-          if (outcome !== undefined) yield* self.cancelJob(job, 'invalid child message')
+          if (outcome !== undefined) yield* this.cancelJob(job, 'invalid child message')
         })
       )
     )
   }
 
   private waitForOwnedExit(job: Job): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     const { token } = job.lifecycle
     return Effect.whileLoop({
       while: () => job.lifecycle.isActive(),
       body: () =>
-        Effect.gen(function* () {
+        Effect.gen({ self: this }, function* () {
           if (!job.lifecycle.hasExited()) {
             const event = yield* Queue.take(job.events)
-            if (event.type === 'message') yield* self.childMessage(job, event.raw)
+            if (event.type === 'message') yield* this.childMessage(job, event.raw)
             else if (event.type === 'error')
-              yield* self.commitBestEffort(job, () =>
+              yield* this.commitBestEffort(job, () =>
                 job.lifecycle.transition.processError(token, event.message)
               )
             else if (event.type === 'exit')
-              yield* self.commitBestEffort(job, () =>
+              yield* this.commitBestEffort(job, () =>
                 job.lifecycle.transition.exit(token, event.code, event.signal)
               )
             else if (event.type === 'close' || job.lifecycle.pid() === undefined)
-              yield* self.commitBestEffort(job, () =>
+              yield* this.commitBestEffort(job, () =>
                 job.lifecycle.transition.exit(token, null, null)
               )
             return
@@ -1247,16 +1201,17 @@ class WorkOwnerImpl implements WorkOwnerService {
           const pending = yield* Queue.poll(job.events)
           if (pending._tag === 'Some') {
             const event = pending.value
-            if (event.type === 'message') yield* self.childMessage(job, event.raw)
+            if (event.type === 'message') yield* this.childMessage(job, event.raw)
             else if (event.type === 'error')
-              yield* self.commitBestEffort(job, () =>
+              yield* this.commitBestEffort(job, () =>
                 job.lifecycle.transition.processError(token, event.message)
               )
             return
           }
-          yield* self
-            .settleUnrecordedLaunch(job, 'The launch failed before user code was released')
-            .pipe(Effect.retry(transientRetry))
+          yield* this.settleUnrecordedLaunch(
+            job,
+            'The launch failed before user code was released'
+          ).pipe(Effect.retry(transientRetry))
           const family = yield* observeFamily(
             {
               pid: job.lifecycle.pid(),
@@ -1266,30 +1221,27 @@ class WorkOwnerImpl implements WorkOwnerService {
             },
             {
               rootExited: hasProcessExitEvidence(job),
-              report: processes => self.reportWorkspace(job, { kind: 'observed', processes }),
+              report: processes => this.reportWorkspace(job, { kind: 'observed', processes }),
             }
           )
           job.observedProcesses = family.reported
           const { known } = family
-          yield* self.commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
+          yield* this.commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
           if (known.length === 0) {
-            yield* self.finish(job)
+            yield* this.finish(job)
             return
           }
-          yield* self.commitBestEffort(job, () => job.lifecycle.transition.waiting(token))
-          self.onChange()
+          yield* this.commitBestEffort(job, () => job.lifecycle.transition.waiting(token))
+          this.onChange()
           yield* Effect.sleep(Duration.millis(500))
         }),
       step: () => undefined,
     }).pipe(
       Effect.asVoid,
-      Effect.catch(error => self.failObservation(job, error))
+      Effect.catch(error => this.failObservation(job, error))
     )
   }
 
-  // A launch whose identity the authority never acknowledged is settled as never launched,
-  // since its user code was not released. Only the authority's refusal proves the identity
-  // was recorded after all, and then the family is observed like any other.
   private settleUnrecordedLaunch(job: Job, reason: string): Effect.Effect<void, WorkFailure> {
     if (job.workspaceLaunch !== 'identity-unrecorded') return Effect.void
     return this.reportWorkspace(job, { kind: 'launch-failed', reason }).pipe(
@@ -1308,11 +1260,9 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   private failObservation(job: Job, cause: unknown): Effect.Effect<void, never> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     const { token } = job.lifecycle
-    return Effect.gen(function* () {
-      yield* self.reportWorkspace(job, { kind: 'unknown', reason: errorMessage(cause) }).pipe(
+    return Effect.gen({ self: this }, function* () {
+      yield* this.reportWorkspace(job, { kind: 'unknown', reason: errorMessage(cause) }).pipe(
         Effect.catch(error =>
           Effect.sync(() => {
             process.stderr.write(
@@ -1322,50 +1272,46 @@ class WorkOwnerImpl implements WorkOwnerService {
         )
       )
       if (job.lifecycle.isTerminal()) {
-        if (cause instanceof WorkPersistenceError) yield* self.notePersistenceFailure(job, cause)
+        if (cause instanceof WorkPersistenceError) yield* this.notePersistenceFailure(job, cause)
         yield* Queue.shutdown(job.events).pipe(Effect.ignore)
-        yield* self.settle(job)
-        self.onChange()
+        yield* this.settle(job)
+        this.onChange()
         return
       }
       if (job.lifecycle.isUnknown()) {
-        yield* self.settle(job)
+        yield* this.settle(job)
         return
       }
       const outcome = yield* Effect.result(
-        self.commit(job, () =>
+        this.commit(job, () =>
           job.lifecycle.transition.unknown(
             token,
             `Process observation unavailable: ${errorMessage(cause)}`
           )
         )
       )
-      if (outcome._tag === 'Failure') yield* self.notePersistenceFailure(job, outcome.failure)
-      yield* self.settle(job)
-      self.onChange()
+      if (outcome._tag === 'Failure') yield* this.notePersistenceFailure(job, outcome.failure)
+      yield* this.settle(job)
+      this.onChange()
     })
   }
 
   private finish(job: Job): Effect.Effect<void, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     const { token } = job.lifecycle
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       if (!job.lifecycle.isActive()) return
       const record = job.lifecycle.snapshot()
       let cleanupError: string | undefined
       const observation = yield* Effect.result(
-        self
-          .reportWorkspace(
-            job,
-            job.workspaceLaunch === 'identity-recorded'
-              ? {
-                  kind: 'quiescent',
-                  reason: 'The owned process group and every tracked descendant were observed gone',
-                }
-              : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
-          )
-          .pipe(Effect.retry(transientRetry))
+        this.reportWorkspace(
+          job,
+          job.workspaceLaunch === 'identity-recorded'
+            ? {
+                kind: 'quiescent',
+                reason: 'The owned process group and every tracked descendant were observed gone',
+              }
+            : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
+        ).pipe(Effect.retry(transientRetry))
       )
       if (observation._tag === 'Failure') cleanupError = errorMessage(observation.failure)
 
@@ -1373,7 +1319,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       const artifactAtCompletion = yield* artifactState(record.cwd)
       const changedDuringRun = changedArtifact(record.artifactAtStart, artifactAtCompletion)
       const saved = yield* Effect.result(
-        self.commit(job, () =>
+        this.commit(job, () =>
           job.lifecycle.transition.complete(token, {
             artifactAtCompletion,
             changedDuringRun,
@@ -1383,19 +1329,19 @@ class WorkOwnerImpl implements WorkOwnerService {
         )
       )
       if (saved._tag === 'Failure') {
-        yield* self.failObservation(job, saved.failure)
+        yield* this.failObservation(job, saved.failure)
         return
       }
       if (!saved.success.accepted || !saved.success.changed) {
-        yield* self.settle(job)
+        yield* this.settle(job)
         return
       }
       yield* Queue.shutdown(job.events).pipe(Effect.ignore)
-      self.active.delete(saved.success.snapshot.id)
+      this.active.delete(saved.success.snapshot.id)
       const completed = viewOf(job.lifecycle.snapshot())
-      yield* self.settle(job)
-      self.onChange()
-      if (self.canDeliverUnsafe(completed)) self.onOutcome(completed)
+      yield* this.settle(job)
+      this.onChange()
+      if (this.canDeliverUnsafe(completed)) this.onOutcome(completed)
     })
   }
 
@@ -1410,23 +1356,21 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   private cancelJob(job: Job, reason: string): Effect.Effect<AttemptView, WorkFailure> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     const { token } = job.lifecycle
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       const requestedAt = yield* Clock.currentTimeMillis
-      yield* self.commitBestEffort(job, () =>
+      yield* this.commitBestEffort(job, () =>
         job.lifecycle.transition.cancel(token, requestedAt, reason)
       )
       if (!job.lifecycle.isActive()) return yield* Deferred.await(job.settled)
       if (job.child === undefined) {
-        yield* self.failObservation(job, new Error('Cancellation raced with launch setup'))
+        yield* this.failObservation(job, new Error('Cancellation raced with launch setup'))
         return yield* Deferred.await(job.settled)
       }
       if (job.child.connected) {
         const ipc = yield* Effect.result(sendIpc(job.child, { type: 'cancel' }))
         if (ipc._tag === 'Failure')
-          yield* self.commitBestEffort(job, () =>
+          yield* this.commitBestEffort(job, () =>
             job.lifecycle.transition.protocolError(
               token,
               `Cancellation IPC failed: ${errorMessage(ipc.failure)}`
@@ -1451,7 +1395,7 @@ class WorkOwnerImpl implements WorkOwnerService {
             job.lifecycle.knownProcesses(),
             root
           )
-          yield* self.commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
+          yield* this.commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
         }
       } else {
         known = []
@@ -1467,7 +1411,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       else if (term.success !== undefined) {
         const message = term.success
         observationError = `${observationError ?? 'Cancellation'}; ${message}`
-        yield* self.commitBestEffort(job, () =>
+        yield* this.commitBestEffort(job, () =>
           job.lifecycle.transition.cleanupError(token, message)
         )
       }
@@ -1490,7 +1434,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               job.lifecycle.knownProcesses(),
               root
             )
-            yield* self.commitBestEffort(job, () =>
+            yield* this.commitBestEffort(job, () =>
               job.lifecycle.transition.processes(token, known)
             )
           }
@@ -1510,7 +1454,7 @@ class WorkOwnerImpl implements WorkOwnerService {
           else if (kill.success !== undefined) {
             const message = kill.success
             observationError = `${observationError ?? 'Cancellation'}; ${message}`
-            yield* self.commitBestEffort(job, () =>
+            yield* this.commitBestEffort(job, () =>
               job.lifecycle.transition.cleanupError(token, message)
             )
           }
@@ -1534,7 +1478,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               job.lifecycle.knownProcesses(),
               root
             )
-            yield* self.commitBestEffort(job, () =>
+            yield* this.commitBestEffort(job, () =>
               job.lifecycle.transition.processes(token, known)
             )
           }
@@ -1550,8 +1494,8 @@ class WorkOwnerImpl implements WorkOwnerService {
           ) {
             observationError = `${observationError ?? 'Cancellation'} process identity unavailable; termination is not confirmed`
           } else {
-            const finished = yield* Effect.result(self.finish(job))
-            if (finished._tag === 'Failure') yield* self.failObservation(job, finished.failure)
+            const finished = yield* Effect.result(this.finish(job))
+            if (finished._tag === 'Failure') yield* this.failObservation(job, finished.failure)
           }
         } else {
           known = []
@@ -1559,7 +1503,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         }
       }
       if (job.lifecycle.isActive())
-        yield* self.failObservation(
+        yield* this.failObservation(
           job,
           new Error(observationError ?? 'Cancellation requested but termination is not confirmed')
         )

@@ -690,9 +690,7 @@ function registerAbortSignal(
       try {
         state.abortPromise ??= session.abort()
         void state.abortPromise.catch(() => {})
-      } catch {
-        // Abort is best-effort while the session is being torn down.
-      }
+      } catch {}
     }
     signal.addEventListener('abort', onAbort, { once: true })
     if (signal.aborted) onAbort()

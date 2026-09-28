@@ -76,6 +76,20 @@ Mostra i workspace noti di quel task esatto con usi, operazioni in sospeso e pro
 
 Sposta la conversazione corrente sul workspace conservato di quel task, senza importare altre conversazioni e senza trasferire file. Se il task ha più workspace e ometti `--workspace`, apre un selettore; Esc annulla senza effetti. Se in questa conversazione ci sono lavori o comandi shell ancora attivi, chiede conferma perché verranno fermati prima del cambio.
 
+```text
+/workspace check <task>
+```
+
+Mostra in sola lettura se i workspace di quel task esatto potrebbero essere rilasciati adesso, con blocchi e prove come `dev workspace check`. Gli usi di questa stessa conversazione contano come usi che il rilascio guidato chiuderebbe. Non ferma nulla e non concede nulla.
+
+```text
+/workspace release <task>
+```
+
+Mostra la valutazione e le conseguenze e chiede conferma; Esc annulla senza effetti. Se il task non riguarda il workspace di questa conversazione, il tentativo avviene subito e il risultato per ogni workspace compare nella conversazione. Se invece questa conversazione usa un workspace del task, la conferma dichiara anche che i lavori posseduti e i comandi shell in corso verranno fermati, che la TUI verrà chiusa e che la directory di lavoro verrà staccata; dopo la conferma dev blocca nuovi tool e nuove inferenze, ferma i lavori, attende di osservarne la fine, chiude Pi ripristinando il terminale e solo allora fa il tentativo, stampando il riepilogo nella shell con il codice di uscita dei comandi da terminale. Il file della conversazione resta; non riprenderla in un workspace rimosso. `/quit`, la chiusura della sessione, i segnali e i riavvii non rilasciano mai nulla.
+
+Il tool `workspace_evidence` è la via con cui il workflow registra le prove del rilascio nell'autorità: il target di integrazione concordato del task, una pubblicazione già effettuata in una issue o PR GitHub, verificata rileggendone il corpo o l'allegato con gli stessi byte, e l'approvazione della versione esatta di un file di regole per gli output rigenerabili, che avviene solo con la tua conferma. Il tool non carica nulla, non recupera ref e non rilascia workspace.
+
 I comandi `!` e `!!` e il tool bash del lead girano nel workspace della conversazione tramite la shell di dev: il checkout resta occupato finché i processi avviati non risultano terminati. Un processo che si stacca in una nuova sessione sfugge a questa osservazione. Finché un processo della conversazione è vivo, il cambio di workspace e lo spostamento in un worktree separato vengono rifiutati con la guida per attenderlo o fermarlo con `/work stop`. Una lettura accanto a un writer mostra un avviso. I tool che dev non ha classificato per effetto vengono rifiutati con un motivo visibile. Le estensioni e i pacchetti in `.pi/` di una cartella fidata vengono caricati secondo il trust di Pi.
 
 ## Sessione e modello: comandi nativi di Pi
@@ -164,4 +178,4 @@ Mostra le scorciatoie da tastiera disponibili.
 /quit
 ```
 
-Chiude Pi ed esegue lo shutdown del runtime, richiedendo l'arresto dei lavori posseduti e terminando i processi delle shell, anche in background. Non elimina le cartelle dei worktree né annulla le modifiche.
+Chiude Pi ed esegue lo shutdown del runtime, richiedendo l'arresto dei lavori posseduti e terminando i processi delle shell, anche in background. Non elimina le cartelle dei worktree, non libera prenotazioni e non annulla le modifiche: il rilascio esiste solo come comando esplicito `/workspace release`.

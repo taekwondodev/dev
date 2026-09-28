@@ -29,6 +29,8 @@ import {
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates } from './workspace-gates.ts'
 import {
+  assertNoUnresolvedRelease,
+  cancelUnstartedReleases,
   getReservation,
   updateReservation,
   getBinding,
@@ -46,7 +48,7 @@ import {
   type ReservationRecord,
   type BindingRecord,
   type UseRecord,
-  type OperationRecord,
+  type TransitionOperationRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { transaction } from './workspace-sqlite.ts'
@@ -68,7 +70,7 @@ export const resolveSelection = (
   if (selected.length === 0) invalid(`No retained workspace matches task ${selection.taskId}`)
   if (selected.length > 1)
     ambiguous(`Task ${selection.taskId} has multiple workspaces; provide an exact workspace ID`)
-  const result = selected[0]
+  const [result] = selected
   if (result === undefined) return invalid('Selected workspace is unavailable')
   return result
 }
@@ -79,7 +81,7 @@ export const selectWorkspace = (
   selection: WorkspaceSelection
 ): WorkspaceHandoff => {
   attachment.assertOpen()
-  const state = attachment.state
+  const { state } = attachment
   if (state.parked || state.pending !== undefined)
     blocked('A workspace transition is already pending')
   assertNoLiveExecution(authority, state, state.binding, 'switched')
@@ -105,7 +107,8 @@ export const selectWorkspace = (
     targetUses.some(use => use.access === 'write' && isActiveUse(use) && !state.leases.has(use.id))
   )
     blocked(`Selected workspace has an active or unresolved writer: ${target.workspace.path}`)
-  const gates = acquirePathGates(authority.paths, target.workspace.path, true)
+  inDb(authority, target.repo, db => assertNoUnresolvedRelease(db, target.workspace.id))
+  const gates = acquirePathGates(authority.paths, target.workspace.path, 'writer')
   const operationId = newId()
   const acquisitionId = newId()
   const use = {
@@ -148,7 +151,7 @@ export const selectWorkspace = (
     expectedBindingRevision: state.binding.revision,
     reason: 'explicit-task-resume',
     createdAt: now(),
-  } satisfies OperationRecord
+  } satisfies TransitionOperationRecord
   const grant = toGrant(
     authority,
     target.repo,
@@ -187,6 +190,7 @@ export const selectWorkspace = (
           acquisitionId,
           revision: reservation.revision + 1,
         })
+        cancelUnstartedReleases(db, target.workspace.id, 'Superseded by an explicit resume')
         putUse(db, use)
         putOperation(db, operation)
         if (source.repo === target.repo) {
@@ -232,8 +236,8 @@ export const performHandoff = async (
   replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>
 ): Promise<void> => {
   attachment.assertOpen()
-  const state = attachment.state
-  const pending = state.pending
+  const { state } = attachment
+  const { pending } = state
   if (
     pending === undefined ||
     pending.handoff.operationId !== transition.operationId ||
@@ -245,7 +249,7 @@ export const performHandoff = async (
     requireReview(
       `Workspace handoff ${transition.operationId} already reached the host; it needs review, not withdrawal`
     )
-  let operation: OperationRecord
+  let operation: TransitionOperationRecord
   try {
     validateGrant(authority, state, pending.handoff.target)
     assertNoLiveExecution(authority, state, pending.handoff.from, 'switched')
@@ -273,7 +277,6 @@ export const performHandoff = async (
   pending.phase = 'started'
   let outcome: 'confirmed' | 'cancelled'
   try {
-    // Runtime teardown/replacement is host-owned and never runs inside a DB transaction.
     outcome = await replace(pending.handoff.target)
   } catch (cause) {
     markTransitionUnknown(
@@ -323,9 +326,7 @@ const markTransitionUnknown = (
           })
       })
     )
-  } catch {
-    /* preserve the already-durable started intent and pending binding */
-  }
+  } catch {}
 }
 
 const cancelTransition = (
@@ -334,7 +335,7 @@ const cancelTransition = (
   pending: PendingTransition,
   result: string
 ): void => {
-  const operationId = pending.handoff.operationId
+  const { operationId } = pending.handoff
   const targetUse = inDb(authority, pending.targetRepositoryId, db =>
     getUse(db, pending.targetLease.useId)
   )
@@ -344,9 +345,13 @@ const cancelTransition = (
   inDb(authority, pending.targetRepositoryId, db =>
     transaction(db, () => {
       const current = getOperation(db, operationId)
-      if (current === undefined || (current.phase !== 'intent' && current.phase !== 'started'))
+      if (
+        current === undefined ||
+        current.kind === 'release' ||
+        (current.phase !== 'intent' && current.phase !== 'started')
+      )
         requireReview('Handoff result no longer matches its intent')
-      const cancelled: OperationRecord = { ...current, phase: 'cancelled', result }
+      const cancelled: TransitionOperationRecord = { ...current, phase: 'cancelled', result }
       saveUse(db, {
         ...targetUse,
         stage: 'quiescent',
@@ -387,12 +392,11 @@ const finishConfirmed = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   pending: PendingTransition,
-  operation: OperationRecord
+  operation: TransitionOperationRecord
 ): void => {
   const sourceWorkspaceId = pending.handoff.from.workspaceId
   const oldUses = outgoingUses(authority, state, sourceWorkspaceId, pending.targetLease.useId)
-  // The host has already switched, so a dependent left live keeps its parent unknown
-  // instead of failing here.
+
   settleDependentsFirst(
     authority,
     oldUses,
@@ -408,7 +412,7 @@ const finishConfirmed = (
     pendingOperationId: undefined,
     superseded: undefined,
   }
-  const confirmedOperation: OperationRecord = {
+  const confirmedOperation: TransitionOperationRecord = {
     ...operation,
     phase: 'confirmed',
     result: 'Host callback confirmed the target binding.',
@@ -428,7 +432,6 @@ const finishConfirmed = (
       })
     )
   } else {
-    // Cross-shard publication is deliberately recoverable rather than pretending to be atomic.
     inDb(authority, pending.targetRepositoryId, db =>
       transaction(db, () => {
         const current = getOperation(db, operation.id)

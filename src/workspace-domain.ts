@@ -53,8 +53,7 @@ export const WorkspaceConversationSchema = Schema.Struct({
   dataHome: Schema.NonEmptyString,
 })
 export type WorkspaceConversation = typeof WorkspaceConversationSchema.Type
-// Pi may name one conversation file through a symbolic link or before it is written, so a Pi path
-// matches a bound conversation only once canonicalized.
+
 export const CanonicalSessionFile = Schema.NonEmptyString.pipe(Schema.brand('CanonicalSessionFile'))
 const BoundConversationSchema = Schema.Struct({
   ...WorkspaceConversationSchema.fields,
@@ -106,8 +105,7 @@ export const WorkspaceGrantSchema = Schema.Struct({
   checkout: AbsolutePath,
   access: WorkspaceAccessSchema,
   origin: WorkspaceOriginSchema,
-  // The destination the authority validated for a native file write. The executor opens
-  // its own operand, so operands that could resolve elsewhere are refused.
+
   path: Schema.optional(Schema.NonEmptyString),
 })
 export type WorkspaceGrant = typeof WorkspaceGrantSchema.Type
@@ -123,8 +121,6 @@ export const WorkspaceBindingSchema = Schema.Struct({
 export type WorkspaceBinding = typeof WorkspaceBindingSchema.Type
 export const sameBinding = Schema.toEquivalence(WorkspaceBindingSchema)
 
-// The host consumes this once, after settling the entire old tool batch.
-// A persisted operation alone never authorizes replay of the host transition.
 export const WorkspaceHandoffSchema = Schema.Struct({
   operationId: WorkspaceId,
   from: WorkspaceBindingSchema,
@@ -188,7 +184,15 @@ export const WorkspaceViewSchema = Schema.Struct({
   path: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,
   reservationId: Schema.optional(WorkspaceId),
-  outcome: Schema.Literals(['active', 'preserved-for-resume', 'blocked', 'review-required']),
+  outcome: Schema.Literals([
+    'active',
+    'preserved-for-resume',
+    'blocked',
+    'review-required',
+    'released',
+    'removed',
+    'already-absent',
+  ]),
   reason: Schema.NonEmptyString,
   nextAction: Schema.NonEmptyString,
   uses: Schema.Array(
@@ -209,6 +213,167 @@ export const WorkspaceViewSchema = Schema.Struct({
 })
 export type WorkspaceView = typeof WorkspaceViewSchema.Type
 
+const FullRef = Schema.NonEmptyString.check(
+  Schema.makeFilter(value =>
+    value.startsWith('refs/') && !value.includes('..') && !/\s/.test(value)
+      ? undefined
+      : 'must be a full Git ref such as refs/heads/main'
+  )
+)
+export const GitHubRepositorySchema = Schema.NonEmptyString.check(
+  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+)
+
+export const RemoteName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+)
+export const CommitSha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/))
+export const TaskTargetSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('local'), ref: FullRef }),
+  Schema.Struct({ kind: Schema.Literal('remote'), remote: RemoteName, ref: FullRef }),
+  Schema.Struct({
+    kind: Schema.Literal('github'),
+    repository: GitHubRepositorySchema,
+    ref: FullRef,
+
+    sourceRepository: Schema.optional(GitHubRepositorySchema),
+    pullRequest: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  }),
+])
+export type TaskTarget = typeof TaskTargetSchema.Type
+
+export const Sha256Hex = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))
+export const RelativeFilePath = Schema.NonEmptyString.check(
+  Schema.makeFilter(value =>
+    !isAbsolute(value) &&
+    !value.includes('\0') &&
+    !value.split('/').some(part => part === '' || part === '.' || part === '..')
+      ? undefined
+      : 'must be a normalized relative path inside the workspace'
+  )
+)
+
+export const PublicationDestinationSchema = Schema.Struct({
+  repository: GitHubRepositorySchema,
+  number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  commentId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  readBack: Schema.Literals(['text-in-body', 'attachment-sha256']),
+  url: Schema.NonEmptyString,
+})
+export const PublicationReferenceSchema = Schema.Struct({
+  id: WorkspaceId,
+  taskId: WorkspaceId,
+  workspaceId: Schema.optional(WorkspaceId),
+
+  commit: Schema.optional(CommitSha),
+  relativePath: RelativeFilePath,
+  byteLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  sha256: Sha256Hex,
+  destination: PublicationDestinationSchema,
+  verifiedAt: Schema.Finite,
+})
+export type PublicationReference = typeof PublicationReferenceSchema.Type
+
+export const RuleApprovalSchema = Schema.Struct({
+  id: WorkspaceId,
+  repositoryId: WorkspaceId,
+  locator: RelativeFilePath,
+  digest: Sha256Hex,
+  approvedBy: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal('tui-confirmation'), sessionId: Schema.NonEmptyString }),
+    Schema.Struct({ kind: Schema.Literal('check-fixture') }),
+  ]),
+  approvedAt: Schema.Finite,
+})
+export type RuleApproval = typeof RuleApprovalSchema.Type
+
+export const EvidenceVerdictSchema = Schema.Literals(['valid', 'invalid', 'unknown'])
+export type EvidenceVerdict = typeof EvidenceVerdictSchema.Type
+
+export const ReleaseSubjectSchema = Schema.Struct({
+  repositoryId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  reservationId: WorkspaceId,
+  reservationRevision: Revision,
+  acquisitionId: Schema.optional(WorkspaceId),
+  workspaceRevision: Revision,
+  origin: WorkspaceOriginSchema,
+  path: Schema.NonEmptyString,
+  effect: Schema.Literals(['release-reservation', 'remove-worktree', 'none']),
+
+  head: Schema.optional(CommitSha),
+  stateDigest: Sha256Hex,
+  policyVersion: Schema.Int,
+})
+export type ReleaseSubject = typeof ReleaseSubjectSchema.Type
+export const RELEASE_SUBJECT_FIELDS = Object.keys(
+  ReleaseSubjectSchema.fields
+) as readonly (keyof ReleaseSubject)[]
+
+export const WorkspaceAssessmentSchema = Schema.Struct({
+  repositoryId: WorkspaceId,
+  taskId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  reservationId: WorkspaceId,
+  path: Schema.NonEmptyString,
+  origin: WorkspaceOriginSchema,
+  outcome: Schema.Literals([
+    'active',
+    'preserved-for-resume',
+    'blocked',
+    'review-required',
+    'releasable',
+    'removable',
+  ]),
+  reasons: Schema.Array(Schema.NonEmptyString),
+  nextActions: Schema.Array(Schema.NonEmptyString),
+  evidence: Schema.optional(
+    Schema.Struct({ verdict: EvidenceVerdictSchema, reasons: Schema.Array(Schema.String) })
+  ),
+  inventory: Schema.optional(
+    Schema.Struct({
+      trackedChanges: Schema.Int,
+      files: Schema.Int,
+      published: Schema.Int,
+      regenerable: Schema.Int,
+      blocking: Schema.Int,
+    })
+  ),
+  residual: Schema.Array(Schema.String),
+  subject: ReleaseSubjectSchema,
+})
+export type WorkspaceAssessment = typeof WorkspaceAssessmentSchema.Type
+
+export const WorkspaceReleaseResultSchema = Schema.Struct({
+  repositoryId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  path: Schema.NonEmptyString,
+  origin: WorkspaceOriginSchema,
+  outcome: Schema.Literals([
+    'released',
+    'removed',
+    'already-absent',
+    'blocked',
+    'review-required',
+    'partial',
+  ]),
+  reason: Schema.NonEmptyString,
+  nextAction: Schema.NonEmptyString,
+  effects: Schema.Array(Schema.String),
+  retained: Schema.Array(Schema.String),
+  operationId: Schema.optional(WorkspaceId),
+})
+export type WorkspaceReleaseResult = typeof WorkspaceReleaseResultSchema.Type
+
+export const ReleaseRequestSchema = Schema.Struct({
+  taskId: WorkspaceId,
+  commandId: WorkspaceId,
+  confirmed: Schema.Array(ReleaseSubjectSchema),
+  workspaceId: WorkspaceId,
+  occupiedCwds: Schema.Array(AbsolutePath),
+})
+export type ReleaseRequest = typeof ReleaseRequestSchema.Type
+
 export type HostReplace = (
   target: WorkspaceGrant
 ) => Effect.Effect<'confirmed' | 'cancelled', unknown>
@@ -221,8 +386,7 @@ export interface WorkspaceAttachment {
     grant: WorkspaceGrant,
     fact: WorkspaceExecutionFact
   ): Effect.Effect<void, WorkspaceError>
-  // Runs outside Pi callbacks. The lifecycle owns intent/start/result publication;
-  // the callback owns quiescence, runtime replacement and observed host outcome.
+
   handoff(transition: WorkspaceHandoff, replace: HostReplace): Effect.Effect<void, WorkspaceError>
   readonly close: Effect.Effect<void, WorkspaceError>
 }
@@ -233,11 +397,27 @@ export interface WorkspaceLifecycle {
     readonly cwd: string
     readonly selection?: WorkspaceSelection
   }): Effect.Effect<WorkspaceAttachment, WorkspaceError>
-  // With a taskId, only the views of exactly that task, across every repository.
+
   inspect(input: {
     readonly cwd?: string
     readonly taskId?: WorkspaceId
   }): Effect.Effect<readonly WorkspaceView[], WorkspaceError>
-  // A child verifies the parent's fenced use; it must not acquire a competing writer.
+
   validate(grant: WorkspaceGrant): Effect.Effect<void, WorkspaceError>
+
+  check(input: {
+    readonly taskId: WorkspaceId
+    readonly ownConversation?: WorkspaceConversation
+  }): Effect.Effect<readonly WorkspaceAssessment[], WorkspaceError>
+  release(input: ReleaseRequest): Effect.Effect<WorkspaceReleaseResult, WorkspaceError>
+  recordTarget(input: {
+    readonly taskId: WorkspaceId
+    readonly target: TaskTarget
+  }): Effect.Effect<void, WorkspaceError>
+  recordPublication(input: {
+    readonly reference: PublicationReference
+  }): Effect.Effect<void, WorkspaceError>
+  recordRuleApproval(input: {
+    readonly approval: RuleApproval
+  }): Effect.Effect<void, WorkspaceError>
 }

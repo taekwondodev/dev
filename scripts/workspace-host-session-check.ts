@@ -1,4 +1,3 @@
-// The TUI probes reach none of these session flows.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import {
@@ -113,8 +112,7 @@ const rewriteHeader = (
   const [header = '', ...rest] = readFileSync(file, 'utf8').split('\n')
   writeFileSync(target, [JSON.stringify(edit(JSON.parse(header))), ...rest].join('\n'))
 }
-// Pi writes a fork's parent path into its header, so a fork copied from another machine names a
-// parent that does not exist here.
+
 const orphanFork = (file: string) =>
   rewriteHeader(file, header => ({
     ...header,
@@ -402,8 +400,6 @@ try {
       }
     )
 
-  // Pi replaces the session while the work tool is still being admitted: its teardown waits
-  // for the running tool, so the rebind reaches the host during the replacement.
   for (const [replacement, order, withdrawalDelayMs] of [
     ['new', 'before', 0],
     ['resume', 'before', 0],
@@ -449,7 +445,7 @@ try {
           started === undefined && operation.kind === 'write'
             ? racingAdmission[order](raced.effect.authorize(operation))
             : raced.effect.authorize(operation)
-        // The rebind is only ever withdrawn here, so a slow handoff is a slow withdrawal.
+
         const slowWithdrawal: WorkspaceAttachment['handoff'] = (transition, replace) =>
           Effect.sleep(withdrawalDelayMs).pipe(
             Effect.andThen(raced.effect.handoff(transition, replace))
@@ -486,7 +482,6 @@ try {
       }
     )
 
-  // Pi exits right after the quit, so the quit itself must close the attachment.
   const quitDuringHandoff = async (
     id: string,
     handoff: (
@@ -550,7 +545,6 @@ try {
         'host-session-quit-refused',
         (quitter, quitNow) => transition =>
           quitNow.pipe(
-            // The authority withdraws a switch it refuses, then reports it blocked.
             Effect.andThen(quitter.handoff(transition, () => Effect.succeed('cancelled' as const))),
             Effect.andThen(
               Effect.fail(

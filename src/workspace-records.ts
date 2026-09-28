@@ -3,7 +3,13 @@ import { Schema } from 'effect'
 import {
   blocked,
   requireReview,
+  PublicationReferenceSchema,
+  CommitSha,
+  RelativeFilePath,
   Revision,
+  RuleApprovalSchema,
+  Sha256Hex,
+  TaskTargetSchema,
   WorkspaceAccessSchema,
   WorkspaceBindingSchema,
   WorkspaceEffectSchema,
@@ -11,6 +17,8 @@ import {
   WorkspaceId,
   WorkspaceOriginSchema,
   WorkspaceProcessSchema,
+  type PublicationReference,
+  type RuleApproval,
   type WorkspaceBinding,
   type WorkspaceOrigin,
 } from './workspace-domain.ts'
@@ -28,6 +36,7 @@ import { newId, now, hash } from './workspace-platform.ts'
 const TaskSchema = Schema.Struct({
   id: WorkspaceId,
   repositoryId: WorkspaceId,
+  target: Schema.optional(TaskTargetSchema),
   revision: Revision,
   createdAt: Schema.Finite,
 })
@@ -53,8 +62,10 @@ const WorkspaceSchema = Schema.Struct({
   common: FileIdentitySchema,
   objectFormat: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,
-  status: Schema.Literals(['provisioning', 'ready']),
+
+  status: Schema.Literals(['provisioning', 'ready', 'removed']),
   allocationOperationId: Schema.optional(WorkspaceId),
+  removalOperationId: Schema.optional(WorkspaceId),
   revision: Revision,
   createdAt: Schema.Finite,
 })
@@ -101,17 +112,18 @@ export const UseSchema = Schema.Struct({
   createdAt: Schema.Finite,
   updatedAt: Schema.Finite,
 })
-export const OperationSchema = Schema.Struct({
+const OperationPhase = Schema.Literals([
+  'intent',
+  'started',
+  'confirmed',
+  'cancelled',
+  'unknown',
+  'review-required',
+])
+const TransitionOperationSchema = Schema.Struct({
   id: WorkspaceId,
   kind: Schema.Literals(['allocation', 'handoff']),
-  phase: Schema.Literals([
-    'intent',
-    'started',
-    'confirmed',
-    'cancelled',
-    'unknown',
-    'review-required',
-  ]),
+  phase: OperationPhase,
   repositoryId: WorkspaceId,
   workspaceId: WorkspaceId,
   taskId: WorkspaceId,
@@ -128,6 +140,61 @@ export const OperationSchema = Schema.Struct({
   createdAt: Schema.Finite,
   result: Schema.optional(Schema.String),
 })
+export const ManifestEntrySchema = Schema.Struct({
+  path: RelativeFilePath,
+  kind: Schema.Literals(['file', 'symlink']),
+  device: Schema.NonEmptyString,
+  inode: Schema.NonEmptyString,
+  size: Schema.Int,
+  mtimeNs: Schema.String,
+  sha256: Schema.optional(Sha256Hex),
+  coverage: Schema.Literals(['published', 'regenerable']),
+  state: Schema.Literals(['pending', 'removed', 'absent', 'failed']),
+  detail: Schema.optional(Schema.String),
+})
+export type ManifestEntry = typeof ManifestEntrySchema.Type
+const ReleaseStepSchema = Schema.Struct({
+  kind: Schema.Literals(['selected-files', 'git-worktree-remove', 'registration', 'records']),
+  state: Schema.Literals(['pending', 'started', 'done', 'failed', 'observed']),
+  detail: Schema.optional(Schema.String),
+})
+export type ReleaseStep = typeof ReleaseStepSchema.Type
+const ReleaseOperationFields = {
+  id: WorkspaceId,
+  kind: Schema.Literal('release'),
+  phase: OperationPhase,
+  repositoryId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  taskId: WorkspaceId,
+  reservationId: WorkspaceId,
+  acquisitionId: Schema.optional(WorkspaceId),
+  commandId: WorkspaceId,
+  targetPath: Schema.NonEmptyString,
+  head: Schema.optional(CommitSha),
+  stateDigest: Sha256Hex,
+  policyVersion: Schema.Int,
+  expectedReservationRevision: Revision,
+  reason: Schema.NonEmptyString,
+  createdAt: Schema.Finite,
+  result: Schema.optional(Schema.String),
+}
+export const ReservationReleaseOperationSchema = Schema.Struct({
+  ...ReleaseOperationFields,
+  effect: Schema.Literal('release-reservation'),
+})
+export const WorktreeRemovalOperationSchema = Schema.Struct({
+  ...ReleaseOperationFields,
+  effect: Schema.Literal('remove-worktree'),
+  gitAdminPath: Schema.NonEmptyString,
+  manifest: Schema.Array(ManifestEntrySchema),
+  steps: Schema.Array(ReleaseStepSchema),
+  observed: Schema.optional(Schema.Literals(['removed', 'already-absent'])),
+})
+export const OperationSchema = Schema.Union([
+  TransitionOperationSchema,
+  ReservationReleaseOperationSchema,
+  WorktreeRemovalOperationSchema,
+])
 
 type TaskRecord = typeof TaskSchema.Type
 export type RepositoryCatalogRecord = typeof RepositoryCatalogSchema.Type
@@ -136,6 +203,16 @@ export type ReservationRecord = typeof ReservationSchema.Type
 export type BindingRecord = typeof BindingSchema.Type
 export type UseRecord = typeof UseSchema.Type
 export type OperationRecord = typeof OperationSchema.Type
+export type TransitionOperationRecord = typeof TransitionOperationSchema.Type
+export type ReservationReleaseRecord = typeof ReservationReleaseOperationSchema.Type
+export type WorktreeRemovalRecord = typeof WorktreeRemovalOperationSchema.Type
+export type ReleaseOperationRecord = ReservationReleaseRecord | WorktreeRemovalRecord
+
+export const operationRevision = (operation: OperationRecord): number =>
+  operation.kind === 'release'
+    ? operation.expectedReservationRevision
+    : operation.expectedBindingRevision
+const OPEN_PHASES = "('intent','started','unknown','review-required')"
 
 export const sameIdentity = (left: FileIdentity, right: FileIdentity): boolean =>
   left.device === right.device && left.inode === right.inode
@@ -154,6 +231,16 @@ export const putTask = (db: DatabaseSync, value: TaskRecord): void => {
     value.revision,
     encode(value)
   )
+}
+export const saveTask = (db: DatabaseSync, value: TaskRecord): void => {
+  db.prepare('UPDATE tasks SET revision=?, payload=? WHERE id=? AND revision=?').run(
+    value.revision,
+    encode(value),
+    value.id,
+    value.revision - 1
+  )
+  if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
+    requireReview(`Task record changed concurrently: ${value.id}`)
 }
 export const getWorkspace = (db: DatabaseSync, id: string): WorkspaceRecord | undefined => {
   const row = first(
@@ -227,6 +314,32 @@ export const putReservation = (db: DatabaseSync, value: ReservationRecord): void
     value.revision,
     encode(value)
   )
+}
+
+export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): void => {
+  db.prepare('DELETE FROM reservations WHERE id=? AND workspace_id=? AND revision=?').run(
+    value.id,
+    value.workspaceId,
+    value.revision
+  )
+  if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
+    requireReview(`Reservation changed before its release was recorded: ${value.id}`)
+}
+export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
+  db.prepare(
+    'UPDATE workspaces SET path_key=?,path=?,origin=?,status=?,revision=?,payload=? WHERE id=? AND revision=?'
+  ).run(
+    value.pathKey,
+    value.path,
+    value.origin,
+    value.status,
+    value.revision,
+    encode(value),
+    value.id,
+    value.revision - 1
+  )
+  if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
+    requireReview(`Workspace record changed concurrently: ${value.id}`)
 }
 export const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   db.prepare(
@@ -306,8 +419,6 @@ export const putUse = (db: DatabaseSync, value: UseRecord): void => {
   )
 }
 export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
-  // Every settling route writes through here, so the absorbing `unknown` and dependent
-  // rules of ADR 0005 cannot be bypassed by a new route.
   const stored = getUse(db, value.id)
   if (stored?.stage === 'unknown' && value.stage !== 'unknown')
     requireReview(`Workspace use ${value.id} is unknown; only explicit recovery can resolve it`)
@@ -343,7 +454,7 @@ export const getOperation = (db: DatabaseSync, id: string): OperationRecord | un
     value.phase !== textField(row, 'phase') ||
     value.workspaceId !== textField(row, 'workspace_id') ||
     value.taskId !== textField(row, 'task_id') ||
-    value.expectedBindingRevision !== numberField(row, 'revision')
+    operationRevision(value) !== numberField(row, 'revision')
   )
     requireReview(`Operation columns disagree with payload: ${id}`)
   return value
@@ -357,7 +468,7 @@ export const putOperation = (db: DatabaseSync, value: OperationRecord): void => 
     value.phase,
     value.workspaceId,
     value.taskId,
-    value.expectedBindingRevision,
+    operationRevision(value),
     value.createdAt,
     encode(value)
   )
@@ -370,13 +481,118 @@ export const saveOperation = (db: DatabaseSync, value: OperationRecord): void =>
     value.phase,
     value.workspaceId,
     value.taskId,
-    value.expectedBindingRevision,
+    operationRevision(value),
     value.createdAt,
     encode(value),
     value.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Workspace operation disappeared: ${value.id}`)
+}
+const operationsWhere = (
+  db: DatabaseSync,
+  condition: string,
+  ...params: string[]
+): OperationRecord[] =>
+  rows(db, `SELECT id FROM operations WHERE ${condition} ORDER BY created_at,id`, ...params)
+    .map(row => getOperation(db, textField(row, 'id')))
+    .filter((value): value is OperationRecord => value !== undefined)
+const isRelease = (operation: OperationRecord): operation is ReleaseOperationRecord =>
+  operation.kind === 'release'
+
+export const isUnresolvedRelease = (
+  operation: OperationRecord
+): operation is ReleaseOperationRecord =>
+  isRelease(operation) &&
+  (operation.phase === 'started' ||
+    operation.phase === 'unknown' ||
+    operation.phase === 'review-required')
+export const openOperations = (db: DatabaseSync, workspaceIdValue?: string): OperationRecord[] =>
+  workspaceIdValue === undefined
+    ? operationsWhere(db, `phase IN ${OPEN_PHASES}`)
+    : operationsWhere(db, `workspace_id=? AND phase IN ${OPEN_PHASES}`, workspaceIdValue)
+export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: string): void => {
+  const unresolved = unresolvedReleases(db, workspaceIdValue)
+  if (unresolved.length > 0)
+    requireReview(
+      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} left this workspace unresolved; observe its effects before using it: ${workspaceIdValue}`
+    )
+}
+export const unresolvedReleases = (
+  db: DatabaseSync,
+  workspaceIdValue: string
+): ReleaseOperationRecord[] => openOperations(db, workspaceIdValue).filter(isUnresolvedRelease)
+const unstartedReleases = (db: DatabaseSync, workspaceIdValue: string): ReleaseOperationRecord[] =>
+  openOperations(db, workspaceIdValue)
+    .filter(isRelease)
+    .filter(operation => operation.phase === 'intent')
+export const releaseOperations = (
+  db: DatabaseSync,
+  workspaceIdValue: string
+): ReleaseOperationRecord[] =>
+  operationsWhere(db, "workspace_id=? AND kind='release'", workspaceIdValue).filter(isRelease)
+export const confirmedReleases = (db: DatabaseSync, taskId: string): ReleaseOperationRecord[] =>
+  operationsWhere(db, "task_id=? AND kind='release' AND phase='confirmed'", taskId).filter(
+    isRelease
+  )
+export const cancelUnstartedReleases = (
+  db: DatabaseSync,
+  workspaceIdValue: string,
+  result: string
+): void => {
+  for (const operation of unstartedReleases(db, workspaceIdValue))
+    saveOperation(db, { ...operation, phase: 'cancelled', result })
+}
+
+export const getPublications = (db: DatabaseSync, taskId: string): PublicationReference[] =>
+  rows(
+    db,
+    'SELECT id, payload FROM publications WHERE task_id=? ORDER BY relative_path, id',
+    taskId
+  ).map(row => {
+    const value = parseRecord(
+      PublicationReferenceSchema,
+      row.payload,
+      `publication ${textField(row, 'id')}`
+    )
+    if (value.id !== textField(row, 'id') || value.taskId !== taskId)
+      requireReview(`Publication columns disagree with payload: ${value.id}`)
+    return value
+  })
+export const putPublication = (db: DatabaseSync, value: PublicationReference): void => {
+  db.prepare(`INSERT INTO publications(id,task_id,relative_path,sha256,payload) VALUES(?,?,?,?,?)
+    ON CONFLICT(task_id,relative_path,sha256) DO UPDATE SET id=excluded.id, payload=excluded.payload`).run(
+    value.id,
+    value.taskId,
+    value.relativePath,
+    value.sha256,
+    encode(value)
+  )
+}
+export const getRuleApprovals = (db: DatabaseSync, repositoryId: string): RuleApproval[] =>
+  rows(
+    db,
+    'SELECT id, payload FROM rule_approvals WHERE repository_id=? ORDER BY locator, id',
+    repositoryId
+  ).map(row => {
+    const value = parseRecord(
+      RuleApprovalSchema,
+      row.payload,
+      `rule approval ${textField(row, 'id')}`
+    )
+    if (value.id !== textField(row, 'id') || value.repositoryId !== repositoryId)
+      requireReview(`Rule approval columns disagree with payload: ${value.id}`)
+    return value
+  })
+export const putRuleApproval = (db: DatabaseSync, value: RuleApproval): void => {
+  db.prepare(`INSERT INTO rule_approvals(id,repository_id,locator,digest,payload) VALUES(?,?,?,?,?)
+    ON CONFLICT(repository_id,locator,digest) DO NOTHING`).run(
+    value.id,
+    value.repositoryId,
+    value.locator,
+    value.digest,
+    encode(value)
+  )
 }
 export const getUseRows = (db: DatabaseSync, workspaceIdValue: string): UseRecord[] =>
   rows(db, 'SELECT id FROM uses WHERE workspace_id=? ORDER BY id', workspaceIdValue)
@@ -386,8 +602,7 @@ const getAllUseRows = (db: DatabaseSync): UseRecord[] =>
   rows(db, 'SELECT id FROM uses ORDER BY id')
     .map(row => getUse(db, textField(row, 'id')))
     .filter((value): value is UseRecord => value !== undefined)
-// Scoped uses are admitted within an ordinary grant, whose gates they write under, so
-// that grant cannot settle while one of them is live.
+
 export const activeDependentUses = (db: DatabaseSync, useIdValue: string): UseRecord[] =>
   getAllUseRows(db).filter(row => row.withinUseId === useIdValue && isActiveUse(row))
 const assertNoActiveDependentUseInDb = (
@@ -444,6 +659,10 @@ export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace):
   sameIdentity(record.common, git.commonIdentity) &&
   record.objectFormat === git.objectFormat
 export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
+  if (record.status === 'removed')
+    return requireReview(
+      `Workspace was removed by release ${record.removalOperationId ?? '(unrecorded)'} and is not recreated: ${record.path}`
+    )
   if (record.status !== 'ready')
     return requireReview(`Workspace allocation is unresolved: ${record.path}`)
   let actual: GitWorkspace

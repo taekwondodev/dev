@@ -30,11 +30,12 @@ profile. Its ownership and paths must be checked before any migration.
 
 ## Workspace ownership vocabulary
 
-The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426)
-and [cleanup](https://github.com/taekwondodev/dev/issues/29#issuecomment-5796162017)
+The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426),
+[cleanup](https://github.com/taekwondodev/dev/issues/29#issuecomment-5796162017) and
+[evidence](https://github.com/taekwondodev/dev/issues/32#issuecomment-5798044999)
 contracts define these terms. The workspace lifecycle implements admission,
-reservations, conversation bindings and recovery facts; task release and
-worktree removal are not implemented yet.
+reservations, conversation bindings, recovery facts, release eligibility checks and
+the explicit, confirmed release attempt.
 
 **Workflow task**: A unit of work whose identity can span Pi conversations and
 execution attempts, with one or more associated workspaces.
@@ -55,7 +56,14 @@ recovery.
 
 **Task release**: An explicit user instruction to evaluate a workflow task's
 reserved workspaces for reservation release or safe removal, not a guarantee
-that either operation can proceed.
+that either operation can proceed. One confirmed command makes one fenced attempt
+per workspace; a repeated release is a fresh command with fresh checks.
+
+**Cleanup evidence**: The facts a managed worktree's removal requires beyond no
+live use: integration of its exact commit into the task's agreed target, a
+verified publication for each selected untracked file, and a user-approved exact
+version of the repository's regenerable-output rule for the rest. A pre-existing
+checkout needs none of it, since its release changes only the reservation.
 
 ## Background work
 

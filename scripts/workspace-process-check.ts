@@ -31,7 +31,6 @@ import type { AttemptView } from '../src/work-domain.ts'
 
 const exec = promisify(execFile)
 
-// Faults are injected into the authority reports a component under test makes.
 const withReport = (
   base: WorkspaceAttachment,
   reportExecution: WorkspaceAttachment['reportExecution']
@@ -104,8 +103,7 @@ try {
         await mkdir(outside)
         await symlink(outside, join(cwd, 'escape'))
         await assert.rejects(validatePath('escape/file.txt'), /escapes/)
-        // Raw `..` after a link: lexical resolution reports a path inside the checkout while
-        // the builtin tool, handing the operand to the kernel, would write through the link.
+
         for (const path of ['escape/../file.txt', 'escape/../../file.txt', './escape/../file.txt'])
           await assert.rejects(validatePath(path), /traverse/)
         assert.ok(!existsSync(join(outside, 'file.txt')))
@@ -547,7 +545,6 @@ try {
       'a native write is refused while another write to the same file under a different case, normalization or ß/ss spelling is in flight',
       async () => {
         for (const [first, second] of [
-          // NFC and uppercase NFD spellings of one name, then a sharp s against its uppercase ss.
           ['Café.txt', 'CAFÉ.TXT'],
           ['straße.txt', 'STRASSE.txt'],
         ] as const) {
@@ -579,8 +576,6 @@ try {
     await claim(
       'a controller launch whose identity and first failure report are lost settles as never launched instead of unknown, and the checkout stays writable',
       async () => {
-        // The authority never acknowledges the identity or the first failure report, so the
-        // controller cannot tell whether the family was recorded until it retries.
         let launchFailedReports = 0
         const lossyAttachment = withReport(attachment.effect, (reported, fact) =>
           Effect.suspend(() => {
@@ -669,8 +664,6 @@ try {
     await claim(
       'a controller launch that fails after its durable launch intent but before spawning rejects, runs no user code, settles its use as quiescent with a launch-failed reason instead of unknown, and the checkout stays writable',
       async () => {
-        // A real failure between the durable launch intent and the spawn: once the intent is
-        // recorded the attempt directory stops being writable, so opening its logs fails.
         const lockedDirectories: string[] = []
         const lockingAttachment = withReport(attachment.effect, (reported, fact) =>
           attachment.effect.reportExecution(reported, fact).pipe(

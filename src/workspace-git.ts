@@ -22,12 +22,28 @@ export type FileIdentity = typeof FileIdentitySchema.Type
 export type GitWorkspace = typeof GitWorkspaceSchema.Type
 const decodeGitWorkspace = Schema.decodeUnknownOption(GitWorkspaceSchema)
 
-// Git refusals and failures leave dev's own state unchanged, so the authority reports them
-// as blocked rather than as a separate error model.
 const gitBlocked = (message: string): WorkspaceError =>
   new WorkspaceError({ outcome: 'blocked', message })
 
-const git = (cwd: string, args: readonly string[], input?: string): string => {
+export interface GitResult<Out = string> {
+  readonly status: number | null
+  readonly stdout: Out
+  readonly stderr: string
+}
+
+export function gitResult(cwd: string, args: readonly string[], input?: string): GitResult
+export function gitResult(
+  cwd: string,
+  args: readonly string[],
+  input: string | undefined,
+  encoding: 'buffer'
+): GitResult<Buffer>
+export function gitResult(
+  cwd: string,
+  args: readonly string[],
+  input?: string,
+  encoding: 'utf8' | 'buffer' = 'utf8'
+): GitResult | GitResult<Buffer> {
   const result = spawnSync(
     'git',
     [
@@ -38,14 +54,16 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
       'core.fsmonitor=false',
       '-c',
       'submodule.recurse=false',
+      '-c',
+      'core.untrackedCache=false',
       ...args,
     ],
     {
       cwd,
-      encoding: 'utf8',
+      encoding,
       input,
       windowsHide: true,
-      maxBuffer: 2 * 1024 * 1024,
+      maxBuffer: 64 * 1024 * 1024,
       timeout: 30_000,
       env: {
         ...Object.fromEntries(
@@ -58,7 +76,12 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
     }
   )
   if (result.error !== undefined) throw gitBlocked(`Cannot run Git: ${result.error.message}`)
+  const stderr = typeof result.stderr === 'string' ? result.stderr : result.stderr.toString('utf8')
+  return { status: result.status, stdout: result.stdout, stderr } as GitResult | GitResult<Buffer>
+}
 
+const git = (cwd: string, args: readonly string[], input?: string): string => {
+  const result = gitResult(cwd, args, input)
   if (result.status !== 0)
     throw gitBlocked(
       `Git ${args[0] ?? 'command'} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ''}`
@@ -113,7 +136,6 @@ export const currentCommit = (workspace: GitWorkspace): string => {
   return workspace.head
 }
 
-// Runs only read-only Git commands, so a refusal leaves no Git effect behind.
 export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: string): void => {
   const trackedPaths = git(source.path, ['ls-tree', '-r', '--name-only', '-z', commit])
   const attributes = git(
@@ -132,7 +154,108 @@ export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: str
     )
 }
 
-// The caller has already run assertManagedCheckoutSupported for this commit.
+const failureText = (result: GitResult): string =>
+  result.stderr.trim() || `exit ${result.status ?? 'signal'}`
+
+const operands = (...values: readonly string[]): readonly string[] => ['--', ...values]
+
+export interface TrackedChange {
+  readonly path: string
+  readonly kind: 'changed' | 'renamed' | 'conflict'
+}
+export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
+  const output = git(checkout, [
+    'status',
+    '--porcelain=v2',
+    '-z',
+    '--untracked-files=no',
+    '--ignore-submodules=none',
+  ])
+  const fields = output.split('\0')
+  const changes: TrackedChange[] = []
+  for (let index = 0; index < fields.length; index += 1) {
+    const line = fields[index] ?? ''
+    if (line.length === 0) continue
+    const [kind] = line
+    if (kind === '1') changes.push({ path: line.split(' ').slice(8).join(' '), kind: 'changed' })
+    else if (kind === '2') {
+      changes.push({ path: line.split(' ').slice(9).join(' '), kind: 'renamed' })
+      index += 1
+    } else if (kind === 'u')
+      changes.push({ path: line.split(' ').slice(10).join(' '), kind: 'conflict' })
+    else if (kind !== '#') throw gitBlocked(`Unrecognized Git status entry: ${line}`)
+  }
+  return changes
+}
+
+export const untrackedPaths = (checkout: string): readonly string[] =>
+  git(checkout, ['ls-files', '--others', '-z'])
+    .split('\0')
+    .filter(entry => entry.length > 0)
+
+export const isShallowRepository = (checkout: string): boolean =>
+  git(checkout, ['rev-parse', '--is-shallow-repository']) === 'true'
+
+export const resolveLocalRef = (checkout: string, ref: string): string | undefined => {
+  const result = gitResult(checkout, [
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    '--end-of-options',
+    `${ref}^{commit}`,
+  ])
+  if (result.status === 0) return result.stdout.trim()
+  if (result.status === 1) return undefined
+  throw gitBlocked(`Cannot resolve ${ref}: ${failureText(result)}`)
+}
+export const hasCommit = (checkout: string, sha: string): boolean =>
+  gitResult(checkout, ['cat-file', '-e', ...operands(`${sha}^{commit}`)]).status === 0
+
+export type Ancestry = 'ancestor' | 'not-ancestor' | { readonly error: string }
+export const ancestry = (checkout: string, ancestor: string, descendant: string): Ancestry => {
+  const result = gitResult(checkout, [
+    'merge-base',
+    '--is-ancestor',
+    ...operands(ancestor, descendant),
+  ])
+  if (result.status === 0) return 'ancestor'
+  if (result.status === 1) return 'not-ancestor'
+  return { error: failureText(result) }
+}
+
+export type RemoteTip = { readonly sha: string } | 'missing' | { readonly error: string }
+export const remoteTip = (checkout: string, remote: string, ref: string): RemoteTip => {
+  const result = gitResult(checkout, ['ls-remote', '--exit-code', ...operands(remote, ref)])
+  if (result.status === 2) return 'missing'
+  if (result.status !== 0) return { error: failureText(result) }
+  const line = result.stdout.split('\n').find(entry => entry.endsWith(`\t${ref}`))
+  const sha = line?.split('\t')[0]
+  return sha === undefined || sha.length === 0 ? 'missing' : { sha }
+}
+
+export const blobAt = (checkout: string, commit: string, path: string): Buffer | undefined => {
+  const type = gitResult(checkout, ['cat-file', '-t', ...operands(`${commit}:${path}`)])
+  if (type.status !== 0) return undefined
+  if (type.stdout.trim() !== 'blob') return undefined
+  const result = gitResult(
+    checkout,
+    ['cat-file', 'blob', ...operands(`${commit}:${path}`)],
+    undefined,
+    'buffer'
+  )
+  if (result.status !== 0) throw gitBlocked(`Cannot read ${path} at ${commit}`)
+  return result.stdout
+}
+
+export const registeredWorktrees = (repositoryPath: string): readonly string[] =>
+  git(repositoryPath, ['worktree', 'list', '--porcelain', '-z'])
+    .split('\0')
+    .filter(line => line.startsWith('worktree '))
+    .map(line => line.slice('worktree '.length))
+
+export const removeWorktree = (repositoryPath: string, path: string): GitResult =>
+  gitResult(repositoryPath, ['worktree', 'remove', '--', path])
+
 export const addDetachedWorktree = (
   source: GitWorkspace,
   destination: string,

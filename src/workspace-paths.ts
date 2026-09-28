@@ -10,9 +10,6 @@ export const isWithin = (root: string, path: string): boolean => {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
-// A missing final component keeps its spelling under the canonical parent, so a removed
-// checkout keeps the slot it had and a conversation file not yet written is named as Pi will
-// write it.
 const slotThrough =
   (realpath: (path: string) => string) =>
   (absolute: string, info: Stats | undefined): string =>
@@ -20,8 +17,7 @@ const slotThrough =
       ? resolve(realpath(dirname(absolute)), basename(absolute))
       : realpath(absolute)
 const canonicalSlot = slotThrough(realpathSync)
-// On a case-insensitive volume every spelling opens the same conversation file, so its slot
-// takes the spelling stored on disk.
+
 export const conversationFileSlot = slotThrough(realpathSync.native)
 
 export const canonicalConversationFile = (file: string): string => {
@@ -37,8 +33,6 @@ export const canonicalPathSlot = (path: string): string => {
   return canonicalSlot(absolute, info)
 }
 
-// The existing prefix is resolved through the filesystem, which follows links and, on a
-// case-insensitive volume, restores the stored case; the missing suffix keeps its spelling.
 export const canonicalPath = (
   absolute: string
 ): { readonly path: string; readonly ancestor: string; readonly missing: readonly string[] } => {
@@ -54,9 +48,6 @@ export const canonicalPath = (
   return { path: resolve(canonicalAncestor, ...missing), ancestor: canonicalAncestor, missing }
 }
 
-// `resolve` removes `..` lexically, before any link is resolved, while the tool hands the
-// operand to the kernel, which resolves links first; Pi also expands its own shorthand.
-// Either way the operand would name one file here and another to the executor.
 const assertLiteralOperand = (requested: string): void => {
   if (requested.length === 0 || requested.includes('\0')) invalid('Invalid write path')
   if (requested.split(sep).includes('..'))
@@ -102,7 +93,6 @@ const writeDestination = (checkout: string, absolute: string): string => {
   return path
 }
 
-// ADR 0005, scoped workspace operations.
 export const resolveWriteDestination = (
   checkout: string,
   cwd: string,
@@ -112,7 +102,6 @@ export const resolveWriteDestination = (
   return writeDestination(checkout, resolve(cwd, requested))
 }
 
-// Rerun at the start boundary; the remaining open(2) window is the residual ADR 0005 accepts.
 export const assertDestinationUnchanged = (checkout: string, recorded: string): void => {
   let actual: string
   try {

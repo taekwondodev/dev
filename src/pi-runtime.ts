@@ -14,7 +14,6 @@ export class PiError extends Schema.TaggedError<PiError>()('PiError', {
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-// Launch prints only the message, so a Pi failure carries its cause's text.
 const piFailure = (what: string) => (cause: unknown) =>
   new PiError({ message: `${what}: ${errorText(cause)}`, cause })
 
@@ -112,7 +111,6 @@ export const findRecentSession = Effect.fnUntraced(function* (
   })
 })
 
-// ADR 0005: /import is classified with Pi's own path resolution.
 export const loadPiPathResolver = Effect.fnUntraced(function* (packageRoot: string) {
   const paths: typeof PiPaths = yield* Effect.tryPromise({
     try: () => import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href),

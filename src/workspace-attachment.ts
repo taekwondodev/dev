@@ -21,6 +21,8 @@ import { acquirePathGates, acquireConversationPresence, releaseGates } from './w
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, conversationFileSlot, isWithin } from './workspace-paths.ts'
 import {
+  assertNoUnresolvedRelease,
+  cancelUnstartedReleases,
   matchesGitWorkspace,
   getWorkspace,
   getWorkspaceByPath,
@@ -41,7 +43,7 @@ import { transaction } from './workspace-sqlite.ts'
 import { now, hash, lstatIfExists } from './workspace-platform.ts'
 import { resolveSelection } from './workspace-transitions.ts'
 
-const conversationRecord = (
+export const conversationRecord = (
   input: WorkspaceConversation
 ): {
   readonly conversation: BoundConversation
@@ -80,7 +82,7 @@ export const attachConversation = (
   const normalized = conversationRecord(input.conversation)
   const live = states.get(normalized.key)
   if (live !== undefined) {
-    const pending = live.pending
+    const { pending } = live
     if (pending !== undefined) {
       const selected = input.selection
       const selectionMatches =
@@ -132,8 +134,13 @@ export const attachConversation = (
       const selected = resolveSelection(authority, input.selection)
       validateWorkspace(authority, selected.workspace)
       ensureNoUnresolvedUse(authority, selected.repo, selected.workspace.id)
-      const probe = acquirePathGates(authority.paths, selected.workspace.path, true)
+      const probe = acquirePathGates(authority.paths, selected.workspace.path, 'writer')
       releaseGates(probe)
+      inDb(authority, selected.repo, db =>
+        transaction(db, () =>
+          cancelUnstartedReleases(db, selected.workspace.id, 'Superseded by an explicit resume')
+        )
+      )
       binding = {
         key: normalized.key,
         conversation: normalized.conversation,
@@ -165,22 +172,7 @@ export const attachConversation = (
         inDb(authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
       }
       repoId = selected.repo
-    } else if (previous !== undefined) {
-      repoId = previous.repo
-      binding = previous.binding
-      const workspace = inDb(authority, repoId, db => getWorkspace(db, binding.workspaceId))
-      if (workspace === undefined)
-        requireReview(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
-      if (lstatIfExists(workspace.path) === undefined)
-        requireReview(
-          `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
-        )
-      validateWorkspace(authority, workspace)
-      if (lstatIfExists(binding.cwd)?.isDirectory() !== true)
-        requireReview(
-          `The working directory bound to this conversation no longer exists and is not recreated: ${binding.cwd}`
-        )
-    } else {
+    } else if (previous === undefined) {
       const git = canonicalGitWorkspace(input.cwd)
       repoId = authority.registerRepository(git)
       const workspace = registerWorkspace(authority, repoId, git)
@@ -195,6 +187,25 @@ export const attachConversation = (
         revision: 0,
       }
       inDb(authority, repoId, db => transaction(db, () => putBinding(db, binding)))
+    } else {
+      ;({ repo: repoId, binding } = previous)
+      const workspace = inDb(authority, repoId, db => getWorkspace(db, binding.workspaceId))
+      if (workspace === undefined)
+        requireReview(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
+      if (workspace.status === 'removed')
+        requireReview(
+          `The workspace bound to this conversation was removed by release ${workspace.removalOperationId ?? '(unrecorded)'} and is not recreated: ${workspace.path}`
+        )
+      if (lstatIfExists(workspace.path) === undefined)
+        requireReview(
+          `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
+        )
+      validateWorkspace(authority, workspace)
+      inDb(authority, repoId, db => assertNoUnresolvedRelease(db, workspace.id))
+      if (lstatIfExists(binding.cwd)?.isDirectory() !== true)
+        requireReview(
+          `The working directory bound to this conversation no longer exists and is not recreated: ${binding.cwd}`
+        )
     }
     const state: ConversationState = {
       key: normalized.key,
@@ -228,7 +239,8 @@ const retireUnstartedTransition = (
       transaction(db, () => {
         const operation = getOperation(db, operationId)
         if (operation?.phase === 'cancelled') withdrawn = true
-        if (operation === undefined || operation.phase !== 'intent') return
+        if (operation === undefined || operation.phase !== 'intent' || operation.kind === 'release')
+          return
         withdrawn = true
         for (const use of getUseRows(db, operation.workspaceId))
           if (
@@ -290,6 +302,7 @@ const ensureNoUnresolvedUse = (
   const active = inDb(authority, repo, db => getUseRows(db, workspaceIdValue).filter(isActiveUse))
   if (active.length > 0)
     blocked(`Workspace has unresolved live-use facts and cannot be resumed: ${workspaceIdValue}`)
+  inDb(authority, repo, db => assertNoUnresolvedRelease(db, workspaceIdValue))
 }
 
 export const settleClosingState = (
@@ -308,8 +321,7 @@ export const settleClosingState = (
       return []
     }
   })
-  // Close must not fail, so it cannot refuse the way a reported settlement does. Instead it
-  // declines to claim quiescence it has not established, keeping the workspace blocked.
+
   settleDependentsFirst(
     authority,
     closing,
@@ -321,9 +333,7 @@ export const settleClosingState = (
             reason: 'attachment-closed-without-authoritative-operation-cessation',
           },
     'attachment-closed-while-dependent-scoped-operations-were-live',
-    () => {
-      /* the durable earlier claim remains blocking */
-    }
+    () => {}
   )
   for (const lease of leases.toReversed()) {
     if (lease.gates !== undefined) {
@@ -338,9 +348,7 @@ export const settleClosingState = (
   for (const held of state.extraGates.splice(0)) {
     try {
       releaseGates(held.gates)
-    } catch {
-      /* retain persisted use rows */
-    }
+    } catch {}
   }
   state.closing = false
 }

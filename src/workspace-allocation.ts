@@ -48,7 +48,7 @@ import {
   type ReservationRecord,
   type BindingRecord,
   type UseRecord,
-  type OperationRecord,
+  type TransitionOperationRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { transaction } from './workspace-sqlite.ts'
@@ -86,8 +86,6 @@ const releaseLocalGates = (state: ConversationState): GateIntent[] => {
   return intents
 }
 
-// Slots are taken in path order so concurrent acquirers cannot deadlock; a writer intent
-// makes its whole slot a writer.
 const groupBySlot = (intents: readonly GateIntent[]): GateIntent[] => {
   const groups = new Map<string, GateIntent>()
   for (const intent of intents) {
@@ -112,7 +110,7 @@ const acquireInOrder = (
     for (const group of groups)
       acquired.push({
         ...group,
-        gates: acquirePathGates(authority.paths, group.path, group.writer),
+        gates: acquirePathGates(authority.paths, group.path, group.writer ? 'writer' : 'reader'),
       })
   } catch (cause) {
     for (const held of acquired.toReversed()) releaseGates(held.gates)
@@ -178,8 +176,8 @@ interface Allocation {
   readonly taskId: WorkspaceId
   readonly workspace: WorkspaceRecord
   readonly reservation: ReservationRecord
-  readonly intent: OperationRecord
-  readonly confirmed: OperationRecord
+  readonly intent: TransitionOperationRecord
+  readonly confirmed: TransitionOperationRecord
   readonly gates: PathGates
 }
 
@@ -227,8 +225,6 @@ const allocateWorktree = (
   if (targetSlot !== destination)
     requireReview(`Managed worktree destination is not canonical: ${destination}`)
 
-  // Taken before the local path gates are released: it never waits, so a contended
-  // structure gate fails here with the conversation's admission intact.
   const structure = acquireStructureGate(authority.paths, source.git, source.repo)
   state.parked = true
   let gateIntents: GateIntent[] = []
@@ -239,7 +235,7 @@ const allocateWorktree = (
         readonly extras: readonly HeldPathGate[]
       }
     | undefined
-  let operation: OperationRecord | undefined
+  let operation: TransitionOperationRecord | undefined
   try {
     gateIntents = releaseLocalGates(state)
     pathGates = orderedAllocationGates(
@@ -270,7 +266,7 @@ const allocateWorktree = (
       expectedBindingRevision: state.binding.revision,
       reason,
       createdAt: now(),
-    } satisfies OperationRecord
+    } satisfies TransitionOperationRecord
     operation = intent
     inDb(authority, source.repo, db =>
       transaction(db, () => {
@@ -288,7 +284,7 @@ const allocateWorktree = (
       })
     )
     assertManagedCheckoutSupported(source.git, commit)
-    const started: OperationRecord = { ...intent, phase: 'started' }
+    const started: TransitionOperationRecord = { ...intent, phase: 'started' }
     operation = started
     inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, started)))
 
@@ -342,31 +338,27 @@ const allocateWorktree = (
   } catch (cause) {
     if (pathGates !== undefined) releaseGates(pathGates.target)
     if (operation?.phase === 'started') {
-      const unresolved: OperationRecord = {
+      const unresolved: TransitionOperationRecord = {
         ...operation,
         phase: 'review-required',
         result: `Allocation outcome requires observation: ${errorText(cause)}`,
       }
       try {
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, unresolved)))
-      } catch {
-        /* retain the durable started intent */
-      }
+      } catch {}
       state.parked = true
       throw cause
     }
-    // No Git effect started, so the conversation keeps its binding and admission.
+
     if (operation !== undefined) {
-      const stopped: OperationRecord = {
+      const stopped: TransitionOperationRecord = {
         ...operation,
         phase: 'cancelled',
         result: `Allocation stopped before any Git effect: ${errorText(cause)}`,
       }
       try {
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, stopped)))
-      } catch {
-        /* an intent that was never recorded needs no result */
-      }
+      } catch {}
     }
     try {
       if (pathGates === undefined) holdGates(authority, state, gateIntents)
@@ -378,9 +370,7 @@ const allocateWorktree = (
   } finally {
     try {
       structure()
-    } catch {
-      /* a failed release blocks later structural acquisition at the SQLite gate */
-    }
+    } catch {}
   }
 }
 
@@ -438,7 +428,7 @@ export const isolateContendedWriter = (
   )
   return allocateWorktree(authority, state, source, taskId, 'checkout-contention', allocation => {
     const destination = allocation.intent.targetPath
-    const handoffOperation: OperationRecord = {
+    const handoffOperation: TransitionOperationRecord = {
       ...allocation.intent,
       id: newId(),
       kind: 'handoff',

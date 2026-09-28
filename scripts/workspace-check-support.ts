@@ -27,17 +27,11 @@ export const within = <A>(promise: Promise<A>, ms: number, what: string): Promis
     }),
   ])
 
-// A claim enters the report only after the assertions of its own block ran and passed. A
-// failing block throws before anything is recorded, so the printed list cannot outrun its
-// evidence. A block that never settles fails at its limit, naming the claim, rather than
-// leaving the check hanging.
 export interface Claims {
   claim<A>(text: string, assertions: () => A | Promise<A>, limitMs?: number): Promise<A>
   readonly passed: readonly string[]
 }
 
-// The slowest claim, a multi-process race in the authority check, takes about 25 s; the limit
-// leaves room for a loaded machine.
 const CLAIM_LIMIT_MS = 120_000
 
 export const makeClaims = (defaultLimitMs = CLAIM_LIMIT_MS): Claims => {
@@ -46,8 +40,7 @@ export const makeClaims = (defaultLimitMs = CLAIM_LIMIT_MS): Claims => {
     passed,
     async claim(text, assertions, limitMs = defaultLimitMs) {
       if (passed.includes(text)) throw new Error(`Claim recorded twice: ${text}`)
-      // The claim's own cleanup never runs after a timeout, so a later cleanup failure could
-      // replace the timeout in the report.
+
       const value = await within(
         Promise.resolve().then(assertions),
         limitMs,
@@ -62,9 +55,6 @@ export const makeClaims = (defaultLimitMs = CLAIM_LIMIT_MS): Claims => {
   }
 }
 
-// Scripts resolve and load the installed global Pi exactly as the launcher does. Modules the
-// SDK entry does not export are imported from the same resolved package root, as the
-// launcher imports its project-trust resolver.
 export const loadInstalledPi = async () => {
   const { api, packageInfo } = await Effect.runPromise(
     loadPi.pipe(Effect.provide(NodeServices.layer))
@@ -147,7 +137,6 @@ export interface ScriptedReply {
   readonly delayMs: number
 }
 
-// Like a real provider, a reply that Pi aborts before delivery ends as aborted.
 export const emitReply = (
   { assistantMessage, eventStreams }: ScriptedStreamParts,
   reply: ScriptedReply,

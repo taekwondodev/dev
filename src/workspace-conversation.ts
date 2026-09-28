@@ -105,9 +105,6 @@ export const outgoingUses = (
 
 export type UseSettlement = Pick<UseRecord, 'stage' | 'reason'>
 
-// Dependents first: a use is created after its `within` parent, so reverse insertion order
-// settles descendants before the parent whose gates they write under. A parent whose
-// dependent is still live is left `unknown` instead of claimed quiescent.
 export const settleDependentsFirst = (
   authority: WorkspaceAuthority,
   entries: readonly { readonly lease: GrantLease; readonly use: UseRecord }[],
@@ -140,8 +137,6 @@ export const settleDependentsFirst = (
   }
 }
 
-// A process of this conversation still running in the workspace it would leave cannot
-// report its cessation once the move releases its leases, so the move waits for it.
 export const assertNoLiveExecution = (
   authority: WorkspaceAuthority,
   state: ConversationState,

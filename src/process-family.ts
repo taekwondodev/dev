@@ -8,8 +8,6 @@ import { WorkspaceProcessSchema, type WorkspaceProcess } from './workspace-domai
 
 const execFilePromise = promisify(execFile)
 
-// The shell blocks on descriptor 3 until its parent has durably recorded the process
-// identity, so no user code runs before the launch barrier.
 export const processGateScript = 'IFS= read -r _ <&3 || exit 125; exec 3<&-; exec /bin/bash -c "$1"'
 
 export const processGate = (child: ChildProcess): Writable => {
@@ -22,7 +20,6 @@ export const processGate = (child: ChildProcess): Writable => {
 export type ObservedProcess = ProcessObservation & { readonly birth: string }
 
 const readProcessTable = async (): Promise<ObservedProcess[]> => {
-  // The start time is the birth identity, so it must not follow the system time zone.
   const { stdout } = await execFilePromise('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
     env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
     maxBuffer: 4 * 1024 * 1024,
@@ -58,7 +55,6 @@ export class ProcessObservationLost extends Schema.TaggedError<ProcessObservatio
   { message: Schema.String }
 ) {}
 
-// One failed `ps` or report must not become an absorbing `unknown` use.
 export const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 
 export const processTable: Effect.Effect<ObservedProcess[], ProcessObservationLost> =
@@ -79,9 +75,6 @@ export interface TrackedFamily {
   readonly reported: string | undefined
 }
 
-// One observation of a launched family: its root's group plus every tracked descendant.
-// The family is reported whenever it changed, and the observation is lost when the root's
-// identity was reused or a tracked process has no birth identity to recognize it by.
 export const observeFamily = Effect.fnUntraced(function* <E>(
   family: TrackedFamily,
   options: {

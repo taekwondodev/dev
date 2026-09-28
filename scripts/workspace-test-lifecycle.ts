@@ -1,7 +1,13 @@
-import { Effect, Exit, Scope } from 'effect'
+import { Worker } from 'node:worker_threads'
+import { Effect, Exit, Schema, Scope } from 'effect'
 import { errorText } from '../src/error-text.ts'
 import {
   WorkspaceError,
+  type PublicationReference,
+  type ReleaseRequest,
+  type RuleApproval,
+  type TaskTarget,
+  type WorkspaceAssessment,
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
   type WorkspaceBinding,
@@ -12,15 +18,66 @@ import {
   type WorkspaceId,
   type WorkspaceLifecycle,
   type WorkspaceOperation,
+  type WorkspaceReleaseResult,
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle, type StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
 import { makeWorkspaceShell, type WorkspaceAdmission } from '../src/workspace-shell.ts'
+import {
+  WorkspaceWorkerMessageSchema,
+  type WorkspaceRpcOperation,
+} from '../src/workspace-protocol.ts'
 import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 
-// The checks are imperative scripts, so they drive the Effect client through Promises. Code
-// under test that takes the client itself receives `effect`.
+const isWorkerMessage = Schema.is(WorkspaceWorkerMessageSchema)
+
+export const faultInjector = () => {
+  let started: Worker | undefined
+  let armedFor: WorkspaceRpcOperation | undefined
+  const dropped: WorkspaceRpcOperation[] = []
+  const startWorker: StartWorkspaceWorker = (url, options) => {
+    const worker = new Worker(url, options)
+    started = worker
+    return {
+      postMessage: (value, transferList) => worker.postMessage(value, transferList),
+      terminate: () => worker.terminate(),
+      on: (event, listener) =>
+        worker.on(
+          event,
+          event === 'message'
+            ? (value: unknown) => {
+                if (
+                  armedFor !== undefined &&
+                  isWorkerMessage(value) &&
+                  !('type' in value) &&
+                  value.ok &&
+                  value.op === armedFor
+                ) {
+                  dropped.push(value.op)
+                  armedFor = undefined
+                  void worker.terminate()
+                  return
+                }
+                listener(value)
+              }
+            : listener
+        ),
+    }
+  }
+  return {
+    startWorker,
+    dropped,
+    dropNextAcknowledgment: (operation: WorkspaceRpcOperation) => {
+      armedFor = operation
+    },
+    worker: (): Worker => {
+      if (started === undefined) throw new Error('The lifecycle started no worker')
+      return started
+    },
+  }
+}
+
 export interface TestAttachment {
   readonly effect: WorkspaceAttachment
   readonly binding: WorkspaceBinding
@@ -46,6 +103,11 @@ export interface TestLifecycle {
     readonly taskId?: WorkspaceId
   }): Promise<readonly WorkspaceView[]>
   validate(grant: WorkspaceGrant): Promise<void>
+  check(taskId: WorkspaceId): Promise<readonly WorkspaceAssessment[]>
+  release(request: ReleaseRequest): Promise<WorkspaceReleaseResult>
+  recordTarget(taskId: WorkspaceId, target: TaskTarget): Promise<void>
+  recordPublication(reference: PublicationReference): Promise<void>
+  recordRuleApproval(approval: RuleApproval): Promise<void>
   close(): Promise<void>
 }
 
@@ -75,6 +137,11 @@ export const openLifecycle = async (options: {
     attach: input => Effect.runPromise(lifecycle.attach(input)).then(promisedAttachment),
     inspect: input => Effect.runPromise(lifecycle.inspect(input)),
     validate: grant => Effect.runPromise(lifecycle.validate(grant)),
+    check: taskId => Effect.runPromise(lifecycle.check({ taskId })),
+    release: request => Effect.runPromise(lifecycle.release(request)),
+    recordTarget: (taskId, target) => Effect.runPromise(lifecycle.recordTarget({ taskId, target })),
+    recordPublication: reference => Effect.runPromise(lifecycle.recordPublication({ reference })),
+    recordRuleApproval: approval => Effect.runPromise(lifecycle.recordRuleApproval({ approval })),
     close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
   }
 }

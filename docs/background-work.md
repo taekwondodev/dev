@@ -94,9 +94,11 @@ hostile code or processes outside dev.
 The attempt records the managed worktree path. `/work`, inspection and automatic
 outcomes show it with a reminder: `blocked` while the workspace use is unresolved,
 otherwise `review-required`, because the reservation and files are retained
-independently of the attempt. Neither status authorizes deletion. Dev never
-removes the worktree, and the recorded path is not a live existence or
-exclusivity check. Use `dev workspace inspect <task>` for the durable state.
+independently of the attempt. Neither status authorizes deletion. Dev removes a
+managed worktree only through an explicit, confirmed `dev workspace release` or
+`/workspace release`, after its evidence and no-live-use checks pass; the recorded
+path is not a live existence or exclusivity check. Use `dev workspace inspect
+<task>` for the durable state and `dev workspace check <task>` for eligibility.
 
 The `work` tool description teaches this protocol to the lead in every dev
 session; outcome messages repeat the relevant cleanup guidance. No per-project
