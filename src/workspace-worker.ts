@@ -75,7 +75,7 @@ const startEngine = (): WorkspaceEngine | undefined => {
 }
 
 const engine = startEngine()
-// A fresh reader per request, so every check or release gets the whole provider budget.
+
 const readers = (): EvidenceReaders => ({ github: makeGitHubReader() })
 if (port !== null && engine !== undefined) {
   let nextAttachmentId = 0
@@ -240,8 +240,6 @@ if (port !== null && engine !== undefined) {
       if (request.op === 'close') port.close()
     } catch (cause) {
       if (executionSucceeded) {
-        // A committed operation whose success payload could not be delivered is
-        // ambiguous. Exit without retrying or replacing the durable use claim.
         port.close()
         return
       }

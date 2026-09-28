@@ -51,7 +51,6 @@ const openLock = (lock: {
     allowExtension: false,
   })
   try {
-    // A waiting acquirer only ever waits out a momentary probe, never a holder.
     db.exec(
       `PRAGMA busy_timeout = ${lock.waitMs}; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;`
     )
@@ -64,7 +63,6 @@ const openLock = (lock: {
   }
 }
 
-// The open transaction is the lock, so closing the database is the release.
 const holdLock = (lock: {
   readonly path: string
   readonly ddl: string
@@ -314,9 +312,7 @@ export const acquireConversationPresence = (
           releaseIncarnation()
           try {
             rmSync(directory, { recursive: true, force: true })
-          } catch {
-            /* a leftover directory reads as a released incarnation */
-          }
+          } catch {}
         } finally {
           releaseConversation()
         }
@@ -328,9 +324,6 @@ export const acquireConversationPresence = (
   }
 }
 
-// Inspection must not write to the authority, and its owner removes the gate once released, so
-// the probe opens only an existing file, read-only: its read is refused while the owner holds
-// the exclusive lock, and a file removed meanwhile is a released incarnation.
 export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId): boolean => {
   const path = incarnationGate(paths, incarnation)
   const removed = () => lstatIfExists(path) === undefined

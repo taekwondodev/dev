@@ -32,9 +32,6 @@ import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-a
 
 const isWorkerMessage = Schema.is(WorkspaceWorkerMessageSchema)
 
-// Wraps the real worker at the lifecycle's seam. Once armed, it drops the next successful
-// acknowledgment of one operation and terminates the worker, as a crash between the commit
-// and its reply would. It recognizes acknowledgments with the protocol's own schema.
 export const faultInjector = () => {
   let started: Worker | undefined
   let armedFor: WorkspaceRpcOperation | undefined
@@ -81,8 +78,6 @@ export const faultInjector = () => {
   }
 }
 
-// The checks are imperative scripts, so they drive the Effect client through Promises. Code
-// under test that takes the client itself receives `effect`.
 export interface TestAttachment {
   readonly effect: WorkspaceAttachment
   readonly binding: WorkspaceBinding

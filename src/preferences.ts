@@ -67,10 +67,6 @@ export const defaultDataHome: Effect.Effect<string, PreferencesError> = Effect.g
   return resolve(configured)
 })
 
-/**
- * Pi's authentication is account-wide, unlike dev's sessions and operational
- * state. Keep the canonical Pi directory independent from DEV_DATA_HOME.
- */
 export const globalPiAgentDir = (): string => join(homedir(), '.pi', 'agent')
 
 export const globalPiAuthPath = (): string => join(globalPiAgentDir(), 'auth.json')

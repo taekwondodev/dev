@@ -22,8 +22,6 @@ export type FileIdentity = typeof FileIdentitySchema.Type
 export type GitWorkspace = typeof GitWorkspaceSchema.Type
 const decodeGitWorkspace = Schema.decodeUnknownOption(GitWorkspaceSchema)
 
-// Git refusals and failures leave dev's own state unchanged, so the authority reports them
-// as blocked rather than as a separate error model.
 const gitBlocked = (message: string): WorkspaceError =>
   new WorkspaceError({ outcome: 'blocked', message })
 
@@ -32,8 +30,7 @@ export interface GitResult<Out = string> {
   readonly stdout: Out
   readonly stderr: string
 }
-// Every Git call of the authority runs without hooks, lazy fetches, prompts or optional
-// locks, so a read stays a read. Inventories can be large, hence the buffer.
+
 export function gitResult(cwd: string, args: readonly string[], input?: string): GitResult
 export function gitResult(
   cwd: string,
@@ -139,7 +136,6 @@ export const currentCommit = (workspace: GitWorkspace): string => {
   return workspace.head
 }
 
-// Runs only read-only Git commands, so a refusal leaves no Git effect behind.
 export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: string): void => {
   const trackedPaths = git(source.path, ['ls-tree', '-r', '--name-only', '-z', commit])
   const attributes = git(
@@ -160,10 +156,9 @@ export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: str
 
 const failureText = (result: GitResult): string =>
   result.stderr.trim() || `exit ${result.status ?? 'signal'}`
-// The terminating `--` keeps an unexpected value an operand rather than an option.
+
 const operands = (...values: readonly string[]): readonly string[] => ['--', ...values]
 
-// Untracked entries come from the complete `ls-files` inventory instead.
 export interface TrackedChange {
   readonly path: string
   readonly kind: 'changed' | 'renamed' | 'conflict'
@@ -184,7 +179,6 @@ export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
     const [kind] = line
     if (kind === '1') changes.push({ path: line.split(' ').slice(8).join(' '), kind: 'changed' })
     else if (kind === '2') {
-      // A rename entry carries the original path as the next NUL-separated field.
       changes.push({ path: line.split(' ').slice(9).join(' '), kind: 'renamed' })
       index += 1
     } else if (kind === 'u')
@@ -194,8 +188,6 @@ export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
   return changes
 }
 
-// Ignored paths included. Git reports a nested repository as its directory with a trailing
-// slash and does not enter it.
 export const untrackedPaths = (checkout: string): readonly string[] =>
   git(checkout, ['ls-files', '--others', '-z'])
     .split('\0')
@@ -261,11 +253,9 @@ export const registeredWorktrees = (repositoryPath: string): readonly string[] =
     .filter(line => line.startsWith('worktree '))
     .map(line => line.slice('worktree '.length))
 
-// Without --force, so Git refuses anything left; the caller deletes the selected files first.
 export const removeWorktree = (repositoryPath: string, path: string): GitResult =>
   gitResult(repositoryPath, ['worktree', 'remove', '--', path])
 
-// The caller has already run assertManagedCheckoutSupported for this commit.
 export const addDetachedWorktree = (
   source: GitWorkspace,
   destination: string,

@@ -1,4 +1,3 @@
-// The TUI probe injects none of these failures.
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'

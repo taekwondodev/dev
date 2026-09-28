@@ -53,8 +53,7 @@ export const WorkspaceConversationSchema = Schema.Struct({
   dataHome: Schema.NonEmptyString,
 })
 export type WorkspaceConversation = typeof WorkspaceConversationSchema.Type
-// Pi may name one conversation file through a symbolic link or before it is written, so a Pi path
-// matches a bound conversation only once canonicalized.
+
 export const CanonicalSessionFile = Schema.NonEmptyString.pipe(Schema.brand('CanonicalSessionFile'))
 const BoundConversationSchema = Schema.Struct({
   ...WorkspaceConversationSchema.fields,
@@ -106,8 +105,7 @@ export const WorkspaceGrantSchema = Schema.Struct({
   checkout: AbsolutePath,
   access: WorkspaceAccessSchema,
   origin: WorkspaceOriginSchema,
-  // The destination the authority validated for a native file write. The executor opens
-  // its own operand, so operands that could resolve elsewhere are refused.
+
   path: Schema.optional(Schema.NonEmptyString),
 })
 export type WorkspaceGrant = typeof WorkspaceGrantSchema.Type
@@ -123,8 +121,6 @@ export const WorkspaceBindingSchema = Schema.Struct({
 export type WorkspaceBinding = typeof WorkspaceBindingSchema.Type
 export const sameBinding = Schema.toEquivalence(WorkspaceBindingSchema)
 
-// The host consumes this once, after settling the entire old tool batch.
-// A persisted operation alone never authorizes replay of the host transition.
 export const WorkspaceHandoffSchema = Schema.Struct({
   operationId: WorkspaceId,
   from: WorkspaceBindingSchema,
@@ -227,7 +223,7 @@ const FullRef = Schema.NonEmptyString.check(
 export const GitHubRepositorySchema = Schema.NonEmptyString.check(
   Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
 )
-// A remote name only: a URL or an option-shaped value would reach Git as an operand or option.
+
 export const RemoteName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
 )
@@ -239,7 +235,7 @@ export const TaskTargetSchema = Schema.Union([
     kind: Schema.Literal('github'),
     repository: GitHubRepositorySchema,
     ref: FullRef,
-    // The repository the merged source must come from; the target repository when absent.
+
     sourceRepository: Schema.optional(GitHubRepositorySchema),
     pullRequest: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   }),
@@ -256,7 +252,7 @@ export const RelativeFilePath = Schema.NonEmptyString.check(
       : 'must be a normalized relative path inside the workspace'
   )
 )
-// Never the bytes, a token or a signed download URL (#31).
+
 export const PublicationDestinationSchema = Schema.Struct({
   repository: GitHubRepositorySchema,
   number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
@@ -268,7 +264,7 @@ export const PublicationReferenceSchema = Schema.Struct({
   id: WorkspaceId,
   taskId: WorkspaceId,
   workspaceId: Schema.optional(WorkspaceId),
-  // The workspace HEAD when the publication was verified.
+
   commit: Schema.optional(CommitSha),
   relativePath: RelativeFilePath,
   byteLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -304,7 +300,7 @@ export const ReleaseSubjectSchema = Schema.Struct({
   origin: WorkspaceOriginSchema,
   path: Schema.NonEmptyString,
   effect: Schema.Literals(['release-reservation', 'remove-worktree', 'none']),
-  // Absent when the checkout has no commit or its directory is gone.
+
   head: Schema.optional(CommitSha),
   stateDigest: Sha256Hex,
   policyVersion: Schema.Int,
@@ -390,8 +386,7 @@ export interface WorkspaceAttachment {
     grant: WorkspaceGrant,
     fact: WorkspaceExecutionFact
   ): Effect.Effect<void, WorkspaceError>
-  // Runs outside Pi callbacks. The lifecycle owns intent/start/result publication;
-  // the callback owns quiescence, runtime replacement and observed host outcome.
+
   handoff(transition: WorkspaceHandoff, replace: HostReplace): Effect.Effect<void, WorkspaceError>
   readonly close: Effect.Effect<void, WorkspaceError>
 }
@@ -402,14 +397,14 @@ export interface WorkspaceLifecycle {
     readonly cwd: string
     readonly selection?: WorkspaceSelection
   }): Effect.Effect<WorkspaceAttachment, WorkspaceError>
-  // With a taskId, only the views of exactly that task, across every repository.
+
   inspect(input: {
     readonly cwd?: string
     readonly taskId?: WorkspaceId
   }): Effect.Effect<readonly WorkspaceView[], WorkspaceError>
-  // A child verifies the parent's fenced use; it must not acquire a competing writer.
+
   validate(grant: WorkspaceGrant): Effect.Effect<void, WorkspaceError>
-  // `ownConversation` uses count as ending; the attempt excludes nothing (ADR 0005, Release).
+
   check(input: {
     readonly taskId: WorkspaceId
     readonly ownConversation?: WorkspaceConversation

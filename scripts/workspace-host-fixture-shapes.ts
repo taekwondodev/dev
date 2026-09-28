@@ -1,5 +1,3 @@
-// The stub lifecycle bypasses the client that decodes every authority response, so each
-// factory decodes what it makes.
 import assert from 'node:assert/strict'
 import { Schema } from 'effect'
 import {
@@ -113,8 +111,6 @@ export const makeFixtureHandoff = (input: {
     reason: input.reason,
   } satisfies WorkspaceHandoff)
 
-// True only when the factory's literal carries every key of the seam type, optional ones
-// included; the annotation below turns a false into a type error.
 type ProducesEvery<Produced, Seam> = [Exclude<keyof Seam, keyof Produced>] extends [never]
   ? true
   : false

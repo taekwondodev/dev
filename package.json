@@ -29,7 +29,7 @@
     "types:pi": "node scripts/resolve-pi.ts",
     "typecheck": "npm run types:pi && tsc --noEmit",
     "lint:effect": "npm run types:pi && effect-tsgo diagnostics --project tsconfig.json --strict --format text",
-    "lint": "npm run typecheck && npm run lint:effect && oxlint .",
+    "lint": "npm run typecheck && npm run lint:effect && oxlint --max-warnings=0 .",
     "lint:fix": "oxlint --fix .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."

@@ -70,7 +70,7 @@ export const resolveSelection = (
   if (selected.length === 0) invalid(`No retained workspace matches task ${selection.taskId}`)
   if (selected.length > 1)
     ambiguous(`Task ${selection.taskId} has multiple workspaces; provide an exact workspace ID`)
-  const result = selected[0]
+  const [result] = selected
   if (result === undefined) return invalid('Selected workspace is unavailable')
   return result
 }
@@ -81,7 +81,7 @@ export const selectWorkspace = (
   selection: WorkspaceSelection
 ): WorkspaceHandoff => {
   attachment.assertOpen()
-  const state = attachment.state
+  const { state } = attachment
   if (state.parked || state.pending !== undefined)
     blocked('A workspace transition is already pending')
   assertNoLiveExecution(authority, state, state.binding, 'switched')
@@ -236,8 +236,8 @@ export const performHandoff = async (
   replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>
 ): Promise<void> => {
   attachment.assertOpen()
-  const state = attachment.state
-  const pending = state.pending
+  const { state } = attachment
+  const { pending } = state
   if (
     pending === undefined ||
     pending.handoff.operationId !== transition.operationId ||
@@ -277,7 +277,6 @@ export const performHandoff = async (
   pending.phase = 'started'
   let outcome: 'confirmed' | 'cancelled'
   try {
-    // Runtime teardown/replacement is host-owned and never runs inside a DB transaction.
     outcome = await replace(pending.handoff.target)
   } catch (cause) {
     markTransitionUnknown(
@@ -327,9 +326,7 @@ const markTransitionUnknown = (
           })
       })
     )
-  } catch {
-    /* preserve the already-durable started intent and pending binding */
-  }
+  } catch {}
 }
 
 const cancelTransition = (
@@ -338,7 +335,7 @@ const cancelTransition = (
   pending: PendingTransition,
   result: string
 ): void => {
-  const operationId = pending.handoff.operationId
+  const { operationId } = pending.handoff
   const targetUse = inDb(authority, pending.targetRepositoryId, db =>
     getUse(db, pending.targetLease.useId)
   )
@@ -399,8 +396,7 @@ const finishConfirmed = (
 ): void => {
   const sourceWorkspaceId = pending.handoff.from.workspaceId
   const oldUses = outgoingUses(authority, state, sourceWorkspaceId, pending.targetLease.useId)
-  // The host has already switched, so a dependent left live keeps its parent unknown
-  // instead of failing here.
+
   settleDependentsFirst(
     authority,
     oldUses,
@@ -436,7 +432,6 @@ const finishConfirmed = (
       })
     )
   } else {
-    // Cross-shard publication is deliberately recoverable rather than pretending to be atomic.
     inDb(authority, pending.targetRepositoryId, db =>
       transaction(db, () => {
         const current = getOperation(db, operation.id)

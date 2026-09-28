@@ -1,8 +1,3 @@
-// Loaded with --import into the workspace worker a release check starts: it stops that worker
-// thread at one named release boundary, the crash windows the recovery contract names, by
-// wrapping the builtins the release calls there. Production code carries no hook for it. In a
-// worker, process.exit ends only the thread, so the parent sees the request unacknowledged, as
-// after a crash.
 import childProcess from 'node:child_process'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
@@ -29,7 +24,6 @@ const checkout = process.env.DEV_RELEASE_FAULT_CHECKOUT
 
 const crash = (): never => process.exit(1)
 
-// The write after the intent is the effect-start record: a release row entering `started`.
 const startsRelease = (parameter: unknown): boolean => {
   if (typeof parameter !== 'string' || !parameter.startsWith('{')) return false
   try {

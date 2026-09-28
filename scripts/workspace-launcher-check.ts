@@ -147,14 +147,11 @@ try {
     taskId: switchTarget.grant.taskId,
     workspaceId: switchTarget.grant.workspaceId,
   })
-  // The host dies before it acts on the switch.
+
   await lifecycle.close()
   rmSync(allocated.grant.checkout, { recursive: true, force: true })
   const historyBefore = createHash('sha256').update(readFileSync(sessionFile)).digest('hex')
 
-  // With STOP_AFTER_ATTACH the injected lifecycle reports what the launcher asked of the
-  // authority and stops it there, before a Pi runtime would load the global agent directory.
-  // The lifecycle always opens the temporary root named by LAUNCHER_CHECK_ROOT.
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
     import { Effect } from 'effect'
@@ -197,7 +194,7 @@ try {
       disableErrorReporting: true,
     })
   `
-  // A claim that times out leaves its launches running, and Node exits before their timeouts.
+
   const launches = new Set<ReturnType<typeof execFile>>()
   process.on('exit', () => {
     for (const launch of launches) launch.kill('SIGKILL')
@@ -214,7 +211,7 @@ try {
         },
         (error, stdout, stderr) => {
           launches.delete(launch)
-          // An exit status is a number; a signal or a failed spawn leaves no status to report.
+
           const status = error === null ? 0 : error.code
           resolveRun({ code: typeof status === 'number' ? status : null, stdout, stderr })
         }
@@ -279,7 +276,6 @@ try {
   await claim(
     'dev --resume of a conversation live in another lifecycle on the same authority exits 1 with guidance instead of taking it over',
     async () => {
-      // A lifecycle in this process keeps the conversation live, as another installation would.
       const liveElsewhere = await openLifecycle({ root: authorityRoot })
       const liveConversation = await liveElsewhere.attach({
         conversation: switchConversation,
@@ -309,8 +305,6 @@ try {
     }
   )
 
-  // Read-only commands answer from the authority as they find it. They run with a data
-  // home and HOME that must stay unused, so a Pi session would show up as created files.
   const secondRepo = join(sandbox, 'second-repo')
   const notGit = join(sandbox, 'not-git')
   const readOnlyHome = join(sandbox, 'read-only-home')

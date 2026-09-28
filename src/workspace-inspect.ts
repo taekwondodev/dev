@@ -34,8 +34,6 @@ const logAvailability = (path: string): boolean | undefined => {
       realpathSync(path) === path
     )
   } catch (cause) {
-    // Expired transient logs do not erase ownership; an inspection error is
-    // unknown availability, not evidence that a workspace can be reused.
     return hasErrorCode(cause, 'ENOENT') ? false : undefined
   }
 }
@@ -94,8 +92,6 @@ const assessWorkspace = (input: {
   }
 }
 
-// An owner settles its uses before it releases its incarnation, so a use read before the probe
-// found the gate free counts as abandoned only if it is still active afterwards.
 const stillActive = (db: DatabaseSync, useId: WorkspaceId): boolean => {
   const current = getUse(db, useId)
   return current !== undefined && isActiveUse(current)
@@ -118,8 +114,6 @@ const LISTED_PATHS = 5
 export const sampledPaths = (paths: readonly string[]): string =>
   `${paths.slice(0, LISTED_PATHS).join(', ')}${paths.length > LISTED_PATHS ? ', …' : ''}`
 
-// A deletion step left `started` stopped before recording its deletions; once a later release
-// has observed and closed the attempt, the selected files found missing are named as observed.
 const unfinishedDeletion = (operation: WorktreeRemovalRecord): string => {
   if (operation.phase !== 'cancelled' && operation.phase !== 'confirmed')
     return 'stopped during its deletion step, so selected files it did not record as deleted may be gone too'
@@ -217,7 +211,7 @@ export const inspectWorkspaces = (
         present.add(id)
         const reservation = getReservation(db, id)
         if (input.taskId !== undefined && reservation?.taskId !== input.taskId) continue
-        // A removed workspace is a receipt, shown only for its exact task below.
+
         if (workspace.status === 'removed') continue
         const uses = getUseRows(db, id)
         const pending = openOperations(db, id).map(value => {
@@ -257,13 +251,12 @@ export const inspectWorkspaces = (
             id: use.id,
             access: use.access,
             stage: use.stage,
-            ...(use.effect === undefined ? {} : { effect: use.effect }),
-            ...(use.operationPath === undefined ? {} : { path: use.operationPath }),
-            ...(use.reason === undefined ? {} : { reason: use.reason }),
-            ...(use.execution === undefined ? {} : { execution: use.execution }),
-            ...(use.execution?.logs === undefined
-              ? {}
-              : { logsAvailable: logAvailability(use.execution.logs) }),
+            effect: use.effect,
+            path: use.operationPath,
+            reason: use.reason,
+            execution: use.execution,
+            logsAvailable:
+              use.execution?.logs === undefined ? undefined : logAvailability(use.execution.logs),
           })),
           pending,
         })

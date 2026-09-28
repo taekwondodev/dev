@@ -1,6 +1,3 @@
-// Release and evidence check: real Git repositories, worktrees, SQLite authority and worker
-// crashes on disposable fixtures. The GitHub provider is a fake reader with the shapes the
-// real `gh api` reader normalizes; no network is used.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -122,7 +119,7 @@ const only = (assessments: readonly WorkspaceAssessment[], workspaceId: string) 
   if (found === undefined) throw new Error(`no assessment for ${workspaceId}`)
   return found
 }
-// Whether a text names an identified earlier attempt together with every given fact.
+
 const namesAttempt = (attempt: string | undefined, ...facts: readonly string[]) => {
   assert.ok(attempt !== undefined, 'the earlier attempt is identified')
   return (text: string | undefined): boolean =>
@@ -206,7 +203,7 @@ const allocateManaged = async (
     managed,
   }
 }
-// Ends the task's reservation on the pre-existing checkout so the next fixture can reserve it.
+
 const freeCheckout = async (
   lifecycle: TestLifecycle,
   taskId: WorkspaceId,
@@ -885,7 +882,6 @@ try {
     }
   )
 
-  // Releases whatever the task still holds, so the next fixture can reserve the checkout.
   const releaseRemaining = async (taskId: WorkspaceId) => {
     for (const { workspaceId } of await lifecycle.check(taskId))
       await releaseOne(lifecycle, await lifecycle.check(taskId), workspaceId)
@@ -1025,7 +1021,7 @@ try {
         residue.reasons.some(reason => reason.includes(adminPath)),
         residue.reasons.join(' | ')
       )
-      // A foreign registration whose directory is gone: a prune would remove it, dev must not.
+
       const foreign = join(sandbox, `foreign-${allocated.managed.workspaceId}`)
       git(['worktree', 'add', '--quiet', '--detach', foreign, 'HEAD'], repo)
       const foreignAdmin = git(['rev-parse', '--path-format=absolute', '--git-dir'], foreign)
@@ -1193,7 +1189,7 @@ try {
   git(['checkout', '--quiet', 'main'], github)
   git(['merge', '--quiet', '--squash', feature], github)
   git(['commit', '--quiet', '-m', 'squash'], github)
-  // Deleted as after a merged pull request: only the pull request binds the feature commit.
+
   git(['branch', '--quiet', '-D', 'feature'], github)
   const squash = git(['rev-parse', 'HEAD'], github)
   const worktree = join(sandbox, 'github-wt')
@@ -1514,7 +1510,7 @@ try {
       const declined = await call({ action: 'approve-rule', locator: RULE_LOCATOR })
       assert.ok(declined.ok)
       assert.equal(reply(declined.text).recorded, 'nothing')
-      // An earlier claim already approved this digest; the tool records it again.
+
       mkdirSync(join(checkout, 'build'))
       writeFileSync(join(checkout, 'build', 'out.o'), 'out')
       confirmAnswer = true

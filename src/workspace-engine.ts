@@ -31,7 +31,7 @@ export class EngineAttachment implements AttachmentHandle {
   }
 
   get binding(): WorkspaceBinding {
-    const pending = this.state.pending
+    const { pending } = this.state
     return toBinding(
       pending !== undefined && this.targetOperationId === pending.handoff.operationId
         ? pending.targetBinding
@@ -51,7 +51,6 @@ const asWorkspaceError = (cause: unknown): WorkspaceError =>
         message: `Workspace authority operation failed: ${errorText(cause)}`,
       })
 
-// Every failure leaves the engine as a WorkspaceError, the only error the RPC carries.
 const attempt = <A>(work: () => A | Promise<A>): Promise<A> => {
   try {
     return Promise.resolve(work()).catch((cause: unknown) => {
@@ -76,7 +75,6 @@ export class WorkspaceEngine {
     try {
       return this.states.get(conversationRecord(conversation).key)?.incarnation
     } catch (cause) {
-      // A conversation the authority would refuse to attach is not live here.
       if (cause instanceof WorkspaceError) return undefined
       throw cause
     }

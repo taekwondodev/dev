@@ -25,7 +25,6 @@ import {
 import type { ManifestEntry } from './workspace-records.ts'
 import { hasErrorCode } from './workspace-platform.ts'
 
-// Bump whenever a predicate below changes meaning; it is part of every release subject.
 export const EVIDENCE_POLICY_VERSION = 1
 
 export const sha256Hex = (bytes: Uint8Array | string): string =>
@@ -50,13 +49,12 @@ export const isUnavailable = (value: unknown): value is Unavailable =>
 export interface GitHubReader {
   refTip(repository: string, ref: string): string | 'missing' | Unavailable
   pullRequest(repository: string, number: number): GitHubPullRequest | 'missing' | Unavailable
-  // In order; the last one is the head the pull request carried when it was merged.
+
   pullRequestCommits(repository: string, number: number): readonly string[] | Unavailable
   mergedPullRequestsForCommit(repository: string, sha: string): readonly number[] | Unavailable
   compare(repository: string, base: string, head: string): CompareStatus | Unavailable
 }
 
-// Provider revisions reach Git as operands, so they are accepted only as exact hashes.
 const PullRequestPayload = Schema.Struct({
   merged: Schema.Boolean,
   merge_commit_sha: Schema.NullOr(CommitSha),
@@ -76,8 +74,6 @@ const ComparePayload = Schema.Struct({
   status: Schema.Literals(['identical', 'ahead', 'behind', 'diverged']),
 })
 
-// All GitHub calls of one worker request share this budget, half the lifecycle's 60 s request
-// timeout, so a slow provider ends in unknown evidence; it bounds provider time, not local Git.
 const PROVIDER_BUDGET_MS = 30_000
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
@@ -121,15 +117,13 @@ const refPath = (ref: string): string => ref.replace(/^refs\//, '')
 const orUnavailable = <A>(value: A | 'missing' | Unavailable, what: string): A | Unavailable =>
   value === 'missing' ? { unavailable: `${what} was not found` } : value
 
-// The budget starts when the reader is made; each call gets at most what is left of it.
 export const makeGitHubReader = (
   call: GhCall = ghApi,
   budgetMs: number = PROVIDER_BUDGET_MS,
   clock: () => number = () => performance.now()
 ): GitHubReader => {
   const deadline = clock() + budgetMs
-  // Identical reads of one request, such as the task target's tip for each workspace, are asked
-  // once.
+
   const answered = new Map<string, ReturnType<GhCall> | Unavailable>()
   const ask = (endpoint: string): ReturnType<GhCall> | Unavailable => {
     const known = answered.get(endpoint)
@@ -141,7 +135,6 @@ export const makeGitHubReader = (
       }
     let response: ReturnType<GhCall> | Unavailable
     try {
-      // A child-process timeout must be a whole number, and 0 would mean none.
       response = call(endpoint, Math.ceil(remaining))
     } catch (cause) {
       response = { unavailable: errorText(cause) }
@@ -261,7 +254,7 @@ const SENSITIVE_PARTS = [
   'private_key',
   'privatekey',
 ]
-// A name heuristic, not a detector: it never certifies that a file is safe.
+
 export const sensitiveName = (relativePath: string): boolean => {
   const name = basename(relativePath).toLowerCase()
   if (SENSITIVE_NAMES.has(name) || name.startsWith('.env.') || name.startsWith('id_rsa'))
@@ -472,7 +465,7 @@ const provePullRequest = (
     if (isUnavailable(commits)) return unknown(`${label} commits: ${commits.unavailable}`)
     const mergedHead = commits.at(-1)
     if (mergedHead === undefined) return unknown(`${label} lists no commits`)
-    // Two independent provider facts must agree on the merged head before it binds anything.
+
     if (mergedHead !== pull.headSha)
       return unknown(
         `${label} lists ${mergedHead.slice(0, 12)} as its last commit but ${pull.headSha.slice(0, 12)} as its head; the merged source cannot be bound`
@@ -743,6 +736,12 @@ export const verifyEvidence = (
   const rules = evaluateRules(subject.checkout, subject.head, subject.approvals)
   invalid.push(...rules.problems)
   const manifest: ManifestEntry[] = []
+  const publicationsByPath = new Map<string, PublicationReference[]>()
+  for (const reference of subject.publications) {
+    const references = publicationsByPath.get(reference.relativePath)
+    if (references === undefined) publicationsByPath.set(reference.relativePath, [reference])
+    else references.push(reference)
+  }
   let published = 0
   let regenerable = 0
   let blocking = 0
@@ -778,10 +777,8 @@ export const verifyEvidence = (
       )
       continue
     }
-    const references = subject.publications.filter(
-      reference => reference.relativePath === file.path
-    )
-    if (references.length > 0 && file.kind === 'file') {
+    const references = publicationsByPath.get(file.path)
+    if (references !== undefined && file.kind === 'file') {
       const digest = sha256Hex(readFileSync(join(subject.checkout, file.path)))
       const match = references.find(
         reference => reference.sha256 === digest && reference.byteLength === file.size

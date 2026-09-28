@@ -1,5 +1,3 @@
-// The stub-lifecycle PTY probe covers fault injection; this one keeps every workspace
-// decision real, so it catches drift at the seam that the stub cannot see.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import {
@@ -60,8 +58,7 @@ const signal = (marker: string) => process.stdout.write(`\nDEV_REAL_AUTHORITY_${
 
 mkdir(lead)
 writeFileSync(join(lead, 'AGENTS.md'), 'real-authority probe: lead\n')
-// The first target commit carries a checkout filter whose smudge would leave a marker, so a
-// managed worktree of it must be refused before any Git effect.
+
 writeFileSync(join(lead, '.gitattributes'), 'AGENTS.md filter=probe\n')
 git(['init', '--quiet', '-b', 'main'], lead)
 git(['config', 'user.email', 'real-authority@example.invalid'], lead)
@@ -216,7 +213,7 @@ const recordingNotices = (context: ExtensionContext): ExtensionContext =>
                   notices.push(args[0])
                   ui.notify(...args)
                 }
-              // The driver answers a confirmation only once it is open, so its opening is signalled.
+
               if (uiKey === 'confirm')
                 return (...args: Parameters<ExtensionContext['ui']['confirm']>) => {
                   confirmations += 1
@@ -364,8 +361,6 @@ const worktrees = () =>
     .filter(line => line.startsWith('worktree '))
 const SHELL_GONE = 'The shell process group and every tracked descendant were observed gone'
 
-// The first contended write needs a managed worktree of the filtered commit: the authority
-// refuses it before any Git effect, and the host reports that without leaving its binding.
 await within(refusalEnded.promise, 30000, 'the turn with the refused allocation to end')
 await claim(
   'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI and changes nothing: the binding is kept, neither the write nor the filter runs, and no worktree or pending operation is left',
@@ -388,7 +383,7 @@ await claim(
     })
   }
 )
-// Later contention allocates from a commit without the filter.
+
 git(['rm', '--quiet', '.gitattributes'], lead)
 git(['commit', '--quiet', '-m', 'real-authority fixture'], lead)
 const leadCommit = git(['rev-parse', 'HEAD'], lead)
@@ -485,8 +480,6 @@ await claim('a tool without a verified workspace effect is refused without endin
   assert.equal(providerCall, script.length, 'refusing the unverified tool did not end the turn')
 })
 
-// Another lifecycle on this authority keeps a second conversation live, as another installation
-// would. Switching this runtime to it must be cancelled, never failed: Pi exits on a failure.
 const heldManager = pi.SessionManager.create(lead, sessionDir)
 const heldReply = assistantMessage([{ type: 'text', text: 'held conversation' }], 'stop')
 heldManager.appendMessage(heldReply)
@@ -602,8 +595,6 @@ await claim(
   }
 )
 
-// A /reload keeps the conversation's live shells; any other session end stops them. The
-// backgrounded sleep outlives the shell, so its use stays live until the family is gone.
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0)
@@ -621,7 +612,7 @@ await workspaceHost.shellOperations.exec(
   { onData: () => undefined }
 )
 const survivorPid = Number(readFileSync(survivorPidFile, 'utf8'))
-// A failed run must not leak the family that only the session end would stop.
+
 let survivorStopped = false
 process.on('exit', () => {
   if (!survivorStopped)
@@ -652,8 +643,6 @@ await claim(
   }
 )
 
-// The worktree's untracked files are the probe's fixtures, removed so the worktree can be
-// eligible; the live survivor shell is what the confirmation must stop.
 const hostTask = binding.taskId
 if (hostTask === undefined) throw new Error('the rebound conversation carries a task')
 await lifecycle.recordTarget(hostTask, { kind: 'local', ref: 'refs/heads/main' })
@@ -705,7 +694,7 @@ const closure = await within(
   90000,
   'the confirmed guided release to reach the launcher boundary'
 )
-// The driver typed a prompt right after answering the confirmation; the parked host must hold it.
+
 await sleep(1500)
 await claim(
   "confirming the release stops this conversation's live shell family, observes it gone and hands the fenced request to the launcher with the TUI parked",

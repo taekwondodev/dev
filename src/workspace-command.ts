@@ -342,8 +342,7 @@ const withoutEffects = (
   effects: [],
   retained: [],
 })
-// Only an invalid request is refused before any effect; any other failure, a lost reply or a
-// worker that died, may follow an effect that already happened.
+
 const failedAttempt = (
   taskId: WorkspaceId,
   assessment: WorkspaceAssessment,
@@ -425,8 +424,6 @@ export const releaseExitCode = (run: ReleaseRun): 0 | 1 =>
     ? 0
     : 1
 
-// An incomplete command changed nothing only when every workspace was blocked without effect;
-// otherwise something changed, or what happened needs review.
 const incompleteLabel = (results: readonly WorkspaceReleaseResult[]): string => {
   if (results.every(result => result.outcome === 'blocked' && result.effects.length === 0))
     return 'nothing was changed'
@@ -479,7 +476,7 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
           ? {}
           : { ownConversation: scope.current.conversation }),
       })
-      // Exit 0 means the assessment was returned; its text carries blockers and unknowns.
+
       return { exitCode: 0, text: formatAssessments(command.taskId, assessments) }
     }
     if (command.kind === 'inspect') {

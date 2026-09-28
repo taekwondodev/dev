@@ -1,7 +1,3 @@
-// The real gh-backed GitHub reader against a public merged pull request whose source branch was
-// deleted afterwards (cli/cli#14497, squash-merged into trunk on 2026-09-22). Read-only and
-// network-dependent: it is not part of `workspace:check`, and the ticket asks for the adapter
-// facts to be exercised through a real reader once, not for a recurring availability gate.
 import assert from 'node:assert/strict'
 import { makeGitHubReader, isUnavailable } from '../src/workspace-evidence.ts'
 import { makeClaims } from './workspace-check-support.ts'

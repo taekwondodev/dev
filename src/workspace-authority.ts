@@ -69,9 +69,6 @@ const canonicalRoot = (requested: string): string => {
   return canonicalPath(absolute).path
 }
 
-// Initial support is local macOS storage. A synchronized folder or network mount can
-// replay or reorder SQLite and gate files outside the authority's control. No detector
-// can recognize every sync agent, so only the known cases are refused.
 const SUPPORTED_FILESYSTEMS = new Set(['apfs', 'hfs'])
 const SYNCHRONIZED_FOLDERS = [
   ['Library', 'Mobile Documents'],
@@ -87,13 +84,14 @@ export const unsupportedAuthorityStorage = (input: {
     if (isWithin(folder, input.path))
       return `Workspace authority cannot live in a synchronized folder: ${folder}`
   }
-  const mount = input.mountTable
-    .split('\n')
-    .map(line => /^.+? on (.+) \((.+)\)$/.exec(line))
-    .filter(match => match !== null)
-    .map(match => ({ point: match[1] ?? '', options: (match[2] ?? '').split(', ') }))
-    .filter(entry => entry.point !== '' && isWithin(entry.point, input.path))
-    .toSorted((left, right) => right.point.length - left.point.length)[0]
+  let mount: { point: string; options: string[] } | undefined
+  for (const line of input.mountTable.split('\n')) {
+    const match = /^.+? on (.+) \((.+)\)$/.exec(line)
+    if (match === null) continue
+    const [, point = '', options = ''] = match
+    if (point !== '' && point.length > (mount?.point.length ?? 0) && isWithin(point, input.path))
+      mount = { point, options: options.split(', ') }
+  }
   if (mount === undefined) return `Cannot identify the filesystem holding ${input.path}`
   const [type = 'unknown'] = mount.options
   if (!mount.options.includes('local'))
@@ -127,8 +125,7 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     insert.run('namespace_id', namespaceId)
     insert.run('protocol_version', String(PROTOCOL_VERSION))
   })
-  // Catalog data is durably published in DELETE mode first; only then switch the
-  // complete record database to WAL. Never reset an existing database here.
+
   let db: DatabaseSync | undefined
   try {
     db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
@@ -221,7 +218,6 @@ export class WorkspaceAuthority {
     this.storageChecked = true
   }
 
-  // The caller owns the returned protocol gate.
   private joinNamespace(): { readonly id: WorkspaceId; readonly release: GateRelease } {
     const id = validateProtocol(this.paths.protocol)
     const release = acquireProtocolGate(this.paths.protocol, this.root, id)
@@ -428,11 +424,7 @@ export class WorkspaceAuthority {
         requireReview(
           `Repository common directory has an unrecognized path alias: ${repository.commonPath}`
         )
-      if (byPath !== undefined) {
-        if (byPhysical === undefined || textField(byPath, 'id') !== textField(byPhysical, 'id'))
-          requireReview(`Repository physical identity changed: ${repository.commonPath}`)
-        registered = validateRepositoryRecord(repository, byPath)
-      } else {
+      if (byPath === undefined) {
         const provisioning: RepositoryCatalogRecord = {
           id: newId(),
           commonPath: repository.commonPath,
@@ -458,6 +450,10 @@ export class WorkspaceAuthority {
             )
         })
         registered = provisioning
+      } else {
+        if (byPhysical === undefined || textField(byPath, 'id') !== textField(byPhysical, 'id'))
+          requireReview(`Repository physical identity changed: ${repository.commonPath}`)
+        registered = validateRepositoryRecord(repository, byPath)
       }
     } catch (cause) {
       if (cause instanceof WorkspaceError) throw cause

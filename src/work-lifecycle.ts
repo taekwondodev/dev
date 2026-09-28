@@ -455,8 +455,6 @@ export const ownedProcesses = (
     rememberedRoot !== undefined &&
     rememberedRoot.birth !== undefined
   ) {
-    // The exited root's group stays ours until it is observed empty: while any member
-    // lives, no new process can take its ID, so a member reparented away is still found.
     for (const item of table) {
       if (item.group === rememberedRoot.group && !blocked.has(item.pid) && !selected.has(item.pid))
         selected.set(item.pid, item)

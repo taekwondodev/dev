@@ -1,5 +1,3 @@
-# Python only because Node has no built-in pseudo-terminal. Keys name the fixture values a probe
-# prints at its inputs marker as {FIELDS}, so no fixture identity is copied here.
 import json
 import os
 import pty
@@ -22,7 +20,7 @@ class Action:
     keys: str
     required: bool = True
     delay: float = 0.0
-    # How many times the trigger must appear, for a prompt that recurs in one transcript.
+
     occurrence: int = 1
 
 
@@ -34,10 +32,10 @@ class Probe:
     timeout: float = 240.0
     fixture_marker: str | None = None
     inputs_marker: str | None = None
-    # Text the pseudo-terminal transcript must contain for the probe to pass: what a child of the
-    # probe printed straight to the terminal, which the probe itself cannot read back.
+
+
     expect: tuple[str, ...] = ()
-    # Extra environment for a variant of a probe script.
+
     env: tuple[tuple[str, str], ...] = ()
 
 
@@ -78,7 +76,7 @@ LAUNCHER_ACTIONS = (
 
 
 PROBES = {
-    # A stub lifecycle, for fault injection the real authority cannot be driven into.
+
     'stub': Probe(
         script='scripts/workspace-host-pty-probe.ts',
         passed_marker='DEV36_TUI_HOST_PROBE_PASSED ',
@@ -86,8 +84,8 @@ PROBES = {
         inputs_marker='DEV36_INPUTS ',
         actions=STUB_ACTIONS,
     ),
-    # Every workspace decision real, to catch drift at the seam the stub cannot see. It ends
-    # with the guided release of the TUI's own task.
+
+
     'real': Probe(
         script='scripts/workspace-host-real-authority-probe.ts',
         passed_marker='DEV_REAL_AUTHORITY_PROBE_PASSED ',
@@ -110,9 +108,8 @@ PROBES = {
                    'stray input after confirm\r', delay=1.0),
         ),
     ),
-    # The real launcher opening the real TUI, released from inside it. The launcher is a child
-    # inheriting the pseudo-terminal, so its triggers are Pi's own rendering: the repository path in
-    # the footer, then the confirmation title.
+
+
     'launcher': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
@@ -121,8 +118,8 @@ PROBES = {
         actions=LAUNCHER_ACTIONS,
         expect=('its workspace attachment is closed', '(pre-existing) at', ': released', 'Exit 0'),
     ),
-    # The same guided release, with a SIGINT reaching the launcher during the teardown after the
-    # handover: it must say the work stopped and nothing was released, and exit 130.
+
+
     'launcher-interrupt': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
@@ -132,7 +129,25 @@ PROBES = {
         expect=('its workspace attachment is closed', 'interrupted before its attempt started', 'Exit 130'),
         env=(('LAUNCHER_TUI_FAULT', 'sigint-after-handover'),),
     ),
-    # The terminal release: the real launcher answering its confirmation from the pseudo-terminal.
+
+    'launcher-shutdown-failure': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=LAUNCHER_ACTIONS,
+        expect=(
+            'The TUI is closed and its work was stopped',
+            'its workspace attachment is closed',
+            'Closing its session then failed',
+            'injected session disposal failure',
+            'Nothing was released.',
+            'Run dev workspace release {TASK} for a fresh attempt.',
+            'Exit 1.',
+        ),
+        env=(('LAUNCHER_TUI_FAULT', 'shutdown-after-handover'),),
+    ),
+
     'release': Probe(
         script='scripts/workspace-release-pty-probe.ts',
         passed_marker='DEV_RELEASE_PTY_PROBE_PASSED ',
@@ -140,7 +155,7 @@ PROBES = {
         timeout=180.0,
         actions=(
             Action('cancel', 'DEV_RELEASE_READY_FOR_CANCEL', 'n\r', delay=1.0),
-            # Only after readline has put the terminal in raw mode, or Ctrl-C would signal the probe.
+
             Action('ctrl-c', 'Type y to release, anything else to cancel: ', '\x03', delay=0.3,
                    occurrence=2),
             Action('ctrl-z', 'Type y to release, anything else to cancel: ', '\x1a', delay=0.3,
@@ -155,8 +170,6 @@ PROBES = {
 }
 
 
-# Pi's TUI can keep running on SIGTERM while it shuts down, so a probe that does not exit is
-# killed after a grace period instead of blocking the driver.
 def stop(pid: int, grace: float = 10.0) -> int:
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + grace
@@ -244,7 +257,15 @@ def run(name: str, probe: Probe) -> bool:
     )
     missing = sorted(action.name for action in probe.actions
                      if action.required and action.name not in sent)
-    missing_output = [needle for needle in probe.expect if needle not in text]
+    missing_output = []
+    for needle in probe.expect:
+        try:
+            expected = needle.format_map(inputs)
+        except KeyError:
+            missing_output.append(needle)
+            continue
+        if expected not in text:
+            missing_output.append(expected)
     passed = (os.WIFEXITED(exit_status) and os.WEXITSTATUS(exit_status) == 0
               and report is not None and not missing and not missing_output
               and input_error is None)

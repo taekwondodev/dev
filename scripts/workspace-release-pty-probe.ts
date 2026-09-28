@@ -1,11 +1,9 @@
-// Drives the real terminal `dev workspace release <task>` in the pseudo-terminal the Python
-// driver provides: the confirmation is answered by keys, first cancelling, then confirming a run
-// that a child under the launcher entry point interrupts with SIGINT, then confirming a fresh run.
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Effect } from 'effect'
 import { launch } from '../src/launcher.ts'
 import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
@@ -58,12 +56,11 @@ try {
     process.exitCode = 0
     return code
   }
-  // A signal must meet the launcher's real signal wiring, which only its runMain entry point
-  // installs, so that run is a child process sharing this pseudo-terminal.
+
   const runInterrupted = async (args: readonly string[]): Promise<number | null> => {
     const child = spawn(
       process.execPath,
-      [new URL('./workspace-release-interrupt-driver.ts', import.meta.url).pathname, ...args],
+      [fileURLToPath(new URL('./workspace-release-interrupt-driver.ts', import.meta.url)), ...args],
       { stdio: 'inherit', env: { ...process.env, RELEASE_INTERRUPT_ROOT: root } }
     )
     return new Promise(resolveExit => {
@@ -93,7 +90,7 @@ try {
     },
     60_000
   )
-  // The driver presses each key at the next confirmation prompt, in this order.
+
   for (const key of ['Ctrl-C', 'Ctrl-Z', 'Ctrl-D on an empty line'])
     await claim(
       `${key} at the terminal confirmation cancels at once without suspending: exit 130 and both reservations remain`,

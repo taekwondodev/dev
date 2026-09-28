@@ -91,7 +91,6 @@ export interface WorkspaceWorkControls {
   readonly stopAll: (reason: string) => Effect.Effect<void, { readonly message: string }>
 }
 
-// The launcher attempts it only after the TUI stopped (ADR 0005, Release).
 export interface GuidedRelease {
   readonly taskId: WorkspaceId
   readonly commandId: WorkspaceId
@@ -107,7 +106,7 @@ export interface WorkspaceHost {
   readonly editOperations: EditOperations
   readonly guidedRelease: Deferred.Deferred<GuidedRelease>
   isParked(): boolean
-  // Whether closing this session's workspace attachment was observed to succeed.
+
   isDetached(): boolean
   requestRebind(
     handoff: WorkspaceHandoff,
@@ -180,8 +179,7 @@ const decodeSessionHeader = Schema.decodeUnknownOption(
     cwd: Schema.optional(Schema.Unknown),
   })
 )
-// ADR 0005: as Pi opens a session file, its header is the first line that parses, blank and
-// malformed lines skipped, and a header without a cwd falls back to the process cwd.
+
 const sessionFileCwd = (file: string): string => {
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     const entry = decodeSessionLine(line)
@@ -193,8 +191,7 @@ const sessionFileCwd = (file: string): string => {
   }
   return process.cwd()
 }
-// Pi's own errors pass through unchanged as defects, since its TUI recovers from some by their
-// class and the host handles none of them.
+
 const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(call)
 const pendingSwitchNotice =
   'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
@@ -206,15 +203,9 @@ const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostE
     catch: cause => hostFailure(errorText(cause)),
   })
 
-// The authority answers `blocked` to a switch it refused before the host acted, having
-// already withdrawn it and kept the last confirmed binding.
 const isWithdrawn = (error: unknown): boolean =>
   error instanceof WorkspaceError && error.outcome === 'blocked'
 
-// The authority keys a conversation by its canonical file, Pi by the path it was given. Paths
-// also reach the host from conversation headers and user input; one that cannot be resolved
-// keeps its absolute spelling, which names no live conversation, and the authority refuses it
-// if it is ever attached.
 const conversationFile = (file: string): string => {
   try {
     return canonicalConversationFile(file)
@@ -255,8 +246,6 @@ export const noUiTrustContext = (cwd: string): ProjectTrustContext => ({
   },
 })
 
-// A /reload during a switch makes every context captured before it throw, so a transition keeps
-// only these parts, read while its context was live.
 type Surface = Pick<ExtensionContext, 'mode' | 'hasUI' | 'ui'>
 const surfaceOf = (context: ExtensionContext): Surface => ({
   mode: context.mode,
@@ -310,7 +299,6 @@ const switchNotices = (
 export const keptConversationGuidance = (sessionFile: string): string =>
   `The conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
 
-// ADR 0005, executable extensions.
 type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner' | 'evidence'
 
 function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
@@ -384,7 +372,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let runtime: AgentSessionRuntime | undefined
   let currentContext: ExtensionContext | undefined
   let currentApi: ExtensionAPI | undefined
-  // A committed runtime ends only a switch fence.
+
   let parked: false | 'switch' | 'guided-release' = false
   let closed = false
   let pending: PendingTransition | undefined
@@ -432,17 +420,13 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
     })
   )
-  // Created after the shell, so closing the host interrupts its handoffs before the shell's
-  // own observers.
+
   const background = yield* FiberSet.make<void>()
   const runInBackground = yield* FiberSet.runtime(background)()
-  // Starts once the Pi call that requested it has returned.
+
   const runDeferred = (effect: Effect.Effect<void>) =>
     runInBackground(Effect.yieldNow.pipe(Effect.andThen(effect)))
 
-  // A copied conversation is attached only after Pi tears the current session down, where a
-  // refusal is fatal, so a working directory outside Git is refused before. A missing one is
-  // left to Pi, which asks for another before teardown.
   const importOutsideCheckout = Effect.fnUntraced(function* (
     source: string,
     cwdOverride: string | undefined
@@ -672,7 +656,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
       return
     }
-    // The host never acted, so the authority can keep the last confirmed binding.
+
     const alreadyWithdrawn = isWithdrawn(error) ? Effect.void : Effect.fail(error)
     const withdrawn = yield* Effect.exit(
       reached(transition, 'handoff-sent')
@@ -696,7 +680,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
   })
 
-  // A quit waits for `settled`, so it completes only once the handoff's outcome is recorded.
   const performPendingHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (pending !== transition || reached(transition, 'switch-started')) return
     yield* runHostHandoff(transition).pipe(
@@ -732,8 +715,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     immediate: boolean,
     source: WorkspaceAttachment = activeAttachment
   ): void => {
-    // A rebind that reaches the host while Pi replaces the session, or from an attachment that
-    // is no longer active, would run against the wrong runtime, so the authority takes it back.
     if (pending || parked || replacing || source !== activeAttachment) {
       withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
       return
@@ -963,8 +944,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
     const staged = stagedAttachments.get(key)
     const canReuse = !reopen && !staged && isBoundTo(activeConversation, identity)
-    // A fork continues the history of the conversation it leaves, so it starts in that
-    // conversation's current workspace rather than the cwd recorded in the copied header.
+
     const resolved = yield* attachForManager(
       manager,
       forkOfActive ? activeAttachment.binding.cwd : input.cwd,
@@ -1038,7 +1018,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   ) {
     const source = options.resolveImportPath(inputPath)
     const sessionDir = runtime?.session.sessionManager.getSessionDir()
-    // A missing file is left to Pi, which reports it and keeps the current session.
+
     const stored =
       sessionDir !== undefined &&
       resolve(sessionDir, basename(source)) === source &&
@@ -1055,8 +1035,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
   })
 
-  // Wraps Pi's `/resume`, and an import of a conversation already stored in the session
-  // directory, so the target is attached to the authority before Pi replaces the runtime.
   const switchSession = Effect.fnUntraced(function* (
     rawSwitch: AgentSessionRuntime['switchSession'],
     sessionFile: string,
@@ -1099,8 +1077,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           sessionId: id,
           minimumEntries: targetManager.getEntries().length,
         }
-      // Nothing has changed before Pi's own switch, so a refusal here is reported and the
-      // switch cancelled; Pi treats a rejected switch as fatal and exits.
+
       const attached = yield* Effect.exit(
         workspaceConversation(targetManager, options.dataHome).pipe(
           Effect.flatMap(conversation =>
@@ -1148,9 +1125,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       Effect.tapError(() =>
         Effect.gen(function* () {
           if (replacementStarted) {
-            // Once Pi's replacement has been invoked, an exception does not prove
-            // whether outgoing shutdown or target runtime construction happened.
-            // Preserve both sides and require explicit recovery.
             parked = 'switch'
           } else if (runtimePreparationSerial === previousSerial && staged && stagedKey) {
             stagedAttachments.delete(stagedKey)
@@ -1192,8 +1166,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (reason !== 'reload') yield* shell.stop
     if (reason !== 'quit') return
     if (reached(pending, 'switch-started')) return
-    // The authority's callback answers `cancelled` while quitting, since the host has not
-    // acted, so waiting for it settles the switch instead of leaving it unknown.
+
     const inFlight = pending
     if (inFlight !== undefined && reached(inFlight, 'handoff-sent')) {
       yield* Deferred.await(inFlight.settled)
@@ -1425,7 +1398,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         display(api, context, formatReleaseRun(command.taskId, run))
         return
       }
-      // The guided closure keeps the order of ADR 0005, Release.
+
       parked = 'guided-release'
       capturePendingInput(context)
       const controls = workControls

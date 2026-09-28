@@ -1,13 +1,18 @@
-// The real launcher, opening the real Pi TUI on the pseudo-terminal the Python driver provides,
-// released from inside that TUI: `/workspace release <task>` is typed and its confirmation
-// answered. The launcher runs as a child that inherits the pseudo-terminal, so this probe can
-// verify the authority afterwards.
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { makeClaims } from './workspace-check-support.ts'
+import { fileURLToPath } from 'node:url'
+import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-tui-')))
@@ -15,8 +20,9 @@ const signal = (marker: string) => process.stdout.write(`\nDEV_LAUNCHER_TUI_${ma
 const git = (args: readonly string[], cwd: string) =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim()
 const { claim, passed } = makeClaims()
-// Set by the driver table for the variant whose handover teardown receives a SIGINT.
+
 const interruptedAfterHandover = process.env.LAUNCHER_TUI_FAULT === 'sigint-after-handover'
+const failedAfterHandover = process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-handover'
 try {
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
     throw new Error(
@@ -36,8 +42,33 @@ try {
   git(['add', 'AGENTS.md'], repo)
   git(['commit', '--quiet', '-m', 'fixture'], repo)
 
-  // The task reserves the pre-existing checkout the TUI will open, so the TUI's own workspace is
-  // in the release scope and the guided path applies.
+  let history: { path: string; text: string } | undefined
+  if (failedAfterHandover) {
+    const { pi } = await loadInstalledPi()
+    const sessions = pi.SessionManager.create(repo, join(dataHome, 'sessions'))
+    sessions.appendMessage({ role: 'user', content: 'retain this conversation', timestamp: 1 })
+    sessions.appendMessage({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'history that must survive a failed guided shutdown' }],
+      api: 'openai-completions',
+      provider: 'fixture',
+      model: 'fixture',
+      stopReason: 'stop',
+      timestamp: 2,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    })
+    const path = sessions.getSessionFile()
+    assert.ok(path !== undefined)
+    history = { path, text: readFileSync(path, 'utf8') }
+  }
+
   const lifecycle = await openLifecycle({ root })
   const ownerHome = join(sandbox, 'owner')
   mkdirSync(ownerHome)
@@ -54,14 +85,23 @@ try {
   if (taskId === undefined) throw new Error('The fixture reservation carries no task')
   await lifecycle.close()
 
-  const driverPath = new URL('./workspace-launcher-tui-driver.ts', import.meta.url).pathname
+  const driverPath = fileURLToPath(new URL('./workspace-launcher-tui-driver.ts', import.meta.url))
   process.stdout.write(
     `\nDEV_LAUNCHER_TUI_INPUTS ${JSON.stringify({ TASK: taskId, REPO: repo })}\n`
   )
   signal('STARTING_LAUNCHER')
   const child = spawn(
     process.execPath,
-    [driverPath, '--cwd', repo, '--data-home', dataHome, '--profile', 'general'],
+    [
+      driverPath,
+      '--cwd',
+      repo,
+      '--data-home',
+      dataHome,
+      '--profile',
+      'general',
+      ...(history === undefined ? [] : ['--resume', history.path]),
+    ],
     {
       stdio: 'inherit',
       env: {
@@ -78,19 +118,33 @@ try {
       child.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }))
     }
   )
-  if (interruptedAfterHandover) {
+  if (interruptedAfterHandover || failedAfterHandover) {
     await claim(
-      'a SIGINT during the teardown after the guided handover, before the attempt, exits 130 and releases nothing: the reservation and the files stay',
+      interruptedAfterHandover
+        ? 'a SIGINT during the teardown after the guided handover, before the attempt, exits 130 and releases nothing: the reservation and the files stay'
+        : 'a session disposal failure after the guided handover exits 1 without releasing the reservation or changing files, and keeps the conversation',
       async () => {
         assert.equal(exit.signal, null)
-        assert.equal(exit.code, 130)
+        assert.equal(exit.code, interruptedAfterHandover ? 130 : 1)
         const after = await openLifecycle({ root })
         try {
-          assert.equal((await after.check(taskId)).length, 1, 'the reservation is kept')
+          const retained = await after.check(taskId)
+          assert.equal(retained.length, 1, 'the reservation is kept')
+          assert.equal(retained[0]?.workspaceId, write.grant.workspaceId)
+          const views = await after.inspect({ taskId })
+          assert.equal(views.length, 1)
+          assert.equal(views[0]?.outcome, 'preserved-for-resume')
+          assert.deepEqual(views[0]?.pending, [], 'no release intent was recorded')
         } finally {
           await after.close()
         }
-        assert.ok(existsSync(join(repo, 'AGENTS.md')))
+        assert.equal(readFileSync(join(repo, 'AGENTS.md'), 'utf8'), 'launcher tui probe\n')
+        assert.equal(git(['status', '--porcelain'], repo), '')
+        if (history !== undefined)
+          assert.ok(
+            readFileSync(history.path, 'utf8').startsWith(history.text),
+            'the persisted conversation history remains intact'
+          )
       }
     )
   } else {

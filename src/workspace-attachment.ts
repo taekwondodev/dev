@@ -82,7 +82,7 @@ export const attachConversation = (
   const normalized = conversationRecord(input.conversation)
   const live = states.get(normalized.key)
   if (live !== undefined) {
-    const pending = live.pending
+    const { pending } = live
     if (pending !== undefined) {
       const selected = input.selection
       const selectionMatches =
@@ -172,9 +172,23 @@ export const attachConversation = (
         inDb(authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
       }
       repoId = selected.repo
-    } else if (previous !== undefined) {
-      repoId = previous.repo
-      binding = previous.binding
+    } else if (previous === undefined) {
+      const git = canonicalGitWorkspace(input.cwd)
+      repoId = authority.registerRepository(git)
+      const workspace = registerWorkspace(authority, repoId, git)
+      const actualCwd = realpathSync(resolve(input.cwd))
+      if (!isWithin(workspace.path, actualCwd))
+        invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
+      binding = {
+        key: normalized.key,
+        conversation: normalized.conversation,
+        workspaceId: workspace.id,
+        cwd: actualCwd,
+        revision: 0,
+      }
+      inDb(authority, repoId, db => transaction(db, () => putBinding(db, binding)))
+    } else {
+      ;({ repo: repoId, binding } = previous)
       const workspace = inDb(authority, repoId, db => getWorkspace(db, binding.workspaceId))
       if (workspace === undefined)
         requireReview(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
@@ -192,21 +206,6 @@ export const attachConversation = (
         requireReview(
           `The working directory bound to this conversation no longer exists and is not recreated: ${binding.cwd}`
         )
-    } else {
-      const git = canonicalGitWorkspace(input.cwd)
-      repoId = authority.registerRepository(git)
-      const workspace = registerWorkspace(authority, repoId, git)
-      const actualCwd = realpathSync(resolve(input.cwd))
-      if (!isWithin(workspace.path, actualCwd))
-        invalid(`Conversation cwd is outside its Git checkout: ${input.cwd}`)
-      binding = {
-        key: normalized.key,
-        conversation: normalized.conversation,
-        workspaceId: workspace.id,
-        cwd: actualCwd,
-        revision: 0,
-      }
-      inDb(authority, repoId, db => transaction(db, () => putBinding(db, binding)))
     }
     const state: ConversationState = {
       key: normalized.key,
@@ -322,8 +321,7 @@ export const settleClosingState = (
       return []
     }
   })
-  // Close must not fail, so it cannot refuse the way a reported settlement does. Instead it
-  // declines to claim quiescence it has not established, keeping the workspace blocked.
+
   settleDependentsFirst(
     authority,
     closing,
@@ -335,9 +333,7 @@ export const settleClosingState = (
             reason: 'attachment-closed-without-authoritative-operation-cessation',
           },
     'attachment-closed-while-dependent-scoped-operations-were-live',
-    () => {
-      /* the durable earlier claim remains blocking */
-    }
+    () => {}
   )
   for (const lease of leases.toReversed()) {
     if (lease.gates !== undefined) {
@@ -352,9 +348,7 @@ export const settleClosingState = (
   for (const held of state.extraGates.splice(0)) {
     try {
       releaseGates(held.gates)
-    } catch {
-      /* retain persisted use rows */
-    }
+    } catch {}
   }
   state.closing = false
 }

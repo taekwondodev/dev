@@ -209,8 +209,6 @@ const validateDiagnostics = (
   }
 }
 
-// The offline probes replace the model and observe dev's extensions; the launcher leaves the
-// model to Pi's settings.
 export interface RuntimeParts {
   readonly api: PiApi
   readonly packageRoot: string
@@ -347,8 +345,6 @@ export const makeRuntimeFactory = (
 const disposeRuntime = (runtime: AgentRuntime): Effect.Effect<void, never> =>
   fromPromise('Cannot dispose Pi runtime', () => runtime.dispose()).pipe(Effect.orDie)
 
-// Pi's loop never returns and its quit exits the process, so a guided release races it
-// (ADR 0005, Release).
 const runInteractive = (
   api: PiApi,
   runtime: AgentRuntime,
@@ -380,7 +376,6 @@ const exitText = (code: ReleaseExitCode): string => {
   }
 }
 
-// Uninterruptible so that a signal only withdraws unstarted workspaces (ADR 0005, Release).
 const attemptRelease = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
   input: {
@@ -399,12 +394,9 @@ const attemptRelease = Effect.fnUntraced(function* (
   return { run, code }
 }, Effect.uninterruptible)
 
-// The attachment is said closed only when its close completed; the attempt rechecks every use
-// either way.
 const tuiClosedNotice = (request: GuidedRelease, detached: boolean): string =>
   `\nThe TUI is closed and its work was stopped; ${detached ? 'its workspace attachment is closed' : 'closing its workspace attachment was not confirmed, so the release rechecks every use'}. ${keptConversationGuidance(request.conversationFile)}`
-// After the handover the shell always hears what became of the TUI, even when its teardown
-// failed or a signal ended it before the attempt.
+
 const handoverNotice = (
   request: GuidedRelease,
   detached: boolean,
@@ -416,7 +408,6 @@ const handoverNotice = (
     : `${tuiClosedNotice(request, detached)}\nClosing its session then failed (${errorText(Cause.squash(cause))}), so its workspace use may still be recorded. ${retry}\nExit 1.`
 }
 
-// Runs only after the Pi runtime, its attachment and the host closed. Exported for the TUI probe.
 export const completeGuidedRelease = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
   request: GuidedRelease,
@@ -430,9 +421,7 @@ export const completeGuidedRelease = Effect.fnUntraced(function* (
   yield* Effect.sync(() => {
     try {
       process.chdir(returnCwd)
-    } catch {
-      /* the recorded return cwd is still reported as occupied below */
-    }
+    } catch {}
   })
   yield* write(
     `${tuiClosedNotice(request, detached)}\nAttempting the confirmed release of task ${request.taskId}...`
@@ -495,14 +484,10 @@ const installSignalHandlers = (
     }
   })
 
-// Besides `makeRuntimeFactory`, the only way to supply another authority than the fixed one of
-// ADR 0003.
 export interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
 }
 
-// A line editor, so the answer is echoed and editable. Ctrl-C, Ctrl-Z, or Ctrl-D on an empty
-// line cancels; with a SIGTSTP listener readline never suspends the prompt.
 const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
   Effect.callback<boolean>(resume => {
     const reader = createInterface({ input: process.stdin, output: process.stdout, terminal: true })
@@ -821,8 +806,7 @@ const run = Effect.fnUntraced(function* (
   })
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
-  // Set when the TUI hands a confirmed guided release over. From then on a signal withdraws the
-  // confirmed workspaces, and one that lands before the attempt starts still gets a notice.
+
   let handover: { readonly request: GuidedRelease; readonly proceed: () => boolean } | undefined
   let attemptStarted = false
   const sessionProgram = Effect.scoped(
@@ -861,7 +845,6 @@ const run = Effect.fnUntraced(function* (
       )
       const request = yield* runInteractive(api, runtime, workspaceHost)
       if (request !== undefined) {
-        // The TUI's own handlers would exit without a word during the teardown that follows.
         signals.remove()
         const { proceed } = yield* Scope.provide(outerScope)(cancellation)
         handover = { request, proceed }
@@ -907,7 +890,7 @@ export const launch = (
         return false
       })
     ),
-    // The stopped TUI may still hold Pi timers, so a guided release exits explicitly.
+
     Effect.tap(guided =>
       guided === true ? Effect.sync(() => process.exit(process.exitCode ?? 0)) : Effect.void
     ),

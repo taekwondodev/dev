@@ -87,8 +87,6 @@ import {
   type FixtureDescriptor,
 } from './workspace-host-fixture-shapes.ts'
 
-// Write-path validation compares a destination's realpath with the grant's checkout, so a
-// symlinked temp root (macOS /var) would make every in-workspace write look like an escape.
 const fixture = mkdtempSync(join(realpathSync(tmpdir()), 'dev36-host-pty-'))
 process.stdout.write(`\nDEV36_FIXTURE ${fixture}\n`)
 const project = (name: string): string => join(fixture, 'projects', name)
@@ -138,7 +136,7 @@ const WS_RESUME_A = id(16)
 const WS_RESUME_C = id(17)
 const WS_DELEGATED = id(18)
 const NAMESPACE_ID = id(32)
-// The PTY driver types these identities; it reads them here instead of keeping copies.
+
 process.stdout.write(
   `\nDEV36_INPUTS ${JSON.stringify({ TASK_LEAD, TASK_RESUME, TASK_FAIL, WS_RESUME_A, WS_RESUME_C, WS_FAIL })}\n`
 )
@@ -186,7 +184,7 @@ const delegatedDescriptor = descriptor(
 )
 const descriptors = [leadDescriptor, aDescriptor, bDescriptor, cDescriptor, failDescriptor]
 for (const item of [...descriptors, delegatedDescriptor]) initProject(item.path, item.label)
-// Every fixture project carries an extension that must not load, so each is recorded untrusted.
+
 const trustStore = new pi.ProjectTrustStore(agentDir)
 for (const item of [...descriptors, delegatedDescriptor]) trustStore.set(item.path, false)
 const descriptorByPath = new Map(
@@ -212,8 +210,7 @@ const displacements = new Map([
 ])
 
 type UseScope = 'ordinary' | 'delegated' | WorkspaceEffect
-// The stub does not judge reports: whether one is legal is the real authority's rule, which
-// workspace-authority-check.ts and the real-authority probe exercise.
+
 interface FixtureUse {
   readonly grant: WorkspaceGrant
   readonly operation: WorkspaceOperation
@@ -260,7 +257,6 @@ const refuse = (outcome: WorkspaceError['outcome'], message: string): never => {
   throw new WorkspaceError({ outcome, message })
 }
 
-// The fixture keeps its rules as plain async code and meets the host at the Effect boundary.
 const fromAsync = <A>(run: () => Promise<A>): Effect.Effect<A, WorkspaceError> =>
   Effect.tryPromise({
     try: run,
@@ -273,7 +269,6 @@ const fromAsync = <A>(run: () => Promise<A>): Effect.Effect<A, WorkspaceError> =
           }),
   })
 
-// The stub's check and inspect must name the same reservation for a descriptor.
 const reservationIdOf = (item: FixtureDescriptor): WorkspaceId =>
   id(Number(item.workspaceId.slice(-3)) + 100)
 const makeView = (item: FixtureDescriptor, outcome: WorkspaceView['outcome']): WorkspaceView =>
@@ -547,8 +542,7 @@ const unsupported = () =>
       message: 'the stub lifecycle has no release path',
     })
   )
-// While `lingeringOwnUse` is set, inspect keeps a live use of this conversation, so the host's
-// bounded wait for observed cessation runs out.
+
 let lingeringOwnUse = false
 const releaseRequests: ReleaseRequest[] = []
 const lingeringUse = (sessionId: string): WorkspaceView['uses'][number] => ({
@@ -608,7 +602,6 @@ const lifecycle: WorkspaceLifecycle = {
   recordRuleApproval: unsupported,
 }
 
-// A defect stays thrown through the flip, so only an expected refusal is returned.
 const refused = <A>(effect: Effect.Effect<A, WorkspaceCommandError>): WorkspaceCommandError =>
   Effect.runSync(Effect.flip(effect))
 const parseCommand = (tokens: readonly string[]) => Effect.runSync(parseWorkspaceCommand(tokens))
@@ -972,8 +965,6 @@ const wrapWorkspaceCommand = (
   },
 })
 
-// A blocked tool call is the host's return value, not an event, so it is only observable by
-// wrapping the host's own registrations.
 const instrumentHost =
   (factory: (api: ExtensionAPI) => void) =>
   (rawApi: ExtensionAPI): void =>
@@ -1049,8 +1040,6 @@ const shadowRead =
 const observer =
   (cwd: string) =>
   (api: ExtensionAPI): void => {
-    // Pi asks extensions first, with the trust context the runtime was built with; an undecided
-    // answer leaves the decision to the recorded distrust.
     api.on('project_trust', (event, context) => {
       projectTrustContexts.push({ cwd: event.cwd, mode: context.mode, hasUI: context.hasUI })
       return { trusted: 'undecided' }
@@ -1127,7 +1116,6 @@ const observer =
     })
   }
 
-// Only the host receives each runtime's work controls, so the probe takes them at the handover.
 const runtimeHost: WorkspaceHost = new Proxy(workspaceHost, {
   get(target, key) {
     if (key === 'setWorkControls')
@@ -1174,8 +1162,6 @@ runtime = activeRuntime
 workspaceHost.bindRuntime(activeRuntime)
 guard.bind(activeRuntime)
 
-// A failed run must still leave evidence and must not leak the detached process groups
-// (a backgrounded `sleep 600`, WorkOwner loops) that only a later host transition would stop.
 process.on('exit', () => {
   const calls = providerCalls.map(({ step, cwd, parked }) => ({ step, cwd, parked }))
   writeFileSync(
@@ -1312,8 +1298,7 @@ const escapeProcess = processResults.get('work-owner-escape')
 assert.ok(escapeProcess)
 assert.equal(escapeProcess.status, 'running')
 const escapeObservation = await cancelledWork(escapeProcess.id)
-// Input typed while the aborted run is still settling is queued as steering, and an
-// aborted run never delivers it.
+
 await activeRuntime.session.waitForIdle()
 marker('DEV36_READY_FOR_RETAINED_WORK')
 await within(retainedTurnDone.promise, 90000, 'retained background work response')
@@ -1376,7 +1361,6 @@ assert.match(
   /the current workspace is kept\. Workspace transition refused before the host acted; the current binding is kept: fixture target became unavailable/
 )
 
-// The failed rebind below runs in the same TUI, which shows it stayed usable.
 lingeringOwnUse = true
 marker('DEV36_READY_FOR_GUIDED_RELEASE')
 await within(waitForCommand('release:1'), 90000, 'guided release without observed cessation')

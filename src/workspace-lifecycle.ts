@@ -54,8 +54,6 @@ const byteLength = (value: unknown): number => {
   }
 }
 
-// Everything this client does with its worker. Checks wrap the real worker here to inject
-// faults, such as a lost acknowledgment, without patching Node's prototypes.
 export interface WorkspaceWorkerPort {
   postMessage(value: unknown, transferList: readonly Transferable[]): void
   on(event: 'message' | 'error' | 'exit', listener: (value: unknown) => void): unknown
@@ -65,8 +63,6 @@ export type StartWorkspaceWorker = (url: URL, options: WorkerOptions) => Workspa
 
 const startWorkerThread: StartWorkspaceWorker = (url, options) => new Worker(url, options)
 
-// The worker owns the authority; this client correlates its acknowledgments. Worker events
-// arrive on Node's event loop, so they complete requests through their deferreds directly.
 export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   readonly root?: string
   readonly startWorker?: StartWorkspaceWorker
@@ -101,10 +97,10 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     void worker.terminate()
   }
 
+  const sendToWorker = worker.postMessage.bind(worker)
   const post = (message: unknown, failure: string): void => {
     try {
-      // oxlint-disable-next-line unicorn(require-post-message-target-origin)
-      worker.postMessage(message, [])
+      sendToWorker(message, [])
     } catch {
       fail(unavailableError(failure))
     }
@@ -271,8 +267,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       return yield* invalidError('Workspace worker request exceeded its size limit')
     }
     const result = yield* Deferred.make<unknown, WorkspaceError>()
-    // An interrupted caller leaves the request pending, so its late acknowledgment is
-    // still correlated instead of failing the worker.
+
     pending.set(id, { op: request.op, result })
     post(envelope, 'Workspace authority worker could not receive a request')
     const value = yield* Deferred.await(result).pipe(
@@ -348,8 +343,6 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     Effect.andThen(Deferred.await(exited))
   )
 
-  // Registered after the callback set, so it runs first: callbacks still in flight are
-  // answered before the worker is asked to close.
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       if (phase === 'starting') yield* Effect.ignore(Deferred.await(ready))

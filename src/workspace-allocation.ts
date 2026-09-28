@@ -86,8 +86,6 @@ const releaseLocalGates = (state: ConversationState): GateIntent[] => {
   return intents
 }
 
-// Slots are taken in path order so concurrent acquirers cannot deadlock; a writer intent
-// makes its whole slot a writer.
 const groupBySlot = (intents: readonly GateIntent[]): GateIntent[] => {
   const groups = new Map<string, GateIntent>()
   for (const intent of intents) {
@@ -227,8 +225,6 @@ const allocateWorktree = (
   if (targetSlot !== destination)
     requireReview(`Managed worktree destination is not canonical: ${destination}`)
 
-  // Taken before the local path gates are released: it never waits, so a contended
-  // structure gate fails here with the conversation's admission intact.
   const structure = acquireStructureGate(authority.paths, source.git, source.repo)
   state.parked = true
   let gateIntents: GateIntent[] = []
@@ -349,13 +345,11 @@ const allocateWorktree = (
       }
       try {
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, unresolved)))
-      } catch {
-        /* retain the durable started intent */
-      }
+      } catch {}
       state.parked = true
       throw cause
     }
-    // No Git effect started, so the conversation keeps its binding and admission.
+
     if (operation !== undefined) {
       const stopped: TransitionOperationRecord = {
         ...operation,
@@ -364,9 +358,7 @@ const allocateWorktree = (
       }
       try {
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, stopped)))
-      } catch {
-        /* an intent that was never recorded needs no result */
-      }
+      } catch {}
     }
     try {
       if (pathGates === undefined) holdGates(authority, state, gateIntents)
@@ -378,9 +370,7 @@ const allocateWorktree = (
   } finally {
     try {
       structure()
-    } catch {
-      /* a failed release blocks later structural acquisition at the SQLite gate */
-    }
+    } catch {}
   }
 }
 

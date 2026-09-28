@@ -74,8 +74,7 @@ export interface EvidenceReaders {
 const short = (sha: string | undefined): string => (sha === undefined ? '(none)' : sha.slice(0, 12))
 
 type Absence = 'present' | 'absent' | { readonly inaccessible: string }
-// Absence counts only while the anchor directory is reachable. Git deletes an emptied
-// `.git/worktrees`, so an admin directory's anchor is the common directory.
+
 const observeAbsence = (path: string, anchor: string = dirname(path)): Absence => {
   try {
     lstatSync(path)
@@ -130,10 +129,7 @@ const observationText = (observation: RemovalObservation): string =>
     describeAbsence(`Git admin directory ${observation.adminPath}`, observation.admin),
     registrationText(observation.registered),
   ].join('; ')
-// The admin directory Git left behind when it deleted the worktree directory and stopped listing
-// the worktree. Release removes it itself only when it is empty, at exactly the recorded path,
-// with a non-recursive rmdir; never a prune. Any other residue is left to the user, with the
-// reason it was kept.
+
 type AdminResidue =
   | { readonly kind: 'none' | 'empty' | 'outside' | 'not-directory' | 'not-empty' }
   | { readonly kind: 'unreadable'; readonly detail: string }
@@ -158,15 +154,12 @@ const adminResidue = (
     return { kind: 'unreadable', detail: errorText(cause) }
   }
   if (entries.length === 0) return { kind: 'empty' }
-  // Git keeps the worktree's location here: one elsewhere is a moved worktree still using this
-  // directory, while the recorded path itself is only a leftover.
+
   try {
     const gitdir = readFileSync(join(path, 'gitdir'), 'utf8').trim()
     if (gitdir.length > 0 && dirname(gitdir) !== workspace.path)
       return { kind: 'named', worktree: dirname(gitdir) }
-  } catch {
-    /* no gitdir: a leftover directory, not a registration Git can still use */
-  }
+  } catch {}
   return { kind: 'not-empty' }
 }
 const keptResidue = (
@@ -200,8 +193,7 @@ const keptResidue = (
       }
   }
 }
-// What the removal changed, as seen in the observations before and after it. A registration
-// Git no longer listed is credited to dev only when its own rmdir succeeded.
+
 const removalEffects = (
   workspace: WorkspaceRecord,
   before: RemovalObservation,
@@ -258,7 +250,7 @@ interface UseAssessment {
 }
 const describeUse = (use: UseRecord): string =>
   `${use.access}/${use.stage}${use.execution === undefined ? '' : `, ${use.execution.taskKey}`}`
-// Own settled uses end with the guided release before its attempt (ADR 0005, Release).
+
 const assessUses = (
   authority: WorkspaceAuthority,
   db: DatabaseSync,
@@ -457,9 +449,7 @@ const assessWorkspace = (
       ),
       nextActions: ['Observe the recorded effect before any further release; nothing is replayed.'],
     })
-  // Keeps the effect and digest so the next release can still bind to this assessment.
-  // Only a release that can remove the worktree observes an interrupted one; otherwise the
-  // state below must be resolved first.
+
   const withInterruption = (shaping: Shaping): Shaping => {
     if (interruptedReleases.length === 0) return shaping
     const observes = shaping.effect === 'remove-worktree'
@@ -519,7 +509,7 @@ const assessWorkspace = (
     } catch (cause) {
       reasons.push(`Residual changes could not be read: ${errorText(cause)}`)
     }
-    // The residual stays out of the digest: only the reservation changes here.
+
     const stateDigest = stateDigestOf({
       head,
       inventory: undefined,
@@ -711,7 +701,6 @@ const subjectResult = (
   retained: [],
 })
 
-// Any row of this command spends it, terminal or not.
 const commandSpent = (
   db: DatabaseSync,
   commandId: WorkspaceId,
@@ -835,8 +824,7 @@ interface Removal {
   readonly status: 'done' | 'failed'
   readonly detail: string
 }
-// Git's own non-forced removal, or, for the emptied admin directory Git left behind, a
-// non-recursive rmdir of exactly that path.
+
 const runRemoval = (workspace: WorkspaceRecord, before: RemovalObservation): Removal => {
   if (adminResidue(workspace, before).kind === 'empty')
     try {
@@ -860,8 +848,6 @@ const runRemoval = (workspace: WorkspaceRecord, before: RemovalObservation): Rem
       }
 }
 
-// An incomplete removal changed nothing, left a state that cannot be observed, or stopped part
-// way; its next action follows from what remains.
 const incompleteEnding = (input: {
   readonly workspace: WorkspaceRecord
   readonly taskId: WorkspaceId
@@ -1035,9 +1021,7 @@ const removeManagedWorktree = (
       )
       try {
         save(authority, repo, unrecorded)
-      } catch {
-        /* the started row remains for observation */
-      }
+      } catch {}
       return releaseResult(
         assessment,
         'partial',
@@ -1277,7 +1261,7 @@ const attemptUnderGates = (
     assessWorkspace(authority, db, repo, gated.reservation, gated.workspace, readers)
   )
   const fresh = assessed.assessment
-  // Reconciliation changes no subject field, so the confirmed subject must still match.
+
   const changed = changedFields(confirmed, fresh.subject)
   if (changed.length > 0)
     return releaseResult(
@@ -1351,8 +1335,7 @@ export const releaseWorkspace = (
     invalid(
       `Release command ${request.commandId} already attempted workspace ${request.workspaceId}; a repeated release is a fresh command`
     )
-  // Earlier attempts' deletions, read after this attempt so that its observations of them count,
-  // and without this command's own row.
+
   const reported = (result: WorkspaceReleaseResult): WorkspaceReleaseResult => {
     const earlier = knownRepository
       ? inDb(authority, confirmed.repositoryId, db =>
@@ -1386,7 +1369,6 @@ export const releaseWorkspace = (
     throw cause
   }
   try {
-    // Scope and reservation are read again under the gates a competing process cannot hold.
     const gated = scopeOf(authority, request).find(
       item => item.workspace.id === request.workspaceId
     )

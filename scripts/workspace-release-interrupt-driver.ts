@@ -1,6 +1,3 @@
-// `dev workspace release` as the launcher's entry point runs it, under NodeRuntime.runMain and its
-// signal handling, with the authority on the probe's temporary root. The first attempt receives a
-// real SIGINT while in flight: the signal reaches every listener before the attempt starts.
 import { NodeRuntime } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { launch } from '../src/launcher.ts'

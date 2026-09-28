@@ -33,7 +33,6 @@ export interface WorkspaceShell {
   readonly stop: Effect.Effect<void>
 }
 
-// Pi reads the outcome of a command from these exact messages.
 export class ShellCommandError extends Schema.TaggedError<ShellCommandError>()(
   'ShellCommandError',
   { message: Schema.String }
@@ -67,9 +66,6 @@ const KILL_RETRY = Duration.millis(100)
 
 const failure = (message: string) => new ShellCommandError({ message })
 
-// A PID is signalled only while a fresh table still shows it with the identity observed
-// earlier, and the root's group only while it still has members, since neither ID can
-// be reused before then. A family that keeps forking is signalled until it is empty.
 const terminate = Effect.fnUntraced(
   function* (shell: LiveShell) {
     for (;;) {
@@ -96,8 +92,6 @@ const terminate = Effect.fnUntraced(
   Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void })
 )
 
-// Completes on the shell's own exit rather than on stdio closure, which a backgrounded
-// descendant holding the pipes can postpone indefinitely.
 const exitOf = (child: ChildProcess): Deferred.Deferred<ShellExit, ShellCommandError> => {
   const exited = Deferred.makeUnsafe<ShellExit, ShellCommandError>()
   child.once('error', cause => Deferred.doneUnsafe(exited, Exit.fail(failure(errorText(cause)))))
@@ -229,8 +223,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
           : failure('The shell exited before its identity was available')
       )
     }
-    // Until the gate opens only the gated shell exists, and it is alive, so its group
-    // cannot belong to anything else.
+
     const killGated = () => {
       try {
         process.kill(-pid, 'SIGKILL')
@@ -256,8 +249,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
       Effect.catch(cause =>
         Effect.gen(function* () {
           killGated()
-          // A lost acknowledgment may still have recorded the identity; the killed
-          // family is then observed gone rather than reported as never launched.
+
           yield* report({ kind: 'launch-failed', reason: cause.message }).pipe(
             Effect.catch(() => Effect.sync(() => track(report, child, identity)))
           )

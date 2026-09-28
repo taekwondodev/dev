@@ -115,7 +115,6 @@ export const ghDestinationReader: PublicationDestinationReader = {
 const ATTACHMENT_URL =
   /https:\/\/(?:github\.com\/(?:user-attachments\/assets|[^\s/]+\/[^\s/]+\/assets)\/[^\s)"'<>]+|user-images\.githubusercontent\.com\/[^\s)"'<>]+|private-user-images\.githubusercontent\.com\/[^\s)"'<>]+)/g
 
-// GitHub normalizes line endings, so both sides compare with LF.
 const containsWholeLines = (body: string, text: string): boolean => {
   const normalizedBody = body.replaceAll('\r\n', '\n')
   const normalizedText = text.replaceAll('\r\n', '\n').replace(/\n$/, '')
@@ -321,7 +320,7 @@ export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition =
           content: [{ type: 'text', text: JSON.stringify(outcome.value) }],
           details: outcome.value,
         }
-      // Pi records a thrown tool error as a failed tool result.
+
       throw new Error(errorText(Cause.squash(outcome.cause)))
     },
   }

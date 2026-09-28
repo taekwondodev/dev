@@ -486,7 +486,6 @@ const enableWal = async (db: DatabaseSync): Promise<void> => {
       if (mode !== 'wal') fail('unsafe-sqlite')
       return
     } catch (cause) {
-      // Concurrent journal-mode upgrades can bypass SQLite's busy handler.
       if (
         !(cause instanceof Error) ||
         !('errcode' in cause) ||
@@ -592,8 +591,6 @@ const prune = (now: number): void => {
     try {
       valid.push({ row, record: decodePayload(row) })
     } catch {
-      // Preserve corrupt records without rescanning them on every operation.
-      // A repair of any persisted fact re-enters the partial index atomically.
       connection().prepare('UPDATE attempts SET retention_blocked = 1 WHERE id = ?').run(row.id)
       continue
     }
@@ -710,8 +707,7 @@ const save = (request: Extract<RpcRequest, { readonly op: 'save' }>): null =>
       if (payload === existingRow.payload) return null
       fail('revision-conflict')
     }
-    // Failed persistence can leave several newer facts in the single owner.
-    // Accept its newer snapshot, never an older or conflicting same revision.
+
     if (record.revision < existingRow.revision) fail('revision-conflict')
     const metadata = metadataOf(record)
     const updated = connection()
@@ -779,7 +775,7 @@ try {
   const data = decodeWorkerData(workerData)
   const initialized = await initializeDatabase(data)
   worker = { data, sqliteVersion: initialized.sqliteVersion }
-  // Connection-local pragmas must remain on the connection doing the work.
+
   dbConnection = initialized.database
   port.postMessage({
     type: 'ready',

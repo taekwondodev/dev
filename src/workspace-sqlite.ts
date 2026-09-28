@@ -206,7 +206,7 @@ const walResetSafe = (text: string): boolean => {
 }
 export const assertSqliteSafety = (): void => {
   const node = parseVersion(process.versions.node)
-  const sqlite = process.versions.sqlite
+  const { sqlite } = process.versions
   if (
     node === undefined ||
     compareVersion(node, [22, 23, 2]) < 0 ||
@@ -272,14 +272,14 @@ export const expectedCatalog = (ddl: string): string => {
     db.close()
   }
 }
-const schemaFor = (kind: 'protocol' | 'catalog' | 'shard' | 'gate'): string =>
-  kind === 'protocol'
-    ? PROTOCOL_SQL
-    : kind === 'catalog'
-      ? CATALOG_SQL
-      : kind === 'shard'
-        ? SHARD_SQL
-        : GATE_SQL
+const schemas = {
+  protocol: PROTOCOL_SQL,
+  catalog: CATALOG_SQL,
+  shard: SHARD_SQL,
+  gate: GATE_SQL,
+} as const
+
+const schemaFor = (kind: keyof typeof schemas): string => schemas[kind]
 
 export const createPublishedDatabase = (
   path: string,
@@ -326,9 +326,7 @@ export const createPublishedDatabase = (
   } finally {
     try {
       db?.close()
-    } catch {
-      /* preserve the original failure */
-    }
+    } catch {}
     if (fd !== undefined) closeSync(fd)
     const candidateInfo = lstatIfExists(candidate)
     if (candidateInfo !== undefined && candidateInfo.isFile() && !candidateInfo.isSymbolicLink())
@@ -412,9 +410,7 @@ export const transaction = <A>(db: DatabaseSync, operation: () => A): A => {
   } catch (cause) {
     try {
       db.exec('ROLLBACK')
-    } catch {
-      /* commit outcome may be uncertain; never grant on this path */
-    }
+    } catch {}
     throw cause
   }
 }

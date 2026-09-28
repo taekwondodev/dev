@@ -410,7 +410,6 @@ class WorkerClient {
       })
       signal.addEventListener('abort', abort, { once: true })
       try {
-        // oxlint-disable-next-line unicorn(require-post-message-target-origin)
         this.worker.postMessage({ id, request }, [])
       } catch {
         clearTimeout(timer)
@@ -580,10 +579,8 @@ class WorkStoreImpl implements WorkStore {
     } catch {
       return Effect.fail(persistenceError(new StorePreparationError('invalid-record')))
     }
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      if (snapshot.owner.sessionId !== self.sessionId)
+    return Effect.gen({ self: this }, function* () {
+      if (snapshot.owner.sessionId !== this.sessionId)
         return yield* persistenceError(new WorkerRpcError('session-mismatch'))
       const startedAt = yield* Clock.currentTimeMillis
       const record = yield* Effect.try({
@@ -600,14 +597,14 @@ class WorkStoreImpl implements WorkStore {
         catch: cause => persistenceError(cause),
       })
       yield* Effect.tryPromise({
-        try: () => makeRecordDirectory(self.root, id),
+        try: () => makeRecordDirectory(this.root, id),
         catch: cause => persistenceError(cause),
       })
       const result = yield* Effect.exit(
-        self.call({ op: 'create', sessionId: self.sessionId, now: startedAt, record })
+        this.call({ op: 'create', sessionId: this.sessionId, now: startedAt, record })
       )
       if (result._tag === 'Failure') return yield* Effect.failCause(result.cause)
-      self.authorized.add(id)
+      this.authorized.add(id)
       return record
     })
   }
@@ -619,13 +616,11 @@ class WorkStoreImpl implements WorkStore {
     } catch (cause) {
       return Effect.fail(persistenceError(cause))
     }
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     return Clock.currentTimeMillis.pipe(
       Effect.flatMap(now =>
-        self
-          .call({ op: 'save', sessionId: self.sessionId, now, record: snapshot })
-          .pipe(Effect.asVoid)
+        this.call({ op: 'save', sessionId: this.sessionId, now, record: snapshot }).pipe(
+          Effect.asVoid
+        )
       )
     )
   }
@@ -633,16 +628,14 @@ class WorkStoreImpl implements WorkStore {
   read(id: AttemptId): Effect.Effect<AttemptRecord, WorkPersistenceError> {
     if (!isAttemptId(id))
       return Effect.fail(persistenceError(new WorkerRpcError('record-unavailable')))
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     return Clock.currentTimeMillis.pipe(
       Effect.flatMap(now =>
-        self.call({ op: 'read', sessionId: self.sessionId, now, attemptId: id }).pipe(
+        this.call({ op: 'read', sessionId: this.sessionId, now, attemptId: id }).pipe(
           Effect.flatMap(value =>
             Effect.try({
               try: () => {
                 const record = safeRecord(value)
-                self.authorized.add(record.id)
+                this.authorized.add(record.id)
                 return record
               },
               catch: cause => persistenceError(cause),
@@ -654,16 +647,14 @@ class WorkStoreImpl implements WorkStore {
   }
 
   get list(): WorkStore['list'] {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     return Clock.currentTimeMillis.pipe(
       Effect.flatMap(now =>
-        self.call({ op: 'list', sessionId: self.sessionId, now }).pipe(
+        this.call({ op: 'list', sessionId: this.sessionId, now }).pipe(
           Effect.flatMap(value =>
             Effect.try({
               try: () => {
                 const listed = decodeListValue(value)
-                for (const record of listed.records) self.authorized.add(record.id)
+                for (const record of listed.records) this.authorized.add(record.id)
                 return listed
               },
               catch: cause => persistenceError(cause),
@@ -674,8 +665,6 @@ class WorkStoreImpl implements WorkStore {
     )
   }
 
-  // A recovery locator can be recorded before admission creates the transient
-  // attempt. It conveys no permission to open a log or read another session.
   plannedLogPath(id: AttemptId, stream: LogStream): string {
     if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
       throw new Error('Choose a valid attempt and log stream')
@@ -688,15 +677,13 @@ class WorkStoreImpl implements WorkStore {
   }
 
   saveResult(id: AttemptId, text: string): Effect.Effect<void, WorkPersistenceError> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      yield* self.read(id)
-      const path = self.logPath(id, 'result')
-      yield* self.writeLog(id, path, text)
-      const checked = yield* Effect.exit(self.read(id))
+    return Effect.gen({ self: this }, function* () {
+      yield* this.read(id)
+      const path = this.logPath(id, 'result')
+      yield* this.writeLog(id, path, text)
+      const checked = yield* Effect.exit(this.read(id))
       if (checked._tag === 'Failure') {
-        yield* self.removeLog(path).pipe(Effect.ignore)
+        yield* this.removeLog(path).pipe(Effect.ignore)
         return yield* Effect.failCause(checked.cause)
       }
     })
@@ -720,9 +707,7 @@ class WorkStoreImpl implements WorkStore {
     },
     WorkPersistenceError
   > {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       if (
         (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) ||
         !Number.isSafeInteger(limit) ||
@@ -730,18 +715,18 @@ class WorkStoreImpl implements WorkStore {
         limit > 64000
       )
         return yield* persistenceError(new WorkerRpcError('invalid-record'))
-      yield* self.read(id)
-      const path = self.logPath(id, stream)
-      const directory = yield* self.lstat(join(self.root, id))
+      yield* this.read(id)
+      const path = this.logPath(id, stream)
+      const directory = yield* this.lstat(join(this.root, id))
       if (directory === undefined || directory.isSymbolicLink() || !directory.isDirectory())
         return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      const info = yield* self.lstat(path)
+      const info = yield* this.lstat(path)
       if (info === undefined)
         return { available: false, path, reason: 'Log unavailable or expired' }
       if (info.isSymbolicLink() || !info.isFile())
         return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      yield* self.fs.chmod(path, 0o600)
-      const file = yield* self.fs.open(path, { flag: 'r' })
+      yield* this.fs.chmod(path, 0o600)
+      const file = yield* this.fs.open(path, { flag: 'r' })
       const size = Number(ByteSize.toBigInt((yield* file.stat).size))
       if (!Number.isSafeInteger(size))
         return yield* persistenceError(new WorkerRpcError('invalid-record'))
@@ -770,33 +755,29 @@ class WorkStoreImpl implements WorkStore {
   }
 
   private call(input: RpcInput): Effect.Effect<unknown, WorkPersistenceError> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
     return Effect.tryPromise({
-      try: signal => self.worker.request(input, signal),
+      try: signal => this.worker.request(input, signal),
       catch: cause => persistenceError(cause),
     }).pipe(
-      Effect.flatMap(response => self.postCommitCleanup(response).pipe(Effect.as(response.value)))
+      Effect.flatMap(response => this.postCommitCleanup(response).pipe(Effect.as(response.value)))
     )
   }
 
   private postCommitCleanup(response: RpcSuccess): Effect.Effect<void, WorkPersistenceError> {
     if (response.cleanup.length === 0) return Effect.void
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
+    return Effect.gen({ self: this }, function* () {
       const acknowledged: AttemptId[] = []
       for (const id of response.cleanup) {
-        yield* self.removeRecordDirectory(id)
-        self.authorized.delete(id)
+        yield* this.removeRecordDirectory(id)
+        this.authorized.delete(id)
         acknowledged.push(id)
       }
       yield* Effect.tryPromise({
         try: signal =>
-          self.worker.request(
+          this.worker.request(
             {
               op: 'ack',
-              sessionId: self.sessionId,
+              sessionId: this.sessionId,
               attemptIds: acknowledged,
             },
             signal
@@ -827,17 +808,15 @@ class WorkStoreImpl implements WorkStore {
     path: string,
     text: string
   ): Effect.Effect<void, WorkPersistenceError> {
-    // oxlint-disable-next-line typescript/no-this-alias
-    const self = this
-    return Effect.gen(function* () {
-      const directory = yield* self.lstat(join(self.root, id))
+    return Effect.gen({ self: this }, function* () {
+      const directory = yield* this.lstat(join(this.root, id))
       if (directory === undefined || directory.isSymbolicLink() || !directory.isDirectory())
         return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      const existing = yield* self.lstat(path)
+      const existing = yield* this.lstat(path)
       if (existing !== undefined && (existing.isSymbolicLink() || !existing.isFile()))
         return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      yield* self.fs.writeFileString(path, text, { flag: 'w', mode: 0o600 })
-      yield* self.fs.chmod(path, 0o600)
+      yield* this.fs.writeFileString(path, text, { flag: 'w', mode: 0o600 })
+      yield* this.fs.chmod(path, 0o600)
     }).pipe(
       Effect.mapError(cause =>
         cause instanceof WorkPersistenceError

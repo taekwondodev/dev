@@ -62,7 +62,7 @@ const WorkspaceSchema = Schema.Struct({
   common: FileIdentitySchema,
   objectFormat: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,
-  // `removed` keeps the path slot taken as an identity fence (ADR 0004).
+
   status: Schema.Literals(['provisioning', 'ready', 'removed']),
   allocationOperationId: Schema.optional(WorkspaceId),
   removalOperationId: Schema.optional(WorkspaceId),
@@ -208,7 +208,6 @@ export type ReservationReleaseRecord = typeof ReservationReleaseOperationSchema.
 export type WorktreeRemovalRecord = typeof WorktreeRemovalOperationSchema.Type
 export type ReleaseOperationRecord = ReservationReleaseRecord | WorktreeRemovalRecord
 
-// The `revision` column fences the operation against the record it expects.
 export const operationRevision = (operation: OperationRecord): number =>
   operation.kind === 'release'
     ? operation.expectedReservationRevision
@@ -316,7 +315,7 @@ export const putReservation = (db: DatabaseSync, value: ReservationRecord): void
     encode(value)
   )
 }
-// Deleted, not marked: one reservation per checkout, and a released one is reservable again.
+
 export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   db.prepare('DELETE FROM reservations WHERE id=? AND workspace_id=? AND revision=?').run(
     value.id,
@@ -420,8 +419,6 @@ export const putUse = (db: DatabaseSync, value: UseRecord): void => {
   )
 }
 export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
-  // Every settling route writes through here, so the absorbing `unknown` and dependent
-  // rules of ADR 0005 cannot be bypassed by a new route.
   const stored = getUse(db, value.id)
   if (stored?.stage === 'unknown' && value.stage !== 'unknown')
     requireReview(`Workspace use ${value.id} is unknown; only explicit recovery can resolve it`)
@@ -502,7 +499,7 @@ const operationsWhere = (
     .filter((value): value is OperationRecord => value !== undefined)
 const isRelease = (operation: OperationRecord): operation is ReleaseOperationRecord =>
   operation.kind === 'release'
-// A release that started but whose outcome is not recorded.
+
 export const isUnresolvedRelease = (
   operation: OperationRecord
 ): operation is ReleaseOperationRecord =>
@@ -563,8 +560,6 @@ export const getPublications = (db: DatabaseSync, taskId: string): PublicationRe
     return value
   })
 export const putPublication = (db: DatabaseSync, value: PublicationReference): void => {
-  // Unchanged bytes keep one fact; re-recording them replaces the row, id included, so the
-  // indexed columns and the payload keep agreeing.
   db.prepare(`INSERT INTO publications(id,task_id,relative_path,sha256,payload) VALUES(?,?,?,?,?)
     ON CONFLICT(task_id,relative_path,sha256) DO UPDATE SET id=excluded.id, payload=excluded.payload`).run(
     value.id,
@@ -607,8 +602,7 @@ const getAllUseRows = (db: DatabaseSync): UseRecord[] =>
   rows(db, 'SELECT id FROM uses ORDER BY id')
     .map(row => getUse(db, textField(row, 'id')))
     .filter((value): value is UseRecord => value !== undefined)
-// Scoped uses are admitted within an ordinary grant, whose gates they write under, so
-// that grant cannot settle while one of them is live.
+
 export const activeDependentUses = (db: DatabaseSync, useIdValue: string): UseRecord[] =>
   getAllUseRows(db).filter(row => row.withinUseId === useIdValue && isActiveUse(row))
 const assertNoActiveDependentUseInDb = (

@@ -117,7 +117,7 @@ const admit = (
   operation: WorkspaceOperation
 ): WorkspaceAuthorization => {
   attachment.assertOpen()
-  const state = attachment.state
+  const { state } = attachment
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
   if (operation.kind === 'native-file-write' || operation.kind === 'opaque')
@@ -441,8 +441,6 @@ const executionUse = (
   return { kind: 'ready', grant }
 }
 
-// A grant stays valid only while its use row, and for a writer the reservation's current
-// acquisition, still carry the facts it was fenced with.
 const fencedUse = (
   db: DatabaseSync,
   grant: WorkspaceGrant,
@@ -541,9 +539,9 @@ export const reportExecutionFact = (
   fact: WorkspaceExecutionFact
 ): void => {
   attachment.assertOpen()
-  const state = attachment.state
+  const { state } = attachment
   if (state.closing) blocked('Execution reporting is fenced during attachment closure')
-  // A transition waits for running work to end, so facts that end it stay reportable.
+
   if (
     state.parked &&
     ['launch-intent', 'spawned', 'started', 'operation-started'].includes(fact.kind)
@@ -623,8 +621,6 @@ export const reportExecutionFact = (
       return
     }
     case 'launch-failed': {
-      // Only before a process identity is recorded can the adapter know that no user
-      // code was released; afterwards the family must be observed gone instead.
       if (current.stage !== 'authorized' && current.stage !== 'launch-intent')
         requireReview(`A launch cannot be reported failed after ${current.stage}`)
       update({
@@ -638,8 +634,6 @@ export const reportExecutionFact = (
       return
     }
     case 'quiescent': {
-      // A process that detaches into a new session escapes this observation; ADR 0005
-      // accepts that residual risk.
       if (current.stage !== 'observed' || current.processes.length > 0)
         requireReview(
           `Quiescence after ${current.stage} requires an observed empty process family first`

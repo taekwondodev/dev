@@ -80,7 +80,7 @@ const expectWorkspaceError = async (
 const switchStage = async (reader: TestLifecycle, operationId: string) =>
   (await reader.inspect({})).flatMap(view => view.pending).find(item => item.id === operationId)
     ?.stage
-// A claim that times out leaves its children running, and Node exits without the claim's cleanup.
+
 const children = new Set<ReturnType<typeof spawn>>()
 process.on('exit', () => {
   for (const child of children) child.kill('SIGKILL')
@@ -1530,8 +1530,7 @@ try {
         workspaceId: recoveryTarget.workspaceId,
       })
       const sourceWorkspaceId = recoveryAttachment.binding.workspaceId
-      // A second lifecycle on the same root stands in for another installation: it shares the
-      // authority but none of the first installation's conversation claims.
+
       const otherInstallation = await openLifecycle({ root: recoveryRoot })
       const otherSelection = { taskId: otherTarget.taskId!, workspaceId: otherTarget.workspaceId }
       await expectWorkspaceError(
@@ -1560,8 +1559,7 @@ try {
         }),
         'blocked'
       )
-      // The host keeps its state while its switch is pending, so closing its last attachment
-      // must not free the conversation for anyone else.
+
       await recoveryAttachment.close()
       await expectWorkspaceError(
         otherInstallation.attach({ conversation: recoveryConversation, cwd: fenceRepo }),
@@ -1737,8 +1735,6 @@ try {
     }
   )
 
-  // The default root must be the same for every installation, launch directory, data home
-  // and HOME. Only the pure resolver module is imported, so nothing can open the root.
   await claim(
     'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME, and is never opened by the check',
     () => {

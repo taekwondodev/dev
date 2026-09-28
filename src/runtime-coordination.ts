@@ -63,7 +63,7 @@ const privateDirectory = (path: string): void => {
 
 const canonicalConversation = (path: string): string => {
   const absolute = resolve(path)
-  // A dangling link is keyed like a missing file, so the authority refuses it with its guidance.
+
   if (!existsSync(absolute)) return conversationFileSlot(absolute, undefined)
   const canonical = canonicalConversationFile(absolute)
   const info = lstatSync(canonical)

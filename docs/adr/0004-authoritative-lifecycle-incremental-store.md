@@ -8,6 +8,8 @@ Each live attempt has one mutable lifecycle authority; persistence records and U
 
 Use native SQLite in an Effect-scoped worker, committing session ownership, payload, revision and retention facts together. Reject an independently writable record-plus-index design: ownership must remain trustworthy when payload decoding fails, and normal saves and session listings must avoid whole-store payload scans. Filter diagnostics by trusted ownership and fail closed when ownership or the store layout is invalid. Saves use monotonic revisions without recreating pruned attempts.
 
+A recovery log locator can be computed and recorded before admission creates the transient attempt. It is descriptive evidence, not permission to open a log or read another session; access still requires the store's current ownership checks.
+
 Process and filesystem cleanup remain recoverable, idempotent external effects. A database commit cannot certify either; retain unfinished cleanup rather than treating an acknowledgement or cleanup failure as grounds to discard evidence.
 
 ## Durability

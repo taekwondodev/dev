@@ -1,13 +1,9 @@
-// The launcher as the TUI probe runs it: the real `launch`, with its authority injected on the
-// temporary root the probe names, so the fixed per-account authority is never opened. With
-// LAUNCHER_TUI_FAULT=sigint-after-handover, the first attachment close after the release
-// command's check, that is the guided handover's teardown before the attempt, first delivers a
-// real SIGINT.
 import { NodeRuntime } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { launch } from '../src/launcher.ts'
 import type { WorkspaceLifecycle } from '../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { loadInstalledPi } from './workspace-check-support.ts'
 
 const root = process.env.LAUNCHER_TUI_ROOT
 if (root === undefined || root.length === 0)
@@ -20,7 +16,6 @@ const deliverSigint = Effect.callback<void>(resume => {
   return Effect.sync(() => process.removeListener('SIGINT', delivered))
 })
 
-// The first attachment close after the release command's check delivers the SIGINT first.
 const interruptedAfterHandover = Effect.gen(function* () {
   const real = yield* makeWorkspaceLifecycle({ root })
   let checked = false
@@ -51,6 +46,17 @@ const interruptedAfterHandover = Effect.gen(function* () {
   }
   return lifecycle
 })
+
+if (process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-handover') {
+  const {
+    pi: { AgentSession },
+  } = await loadInstalledPi()
+  const { dispose } = AgentSession.prototype
+  AgentSession.prototype.dispose = function (this: InstanceType<typeof AgentSession>) {
+    dispose.call(this)
+    throw new Error('injected session disposal failure')
+  }
+}
 
 NodeRuntime.runMain(
   launch(process.argv.slice(2), {
