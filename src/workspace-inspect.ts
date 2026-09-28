@@ -7,11 +7,16 @@ import { canonicalGitWorkspace } from './workspace-git.ts'
 import {
   getWorkspace,
   getReservation,
-  getOperation,
+  confirmedReleases,
   getUse,
   getUseRows,
   isActiveUse,
-  type OperationRecord,
+  openOperations,
+  releaseOperations,
+  type ReleaseOperationRecord,
+  type WorktreeRemovalRecord,
+  type UseRecord,
+  type WorkspaceRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { rows, textField } from './workspace-sqlite.ts'
@@ -95,6 +100,83 @@ const stillActive = (db: DatabaseSync, useId: WorkspaceId): boolean => {
   const current = getUse(db, useId)
   return current !== undefined && isActiveUse(current)
 }
+export const abandonedUseIds = (
+  authority: WorkspaceAuthority,
+  db: DatabaseSync,
+  uses: readonly UseRecord[]
+): readonly WorkspaceId[] =>
+  uses
+    .filter(
+      use =>
+        isActiveUse(use) &&
+        !incarnationHeld(authority.paths, use.incarnation) &&
+        stillActive(db, use.id)
+    )
+    .map(use => use.id)
+
+const LISTED_PATHS = 5
+export const sampledPaths = (paths: readonly string[]): string =>
+  `${paths.slice(0, LISTED_PATHS).join(', ')}${paths.length > LISTED_PATHS ? ', …' : ''}`
+
+// A deletion step left `started` stopped before recording its deletions; once a later release
+// has observed and closed the attempt, the selected files found missing are named as observed.
+const unfinishedDeletion = (operation: WorktreeRemovalRecord): string => {
+  if (operation.phase !== 'cancelled' && operation.phase !== 'confirmed')
+    return 'stopped during its deletion step, so selected files it did not record as deleted may be gone too'
+  const absent = operation.manifest
+    .filter(entry => entry.state === 'absent')
+    .map(entry => entry.path)
+  return absent.length === 0
+    ? 'stopped during its deletion step; no selected file was missing afterwards'
+    : `stopped during its deletion step, after which ${absent.length} selected file(s) were observed absent: ${sampledPaths(absent)}`
+}
+
+export const deletionHistory = (
+  db: DatabaseSync,
+  workspaceId: WorkspaceId,
+  excludedCommand?: WorkspaceId
+): readonly string[] =>
+  releaseOperations(db, workspaceId).flatMap(operation => {
+    if (operation.effect !== 'remove-worktree' || operation.commandId === excludedCommand) return []
+    const deleted = operation.manifest
+      .filter(entry => entry.state === 'removed')
+      .map(entry => entry.path)
+    const unfinished = operation.steps.some(
+      step => step.kind === 'selected-files' && step.state === 'started'
+    )
+    const parts: string[] = []
+    if (deleted.length > 0)
+      parts.push(`deleted ${deleted.length} selected file(s): ${sampledPaths(deleted)}`)
+    if (unfinished) parts.push(unfinishedDeletion(operation))
+    return parts.length === 0 ? [] : [`Release attempt ${operation.id} ${parts.join(' and ')}.`]
+  })
+
+const receiptView = (
+  repositoryId: WorkspaceId,
+  workspace: WorkspaceRecord,
+  release: ReleaseOperationRecord
+): WorkspaceView => {
+  const removed = workspace.status === 'removed'
+  let outcome: WorkspaceView['outcome'] = 'released'
+  if (release.effect === 'remove-worktree')
+    outcome = release.observed === 'already-absent' ? 'already-absent' : 'removed'
+  return {
+    repositoryId,
+    taskId: release.taskId,
+    reservationId: release.reservationId,
+    workspaceId: workspace.id,
+    path: workspace.path,
+    origin: workspace.origin,
+    outcome,
+    reason:
+      release.result ?? (removed ? 'Removed by a confirmed release.' : 'Reservation released.'),
+    nextAction: removed
+      ? 'Do not resume a conversation into this path; start from an existing checkout with dev --cwd PATH.'
+      : 'The checkout is unreserved; select or create a task before writing there.',
+    uses: [],
+    pending: [],
+  }
+}
 
 export const inspectWorkspaces = (
   authority: WorkspaceAuthority,
@@ -135,20 +217,13 @@ export const inspectWorkspaces = (
         present.add(id)
         const reservation = getReservation(db, id)
         if (input.taskId !== undefined && reservation?.taskId !== input.taskId) continue
+        // A removed workspace is a receipt, shown only for its exact task below.
+        if (workspace.status === 'removed') continue
         const uses = getUseRows(db, id)
-        const operationRows = rows(
-          db,
-          `SELECT id FROM operations
-          WHERE workspace_id=? AND phase IN ('intent','started','unknown','review-required') ORDER BY created_at,id`,
-          id
-        )
-        const pending = operationRows
-          .map(item => getOperation(db, textField(item, 'id')))
-          .filter((value): value is OperationRecord => value !== undefined)
-          .map(value => {
-            visibleOperationIds.add(value.id)
-            return { id: value.id, kind: value.kind, stage: value.phase }
-          })
+        const pending = openOperations(db, id).map(value => {
+          visibleOperationIds.add(value.id)
+          return { id: value.id, kind: value.kind, stage: value.phase }
+        })
         let identityReason: string | undefined
         try {
           validateWorkspace(authority, workspace)
@@ -164,15 +239,7 @@ export const inspectWorkspaces = (
           unresolved,
           unknown,
           live,
-          abandoned: () =>
-            uses
-              .filter(
-                use =>
-                  isActiveUse(use) &&
-                  !incarnationHeld(authority.paths, use.incarnation) &&
-                  stillActive(db, use.id)
-              )
-              .map(use => use.id),
+          abandoned: () => abandonedUseIds(authority, db, uses),
           reserved: reservation !== undefined,
         })
         views.push({
@@ -184,7 +251,7 @@ export const inspectWorkspaces = (
           path: workspace.path,
           origin: workspace.origin,
           outcome,
-          reason,
+          reason: [reason, ...deletionHistory(db, workspace.id)].join(' '),
           nextAction,
           uses: uses.map(use => ({
             id: use.id,
@@ -201,19 +268,19 @@ export const inspectWorkspaces = (
           pending,
         })
       }
-      const orphanOperations = rows(
-        db,
-        `SELECT id FROM operations
-        WHERE phase IN ('intent','started','unknown','review-required') ORDER BY created_at,id`
+      if (input.taskId !== undefined)
+        for (const operation of confirmedReleases(db, input.taskId)) {
+          if (views.some(view => view.workspaceId === operation.workspaceId)) continue
+          const workspace = getWorkspace(db, operation.workspaceId)
+          if (workspace === undefined) continue
+          views.push(receiptView(repository.id, workspace, operation))
+        }
+      const orphanOperations = openOperations(db).filter(
+        operation =>
+          !present.has(operation.workspaceId) &&
+          !visibleOperationIds.has(operation.id) &&
+          (input.taskId === undefined || operation.taskId === input.taskId)
       )
-        .map(row => getOperation(db, textField(row, 'id')))
-        .filter((value): value is OperationRecord => value !== undefined)
-        .filter(
-          operation =>
-            !present.has(operation.workspaceId) &&
-            !visibleOperationIds.has(operation.id) &&
-            (input.taskId === undefined || operation.taskId === input.taskId)
-        )
       for (const operation of orphanOperations) {
         visibleOperationIds.add(operation.id)
         views.push({

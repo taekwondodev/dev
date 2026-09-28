@@ -167,7 +167,7 @@ const admit = (
   }
   let gates: PathGates
   try {
-    gates = acquirePathGates(authority.paths, source.workspace.path, true)
+    gates = acquirePathGates(authority.paths, source.workspace.path, 'writer')
   } catch (cause) {
     if (
       !(cause instanceof WorkspaceError) ||
@@ -355,7 +355,7 @@ const authorizeRead = (
     )
       return ready(lease.grant)
   }
-  const gates = acquirePathGates(authority.paths, workspace.path, false)
+  const gates = acquirePathGates(authority.paths, workspace.path, 'reader')
   try {
     const reservation = inDb(authority, repo, db => getReservation(db, workspace.id))
     const use = {

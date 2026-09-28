@@ -386,5 +386,20 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       ),
     inspect: input => request({ op: 'inspect', ...input }),
     validate: grant => request({ op: 'validate', grant }).pipe(Effect.asVoid),
+    check: input =>
+      request({
+        op: 'check',
+        taskId: input.taskId,
+        ...(input.ownConversation === undefined ? {} : { ownConversation: input.ownConversation }),
+      }),
+    release: input => request({ op: 'release', request: input }),
+    recordTarget: input =>
+      request({ op: 'record-target', taskId: input.taskId, target: input.target }).pipe(
+        Effect.asVoid
+      ),
+    recordPublication: input =>
+      request({ op: 'record-publication', reference: input.reference }).pipe(Effect.asVoid),
+    recordRuleApproval: input =>
+      request({ op: 'record-rule-approval', approval: input.approval }).pipe(Effect.asVoid),
   }
 })

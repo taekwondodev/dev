@@ -33,7 +33,7 @@ export const sqliteBusy = (cause: unknown): boolean => {
 }
 
 export const PROTOCOL_VERSION = 1
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 const BUSY_TIMEOUT_MS = 5000
 
 export type SqlRow = Record<string, unknown>
@@ -70,7 +70,7 @@ const SHARD_SQL = `
     path_key TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL,
     origin TEXT NOT NULL CHECK(origin IN ('pre-existing', 'managed')),
-    status TEXT NOT NULL CHECK(status IN ('provisioning', 'ready')),
+    status TEXT NOT NULL CHECK(status IN ('provisioning', 'ready', 'removed')),
     revision INTEGER NOT NULL,
     payload TEXT NOT NULL
   ) STRICT;
@@ -113,6 +113,22 @@ const SHARD_SQL = `
     payload TEXT NOT NULL
   ) STRICT;
   CREATE INDEX operations_open ON operations(phase, created_at) WHERE phase IN ('intent', 'started', 'unknown', 'review-required');
+  CREATE TABLE publications(
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    UNIQUE(task_id, relative_path, sha256)
+  ) STRICT;
+  CREATE TABLE rule_approvals(
+    id TEXT PRIMARY KEY,
+    repository_id TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    UNIQUE(repository_id, locator, digest)
+  ) STRICT;
   PRAGMA user_version = ${SCHEMA_VERSION};
 `
 export const GATE_SQL = `

@@ -1,6 +1,11 @@
 import { Schema } from 'effect'
 import {
   AbsolutePath,
+  PublicationReferenceSchema,
+  ReleaseRequestSchema,
+  RuleApprovalSchema,
+  TaskTargetSchema,
+  WorkspaceAssessmentSchema,
   WorkspaceAuthorizationSchema,
   WorkspaceBindingSchema,
   WorkspaceConversationSchema,
@@ -10,11 +15,14 @@ import {
   WorkspaceHandoffSchema,
   WorkspaceId,
   WorkspaceOperationSchema,
+  WorkspaceReleaseResultSchema,
   WorkspaceSelectionSchema,
   WorkspaceViewSchema,
+  type WorkspaceAssessment,
   type WorkspaceAuthorization,
   type WorkspaceBinding,
   type WorkspaceHandoff,
+  type WorkspaceReleaseResult,
   type WorkspaceView,
 } from './workspace-domain.ts'
 
@@ -65,6 +73,28 @@ const ValidateRequestSchema = Schema.Struct({
   grant: WorkspaceGrantSchema,
 })
 const CloseRequestSchema = Schema.Struct({ op: Schema.Literal('close') })
+const CheckRequestSchema = Schema.Struct({
+  op: Schema.Literal('check'),
+  taskId: WorkspaceId,
+  ownConversation: Schema.optional(WorkspaceConversationSchema),
+})
+const ReleaseRequestRpcSchema = Schema.Struct({
+  op: Schema.Literal('release'),
+  request: ReleaseRequestSchema,
+})
+const RecordTargetRequestSchema = Schema.Struct({
+  op: Schema.Literal('record-target'),
+  taskId: WorkspaceId,
+  target: TaskTargetSchema,
+})
+const RecordPublicationRequestSchema = Schema.Struct({
+  op: Schema.Literal('record-publication'),
+  reference: PublicationReferenceSchema,
+})
+const RecordRuleApprovalRequestSchema = Schema.Struct({
+  op: Schema.Literal('record-rule-approval'),
+  approval: RuleApprovalSchema,
+})
 
 const WorkspaceRpcInputSchema = Schema.Union([
   AttachRequestSchema,
@@ -76,6 +106,11 @@ const WorkspaceRpcInputSchema = Schema.Union([
   InspectRequestSchema,
   ValidateRequestSchema,
   CloseRequestSchema,
+  CheckRequestSchema,
+  ReleaseRequestRpcSchema,
+  RecordTargetRequestSchema,
+  RecordPublicationRequestSchema,
+  RecordRuleApprovalRequestSchema,
 ])
 
 export type WorkspaceRpcInput = typeof WorkspaceRpcInputSchema.Type
@@ -91,6 +126,11 @@ export interface WorkspaceRpcResults {
   readonly inspect: readonly WorkspaceView[]
   readonly validate: null
   readonly close: null
+  readonly check: readonly WorkspaceAssessment[]
+  readonly release: WorkspaceReleaseResult
+  readonly 'record-target': null
+  readonly 'record-publication': null
+  readonly 'record-rule-approval': null
 }
 
 const EnvelopeSchema = Schema.Struct({ id: RpcId, request: Schema.Unknown })
@@ -113,7 +153,18 @@ const SuccessSchema = Schema.Union([
     op: Schema.Literal('select'),
     value: WorkspaceHandoffSchema,
   }),
-  ...(['report-execution', 'handoff', 'close-attachment', 'validate', 'close'] as const).map(op =>
+  ...(
+    [
+      'report-execution',
+      'handoff',
+      'close-attachment',
+      'validate',
+      'close',
+      'record-target',
+      'record-publication',
+      'record-rule-approval',
+    ] as const
+  ).map(op =>
     Schema.Struct({
       id: RpcId,
       ok: Schema.Literal(true),
@@ -126,6 +177,18 @@ const SuccessSchema = Schema.Union([
     ok: Schema.Literal(true),
     op: Schema.Literal('inspect'),
     value: Schema.Array(WorkspaceViewSchema),
+  }),
+  Schema.Struct({
+    id: RpcId,
+    ok: Schema.Literal(true),
+    op: Schema.Literal('check'),
+    value: Schema.Array(WorkspaceAssessmentSchema),
+  }),
+  Schema.Struct({
+    id: RpcId,
+    ok: Schema.Literal(true),
+    op: Schema.Literal('release'),
+    value: WorkspaceReleaseResultSchema,
   }),
 ])
 const FailureSchema = Schema.Struct({

@@ -19,7 +19,7 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import { makeRuntimeFactory } from '../src/launcher.ts'
+import { completeGuidedRelease, makeRuntimeFactory } from '../src/launcher.ts'
 import { getProfile } from '../src/profiles.ts'
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { createSessionGuard } from '../src/session-guard.ts'
@@ -40,7 +40,7 @@ import {
 } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { NodeServices } from '@effect/platform-node'
-import { Effect, Exit, Scope } from 'effect'
+import { Deferred, Effect, Exit, Scope } from 'effect'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const resolveImportPath = await loadImportPathResolver(packageInfo.root)
@@ -203,18 +203,29 @@ const bound = (target: object, key: string | symbol): unknown => {
   const value: unknown = Reflect.get(target, key)
   return typeof value === 'function' ? value.bind(target) : value
 }
+let confirmations = 0
+const confirmationTexts: { readonly title: string; readonly message: string }[] = []
 const recordingNotices = (context: ExtensionContext): ExtensionContext =>
   new Proxy(context, {
     get: (target, key) =>
       key === 'ui'
         ? new Proxy(target.ui, {
-            get: (ui, uiKey) =>
-              uiKey === 'notify'
-                ? (...args: Parameters<ExtensionContext['ui']['notify']>) => {
-                    notices.push(args[0])
-                    ui.notify(...args)
-                  }
-                : bound(ui, uiKey),
+            get: (ui, uiKey) => {
+              if (uiKey === 'notify')
+                return (...args: Parameters<ExtensionContext['ui']['notify']>) => {
+                  notices.push(args[0])
+                  ui.notify(...args)
+                }
+              // The driver answers a confirmation only once it is open, so its opening is signalled.
+              if (uiKey === 'confirm')
+                return (...args: Parameters<ExtensionContext['ui']['confirm']>) => {
+                  confirmations += 1
+                  confirmationTexts.push({ title: args[0], message: args[1] })
+                  signal(`CONFIRM_OPEN_${confirmations}`)
+                  return ui.confirm(...args)
+                }
+              return bound(ui, uiKey)
+            },
           })
         : bound(target, key),
   })
@@ -223,15 +234,35 @@ const recordHostNotices =
   api =>
     factory(
       new Proxy(api, {
-        get: (target, key) =>
-          key === 'on'
-            ? (event: string, handler: (payload: unknown, context: ExtensionContext) => unknown) =>
-                Reflect.apply(target.on, target, [
-                  event,
-                  (payload: unknown, context: ExtensionContext) =>
-                    handler(payload, recordingNotices(context)),
-                ])
-            : bound(target, key),
+        get: (target, key) => {
+          if (key === 'on')
+            return (
+              event: string,
+              handler: (payload: unknown, context: ExtensionContext) => unknown
+            ) =>
+              Reflect.apply(target.on, target, [
+                event,
+                (payload: unknown, context: ExtensionContext) =>
+                  handler(payload, recordingNotices(context)),
+              ])
+          if (key === 'registerCommand')
+            return (
+              name: string,
+              command: { handler: (args: string, context: ExtensionContext) => unknown } & Record<
+                string,
+                unknown
+              >
+            ) =>
+              Reflect.apply(target.registerCommand, target, [
+                name,
+                {
+                  ...command,
+                  handler: (args: string, context: ExtensionContext) =>
+                    command.handler(args, recordingNotices(context)),
+                },
+              ])
+          return bound(target, key)
+        },
       })
     )
 
@@ -285,7 +316,8 @@ const { claim, passed } = makeClaims()
 
 const readOnly = (args: readonly string[]) => {
   const command = Effect.runSync(parseWorkspaceCommand(args))
-  if (command.kind === 'resume') throw new Error('Expected a read-only workspace command')
+  if (command.kind === 'resume' || command.kind === 'release')
+    throw new Error('Expected a read-only workspace command')
   return Effect.runPromise(
     runReadOnlyWorkspaceCommand(Effect.succeed(lifecycle.effect), command, {
       repositoryRoot: Effect.succeed(lead),
@@ -620,12 +652,82 @@ await claim(
   }
 )
 
-mode.stop('transcript')
+// The worktree's untracked files are the probe's fixtures, removed so the worktree can be
+// eligible; the live survivor shell is what the confirmation must stop.
+const hostTask = binding.taskId
+if (hostTask === undefined) throw new Error('the rebound conversation carries a task')
+await lifecycle.recordTarget(hostTask, { kind: 'local', ref: 'refs/heads/main' })
+for (const entry of git(['ls-files', '--others', '-z'], managed).split('\0').filter(Boolean))
+  rmSync(join(managed, entry), { force: true })
+const workspaceEntries = () =>
+  runtime.session.sessionManager
+    .getEntries()
+    .flatMap(entry =>
+      entry.type === 'custom_message' && entry.customType === 'dev/workspace' ? [entry.content] : []
+    )
+    .map(content => (typeof content === 'string' ? content : JSON.stringify(content)))
+process.stdout.write(`\nDEV_REAL_AUTHORITY_INPUTS ${JSON.stringify({ TASK_HOST: hostTask })}\n`)
+signal('READY_FOR_CHECK')
 await claim(
-  'the session end that follows the reload stops the live shell family, observes it gone and settles its use as quiescent',
+  "/workspace check of the TUI task shows its managed worktree as removable, naming the conversation's own live shell as a use the guided release will settle, without parking the host or stopping anything",
   async () => {
-    assert.ok(alive(survivorPid), 'the live shell family is still running when the session ends')
-    await runtime.dispose()
+    const shown = await waitFor('the check to be displayed', () =>
+      workspaceEntries().find(content => content.includes('Release eligibility for exact task'))
+    )
+    assert.ok(shown.includes(`workspace ${binding.workspaceId} (managed)`), shown)
+    assert.ok(shown.includes('eligibility: removable'), shown)
+    assert.ok(shown.includes('lead-shell'), shown)
+    assert.equal(workspaceHost.isParked(), false)
+    assert.ok(alive(survivorPid), 'a check stops nothing')
+  }
+)
+signal('READY_FOR_RELEASE_CANCEL')
+await claim(
+  'cancelling the release confirmation with Escape changes nothing: the live shell survives, the worktree remains and the TUI stays usable',
+  async () => {
+    await waitFor('the cancellation notice', () =>
+      notices.find(notice => notice.startsWith('Release cancelled before confirmation'))
+    )
+    const confirmation = confirmationTexts.at(-1)
+    assert.equal(confirmation?.title, `Release task ${hostTask}?`)
+    const message = confirmation?.message ?? ''
+    assert.ok(message.includes(workspaceHost.attachment.binding.conversation.sessionId), message)
+    assert.ok(message.includes(' 1 shell process group'), message)
+    assert.ok(alive(survivorPid), 'the cancelled confirmation stopped nothing')
+    assert.ok(existsSync(managed))
+    assert.equal(workspaceHost.isParked(), false, 'the TUI stays usable')
+  }
+)
+signal('READY_FOR_CONFIRMED_RELEASE')
+const providerCallsBeforeRelease = providerCall
+const closure = await within(
+  Effect.runPromise(Deferred.await(workspaceHost.guidedRelease)),
+  90000,
+  'the confirmed guided release to reach the launcher boundary'
+)
+// The driver typed a prompt right after answering the confirmation; the parked host must hold it.
+await sleep(1500)
+await claim(
+  "confirming the release stops this conversation's live shell family, observes it gone and hands the fenced request to the launcher with the TUI parked",
+  async () => {
+    assert.equal(closure.taskId, hostTask)
+    assert.equal(workspaceHost.isParked(), true, 'the host is fenced once the release is confirmed')
+    assert.equal(
+      providerCall,
+      providerCallsBeforeRelease,
+      'input typed after the confirmation started no model turn'
+    )
+    assert.ok(
+      !runtime.session.sessionManager
+        .getEntries()
+        .some(
+          entry =>
+            entry.type === 'message' &&
+            entry.message.role === 'user' &&
+            JSON.stringify(entry.message.content).includes('stray input after confirm')
+        ),
+      'the stray input was not appended to the conversation'
+    )
     await waitFor('the live shell family to stop', () => (alive(survivorPid) ? undefined : true), {
       attempts: 20,
     })
@@ -639,8 +741,30 @@ await claim(
     assert.equal(stoppedUse?.reason, SHELL_GONE)
   }
 )
+mode.stop('transcript')
+await runtime.dispose()
 await Effect.runPromise(workspaceHost.close)
 await Effect.runPromise(Scope.close(hostScope, Exit.void))
+await claim(
+  'after the TUI stopped and the runtime closed, the launcher-side completion removes the managed worktree, prints the receipt to the shell and keeps the conversation file',
+  async () => {
+    const run = await Effect.runPromise(
+      completeGuidedRelease(lifecycle.effect, closure, {
+        returnCwd: fixture,
+        proceed: () => true,
+        detached: workspaceHost.isDetached(),
+      })
+    )
+    assert.deepEqual(
+      run.results.map(result => [result.origin, result.outcome]),
+      [['managed', 'removed']]
+    )
+    assert.ok(!existsSync(managed), 'the managed worktree is gone')
+    assert.deepEqual(worktrees(), [`worktree ${lead}`])
+    assert.ok(existsSync(initialSessionFile), 'the conversation file is kept')
+    assert.equal(process.exitCode, 0)
+  }
+)
 await squatter.close()
 await lifecycle.close()
 assert.equal(runFailure, undefined)

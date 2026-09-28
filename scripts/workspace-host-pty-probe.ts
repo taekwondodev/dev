@@ -12,7 +12,7 @@ import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { NodeServices } from '@effect/platform-node'
-import { Effect, Exit, Scope } from 'effect'
+import { Deferred, Effect, Exit, Schema, Scope } from 'effect'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -39,7 +39,10 @@ import {
   type WorkspaceCommandError,
 } from '../src/workspace-command.ts'
 import {
+  WorkspaceAssessmentSchema,
   WorkspaceError,
+  type ReleaseRequest,
+  type WorkspaceAssessment,
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
   type WorkspaceBinding,
@@ -270,11 +273,14 @@ const fromAsync = <A>(run: () => Promise<A>): Effect.Effect<A, WorkspaceError> =
           }),
   })
 
+// The stub's check and inspect must name the same reservation for a descriptor.
+const reservationIdOf = (item: FixtureDescriptor): WorkspaceId =>
+  id(Number(item.workspaceId.slice(-3)) + 100)
 const makeView = (item: FixtureDescriptor, outcome: WorkspaceView['outcome']): WorkspaceView =>
   makeFixtureView({
     descriptor: item,
     outcome,
-    reservationId: id(Number(item.workspaceId.slice(-3)) + 100),
+    reservationId: reservationIdOf(item),
   })
 
 const issue = (
@@ -516,7 +522,11 @@ const fixtureLifecycle = {
       ...descriptors.map(item =>
         makeView(item, item.path === targetB ? 'active' : 'preserved-for-resume')
       ),
-      ...resumeDescriptors.map(item => makeView(item, 'preserved-for-resume')),
+      ...resumeDescriptors.map(item =>
+        lingeringOwnUse && item.workspaceId === WS_RESUME_A
+          ? { ...makeView(item, 'active'), uses: [lingeringUse(initialSessionId)] }
+          : makeView(item, 'preserved-for-resume')
+      ),
     ]
     if (input.taskId !== undefined) rows = rows.filter(row => row.taskId === input.taskId)
     if (input.cwd !== undefined) {
@@ -530,10 +540,72 @@ const fixtureLifecycle = {
     if (known?.workspaceId !== grant.workspaceId) throw new Error('fixture grant identity mismatch')
   },
 }
+const unsupported = () =>
+  Effect.fail(
+    new WorkspaceError({
+      outcome: 'unavailable',
+      message: 'the stub lifecycle has no release path',
+    })
+  )
+// While `lingeringOwnUse` is set, inspect keeps a live use of this conversation, so the host's
+// bounded wait for observed cessation runs out.
+let lingeringOwnUse = false
+const releaseRequests: ReleaseRequest[] = []
+const lingeringUse = (sessionId: string): WorkspaceView['uses'][number] => ({
+  id: id(900),
+  access: 'write',
+  stage: 'started',
+  execution: {
+    sessionId,
+    taskKey: 'lingering-process',
+    attemptId: 'lingering-attempt',
+    generation: 'lead',
+  },
+})
+const eligibleAssessment = (item: FixtureDescriptor): WorkspaceAssessment => {
+  const reservationId = reservationIdOf(item)
+  return Schema.decodeSync(WorkspaceAssessmentSchema)({
+    repositoryId: item.repoId,
+    taskId: item.taskId,
+    workspaceId: item.workspaceId,
+    reservationId,
+    path: item.path,
+    origin: item.origin,
+    outcome: 'removable',
+    reasons: ['fixture: eligible at this check'],
+    nextActions: [],
+    residual: [],
+    subject: {
+      repositoryId: item.repoId,
+      workspaceId: item.workspaceId,
+      reservationId,
+      reservationRevision: 1,
+      workspaceRevision: 1,
+      origin: item.origin,
+      path: item.path,
+      effect: 'remove-worktree',
+      stateDigest: '0'.repeat(64),
+      policyVersion: 1,
+    },
+  })
+}
 const lifecycle: WorkspaceLifecycle = {
   attach: input => fromAsync(() => fixtureLifecycle.attach(input)),
   inspect: input => fromAsync(() => fixtureLifecycle.inspect(input)),
   validate: grant => fromAsync(() => fixtureLifecycle.validate(grant)),
+  check: input =>
+    input.taskId === TASK_RESUME
+      ? Effect.succeed(
+          resumeDescriptors.filter(item => item.workspaceId === WS_RESUME_A).map(eligibleAssessment)
+        )
+      : unsupported(),
+  release: input => {
+    releaseRequests.push(input)
+    return unsupported()
+  },
+  recordTarget: unsupported,
+  recordPublication: unsupported,
+  recordRuleApproval: unsupported,
 }
 
 // A defect stays thrown through the flip, so only an expected refusal is returned.
@@ -860,7 +932,11 @@ const observeUi = <C extends ExtensionContext>(context: C): C => {
       if (key === 'confirm')
         return async (...args: Parameters<typeof target.confirm>) => {
           timeline.push({ kind: 'confirm', title: args[0], message: args[1] })
-          process.stdout.write(`\nDEV36_CONFIRM_SWITCH_OPEN_${++confirmCount}\n`)
+          process.stdout.write(
+            args[0].startsWith('Release task')
+              ? '\nDEV36_RELEASE_CONFIRM_OPEN\n'
+              : `\nDEV36_CONFIRM_SWITCH_OPEN_${++confirmCount}\n`
+          )
           confirmOpen.resolve()
           return target.confirm(...args)
         }
@@ -1300,6 +1376,37 @@ assert.match(
   /the current workspace is kept\. Workspace transition refused before the host acted; the current binding is kept: fixture target became unavailable/
 )
 
+// The failed rebind below runs in the same TUI, which shows it stayed usable.
+lingeringOwnUse = true
+marker('DEV36_READY_FOR_GUIDED_RELEASE')
+await within(waitForCommand('release:1'), 90000, 'guided release without observed cessation')
+lingeringOwnUse = false
+const releaseConfirm = timeline.find(
+  entry => entry.kind === 'confirm' && entry.title === `Release task ${TASK_RESUME}?`
+)
+assert.ok(releaseConfirm?.kind === 'confirm', 'the guided release asked for confirmation')
+assert.ok(
+  releaseConfirm.message.includes(initialSessionId) &&
+    releaseConfirm.message.includes('closes this TUI'),
+  'the confirmation names this conversation and says its TUI closes'
+)
+const cessationNotice = timeline.find(
+  entry =>
+    entry.kind === 'notify' &&
+    entry.message.includes('nothing was released') &&
+    entry.message.includes('the TUI stays open')
+)
+assert.ok(cessationNotice?.kind === 'notify', 'the bounded cessation failure was reported')
+assert.equal(cessationNotice.level, 'error')
+assert.deepEqual(releaseRequests, [], 'no release attempt was made')
+assert.equal(
+  Deferred.isDoneUnsafe(workspaceHost.guidedRelease),
+  false,
+  'the guided release was not handed to the launcher'
+)
+assert.equal(workspaceHost.isParked(), false, 'the host unparked after the bounded wait')
+assert.equal(resolve(activeRuntime.cwd), resolve(targetA), 'the TUI kept its workspace')
+
 attachFailures.add(resolve(targetFail))
 marker('DEV36_READY_FOR_FAILED_REBIND')
 await within(waitForCommand('resume:4'), 90000, 'failed automatic rebind report')
@@ -1578,8 +1685,8 @@ assert.deepEqual(retainedUse.facts.at(-1), {
 })
 assert.equal(
   timeline.filter(entry => entry.kind === 'confirm').length,
-  1,
-  'only the resume with live work asked for confirmation'
+  2,
+  'only the resume with live work and the guided release asked for confirmation'
 )
 const firstConfirm = timeline[resumeConfirm]
 assert.ok(firstConfirm?.kind === 'confirm')
@@ -1675,9 +1782,10 @@ assert.deepEqual(
     `resume ${TASK_RESUME}`,
     `resume ${TASK_RESUME} --workspace ${WS_RESUME_A}`,
     `resume ${TASK_RESUME} --workspace ${WS_RESUME_C}`,
+    `release ${TASK_RESUME}`,
     `resume ${TASK_FAIL} --workspace ${WS_FAIL}`,
   ],
-  'InteractiveMode dispatched the exact list/inspect/resume grammar'
+  'InteractiveMode dispatched the exact list/inspect/resume/release grammar'
 )
 assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB)))
 assert.ok(inspections.some(input => input.taskId === TASK_LEAD))
@@ -1707,11 +1815,20 @@ assert.deepEqual(
     ],
     [`Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`],
     [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
+    [
+      `Release eligibility for exact task ${TASK_RESUME} (a check grants nothing; release rechecks everything):`,
+      `workspace ${WS_RESUME_A} (managed) at ${targetA}`,
+    ],
   ],
-  'the TUI showed each confirmed switch, the /workspace list and the /workspace inspect output'
+  'the TUI showed each confirmed switch, the /workspace list, inspect and release assessment output'
 )
 assert.ok(terminalInputs.length > 0)
 assert.equal(processResults.size, 3)
+assert.equal(
+  Deferred.isDoneUnsafe(workspaceHost.guidedRelease),
+  false,
+  'no later step handed the failed guided release to the launcher'
+)
 
 class GrantingController extends EventEmitter implements ControllerChannel {
   readonly connected = true
@@ -1802,6 +1919,7 @@ const report = {
   })),
   resumeConfirmation: firstConfirm.message,
   refusedSwitchNotice: refusalNotice.message,
+  guidedReleaseCessationFailure: cessationNotice.message,
   userBash: bashHistory(),
   workOwnerCancellationObservations: [abortObservation, escapeObservation],
   retainedWorkStoppedBeforeSelect: retainedUse.facts.at(-1),
@@ -1821,6 +1939,7 @@ const report = {
   limits: [
     'WorkspaceLifecycle is a typed stub that issues grants and records the reported facts without judging them; admission rules, the execution stage machine, fencing, live-execution refusals, persistence and writer-grant restoration after a cancelled switch are covered by the real-authority probe and workspace-authority-check.ts, not here.',
     'The refused switch is fault-injected in the stub; the real triggers (a live execution appearing between select and handoff, an invalidated target) are not produced here.',
+    'The guided release cessation failure is fault-injected: the stub keeps reporting a live use of this conversation; a real process surviving stopAll is not produced here.',
     'Shell quiescence is observed through the process group and tracked descendants; a descendant that leaves the group and is not a tracked child escapes observation and is not exercised here.',
     'Project extensions are gated only by Pi folder trust; their executable side effects are not bounded by tool-call instrumentation.',
   ],

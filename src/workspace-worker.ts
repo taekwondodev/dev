@@ -19,6 +19,13 @@ import {
   type WorkspaceWorkerMessage,
 } from './workspace-protocol.ts'
 import { performHandoff, selectWorkspace } from './workspace-transitions.ts'
+import { makeGitHubReader } from './workspace-evidence.ts'
+import {
+  recordPublication,
+  recordRuleApproval,
+  recordTarget,
+} from './workspace-evidence-records.ts'
+import { checkTask, releaseWorkspace, type EvidenceReaders } from './workspace-release.ts'
 import { errorText } from './error-text.ts'
 
 const MAX_ATTACHMENTS = 256
@@ -68,6 +75,8 @@ const startEngine = (): WorkspaceEngine | undefined => {
 }
 
 const engine = startEngine()
+// A fresh reader per request, so every check or release gets the whole provider budget.
+const readers = (): EvidenceReaders => ({ github: makeGitHubReader() })
 if (port !== null && engine !== undefined) {
   let nextAttachmentId = 0
   const attachments = new Map<number, EngineAttachment>()
@@ -165,6 +174,28 @@ if (port !== null && engine !== undefined) {
         return await engine.run(authority => inspectWorkspaces(authority, request))
       case 'validate':
         await engine.run(authority => validateDurableGrant(authority, request.grant))
+        return null
+      case 'check':
+        return await engine.run(authority =>
+          checkTask(
+            authority,
+            request.taskId,
+            readers(),
+            engine.incarnationOf(request.ownConversation)
+          )
+        )
+      case 'release':
+        return await engine.run(authority =>
+          releaseWorkspace(authority, request.request, readers())
+        )
+      case 'record-target':
+        await engine.run(authority => recordTarget(authority, request.taskId, request.target))
+        return null
+      case 'record-publication':
+        await engine.run(authority => recordPublication(authority, request.reference))
+        return null
+      case 'record-rule-approval':
+        await engine.run(authority => recordRuleApproval(authority, request.approval))
         return null
       case 'close': {
         if (closing) return null

@@ -1,4 +1,8 @@
-import { attachConversation, settleClosingState } from './workspace-attachment.ts'
+import {
+  attachConversation,
+  conversationRecord,
+  settleClosingState,
+} from './workspace-attachment.ts'
 import { WorkspaceAuthority } from './workspace-authority.ts'
 import type { AttachmentHandle, ConversationState } from './workspace-conversation.ts'
 import {
@@ -65,6 +69,17 @@ export class WorkspaceEngine {
 
   constructor(root: string) {
     this.authority = new WorkspaceAuthority(root)
+  }
+
+  incarnationOf(conversation: WorkspaceConversation | undefined): WorkspaceId | undefined {
+    if (conversation === undefined) return undefined
+    try {
+      return this.states.get(conversationRecord(conversation).key)?.incarnation
+    } catch (cause) {
+      // A conversation the authority would refuse to attach is not live here.
+      if (cause instanceof WorkspaceError) return undefined
+      throw cause
+    }
   }
 
   run<A>(work: (authority: WorkspaceAuthority) => A | Promise<A>): Promise<A> {

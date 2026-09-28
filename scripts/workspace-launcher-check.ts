@@ -484,6 +484,59 @@ try {
   )
 
   await claim(
+    'dev workspace check <task> returns the assessment with exit 0 even though it names blockers and eligibility, a malformed task ID is a usage error, and no unattended release flag exists',
+    async () => {
+      const checked = await readOnly(inspectRoot, [
+        '--cwd',
+        notGit,
+        'workspace',
+        'check',
+        firstGrant.taskId,
+      ])
+      assert.equal(checked.code, 0, checked.stderr)
+      assert.ok(
+        checked.stdout.includes(firstGrant.taskId) &&
+          checked.stdout.includes(firstGrant.workspaceId),
+        checked.stdout
+      )
+      assert.ok(checked.stdout.includes('eligibility: releasable'), checked.stdout)
+      const malformed = await readOnly(inspectRoot, ['workspace', 'check', 'not-a-task'])
+      assert.equal(malformed.code, 2, malformed.stderr)
+      assert.ok(malformed.stderr.includes('not-a-task'), malformed.stderr)
+      const unattended = await readOnly(inspectRoot, [
+        'workspace',
+        'release',
+        firstGrant.taskId,
+        '--yes',
+      ])
+      assert.equal(unattended.code, 2, unattended.stderr)
+      assert.ok(unattended.stderr.includes('workspace release <task>'), unattended.stderr)
+    }
+  )
+  await claim(
+    'dev workspace release <task> without a TTY refuses with exit 2 and releases nothing: the reservation is still held afterwards',
+    async () => {
+      const refused = await readOnly(inspectRoot, [
+        '--cwd',
+        repo,
+        'workspace',
+        'release',
+        firstGrant.taskId,
+      ])
+      assert.equal(refused.code, 2, refused.stderr)
+      const still = await openLifecycle({ root: inspectRoot })
+      try {
+        const views = await still.inspect({ taskId: firstGrant.taskId })
+        assert.deepEqual(
+          views.map(view => [view.workspaceId, view.reservationId, view.outcome]),
+          [[firstGrant.workspaceId, firstGrant.reservationId, 'preserved-for-resume']]
+        )
+      } finally {
+        await still.close()
+      }
+    }
+  )
+  await claim(
     'no read-only workspace command creates an authority root, a data home, Pi state or a session file',
     () => {
       assert.ok(!existsSync(unusedDataHome), 'no read-only command resolved a data home')

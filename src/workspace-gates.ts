@@ -219,10 +219,11 @@ export interface PathGates {
   readonly use: GateRelease
   readonly writer?: GateRelease
 }
+export type PathGateMode = 'reader' | 'writer' | 'removal'
 export const acquirePathGates = (
   paths: AuthorityPaths,
   path: string,
-  writer: boolean
+  mode: PathGateMode
 ): PathGates => {
   const canonical = canonicalPathSlot(path)
   const key = hash(canonical)
@@ -230,10 +231,10 @@ export const acquirePathGates = (
   const presence = acquireGate(
     join(directory, 'use.sqlite'),
     { kind: 'use', path: canonical, key },
-    false
+    mode === 'removal'
   )
   try {
-    if (!writer) return { use: presence }
+    if (mode === 'reader') return { use: presence }
     return {
       use: presence,
       writer: acquireGate(
@@ -249,7 +250,7 @@ export const acquirePathGates = (
 }
 export const acquireStructureGate = (
   paths: AuthorityPaths,
-  repository: GitWorkspace,
+  repository: Pick<GitWorkspace, 'commonPath'>,
   repositoryId: WorkspaceId
 ): GateRelease => {
   const key = repositoryId

@@ -17,8 +17,6 @@ import {
 import { tmpdir, userInfo } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { Worker } from 'node:worker_threads'
-import { Schema } from 'effect'
 import {
   WorkspaceError,
   type WorkspaceExecution,
@@ -27,68 +25,13 @@ import {
   type WorkspaceOperation,
 } from '../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../src/workspace-authority.ts'
-import type { StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
-import {
-  WorkspaceWorkerMessageSchema,
-  type WorkspaceRpcOperation,
-} from '../src/workspace-protocol.ts'
 import { deferred, makeClaims } from './workspace-check-support.ts'
 import {
+  faultInjector,
   openLifecycle,
   type TestAttachment,
   type TestLifecycle,
 } from './workspace-test-lifecycle.ts'
-
-const isWorkerMessage = Schema.is(WorkspaceWorkerMessageSchema)
-
-// Wraps the real worker at the lifecycle's seam. Once armed, it drops the next successful
-// acknowledgment of one operation and terminates the worker, as a crash between the commit
-// and its reply would. It recognizes acknowledgments with the protocol's own schema.
-const faultInjector = () => {
-  let started: Worker | undefined
-  let armedFor: WorkspaceRpcOperation | undefined
-  const dropped: WorkspaceRpcOperation[] = []
-  const startWorker: StartWorkspaceWorker = (url, options) => {
-    const worker = new Worker(url, options)
-    started = worker
-    return {
-      postMessage: (value, transferList) => worker.postMessage(value, transferList),
-      terminate: () => worker.terminate(),
-      on: (event, listener) =>
-        worker.on(
-          event,
-          event === 'message'
-            ? (value: unknown) => {
-                if (
-                  armedFor !== undefined &&
-                  isWorkerMessage(value) &&
-                  !('type' in value) &&
-                  value.ok &&
-                  value.op === armedFor
-                ) {
-                  dropped.push(value.op)
-                  armedFor = undefined
-                  void worker.terminate()
-                  return
-                }
-                listener(value)
-              }
-            : listener
-        ),
-    }
-  }
-  return {
-    startWorker,
-    dropped,
-    dropNextAcknowledgment: (operation: WorkspaceRpcOperation) => {
-      armedFor = operation
-    },
-    worker: (): Worker => {
-      if (started === undefined) throw new Error('The lifecycle started no worker')
-      return started
-    },
-  }
-}
 
 const inside = (parent: string, path: string) => {
   const offset = relative(parent, path)

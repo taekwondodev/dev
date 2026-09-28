@@ -69,6 +69,11 @@ const lifecycle: WorkspaceLifecycle = {
   attach: () => Effect.fail(refused),
   inspect: () => Effect.succeed([retained]),
   validate: () => Effect.void,
+  check: () => Effect.fail(refused),
+  release: () => Effect.fail(refused),
+  recordTarget: () => Effect.fail(refused),
+  recordPublication: () => Effect.fail(refused),
+  recordRuleApproval: () => Effect.fail(refused),
 }
 
 let opened: Awaited<ReturnType<typeof openHostRuntime>> | undefined
@@ -155,7 +160,7 @@ try {
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')
     assert.deepEqual(displayed(), [
-      'Unknown workspace command "switch". Use list, inspect <task>, or resume <task> [--workspace <workspace>].',
+      'Unknown workspace command "switch". Use list, inspect <task>, check <task>, release <task>, or resume <task> [--workspace <workspace>].',
     ])
   })
   await claim(

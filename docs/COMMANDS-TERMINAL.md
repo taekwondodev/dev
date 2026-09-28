@@ -105,7 +105,19 @@ dev workspace resume <task> --workspace <workspace>
 
 Apre una nuova conversazione sul workspace conservato di quel task. `--workspace` è obbligatorio solo se il task ha più workspace. Non sposta file modificati, non riavvia lavori e non sostituisce un workspace occupato, mancante o sostituito.
 
-I comandi `workspace` escono con 0 quando restituiscono l'osservazione richiesta, 1 se non è ottenibile e 2 per argomenti non validi o ambigui.
+```bash
+dev workspace check <task>
+```
+
+Mostra, in sola lettura, se ogni workspace di quel task esatto potrebbe essere rilasciato adesso: usi attivi, identità, stato Git, prova di integrazione nel target concordato, file non tracciati coperti da una pubblicazione verificata o da una regola approvata, e i blocchi rimasti. Un checkout pre-esistente può risultare `releasable` (si libera solo la prenotazione); un worktree creato da dev risulta `removable` solo a questo controllo. Non prenota, non recupera ref, non pubblica nulla e non memorizza alcun permesso: il rilascio ricontrolla tutto.
+
+```bash
+dev workspace release <task>
+```
+
+Mostra la valutazione e le conseguenze, chiede conferma nel terminale e fa un solo tentativo di rilascio per ciascun workspace confermato, valutato indipendentemente. Per un checkout pre-esistente, anche il principale, libera soltanto la prenotazione del task: file e commit restano intatti e le modifiche residue vengono riportate. Un worktree creato da dev viene rimosso solo se il commit corrente è integrato nel target concordato, ogni file non tracciato è coperto da una pubblicazione verificata o da una regola approvata nella sua versione esatta e nessuna sessione lo usa; contenuti sconosciuti o sensibili lo bloccano. Serve un terminale interattivo: senza conferma non rilascia nulla e non esiste una modalità `--yes`. Se la shell da cui lanci il comando si trova dentro un worktree rimovibile, quel worktree resta e va rilasciato da fuori. Un rilascio interrotto prima di registrare il suo esito compare come `review-required` e blocca la ripresa del workspace: il rilascio esplicito successivo osserva ciò che ha fatto, lo chiude e rivaluta lo stato corrente, senza ripetere nulla. Finché il workspace esiste, `check`, `inspect` e ogni rilascio successivo elencano i file che un tentativo precedente ha registrato come cancellati; se il tentativo si è interrotto a metà delle cancellazioni, avvisano che altri file potrebbero mancare finché il rilascio successivo non li osserva e li elenca come assenti. Se Git si ferma dopo aver cancellato la directory del worktree e svuotato la sua directory di amministrazione, il rilascio successivo rimuove soltanto quella directory vuota; se non è vuota, non è leggibile o indica ancora un worktree spostato, resta a te, con il percorso e il motivo. Ripetere il comando è una richiesta nuova con controlli nuovi.
+
+I comandi `workspace` escono con 0 quando restituiscono l'osservazione richiesta o quando ogni rilascio confermato termina con `released`, `removed` o `already-absent`; con 1 se l'osservazione non è ottenibile o il rilascio è bloccato, parziale o incerto; con 2 per argomenti non validi o ambigui e quando manca l'interazione richiesta; con 130 se annulli la conferma o interrompi il rilascio con Ctrl-C: il tentativo già avviato arriva al suo esito, il riepilogo lo riporta e i workspace non ancora tentati restano com'erano. Un `check` esce con 0 anche quando elenca blocchi: il testo li riporta e l'uscita 0 non è un permesso di rimozione.
 
 ```bash
 dev --help

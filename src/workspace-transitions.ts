@@ -29,6 +29,8 @@ import {
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates } from './workspace-gates.ts'
 import {
+  assertNoUnresolvedRelease,
+  cancelUnstartedReleases,
   getReservation,
   updateReservation,
   getBinding,
@@ -46,7 +48,7 @@ import {
   type ReservationRecord,
   type BindingRecord,
   type UseRecord,
-  type OperationRecord,
+  type TransitionOperationRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { transaction } from './workspace-sqlite.ts'
@@ -105,7 +107,8 @@ export const selectWorkspace = (
     targetUses.some(use => use.access === 'write' && isActiveUse(use) && !state.leases.has(use.id))
   )
     blocked(`Selected workspace has an active or unresolved writer: ${target.workspace.path}`)
-  const gates = acquirePathGates(authority.paths, target.workspace.path, true)
+  inDb(authority, target.repo, db => assertNoUnresolvedRelease(db, target.workspace.id))
+  const gates = acquirePathGates(authority.paths, target.workspace.path, 'writer')
   const operationId = newId()
   const acquisitionId = newId()
   const use = {
@@ -148,7 +151,7 @@ export const selectWorkspace = (
     expectedBindingRevision: state.binding.revision,
     reason: 'explicit-task-resume',
     createdAt: now(),
-  } satisfies OperationRecord
+  } satisfies TransitionOperationRecord
   const grant = toGrant(
     authority,
     target.repo,
@@ -187,6 +190,7 @@ export const selectWorkspace = (
           acquisitionId,
           revision: reservation.revision + 1,
         })
+        cancelUnstartedReleases(db, target.workspace.id, 'Superseded by an explicit resume')
         putUse(db, use)
         putOperation(db, operation)
         if (source.repo === target.repo) {
@@ -245,7 +249,7 @@ export const performHandoff = async (
     requireReview(
       `Workspace handoff ${transition.operationId} already reached the host; it needs review, not withdrawal`
     )
-  let operation: OperationRecord
+  let operation: TransitionOperationRecord
   try {
     validateGrant(authority, state, pending.handoff.target)
     assertNoLiveExecution(authority, state, pending.handoff.from, 'switched')
@@ -344,9 +348,13 @@ const cancelTransition = (
   inDb(authority, pending.targetRepositoryId, db =>
     transaction(db, () => {
       const current = getOperation(db, operationId)
-      if (current === undefined || (current.phase !== 'intent' && current.phase !== 'started'))
+      if (
+        current === undefined ||
+        current.kind === 'release' ||
+        (current.phase !== 'intent' && current.phase !== 'started')
+      )
         requireReview('Handoff result no longer matches its intent')
-      const cancelled: OperationRecord = { ...current, phase: 'cancelled', result }
+      const cancelled: TransitionOperationRecord = { ...current, phase: 'cancelled', result }
       saveUse(db, {
         ...targetUse,
         stage: 'quiescent',
@@ -387,7 +395,7 @@ const finishConfirmed = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   pending: PendingTransition,
-  operation: OperationRecord
+  operation: TransitionOperationRecord
 ): void => {
   const sourceWorkspaceId = pending.handoff.from.workspaceId
   const oldUses = outgoingUses(authority, state, sourceWorkspaceId, pending.targetLease.useId)
@@ -408,7 +416,7 @@ const finishConfirmed = (
     pendingOperationId: undefined,
     superseded: undefined,
   }
-  const confirmedOperation: OperationRecord = {
+  const confirmedOperation: TransitionOperationRecord = {
     ...operation,
     phase: 'confirmed',
     result: 'Host callback confirmed the target binding.',

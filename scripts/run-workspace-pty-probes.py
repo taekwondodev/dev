@@ -22,6 +22,8 @@ class Action:
     keys: str
     required: bool = True
     delay: float = 0.0
+    # How many times the trigger must appear, for a prompt that recurs in one transcript.
+    occurrence: int = 1
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,11 @@ class Probe:
     timeout: float = 240.0
     fixture_marker: str | None = None
     inputs_marker: str | None = None
+    # Text the pseudo-terminal transcript must contain for the probe to pass: what a child of the
+    # probe printed straight to the terminal, which the probe itself cannot read back.
+    expect: tuple[str, ...] = ()
+    # Extra environment for a variant of a probe script.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 STUB_ACTIONS = (
@@ -55,8 +62,18 @@ STUB_ACTIONS = (
     Action('confirm-retained-work', 'DEV36_CONFIRM_SWITCH_OPEN_2', 'y\r', required=False),
     Action('resume-refused', 'DEV36_READY_FOR_REFUSED_SWITCH',
            '/workspace resume {TASK_RESUME} --workspace {WS_RESUME_C}\r'),
+    Action('guided-release', 'DEV36_READY_FOR_GUIDED_RELEASE', '/workspace release {TASK_RESUME}\r'),
+    Action('confirm-guided-release', 'DEV36_RELEASE_CONFIRM_OPEN', 'y\r', delay=0.25),
     Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND',
            '/workspace resume {TASK_FAIL} --workspace {WS_FAIL}\r'),
+)
+
+
+LAUNCHER_ACTIONS = (
+    Action('release', 'Press ctrl+o to show full startup help',
+           '\x15/workspace release {TASK}\r', delay=2.0),
+    Action('confirm-yes', 'Release task {TASK}?', 'y\r', delay=0.5),
+    Action('stray-input', 'Release task {TASK}?', 'stray input after confirm\r', delay=1.0),
 )
 
 
@@ -69,17 +86,71 @@ PROBES = {
         inputs_marker='DEV36_INPUTS ',
         actions=STUB_ACTIONS,
     ),
-    # Every workspace decision real, to catch drift at the seam the stub cannot see.
+    # Every workspace decision real, to catch drift at the seam the stub cannot see. It ends
+    # with the guided release of the TUI's own task.
     'real': Probe(
         script='scripts/workspace-host-real-authority-probe.ts',
         passed_marker='DEV_REAL_AUTHORITY_PROBE_PASSED ',
+        inputs_marker='DEV_REAL_AUTHORITY_INPUTS ',
         actions=(
             Action('after-refused-allocation', 'DEV_REAL_AUTHORITY_READY_FOR_NEXT_CALL',
                    '\x15continue after the refused allocation\r'),
             Action('user-bash', 'DEV_REAL_AUTHORITY_READY_FOR_USER_BASH',
                    '\x15!printf user-bash > user.txt\r'),
             Action('reload', 'DEV_REAL_AUTHORITY_READY_FOR_RELOAD', '\x15/reload\r'),
+            Action('check', 'DEV_REAL_AUTHORITY_READY_FOR_CHECK',
+                   '\x15/workspace check {TASK_HOST}\r'),
+            Action('release-cancel', 'DEV_REAL_AUTHORITY_READY_FOR_RELEASE_CANCEL',
+                   '\x15/workspace release {TASK_HOST}\r'),
+            Action('confirm-escape', 'DEV_REAL_AUTHORITY_CONFIRM_OPEN_1', '\x1b', delay=0.25),
+            Action('release-confirm', 'DEV_REAL_AUTHORITY_READY_FOR_CONFIRMED_RELEASE',
+                   '\x15/workspace release {TASK_HOST}\r'),
+            Action('confirm-yes', 'DEV_REAL_AUTHORITY_CONFIRM_OPEN_2', 'y\r', delay=0.25),
+            Action('stray-input', 'DEV_REAL_AUTHORITY_CONFIRM_OPEN_2',
+                   'stray input after confirm\r', delay=1.0),
         ),
+    ),
+    # The real launcher opening the real TUI, released from inside it. The launcher is a child
+    # inheriting the pseudo-terminal, so its triggers are Pi's own rendering: the repository path in
+    # the footer, then the confirmation title.
+    'launcher': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=LAUNCHER_ACTIONS,
+        expect=('its workspace attachment is closed', '(pre-existing) at', ': released', 'Exit 0'),
+    ),
+    # The same guided release, with a SIGINT reaching the launcher during the teardown after the
+    # handover: it must say the work stopped and nothing was released, and exit 130.
+    'launcher-interrupt': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=LAUNCHER_ACTIONS,
+        expect=('its workspace attachment is closed', 'interrupted before its attempt started', 'Exit 130'),
+        env=(('LAUNCHER_TUI_FAULT', 'sigint-after-handover'),),
+    ),
+    # The terminal release: the real launcher answering its confirmation from the pseudo-terminal.
+    'release': Probe(
+        script='scripts/workspace-release-pty-probe.ts',
+        passed_marker='DEV_RELEASE_PTY_PROBE_PASSED ',
+        inputs_marker='DEV_RELEASE_INPUTS ',
+        timeout=180.0,
+        actions=(
+            Action('cancel', 'DEV_RELEASE_READY_FOR_CANCEL', 'n\r', delay=1.0),
+            # Only after readline has put the terminal in raw mode, or Ctrl-C would signal the probe.
+            Action('ctrl-c', 'Type y to release, anything else to cancel: ', '\x03', delay=0.3,
+                   occurrence=2),
+            Action('ctrl-z', 'Type y to release, anything else to cancel: ', '\x1a', delay=0.3,
+                   occurrence=3),
+            Action('ctrl-d', 'Type y to release, anything else to cancel: ', '\x04', delay=0.3,
+                   occurrence=4),
+            Action('interrupted-confirm', 'DEV_RELEASE_READY_FOR_INTERRUPT', 'y\r', delay=1.0),
+            Action('confirm', 'DEV_RELEASE_READY_FOR_CONFIRM', 'y\r', delay=1.0),
+        ),
+        expect=('Cancellation requested', 'Summary: partial', 'Exit 130'),
     ),
 }
 
@@ -108,6 +179,7 @@ def run(name: str, probe: Probe) -> bool:
         'PI_OFFLINE': '1',
         'PI_TELEMETRY_DISABLED': '1',
     })
+    env.update(dict(probe.env))
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(ROOT)
@@ -137,16 +209,22 @@ def run(name: str, probe: Probe) -> bool:
                 printed = re.search(re.escape(probe.inputs_marker) + r'(\{[^\r\n]+\})', text)
                 inputs = json.loads(printed.group(1)) if printed else {}
             for action in probe.actions:
-                if action.name not in sent and action.trigger in text:
-                    try:
-                        keys = action.keys.format_map(inputs)
-                    except KeyError as missing:
+                if action.name in sent:
+                    continue
+                try:
+                    trigger = action.trigger.format_map(inputs)
+                    keys = action.keys.format_map(inputs)
+                except KeyError as missing:
+                    if inputs:
                         input_error = f'{action.name} needs {missing}, which the probe did not print'
                         break
+                    continue
+                if text.count(trigger) >= action.occurrence:
                     if action.delay:
                         time.sleep(action.delay)
                     os.write(master, keys.encode())
                     sent.append(action.name)
+                    break
             if input_error:
                 break
             done, status = os.waitpid(pid, os.WNOHANG)
@@ -166,8 +244,10 @@ def run(name: str, probe: Probe) -> bool:
     )
     missing = sorted(action.name for action in probe.actions
                      if action.required and action.name not in sent)
+    missing_output = [needle for needle in probe.expect if needle not in text]
     passed = (os.WIFEXITED(exit_status) and os.WEXITSTATUS(exit_status) == 0
-              and report is not None and not missing and input_error is None)
+              and report is not None and not missing and not missing_output
+              and input_error is None)
     print(json.dumps({
         'probe': name,
         'script': probe.script,
@@ -176,6 +256,7 @@ def run(name: str, probe: Probe) -> bool:
         'passed_marker': report is not None,
         'sent_actions': sent,
         'missing_actions': missing,
+        'missing_output': missing_output,
         'input_error': input_error,
         'report': report,
         'pty_log': log_path,
