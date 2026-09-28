@@ -1,20 +1,21 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstatSync, readFileSync, type BigIntStats } from 'node:fs'
-import { basename, join } from 'node:path'
+import { lstatSync, readFileSync, readlinkSync, realpathSync, type BigIntStats } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
   CommitSha,
+  blocked,
   type EvidenceVerdict,
   type PublicationReference,
-  type RuleApproval,
   type TaskTarget,
 } from './workspace-domain.ts'
 import {
   ancestry,
-  blobAt,
+  assertUnfilteredIndex,
   hasCommit,
+  indexSnapshot,
   isShallowRepository,
   remoteTip,
   resolveLocalRef,
@@ -23,9 +24,9 @@ import {
   type TrackedChange,
 } from './workspace-git.ts'
 import type { ManifestEntry } from './workspace-records.ts'
-import { hasErrorCode } from './workspace-platform.ts'
+import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
 
-export const EVIDENCE_POLICY_VERSION = 1
+export const EVIDENCE_POLICY_VERSION = 2
 
 export const sha256Hex = (bytes: Uint8Array | string): string =>
   createHash('sha256').update(bytes).digest('hex')
@@ -205,13 +206,15 @@ export type InventoryFile =
       readonly mtimeNs: string
     }
   | {
-      readonly kind: 'nested-repository' | 'other' | 'unreadable'
+      readonly kind: 'nested-repository' | 'other' | 'unreadable' | 'absent'
       readonly path: string
       readonly detail?: string
     }
 export interface Inventory {
   readonly head: string | undefined
   readonly tracked: readonly TrackedChange[]
+  readonly trackedFiles: readonly InventoryFile[]
+  readonly trackedDigest: string
   readonly files: readonly InventoryFile[]
 }
 
@@ -283,9 +286,16 @@ const inventoryFileOf = (checkout: string, device: string, entry: string): Inven
   if (entry.endsWith('/')) return { path: entry.slice(0, -1), kind: 'nested-repository' }
   let stat
   try {
+    const parent = dirname(join(checkout, entry))
+    if (realpathSync(parent) !== parent)
+      return { path: entry, kind: 'other', detail: 'has a symbolic-link ancestor' }
     stat = lstatSync(join(checkout, entry), { bigint: true })
   } catch (cause) {
-    return { path: entry, kind: 'unreadable', detail: errorText(cause) }
+    return {
+      path: entry,
+      kind: hasErrorCode(cause, 'ENOENT') ? 'absent' : 'unreadable',
+      detail: errorText(cause),
+    }
   }
   const identity = identityOf(stat)
   if (identity.device !== device)
@@ -300,8 +310,30 @@ const inventoryFileOf = (checkout: string, device: string, entry: string): Inven
 
 export const readInventory = (checkout: string, head: string | undefined): Inventory => {
   const device = String(lstatSync(checkout, { bigint: true }).dev)
+  const index = indexSnapshot(checkout)
+  const trackedFiles = index.paths.flatMap(entry => {
+    const file = inventoryFileOf(checkout, device, entry)
+    if (file.kind === 'absent') return []
+    if (file.kind !== 'file' && file.kind !== 'symlink')
+      return blocked(`Cannot inspect tracked entry ${file.path}: ${file.kind}`)
+    return [file]
+  })
   const files = untrackedPaths(checkout).map(entry => inventoryFileOf(checkout, device, entry))
-  return { head, tracked: trackedChanges(checkout), files }
+  assertUnfilteredIndex(checkout, index.paths)
+  const trackedDigest = sha256Hex(
+    JSON.stringify({
+      index: index.digest ?? null,
+      contents: trackedFiles.map(file => {
+        const path = join(checkout, file.path)
+        const digest =
+          file.kind === 'symlink'
+            ? sha256Hex(readlinkSync(path, { encoding: 'buffer' }))
+            : regularFileDigest(path)
+        return [file.path, digest]
+      }),
+    })
+  )
+  return { head, tracked: trackedChanges(checkout), trackedFiles, trackedDigest, files }
 }
 
 export const entryUnchanged = (
@@ -336,66 +368,6 @@ export const entryUnchanged = (
   }
   return { state: 'same' }
 }
-
-const RuleSet = Schema.Struct({
-  version: Schema.Literal(1),
-  regenerable: Schema.Array(Schema.NonEmptyString),
-})
-interface ApprovedRule {
-  readonly locator: string
-  readonly digest: string
-  readonly directories: readonly string[]
-  readonly files: readonly string[]
-}
-export interface RuleEvaluation {
-  readonly approved: readonly ApprovedRule[]
-  readonly problems: readonly string[]
-}
-export const evaluateRules = (
-  checkout: string,
-  head: string | undefined,
-  approvals: readonly RuleApproval[]
-): RuleEvaluation => {
-  const approved: ApprovedRule[] = []
-  const problems: string[] = []
-  if (head === undefined) return { approved, problems }
-  const locators = [...new Set(approvals.map(approval => approval.locator))].toSorted()
-  for (const locator of locators) {
-    const blob = blobAt(checkout, head, locator)
-    if (blob === undefined) continue
-    const digest = sha256Hex(blob)
-    if (!approvals.some(approval => approval.locator === locator && approval.digest === digest)) {
-      problems.push(
-        `Regenerable rule ${locator} at ${head.slice(0, 12)} has digest ${digest.slice(0, 12)}, which the user has not approved; approve this exact version before it can cover files.`
-      )
-      continue
-    }
-    let rules
-    try {
-      rules = Schema.decodeUnknownSync(RuleSet)(JSON.parse(blob.toString('utf8')))
-    } catch (cause) {
-      problems.push(`Regenerable rule ${locator} is not a valid rule set: ${errorText(cause)}`)
-      continue
-    }
-    const entries = rules.regenerable.map(entry => entry.replace(/^\.\//, ''))
-    if (entries.some(entry => entry.startsWith('/') || entry.split('/').includes('..'))) {
-      problems.push(`Regenerable rule ${locator} names a path outside the workspace`)
-      continue
-    }
-    approved.push({
-      locator,
-      digest,
-      directories: entries.filter(entry => entry.endsWith('/')),
-      files: entries.filter(entry => !entry.endsWith('/')),
-    })
-  }
-  return { approved, problems }
-}
-const ruleCovers = (rules: readonly ApprovedRule[], path: string): ApprovedRule | undefined =>
-  rules.find(
-    rule =>
-      rule.files.includes(path) || rule.directories.some(directory => path.startsWith(directory))
-  )
 
 export interface IntegrationProof {
   readonly verdict: EvidenceVerdict
@@ -470,9 +442,20 @@ const provePullRequest = (
       return unknown(
         `${label} lists ${mergedHead.slice(0, 12)} as its last commit but ${pull.headSha.slice(0, 12)} as its head; the merged source cannot be bound`
       )
-    if (mergedHead !== source) {
+    if (!hasCommit(checkout, mergedHead) || !hasCommit(checkout, source))
+      return unknown(
+        `${label} source history is not locally readable; dev does not fetch to prove ancestry`
+      )
+    const sourceReachable = ancestry(checkout, source, mergedHead)
+    if (typeof sourceReachable !== 'string')
+      return unknown(`${label} source ancestry could not be read: ${sourceReachable.error}`)
+    if (sourceReachable !== 'ancestor') {
+      if (isShallowRepository(checkout))
+        return unknown(
+          `${label} source history is shallow; negative ancestry does not prove exclusion`
+        )
       reasons.push(
-        `${label} merged head ${mergedHead.slice(0, 12)}, but this worktree is at ${source.slice(0, 12)}; extra or different local commits are not covered by that merge`
+        `${label} merged source ${mergedHead.slice(0, 12)} does not descend from this worktree's ${source.slice(0, 12)} commit`
       )
       continue
     }
@@ -498,7 +481,7 @@ const provePullRequest = (
     return {
       verdict: 'valid',
       reasons: [
-        `${label} merged exactly ${source.slice(0, 12)} from ${expectedSource} into ${target.repository} ${branchOf(target.ref)}; its result ${result.slice(0, 12)} is reachable from the current tip ${tip.slice(0, 12)}`,
+        `${label} merged source ${mergedHead.slice(0, 12)} from ${expectedSource} into ${target.repository} ${branchOf(target.ref)}; this worktree's ${source.slice(0, 12)} is in that source history and its result ${result.slice(0, 12)} is reachable from the current tip ${tip.slice(0, 12)}`,
       ],
       targetTip: tip,
     }
@@ -668,7 +651,6 @@ export interface EvidenceSubject {
   readonly head: string | undefined
   readonly target: TaskTarget | undefined
   readonly publications: readonly PublicationReference[]
-  readonly approvals: readonly RuleApproval[]
 }
 export interface EvidenceResult {
   readonly verdict: EvidenceVerdict
@@ -680,7 +662,7 @@ export interface EvidenceResult {
     readonly trackedChanges: number
     readonly files: number
     readonly published: number
-    readonly regenerable: number
+    readonly disposable: number
     readonly blocking: number
   }
   readonly stateDigest: string
@@ -691,7 +673,6 @@ export const stateDigestOf = (input: {
   readonly inventory: Inventory | undefined
   readonly targetTip: string | undefined
   readonly publications: readonly PublicationReference[]
-  readonly approvals: readonly RuleApproval[]
   readonly absent?: boolean
 }): string =>
   sha256Hex(
@@ -701,17 +682,17 @@ export const stateDigestOf = (input: {
       absent: input.absent === true,
       targetTip: input.targetTip ?? null,
       tracked: input.inventory?.tracked.map(change => [change.kind, change.path]) ?? null,
+      trackedDigest: input.inventory?.trackedDigest ?? null,
       files:
-        input.inventory?.files.map(file =>
-          file.kind === 'file' || file.kind === 'symlink'
-            ? [file.kind, file.path, file.size, file.device, file.inode, file.mtimeNs]
-            : [file.kind, file.path]
-        ) ?? null,
+        input.inventory === undefined
+          ? null
+          : [...input.inventory.trackedFiles, ...input.inventory.files].map(file =>
+              file.kind === 'file' || file.kind === 'symlink'
+                ? [file.kind, file.path, file.size, file.device, file.inode, file.mtimeNs]
+                : [file.kind, file.path]
+            ),
       publications: input.publications
         .map(reference => `${reference.relativePath}\0${reference.sha256}\0${reference.byteLength}`)
-        .toSorted(),
-      approvals: input.approvals
-        .map(approval => `${approval.locator}\0${approval.digest}`)
         .toSorted(),
     })
   )
@@ -724,17 +705,11 @@ export const verifyEvidence = (
   const invalid: string[] = []
   const unknown: string[] = []
   for (const change of inventory.tracked)
-    invalid.push(
-      change.kind === 'conflict'
-        ? `Unresolved conflict: ${change.path}`
-        : `Modified or staged tracked file: ${change.path}`
-    )
+    if (change.kind === 'conflict') invalid.push(`Unresolved conflict: ${change.path}`)
   const integration = proveIntegration(reader, subject.checkout, subject.head, subject.target)
   if (integration.verdict === 'invalid') invalid.push(...integration.reasons)
   if (integration.verdict === 'unknown') unknown.push(...integration.reasons)
 
-  const rules = evaluateRules(subject.checkout, subject.head, subject.approvals)
-  invalid.push(...rules.problems)
   const manifest: ManifestEntry[] = []
   const publicationsByPath = new Map<string, PublicationReference[]>()
   for (const reference of subject.publications) {
@@ -743,15 +718,16 @@ export const verifyEvidence = (
     else references.push(reference)
   }
   let published = 0
-  let regenerable = 0
+  let disposable = 0
   let blocking = 0
-  for (const file of inventory.files) {
+  const untracked = new Set(inventory.files.map(file => file.path))
+  for (const file of [...inventory.trackedFiles, ...inventory.files]) {
     if (file.kind === 'nested-repository') {
       blocking += 1
       invalid.push(`Nested repository is not entered or removed: ${file.path}/`)
       continue
     }
-    if (file.kind === 'unreadable') {
+    if (file.kind === 'unreadable' || file.kind === 'absent') {
       blocking += 1
       unknown.push(`Unreadable inventory entry: ${file.path} (${file.detail ?? 'unknown'})`)
       continue
@@ -770,14 +746,19 @@ export const verifyEvidence = (
       mtimeNs: file.mtimeNs,
       state: 'pending' as const,
     }
-    if (sensitiveName(file.path)) {
+    const references = publicationsByPath.get(file.path)
+    if (references !== undefined && sensitiveName(file.path)) {
       blocking += 1
       invalid.push(
-        `Possibly sensitive file is never disposed of by a rule or publication: ${file.path}`
+        `Possibly sensitive published artifact is never certified for disposal: ${file.path}`
       )
       continue
     }
-    const references = publicationsByPath.get(file.path)
+    if (references !== undefined && file.kind === 'symlink') {
+      blocking += 1
+      invalid.push(`Recorded artifact is no longer a regular file: ${file.path}`)
+      continue
+    }
     if (references !== undefined && file.kind === 'file') {
       const digest = sha256Hex(readFileSync(join(subject.checkout, file.path)))
       const match = references.find(
@@ -794,18 +775,7 @@ export const verifyEvidence = (
       )
       continue
     }
-    const rule = ruleCovers(rules.approved, file.path)
-    if (rule !== undefined) {
-      regenerable += 1
-      manifest.push({ ...identity, kind: file.kind, coverage: 'regenerable' })
-      continue
-    }
-    blocking += 1
-    invalid.push(
-      file.kind === 'symlink'
-        ? `Symbolic link is neither published nor covered by an approved rule: ${file.path}`
-        : `Untracked or ignored file is neither published nor covered by an approved rule: ${file.path}`
-    )
+    if (untracked.has(file.path)) disposable += 1
   }
   let verdict: EvidenceVerdict = 'valid'
   if (invalid.length > 0) verdict = 'invalid'
@@ -820,7 +790,7 @@ export const verifyEvidence = (
       trackedChanges: inventory.tracked.length,
       files: inventory.files.length,
       published,
-      regenerable,
+      disposable,
       blocking,
     },
     stateDigest: stateDigestOf({
@@ -828,7 +798,6 @@ export const verifyEvidence = (
       inventory,
       targetTip: integration.targetTip,
       publications: subject.publications,
-      approvals: subject.approvals,
     }),
   }
 }

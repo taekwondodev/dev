@@ -7,7 +7,6 @@ import {
   CommitSha,
   RelativeFilePath,
   Revision,
-  RuleApprovalSchema,
   Sha256Hex,
   TaskTargetSchema,
   WorkspaceAccessSchema,
@@ -18,7 +17,6 @@ import {
   WorkspaceOriginSchema,
   WorkspaceProcessSchema,
   type PublicationReference,
-  type RuleApproval,
   type WorkspaceBinding,
   type WorkspaceOrigin,
 } from './workspace-domain.ts'
@@ -566,31 +564,6 @@ export const putPublication = (db: DatabaseSync, value: PublicationReference): v
     value.taskId,
     value.relativePath,
     value.sha256,
-    encode(value)
-  )
-}
-export const getRuleApprovals = (db: DatabaseSync, repositoryId: string): RuleApproval[] =>
-  rows(
-    db,
-    'SELECT id, payload FROM rule_approvals WHERE repository_id=? ORDER BY locator, id',
-    repositoryId
-  ).map(row => {
-    const value = parseRecord(
-      RuleApprovalSchema,
-      row.payload,
-      `rule approval ${textField(row, 'id')}`
-    )
-    if (value.id !== textField(row, 'id') || value.repositoryId !== repositoryId)
-      requireReview(`Rule approval columns disagree with payload: ${value.id}`)
-    return value
-  })
-export const putRuleApproval = (db: DatabaseSync, value: RuleApproval): void => {
-  db.prepare(`INSERT INTO rule_approvals(id,repository_id,locator,digest,payload) VALUES(?,?,?,?,?)
-    ON CONFLICT(repository_id,locator,digest) DO NOTHING`).run(
-    value.id,
-    value.repositoryId,
-    value.locator,
-    value.digest,
     encode(value)
   )
 }

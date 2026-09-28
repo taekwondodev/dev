@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process'
 import { basename, isAbsolute, resolve } from 'node:path'
 import { Option, Schema } from 'effect'
 import { WorkspaceError } from './workspace-domain.ts'
+import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
+import { errorText } from './error-text.ts'
 
 export const FileIdentitySchema = Schema.Struct({
   device: Schema.NonEmptyString,
@@ -25,25 +27,13 @@ const decodeGitWorkspace = Schema.decodeUnknownOption(GitWorkspaceSchema)
 const gitBlocked = (message: string): WorkspaceError =>
   new WorkspaceError({ outcome: 'blocked', message })
 
-export interface GitResult<Out = string> {
+export interface GitResult {
   readonly status: number | null
-  readonly stdout: Out
+  readonly stdout: string
   readonly stderr: string
 }
 
-export function gitResult(cwd: string, args: readonly string[], input?: string): GitResult
-export function gitResult(
-  cwd: string,
-  args: readonly string[],
-  input: string | undefined,
-  encoding: 'buffer'
-): GitResult<Buffer>
-export function gitResult(
-  cwd: string,
-  args: readonly string[],
-  input?: string,
-  encoding: 'utf8' | 'buffer' = 'utf8'
-): GitResult | GitResult<Buffer> {
+export const gitResult = (cwd: string, args: readonly string[], input?: string): GitResult => {
   const result = spawnSync(
     'git',
     [
@@ -60,7 +50,7 @@ export function gitResult(
     ],
     {
       cwd,
-      encoding,
+      encoding: 'utf8',
       input,
       windowsHide: true,
       maxBuffer: 64 * 1024 * 1024,
@@ -72,12 +62,13 @@ export function gitResult(
         GIT_OPTIONAL_LOCKS: '0',
         GIT_TERMINAL_PROMPT: '0',
         GIT_NO_LAZY_FETCH: '1',
+        GIT_NO_REPLACE_OBJECTS: '1',
+        GIT_GRAFT_FILE: '/dev/null',
       },
     }
   )
   if (result.error !== undefined) throw gitBlocked(`Cannot run Git: ${result.error.message}`)
-  const stderr = typeof result.stderr === 'string' ? result.stderr : result.stderr.toString('utf8')
-  return { status: result.status, stdout: result.stdout, stderr } as GitResult | GitResult<Buffer>
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
 
 const git = (cwd: string, args: readonly string[], input?: string): string => {
@@ -154,7 +145,7 @@ export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: str
     )
 }
 
-const failureText = (result: GitResult): string =>
+const failureText = (result: Pick<GitResult, 'stderr' | 'status'>): string =>
   result.stderr.trim() || `exit ${result.status ?? 'signal'}`
 
 const operands = (...values: readonly string[]): readonly string[] => ['--', ...values]
@@ -163,6 +154,44 @@ export interface TrackedChange {
   readonly path: string
   readonly kind: 'changed' | 'renamed' | 'conflict'
 }
+export const indexSnapshot = (
+  checkout: string
+): { readonly paths: readonly string[]; readonly digest: string | undefined } => {
+  const indexPath = git(checkout, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])
+  let digest: string | undefined
+  try {
+    digest = regularFileDigest(indexPath)
+  } catch (cause) {
+    if (!hasErrorCode(cause, 'ENOENT'))
+      throw gitBlocked(`Cannot read Git index: ${errorText(cause)}`)
+  }
+  const entries = git(checkout, ['ls-files', '--stage', '-z'])
+    .split('\0')
+    .filter(entry => entry.length > 0)
+  const paths = new Set<string>()
+  for (const entry of entries) {
+    const separator = entry.indexOf('\t')
+    if (separator === -1) throw gitBlocked('Git returned an invalid index entry')
+    const path = entry.slice(separator + 1)
+    paths.add(entry.startsWith('160000 ') ? `${path}/` : path)
+  }
+  return { paths: [...paths], digest }
+}
+
+export const assertUnfilteredIndex = (checkout: string, paths: readonly string[]): void => {
+  const attributes = git(
+    checkout,
+    ['check-attr', '--stdin', '-z', 'filter'],
+    paths.map(path => `${path}\0`).join('')
+  ).split('\0')
+  if (
+    attributes.some(
+      (value, index) => index % 3 === 2 && value !== 'unspecified' && value !== 'unset'
+    )
+  )
+    throw gitBlocked('Tracked files use checkout filters; their read effects are not controlled')
+}
+
 export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
   const output = git(checkout, [
     'status',
@@ -188,10 +217,16 @@ export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
   return changes
 }
 
-export const untrackedPaths = (checkout: string): readonly string[] =>
-  git(checkout, ['ls-files', '--others', '-z'])
-    .split('\0')
-    .filter(entry => entry.length > 0)
+export const untrackedPaths = (checkout: string): readonly string[] => [
+  ...new Set(
+    [
+      git(checkout, ['ls-files', '--others', '--exclude-standard', '-z']),
+      git(checkout, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']),
+    ]
+      .flatMap(output => output.split('\0'))
+      .filter(entry => entry.length > 0)
+  ),
+]
 
 export const isShallowRepository = (checkout: string): boolean =>
   git(checkout, ['rev-parse', '--is-shallow-repository']) === 'true'
@@ -233,18 +268,17 @@ export const remoteTip = (checkout: string, remote: string, ref: string): Remote
   return sha === undefined || sha.length === 0 ? 'missing' : { sha }
 }
 
-export const blobAt = (checkout: string, commit: string, path: string): Buffer | undefined => {
-  const type = gitResult(checkout, ['cat-file', '-t', ...operands(`${commit}:${path}`)])
-  if (type.status !== 0) return undefined
-  if (type.stdout.trim() !== 'blob') return undefined
-  const result = gitResult(
-    checkout,
-    ['cat-file', 'blob', ...operands(`${commit}:${path}`)],
-    undefined,
-    'buffer'
-  )
-  if (result.status !== 0) throw gitBlocked(`Cannot read ${path} at ${commit}`)
-  return result.stdout
+export const worktreeLockReason = (repositoryPath: string, path: string): string | undefined => {
+  const fields = git(repositoryPath, ['worktree', 'list', '--porcelain', '-z']).split('\0')
+  let selected = false
+  for (const field of fields) {
+    if (field.startsWith('worktree ')) {
+      selected = field.slice('worktree '.length) === path
+      continue
+    }
+    if (selected && field.startsWith('locked')) return field.slice('locked'.length).trim()
+  }
+  return undefined
 }
 
 export const registeredWorktrees = (repositoryPath: string): readonly string[] =>
@@ -254,7 +288,7 @@ export const registeredWorktrees = (repositoryPath: string): readonly string[] =
     .map(line => line.slice('worktree '.length))
 
 export const removeWorktree = (repositoryPath: string, path: string): GitResult =>
-  gitResult(repositoryPath, ['worktree', 'remove', '--', path])
+  gitResult(repositoryPath, ['worktree', 'remove', '--force', '--', path])
 
 export const addDetachedWorktree = (
   source: GitWorkspace,

@@ -190,7 +190,10 @@ try {
             )
           )
     )
-    NodeRuntime.runMain(launch(process.argv.slice(1), { workspaceLifecycle }), {
+    NodeRuntime.runMain(launch(process.argv.slice(1), {
+      workspaceLifecycle,
+      coordination: { installationPath: ${JSON.stringify(sandbox)}, namespacePath: root },
+    }), {
       disableErrorReporting: true,
     })
   `
@@ -600,7 +603,11 @@ try {
         copyFileSync(heldFile, copied)
         const holding = Scope.makeUnsafe()
         try {
-          const lease = await Effect.runPromise(Scope.provide(holding)(acquireRuntime(caseHome)))
+          const lease = await Effect.runPromise(
+            Scope.provide(holding)(
+              acquireRuntime(caseHome, { installationPath: sandbox, namespacePath: authorityRoot })
+            )
+          )
           await Effect.runPromise(lease.protect({ path: heldFile, sessionId: held.getSessionId() }))
           for (const resumed of [respelled(heldFile), respelled(copied)]) {
             const outcome = await runLauncher(

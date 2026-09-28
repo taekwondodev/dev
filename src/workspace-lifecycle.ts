@@ -392,7 +392,5 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       ),
     recordPublication: input =>
       request({ op: 'record-publication', reference: input.reference }).pipe(Effect.asVoid),
-    recordRuleApproval: input =>
-      request({ op: 'record-rule-approval', approval: input.approval }).pipe(Effect.asVoid),
   }
 })

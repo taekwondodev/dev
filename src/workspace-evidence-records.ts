@@ -3,17 +3,10 @@ import { inDb, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   invalid,
   type PublicationReference,
-  type RuleApproval,
   type TaskTarget,
   type WorkspaceId,
 } from './workspace-domain.ts'
-import {
-  getTask,
-  getWorkspace,
-  putPublication,
-  putRuleApproval,
-  saveTask,
-} from './workspace-records.ts'
+import { getTask, getWorkspace, putPublication, saveTask } from './workspace-records.ts'
 import { transaction } from './workspace-sqlite.ts'
 
 const inTaskShard = <A>(
@@ -60,12 +53,3 @@ export const recordPublication = (
       putPublication(db, reference)
     })
   )
-
-export const recordRuleApproval = (authority: WorkspaceAuthority, approval: RuleApproval): void => {
-  authority.initialize()
-  if (!authority.listRepositories().some(repository => repository.id === approval.repositoryId))
-    return invalid(
-      `Repository ${approval.repositoryId} is not registered in the workspace authority`
-    )
-  inDb(authority, approval.repositoryId, db => transaction(db, () => putRuleApproval(db, approval)))
-}

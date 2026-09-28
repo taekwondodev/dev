@@ -9,9 +9,9 @@ The workflow speaks in terms of canonical category, state, and workflow-marker r
 ### Issue state labels
 
 | Canonical role    | Label in this tracker |
-| ------------------ | ---------------------- |
-| `needs-grilling`  | `needs-grilling`        |
-| `ready-for-agent` | `ready-for-agent`       |
+| ----------------- | --------------------- |
+| `needs-grilling`  | `needs-grilling`      |
+| `ready-for-agent` | `ready-for-agent`     |
 
 `needs-grilling` is the initial state for a quick issue that is intentionally waiting for a future grilling session. `ready-for-agent` replaces it when the complete spec is ready.
 

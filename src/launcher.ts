@@ -27,7 +27,7 @@ import { errorText } from './error-text.ts'
 import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { readDispatch } from './work-dispatch.ts'
-import { acquireRuntime } from './runtime-coordination.ts'
+import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
 import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
 import type { WorkspaceAssessment, WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
@@ -486,6 +486,7 @@ const installSignalHandlers = (
 
 export interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
+  readonly coordination?: CoordinationOptions
 }
 
 const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
@@ -642,6 +643,7 @@ const run = Effect.fnUntraced(function* (
 
   const launchCwd = workspaceResume?.view.path ?? options.cwd
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
+  const lease = yield* acquireRuntime(dataHome, dependencies.coordination)
   const root = yield* gitRoot(launchCwd)
   const selection = yield* resolveSelection({
     cwd: launchCwd,
@@ -668,7 +670,6 @@ const run = Effect.fnUntraced(function* (
     )
       return
   }
-  const lease = yield* acquireRuntime(dataHome)
   const guard = createSessionGuard(lease)
   const { api, packageInfo } = yield* loadPi
   const sessionsPath = yield* sessionDir(dataHome).pipe(
@@ -854,6 +855,7 @@ const run = Effect.fnUntraced(function* (
   return yield* Effect.gen(function* () {
     yield* sessionProgram
     if (handover === undefined) return false
+    yield* lease.release
     const { request, proceed } = handover
     yield* Effect.uninterruptible(
       Effect.sync(() => {

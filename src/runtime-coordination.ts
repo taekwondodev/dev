@@ -10,11 +10,16 @@ import {
   realpathSync,
   unlinkSync,
 } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { Effect, Predicate, Schema, Semaphore, type Scope } from 'effect'
-import { canonicalConversationFile, conversationFileSlot } from './workspace-paths.ts'
+import { canonicalConversationFile, conversationFileSlot, isWithin } from './workspace-paths.ts'
+import { WorkspaceAuthority } from './workspace-authority.ts'
+import { defaultAuthorityRoot } from './workspace-authority-root.ts'
+import { acquirePathGates, type GateRelease } from './workspace-gates.ts'
+import { WorkspaceId } from './workspace-domain.ts'
+import { getWorkspace } from './workspace-records.ts'
 
 export class CoordinationError extends Schema.TaggedError<CoordinationError>()(
   'CoordinationError',
@@ -38,7 +43,64 @@ export interface RuntimeLease {
   ) => Effect.Effect<A, E | CoordinationError, R>
 }
 
-const installationHome = fileURLToPath(new URL('../.dev/', import.meta.url))
+const installationPath = fileURLToPath(new URL('../', import.meta.url))
+
+export interface CoordinationOptions {
+  readonly installationPath?: string
+  readonly namespacePath?: string
+}
+
+const sourcePresence = (options: CoordinationOptions): GateRelease => {
+  const source = realpathSync(options.installationPath ?? installationPath)
+  const authority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
+  const { paths } = authority
+  if (!isWithin(paths.worktrees, source)) {
+    authority.close()
+    return () => {}
+  }
+  const [repository, workspace] = relative(paths.worktrees, source).split(sep)
+  if (!Schema.is(WorkspaceId)(repository) || !Schema.is(WorkspaceId)(workspace))
+    throw new CoordinationError({
+      message: 'Installation is not inside an identifiable managed workspace',
+    })
+  const root = join(paths.worktrees, repository, workspace)
+  const before = lstatSync(root, { bigint: true })
+  let release: GateRelease | undefined
+  try {
+    if (authority.inspectExisting() === undefined)
+      throw new CoordinationError({ message: 'Managed installation authority is unavailable' })
+    release = acquirePathGates(authority.paths, root, 'reader').use
+    const after = lstatSync(root, { bigint: true })
+    if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino)
+      throw new CoordinationError({ message: 'Installation workspace changed during startup' })
+    const db = authority.openShard(repository)
+    try {
+      const recorded = getWorkspace(db, workspace)
+      if (
+        recorded === undefined ||
+        recorded.status !== 'ready' ||
+        recorded.origin !== 'managed' ||
+        recorded.path !== root ||
+        recorded.physical.device !== String(after.dev) ||
+        recorded.physical.inode !== String(after.ino)
+      )
+        throw new CoordinationError({
+          message: 'Installation workspace no longer matches its authority record',
+        })
+    } finally {
+      db.close()
+    }
+    const held = release
+    return () => {
+      held()
+      authority.close()
+    }
+  } catch (cause) {
+    release?.()
+    authority.close()
+    throw cause
+  }
+}
 const markerSql = 'CREATE TABLE guard (version INTEGER PRIMARY KEY CHECK (version = 1)) STRICT'
 const JournalMode = Schema.Struct({ journal_mode: Schema.Literal('delete') })
 
@@ -93,8 +155,13 @@ const publishLockDatabase = (path: string): void => {
   }
 }
 
-const lockDatabase = (path: string, shared: boolean, conflict: string): (() => void) => {
-  publishLockDatabase(path)
+const lockDatabase = (
+  path: string,
+  shared: boolean,
+  conflict: string,
+  create = true
+): (() => void) => {
+  if (create) publishLockDatabase(path)
   if (!lstatSync(path).isFile()) throw new Error(`Invalid coordination file: ${path}`)
   chmodSync(path, 0o600)
   let database: DatabaseSync | undefined
@@ -125,23 +192,54 @@ const lockDatabase = (path: string, shared: boolean, conflict: string): (() => v
   }
 }
 
-const prepareCoordination = (): string => {
-  privateDirectory(installationHome)
-  const root = join(realpathSync(installationHome), 'coordination')
+export const holdExistingInstallationForRemoval = (checkout: string): GateRelease => {
+  let directory = checkout
+  for (const part of ['.dev', 'coordination']) {
+    directory = join(directory, part)
+    try {
+      const info = lstatSync(directory)
+      if (!info.isDirectory())
+        throw new CoordinationError({ message: `Invalid coordination directory: ${directory}` })
+    } catch (cause) {
+      if (Predicate.isObject(cause) && cause.code === 'ENOENT') return () => {}
+      throw cause
+    }
+  }
+  return lockDatabase(
+    join(directory, 'installation.sqlite'),
+    false,
+    `Target installation is still in use: ${checkout}`,
+    false
+  )
+}
+
+const prepareCoordination = (options: CoordinationOptions): string => {
+  const home = join(options.installationPath ?? installationPath, '.dev')
+  privateDirectory(home)
+  const root = join(realpathSync(home), 'coordination')
   privateDirectory(root)
   privateDirectory(join(root, 'conversations'))
   return root
 }
 
-const makeRuntimeLease = (dataHome: string): RuntimeLease => {
-  const root = prepareCoordination()
-  mkdirSync(dataHome, { recursive: true, mode: 0o700 })
-  const home = realpathSync.native(dataHome)
-  const releaseInstallation = lockDatabase(
-    join(root, 'installation.sqlite'),
-    true,
-    'Dev maintenance is active; retry after it finishes.'
-  )
+const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): RuntimeLease => {
+  const releaseSource = sourcePresence(options)
+  let root: string
+  let home: string
+  let releaseInstallation: GateRelease
+  try {
+    root = prepareCoordination(options)
+    mkdirSync(dataHome, { recursive: true, mode: 0o700 })
+    home = realpathSync.native(dataHome)
+    releaseInstallation = lockDatabase(
+      join(root, 'installation.sqlite'),
+      true,
+      'Dev maintenance is active; retry after it finishes.'
+    )
+  } catch (cause) {
+    releaseSource()
+    throw cause
+  }
   const claims = new Map<string, () => void>()
   const navigation = Semaphore.makeUnsafe(1)
   let closed = false
@@ -195,28 +293,42 @@ const makeRuntimeLease = (dataHome: string): RuntimeLease => {
       if (closed) return
       releaseExcept(new Set())
       releaseInstallation()
+      releaseSource()
       closed = true
     }),
   }
 }
 
 export const acquireRuntime = (
-  dataHome: string
+  dataHome: string,
+  options: CoordinationOptions = {}
 ): Effect.Effect<RuntimeLease, CoordinationError, Scope.Scope> =>
   Effect.acquireRelease(
-    native(() => makeRuntimeLease(dataHome)),
+    native(() => makeRuntimeLease(dataHome, options)),
     lease => lease.release.pipe(Effect.orDie)
   )
 
-export const acquireMaintenance: Effect.Effect<void, CoordinationError, Scope.Scope> =
+export const acquireMaintenance = (
+  options: CoordinationOptions = {}
+): Effect.Effect<void, CoordinationError, Scope.Scope> =>
   Effect.acquireRelease(
     native(() => {
-      const root = prepareCoordination()
-      return lockDatabase(
-        join(root, 'installation.sqlite'),
-        false,
-        'Dev sessions or another maintenance operation are active; stop them before updating or rolling back.'
-      )
+      const releaseSource = sourcePresence(options)
+      try {
+        const root = prepareCoordination(options)
+        const releaseDatabase = lockDatabase(
+          join(root, 'installation.sqlite'),
+          false,
+          'Dev sessions or another maintenance operation are active; stop them before updating or rolling back.'
+        )
+        return () => {
+          releaseDatabase()
+          releaseSource()
+        }
+      } catch (cause) {
+        releaseSource()
+        throw cause
+      }
     }),
     release => native(release).pipe(Effect.orDie)
   ).pipe(Effect.asVoid)

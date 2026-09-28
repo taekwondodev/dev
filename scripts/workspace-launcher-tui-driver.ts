@@ -1,3 +1,4 @@
+import { dirname } from 'node:path'
 import { NodeRuntime } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { launch } from '../src/launcher.ts'
@@ -60,6 +61,10 @@ if (process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-handover') {
 
 NodeRuntime.runMain(
   launch(process.argv.slice(2), {
+    coordination: {
+      installationPath: process.env.LAUNCHER_TUI_INSTALLATION ?? dirname(root),
+      namespacePath: root,
+    },
     workspaceLifecycle:
       process.env.LAUNCHER_TUI_FAULT === 'sigint-after-handover'
         ? interruptedAfterHandover

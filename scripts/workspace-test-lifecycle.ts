@@ -5,7 +5,6 @@ import {
   WorkspaceError,
   type PublicationReference,
   type ReleaseRequest,
-  type RuleApproval,
   type TaskTarget,
   type WorkspaceAssessment,
   type WorkspaceAttachment,
@@ -107,7 +106,6 @@ export interface TestLifecycle {
   release(request: ReleaseRequest): Promise<WorkspaceReleaseResult>
   recordTarget(taskId: WorkspaceId, target: TaskTarget): Promise<void>
   recordPublication(reference: PublicationReference): Promise<void>
-  recordRuleApproval(approval: RuleApproval): Promise<void>
   close(): Promise<void>
 }
 
@@ -141,7 +139,6 @@ export const openLifecycle = async (options: {
     release: request => Effect.runPromise(lifecycle.release(request)),
     recordTarget: (taskId, target) => Effect.runPromise(lifecycle.recordTarget({ taskId, target })),
     recordPublication: reference => Effect.runPromise(lifecycle.recordPublication({ reference })),
-    recordRuleApproval: approval => Effect.runPromise(lifecycle.recordRuleApproval({ approval })),
     close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
   }
 }

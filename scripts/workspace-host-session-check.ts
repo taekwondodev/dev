@@ -155,6 +155,7 @@ const openLeadHost = (input: {
   readonly dataHome?: string
 }) =>
   openHostRuntime({
+    coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
     pi,
     packageRoot: packageInfo.root,
     sessionDir,

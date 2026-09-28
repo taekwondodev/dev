@@ -599,7 +599,6 @@ const lifecycle: WorkspaceLifecycle = {
   },
   recordTarget: unsupported,
   recordPublication: unsupported,
-  recordRuleApproval: unsupported,
 }
 
 const refused = <A>(effect: Effect.Effect<A, WorkspaceCommandError>): WorkspaceCommandError =>
@@ -1128,7 +1127,14 @@ const runtimeHost: WorkspaceHost = new Proxy(workspaceHost, {
   },
 })
 const guard = createSessionGuard(
-  await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
+  await Effect.runPromise(
+    Scope.provide(hostScope)(
+      acquireRuntime(dataHome, {
+        installationPath: fixture,
+        namespacePath: join(fixture, 'authority'),
+      })
+    )
+  )
 )
 const runtimeFactory = await Effect.runPromise(
   Effect.gen(function* () {

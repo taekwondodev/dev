@@ -1,5 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+} from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname } from 'node:path'
 import { Predicate } from 'effect'
@@ -20,6 +29,25 @@ export const lstatIfExists = (path: string) => {
 export const newId = (): WorkspaceId => WorkspaceId.make(randomUUID())
 export const now = (): number => Date.now()
 export const hash = (text: string): string => createHash('sha256').update(text).digest('hex')
+
+export const regularFileDigest = (path: string): string => {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const info = fstatSync(fd)
+    if (!info.isFile()) return unavailable(`Not a regular file: ${path}`)
+    const digest = createHash('sha256')
+    const bytes = Buffer.allocUnsafe(64 * 1024)
+    for (let position = 0; position < info.size; ) {
+      const count = readSync(fd, bytes, 0, Math.min(bytes.length, info.size - position), position)
+      if (count === 0) return unavailable(`File was truncated while reading: ${path}`)
+      digest.update(bytes.subarray(0, count))
+      position += count
+    }
+    return digest.digest('hex')
+  } finally {
+    closeSync(fd)
+  }
+}
 
 export const fsyncPath = (path: string, directory = false): void => {
   const flags = constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : 0)

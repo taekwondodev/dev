@@ -8,9 +8,11 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -20,7 +22,6 @@ import {
   WorkspaceError,
   type PublicationReference,
   type ReleaseRequest,
-  type RuleApproval,
   type TaskTarget,
   type WorkspaceAssessment,
   type WorkspaceId,
@@ -47,8 +48,11 @@ import {
   runRelease,
 } from '../src/workspace-command.ts'
 import { newId } from '../src/workspace-platform.ts'
+import { acquireMaintenance, acquireRuntime } from '../src/runtime-coordination.ts'
+import { authorityPaths } from '../src/workspace-authority-root.ts'
+import { acquirePathGates, releaseGates } from '../src/workspace-gates.ts'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Effect } from 'effect'
+import { Effect, Exit, Scope } from 'effect'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
 import {
@@ -65,8 +69,6 @@ const { claim, passed } = makeClaims()
 
 const git = (args: readonly string[], cwd: string): string =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim()
-const RULE_LOCATOR = '.dev/regenerable.json'
-const RULE_CONTENT = '{"version":1,"regenerable":["build/","cache/"]}\n'
 const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const initRepository = (path: string): string => {
   mkdirSync(path, { recursive: true })
@@ -75,8 +77,6 @@ const initRepository = (path: string): string => {
   git(['config', 'user.email', 'release-check@example.invalid'], path)
   writeFileSync(join(path, 'tracked.txt'), 'tracked\n')
   writeFileSync(join(path, '.gitignore'), 'build/\ncache/\n*.log\n')
-  mkdirSync(join(path, '.dev'))
-  writeFileSync(join(path, RULE_LOCATOR), RULE_CONTENT)
   git(['add', '.'], path)
   git(['commit', '--quiet', '-m', 'fixture'], path)
   return git(['rev-parse', 'HEAD'], path)
@@ -143,7 +143,6 @@ const reply = (text: string) =>
   JSON.parse(text) as {
     readonly recorded: string
     readonly reference?: PublicationReference
-    readonly approval?: RuleApproval
   }
 const localMain: TaskTarget = { kind: 'local', ref: 'refs/heads/main' }
 const registered = (repo: string) =>
@@ -173,15 +172,6 @@ const publication = (
   },
   verifiedAt: Date.now(),
 })
-const approval = (repositoryId: WorkspaceId, digest: string): RuleApproval => ({
-  id: newId(),
-  repositoryId,
-  locator: RULE_LOCATOR,
-  digest,
-  approvedBy: { kind: 'check-fixture' },
-  approvedAt: Date.now(),
-})
-
 const allocateManaged = async (
   lifecycle: TestLifecycle,
   repo: string,
@@ -317,6 +307,31 @@ try {
       assert.ok(existsSync(m1.checkout))
     }
   )
+  await claim(
+    'installation coordination refuses concurrent exclusive cleanup ownership and keeps one stable lock inode',
+    async () => {
+      const home = join(sandbox, 'installation')
+      mkdirSync(home)
+      const options = { installationPath: home, namespacePath: root }
+      const scope = Scope.makeUnsafe()
+      let identity: number
+      try {
+        await Effect.runPromise(Scope.provide(scope)(acquireMaintenance(options)))
+        identity = statSync(join(home, '.dev', 'coordination', 'installation.sqlite')).ino
+        await assert.rejects(
+          Effect.runPromise(Effect.scoped(acquireMaintenance(options))),
+          /active/
+        )
+      } finally {
+        await Effect.runPromise(Scope.close(scope, Exit.void))
+      }
+      await Effect.runPromise(Effect.scoped(acquireMaintenance(options)))
+      assert.equal(
+        statSync(join(home, '.dev', 'coordination', 'installation.sqlite')).ino,
+        identity
+      )
+    }
+  )
   await lifecycle.recordTarget(taskB, localMain)
   await claim(
     'with the agreed local target recorded, a clean managed worktree at an ancestor of the target tip is removable at this check only, and a check still creates no use',
@@ -332,6 +347,50 @@ try {
         uses.every(use => use.stage === 'quiescent'),
         'a check leaves no live use'
       )
+    }
+  )
+  await claim(
+    'confirmation binds index flags and actual tracked bytes even when Git masks changes and file size and mtime stay the same',
+    async () => {
+      const path = join(m1.checkout, 'tracked.txt')
+      const original = readFileSync(path)
+      for (const [set, unset] of [
+        ['--assume-unchanged', '--no-assume-unchanged'],
+        ['--skip-worktree', '--no-skip-worktree'],
+      ] as const) {
+        const beforeFlags = await lifecycle.check(taskB)
+        git(['update-index', set, 'tracked.txt'], m1.checkout)
+        const staleIndex = await releaseOne(lifecycle, beforeFlags, m1.workspaceId)
+        assert.equal(staleIndex.outcome, 'blocked', staleIndex.reason)
+        assert.deepEqual(staleIndex.effects, [])
+        utimesSync(path, 10, 10)
+        const beforeContents = await lifecycle.check(taskB)
+        writeFileSync(path, Buffer.alloc(original.length, 120))
+        utimesSync(path, 10, 10)
+        assert.equal(git(['status', '--porcelain'], m1.checkout), '')
+        const staleContents = await releaseOne(lifecycle, beforeContents, m1.workspaceId)
+        assert.equal(staleContents.outcome, 'blocked', staleContents.reason)
+        assert.deepEqual(staleContents.effects, [])
+        assert.deepEqual(readFileSync(path), Buffer.alloc(original.length, 120))
+        writeFileSync(path, original)
+        git(['update-index', unset, 'tracked.txt'], m1.checkout)
+      }
+    }
+  )
+  await claim(
+    'an explicitly Git-locked worktree is refused before any cleanup effect',
+    async () => {
+      const assessments = await lifecycle.check(taskB)
+      git(['worktree', 'lock', '--reason', 'fixture lock', '--', m1.checkout], repo)
+      try {
+        const result = await releaseOne(lifecycle, assessments, m1.workspaceId)
+        assert.equal(result.outcome, 'blocked', result.reason)
+        assert.ok(result.reason.includes('locked'), result.reason)
+        assert.deepEqual(result.effects, [])
+        assert.ok(existsSync(m1.checkout))
+      } finally {
+        git(['worktree', 'unlock', '--', m1.checkout], repo)
+      }
     }
   )
   await claim(
@@ -450,22 +509,28 @@ try {
   const m3 = third.managed
   await lifecycle.recordTarget(taskC, localMain)
   await freeCheckout(lifecycle, taskC, third.repoWorkspaceId)
-  const [repositoryView] = await lifecycle.inspect({ cwd: repo })
-  if (repositoryView === undefined) throw new Error('the repository has no workspace view')
-  const { repositoryId } = repositoryView
   const outcomeOf = async (workspaceId: WorkspaceId, taskId: WorkspaceId) =>
     only(await lifecycle.check(taskId), workspaceId)
   await claim(
-    'modified tracked files, an unintegrated local commit and an unpublished untracked file each block removal with their reason; restoring the state makes the worktree removable again',
+    'dirty tracked residue and unselected reports are disposable, but an unintegrated local commit blocks removal',
     async () => {
       writeFileSync(join(m3.checkout, 'tracked.txt'), 'dirty\n')
       let managed = await outcomeOf(m3.workspaceId, taskC)
-      assert.equal(managed.outcome, 'blocked')
+      assert.equal(managed.outcome, 'removable', managed.reasons.join(' | '))
       assert.equal(managed.inventory?.trackedChanges, 1)
-      assert.ok(
-        managed.reasons.some(reason => reason.includes('tracked.txt')),
-        managed.reasons.join(' | ')
-      )
+      const before = await lifecycle.check(taskC)
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'other\n')
+      const stale = await releaseOne(lifecycle, before, m3.workspaceId)
+      assert.equal(stale.outcome, 'blocked', stale.reason)
+      assert.deepEqual(stale.effects, [])
+      git(['add', 'tracked.txt'], m3.checkout)
+      const stagedBefore = await lifecycle.check(taskC)
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'again\n')
+      git(['add', 'tracked.txt'], m3.checkout)
+      const staleIndex = await releaseOne(lifecycle, stagedBefore, m3.workspaceId)
+      assert.equal(staleIndex.outcome, 'blocked', staleIndex.reason)
+      assert.deepEqual(staleIndex.effects, [])
+      git(['reset', '--quiet', 'HEAD', '--', 'tracked.txt'], m3.checkout)
       git(['checkout', '--quiet', '--', 'tracked.txt'], m3.checkout)
 
       writeFileSync(join(m3.checkout, 'feature.txt'), 'feature\n')
@@ -486,12 +551,8 @@ try {
 
       writeFileSync(join(m3.checkout, 'report.txt'), 'evidence report\n')
       managed = await outcomeOf(m3.workspaceId, taskC)
-      assert.equal(managed.outcome, 'blocked')
-      assert.ok(
-        managed.reasons.some(reason => reason.includes('report.txt')),
-        managed.reasons.join(' | ')
-      )
-      assert.equal(managed.inventory?.blocking, 1)
+      assert.equal(managed.outcome, 'removable', managed.reasons.join(' '))
+      assert.ok((managed.inventory?.disposable ?? 0) >= 1)
     }
   )
   await claim(
@@ -517,59 +578,46 @@ try {
         ),
         managed.reasons.join(' | ')
       )
+      rmSync(join(m3.checkout, 'report.txt'))
+      symlinkSync(join(sandbox, 'unpublished-target'), join(m3.checkout, 'report.txt'))
+      managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(
+        managed.outcome,
+        'blocked',
+        'a recorded report replaced by a link is not disposable residue'
+      )
+      rmSync(join(m3.checkout, 'report.txt'))
       writeFileSync(join(m3.checkout, 'report.txt'), 'evidence report\n')
+      const trackedReport = readFileSync(join(m3.checkout, '.gitignore'))
+      await lifecycle.recordPublication(
+        publication(taskC, m3.workspaceId, '.gitignore', trackedReport)
+      )
+      writeFileSync(join(m3.checkout, '.gitignore'), `${trackedReport.toString()}changed\n`)
+      managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(
+        managed.outcome,
+        'blocked',
+        'a changed tracked publication is not disposable residue'
+      )
+      writeFileSync(join(m3.checkout, '.gitignore'), trackedReport)
     }
   )
-  const ruleDigest = sha256(RULE_CONTENT)
   await claim(
-    'regenerable outputs need the exact approved rule version: an unapproved or differently approved rule blocks, the exact digest covers files and links under its directories, a sensitive name still blocks, and nested repositories or uncovered links block',
+    'unselected ignored and sensitive-looking files are disposable, while nested repositories remain blocking inventory entries',
     async () => {
       mkdirSync(join(m3.checkout, 'build', 'sub'), { recursive: true })
       writeFileSync(join(m3.checkout, 'build', 'a.o'), 'object a')
       writeFileSync(join(m3.checkout, 'build', 'sub', 'b.o'), 'object b')
+      writeFileSync(join(m3.checkout, 'build', 'credentials-provider.js'), 'local dependency')
       let managed = await outcomeOf(m3.workspaceId, taskC)
-      assert.equal(managed.outcome, 'blocked')
-      assert.ok(
-        managed.reasons.some(reason => reason.includes('build/a.o')),
-        managed.reasons.join(' | ')
-      )
-      await lifecycle.recordRuleApproval(approval(repositoryId, sha256('another version')))
-      managed = await outcomeOf(m3.workspaceId, taskC)
-      assert.equal(managed.outcome, 'blocked')
-      assert.ok(
-        managed.reasons.some(
-          reason => reason.includes(RULE_LOCATOR) && reason.includes(ruleDigest.slice(0, 12))
-        ),
-        managed.reasons.join(' | ')
-      )
-      await lifecycle.recordRuleApproval(approval(repositoryId, ruleDigest))
-      managed = await outcomeOf(m3.workspaceId, taskC)
       assert.equal(managed.outcome, 'removable', managed.reasons.join(' '))
-      assert.equal(managed.inventory?.regenerable, 2)
-
-      writeFileSync(join(m3.checkout, 'build', 'signing.pem'), 'never read')
-      managed = await outcomeOf(m3.workspaceId, taskC)
-      assert.equal(managed.outcome, 'blocked')
-      assert.ok(
-        managed.reasons.some(reason => reason.includes('build/signing.pem')),
-        managed.reasons.join(' | ')
-      )
-      rmSync(join(m3.checkout, 'build', 'signing.pem'))
+      assert.equal(managed.inventory?.disposable, 3)
 
       writeFileSync(join(sandbox, 'outside.txt'), 'outside the worktree\n')
       symlinkSync(join(sandbox, 'outside.txt'), join(m3.checkout, 'build', 'link'))
       managed = await outcomeOf(m3.workspaceId, taskC)
       assert.equal(managed.outcome, 'removable', managed.reasons.join(' '))
-      assert.equal(managed.inventory?.regenerable, 3)
-
-      symlinkSync(join(sandbox, 'outside.txt'), join(m3.checkout, 'stray-link'))
-      managed = await outcomeOf(m3.workspaceId, taskC)
-      assert.equal(managed.outcome, 'blocked')
-      assert.ok(
-        managed.reasons.some(reason => reason.includes('stray-link')),
-        managed.reasons.join(' | ')
-      )
-      rmSync(join(m3.checkout, 'stray-link'))
+      assert.equal(managed.inventory?.disposable, 4)
 
       mkdirSync(join(m3.checkout, 'vendor'))
       git(['init', '--quiet'], join(m3.checkout, 'vendor'))
@@ -579,6 +627,68 @@ try {
       const nested = managed.reasons.join(' | ')
       assert.ok(nested.includes('vendor/') && !nested.includes('vendor/v.txt'), nested)
       rmSync(join(m3.checkout, 'vendor'), { recursive: true, force: true })
+    }
+  )
+  await claim(
+    'tracked submodules and replaced tracked ancestors block disposal without reading or changing external content',
+    async () => {
+      git(['update-index', '--add', '--cacheinfo', `160000,${mainCommit},module`], m3.checkout)
+      let managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(managed.outcome, 'review-required')
+      assert.equal(managed.subject.effect, 'none')
+      assert.ok(
+        managed.reasons.some(reason => reason.includes('module')),
+        managed.reasons.join(' ')
+      )
+      git(['reset', '--quiet', 'HEAD', '--', 'module'], m3.checkout)
+      mkdirSync(join(m3.checkout, 'tracked-parent'))
+      writeFileSync(join(m3.checkout, 'tracked-parent', 'file.txt'), 'tracked fixture\n')
+      git(['add', 'tracked-parent/file.txt'], m3.checkout)
+      rmSync(join(m3.checkout, 'tracked-parent'), { recursive: true })
+      const outside = join(sandbox, 'tracked-outside')
+      mkdirSync(outside)
+      writeFileSync(join(outside, 'file.txt'), 'external sentinel\n')
+      symlinkSync(outside, join(m3.checkout, 'tracked-parent'))
+      managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(managed.outcome, 'review-required')
+      assert.equal(managed.subject.effect, 'none')
+      assert.ok(
+        managed.reasons.some(reason => reason.includes('tracked-parent')),
+        managed.reasons.join(' ')
+      )
+      assert.equal(readFileSync(join(outside, 'file.txt'), 'utf8'), 'external sentinel\n')
+      rmSync(join(m3.checkout, 'tracked-parent'))
+      git(['reset', '--quiet', 'HEAD', '--', 'tracked-parent/file.txt'], m3.checkout)
+    }
+  )
+  await claim(
+    'Git state inspection does not execute configured diff or textconv commands and refuses checkout filters',
+    async () => {
+      const sentinel = join(sandbox, 'git-command-executed')
+      const command = `touch "${sentinel}"`
+      const attributes = join(m3.checkout, '.gitattributes')
+      git(['config', 'diff.tripwire.command', command], m3.checkout)
+      git(['config', 'diff.tripwire.textconv', command], m3.checkout)
+      writeFileSync(attributes, 'tracked.txt diff=tripwire\n')
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'changed for diff\n')
+      let managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(managed.outcome, 'removable', managed.reasons.join(' '))
+      assert.ok(!existsSync(sentinel))
+      git(['config', 'filter.tripwire.clean', command], m3.checkout)
+      writeFileSync(attributes, 'tracked.txt filter=tripwire\n')
+      managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(managed.outcome, 'review-required')
+      assert.equal(managed.subject.effect, 'none')
+      assert.ok(
+        managed.reasons.some(reason => reason.includes('filter')),
+        managed.reasons.join(' ')
+      )
+      assert.ok(!existsSync(sentinel))
+      rmSync(attributes)
+      git(['config', '--unset', 'diff.tripwire.command'], m3.checkout)
+      git(['config', '--unset', 'diff.tripwire.textconv'], m3.checkout)
+      git(['config', '--unset', 'filter.tripwire.clean'], m3.checkout)
+      git(['checkout', '--quiet', '--', 'tracked.txt'], m3.checkout)
     }
   )
   await claim(
@@ -608,13 +718,16 @@ try {
     }
   )
   await claim(
-    'removal deletes exactly the published and regenerable entries, unlinks a covered link without following it, then removes the clean worktree and its registration',
+    'removal deletes the published report, leaves an external symlink target unchanged, and lets Git discard dirty tracked and untracked residue',
     async () => {
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'reconciled intermediate content\n')
+      git(['add', 'tracked.txt'], m3.checkout)
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'uncommitted intermediate residue\n')
       const assessments = await lifecycle.check(taskC)
       const result = await releaseOne(lifecycle, assessments, m3.workspaceId)
       assert.equal(result.outcome, 'removed', result.reason)
       assert.ok(result.effects.includes('deleted report.txt'), result.effects.join(';'))
-      assert.ok(result.effects.includes('deleted build/link'))
+      assert.ok(!result.effects.some(effect => effect.includes('outside.txt')))
       assert.equal(readFileSync(join(sandbox, 'outside.txt'), 'utf8'), 'outside the worktree\n')
       assert.ok(!existsSync(m3.checkout))
       assert.ok(!registered(repo).includes(m3.checkout))
@@ -1134,47 +1247,162 @@ try {
     }
   )
   await claim(
-    'a selected file that cannot be deleted stops the removal after the files already deleted: the result is partial, lists the actual effects and residuals, the workspace is review-required until a fresh command observes the attempt, inspect and check name the deleted file, and that fresh release then completes on the current state and names it too',
+    'symlinked installation coordination is unverifiable and blocks before deleting a selected report or any worktree content',
     async () => {
-      const allocated = await allocateManaged(lifecycle, repo)
-      await lifecycle.recordTarget(allocated.taskId, localMain)
-      await freeCheckout(lifecycle, allocated.taskId, allocated.repoWorkspaceId)
-      const { checkout } = allocated.managed
-      mkdirSync(join(checkout, 'build'))
-      mkdirSync(join(checkout, 'cache'))
-      writeFileSync(join(checkout, 'build', 'first.o'), 'first')
-      writeFileSync(join(checkout, 'cache', 'second.o'), 'second')
-      const assessments = await lifecycle.check(allocated.taskId)
-      assert.equal(only(assessments, allocated.managed.workspaceId).outcome, 'removable')
-      chmodSync(join(checkout, 'cache'), 0o500)
-      const result = await releaseOne(
+      for (const relative of ['.dev', '.dev/coordination']) {
+        const source = await allocateManaged(lifecycle, repo)
+        await lifecycle.recordTarget(source.taskId, localMain)
+        await freeCheckout(lifecycle, source.taskId, source.repoWorkspaceId)
+        const outside = mkdtempSync(join(sandbox, 'linked-coordination-'))
+        writeFileSync(join(outside, 'sentinel'), 'outside coordination stays untouched')
+        const link = join(source.managed.checkout, relative)
+        mkdirSync(dirname(link), { recursive: true })
+        symlinkSync(outside, link)
+        const report = join(source.managed.checkout, 'selected.log')
+        writeFileSync(report, 'selected report')
+        await lifecycle.recordPublication(
+          publication(
+            source.taskId,
+            source.managed.workspaceId,
+            'selected.log',
+            readFileSync(report)
+          )
+        )
+        const result = await releaseOne(
+          lifecycle,
+          await lifecycle.check(source.taskId),
+          source.managed.workspaceId
+        )
+        assert.equal(result.outcome, 'blocked', result.reason)
+        assert.match(result.reason, /Target installation coordination/)
+        assert.deepEqual(result.effects, [])
+        assert.equal(readFileSync(report, 'utf8'), 'selected report')
+        assert.equal(
+          readFileSync(join(outside, 'sentinel'), 'utf8'),
+          'outside coordination stays untouched'
+        )
+      }
+    }
+  )
+  await claim(
+    'a managed installation stays protected independently of cwd, an unrelated installation does not block disposal, and startup cannot split the removal gate or recreate a removed installation',
+    async () => {
+      const source = await allocateManaged(lifecycle, repo)
+      await lifecycle.recordTarget(source.taskId, localMain)
+      await freeCheckout(lifecycle, source.taskId, source.repoWorkspaceId)
+      const options = { installationPath: source.managed.checkout, namespacePath: root }
+      const dataHome = join(sandbox, 'source-session-outside-checkout')
+      const scope = Scope.makeUnsafe()
+      const database = join(source.managed.checkout, '.dev', 'coordination', 'installation.sqlite')
+      try {
+        await Effect.runPromise(Scope.provide(scope)(acquireRuntime(dataHome, options)))
+        const identity = statSync(database).ino
+        const blocked = await releaseOne(
+          lifecycle,
+          await lifecycle.check(source.taskId),
+          source.managed.workspaceId
+        )
+        assert.equal(blocked.outcome, 'blocked', blocked.reason)
+        assert.deepEqual(blocked.effects, [])
+        assert.equal(statSync(database).ino, identity)
+        const unrelated = await allocateManaged(lifecycle, repo)
+        await lifecycle.recordTarget(unrelated.taskId, localMain)
+        await freeCheckout(lifecycle, unrelated.taskId, unrelated.repoWorkspaceId)
+        const removed = await releaseOne(
+          lifecycle,
+          await lifecycle.check(unrelated.taskId),
+          unrelated.managed.workspaceId
+        )
+        assert.equal(removed.outcome, 'removed', removed.reason)
+        assert.ok(existsSync(source.managed.checkout))
+        await assert.rejects(
+          Effect.runPromise(Effect.scoped(acquireMaintenance(options))),
+          /active/
+        )
+      } finally {
+        await Effect.runPromise(Scope.close(scope, Exit.void))
+      }
+      const removal = acquirePathGates(authorityPaths(root), source.managed.checkout, 'removal')
+      try {
+        const before = statSync(database).ino
+        await assert.rejects(Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))))
+        await assert.rejects(Effect.runPromise(Effect.scoped(acquireMaintenance(options))))
+        assert.equal(statSync(database).ino, before)
+      } finally {
+        releaseGates(removal)
+      }
+      const unexpectedScope = Scope.makeUnsafe()
+      try {
+        await Effect.runPromise(
+          Scope.provide(unexpectedScope)(
+            acquireRuntime(dataHome, {
+              ...options,
+              namespacePath: join(sandbox, 'other-namespace'),
+            })
+          )
+        )
+        const blocked = await releaseOne(
+          lifecycle,
+          await lifecycle.check(source.taskId),
+          source.managed.workspaceId
+        )
+        assert.equal(blocked.outcome, 'blocked', blocked.reason)
+        assert.match(blocked.reason, /Target installation coordination/)
+        assert.deepEqual(blocked.effects, [])
+        assert.ok(existsSync(database))
+      } finally {
+        await Effect.runPromise(Scope.close(unexpectedScope, Exit.void))
+      }
+      const maintenance = Scope.makeUnsafe()
+      try {
+        await Effect.runPromise(Scope.provide(maintenance)(acquireMaintenance(options)))
+        const blocked = await releaseOne(
+          lifecycle,
+          await lifecycle.check(source.taskId),
+          source.managed.workspaceId
+        )
+        assert.equal(blocked.outcome, 'blocked', blocked.reason)
+        assert.deepEqual(blocked.effects, [])
+      } finally {
+        await Effect.runPromise(Scope.close(maintenance, Exit.void))
+      }
+      const saved = join(sandbox, 'saved-installation.sqlite')
+      renameSync(database, saved)
+      try {
+        const blocked = await releaseOne(
+          lifecycle,
+          await lifecycle.check(source.taskId),
+          source.managed.workspaceId
+        )
+        assert.equal(blocked.outcome, 'blocked', blocked.reason)
+        assert.deepEqual(blocked.effects, [])
+        assert.equal(
+          existsSync(database),
+          false,
+          'cleanup must not recreate an uncertain installation lock'
+        )
+      } finally {
+        renameSync(saved, database)
+      }
+      const removed = await releaseOne(
         lifecycle,
-        assessments,
-        allocated.managed.workspaceId
-      ).finally(() => chmodSync(join(checkout, 'cache'), 0o700))
-      assert.equal(result.outcome, 'partial', result.reason)
-      assert.deepEqual(result.effects, ['deleted build/first.o'])
-      assert.ok(
-        result.retained.some(item => item.includes('cache/second.o')),
-        result.retained.join(';')
+        await lifecycle.check(source.taskId),
+        source.managed.workspaceId
       )
-      assert.ok(result.retained.includes('reservation retained'))
-      assert.ok(!existsSync(join(checkout, 'build', 'first.o')))
-      assert.ok(existsSync(join(checkout, 'cache', 'second.o')))
-      assert.ok(existsSync(checkout))
-      const view = await viewOf(allocated.taskId, allocated.managed.workspaceId)
-      assert.equal(view?.outcome, 'review-required')
-      const reportsDeletion = namesAttempt(result.operationId, 'deleted', 'build/first.o')
-      assert.ok(reportsDeletion(view?.reason), view?.reason)
-      const current = await lifecycle.check(allocated.taskId)
-      assert.ok(only(current, allocated.managed.workspaceId).reasons.some(reportsDeletion))
-      const again = await releaseOne(lifecycle, current, allocated.managed.workspaceId)
-      assert.equal(again.outcome, 'removed', again.reason)
-      assert.ok(reportsDeletion(again.reason), again.reason)
-      assert.ok(again.effects.includes('deleted cache/second.o'))
+      assert.equal(removed.outcome, 'removed', removed.reason)
+      await assert.rejects(Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))))
+      await assert.rejects(Effect.runPromise(Effect.scoped(acquireMaintenance(options))))
+      assert.equal(existsSync(source.managed.checkout), false)
+      mkdirSync(source.managed.checkout)
+      await assert.rejects(
+        Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))),
+        /authority record/
+      )
+      assert.equal(existsSync(join(source.managed.checkout, '.dev')), false)
+      rmSync(source.managed.checkout, { recursive: true })
       assert.ok(
-        !existsSync(checkout),
-        'the fresh release observed the partial attempt, then removed the worktree'
+        existsSync(dataHome),
+        'the installation source lease did not authorize deleting external runtime data'
       )
     }
   )
@@ -1194,6 +1422,12 @@ try {
   const squash = git(['rev-parse', 'HEAD'], github)
   const worktree = join(sandbox, 'github-wt')
   git(['worktree', 'add', '--quiet', '--detach', worktree, feature], github)
+  git(['checkout', '--quiet', '-b', 'source-extension', feature], github)
+  writeFileSync(join(github, 'extension.txt'), 'extension\n')
+  git(['add', 'extension.txt'], github)
+  git(['commit', '--quiet', '-m', 'source extension'], github)
+  const extendedSource = git(['rev-parse', 'HEAD'], github)
+  git(['checkout', '--quiet', 'main'], github)
   const unknownSha = 'f'.repeat(40)
   const pull = (overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest => ({
     merged: true,
@@ -1268,6 +1502,17 @@ try {
     'a squash-merged pull request proves integration only with the exact source-at-merge binding: wrong target, wrong source repository, a different merged head, an unreachable merge result or no merged pull request are invalid, and provider failures or too many commits are unknown',
     () => {
       assert.equal(prove(reader()).verdict, 'valid', prove(reader()).reasons.join(' | '))
+      assert.equal(
+        prove(
+          reader(
+            { pullRequestCommits: () => [feature, extendedSource] },
+            { headSha: extendedSource, commits: 2 }
+          ),
+          feature
+        ).verdict,
+        'valid',
+        'an earlier local source commit is covered when proven an ancestor of the bound merged source'
+      )
       const bound = prove(reader()).reasons.join(' | ')
       assert.ok(bound.includes('owner/repo#7') && bound.includes(feature.slice(0, 12)), bound)
       assert.equal(prove(reader({}, { baseRef: 'release' })).verdict, 'invalid')
@@ -1310,6 +1555,47 @@ try {
         prove(reader({ mergedPullRequestsForCommit: () => [] }), feature, explicit).verdict,
         'valid'
       )
+    }
+  )
+  await claim(
+    'replacement refs and grafts cannot make unrelated commits part of the actual merged source or agreed target history',
+    () => {
+      const unrelated = git(
+        [
+          'commit-tree',
+          git(['rev-parse', `${extendedSource}^{tree}`], github),
+          '-m',
+          'unrelated source',
+        ],
+        github
+      )
+      const grafts = join(github, '.git', 'info', 'grafts')
+      const explicit: TaskTarget = { ...target, pullRequest: 7 }
+      git(['checkout', '--quiet', '--detach', unrelated], worktree)
+      try {
+        assert.equal(prove(reader(), unrelated, explicit).verdict, 'invalid')
+        for (const changed of [feature, squash]) {
+          git(['replace', '--graft', changed, unrelated], github)
+          assert.equal(
+            prove(reader(), unrelated, explicit).verdict,
+            'invalid',
+            'replacement history is not delivery'
+          )
+          git(['update-ref', '-d', `refs/replace/${changed}`], github)
+          writeFileSync(grafts, `${changed} ${unrelated}\n`)
+          assert.equal(
+            prove(reader(), unrelated, explicit).verdict,
+            'invalid',
+            'grafted history is not delivery'
+          )
+          rmSync(grafts)
+        }
+      } finally {
+        for (const changed of [feature, squash])
+          git(['update-ref', '-d', `refs/replace/${changed}`], github)
+        rmSync(grafts, { force: true })
+        git(['checkout', '--quiet', '--detach', feature], worktree)
+      }
     }
   )
   await claim(
@@ -1376,38 +1662,45 @@ try {
     }
   )
   await claim(
-    'the verifier composes the predicates: dirty tracked files are invalid even when integrated, and a valid integration with every file accounted for is valid with an empty manifest',
+    'the verifier fingerprints staged and unstaged tracked content even when status paths do not change',
     () => {
       const composed = verifyEvidence(reader(), {
         checkout: worktree,
         head: feature,
         target,
         publications: [],
-        approvals: [],
       })
       assert.equal(composed.verdict, 'valid')
-      assert.deepEqual(composed.manifest, [])
       writeFileSync(join(worktree, 'tracked.txt'), 'dirty\n')
       const dirty = verifyEvidence(reader(), {
         checkout: worktree,
         head: feature,
         target,
         publications: [],
-        approvals: [],
       })
-      assert.equal(dirty.verdict, 'invalid')
-      assert.notEqual(dirty.stateDigest, composed.stateDigest, 'the state digest fences the change')
+      assert.equal(dirty.verdict, 'valid', dirty.reasons.join(' | '))
+      assert.notEqual(dirty.stateDigest, composed.stateDigest)
+      git(['add', 'tracked.txt'], worktree)
+      const staged = verifyEvidence(reader(), {
+        checkout: worktree,
+        head: feature,
+        target,
+        publications: [],
+      })
+      assert.notEqual(staged.stateDigest, dirty.stateDigest)
     }
   )
 
   await claim(
-    'the evidence tool records the agreed target, records a publication only after the destination body or an attachment reads back the exact bytes, and records a rule approval only through an interactive confirmation',
+    'the evidence tool records the agreed target and records a publication only after the destination body or an attachment reads back the exact bytes',
     async () => {
       const allocated = await allocateManaged(lifecycle, repo)
       await freeCheckout(lifecycle, allocated.taskId, allocated.repoWorkspaceId)
       const { checkout } = allocated.managed
       writeFileSync(join(checkout, 'report.txt'), 'published report\n')
       writeFileSync(join(checkout, 'shot.bin'), Buffer.from([1, 2, 3, 4]))
+      writeFileSync(join(checkout, 'id_rsa'), 'private key fixture')
+      writeFileSync(join(checkout, 'credentials-provider.js'), 'credential fixture')
       const bodies = new Map<string, string>()
       const destinations: PublicationDestinationReader = {
         body: (repository, number, commentId) =>
@@ -1431,28 +1724,17 @@ try {
         cwd: repo,
         selection: { taskId: allocated.taskId, workspaceId: allocated.managed.workspaceId },
       })
-      let confirmAnswer = true
-      const context = (hasUI: boolean) =>
-        ({
-          cwd: checkout,
-          hasUI,
-          ui: { confirm: async () => confirmAnswer },
-        }) as unknown as Parameters<ToolDefinition['execute']>[4]
+      const context = () =>
+        ({ cwd: checkout, hasUI: true }) as unknown as Parameters<ToolDefinition['execute']>[4]
       const tool = makeEvidenceTool({
         lifecycle: lifecycle.effect,
         attachment: () => bound.effect,
         destinations,
         runPromise: effect => Effect.runPromise(effect),
       })
-      const call = async (input: unknown, hasUI = true) => {
+      const call = async (input: unknown) => {
         try {
-          const result = await tool.execute(
-            'call',
-            input as never,
-            undefined,
-            undefined,
-            context(hasUI)
-          )
+          const result = await tool.execute('call', input as never, undefined, undefined, context())
           const text = result.content.map(part => (part.type === 'text' ? part.text : '')).join('')
           return { ok: true, text }
         } catch (cause) {
@@ -1504,24 +1786,18 @@ try {
         destination: { repository: 'owner/repo', number: 37, commentId: 9 },
       })
       assert.ok(!sensitive.ok)
-      const noUi = await call({ action: 'approve-rule', locator: RULE_LOCATOR }, false)
-      assert.ok(!noUi.ok)
-      confirmAnswer = false
-      const declined = await call({ action: 'approve-rule', locator: RULE_LOCATOR })
-      assert.ok(declined.ok)
-      assert.equal(reply(declined.text).recorded, 'nothing')
-
-      mkdirSync(join(checkout, 'build'))
-      writeFileSync(join(checkout, 'build', 'out.o'), 'out')
-      confirmAnswer = true
-      const approved = await call({ action: 'approve-rule', locator: RULE_LOCATOR })
-      assert.ok(approved.ok, approved.text)
-      assert.equal(reply(approved.text).approval?.digest, ruleDigest)
+      assert.ok(sensitive.text.includes('sensitive name'), sensitive.text)
+      const selectedSecret = await call({
+        action: 'record-publication',
+        path: 'credentials-provider.js',
+        destination: { repository: 'owner/repo', number: 37, commentId: 9 },
+      })
+      assert.ok(!selectedSecret.ok)
       await bound.close()
       const managed = only(await lifecycle.check(allocated.taskId), allocated.managed.workspaceId)
       assert.equal(managed.outcome, 'removable', managed.reasons.join(' '))
       assert.equal(managed.inventory?.published, 2)
-      assert.equal(managed.inventory?.regenerable, 1)
+      assert.equal(managed.inventory?.disposable, 2)
     }
   )
 

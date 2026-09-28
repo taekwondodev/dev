@@ -35,7 +35,12 @@ import {
   type GateRelease,
   type PathGates,
 } from './workspace-gates.ts'
-import { registeredWorktrees, removeWorktree, type GitWorkspace } from './workspace-git.ts'
+import {
+  registeredWorktrees,
+  removeWorktree,
+  worktreeLockReason,
+  type GitWorkspace,
+} from './workspace-git.ts'
 import { abandonedUseIds, deletionHistory, sampledPaths } from './workspace-inspect.ts'
 import { isWithin } from './workspace-paths.ts'
 import {
@@ -43,7 +48,6 @@ import {
   deleteReservation,
   getPublications,
   getReservation,
-  getRuleApprovals,
   getTask,
   getUseRows,
   getWorkspace,
@@ -64,6 +68,7 @@ import {
   type WorktreeRemovalRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
+import { holdExistingInstallationForRemoval } from './runtime-coordination.ts'
 import { transaction } from './workspace-sqlite.ts'
 import { hasErrorCode, newId, now } from './workspace-platform.ts'
 
@@ -425,7 +430,6 @@ const assessWorkspace = (
     inventory: undefined,
     targetTip: undefined,
     publications: [],
-    approvals: [],
     absent,
   })
   if (identity.kind === 'unverifiable')
@@ -515,7 +519,6 @@ const assessWorkspace = (
       inventory: undefined,
       targetTip: undefined,
       publications: [],
-      approvals: [],
     })
     const residual = residualOf(inventory, head)
     if (uses.inUse)
@@ -549,8 +552,9 @@ const assessWorkspace = (
       checkout: workspace.path,
       head,
       target: getTask(db, reservation.taskId)?.target,
-      publications: getPublications(db, reservation.taskId),
-      approvals: getRuleApprovals(db, repo),
+      publications: getPublications(db, reservation.taskId).filter(
+        reference => reference.workspaceId === undefined || reference.workspaceId === workspace.id
+      ),
     })
   } catch (cause) {
     return shape(
@@ -584,7 +588,7 @@ const assessWorkspace = (
         stateDigest: evidence.stateDigest,
         reasons: [...uses.reasons, ...evidence.reasons],
         nextActions: [
-          'Resolve each blocker (integrate, publish, approve the exact rule or keep the file), then check again.',
+          'Resolve each blocker (integrate, publish the selected artifact or keep the file), then check again.',
         ],
         evidence,
         residual,
@@ -612,7 +616,7 @@ const assessWorkspace = (
       reasons: [
         ...uses.reasons,
         ...evidence.reasons,
-        `Eligible at this check; nothing removed; release rechecks. ${evidence.counts.published} published and ${evidence.counts.regenerable} regenerable file(s) would be deleted with the worktree.`,
+        `Eligible at this check; nothing removed; release rechecks. ${evidence.counts.published} published file(s) are recorded for deletion; Git removes remaining disposable worktree contents.`,
       ],
       nextActions: [
         `dev workspace release ${reservation.taskId} removes this managed worktree after confirmation.`,
@@ -659,7 +663,7 @@ const describeChange = (
   confirmed: ReleaseSubject,
   fresh: ReleaseSubject
 ): string => {
-  if (key === 'stateDigest') return 'files, Git state, target tip, publications or rule approvals'
+  if (key === 'stateDigest') return 'files, Git state, target tip or publications'
   if (key === 'head') return `HEAD (${short(confirmed.head)} -> ${short(fresh.head)})`
   return key
 }
@@ -844,7 +848,7 @@ const runRemoval = (workspace: WorkspaceRecord, before: RemovalObservation): Rem
     ? { status: 'done', detail: 'git worktree remove exited 0' }
     : {
         status: 'failed',
-        detail: `git worktree remove failed: ${git.stderr.trim() || `exit ${git.status ?? 'signal'}`}`,
+        detail: `git worktree remove --force failed: ${git.stderr.trim() || `exit ${git.status ?? 'signal'}`}`,
       }
 }
 
@@ -916,6 +920,16 @@ const removeManagedWorktree = (
       'The directory exists but Git no longer registers it as a worktree of this repository; nothing was changed.',
       'Inspect the directory and the repository registration before any removal.'
     )
+  if (before.registered) {
+    const lockReason = worktreeLockReason(workspace.commonPath, workspace.path)
+    if (lockReason !== undefined)
+      return releaseResult(
+        assessment,
+        'blocked',
+        `Git has locked this worktree${lockReason.length > 0 ? ` (${lockReason})` : ''}; nothing was changed.`,
+        'Unlock it with Git only if it is safe to do so, then check and release again.'
+      )
+  }
   const intent: WorktreeRemovalRecord = {
     ...releaseOperationBase(assessed, commandId),
     phase: 'intent',
@@ -1301,13 +1315,28 @@ const attemptUnderGates = (
         `A shell or launcher working directory is still inside this worktree (${inside.join(', ')}); nothing was changed.`,
         'Leave the directory and run a fresh release from outside it.'
       )
-    return removeManagedWorktree(
-      authority,
-      repo,
-      assessed,
-      request.commandId,
-      assessed.evidence?.manifest ?? []
-    )
+    let releaseInstallation: GateRelease
+    try {
+      releaseInstallation = holdExistingInstallationForRemoval(fresh.path)
+    } catch (cause) {
+      return releaseResult(
+        fresh,
+        'blocked',
+        `Target installation coordination is active or unverifiable (${errorText(cause)}); no task files were removed.`,
+        'Stop the target installation and inspect its coordination state before a fresh release.'
+      )
+    }
+    try {
+      return removeManagedWorktree(
+        authority,
+        repo,
+        assessed,
+        request.commandId,
+        assessed.evidence?.manifest ?? []
+      )
+    } finally {
+      releaseInstallation()
+    }
   }
   return releaseReservation(authority, repo, assessed, request.commandId)
 }
