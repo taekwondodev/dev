@@ -274,19 +274,6 @@ export const PublicationReferenceSchema = Schema.Struct({
 })
 export type PublicationReference = typeof PublicationReferenceSchema.Type
 
-export const RuleApprovalSchema = Schema.Struct({
-  id: WorkspaceId,
-  repositoryId: WorkspaceId,
-  locator: RelativeFilePath,
-  digest: Sha256Hex,
-  approvedBy: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal('tui-confirmation'), sessionId: Schema.NonEmptyString }),
-    Schema.Struct({ kind: Schema.Literal('check-fixture') }),
-  ]),
-  approvedAt: Schema.Finite,
-})
-export type RuleApproval = typeof RuleApprovalSchema.Type
-
 export const EvidenceVerdictSchema = Schema.Literals(['valid', 'invalid', 'unknown'])
 export type EvidenceVerdict = typeof EvidenceVerdictSchema.Type
 
@@ -335,7 +322,7 @@ export const WorkspaceAssessmentSchema = Schema.Struct({
       trackedChanges: Schema.Int,
       files: Schema.Int,
       published: Schema.Int,
-      regenerable: Schema.Int,
+      disposable: Schema.Int,
       blocking: Schema.Int,
     })
   ),
@@ -416,8 +403,5 @@ export interface WorkspaceLifecycle {
   }): Effect.Effect<void, WorkspaceError>
   recordPublication(input: {
     readonly reference: PublicationReference
-  }): Effect.Effect<void, WorkspaceError>
-  recordRuleApproval(input: {
-    readonly approval: RuleApproval
   }): Effect.Effect<void, WorkspaceError>
 }

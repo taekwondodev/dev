@@ -1351,9 +1351,22 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return
       }
       const assessments = checked.value
+      const { binding } = activeAttachment
+      const containing = assessments.find(
+        assessment =>
+          assessment.origin === 'managed' &&
+          isWithin(assessment.path, binding.conversation.sessionFile)
+      )
+      if (containing !== undefined) {
+        notify(
+          context,
+          `Active conversation is inside managed worktree ${containing.workspaceId}. Preserve and open it outside that worktree before releasing this task. No release was started; work and the TUI stay active.`,
+          'error'
+        )
+        return
+      }
       display(api, context, formatAssessments(command.taskId, assessments))
       if (assessments.length === 0) return
-      const { binding } = activeAttachment
       const { sessionId } = binding.conversation
       const involved =
         binding.taskId === command.taskId ||

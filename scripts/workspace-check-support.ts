@@ -12,7 +12,7 @@ import type {
 import { makeRuntimeFactory } from '../src/launcher.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../src/pi-runtime.ts'
 import { getProfile } from '../src/profiles.ts'
-import { acquireRuntime } from '../src/runtime-coordination.ts'
+import { acquireRuntime, type CoordinationOptions } from '../src/runtime-coordination.ts'
 import { createSessionGuard } from '../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
@@ -235,6 +235,7 @@ export const makeOfflineModel = async (input: {
 }
 
 export const openHostRuntime = async (input: {
+  readonly coordination: CoordinationOptions
   readonly pi: PiApi
   readonly packageRoot: string
   readonly lifecycle: WorkspaceLifecycle
@@ -264,7 +265,9 @@ export const openHostRuntime = async (input: {
       )
     )
     const guard = createSessionGuard(
-      await Effect.runPromise(Scope.provide(scope)(acquireRuntime(input.dataHome)))
+      await Effect.runPromise(
+        Scope.provide(scope)(acquireRuntime(input.dataHome, input.coordination))
+      )
     )
     const runtimeFactory = await Effect.runPromise(
       Effect.gen(function* () {

@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, FileSystem, Schema } from 'effect'
 
@@ -46,7 +48,20 @@ const program = Effect.scoped(
     const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: 'dev-smoke-' })
     const output = yield* run(
       process.execPath,
-      ['src/launcher.ts', '--diagnostics', '--data-home', dataHome],
+      [
+        '--input-type=module',
+        '--eval',
+        `
+        import { NodeRuntime } from '@effect/platform-node'
+        import { launch } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/launcher.ts')).href)}
+        import { makeWorkspaceLifecycle } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/workspace-lifecycle.ts')).href)}
+        const root = ${JSON.stringify(join(dataHome, 'authority'))}
+        NodeRuntime.runMain(launch(['--diagnostics', '--data-home', ${JSON.stringify(dataHome)}], {
+          workspaceLifecycle: makeWorkspaceLifecycle({ root }),
+          coordination: { installationPath: ${JSON.stringify(dataHome)}, namespacePath: root },
+        }), { disableErrorReporting: true })
+      `,
+      ],
       checkout
     )
     if (!output.includes('pi: 0.87.1') || !output.includes('selection: general'))

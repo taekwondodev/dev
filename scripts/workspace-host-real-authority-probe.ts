@@ -264,7 +264,11 @@ const recordHostNotices =
     )
 
 const guard = createSessionGuard(
-  await Effect.runPromise(Scope.provide(hostScope)(acquireRuntime(dataHome)))
+  await Effect.runPromise(
+    Scope.provide(hostScope)(
+      acquireRuntime(dataHome, { installationPath: fixture, namespacePath: authorityRoot })
+    )
+  )
 )
 const runtimeFactory = await Effect.runPromise(
   Effect.gen(function* () {

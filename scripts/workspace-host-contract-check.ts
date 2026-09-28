@@ -72,12 +72,12 @@ const lifecycle: WorkspaceLifecycle = {
   release: () => Effect.fail(refused),
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
-  recordRuleApproval: () => Effect.fail(refused),
 }
 
 let opened: Awaited<ReturnType<typeof openHostRuntime>> | undefined
 try {
   opened = await openHostRuntime({
+    coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
     pi,
     packageRoot: packageInfo.root,
     lifecycle,

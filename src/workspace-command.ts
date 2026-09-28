@@ -229,7 +229,7 @@ const consequenceOf = (assessment: WorkspaceAssessment): string => {
       return 'release would end the task reservation only; every file and commit stays'
     case 'remove-worktree':
       return assessment.outcome === 'removable'
-        ? 'release would delete this managed worktree, its published and regenerable files and its Git registration'
+        ? 'release would delete this managed worktree, its uncommitted edits, untracked/ignored contents and Git registration; undelivered or unselected contents will be lost'
         : 'release would reconcile the registration and reservation of the absent directory'
     case 'none':
       return 'release would change nothing here; the blockers above stay'
@@ -245,7 +245,7 @@ const assessmentText = (assessment: WorkspaceAssessment): string[] => [
   ...(assessment.inventory === undefined
     ? []
     : [
-        `  inventory: ${assessment.inventory.trackedChanges} tracked change(s), ${assessment.inventory.files} untracked or ignored file(s): ${assessment.inventory.published} published, ${assessment.inventory.regenerable} regenerable, ${assessment.inventory.blocking} blocking`,
+        `  inventory: ${assessment.inventory.trackedChanges} tracked change(s), ${assessment.inventory.files} untracked or ignored file(s); ${assessment.inventory.published} matched publication(s), ${assessment.inventory.disposable} disposable untracked file(s), ${assessment.inventory.blocking} blocking entry(s)`,
       ]),
   ...assessment.residual.map(item => `  residual: ${item}`),
   `  consequence: ${consequenceOf(assessment)}`,

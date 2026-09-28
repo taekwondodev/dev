@@ -120,6 +120,31 @@ PROBES = {
     ),
 
 
+    'launcher-self-remove': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=LAUNCHER_ACTIONS,
+        expect=('its workspace attachment is closed', '(managed) at', ': removed', 'Exit 0'),
+        env=(('LAUNCHER_TUI_SELF_REMOVE', '1'),),
+    ),
+
+    'launcher-contained-history': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        actions=(
+            LAUNCHER_ACTIONS[0],
+            Action('still-usable', 'Active conversation is inside',
+                   '\x15/workspace inspect {TASK}\r', delay=0.5),
+            Action('quit', 'pending operations: none recorded', '/quit\r', delay=0.5),
+            Action('unexpected-confirm', 'Release task {TASK}?', 'y\r', required=False, delay=0.5),
+        ),
+        expect=('Active conversation is inside', 'No release was started', 'pending operations: none recorded'),
+        env=(('LAUNCHER_TUI_CONTAINED_HISTORY', '1'),),
+    ),
+
     'launcher-interrupt': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',

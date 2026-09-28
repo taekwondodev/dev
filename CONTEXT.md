@@ -30,10 +30,10 @@ profile. Its ownership and paths must be checked before any migration.
 
 ## Workspace ownership vocabulary
 
-The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426),
-[cleanup](https://github.com/taekwondodev/dev/issues/29#issuecomment-5796162017) and
-[evidence](https://github.com/taekwondodev/dev/issues/32#issuecomment-5798044999)
-contracts define these terms. The workspace lifecycle implements admission,
+The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426)
+and [disposable-worktree delivery](https://github.com/taekwondodev/dev/issues/42)
+contracts define these terms. The latter supersedes the per-file certification
+predicates of the original cleanup and evidence contracts. The workspace lifecycle implements admission,
 reservations, conversation bindings, recovery facts, release eligibility checks and
 the explicit, confirmed release attempt.
 
@@ -59,11 +59,21 @@ reserved workspaces for reservation release or safe removal, not a guarantee
 that either operation can proceed. One confirmed command makes one fenced attempt
 per workspace; a repeated release is a fresh command with fresh checks.
 
-**Cleanup evidence**: The facts a managed worktree's removal requires beyond no
-live use: integration of its exact commit into the task's agreed target, a
-verified publication for each selected untracked file, and a user-approved exact
-version of the repository's regenerable-output rule for the rest. A pre-existing
-checkout needs none of it, since its release changes only the reservation.
+**Disposable managed worktree**: A dev-created task checkout whose intended
+code/assets have been delivered and whose agent contributions have been
+reconciled by the workflow. Final confirmed release can discard its remaining
+contents, including dirty intermediate files and forgotten unselected outputs.
+It is not an archive or permission to remove a pre-existing checkout.
+
+**Cleanup evidence**: Runtime-verifiable integration into the agreed target and
+exact matching of recorded publications, in addition to the use, identity and
+structural checks. Source ancestry within the independently bound merged PR can
+cover an intermediate commit; it does not prove that dirty edits were delivered.
+The workflow owns report selection, verified publication before merge and
+incomplete-work blockers. A pre-existing checkout needs no cleanup evidence,
+since its release changes only the reservation. Read
+[ADR 0005's release boundary](docs/adr/0005-scoped-runtime-coordination.md#release)
+before changing these responsibilities.
 
 ## Background work
 

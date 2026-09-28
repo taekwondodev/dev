@@ -20,11 +20,7 @@ import {
 } from './workspace-protocol.ts'
 import { performHandoff, selectWorkspace } from './workspace-transitions.ts'
 import { makeGitHubReader } from './workspace-evidence.ts'
-import {
-  recordPublication,
-  recordRuleApproval,
-  recordTarget,
-} from './workspace-evidence-records.ts'
+import { recordPublication, recordTarget } from './workspace-evidence-records.ts'
 import { checkTask, releaseWorkspace, type EvidenceReaders } from './workspace-release.ts'
 import { errorText } from './error-text.ts'
 
@@ -193,9 +189,6 @@ if (port !== null && engine !== undefined) {
         return null
       case 'record-publication':
         await engine.run(authority => recordPublication(authority, request.reference))
-        return null
-      case 'record-rule-approval':
-        await engine.run(authority => recordRuleApproval(authority, request.approval))
         return null
       case 'close': {
         if (closing) return null

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Cause, Effect, Exit, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
@@ -10,12 +10,11 @@ import {
   TaskTargetSchema,
   WorkspaceId,
   type PublicationReference,
-  type RuleApproval,
   type WorkspaceAttachment,
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
-import { blobAt, canonicalGitWorkspace } from './workspace-git.ts'
+import { canonicalGitWorkspace } from './workspace-git.ts'
 import { newId, now } from './workspace-platform.ts'
 
 const EvidenceInputSchema = Schema.Union([
@@ -34,7 +33,6 @@ const EvidenceInputSchema = Schema.Union([
       commentId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
     }),
   }),
-  Schema.Struct({ action: Schema.Literal('approve-rule'), locator: RelativeFilePath }),
 ])
 type EvidenceInput = typeof EvidenceInputSchema.Type
 const parameters = Schema.toJsonSchemaDocument(EvidenceInputSchema, {
@@ -247,58 +245,13 @@ export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition =
     return { recorded: 'publication', reference }
   })
 
-  const approveRule = Effect.fnUntraced(function* (
-    input: Extract<EvidenceInput, { readonly action: 'approve-rule' }>,
-    context: ExtensionContext
-  ) {
-    if (!context.hasUI)
-      return yield* refuse(
-        'Rule approval needs the user to confirm interactively; no UI is available, so nothing was approved.'
-      )
-    const { binding, view } = yield* boundWorkspace(undefined)
-    if (view === undefined)
-      return yield* refuse(
-        `The current workspace ${binding.workspaceId} is not reserved by a task.`
-      )
-    const blob = yield* Effect.try({
-      try: () => blobAt(view.path, 'HEAD', input.locator),
-      catch: cause => refuse(`Rule file could not be read at HEAD: ${errorText(cause)}`),
-    })
-    if (blob === undefined)
-      return yield* refuse(
-        `No tracked file ${input.locator} exists at HEAD of ${view.path}; rules are versioned in the repository.`
-      )
-    const digest = sha256Hex(blob)
-    const content = blob.toString('utf8')
-    const preview = content.length > 2000 ? `${content.slice(0, 2000)}\n…` : content
-    const confirmed = yield* Effect.promise(() =>
-      context.ui.confirm(
-        `Approve regenerable rule ${input.locator}?`,
-        `Repository: ${view.repositoryId}\nRule file: ${input.locator} at HEAD ${view.path}\nsha256: ${digest}\n\nFiles matching this exact version may be deleted with an eligible managed worktree. Any later change to the file needs a new approval.\n\n${preview}`
-      )
-    )
-    if (!confirmed) return { recorded: 'nothing', reason: 'The user did not approve the rule.' }
-    const approval: RuleApproval = {
-      id: newId(),
-      repositoryId: view.repositoryId,
-      locator: input.locator,
-      digest,
-      approvedBy: { kind: 'tui-confirmation', sessionId: binding.conversation.sessionId },
-      approvedAt: now(),
-    }
-    yield* options.lifecycle
-      .recordRuleApproval({ approval })
-      .pipe(Effect.mapError(error => refuse(`Approval was not recorded: ${error.message}`)))
-    return { recorded: 'rule-approval', approval }
-  })
-
   return {
     name: 'workspace_evidence',
     label: 'Workspace evidence',
     description:
-      'Record cleanup evidence for this conversation\'s workflow task in the workspace authority. set-target records the agreed integration target (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. approve-rule asks the user to approve the exact HEAD version of a versioned regenerable-rule file ({"version":1,"regenerable":["dir/","file"]}); the user\'s confirmation is the approval. None of these releases or removes a workspace: the user does that with /workspace release.',
+      "Record cleanup evidence for this conversation's workflow task in the workspace authority. set-target records the agreed integration target (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. None of these releases or removes a workspace: the user does that with /workspace release.",
     parameters,
-    async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, input, _signal, _onUpdate) {
       const run: Effect.Effect<unknown, EvidenceToolError> = decodeInput(input, {
         onExcessProperty: 'error',
       }).pipe(
@@ -309,8 +262,6 @@ export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition =
               return setTarget(decoded)
             case 'record-publication':
               return recordPublication(decoded)
-            case 'approve-rule':
-              return approveRule(decoded, ctx)
           }
         })
       )

@@ -71,7 +71,7 @@ const setup = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const dataHome = argument('--data-home') ?? (yield* defaultDataHome)
-    yield* acquireMaintenance
+    yield* acquireMaintenance()
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
     const home = process.env.HOME ?? process.env.USERPROFILE
@@ -106,7 +106,7 @@ const setup = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =
 
 const update = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    yield* acquireMaintenance
+    yield* acquireMaintenance()
     if ((yield* run('git', ['status', '--porcelain'])) !== '')
       return yield* new MaintenanceError({
         message:
@@ -127,7 +127,7 @@ const update = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> 
 
 const rollback = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    yield* acquireMaintenance
+    yield* acquireMaintenance()
     const ref = argument('--ref')
     if (ref === undefined)
       return yield* new MaintenanceError({

@@ -3,7 +3,6 @@ import {
   AbsolutePath,
   PublicationReferenceSchema,
   ReleaseRequestSchema,
-  RuleApprovalSchema,
   TaskTargetSchema,
   WorkspaceAssessmentSchema,
   WorkspaceAuthorizationSchema,
@@ -91,10 +90,6 @@ const RecordPublicationRequestSchema = Schema.Struct({
   op: Schema.Literal('record-publication'),
   reference: PublicationReferenceSchema,
 })
-const RecordRuleApprovalRequestSchema = Schema.Struct({
-  op: Schema.Literal('record-rule-approval'),
-  approval: RuleApprovalSchema,
-})
 
 const WorkspaceRpcInputSchema = Schema.Union([
   AttachRequestSchema,
@@ -110,7 +105,6 @@ const WorkspaceRpcInputSchema = Schema.Union([
   ReleaseRequestRpcSchema,
   RecordTargetRequestSchema,
   RecordPublicationRequestSchema,
-  RecordRuleApprovalRequestSchema,
 ])
 
 export type WorkspaceRpcInput = typeof WorkspaceRpcInputSchema.Type
@@ -130,7 +124,6 @@ export interface WorkspaceRpcResults {
   readonly release: WorkspaceReleaseResult
   readonly 'record-target': null
   readonly 'record-publication': null
-  readonly 'record-rule-approval': null
 }
 
 const EnvelopeSchema = Schema.Struct({ id: RpcId, request: Schema.Unknown })
@@ -162,7 +155,6 @@ const SuccessSchema = Schema.Union([
       'close',
       'record-target',
       'record-publication',
-      'record-rule-approval',
     ] as const
   ).map(op =>
     Schema.Struct({
