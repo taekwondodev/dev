@@ -1,4 +1,5 @@
 import { dirname } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { NodeRuntime } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { launch } from '../src/launcher.ts'
@@ -17,21 +18,16 @@ const deliverSigint = Effect.callback<void>(resume => {
   return Effect.sync(() => process.removeListener('SIGINT', delivered))
 })
 
-const interruptedAfterHandover = Effect.gen(function* () {
+const interruptedAfterQuit = Effect.gen(function* () {
   const real = yield* makeWorkspaceLifecycle({ root })
-  let checked = false
   let signalled = false
   const signalOnce = Effect.suspend(() => {
-    if (!checked || signalled) return Effect.void
+    if (signalled) return Effect.void
     signalled = true
     return deliverSigint
   })
   const lifecycle: WorkspaceLifecycle = {
     ...real,
-    check: input => {
-      checked = true
-      return real.check(input)
-    },
     attach: input =>
       real.attach(input).pipe(
         Effect.map(
@@ -48,7 +44,40 @@ const interruptedAfterHandover = Effect.gen(function* () {
   return lifecycle
 })
 
-if (process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-handover') {
+const interruptedDuringSweep = Effect.gen(function* () {
+  const real = yield* makeWorkspaceLifecycle({ root })
+  const lifecycle: WorkspaceLifecycle = {
+    ...real,
+    sweep: input => deliverSigint.pipe(Effect.andThen(real.sweep(input))),
+  }
+  return lifecycle
+})
+
+const lifecycleFor = (fault: string | undefined) => {
+  switch (fault) {
+    case 'sigint-after-quit':
+      return interruptedAfterQuit
+    case 'sigint-during-sweep':
+      return interruptedDuringSweep
+    default:
+      return makeWorkspaceLifecycle({ root })
+  }
+}
+
+if (process.env.LAUNCHER_TUI_FAULT === 'interactive-failure') {
+  const {
+    pi: { InteractiveMode },
+  } = await loadInstalledPi()
+  const { run } = InteractiveMode.prototype
+  InteractiveMode.prototype.run = async function (this: InstanceType<typeof InteractiveMode>) {
+    run.call(this).catch(() => undefined)
+    await sleep(1500)
+    this.stop()
+    throw new Error('injected interactive mode failure')
+  }
+}
+
+if (process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-quit') {
   const {
     pi: { AgentSession },
   } = await loadInstalledPi()
@@ -65,10 +94,7 @@ NodeRuntime.runMain(
       installationPath: process.env.LAUNCHER_TUI_INSTALLATION ?? dirname(root),
       namespacePath: root,
     },
-    workspaceLifecycle:
-      process.env.LAUNCHER_TUI_FAULT === 'sigint-after-handover'
-        ? interruptedAfterHandover
-        : makeWorkspaceLifecycle({ root }),
+    workspaceLifecycle: lifecycleFor(process.env.LAUNCHER_TUI_FAULT),
   }),
   { disableErrorReporting: true }
 )

@@ -17,12 +17,12 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import { completeGuidedRelease, makeRuntimeFactory } from '../src/launcher.ts'
+import { makeRuntimeFactory, sweepAtQuit } from '../src/launcher.ts'
 import { getProfile } from '../src/profiles.ts'
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { createSessionGuard } from '../src/session-guard.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
-import type { WorkspaceView } from '../src/workspace-domain.ts'
+import { WorkspaceError, type WorkspaceView } from '../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import {
   deferred,
@@ -69,6 +69,8 @@ const filterMarker = join(fixture, 'checkout-filter-ran')
 git(['config', 'filter.probe.smudge', `touch ${JSON.stringify(filterMarker)}`], lead)
 
 for (const path of [sessionDir, agentDir, dataHome]) mkdir(path)
+const trustStore = new pi.ProjectTrustStore(agentDir)
+trustStore.set(fixture, false)
 process.env.HOME = join(fixture, 'home')
 process.env.PI_CODING_AGENT_DIR = agentDir
 process.env.PI_OFFLINE = '1'
@@ -317,8 +319,7 @@ const { claim, passed } = makeClaims()
 
 const readOnly = (args: readonly string[]) => {
   const command = Effect.runSync(parseWorkspaceCommand(args))
-  if (command.kind === 'resume' || command.kind === 'release')
-    throw new Error('Expected a read-only workspace command')
+  if (command.kind === 'release') throw new Error('Expected a read-only workspace command')
   return Effect.runPromise(
     runReadOnlyWorkspaceCommand(Effect.succeed(lifecycle.effect), command, {
       repositoryRoot: Effect.succeed(lead),
@@ -662,65 +663,55 @@ const workspaceEntries = () =>
 process.stdout.write(`\nDEV_REAL_AUTHORITY_INPUTS ${JSON.stringify({ TASK_HOST: hostTask })}\n`)
 signal('READY_FOR_CHECK')
 await claim(
-  "/workspace check of the TUI task shows its managed worktree as removable, naming the conversation's own live shell as a use the guided release will settle, without parking the host or stopping anything",
+  "/workspace check of the TUI task shows its managed worktree as finished for the sweep, naming the conversation's own live shell as a use that ends when it quits, without parking the host or stopping anything",
   async () => {
     const shown = await waitFor('the check to be displayed', () =>
       workspaceEntries().find(content => content.includes('Release eligibility for exact task'))
     )
     assert.ok(shown.includes(`workspace ${binding.workspaceId} (managed)`), shown)
+    assert.ok(shown.includes('sweep verdict: finished (no-residue)'), shown)
     assert.ok(shown.includes('eligibility: removable'), shown)
-    assert.ok(shown.includes('lead-shell'), shown)
+    assert.ok(shown.includes('lead-shell') && shown.includes('they end when it quits'), shown)
     assert.equal(workspaceHost.isParked(), false)
     assert.ok(alive(survivorPid), 'a check stops nothing')
   }
 )
-signal('READY_FOR_RELEASE_CANCEL')
+const confirmationsBeforeRelease = confirmations
+signal('READY_FOR_OWN_RELEASE')
 await claim(
-  'cancelling the release confirmation with Escape changes nothing: the live shell survives, the worktree remains and the TUI stays usable',
+  "/workspace release of the TUI's own task answers that quitting sweeps it, asks for no confirmation and stops nothing",
   async () => {
-    await waitFor('the cancellation notice', () =>
-      notices.find(notice => notice.startsWith('Release cancelled before confirmation'))
+    const answer = await waitFor('the own-task answer', () =>
+      workspaceEntries().find(content => content.includes('belongs to this conversation'))
     )
-    const confirmation = confirmationTexts.at(-1)
-    assert.equal(confirmation?.title, `Release task ${hostTask}?`)
-    const message = confirmation?.message ?? ''
-    assert.ok(message.includes(workspaceHost.attachment.binding.conversation.sessionId), message)
-    assert.ok(message.includes(' 1 shell process group'), message)
-    assert.ok(alive(survivorPid), 'the cancelled confirmation stopped nothing')
+    assert.ok(answer.includes('/quit') && answer.includes('sweeps'), answer)
+    assert.equal(confirmations, confirmationsBeforeRelease)
+    assert.ok(alive(survivorPid), 'the answer stopped nothing')
     assert.ok(existsSync(managed))
     assert.equal(workspaceHost.isParked(), false, 'the TUI stays usable')
   }
 )
-signal('READY_FOR_CONFIRMED_RELEASE')
-const providerCallsBeforeRelease = providerCall
-const closure = await within(
-  Effect.runPromise(Deferred.await(workspaceHost.guidedRelease)),
+workspaceHost.interceptQuit(true)
+signal('READY_FOR_QUIT')
+await within(
+  Effect.runPromise(Deferred.await(workspaceHost.quitRequested)),
   90000,
-  'the confirmed guided release to reach the launcher boundary'
+  "the typed /quit to reach the host's dispose boundary"
 )
-
-await sleep(1500)
+await sleep(500)
 await claim(
-  "confirming the release stops this conversation's live shell family, observes it gone and hands the fenced request to the launcher with the TUI parked",
+  "a typed /quit parks Pi's own exit at the host's dispose boundary with the runtime still undisposed",
   async () => {
-    assert.equal(closure.taskId, hostTask)
-    assert.equal(workspaceHost.isParked(), true, 'the host is fenced once the release is confirmed')
-    assert.equal(
-      providerCall,
-      providerCallsBeforeRelease,
-      'input typed after the confirmation started no model turn'
-    )
-    assert.ok(
-      !runtime.session.sessionManager
-        .getEntries()
-        .some(
-          entry =>
-            entry.type === 'message' &&
-            entry.message.role === 'user' &&
-            JSON.stringify(entry.message.content).includes('stray input after confirm')
-        ),
-      'the stray input was not appended to the conversation'
-    )
+    assert.ok(alive(survivorPid), 'nothing was disposed before the launcher takes over')
+    assert.ok(existsSync(managed))
+  }
+)
+await runtime.dispose()
+await Effect.runPromise(workspaceHost.close)
+await Effect.runPromise(Scope.close(hostScope, Exit.void))
+await claim(
+  "once the runtime is disposed after the quit, the conversation's live shell family is stopped and its use settled",
+  async () => {
     await waitFor('the live shell family to stop', () => (alive(survivorPid) ? undefined : true), {
       attempts: 20,
     })
@@ -734,23 +725,59 @@ await claim(
     assert.equal(stoppedUse?.reason, SHELL_GONE)
   }
 )
-mode.stop('transcript')
-await runtime.dispose()
-await Effect.runPromise(workspaceHost.close)
-await Effect.runPromise(Scope.close(hostScope, Exit.void))
 await claim(
-  'after the TUI stopped and the runtime closed, the launcher-side completion removes the managed worktree, prints the receipt to the shell and keeps the conversation file',
+  'a quit sweep that never reports back exits 1 saying its outcome is unknown and pointing to inspect, not that nothing was released',
   async () => {
-    const run = await Effect.runPromise(
-      completeGuidedRelease(lifecycle.effect, closure, {
-        returnCwd: fixture,
-        proceed: () => true,
+    process.exitCode = undefined
+    const printed: string[] = []
+    const { write } = process.stdout
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      printed.push(String(chunk))
+      return true
+    }) as typeof process.stdout.write
+    try {
+      await Effect.runPromise(
+        sweepAtQuit(
+          {
+            ...lifecycle.effect,
+            sweep: () =>
+              Effect.fail(
+                new WorkspaceError({
+                  outcome: 'unavailable',
+                  message: 'Workspace worker acknowledgment was lost or timed out',
+                })
+              ),
+          },
+          {
+            anchorWorkspaceId: binding.workspaceId,
+            occupiedPaths: [fixture, initialSessionFile],
+            detached: workspaceHost.isDetached(),
+            proceed: () => true,
+          }
+        )
+      )
+    } finally {
+      process.stdout.write = write
+    }
+    const text = printed.join('')
+    assert.equal(process.exitCode, 1)
+    assert.ok(text.includes('its outcome is unknown'), text)
+    assert.ok(text.includes('dev workspace inspect'), text)
+    assert.ok(!text.includes('nothing was released'), text)
+    assert.ok(existsSync(managed), 'the stubbed sweep touched nothing')
+  }
+)
+await claim(
+  'the sweep at quit removes the finished managed worktree, prints the receipt with exit 0 and keeps the conversation file',
+  async () => {
+    process.exitCode = undefined
+    await Effect.runPromise(
+      sweepAtQuit(lifecycle.effect, {
+        anchorWorkspaceId: binding.workspaceId,
+        occupiedPaths: [fixture, initialSessionFile],
         detached: workspaceHost.isDetached(),
+        proceed: () => true,
       })
-    )
-    assert.deepEqual(
-      run.results.map(result => [result.origin, result.outcome]),
-      [['managed', 'removed']]
     )
     assert.ok(!existsSync(managed), 'the managed worktree is gone')
     assert.deepEqual(worktrees(), [`worktree ${lead}`])

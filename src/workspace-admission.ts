@@ -1,7 +1,11 @@
 import { realpathSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { resolve } from 'node:path'
-import { allocateDelegatedWorkspace, isolateContendedWriter } from './workspace-allocation.ts'
+import {
+  allocateDelegatedWorkspace,
+  isolateContendedWriter,
+  type AllocationSweep,
+} from './workspace-allocation.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   isScoped,
@@ -104,9 +108,10 @@ const validateWithinGrant = (
 export const authorizeOperation = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  operation: WorkspaceOperation
+  operation: WorkspaceOperation,
+  sweep: AllocationSweep
 ): WorkspaceAuthorization => {
-  const result = admit(authority, attachment, operation)
+  const result = admit(authority, attachment, operation, sweep)
   if (result.kind === 'ready') claimGrant(attachment, result.grant)
   return result
 }
@@ -114,7 +119,8 @@ export const authorizeOperation = (
 const admit = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  operation: WorkspaceOperation
+  operation: WorkspaceOperation,
+  sweep: AllocationSweep
 ): WorkspaceAuthorization => {
   attachment.assertOpen()
   const { state } = attachment
@@ -140,7 +146,8 @@ const admit = (
       state,
       source,
       source.binding.taskId ?? newId(),
-      operation.execution
+      operation.execution,
+      sweep
     )
   const existing = state.writeGrant
   if (
@@ -155,7 +162,7 @@ const admit = (
   }
   const reservation = inDb(authority, source.repo, db => getReservation(db, source.workspace.id))
   if (reservation !== undefined && reservation.taskId !== source.binding.taskId)
-    return isolateContendedWriter(authority, state, source, source.binding.taskId ?? newId())
+    return isolateContendedWriter(authority, state, source, source.binding.taskId ?? newId(), sweep)
   const activeWrites = inDb(authority, source.repo, db =>
     getUseRows(db, source.workspace.id).filter(use => use.access === 'write' && isActiveUse(use))
   )
@@ -163,7 +170,7 @@ const admit = (
   if (foreignActive) {
     if (source.binding.taskId !== undefined)
       blocked(`The selected task has an unresolved writer use: ${source.workspace.path}`)
-    return isolateContendedWriter(authority, state, source, newId())
+    return isolateContendedWriter(authority, state, source, newId(), sweep)
   }
   let gates: PathGates
   try {
@@ -175,7 +182,7 @@ const admit = (
       source.binding.taskId !== undefined
     )
       throw cause
-    return isolateContendedWriter(authority, state, source, newId())
+    return isolateContendedWriter(authority, state, source, newId(), sweep)
   }
   try {
     const taskId = source.binding.taskId ?? newId()

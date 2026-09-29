@@ -14,6 +14,7 @@ import {
   type WorkspaceId,
   type WorkspaceSelection,
 } from './workspace-domain.ts'
+import type { OwnConversation } from './workspace-release.ts'
 import { toBinding } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { newId } from './workspace-platform.ts'
@@ -70,10 +71,13 @@ export class WorkspaceEngine {
     this.authority = new WorkspaceAuthority(root)
   }
 
-  incarnationOf(conversation: WorkspaceConversation | undefined): WorkspaceId | undefined {
+  ownConversation(conversation: WorkspaceConversation | undefined): OwnConversation | undefined {
     if (conversation === undefined) return undefined
     try {
-      return this.states.get(conversationRecord(conversation).key)?.incarnation
+      const state = this.states.get(conversationRecord(conversation).key)
+      return state === undefined
+        ? undefined
+        : { incarnation: state.incarnation, conversationKey: state.key }
     } catch (cause) {
       if (cause instanceof WorkspaceError) return undefined
       throw cause

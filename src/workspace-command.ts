@@ -2,7 +2,10 @@ import { Cause, Effect, Exit, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
   WorkspaceId,
+  type CompletionVerdict,
   type ReleaseSubject,
+  type SweepReceipt,
+  type SweepRow,
   type WorkspaceAssessment,
   type WorkspaceConversation,
   WorkspaceError,
@@ -18,16 +21,8 @@ export type WorkspaceCommand =
   | { readonly kind: 'inspect'; readonly taskId: WorkspaceId }
   | { readonly kind: 'check'; readonly taskId: WorkspaceId }
   | { readonly kind: 'release'; readonly taskId: WorkspaceId }
-  | {
-      readonly kind: 'resume'
-      readonly taskId: WorkspaceId
-      readonly workspaceId?: WorkspaceId
-    }
 
-type ReadOnlyWorkspaceCommand = Exclude<
-  WorkspaceCommand,
-  { readonly kind: 'resume' } | { readonly kind: 'release' }
->
+type ReadOnlyWorkspaceCommand = Exclude<WorkspaceCommand, { readonly kind: 'release' }>
 
 export interface WorkspaceCommandResult {
   readonly exitCode: 0 | 1 | 2
@@ -96,15 +91,8 @@ export const parseWorkspaceCommand = Effect.fnUntraced(function* (
       )
     return { kind: 'release', taskId: yield* exactId(args[0], 'Task') }
   }
-  if (verb === 'resume') {
-    const taskId = yield* exactId(args[0], 'Task')
-    if (args.length === 1) return { kind: 'resume', taskId }
-    if (args.length === 3 && args[1] === '--workspace')
-      return { kind: 'resume', taskId, workspaceId: yield* exactId(args[2], 'Workspace') }
-    return yield* usage('Usage: workspace resume <task> [--workspace <workspace>]')
-  }
   return yield* usage(
-    `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task>, check <task>, release <task>, or resume <task> [--workspace <workspace>].`
+    `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task>, check <task> or release <task>.`
   )
 })
 
@@ -179,43 +167,6 @@ export const resumeCandidates = (
     .filter(view => view.outcome === 'preserved-for-resume')
     .map(view => ({ selection: { taskId, workspaceId: view.workspaceId }, view }))
 
-const choicesText = (candidates: readonly ResumeCandidate[]): string =>
-  candidates.map(({ view }) => `  ${view.workspaceId}  ${view.path} (${view.origin})`).join('\n')
-
-export const chooseResumeCandidate = Effect.fnUntraced(function* (
-  exactTaskViews: readonly WorkspaceView[],
-  taskId: WorkspaceId,
-  requestedWorkspaceId?: WorkspaceId
-): Effect.fn.Return<ResumeCandidate, WorkspaceCommandError> {
-  const candidates = resumeCandidates(exactTaskViews, taskId)
-  if (requestedWorkspaceId !== undefined) {
-    const selected = candidates.find(
-      candidate => candidate.view.workspaceId === requestedWorkspaceId
-    )
-    if (selected !== undefined) return selected
-    const choices = choicesText(candidates)
-    return yield* new WorkspaceCommandError({
-      message:
-        choices.length === 0
-          ? `Task ${taskId} has no workspace currently preserved for resume.\n${formatWorkspaceViews(exactTaskViews)}`
-          : `Workspace ${requestedWorkspaceId} is not an exact retained workspace for task ${taskId}. Choose one of:\n${choices}`,
-      exitCode: 1,
-    })
-  }
-  if (candidates.length === 1) return candidates[0]!
-  if (candidates.length > 1)
-    return yield* usage(
-      `Task ${taskId} has multiple retained workspaces; select one with --workspace:\n${choicesText(candidates)}`
-    )
-  return yield* new WorkspaceCommandError({
-    message:
-      exactTaskViews.length === 0
-        ? noTaskRecords(taskId)
-        : `Task ${taskId} has no workspace currently preserved for resume.\n${formatWorkspaceViews(exactTaskViews)}`,
-    exitCode: 1,
-  })
-})
-
 const sortedAssessments = (assessments: readonly WorkspaceAssessment[]) =>
   assessments.toSorted(
     (left, right) =>
@@ -236,9 +187,23 @@ const consequenceOf = (assessment: WorkspaceAssessment): string => {
   }
 }
 
+const ROLE_TEXT: Record<CompletionVerdict['role'], string> = {
+  'pre-existing': 'pre-existing checkout',
+  branch: 'branch worktree',
+  child: 'delegated child worktree',
+  detached: 'detached worktree',
+}
+const verdictText = (verdict: CompletionVerdict): string =>
+  verdict.kind === 'finished'
+    ? `finished (${verdict.rule}): ${verdict.reason}`
+    : `retained (${verdict.retained}): ${verdict.reason}`
+
 const assessmentText = (assessment: WorkspaceAssessment): string[] => [
   `workspace ${assessment.workspaceId} (${assessment.origin}) at ${assessment.path}`,
   `  repository: ${assessment.repositoryId}; reservation: ${assessment.reservationId}`,
+  `  role: ${ROLE_TEXT[assessment.completion.role]}`,
+  `  target: ${assessment.target.source}; ${assessment.target.description}`,
+  `  sweep verdict: ${verdictText(assessment.completion)}`,
   `  eligibility: ${assessment.outcome}`,
   ...assessment.reasons.map(reason => `  - ${reason}`),
   ...(assessment.evidence === undefined ? [] : [`  evidence: ${assessment.evidence.verdict}`]),
@@ -258,17 +223,16 @@ export const formatAssessments = (
 ): string => {
   if (assessments.length === 0) return noTaskRecords(taskId)
   return [
-    `Release eligibility for exact task ${taskId} (a check grants nothing; release rechecks everything):`,
+    `Release eligibility for exact task ${taskId} (a check grants nothing; the sweep at quit or before a worktree allocation rechecks everything):`,
     ...sortedAssessments(assessments).flatMap(assessmentText),
   ].join('\n')
 }
 
-export interface SessionConsequences {
-  readonly sessionId: string
-  readonly work: readonly string[]
-  readonly liveShells: number
-  readonly unrelatedWork: readonly string[]
-}
+export const needsExplicitRelease = (assessments: readonly WorkspaceAssessment[]): boolean =>
+  assessments.some(assessment => assessment.outcome === 'review-required')
+
+export const noExplicitRelease = (taskId: WorkspaceId): string =>
+  `No workspace of task ${taskId} is review-required, so there is nothing for an explicit release. Finished workspaces are released automatically when dev quits or before it allocates a worktree; the others stay retained with the reason above.`
 
 const confirmationLines = (assessment: WorkspaceAssessment): string[] => {
   const lines = [
@@ -285,8 +249,7 @@ const confirmationLines = (assessment: WorkspaceAssessment): string[] => {
 
 export const releaseConfirmation = (
   taskId: WorkspaceId,
-  assessments: readonly WorkspaceAssessment[],
-  session: SessionConsequences | undefined
+  assessments: readonly WorkspaceAssessment[]
 ): { readonly title: string; readonly message: string } => {
   const lines = [
     `Task ${taskId}: one release attempt for exactly the ${assessments.length} workspace(s) below. Each is rechecked and evaluated independently; a workspace added or rebound after this confirmation is not included.`,
@@ -295,23 +258,6 @@ export const releaseConfirmation = (
     '',
     'Eligible dev-created worktrees may be deleted; pre-existing checkout files are never touched. No automatic retry follows a blocked workspace.',
   ]
-  if (session !== undefined) {
-    lines.push(
-      '',
-      `This conversation (${session.sessionId}) uses a workspace of this task, so confirming stops its running lead operation and owned background work, closes this TUI and detaches its working directory before the attempt. The conversation file is kept.`
-    )
-    if (session.work.length > 0)
-      lines.push('Owned work that will be stopped:', ...session.work.map(item => `  ${item}`))
-    if (session.liveShells > 0)
-      lines.push(
-        `  ${session.liveShells} shell process group(s) started by this conversation will be stopped.`
-      )
-    if (session.unrelatedWork.length > 0)
-      lines.push(
-        'Unrelated activity interrupted by closing this session (its reservations are preserved, not released):',
-        ...session.unrelatedWork.map(item => `  ${item}`)
-      )
-  }
   return { title: `Release task ${taskId}?`, message: lines.join('\n') }
 }
 
@@ -367,13 +313,13 @@ export const runRelease = Effect.fnUntraced(function* (
   input: {
     readonly taskId: WorkspaceId
     readonly confirmed: readonly WorkspaceAssessment[]
-    readonly occupiedCwds: readonly string[]
+    readonly occupiedPaths: readonly string[]
     readonly commandId?: WorkspaceId
     readonly proceed?: () => boolean
   }
 ): Effect.fn.Return<ReleaseRun> {
   const commandId = input.commandId ?? newId()
-  const confirmed: readonly ReleaseSubject[] = input.confirmed.map(assessment => assessment.subject)
+  const decided: readonly ReleaseSubject[] = input.confirmed.map(assessment => assessment.subject)
   const results: WorkspaceReleaseResult[] = []
   let stopped = false
   for (const assessment of sortedAssessments(input.confirmed)) {
@@ -403,9 +349,10 @@ export const runRelease = Effect.fnUntraced(function* (
       lifecycle.release({
         taskId: input.taskId,
         commandId,
-        confirmed,
+        decided,
+        decider: { kind: 'user' },
         workspaceId: assessment.workspaceId,
-        occupiedCwds: input.occupiedCwds,
+        occupiedPaths: input.occupiedPaths,
       })
     )
     if (Exit.isSuccess(attempt)) {
@@ -440,7 +387,7 @@ const incompleteLabel = (results: readonly WorkspaceReleaseResult[]): string => 
 }
 
 export const formatReleaseRun = (taskId: WorkspaceId, run: ReleaseRun): string => {
-  const lines = [`Release of task ${taskId}, command ${run.commandId}:`]
+  const lines = [`Release of task ${taskId} confirmed by the user, command ${run.commandId}:`]
   for (const result of run.results) {
     lines.push(
       `workspace ${result.workspaceId} (${result.origin}) at ${result.path}: ${result.outcome}`,
@@ -460,6 +407,55 @@ export const formatReleaseRun = (taskId: WorkspaceId, run: ReleaseRun): string =
       : `Summary: ${incompleteLabel(run.results)}. ${terminal}/${run.results.length} workspace(s) reached a terminal outcome; each workspace above says what happened and what to do next. A repeated release is a fresh command with fresh checks.`
   )
   return lines.join('\n')
+}
+
+type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
+
+const sweepRowText = (row: SweepRow): string[] => {
+  switch (row.kind) {
+    case 'sweep-failure':
+      return [`repository: review-required`, `  ${row.reason}`]
+    case 'task-failure':
+      return [`task ${row.taskId}: review-required`, `  ${row.reason}`]
+    case 'task-deferred':
+      return [`task ${row.taskId}: deferred`, `  ${row.reason}`]
+    case 'workspace': {
+      const attempted = row.verdict.kind === 'finished'
+      return [
+        `workspace ${row.workspaceId} (${row.origin}) at ${row.path}, task ${row.taskId}: ${row.outcome}${attempted ? ' (automatic)' : ''}`,
+        `  verdict: ${verdictText(row.verdict)}`,
+        ...(attempted ? [`  ${row.reason}`] : []),
+        ...(row.operationId === undefined ? [] : [`  operation: ${row.operationId}`]),
+      ]
+    }
+  }
+}
+
+export const attemptedRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
+  receipt.rows.filter(
+    (row): row is WorkspaceRow => row.kind === 'workspace' && row.verdict.kind === 'finished'
+  )
+
+const TERMINAL_SWEEP_OUTCOMES: ReadonlySet<WorkspaceRow['outcome']> = new Set([
+  'removed',
+  'released',
+  'already-absent',
+])
+export const sweepExitCode = (receipt: SweepReceipt): 0 | 1 =>
+  attemptedRows(receipt).every(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)) ? 0 : 1
+
+export const formatSweepReceipt = (receipt: SweepReceipt): string => {
+  const moment = receipt.moment === 'quit' ? 'at quit' : 'before a worktree allocation'
+  if (receipt.rows.length === 0)
+    return `Workspace sweep ${moment}, command ${receipt.commandId}: no reserved workspace.`
+  const attempted = attemptedRows(receipt)
+  const terminal = attempted.filter(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)).length
+  const deferred = receipt.rows.filter(row => row.kind === 'task-deferred').length
+  return [
+    `Workspace sweep ${moment}, command ${receipt.commandId} (automatic; decided by observable completion):`,
+    ...receipt.rows.flatMap(sweepRowText),
+    `Summary: ${terminal}/${attempted.length} finished workspace(s) reached a terminal outcome; ${receipt.rows.length - attempted.length - deferred} retained or skipped${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next sweep`}.`,
+  ].join('\n')
 }
 
 export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(

@@ -1,5 +1,5 @@
 import { isAbsolute } from 'node:path'
-import { type Effect, Schema } from 'effect'
+import { type Effect, Schema, type Stream } from 'effect'
 
 export const WorkspaceId = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)
@@ -277,6 +277,82 @@ export type PublicationReference = typeof PublicationReferenceSchema.Type
 export const EvidenceVerdictSchema = Schema.Literals(['valid', 'invalid', 'unknown'])
 export type EvidenceVerdict = typeof EvidenceVerdictSchema.Type
 
+export const AllocationReasonSchema = Schema.Literals(['delegated-writer', 'checkout-contention'])
+export type AllocationReason = typeof AllocationReasonSchema.Type
+
+export const SweepMomentSchema = Schema.Literals(['quit', 'allocation'])
+export type SweepMoment = typeof SweepMomentSchema.Type
+
+export const WorkspaceRoleSchema = Schema.Literals(['pre-existing', 'branch', 'child', 'detached'])
+export type WorkspaceRole = typeof WorkspaceRoleSchema.Type
+
+export const FinishedRuleSchema = Schema.Literals([
+  'clean-checkout',
+  'no-residue',
+  'branch-merged',
+  'branch-in-target',
+  'child-delivered',
+])
+export type FinishedRule = typeof FinishedRuleSchema.Type
+
+export const RetainedReasonSchema = Schema.Literals([
+  'identity-unverifiable',
+  'transition-unresolved',
+  'release-review',
+  'excluded',
+  'use-unknown',
+  'use-abandoned',
+  'use-live',
+  'directory-missing',
+  'residue-unreadable',
+  'checkout-modified',
+  'skipped',
+  'no-commits',
+  'integration-unknown',
+  'not-integrated',
+])
+export type RetainedReason = typeof RetainedReasonSchema.Type
+
+export const CompletionVerdictSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('finished'),
+    role: WorkspaceRoleSchema,
+    rule: FinishedRuleSchema,
+    reason: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('retained'),
+    role: WorkspaceRoleSchema,
+    retained: RetainedReasonSchema,
+    reason: Schema.NonEmptyString,
+  }),
+])
+export type CompletionVerdict = typeof CompletionVerdictSchema.Type
+
+export const TargetSourceSchema = Schema.Literals([
+  'override',
+  'origin-github',
+  'origin-remote',
+  'none',
+  'not-needed',
+  'not-assessed',
+])
+export const TargetViewSchema = Schema.Struct({
+  source: TargetSourceSchema,
+  description: Schema.NonEmptyString,
+})
+export type TargetView = typeof TargetViewSchema.Type
+
+export const ReleaseDeciderSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('user') }),
+  Schema.Struct({
+    kind: Schema.Literal('completion'),
+    policyVersion: Schema.Int,
+    moment: SweepMomentSchema,
+  }),
+])
+export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
+
 export const ReleaseSubjectSchema = Schema.Struct({
   repositoryId: WorkspaceId,
   workspaceId: WorkspaceId,
@@ -327,6 +403,8 @@ export const WorkspaceAssessmentSchema = Schema.Struct({
     })
   ),
   residual: Schema.Array(Schema.String),
+  target: TargetViewSchema,
+  completion: CompletionVerdictSchema,
   subject: ReleaseSubjectSchema,
 })
 export type WorkspaceAssessment = typeof WorkspaceAssessmentSchema.Type
@@ -355,11 +433,62 @@ export type WorkspaceReleaseResult = typeof WorkspaceReleaseResultSchema.Type
 export const ReleaseRequestSchema = Schema.Struct({
   taskId: WorkspaceId,
   commandId: WorkspaceId,
-  confirmed: Schema.Array(ReleaseSubjectSchema),
+  decided: Schema.Array(ReleaseSubjectSchema),
+  decider: ReleaseDeciderSchema,
   workspaceId: WorkspaceId,
-  occupiedCwds: Schema.Array(AbsolutePath),
+  occupiedPaths: Schema.Array(AbsolutePath),
 })
 export type ReleaseRequest = typeof ReleaseRequestSchema.Type
+
+export const SweepOutcomeSchema = Schema.Literals([
+  'removed',
+  'released',
+  'already-absent',
+  'retained',
+  'review-required',
+  'partial',
+  'skipped',
+])
+export type SweepOutcome = typeof SweepOutcomeSchema.Type
+export const SweepRowSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('workspace'),
+    taskId: WorkspaceId,
+    workspaceId: WorkspaceId,
+    path: Schema.NonEmptyString,
+    origin: WorkspaceOriginSchema,
+    verdict: CompletionVerdictSchema,
+    outcome: SweepOutcomeSchema,
+    reason: Schema.NonEmptyString,
+    operationId: Schema.optional(WorkspaceId),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('task-failure'),
+    taskId: WorkspaceId,
+    reason: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('task-deferred'),
+    taskId: WorkspaceId,
+    reason: Schema.NonEmptyString,
+  }),
+  Schema.Struct({ kind: Schema.Literal('sweep-failure'), reason: Schema.NonEmptyString }),
+])
+export type SweepRow = typeof SweepRowSchema.Type
+export const SweepReceiptSchema = Schema.Struct({
+  commandId: WorkspaceId,
+  moment: SweepMomentSchema,
+  rows: Schema.Array(SweepRowSchema),
+})
+export type SweepReceipt = typeof SweepReceiptSchema.Type
+
+export const WORKER_REQUEST_TIMEOUT_MS = 60_000
+
+export const SweepRequestSchema = Schema.Struct({
+  anchorWorkspaceId: WorkspaceId,
+  occupiedPaths: Schema.Array(AbsolutePath),
+})
+export type SweepRequest = typeof SweepRequestSchema.Type
 
 export type HostReplace = (
   target: WorkspaceGrant
@@ -375,6 +504,7 @@ export interface WorkspaceAttachment {
   ): Effect.Effect<void, WorkspaceError>
 
   handoff(transition: WorkspaceHandoff, replace: HostReplace): Effect.Effect<void, WorkspaceError>
+  readonly sweeps: Stream.Stream<SweepReceipt>
   readonly close: Effect.Effect<void, WorkspaceError>
 }
 
@@ -397,6 +527,7 @@ export interface WorkspaceLifecycle {
     readonly ownConversation?: WorkspaceConversation
   }): Effect.Effect<readonly WorkspaceAssessment[], WorkspaceError>
   release(input: ReleaseRequest): Effect.Effect<WorkspaceReleaseResult, WorkspaceError>
+  sweep(input: SweepRequest): Effect.Effect<SweepReceipt, WorkspaceError>
   recordTarget(input: {
     readonly taskId: WorkspaceId
     readonly target: TaskTarget

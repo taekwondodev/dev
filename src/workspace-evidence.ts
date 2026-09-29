@@ -2,22 +2,38 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, readlinkSync, realpathSync, type BigIntStats } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { Schema } from 'effect'
+import { Option, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
+  branchName,
+  integrationUnknown,
+  type IntegrationFacts,
+  type Proof,
+  type PullRequestFact,
+  type PullRequestSeed,
+} from './workspace-completion.ts'
+import {
   CommitSha,
+  TaskTargetSchema,
   blocked,
   type EvidenceVerdict,
   type PublicationReference,
+  type TargetView,
   type TaskTarget,
+  WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
 import {
   ancestry,
   assertUnfilteredIndex,
+  branchPushRef,
   hasCommit,
   indexSnapshot,
   isShallowRepository,
+  remoteHead,
+  remoteNames,
+  remotePushUrls,
   remoteTip,
+  remoteUrl,
   resolveLocalRef,
   trackedChanges,
   untrackedPaths,
@@ -26,13 +42,14 @@ import {
 import type { ManifestEntry } from './workspace-records.ts'
 import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
 
-export const EVIDENCE_POLICY_VERSION = 2
+export const EVIDENCE_POLICY_VERSION = 3
 
 export const sha256Hex = (bytes: Uint8Array | string): string =>
   createHash('sha256').update(bytes).digest('hex')
 
 export interface GitHubPullRequest {
   readonly merged: boolean
+  readonly mergedAt: string | undefined
   readonly mergeCommit: string | undefined
   readonly headSha: string
   readonly headRepository: string | undefined
@@ -48,6 +65,7 @@ export const isUnavailable = (value: unknown): value is Unavailable =>
   typeof value === 'object' && value !== null && 'unavailable' in value
 
 export interface GitHubReader {
+  defaultBranch(repository: string): string | 'missing' | Unavailable
   refTip(repository: string, ref: string): string | 'missing' | Unavailable
   pullRequest(repository: string, number: number): GitHubPullRequest | 'missing' | Unavailable
 
@@ -58,6 +76,7 @@ export interface GitHubReader {
 
 const PullRequestPayload = Schema.Struct({
   merged: Schema.Boolean,
+  merged_at: Schema.NullOr(Schema.String),
   merge_commit_sha: Schema.NullOr(CommitSha),
   head: Schema.Struct({
     sha: CommitSha,
@@ -66,6 +85,7 @@ const PullRequestPayload = Schema.Struct({
   base: Schema.Struct({ ref: Schema.String, repo: Schema.Struct({ full_name: Schema.String }) }),
   commits: Schema.Int,
 })
+const RepositoryPayload = Schema.Struct({ default_branch: Schema.NonEmptyString })
 const RefPayload = Schema.Struct({ object: Schema.Struct({ sha: CommitSha }) })
 const CommitListPayload = Schema.Array(Schema.Struct({ sha: CommitSha }))
 const PullListPayload = Schema.Array(
@@ -75,7 +95,7 @@ const ComparePayload = Schema.Struct({
   status: Schema.Literals(['identical', 'ahead', 'behind', 'diverged']),
 })
 
-const PROVIDER_BUDGET_MS = 30_000
+export const PROVIDER_BUDGET_MS = WORKER_REQUEST_TIMEOUT_MS / 2
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   text: string
@@ -153,6 +173,10 @@ export const makeGitHubReader = (
     return decode(schema, response.text)
   }
   return {
+    defaultBranch(repository) {
+      const value = read(`repos/${repository}`, RepositoryPayload)
+      return value === 'missing' || isUnavailable(value) ? value : value.default_branch
+    },
     refTip(repository, ref) {
       const value = read(`repos/${repository}/git/ref/${refPath(ref)}`, RefPayload)
       return value === 'missing' || isUnavailable(value) ? value : value.object.sha
@@ -162,6 +186,7 @@ export const makeGitHubReader = (
       if (value === 'missing' || isUnavailable(value)) return value
       return {
         merged: value.merged,
+        mergedAt: value.merged_at ?? undefined,
         mergeCommit: value.merge_commit_sha ?? undefined,
         headSha: value.head.sha,
         headRepository: value.head.repo?.full_name,
@@ -216,6 +241,8 @@ export interface Inventory {
   readonly trackedFiles: readonly InventoryFile[]
   readonly trackedDigest: string
   readonly files: readonly InventoryFile[]
+  readonly untracked: number
+  readonly ignored: number
 }
 
 const SENSITIVE_NAMES = new Set([
@@ -318,7 +345,10 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
       return blocked(`Cannot inspect tracked entry ${file.path}: ${file.kind}`)
     return [file]
   })
-  const files = untrackedPaths(checkout).map(entry => inventoryFileOf(checkout, device, entry))
+  const others = untrackedPaths(checkout)
+  const files = [...others.untracked, ...others.ignored].map(entry =>
+    inventoryFileOf(checkout, device, entry)
+  )
   assertUnfilteredIndex(checkout, index.paths)
   const trackedDigest = sha256Hex(
     JSON.stringify({
@@ -333,7 +363,15 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
       }),
     })
   )
-  return { head, tracked: trackedChanges(checkout), trackedFiles, trackedDigest, files }
+  return {
+    head,
+    tracked: trackedChanges(checkout),
+    trackedFiles,
+    trackedDigest,
+    files,
+    untracked: others.untracked.length,
+    ignored: others.ignored.length,
+  }
 }
 
 export const entryUnchanged = (
@@ -358,136 +396,31 @@ export const entryUnchanged = (
     identity.mtimeNs !== entry.mtimeNs
   )
     return { state: 'changed', detail: 'identity or content changed since the check' }
-  if (stat.isSymbolicLink() !== (entry.kind === 'symlink'))
-    return { state: 'changed', detail: 'file type changed since the check' }
-  if (entry.kind === 'file' && !stat.isFile())
-    return { state: 'changed', detail: 'no longer a regular file' }
-  if (entry.sha256 !== undefined && entry.kind === 'file') {
-    const digest = sha256Hex(readFileSync(join(checkout, entry.path)))
-    if (digest !== entry.sha256) return { state: 'changed', detail: 'content digest changed' }
-  }
+  if (!stat.isFile()) return { state: 'changed', detail: 'no longer a regular file' }
+  if (sha256Hex(readFileSync(join(checkout, entry.path))) !== entry.sha256)
+    return { state: 'changed', detail: 'content digest changed' }
   return { state: 'same' }
 }
 
-export interface IntegrationProof {
-  readonly verdict: EvidenceVerdict
-  readonly reasons: readonly string[]
-  readonly targetTip: string | undefined
-}
-const branchOf = (ref: string): string => ref.replace(/^refs\/heads\//, '')
+const short = (sha: string): string => sha.slice(0, 12)
+const yes = (reason: string): Proof => ({ kind: 'yes', reason })
+const no = (reason: string): Proof => ({ kind: 'no', reason })
+const unknownProof = (reason: string): Proof => ({ kind: 'unknown', reason })
 
-const provePullRequest = (
-  reader: GitHubReader,
-  checkout: string,
-  target: Extract<TaskTarget, { readonly kind: 'github' }>,
-  source: string,
-  tip: string
-): IntegrationProof => {
-  const reasons: string[] = []
-  const unknown = (reason: string): IntegrationProof => ({
-    verdict: 'unknown',
-    reasons: [...reasons, reason],
-    targetTip: tip,
-  })
-  let candidates: readonly number[]
-  if (target.pullRequest === undefined) {
-    const found = reader.mergedPullRequestsForCommit(target.repository, source)
-    if (isUnavailable(found))
-      return unknown(`GitHub pull requests for ${source}: ${found.unavailable}`)
-    candidates = found
-  } else candidates = [target.pullRequest]
-  if (candidates.length === 0)
-    return {
-      verdict: 'invalid',
-      reasons: [`GitHub lists no merged pull request whose commits include exactly ${source}`],
-      targetTip: tip,
-    }
-  const expectedSource = target.sourceRepository ?? target.repository
-  for (const number of candidates) {
-    const pull = reader.pullRequest(target.repository, number)
-    if (pull === 'missing') {
-      reasons.push(`Pull request #${number} does not exist in ${target.repository}`)
-      continue
-    }
-    if (isUnavailable(pull)) return unknown(`GitHub pull request #${number}: ${pull.unavailable}`)
-    const label = `${target.repository}#${number}`
-    if (!pull.merged) {
-      reasons.push(`${label} is not merged`)
-      continue
-    }
-    if (pull.baseRepository !== target.repository || pull.baseRef !== branchOf(target.ref)) {
-      reasons.push(
-        `${label} targets ${pull.baseRepository} ${pull.baseRef}, not the agreed ${target.repository} ${branchOf(target.ref)}`
-      )
-      continue
-    }
-    if (pull.headRepository === undefined)
-      return unknown(
-        `${label} no longer names its source repository, so the merged source cannot be bound`
-      )
-    if (pull.headRepository !== expectedSource) {
-      reasons.push(
-        `${label} was merged from ${pull.headRepository}, not from the agreed source repository ${expectedSource}`
-      )
-      continue
-    }
-    if (pull.commits > 250)
-      return unknown(`${label} has more than 250 commits; its merged head cannot be bound`)
-    const commits = reader.pullRequestCommits(target.repository, number)
-    if (isUnavailable(commits)) return unknown(`${label} commits: ${commits.unavailable}`)
-    const mergedHead = commits.at(-1)
-    if (mergedHead === undefined) return unknown(`${label} lists no commits`)
+const GITHUB_REMOTE =
+  /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/|git:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+export const githubRepositoryOf = (url: string): string | undefined => GITHUB_REMOTE.exec(url)?.[1]
 
-    if (mergedHead !== pull.headSha)
-      return unknown(
-        `${label} lists ${mergedHead.slice(0, 12)} as its last commit but ${pull.headSha.slice(0, 12)} as its head; the merged source cannot be bound`
-      )
-    if (!hasCommit(checkout, mergedHead) || !hasCommit(checkout, source))
-      return unknown(
-        `${label} source history is not locally readable; dev does not fetch to prove ancestry`
-      )
-    const sourceReachable = ancestry(checkout, source, mergedHead)
-    if (typeof sourceReachable !== 'string')
-      return unknown(`${label} source ancestry could not be read: ${sourceReachable.error}`)
-    if (sourceReachable !== 'ancestor') {
-      if (isShallowRepository(checkout))
-        return unknown(
-          `${label} source history is shallow; negative ancestry does not prove exclusion`
-        )
-      reasons.push(
-        `${label} merged source ${mergedHead.slice(0, 12)} does not descend from this worktree's ${source.slice(0, 12)} commit`
-      )
-      continue
+export type DerivedTarget = (
+  | {
+      readonly source: 'override' | 'origin-github' | 'origin-remote'
+      readonly target: TaskTarget
     }
-    if (pull.mergeCommit === undefined) return unknown(`${label} reports no merge result commit`)
-    const result = pull.mergeCommit
-    let reachable: 'ancestor' | 'not-ancestor' | undefined
-    if (hasCommit(checkout, result) && hasCommit(checkout, tip)) {
-      const local = ancestry(checkout, result, tip)
-      if (typeof local === 'string') reachable = local
-    }
-    if (reachable === undefined) {
-      const status = reader.compare(target.repository, result, tip)
-      if (isUnavailable(status))
-        return unknown(`${label} merge result reachability: ${status.unavailable}`)
-      reachable = status === 'identical' || status === 'ahead' ? 'ancestor' : 'not-ancestor'
-    }
-    if (reachable === 'not-ancestor') {
-      reasons.push(
-        `${label} merge result ${result.slice(0, 12)} is not reachable from the current ${target.ref} tip ${tip.slice(0, 12)}`
-      )
-      continue
-    }
-    return {
-      verdict: 'valid',
-      reasons: [
-        `${label} merged source ${mergedHead.slice(0, 12)} from ${expectedSource} into ${target.repository} ${branchOf(target.ref)}; this worktree's ${source.slice(0, 12)} is in that source history and its result ${result.slice(0, 12)} is reachable from the current tip ${tip.slice(0, 12)}`,
-      ],
-      targetTip: tip,
-    }
-  }
-  return { verdict: 'invalid', reasons, targetTip: tip }
-}
+  | { readonly source: 'none'; readonly reason: string }
+) & { readonly ignored?: string }
+
+const decodeTarget = Schema.decodeUnknownOption(TaskTargetSchema)
+const none = (reason: string): DerivedTarget => ({ source: 'none', reason })
 
 const targetText = (target: TaskTarget): string => {
   switch (target.kind) {
@@ -500,172 +433,432 @@ const targetText = (target: TaskTarget): string => {
   }
 }
 
-export const proveIntegration = (
-  reader: GitHubReader,
-  checkout: string,
-  source: string | undefined,
-  target: TaskTarget | undefined
-): IntegrationProof => {
-  if (target === undefined)
-    return {
-      verdict: 'unknown',
-      reasons: [
-        'No agreed integration target is recorded for this task; the workflow records it through workspace_evidence set-target.',
-      ],
-      targetTip: undefined,
-    }
-  if (source === undefined)
-    return {
-      verdict: 'unknown',
-      reasons: ['The worktree has no current commit'],
-      targetTip: undefined,
-    }
-  let tip: string
-  let tipLocal: boolean
-  if (target.kind === 'local') {
-    const resolved = resolveLocalRef(checkout, target.ref)
-    if (resolved === undefined)
-      return {
-        verdict: 'unknown',
-        reasons: [`The agreed local ref ${target.ref} does not exist in this repository`],
-        targetTip: undefined,
-      }
-    tip = resolved
-    tipLocal = true
-  } else if (target.kind === 'remote') {
-    const remote = remoteTip(checkout, target.remote, target.ref)
-    if (remote === 'missing')
-      return {
-        verdict: 'unknown',
-        reasons: [`Remote ${target.remote} has no ref ${target.ref}`],
-        targetTip: undefined,
-      }
-    if ('error' in remote)
-      return {
-        verdict: 'unknown',
-        reasons: [`Remote ${target.remote} could not be read: ${remote.error}`],
-        targetTip: undefined,
-      }
-    tip = remote.sha
-    tipLocal = hasCommit(checkout, tip)
+const originTarget = (reader: GitHubReader, checkout: string): DerivedTarget => {
+  let url: string | undefined
+  try {
+    url = remoteUrl(checkout, 'origin')
+  } catch (cause) {
+    return none(`The origin remote could not be read: ${errorText(cause)}`)
+  }
+  if (url === undefined)
+    return none(
+      'No integration target: none is recorded for the task and the repository has no origin remote.'
+    )
+  const repository = githubRepositoryOf(url)
+  let candidate: unknown
+  if (repository === undefined) {
+    const head = remoteHead(checkout, 'origin')
+    if (head === 'missing') return none('The origin remote reports no HEAD branch.')
+    if ('error' in head) return none(`The origin remote HEAD could not be read: ${head.error}`)
+    candidate = { kind: 'remote', remote: 'origin', ref: head.ref }
   } else {
-    const remote = reader.refTip(target.repository, target.ref)
-    if (remote === 'missing')
-      return {
-        verdict: 'unknown',
-        reasons: [`${target.repository} has no ref ${target.ref}`],
-        targetTip: undefined,
-      }
-    if (isUnavailable(remote))
-      return {
-        verdict: 'unknown',
-        reasons: [`GitHub ref ${target.repository} ${target.ref}: ${remote.unavailable}`],
-        targetTip: undefined,
-      }
-    tip = remote
-    tipLocal = hasCommit(checkout, tip)
+    const branch = reader.defaultBranch(repository)
+    if (branch === 'missing')
+      return none(`GitHub repository ${repository} of the origin remote was not found.`)
+    if (isUnavailable(branch))
+      return none(`The default branch of ${repository} could not be read: ${branch.unavailable}`)
+    candidate = { kind: 'github', repository, ref: `refs/heads/${branch}` }
   }
-  const describeTarget = targetText(target)
-  if (tipLocal) {
-    const local = ancestry(checkout, source, tip)
-    if (local === 'ancestor')
-      return {
-        verdict: 'valid',
-        reasons: [
-          `${source.slice(0, 12)} is an ancestor of the current ${describeTarget} tip ${tip.slice(0, 12)}`,
-        ],
-        targetTip: tip,
-      }
-    if (typeof local !== 'string')
-      return {
-        verdict: 'unknown',
-        reasons: [`Ancestry could not be read: ${local.error}`],
-        targetTip: tip,
-      }
-    if (isShallowRepository(checkout))
-      return {
-        verdict: 'unknown',
-        reasons: [
-          `History is shallow, so a negative ancestry result for ${describeTarget} proves nothing`,
-        ],
-        targetTip: tip,
-      }
-    if (target.kind !== 'github')
-      return {
-        verdict: 'invalid',
-        reasons: [
-          `${source.slice(0, 12)} is not integrated into the current ${describeTarget} tip ${tip.slice(0, 12)} (complete history)`,
-        ],
-        targetTip: tip,
-      }
-    const proof = provePullRequest(reader, checkout, target, source, tip)
-    return proof.verdict === 'valid'
-      ? proof
-      : {
-          ...proof,
-          reasons: [
-            `${source.slice(0, 12)} is not an ancestor of the current ${describeTarget} tip ${tip.slice(0, 12)}`,
-            ...proof.reasons,
-          ],
-        }
+  const target = decodeTarget(candidate)
+  if (Option.isNone(target))
+    return none(`The origin remote names an unsupported target: ${JSON.stringify(candidate)}`)
+  return {
+    source: repository === undefined ? 'origin-remote' : 'origin-github',
+    target: target.value,
   }
-  if (target.kind !== 'github')
-    return {
-      verdict: 'unknown',
-      reasons: [
-        `The current ${describeTarget} tip ${tip.slice(0, 12)} is not present locally and dev fetches nothing; fetch it with Git, then check again`,
-      ],
-      targetTip: tip,
-    }
-  const status = reader.compare(target.repository, source, tip)
-  if (isUnavailable(status))
-    return {
-      verdict: 'unknown',
-      reasons: [
-        `GitHub comparison ${source.slice(0, 12)}...${tip.slice(0, 12)}: ${status.unavailable}`,
-      ],
-      targetTip: tip,
-    }
-  if (status === 'identical' || status === 'ahead')
-    return {
-      verdict: 'valid',
-      reasons: [
-        `GitHub reports ${source.slice(0, 12)} reachable from the current ${describeTarget} tip ${tip.slice(0, 12)} (${status})`,
-      ],
-      targetTip: tip,
-    }
-  const proof = provePullRequest(reader, checkout, target, source, tip)
-  return proof.verdict === 'valid'
-    ? proof
-    : {
-        ...proof,
-        reasons: [
-          `GitHub reports ${source.slice(0, 12)} ${status} relative to the current ${describeTarget} tip ${tip.slice(0, 12)}`,
-          ...proof.reasons,
-        ],
-      }
 }
 
-export interface EvidenceSubject {
-  readonly checkout: string
-  readonly head: string | undefined
-  readonly target: TaskTarget | undefined
-  readonly publications: readonly PublicationReference[]
-}
-export interface EvidenceResult {
-  readonly verdict: EvidenceVerdict
-  readonly reasons: readonly string[]
-  readonly integration: IntegrationProof
-  readonly inventory: Inventory
-  readonly manifest: readonly ManifestEntry[]
-  readonly counts: {
-    readonly trackedChanges: number
-    readonly files: number
-    readonly published: number
-    readonly disposable: number
-    readonly blocking: number
+const REMOTE_TRACKING = /^refs\/remotes\/([^/]+)\/(.+)$/
+
+const namesOwnBranch = (
+  checkout: string,
+  override: TaskTarget,
+  branchRef: string | undefined
+): boolean => {
+  if (branchRef === undefined) return false
+  const name = branchName(branchRef)
+  const pushRef = branchPushRef(checkout, name)
+  const push = pushRef === undefined ? undefined : (REMOTE_TRACKING.exec(pushRef) ?? undefined)
+  switch (override.kind) {
+    case 'local':
+      return (
+        override.ref === branchRef ||
+        REMOTE_TRACKING.exec(override.ref)?.[2] === name ||
+        override.ref === pushRef
+      )
+    case 'remote':
+      return (
+        override.ref === branchRef ||
+        (push !== undefined &&
+          override.remote === push[1] &&
+          override.ref === `refs/heads/${push[2]}`)
+      )
+    case 'github': {
+      const pushBranch = push === undefined ? pushRef : `refs/heads/${push[2]}`
+      if (override.ref !== branchRef && override.ref !== pushBranch) return false
+      return remoteNames(checkout).some(remote => {
+        const url = remoteUrl(checkout, remote)
+        return (
+          (url !== undefined && githubRepositoryOf(url) === override.repository) ||
+          remotePushUrls(checkout, remote).some(
+            pushUrl => githubRepositoryOf(pushUrl) === override.repository
+          )
+        )
+      })
+    }
   }
-  readonly stateDigest: string
+}
+
+export const deriveTarget = (
+  reader: GitHubReader,
+  checkout: string,
+  override: TaskTarget | undefined,
+  branchRef: string | undefined
+): DerivedTarget => {
+  if (override === undefined) return originTarget(reader, checkout)
+  if (!namesOwnBranch(checkout, override, branchRef))
+    return { source: 'override', target: override }
+  return {
+    ...originTarget(reader, checkout),
+    ignored: `The recorded target ${targetText(override)} names this worktree's own branch, which proves nothing, so it is ignored.`,
+  }
+}
+
+const derivedView = (derived: DerivedTarget): TargetView => {
+  switch (derived.source) {
+    case 'none':
+      return { source: 'none', description: derived.reason }
+    case 'override':
+      return {
+        source: 'override',
+        description: `${targetText(derived.target)}${derived.target.kind === 'github' && derived.target.pullRequest !== undefined ? ` (pull request #${derived.target.pullRequest})` : ''}, recorded for the task`,
+      }
+    case 'origin-github':
+      return {
+        source: 'origin-github',
+        description: `${targetText(derived.target)}, the default branch of the origin remote`,
+      }
+    case 'origin-remote':
+      return {
+        source: 'origin-remote',
+        description: `${targetText(derived.target)}, the HEAD branch of the origin remote`,
+      }
+  }
+}
+
+export const describeTarget = (derived: DerivedTarget): TargetView => {
+  const view = derivedView(derived)
+  return derived.ignored === undefined
+    ? view
+    : { ...view, description: `${derived.ignored} ${view.description}` }
+}
+
+export const recordedTarget = (
+  checkout: string,
+  override: TaskTarget | undefined,
+  branchRef: string | undefined
+): TargetView | undefined =>
+  override === undefined || namesOwnBranch(checkout, override, branchRef)
+    ? undefined
+    : describeTarget({ source: 'override', target: override })
+
+type Tip = { readonly sha: string; readonly local: boolean } | { readonly unknown: string }
+
+const resolveTip = (reader: GitHubReader, checkout: string, target: TaskTarget): Tip => {
+  if (target.kind === 'local') {
+    const resolved = resolveLocalRef(checkout, target.ref)
+    return resolved === undefined
+      ? { unknown: `The agreed local ref ${target.ref} does not exist in this repository` }
+      : { sha: resolved, local: true }
+  }
+  if (target.kind === 'remote') {
+    const remote = remoteTip(checkout, target.remote, target.ref)
+    if (remote === 'missing') return { unknown: `Remote ${target.remote} has no ref ${target.ref}` }
+    if ('error' in remote)
+      return { unknown: `Remote ${target.remote} could not be read: ${remote.error}` }
+    return { sha: remote.sha, local: hasCommit(checkout, remote.sha) }
+  }
+  const remote = reader.refTip(target.repository, target.ref)
+  if (remote === 'missing') return { unknown: `${target.repository} has no ref ${target.ref}` }
+  if (isUnavailable(remote))
+    return { unknown: `GitHub ref ${target.repository} ${target.ref}: ${remote.unavailable}` }
+  return { sha: remote, local: hasCommit(checkout, remote) }
+}
+
+const tipAncestry = (
+  reader: GitHubReader,
+  checkout: string,
+  target: TaskTarget,
+  commit: string,
+  tip: { readonly sha: string; readonly local: boolean }
+): Proof => {
+  const described = targetText(target)
+  if (tip.local) {
+    const local = ancestry(checkout, commit, tip.sha)
+    if (local === 'ancestor')
+      return yes(
+        `${short(commit)} is an ancestor of the current ${described} tip ${short(tip.sha)}`
+      )
+    if (typeof local !== 'string') return unknownProof(`Ancestry could not be read: ${local.error}`)
+    if (isShallowRepository(checkout))
+      return unknownProof(
+        `History is shallow, so a negative ancestry result for ${described} proves nothing`
+      )
+    return no(
+      `${short(commit)} is not integrated into the current ${described} tip ${short(tip.sha)} (complete history)`
+    )
+  }
+  if (target.kind !== 'github')
+    return unknownProof(
+      `The current ${described} tip ${short(tip.sha)} is not present locally and dev fetches nothing; fetch it with Git, then check again`
+    )
+  const status = reader.compare(target.repository, commit, tip.sha)
+  if (isUnavailable(status))
+    return unknownProof(
+      `GitHub comparison ${short(commit)}...${short(tip.sha)}: ${status.unavailable}`
+    )
+  return status === 'identical' || status === 'ahead'
+    ? yes(
+        `GitHub reports ${short(commit)} reachable from the current ${described} tip ${short(tip.sha)} (${status})`
+      )
+    : no(
+        `GitHub reports ${short(commit)} ${status} relative to the current ${described} tip ${short(tip.sha)}`
+      )
+}
+
+type Binding =
+  | {
+      readonly kind: 'bound'
+      readonly label: string
+      readonly mergedHead: string
+      readonly mergeCommit: string
+      readonly mergedAt: string | undefined
+    }
+  | { readonly kind: 'rejected'; readonly reason: string }
+  | { readonly kind: 'unknown'; readonly reason: string }
+const unbound = (reason: string): Binding => ({ kind: 'rejected', reason })
+const unboundable = (reason: string): Binding => ({ kind: 'unknown', reason })
+
+const bindPullRequest = (
+  reader: GitHubReader,
+  checkout: string,
+  target: Extract<TaskTarget, { readonly kind: 'github' }>,
+  number: number,
+  tip: string
+): Binding => {
+  const label = `${target.repository}#${number}`
+  const expectedSource = target.sourceRepository ?? target.repository
+  const pull = reader.pullRequest(target.repository, number)
+  if (pull === 'missing')
+    return unbound(`Pull request #${number} does not exist in ${target.repository}`)
+  if (isUnavailable(pull)) return unboundable(`GitHub pull request #${number}: ${pull.unavailable}`)
+  if (!pull.merged) return unbound(`${label} is not merged`)
+  if (pull.baseRepository !== target.repository || pull.baseRef !== branchName(target.ref))
+    return unbound(
+      `${label} targets ${pull.baseRepository} ${pull.baseRef}, not the agreed ${target.repository} ${branchName(target.ref)}`
+    )
+  if (pull.headRepository === undefined)
+    return unboundable(
+      `${label} no longer names its source repository, so the merged source cannot be bound`
+    )
+  if (pull.headRepository !== expectedSource)
+    return unbound(
+      `${label} was merged from ${pull.headRepository}, not from the agreed source repository ${expectedSource}`
+    )
+  if (pull.commits > 250)
+    return unboundable(`${label} has more than 250 commits; its merged head cannot be bound`)
+  const commits = reader.pullRequestCommits(target.repository, number)
+  if (isUnavailable(commits)) return unboundable(`${label} commits: ${commits.unavailable}`)
+  const mergedHead = commits.at(-1)
+  if (mergedHead === undefined) return unboundable(`${label} lists no commits`)
+  if (mergedHead !== pull.headSha)
+    return unboundable(
+      `${label} lists ${short(mergedHead)} as its last commit but ${short(pull.headSha)} as its head; the merged source cannot be bound`
+    )
+  if (pull.mergeCommit === undefined) return unboundable(`${label} reports no merge result commit`)
+  const result = pull.mergeCommit
+  let reachable: 'ancestor' | 'not-ancestor' | undefined
+  if (hasCommit(checkout, result) && hasCommit(checkout, tip)) {
+    const local = ancestry(checkout, result, tip)
+    if (typeof local === 'string') reachable = local
+  }
+  if (reachable === undefined) {
+    const status = reader.compare(target.repository, result, tip)
+    if (isUnavailable(status))
+      return unboundable(`${label} merge result reachability: ${status.unavailable}`)
+    reachable = status === 'identical' || status === 'ahead' ? 'ancestor' : 'not-ancestor'
+  }
+  if (reachable === 'not-ancestor')
+    return unbound(
+      `${label} merge result ${short(result)} is not reachable from the current ${target.ref} tip ${short(tip)}`
+    )
+  return { kind: 'bound', label, mergedHead, mergeCommit: result, mergedAt: pull.mergedAt }
+}
+
+const sourceContains = (
+  checkout: string,
+  label: string,
+  mergedHead: string,
+  commit: string
+): Proof => {
+  if (commit === mergedHead) return yes(`${label} merged source is ${short(commit)} itself`)
+  if (!hasCommit(checkout, mergedHead) || !hasCommit(checkout, commit))
+    return unknownProof(
+      `${label} source history is not locally readable; dev does not fetch to prove ancestry`
+    )
+  const result = ancestry(checkout, commit, mergedHead)
+  if (typeof result !== 'string')
+    return unknownProof(`${label} source ancestry could not be read: ${result.error}`)
+  if (result === 'ancestor') return yes(`${label} merged source contains ${short(commit)}`)
+  if (isShallowRepository(checkout))
+    return unknownProof(
+      `${label} source history is shallow; negative ancestry does not prove exclusion`
+    )
+  return no(`${label} merged source ${short(mergedHead)} does not contain ${short(commit)}`)
+}
+
+const sourceAncestry = (
+  checkout: string,
+  target: Extract<TaskTarget, { readonly kind: 'github' }>,
+  bound: Extract<Binding, { readonly kind: 'bound' }>,
+  tip: string,
+  commit: string | undefined,
+  what: 'HEAD' | 'base'
+): Proof => {
+  const { label, mergedHead, mergeCommit } = bound
+  if (commit === undefined) return no(`this worktree records no ${what} commit`)
+  const contained = sourceContains(checkout, label, mergedHead, commit)
+  switch (contained.kind) {
+    case 'yes':
+      return yes(
+        `${label} merged source ${short(mergedHead)} into ${target.repository} ${branchName(target.ref)}; this worktree's ${what} ${short(commit)} is in that source history and its result ${short(mergeCommit)} is reachable from the current tip ${short(tip)}`
+      )
+    case 'no':
+      return no(
+        `${label} merged source ${short(mergedHead)} does not descend from this worktree's ${what} ${short(commit)}`
+      )
+    case 'unknown':
+      return contained
+  }
+}
+
+const baseDescent = (
+  checkout: string,
+  target: Extract<TaskTarget, { readonly kind: 'github' }>,
+  bound: Extract<Binding, { readonly kind: 'bound' }>,
+  tip: string,
+  base: string | undefined,
+  allocatedAt: number | undefined
+): Proof => {
+  const { label, mergedHead, mergedAt } = bound
+  if (base === undefined) return no('this worktree records no base commit')
+  if (mergedHead === base)
+    return no(
+      `${label} merged source ${short(mergedHead)} is this worktree's base itself, so it carries nothing made after the allocation`
+    )
+  if (allocatedAt === undefined)
+    return unknownProof('the allocation time of this worktree is not recorded')
+  const merged = mergedAt === undefined ? Number.NaN : Date.parse(mergedAt)
+  if (Number.isNaN(merged)) return unknownProof(`${label} reports no readable merge time`)
+  if (merged <= allocatedAt)
+    return no(`${label} was merged at ${mergedAt}, before this worktree was allocated`)
+  return sourceAncestry(checkout, target, bound, tip, base, 'base')
+}
+
+export interface Siblings {
+  readonly heads: readonly string[]
+  readonly unknown: readonly string[]
+}
+export interface IntegrationInput {
+  readonly target: TaskTarget
+  readonly head: string | undefined
+  readonly base: string | undefined
+  readonly allocatedAt: number | undefined
+  readonly siblings: Siblings
+}
+export interface IntegrationResult extends IntegrationFacts {
+  readonly tip: string | undefined
+}
+
+export const integrationFacts = (
+  reader: GitHubReader,
+  checkout: string,
+  input: IntegrationInput
+): IntegrationResult => {
+  const { target, head, base } = input
+  const tip = resolveTip(reader, checkout, target)
+  if ('unknown' in tip) return { tip: undefined, ...integrationUnknown(tip.unknown) }
+  const headInTip =
+    head === undefined
+      ? unknownProof('The worktree has no current commit')
+      : tipAncestry(reader, checkout, target, head, tip)
+  if (target.kind !== 'github')
+    return { tip: tip.sha, headInTip, pullRequests: [], rejected: [], unknown: [] }
+  const found = new Map<number, PullRequestSeed[]>()
+  const siblingSeeds = new Map<number, string[]>()
+  const record = (number: number, seed: PullRequestSeed, commit?: string): void => {
+    const seeds = found.get(number) ?? []
+    if (!seeds.includes(seed)) seeds.push(seed)
+    found.set(number, seeds)
+    if (seed === 'sibling' && commit !== undefined)
+      siblingSeeds.set(number, [...(siblingSeeds.get(number) ?? []), commit])
+  }
+  const unknown: string[] = [...input.siblings.unknown]
+  const seeds: readonly (readonly [PullRequestSeed, string])[] = [
+    ...(head === undefined ? [] : [['head', head] as const]),
+    ...(base === undefined ? [] : [['base', base] as const]),
+    ...input.siblings.heads.map(sibling => ['sibling', sibling] as const),
+  ]
+  for (const [seed, commit] of seeds) {
+    const numbers = reader.mergedPullRequestsForCommit(target.repository, commit)
+    if (isUnavailable(numbers)) {
+      unknown.push(`GitHub pull requests for ${short(commit)}: ${numbers.unavailable}`)
+      continue
+    }
+    for (const number of numbers) record(number, seed, commit)
+  }
+  if (target.pullRequest !== undefined) record(target.pullRequest, 'override')
+  const pullRequests: PullRequestFact[] = []
+  const rejected: string[] = []
+  for (const [number, via] of [...found].toSorted(([left], [right]) => left - right)) {
+    const bound = bindPullRequest(reader, checkout, target, number, tip.sha)
+    if (bound.kind === 'rejected') {
+      rejected.push(bound.reason)
+      continue
+    }
+    if (bound.kind === 'unknown') {
+      unknown.push(bound.reason)
+      continue
+    }
+    if (via.every(seed => seed === 'sibling')) {
+      const containment = (siblingSeeds.get(number) ?? []).map(commit =>
+        sourceContains(checkout, bound.label, bound.mergedHead, commit)
+      )
+      if (!containment.some(proof => proof.kind === 'yes')) {
+        const unproven = containment.filter(proof => proof.kind === 'unknown')
+        if (unproven.length > 0)
+          unknown.push(
+            `${bound.label} was found only through sibling commits whose containment cannot be proven: ${unproven.map(proof => proof.reason).join('; ')}`
+          )
+        else
+          rejected.push(
+            `${bound.label} was found only through a sibling commit its merged source does not contain`
+          )
+        continue
+      }
+    }
+    pullRequests.push({
+      label: bound.label,
+      seeds: via,
+      containsHead: sourceAncestry(checkout, target, bound, tip.sha, head, 'HEAD'),
+      descendsFromBase: baseDescent(checkout, target, bound, tip.sha, base, input.allocatedAt),
+    })
+  }
+  if (found.size === 0 && unknown.length === 0)
+    rejected.push(
+      `GitHub lists no merged pull request for this worktree's HEAD, base or sibling commits in ${target.repository}`
+    )
+  return { tip: tip.sha, headInTip, pullRequests, rejected, unknown }
 }
 
 export const stateDigestOf = (input: {
@@ -697,22 +890,33 @@ export const stateDigestOf = (input: {
     })
   )
 
-export const verifyEvidence = (
-  reader: GitHubReader,
-  subject: EvidenceSubject,
-  inventory: Inventory = readInventory(subject.checkout, subject.head)
-): EvidenceResult => {
+export interface InventoryVerdict {
+  readonly verdict: EvidenceVerdict
+  readonly reasons: readonly string[]
+  readonly inventory: Inventory
+  readonly manifest: readonly ManifestEntry[]
+  readonly counts: {
+    readonly trackedChanges: number
+    readonly files: number
+    readonly published: number
+    readonly disposable: number
+    readonly blocking: number
+  }
+}
+
+export const verifyInventory = (
+  checkout: string,
+  publications: readonly PublicationReference[],
+  inventory: Inventory
+): InventoryVerdict => {
   const invalid: string[] = []
   const unknown: string[] = []
   for (const change of inventory.tracked)
     if (change.kind === 'conflict') invalid.push(`Unresolved conflict: ${change.path}`)
-  const integration = proveIntegration(reader, subject.checkout, subject.head, subject.target)
-  if (integration.verdict === 'invalid') invalid.push(...integration.reasons)
-  if (integration.verdict === 'unknown') unknown.push(...integration.reasons)
 
   const manifest: ManifestEntry[] = []
   const publicationsByPath = new Map<string, PublicationReference[]>()
-  for (const reference of subject.publications) {
+  for (const reference of publications) {
     const references = publicationsByPath.get(reference.relativePath)
     if (references === undefined) publicationsByPath.set(reference.relativePath, [reference])
     else references.push(reference)
@@ -760,13 +964,13 @@ export const verifyEvidence = (
       continue
     }
     if (references !== undefined && file.kind === 'file') {
-      const digest = sha256Hex(readFileSync(join(subject.checkout, file.path)))
+      const digest = sha256Hex(readFileSync(join(checkout, file.path)))
       const match = references.find(
         reference => reference.sha256 === digest && reference.byteLength === file.size
       )
       if (match !== undefined) {
         published += 1
-        manifest.push({ ...identity, kind: 'file', sha256: digest, coverage: 'published' })
+        manifest.push({ ...identity, sha256: digest })
         continue
       }
       blocking += 1
@@ -782,8 +986,7 @@ export const verifyEvidence = (
   else if (unknown.length > 0) verdict = 'unknown'
   return {
     verdict,
-    reasons: verdict === 'valid' ? [...integration.reasons] : [...invalid, ...unknown],
-    integration,
+    reasons: [...invalid, ...unknown],
     inventory,
     manifest,
     counts: {
@@ -793,11 +996,5 @@ export const verifyEvidence = (
       disposable,
       blocking,
     },
-    stateDigest: stateDigestOf({
-      head: subject.head,
-      inventory,
-      targetTip: integration.targetTip,
-      publications: subject.publications,
-    }),
   }
 }

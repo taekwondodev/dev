@@ -10,6 +10,7 @@ const RELEASE_FAULTS = [
   'during-selected-files',
   'after-selected-files',
   'after-git-remove',
+  'clock-after-git-remove',
 ] as const
 export type ReleaseFault = (typeof RELEASE_FAULTS)[number]
 
@@ -59,6 +60,18 @@ const arm = (fault: ReleaseFault, root: string): void => {
         unlink(path)
         if (resolve(String(path)).startsWith(`${root}${sep}`)) crash()
       }
+      return
+    }
+    case 'clock-after-git-remove': {
+      const spawn = childProcess.spawnSync
+      const realNow = Date.now
+      let offset = 0
+      Date.now = () => realNow() + offset
+      childProcess.spawnSync = ((command: string, args?: readonly string[], options?: object) => {
+        const result = spawn(command, args, options)
+        if (removesWorktree(args)) offset = 3_600_000
+        return result
+      }) as typeof childProcess.spawnSync
       return
     }
     case 'after-selected-files':

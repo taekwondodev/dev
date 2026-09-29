@@ -41,6 +41,7 @@ const withReport = (
   authorize: operation => base.authorize(operation),
   select: selection => base.select(selection),
   handoff: (transition, replace) => base.handoff(transition, replace),
+  sweeps: base.sweeps,
   close: base.close,
   reportExecution,
 })

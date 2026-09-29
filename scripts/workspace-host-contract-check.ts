@@ -2,37 +2,51 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Effect } from 'effect'
-import { WorkError } from '../src/work-domain.ts'
+import { type Cause, Effect, Queue, Stream } from 'effect'
 import {
   WorkspaceError,
+  type SweepReceipt,
   type WorkspaceAttachment,
   type WorkspaceLifecycle,
   type WorkspaceSelection,
 } from '../src/workspace-domain.ts'
-import { loadInstalledPi, makeClaims, openHostRuntime } from './workspace-check-support.ts'
+import {
+  loadInstalledPi,
+  makeClaims,
+  makeOfflineModel,
+  openHostRuntime,
+  replay,
+  toolCall,
+  type ScriptedContent,
+} from './workspace-check-support.ts'
 import {
   fixtureId,
+  makeFixtureAssessment,
   makeFixtureBinding,
-  makeFixtureView,
+  makeFixtureReceipt,
   type FixtureDescriptor,
 } from './workspace-host-fixture-shapes.ts'
 
-const { pi, packageInfo } = await loadInstalledPi()
+const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-host-contract-')))
 const sessionDir = join(fixture, 'sessions')
 const agentDir = join(fixture, 'agent')
 const dataHome = join(fixture, 'data')
-const descriptor = (origin: FixtureDescriptor['origin']): FixtureDescriptor => ({
+const descriptor = (
+  origin: FixtureDescriptor['origin'],
+  task: number,
+  workspace: number
+): FixtureDescriptor => ({
   repoId: fixtureId(41),
-  taskId: fixtureId(1),
-  workspaceId: fixtureId(origin === 'managed' ? 12 : 11),
-  path: join(fixture, 'projects', origin),
+  taskId: fixtureId(task),
+  workspaceId: fixtureId(workspace),
+  path: join(fixture, 'projects', `${origin}-${workspace}`),
   origin,
   label: 'contract-check',
 })
-const current = descriptor('pre-existing')
-const target = descriptor('managed')
+const current = descriptor('pre-existing', 1, 11)
+const other = descriptor('managed', 2, 12)
+const swept = descriptor('managed', 3, 13)
 for (const path of [sessionDir, agentDir, current.path, join(fixture, 'home', '.agents', 'skills')])
   mkdirSync(path, { recursive: true })
 mkdirSync(dataHome, { mode: 0o700 })
@@ -47,32 +61,82 @@ const sessionFile = manager.getSessionFile()
 if (sessionFile === undefined) throw new Error('Pi did not name the session file')
 const conversation = { sessionId: manager.getSessionId(), sessionFile, dataHome }
 const selections: WorkspaceSelection[] = []
+const checked: string[] = []
+const released: string[] = []
 const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this check' })
+const receipt: SweepReceipt = makeFixtureReceipt({
+  commandId: fixtureId(900),
+  moment: 'allocation',
+  rows: [
+    {
+      descriptor: swept,
+      outcome: 'removed',
+      verdict: {
+        kind: 'finished',
+        role: 'child',
+        rule: 'child-delivered',
+        reason: 'fixture pull request descends from the base',
+      },
+      reason:
+        'The managed worktree, its Git registration and its reservation were verified removed.',
+    },
+  ],
+})
+const receipts = await Effect.runPromise(Queue.make<SweepReceipt, Cause.Done>())
 const attachment: WorkspaceAttachment = {
   binding: makeFixtureBinding({ conversation, descriptor: current }),
-  authorize: () => Effect.fail(refused),
+  authorize: operation => {
+    if (operation.kind === 'write') Queue.offerUnsafe(receipts, receipt)
+    return Effect.fail(refused)
+  },
   select: selection => {
     selections.push(selection)
     return Effect.fail(refused)
   },
   reportExecution: () => Effect.void,
   handoff: () => Effect.void,
+  sweeps: Stream.fromQueue(receipts),
   close: Effect.void,
 }
-const retained = makeFixtureView({
-  descriptor: target,
-  outcome: 'preserved-for-resume',
-  reservationId: fixtureId(112),
-})
 const lifecycle: WorkspaceLifecycle = {
   attach: () => Effect.fail(refused),
-  inspect: () => Effect.succeed([retained]),
+  inspect: () => Effect.succeed([]),
   validate: () => Effect.void,
-  check: () => Effect.fail(refused),
-  release: () => Effect.fail(refused),
+  check: input => {
+    checked.push(input.taskId)
+    return Effect.succeed([
+      makeFixtureAssessment({
+        descriptor: other,
+        outcome: 'removable',
+        completion: {
+          kind: 'finished',
+          role: 'branch',
+          rule: 'branch-in-target',
+          reason: 'fixture HEAD is an ancestor of the target tip',
+        },
+        reservationId: fixtureId(112),
+      }),
+    ])
+  },
+  release: input => {
+    released.push(input.workspaceId)
+    return Effect.fail(refused)
+  },
+  sweep: () => Effect.fail(refused),
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
 }
+const steps: readonly ScriptedContent[] = [
+  [toolCall('work-allocation', 'work', { action: 'process', taskId: 'tests', command: 'true' })],
+]
+let calls = 0
+const offline = await makeOfflineModel({
+  pi,
+  importFromPi,
+  fixture,
+  id: 'host-contract',
+  stream: replay(() => steps[calls++] ?? [{ type: 'text', text: 'done' }]),
+})
 
 let opened: Awaited<ReturnType<typeof openHostRuntime>> | undefined
 try {
@@ -88,9 +152,11 @@ try {
     manager,
     cwd: current.path,
     repositoryRoot: cwd => Effect.succeed(cwd),
+    offline,
   })
   const { host, runtime } = opened
   const notices: { readonly message: string; readonly level: string | undefined }[] = []
+  const confirmations: string[] = []
   const handlerErrors: string[] = []
   await runtime.session.bindExtensions({
     uiContext: {
@@ -98,7 +164,10 @@ try {
       notify: (message, level) => {
         notices.push({ message, level })
       },
-      confirm: async () => true,
+      confirm: async title => {
+        confirmations.push(title)
+        return true
+      },
     },
     onError: error => {
       handlerErrors.push(error.error)
@@ -109,65 +178,65 @@ try {
       .getEntries()
       .flatMap(entry =>
         entry.type === 'custom_message' && entry.customType === 'dev/workspace'
-          ? [entry.content]
+          ? [String(entry.content)]
           : []
       )
-  const resume = `/workspace resume ${target.taskId} --workspace ${target.workspaceId}`
 
-  await claim(
-    'a /workspace resume whose session-owned work cannot be listed is reported as a notice',
-    async () => {
-      host.setWorkControls({
-        running: Effect.fail(new WorkError({ message: 'fixture listing failed' })),
-        stopAll: () => Effect.void,
-      })
-      await runtime.session.prompt(resume)
-      assert.deepEqual(notices.splice(0), [
-        {
-          message:
-            'Session-owned work could not be listed, so no switch was started: fixture listing failed',
-          level: 'error',
-        },
-      ])
-    }
-  )
-  await claim(
-    'a confirmed /workspace resume whose session-owned work cannot be stopped is reported as a notice',
-    async () => {
-      host.setWorkControls({
-        running: Effect.succeed([
-          {
-            taskId: 'fixture-work',
-            attemptId: 'fixture-attempt',
-            kind: 'process',
-            status: 'running',
-            cwd: current.path,
-          },
-        ]),
-        stopAll: () => Effect.fail(new WorkError({ message: 'fixture stop failed' })),
-      })
-      await runtime.session.prompt(resume)
-      assert.deepEqual(notices.splice(0), [
-        {
-          message:
-            'Session-owned work could not be stopped, so no switch was started: fixture stop failed',
-          level: 'error',
-        },
-      ])
-    }
-  )
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')
     assert.deepEqual(displayed(), [
-      'Unknown workspace command "switch". Use list, inspect <task>, check <task>, release <task>, or resume <task> [--workspace <workspace>].',
+      'Unknown workspace command "switch". Use list, inspect <task>, check <task> or release <task>.',
     ])
   })
+  await claim(
+    "/workspace release of this conversation's own task answers that quitting sweeps it and assesses nothing",
+    async () => {
+      await runtime.session.prompt(`/workspace release ${current.taskId}`)
+      const answer = displayed().at(-1) ?? ''
+      assert.ok(answer.includes('/quit') && answer.includes('sweeps'), answer)
+      assert.deepEqual(checked, [])
+      assert.deepEqual(confirmations, [])
+    }
+  )
+  await claim(
+    '/workspace release of a task with nothing review-required shows its verdicts and asks for no confirmation',
+    async () => {
+      await runtime.session.prompt(`/workspace release ${other.taskId}`)
+      const [eligibility, answer] = displayed().slice(-2)
+      assert.ok(
+        eligibility?.includes('sweep verdict: finished (branch-in-target)') &&
+          eligibility.includes('role: branch worktree') &&
+          eligibility.includes('target: override'),
+        eligibility
+      )
+      assert.ok(answer?.includes('nothing for an explicit release'), answer)
+      assert.deepEqual(checked, [other.taskId])
+      assert.deepEqual(confirmations, [])
+      assert.deepEqual(released, [])
+    }
+  )
+  await claim(
+    'a sweep receipt the authority delivers while a work tool admission allocates is shown once in the conversation',
+    async () => {
+      const before = displayed().length
+      await runtime.session.prompt('start the fixture work')
+      const shown = displayed().slice(before)
+      assert.equal(shown.length, 1, JSON.stringify(shown))
+      assert.ok(
+        shown[0]?.includes('before a worktree allocation') &&
+          shown[0].includes(swept.workspaceId) &&
+          shown[0].includes('removed (automatic)'),
+        shown[0]
+      )
+    }
+  )
   await claim(
     "none of these commands selected a workspace, parked the host or rejected Pi's handler",
     () => {
       assert.deepEqual(selections, [])
       assert.equal(host.isParked(), false)
       assert.deepEqual(handlerErrors, [])
+      assert.deepEqual(notices, [])
     }
   )
 } finally {
@@ -181,7 +250,7 @@ console.log(
       result: 'passed',
       checks: passed,
       limitation:
-        'Command-failure notices through a headless Pi session with a stub lifecycle. The TUI probes drive the successful switches, and every stub value is decoded as it is made.',
+        'Command answers and receipt delivery through a headless Pi session with a stub lifecycle; the stub attachment delivers the receipt as the worker does during an allocating admission. The sweep check exercises real allocations.',
     },
     null,
     2

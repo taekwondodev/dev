@@ -8,36 +8,64 @@ import {
   type WorkspaceAuthority,
 } from './workspace-authority.ts'
 import {
+  COMPLETION_POLICY_VERSION,
+  decideCompletion,
+  integrationUnknown,
+  needsIntegration,
+  type CompletionFacts,
+  type IntegrationFacts,
+  type Residue,
+} from './workspace-completion.ts'
+import {
   invalid,
   RELEASE_SUBJECT_FIELDS,
   requireReview,
   WorkspaceError,
+  WorkspaceId,
+  type AllocationReason,
+  type CompletionVerdict,
+  type ReleaseDecider,
   type ReleaseRequest,
   type ReleaseSubject,
+  type RetainedReason,
+  type SweepMoment,
+  type SweepOutcome,
+  type SweepReceipt,
+  type SweepRow,
+  type TargetView,
   type WorkspaceAssessment,
-  type WorkspaceId,
   type WorkspaceReleaseResult,
+  WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
 import {
   EVIDENCE_POLICY_VERSION,
+  deriveTarget,
+  describeTarget,
+  recordedTarget,
   entryUnchanged,
+  integrationFacts,
   readInventory,
   stateDigestOf,
-  verifyEvidence,
-  type EvidenceResult,
+  verifyInventory,
   type GitHubReader,
   type Inventory,
+  type InventoryVerdict,
+  type Siblings,
 } from './workspace-evidence.ts'
 import {
   acquirePathGates,
   acquireStructureGate,
+  conversationIdentity,
+  conversationPresent,
   releaseGates,
   type GateRelease,
   type PathGates,
 } from './workspace-gates.ts'
 import {
+  ancestry,
   registeredWorktrees,
   removeWorktree,
+  symbolicBranch,
   worktreeLockReason,
   type GitWorkspace,
 } from './workspace-git.ts'
@@ -45,12 +73,16 @@ import { abandonedUseIds, deletionHistory, sampledPaths } from './workspace-insp
 import { isWithin } from './workspace-paths.ts'
 import {
   cancelUnstartedReleases,
+  confirmedReleases,
   deleteReservation,
+  getBindingRows,
+  getOperation,
   getPublications,
   getReservation,
   getTask,
   getUseRows,
   getWorkspace,
+  isEngineRecordedRelease,
   isUnresolvedRelease,
   isActiveUse,
   openOperations,
@@ -69,7 +101,7 @@ import {
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { holdExistingInstallationForRemoval } from './runtime-coordination.ts'
-import { transaction } from './workspace-sqlite.ts'
+import { rows, textField, transaction } from './workspace-sqlite.ts'
 import { hasErrorCode, newId, now } from './workspace-platform.ts'
 
 export interface EvidenceReaders {
@@ -136,7 +168,9 @@ const observationText = (observation: RemovalObservation): string =>
   ].join('; ')
 
 type AdminResidue =
-  | { readonly kind: 'none' | 'empty' | 'outside' | 'not-directory' | 'not-empty' }
+  | {
+      readonly kind: 'none' | 'empty' | 'outside' | 'not-directory' | 'not-empty'
+    }
   | { readonly kind: 'unreadable'; readonly detail: string }
   | { readonly kind: 'named'; readonly worktree: string }
 const adminResidue = (
@@ -247,6 +281,7 @@ const assessIdentity = (authority: WorkspaceAuthority, workspace: WorkspaceRecor
 
 interface UseAssessment {
   readonly live: readonly UseRecord[]
+  readonly conversations: number
   readonly unknown: readonly UseRecord[]
   readonly abandoned: readonly WorkspaceId[]
   readonly inUse: boolean
@@ -259,24 +294,34 @@ const describeUse = (use: UseRecord): string =>
 const assessUses = (
   authority: WorkspaceAuthority,
   db: DatabaseSync,
-  uses: readonly UseRecord[],
-  ownIncarnation: WorkspaceId | undefined
+  workspaceId: WorkspaceId,
+  own: OwnConversation | undefined
 ): UseAssessment => {
+  const uses = getUseRows(db, workspaceId)
   const unknown = uses.filter(use => use.stage === 'unknown')
-  const own = uses.filter(
+  const ownUses = uses.filter(
     use =>
-      ownIncarnation !== undefined &&
-      use.incarnation === ownIncarnation &&
+      own !== undefined &&
+      use.incarnation === own.incarnation &&
       isActiveUse(use) &&
       use.stage !== 'unknown'
   )
-  const live = uses.filter(use => isActiveUse(use) && !own.includes(use))
+  const live = uses.filter(use => isActiveUse(use) && !ownUses.includes(use))
+  const bindings = getBindingRows(db, workspaceId).filter(binding => binding.superseded !== true)
+  const ownBound = bindings.some(binding => binding.key === own?.conversationKey)
+  const conversations = bindings.filter(
+    binding =>
+      binding.key !== own?.conversationKey &&
+      conversationPresent(authority.paths, conversationIdentity(binding.conversation))
+  )
   const abandoned = abandonedUseIds(authority, db, uses)
   const reasons: string[] = []
   const nextActions: string[] = []
-  if (own.length > 0)
+  if (ownUses.length > 0 || ownBound)
     reasons.push(
-      `This conversation holds ${own.length} use(s) here (${own.map(describeUse).join(', ')}); a guided release stops and settles them before the attempt.`
+      ownUses.length > 0
+        ? `This conversation holds ${ownUses.length} use(s) here (${ownUses.map(describeUse).join(', ')}); they end when it quits, and the sweep then rechecks them.`
+        : 'This conversation is bound here; it stops counting as a use when it quits, and the sweep then rechecks the workspace.'
     )
   if (unknown.length > 0) {
     reasons.push(
@@ -290,27 +335,38 @@ const assessUses = (
       `Use(s) ${abandoned.join(', ')} were left unsettled by dev sessions that have ended; their processes may still run.`
     )
     nextActions.push('Keep the workspace until those uses are recovered explicitly.')
-  } else if (live.length > 0) {
-    reasons.push(
-      `${live.length} live use(s) by participating dev session(s): ${live
-        .map(use => `${use.id} (${describeUse(use)})`)
-        .join(', ')}`
-    )
+  } else if (live.length > 0 || conversations.length > 0) {
+    if (live.length > 0)
+      reasons.push(
+        `${live.length} live use(s) by participating dev session(s): ${live
+          .map(use => `${use.id} (${describeUse(use)})`)
+          .join(', ')}`
+      )
+    if (conversations.length > 0)
+      reasons.push(
+        `${conversations.length} open dev conversation(s) are bound here: ${conversations
+          .map(binding => binding.conversation.sessionId)
+          .join(', ')}`
+      )
     nextActions.push(
-      'End that use (finish or stop its work, close its conversation) and release again.'
+      'End that use (finish or stop its work, close its conversation); the next sweep rechecks it.'
     )
   }
   return {
     live,
+    conversations: conversations.length,
     unknown,
     abandoned,
-    inUse: unknown.length > 0 || abandoned.length > 0 || live.length > 0,
+    inUse:
+      unknown.length > 0 || abandoned.length > 0 || live.length > 0 || conversations.length > 0,
     reasons,
     nextActions,
   }
 }
 const inUseOutcome = (uses: UseAssessment): WorkspaceAssessment['outcome'] =>
-  uses.live.length > 0 && uses.unknown.length === 0 && uses.abandoned.length === 0
+  (uses.live.length > 0 || uses.conversations > 0) &&
+  uses.unknown.length === 0 &&
+  uses.abandoned.length === 0
     ? 'active'
     : 'blocked'
 
@@ -325,15 +381,22 @@ const residualOf = (inventory: Inventory | undefined, head: string | undefined):
       )}`
     )
   if (inventory.files.length > 0)
-    residual.push(`${inventory.files.length} untracked or ignored path(s) remain in place`)
+    residual.push(
+      `${inventory.untracked} untracked and ${inventory.ignored} ignored path(s) remain in place`
+    )
   return residual
 }
+const residueOf = (inventory: Inventory): Residue => ({
+  tracked: inventory.tracked.length,
+  untracked: inventory.untracked,
+  ignored: inventory.ignored,
+})
 
 interface Assessed {
   readonly assessment: WorkspaceAssessment
   readonly reservation: ReservationRecord
   readonly workspace: WorkspaceRecord
-  readonly evidence: EvidenceResult | undefined
+  readonly evidence: InventoryVerdict | undefined
   readonly absent: boolean
 }
 interface Shaping {
@@ -342,8 +405,50 @@ interface Shaping {
   readonly stateDigest: string
   readonly reasons: readonly string[]
   readonly nextActions: readonly string[]
-  readonly evidence?: EvidenceResult
+  readonly completion?: CompletionVerdict
+  readonly target?: TargetView
+  readonly evidence?: InventoryVerdict
   readonly residual?: readonly string[]
+}
+
+export interface OwnConversation {
+  readonly incarnation: WorkspaceId
+  readonly conversationKey: string
+}
+export interface AssessmentContext {
+  readonly moment: SweepMoment
+  readonly own?: OwnConversation
+  readonly excluded?: ReadonlySet<WorkspaceId>
+}
+const AT_QUIT: AssessmentContext = { moment: 'quit' }
+
+const allocationOf = (
+  db: DatabaseSync,
+  workspace: WorkspaceRecord
+): {
+  readonly base?: string
+  readonly reason?: AllocationReason
+  readonly allocatedAt?: number
+} => {
+  if (workspace.allocationOperationId === undefined) return {}
+  const operation = getOperation(db, workspace.allocationOperationId)
+  if (operation?.kind !== 'allocation') return {}
+  const { reason, sourceCommit, createdAt } = operation
+  return {
+    reason,
+    allocatedAt: createdAt,
+    ...(sourceCommit === undefined ? {} : { base: sourceCommit }),
+  }
+}
+
+const ownCommitsOf = (
+  checkout: string,
+  head: string | undefined,
+  base: string | undefined
+): boolean | undefined => {
+  if (head === undefined || base === undefined) return undefined
+  const result = ancestry(checkout, head, base)
+  return typeof result === 'string' ? result === 'not-ancestor' : undefined
 }
 
 const absentReason = (
@@ -360,6 +465,67 @@ const absentReason = (
   return `The managed worktree directory is absent; ${observationText(observation)}.`
 }
 
+const DELIVER = [
+  'Deliver the work (merge its pull request or integrate its commits) or keep the worktree; the sweep removes it once it is finished.',
+]
+const RETAINED: Record<
+  RetainedReason,
+  {
+    readonly eligibility: 'blocked' | 'review-required'
+    readonly sweep: SweepOutcome
+    readonly actions: readonly string[]
+  }
+> = {
+  'identity-unverifiable': {
+    eligibility: 'review-required',
+    sweep: 'retained',
+    actions: [],
+  },
+  'transition-unresolved': {
+    eligibility: 'review-required',
+    sweep: 'retained',
+    actions: [],
+  },
+  'release-review': {
+    eligibility: 'review-required',
+    sweep: 'review-required',
+    actions: [],
+  },
+  excluded: { eligibility: 'blocked', sweep: 'skipped', actions: [] },
+  'use-unknown': { eligibility: 'blocked', sweep: 'retained', actions: [] },
+  'use-abandoned': { eligibility: 'blocked', sweep: 'retained', actions: [] },
+  'use-live': { eligibility: 'blocked', sweep: 'retained', actions: [] },
+  'directory-missing': { eligibility: 'review-required', sweep: 'retained', actions: [] },
+  'residue-unreadable': {
+    eligibility: 'review-required',
+    sweep: 'retained',
+    actions: ['Fix the reported read failure; the next sweep rechecks it.'],
+  },
+  'checkout-modified': {
+    eligibility: 'blocked',
+    sweep: 'retained',
+    actions: [
+      'Commit or clean the checkout; a clean checkout loses its reservation automatically when dev quits.',
+    ],
+  },
+  skipped: { eligibility: 'blocked', sweep: 'skipped', actions: [] },
+  'no-commits': { eligibility: 'blocked', sweep: 'retained', actions: DELIVER },
+  'integration-unknown': {
+    eligibility: 'review-required',
+    sweep: 'retained',
+    actions: [
+      'Establish the missing fact (target, history or provider); the lead can record a target with the workspace tool, and dev never fetches or uploads for you.',
+    ],
+  },
+  'not-integrated': {
+    eligibility: 'blocked',
+    sweep: 'retained',
+    actions: DELIVER,
+  },
+}
+const retainedActions = (verdict: CompletionVerdict): readonly string[] =>
+  verdict.kind === 'finished' ? [] : RETAINED[verdict.retained].actions
+
 const assessWorkspace = (
   authority: WorkspaceAuthority,
   db: DatabaseSync,
@@ -367,7 +533,9 @@ const assessWorkspace = (
   reservation: ReservationRecord,
   workspace: WorkspaceRecord,
   readers: EvidenceReaders,
-  ownIncarnation?: WorkspaceId
+  context: AssessmentContext,
+  siblings: Siblings,
+  removalClosed: boolean
 ): Assessed => {
   const identity = assessIdentity(authority, workspace)
   const head =
@@ -385,6 +553,53 @@ const assessWorkspace = (
     operation => operation.kind !== 'release' && operation.phase !== 'intent'
   )
   const interruptedReleases = open.filter(isUnresolvedRelease)
+  const engineRecorded = open.some(isEngineRecordedRelease)
+  const allocation = allocationOf(db, workspace)
+  const uses = assessUses(authority, db, workspace.id, context.own)
+  const unknownIds = new Set(uses.unknown.map(use => use.id))
+  const abandoned = uses.abandoned.filter(id => !unknownIds.has(id))
+  const factsBase: CompletionFacts = {
+    moment: context.moment,
+    origin: workspace.origin,
+    allocation: allocation.reason,
+    identity: identity.kind,
+    transitionUnresolved: unresolvedTransitions.length > 0,
+    removalInterrupted:
+      removalClosed ||
+      interruptedReleases.some(
+        operation => operation.effect === 'remove-worktree' && operation.phase === 'started'
+      ),
+    releaseReview: false,
+    excluded: context.excluded?.has(workspace.id) === true,
+    uses: {
+      unknown: uses.unknown.length,
+      abandoned: abandoned.length,
+      live: uses.live.filter(use => !unknownIds.has(use.id) && !abandoned.includes(use.id)).length,
+      conversations: uses.conversations,
+    },
+    attemptsQuiescent: !uses.live.some(use => use.execution !== undefined),
+    branch: undefined,
+    residue: undefined,
+    ownCommits: undefined,
+    integration: integrationUnknown('Integration was not assessed.'),
+  }
+  const decide = (facts: CompletionFacts) => {
+    const underlying = decideCompletion(facts)
+    return {
+      underlying,
+      reported: engineRecorded ? decideCompletion({ ...facts, releaseReview: true }) : underlying,
+    }
+  }
+  const unassessedTarget: TargetView =
+    workspace.origin === 'pre-existing'
+      ? {
+          source: 'not-needed',
+          description: 'A pre-existing checkout needs no integration target.',
+        }
+      : {
+          source: 'not-assessed',
+          description: 'The target was not derived for this state.',
+        }
   const shape = (shaping: Shaping): Assessed => ({
     assessment: {
       repositoryId: repo,
@@ -399,10 +614,15 @@ const assessWorkspace = (
       ...(shaping.evidence === undefined
         ? {}
         : {
-            evidence: { verdict: shaping.evidence.verdict, reasons: shaping.evidence.reasons },
+            evidence: {
+              verdict: shaping.evidence.verdict,
+              reasons: shaping.evidence.reasons,
+            },
             inventory: shaping.evidence.counts,
           }),
       residual: [...(shaping.residual ?? [])],
+      target: shaping.target ?? unassessedTarget,
+      completion: shaping.completion ?? decide(factsBase).reported,
       subject: {
         repositoryId: repo,
         workspaceId: workspace.id,
@@ -457,6 +677,9 @@ const assessWorkspace = (
   const withInterruption = (shaping: Shaping): Shaping => {
     if (interruptedReleases.length === 0) return shaping
     const observes = shaping.effect === 'remove-worktree'
+    const observer = engineRecorded
+      ? `dev workspace release ${reservation.taskId}`
+      : `The next sweep, or dev workspace release ${reservation.taskId},`
     return {
       ...shaping,
       outcome: 'review-required',
@@ -468,11 +691,7 @@ const assessWorkspace = (
         ...shaping.reasons,
       ],
       nextActions: [
-        ...(observes
-          ? [
-              `dev workspace release ${reservation.taskId} observes the interrupted release; nothing is replayed.`,
-            ]
-          : []),
+        ...(observes ? [`${observer} observes the interrupted release; nothing is replayed.`] : []),
         ...shaping.nextActions,
       ],
     }
@@ -500,11 +719,14 @@ const assessWorkspace = (
         effect: 'remove-worktree',
         stateDigest: bareDigest,
         reasons: [absentReason(workspace, observation, residue)],
-        nextActions: [`dev workspace release ${reservation.taskId} records the observed absence.`],
+        nextActions: [
+          decide(factsBase).reported.kind === 'finished'
+            ? `The next sweep, or dev workspace release ${reservation.taskId}, records the observed absence.`
+            : `Confirm the directory was meant to go, then run dev workspace release ${reservation.taskId} to record the absence; the sweep settles only an absence its own interrupted removal caused.`,
+        ],
       })
     )
   }
-  const uses = assessUses(authority, db, getUseRows(db, workspace.id), ownIncarnation)
   if (workspace.origin === 'pre-existing') {
     let inventory: Inventory | undefined
     const reasons = [...uses.reasons]
@@ -513,7 +735,10 @@ const assessWorkspace = (
     } catch (cause) {
       reasons.push(`Residual changes could not be read: ${errorText(cause)}`)
     }
-
+    const { reported } = decide({
+      ...factsBase,
+      ...(inventory === undefined ? {} : { residue: residueOf(inventory) }),
+    })
     const stateDigest = stateDigestOf({
       head,
       inventory: undefined,
@@ -530,6 +755,7 @@ const assessWorkspace = (
           reasons,
           nextActions: uses.nextActions,
           residual,
+          completion: reported,
         })
       )
     return shape(
@@ -540,22 +766,27 @@ const assessWorkspace = (
         reasons: [
           ...reasons,
           'Pre-existing checkout: release ends only the task reservation; files and commits stay untouched and no integration or publication proof is required.',
+          reported.reason,
         ],
-        nextActions: [`dev workspace release ${reservation.taskId} releases the reservation.`],
+        nextActions:
+          reported.kind === 'finished'
+            ? ['Quitting dev releases this reservation automatically; files and commits stay.']
+            : retainedActions(reported),
         residual,
+        completion: reported,
       })
     )
   }
-  let evidence: EvidenceResult
+  let evidence: InventoryVerdict
+  let branch: string | undefined
+  let ownCommits: boolean | undefined
+  const publications = getPublications(db, reservation.taskId).filter(
+    reference => reference.workspaceId === undefined || reference.workspaceId === workspace.id
+  )
   try {
-    evidence = verifyEvidence(readers.github, {
-      checkout: workspace.path,
-      head,
-      target: getTask(db, reservation.taskId)?.target,
-      publications: getPublications(db, reservation.taskId).filter(
-        reference => reference.workspaceId === undefined || reference.workspaceId === workspace.id
-      ),
-    })
+    evidence = verifyInventory(workspace.path, publications, readInventory(workspace.path, head))
+    branch = symbolicBranch(workspace.path)
+    ownCommits = ownCommitsOf(workspace.path, head, allocation.base)
   } catch (cause) {
     return shape(
       withInterruption({
@@ -567,104 +798,239 @@ const assessWorkspace = (
       })
     )
   }
-  const residual = residualOf(evidence.inventory, head)
+  const residue = residueOf(evidence.inventory)
+  const override = getTask(db, reservation.taskId)?.target
+  let target: TargetView =
+    recordedTarget(workspace.path, override, branch) ??
+    (uses.inUse
+      ? {
+          source: 'not-assessed',
+          description: 'The target is derived once no use holds the workspace.',
+        }
+      : {
+          source: 'not-needed',
+          description:
+            'No residue and no commits beyond its base, so no integration target is needed.',
+        })
+  let integration: IntegrationFacts = integrationUnknown('Integration is not needed here.')
+  let targetTip: string | undefined
+  if (!uses.inUse && needsIntegration(residue, ownCommits)) {
+    const derived = deriveTarget(readers.github, workspace.path, override, branch)
+    target = describeTarget(derived)
+    if (derived.source === 'none') integration = integrationUnknown(derived.reason)
+    else
+      try {
+        const facts = integrationFacts(readers.github, workspace.path, {
+          target: derived.target,
+          head,
+          base: allocation.base,
+          allocatedAt: allocation.allocatedAt,
+          siblings,
+        })
+        integration = facts
+        targetTip = facts.tip
+      } catch (cause) {
+        integration = integrationUnknown(`Integration could not be read: ${errorText(cause)}`)
+      }
+  }
+  const { reported, underlying } = decide({
+    ...factsBase,
+    branch,
+    residue,
+    ownCommits,
+    integration,
+  })
+  const common = {
+    stateDigest: stateDigestOf({
+      head,
+      inventory: evidence.inventory,
+      targetTip,
+      publications,
+    }),
+    evidence,
+    residual: residualOf(evidence.inventory, head),
+    completion: reported,
+    target,
+  }
   if (uses.inUse)
     return shape(
       withInterruption({
+        ...common,
         outcome: inUseOutcome(uses),
         effect: 'none',
-        stateDigest: evidence.stateDigest,
         reasons: uses.reasons,
         nextActions: uses.nextActions,
-        evidence,
-        residual,
       })
     )
-  if (evidence.verdict === 'invalid')
+  if (evidence.verdict !== 'valid')
     return shape(
       withInterruption({
-        outcome: 'blocked',
+        ...common,
+        outcome: evidence.verdict === 'invalid' ? 'blocked' : 'review-required',
         effect: 'none',
-        stateDigest: evidence.stateDigest,
-        reasons: [...uses.reasons, ...evidence.reasons],
+        reasons: [...uses.reasons, ...evidence.reasons, underlying.reason],
         nextActions: [
-          'Resolve each blocker (integrate, publish the selected artifact or keep the file), then check again.',
+          evidence.verdict === 'invalid'
+            ? 'Resolve each blocker (publish the selected artifact again, resolve the conflict or remove the nested repository), then check again.'
+            : 'Resolve each unsupported or unreadable entry, then check again; dev never deletes what it cannot inspect.',
         ],
-        evidence,
-        residual,
       })
     )
-  if (evidence.verdict === 'unknown')
+  if (underlying.kind === 'finished')
     return shape(
       withInterruption({
-        outcome: 'review-required',
-        effect: 'none',
-        stateDigest: evidence.stateDigest,
-        reasons: [...uses.reasons, ...evidence.reasons],
-        nextActions: [
-          'Establish the missing fact (target, history or provider), then check again; dev never fetches or uploads for you.',
+        ...common,
+        outcome: 'removable',
+        effect: 'remove-worktree',
+        reasons: [
+          ...uses.reasons,
+          underlying.reason,
+          `Eligible at this check; nothing removed; the sweep rechecks. ${evidence.counts.published} published file(s) are recorded for deletion; Git removes remaining disposable worktree contents.`,
         ],
-        evidence,
-        residual,
+        nextActions: [
+          'Quitting dev, or the next managed worktree allocation, removes it automatically.',
+        ],
       })
     )
   return shape(
     withInterruption({
-      outcome: 'removable',
-      effect: 'remove-worktree',
-      stateDigest: evidence.stateDigest,
-      reasons: [
-        ...uses.reasons,
-        ...evidence.reasons,
-        `Eligible at this check; nothing removed; release rechecks. ${evidence.counts.published} published file(s) are recorded for deletion; Git removes remaining disposable worktree contents.`,
-      ],
-      nextActions: [
-        `dev workspace release ${reservation.taskId} removes this managed worktree after confirmation.`,
-      ],
-      evidence,
-      residual,
+      ...common,
+      outcome: RETAINED[underlying.retained].eligibility,
+      effect: 'none',
+      reasons: [...uses.reasons, underlying.reason],
+      nextActions: retainedActions(underlying),
     })
   )
 }
 
-export const checkTask = (
+type Sibling =
+  | { readonly kind: 'seed'; readonly head: string }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unknown'; readonly reason: string }
+const NO_SIBLING: Sibling = { kind: 'none' }
+
+const siblingAt = (db: DatabaseSync, workspace: WorkspaceRecord, head: string): Sibling => {
+  const own = ownCommitsOf(workspace.commonPath, head, allocationOf(db, workspace).base)
+  if (own === undefined)
+    return {
+      kind: 'unknown',
+      reason: `Commits of sibling workspace ${workspace.id} beyond its base cannot be determined, so its pull requests were not searched.`,
+    }
+  return own ? { kind: 'seed', head } : NO_SIBLING
+}
+const liveSibling = (
+  authority: WorkspaceAuthority,
+  db: DatabaseSync,
+  workspace: WorkspaceRecord
+): Sibling => {
+  if (workspace.origin !== 'managed') return NO_SIBLING
+  let validated: ReturnType<typeof validateWorkspace>
+  try {
+    validated = validateWorkspace(authority, workspace)
+  } catch (cause) {
+    return {
+      kind: 'unknown',
+      reason: `The HEAD of sibling workspace ${workspace.id} could not be read, so its pull requests were not searched: ${errorText(cause)}`,
+    }
+  }
+  const { head } = validated
+  return head.length > 0 ? siblingAt(db, workspace, head) : NO_SIBLING
+}
+const removedSiblings = (authority: WorkspaceAuthority, taskId: WorkspaceId): readonly Sibling[] =>
+  authority.listRepositories().flatMap(repository =>
+    inDb(authority, repository.id, db =>
+      confirmedReleases(db, taskId).flatMap(operation => {
+        if (operation.effect !== 'remove-worktree' || operation.head === undefined) return []
+        const workspace = getWorkspace(db, operation.workspaceId)
+        return workspace?.origin === 'managed' ? [siblingAt(db, workspace, operation.head)] : []
+      })
+    )
+  )
+const taskSiblings = (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId,
+  entries: ReturnType<typeof taskWorkspaces>
+): ((workspaceId: WorkspaceId) => Siblings) => {
+  const live = entries.map(({ repo, workspace }) => ({
+    id: workspace.id,
+    sibling: inDb(authority, repo, db => liveSibling(authority, db, workspace)),
+  }))
+  const removed = removedSiblings(authority, taskId)
+  return workspaceId => {
+    const siblings = [
+      ...live.filter(({ id }) => id !== workspaceId).map(({ sibling }) => sibling),
+      ...removed,
+    ]
+    return {
+      heads: [
+        ...new Set(siblings.flatMap(sibling => (sibling.kind === 'seed' ? [sibling.head] : []))),
+      ],
+      unknown: siblings.flatMap(sibling => (sibling.kind === 'unknown' ? [sibling.reason] : [])),
+    }
+  }
+}
+
+const assessTask = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId,
   readers: EvidenceReaders,
-  ownIncarnation?: WorkspaceId
-): readonly WorkspaceAssessment[] => {
-  if (authority.inspectExisting() === undefined) return []
-  return taskWorkspaces(authority, taskId).map(({ repo, reservation, workspace }) =>
-    inDb(authority, repo, db => {
-      const { assessment } = assessWorkspace(
+  context: AssessmentContext
+): readonly Assessed[] => {
+  const entries = taskWorkspaces(authority, taskId)
+  const siblingsFor = taskSiblings(authority, taskId, entries)
+  return entries.map(({ repo, reservation, workspace }) =>
+    inDb(authority, repo, db =>
+      assessWorkspace(
         authority,
         db,
         repo,
         reservation,
         workspace,
         readers,
-        ownIncarnation
+        context,
+        siblingsFor(workspace.id),
+        false
       )
-      return {
-        ...assessment,
-        reasons: [...assessment.reasons, ...deletionHistory(db, workspace.id)],
-      }
-    })
+    )
   )
 }
 
+const withDeletionHistory = (
+  authority: WorkspaceAuthority,
+  assessment: WorkspaceAssessment
+): WorkspaceAssessment => ({
+  ...assessment,
+  reasons: [
+    ...assessment.reasons,
+    ...inDb(authority, assessment.repositoryId, db => deletionHistory(db, assessment.workspaceId)),
+  ],
+})
+
+export const checkTask = (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId,
+  readers: EvidenceReaders,
+  own?: OwnConversation
+): readonly WorkspaceAssessment[] => {
+  if (authority.inspectExisting() === undefined) return []
+  return assessTask(authority, taskId, readers, {
+    ...AT_QUIT,
+    ...(own === undefined ? {} : { own }),
+  }).map(({ assessment }) => withDeletionHistory(authority, assessment))
+}
+
 const changedFields = (
-  confirmed: ReleaseSubject,
+  decided: ReleaseSubject,
   fresh: ReleaseSubject
 ): readonly (keyof ReleaseSubject)[] =>
-  RELEASE_SUBJECT_FIELDS.filter(key => confirmed[key] !== fresh[key])
+  RELEASE_SUBJECT_FIELDS.filter(key => decided[key] !== fresh[key])
 const describeChange = (
   key: keyof ReleaseSubject,
-  confirmed: ReleaseSubject,
+  decided: ReleaseSubject,
   fresh: ReleaseSubject
 ): string => {
   if (key === 'stateDigest') return 'files, Git state, target tip or publications'
-  if (key === 'head') return `HEAD (${short(confirmed.head)} -> ${short(fresh.head)})`
+  if (key === 'head') return `HEAD (${short(decided.head)} -> ${short(fresh.head)})`
   return key
 }
 
@@ -689,15 +1055,15 @@ const releaseResult = (
   ...(operationId === undefined ? {} : { operationId }),
 })
 const subjectResult = (
-  confirmed: ReleaseSubject,
+  subject: ReleaseSubject,
   outcome: WorkspaceReleaseResult['outcome'],
   reason: string,
   nextAction: string
 ): WorkspaceReleaseResult => ({
-  repositoryId: confirmed.repositoryId,
-  workspaceId: confirmed.workspaceId,
-  path: confirmed.path,
-  origin: confirmed.origin,
+  repositoryId: subject.repositoryId,
+  workspaceId: subject.workspaceId,
+  path: subject.path,
+  origin: subject.origin,
   outcome,
   reason,
   nextAction,
@@ -727,7 +1093,11 @@ const requireCurrentReservation = (
   return current
 }
 
-const releaseOperationBase = (assessed: Assessed, commandId: WorkspaceId) => {
+const releaseOperationBase = (
+  assessed: Assessed,
+  commandId: WorkspaceId,
+  decider: ReleaseDecider
+) => {
   const { assessment, workspace, reservation } = assessed
   return {
     id: newId(),
@@ -740,12 +1110,12 @@ const releaseOperationBase = (assessed: Assessed, commandId: WorkspaceId) => {
       ? {}
       : { acquisitionId: reservation.acquisitionId }),
     commandId,
+    decider,
     targetPath: workspace.path,
     ...(assessment.subject.head === undefined ? {} : { head: assessment.subject.head }),
     stateDigest: assessment.subject.stateDigest,
     policyVersion: assessment.subject.policyVersion,
     expectedReservationRevision: reservation.revision,
-    reason: 'explicit-task-release',
     createdAt: now(),
   }
 }
@@ -901,6 +1271,7 @@ const removeManagedWorktree = (
   repo: WorkspaceId,
   assessed: Assessed,
   commandId: WorkspaceId,
+  decider: ReleaseDecider,
   manifest: readonly ManifestEntry[]
 ): WorkspaceReleaseResult => {
   const { assessment, workspace, reservation, absent } = assessed
@@ -931,7 +1302,7 @@ const removeManagedWorktree = (
       )
   }
   const intent: WorktreeRemovalRecord = {
-    ...releaseOperationBase(assessed, commandId),
+    ...releaseOperationBase(assessed, commandId, decider),
     phase: 'intent',
     effect: 'remove-worktree',
     gitAdminPath: workspace.gitAdminPath,
@@ -1069,7 +1440,11 @@ const removeManagedWorktree = (
   })
   operation = withStep(
     withStep(
-      { ...operation, phase: ending.phase, result: `${removal.detail}. ${residual}` },
+      {
+        ...operation,
+        phase: ending.phase,
+        result: `${removal.detail}. ${residual}`,
+      },
       'git-worktree-remove',
       removal.status,
       removal.detail
@@ -1094,11 +1469,12 @@ const releaseReservation = (
   authority: WorkspaceAuthority,
   repo: WorkspaceId,
   assessed: Assessed,
-  commandId: WorkspaceId
+  commandId: WorkspaceId,
+  decider: ReleaseDecider
 ): WorkspaceReleaseResult => {
   const { assessment, workspace, reservation } = assessed
   const operation: ReleaseOperationRecord = {
-    ...releaseOperationBase(assessed, commandId),
+    ...releaseOperationBase(assessed, commandId, decider),
     phase: 'confirmed',
     effect: 'release-reservation',
     result: `Reservation ${reservation.id} released; files and commits unchanged.${assessment.residual.length > 0 ? ` Residual: ${assessment.residual.join('; ')}` : ''}`,
@@ -1121,11 +1497,10 @@ const releaseReservation = (
     operation.id
   )
 }
-
 type Reconciliation =
   | { readonly kind: 'nothing' }
   | { readonly kind: 'completed' }
-  | { readonly kind: 'closed' }
+  | { readonly kind: 'closed'; readonly removalStarted: boolean }
   | { readonly kind: 'unobservable'; readonly reason: string }
 const reconcileInterruptedReleases = (
   authority: WorkspaceAuthority,
@@ -1136,7 +1511,8 @@ const reconcileInterruptedReleases = (
 ): Reconciliation => {
   const interrupted = inDb(authority, repo, db => unresolvedReleases(db, workspace.id))
   if (interrupted.length === 0) return { kind: 'nothing' }
-  let result: Reconciliation = { kind: 'closed' }
+  let observedComplete = false
+  let removalStarted = false
   for (const operation of interrupted) {
     if (operation.effect === 'release-reservation') {
       inDb(authority, repo, db =>
@@ -1184,9 +1560,10 @@ const reconcileInterruptedReleases = (
           )
         )
       )
-      result = { kind: 'completed' }
+      observedComplete = true
       continue
     }
+    if (operation.phase === 'started') removalStarted = true
     const present = manifest.filter(entry => entry.state !== 'removed' && entry.state !== 'absent')
     inDb(authority, repo, db =>
       transaction(db, () =>
@@ -1207,45 +1584,58 @@ const reconcileInterruptedReleases = (
       )
     )
   }
-  return result
+  return observedComplete ? { kind: 'completed' } : { kind: 'closed', removalStarted }
 }
 
 const scopeOf = (
   authority: WorkspaceAuthority,
-  request: ReleaseRequest
+  request: ReleaseRequest,
+  decidedIds: ReadonlySet<WorkspaceId>
 ): ReturnType<typeof taskWorkspaces> => {
   const current = taskWorkspaces(authority, request.taskId)
-  const added = current.filter(
-    item => !request.confirmed.some(subject => subject.workspaceId === item.workspace.id)
-  )
+  const added = current.filter(item => !decidedIds.has(item.workspace.id))
   if (added.length > 0)
     invalid(
-      `The scope of task ${request.taskId} changed after confirmation: workspace(s) ${added
+      `The scope of task ${request.taskId} changed after the decision: workspace(s) ${added
         .map(item => `${item.workspace.id} at ${item.workspace.path}`)
         .join(', ')} were added or rebound.`
     )
   return current
 }
 
-const noReservation = (confirmed: ReleaseSubject, taskId: WorkspaceId): WorkspaceReleaseResult =>
+const noReservation = (subject: ReleaseSubject, taskId: WorkspaceId): WorkspaceReleaseResult =>
   subjectResult(
-    confirmed,
+    subject,
     'blocked',
-    `Task ${taskId} no longer holds a reservation on workspace ${confirmed.workspaceId}; nothing was changed.`,
+    `Task ${taskId} no longer holds a reservation on workspace ${subject.workspaceId}; nothing was changed.`,
     'Inspect the task; another command may have released or removed it.'
   )
 
 const attemptUnderGates = (
   authority: WorkspaceAuthority,
   request: ReleaseRequest,
-  confirmed: ReleaseSubject,
+  subject: ReleaseSubject,
   gated: ReturnType<typeof taskWorkspaces>[number],
-  readers: EvidenceReaders
+  readers: EvidenceReaders,
+  context: AssessmentContext
 ): WorkspaceReleaseResult => {
   const { repo } = gated
+  const automatic = request.decider.kind === 'completion'
+  if (automatic) {
+    const recorded = inDb(authority, repo, db => openOperations(db, gated.workspace.id)).filter(
+      isEngineRecordedRelease
+    )
+    if (recorded.length > 0)
+      return subjectResult(
+        subject,
+        'review-required',
+        `Release ${recorded.map(operation => `${operation.id} (${operation.phase})`).join(', ')} needs review; only an explicit release observes it, so nothing was attempted automatically.`,
+        `Run dev workspace release ${request.taskId} to observe it; nothing is replayed.`
+      )
+  }
   const gatedUses = inDb(authority, repo, db => getUseRows(db, gated.workspace.id))
   const mayReconcile =
-    confirmed.effect === 'remove-worktree' &&
+    subject.effect === 'remove-worktree' &&
     gatedUses.every(use => use.stage !== 'unknown') &&
     inDb(authority, repo, db => abandonedUseIds(authority, db, gatedUses)).length === 0
   const reconciled: Reconciliation = mayReconcile
@@ -1259,35 +1649,59 @@ const attemptUnderGates = (
     : { kind: 'nothing' }
   if (reconciled.kind === 'unobservable')
     return subjectResult(
-      confirmed,
+      subject,
       'review-required',
       `An interrupted release of this workspace cannot be observed yet (${reconciled.reason}); nothing was changed.`,
       'Make the directory and repository readable, then release again.'
     )
   if (reconciled.kind === 'completed')
     return subjectResult(
-      confirmed,
+      subject,
       'already-absent',
       'After an interrupted removal the worktree directory, its Git registration and its worktree list entry were all observed gone; the reservation is now resolved and the observation recorded.',
       'Nothing remains to do for this workspace; do not resume a conversation into it.'
     )
+  const siblings = taskSiblings(
+    authority,
+    request.taskId,
+    taskWorkspaces(authority, request.taskId)
+  )(gated.workspace.id)
   const assessed = inDb(authority, repo, db =>
-    assessWorkspace(authority, db, repo, gated.reservation, gated.workspace, readers)
+    assessWorkspace(
+      authority,
+      db,
+      repo,
+      gated.reservation,
+      gated.workspace,
+      readers,
+      context,
+      siblings,
+      reconciled.kind === 'closed' && reconciled.removalStarted
+    )
   )
   const fresh = assessed.assessment
 
-  const changed = changedFields(confirmed, fresh.subject)
+  const changed = changedFields(subject, fresh.subject)
   if (changed.length > 0)
     return releaseResult(
       fresh,
       'blocked',
-      `The workspace changed after the confirmed check (${changed
-        .map(key => describeChange(key, confirmed, fresh.subject))
+      `The workspace changed after the ${automatic ? 'sweep assessed it' : 'subject check'} (${changed
+        .map(key => describeChange(key, subject, fresh.subject))
         .join(', ')}); nothing was changed.`,
-      'Run check and release again against the current state.'
+      automatic
+        ? 'The next sweep assesses the current state again.'
+        : 'Run check and release again against the current state.'
+    )
+  if (automatic && fresh.completion.kind !== 'finished')
+    return releaseResult(
+      fresh,
+      'blocked',
+      `It is no longer finished (${fresh.completion.reason}); nothing was changed.`,
+      'The next sweep assesses it again.'
     )
   if (
-    confirmed.effect === 'none' ||
+    subject.effect === 'none' ||
     (fresh.outcome !== 'releasable' && fresh.outcome !== 'removable' && !assessed.absent)
   )
     return releaseResult(
@@ -1306,14 +1720,14 @@ const attemptUnderGates = (
       `Workspace use(s) ${liveUses.map(use => use.id).join(', ')} are still recorded as live; nothing was changed.`,
       'Wait for their observed cessation or recover them explicitly, then release again.'
     )
-  if (confirmed.effect === 'remove-worktree') {
-    const inside = request.occupiedCwds.filter(cwd => isWithin(gated.workspace.path, cwd))
+  if (subject.effect === 'remove-worktree') {
+    const inside = request.occupiedPaths.filter(cwd => isWithin(gated.workspace.path, cwd))
     if (inside.length > 0)
       return releaseResult(
         fresh,
         'blocked',
-        `A shell or launcher working directory is still inside this worktree (${inside.join(', ')}); nothing was changed.`,
-        'Leave the directory and run a fresh release from outside it.'
+        `A shell or launcher working directory, or the conversation being closed, is still inside this worktree (${inside.join(', ')}); nothing was changed.`,
+        'Leave the directory and quit or release again from outside it.'
       )
     let releaseInstallation: GateRelease
     try {
@@ -1332,32 +1746,34 @@ const attemptUnderGates = (
         repo,
         assessed,
         request.commandId,
+        request.decider,
         assessed.evidence?.manifest ?? []
       )
     } finally {
       releaseInstallation()
     }
   }
-  return releaseReservation(authority, repo, assessed, request.commandId)
+  return releaseReservation(authority, repo, assessed, request.commandId, request.decider)
 }
 
-export const releaseWorkspace = (
+const releaseDecidedWorkspace = (
   authority: WorkspaceAuthority,
   request: ReleaseRequest,
-  readers: EvidenceReaders
+  readers: EvidenceReaders,
+  context: AssessmentContext,
+  decidedIds: ReadonlySet<WorkspaceId>
 ): WorkspaceReleaseResult => {
-  if (request.confirmed.length === 0)
-    invalid('A release needs the confirmed assessment it is bound to')
-  const confirmed = request.confirmed.find(subject => subject.workspaceId === request.workspaceId)
-  if (confirmed === undefined)
-    invalid(`Workspace ${request.workspaceId} is not part of the confirmed release scope`)
+  if (request.decided.length === 0) invalid('A release needs the decided assessment it is bound to')
+  const subject = request.decided.find(item => item.workspaceId === request.workspaceId)
+  if (subject === undefined)
+    invalid(`Workspace ${request.workspaceId} is not part of the decided release scope`)
   authority.initialize()
   const knownRepository = authority
     .listRepositories()
-    .some(repository => repository.id === confirmed.repositoryId)
+    .some(repository => repository.id === subject.repositoryId)
   if (
     knownRepository &&
-    inDb(authority, confirmed.repositoryId, db =>
+    inDb(authority, subject.repositoryId, db =>
       commandSpent(db, request.commandId, request.workspaceId)
     )
   )
@@ -1367,16 +1783,18 @@ export const releaseWorkspace = (
 
   const reported = (result: WorkspaceReleaseResult): WorkspaceReleaseResult => {
     const earlier = knownRepository
-      ? inDb(authority, confirmed.repositoryId, db =>
-          deletionHistory(db, confirmed.workspaceId, request.commandId)
+      ? inDb(authority, subject.repositoryId, db =>
+          deletionHistory(db, subject.workspaceId, request.commandId)
         )
       : []
     return earlier.length === 0
       ? result
       : { ...result, reason: [result.reason, ...earlier].join(' ') }
   }
-  const entry = scopeOf(authority, request).find(item => item.workspace.id === request.workspaceId)
-  if (entry === undefined) return reported(noReservation(confirmed, request.taskId))
+  const entry = scopeOf(authority, request, decidedIds).find(
+    item => item.workspace.id === request.workspaceId
+  )
+  if (entry === undefined) return reported(noReservation(subject, request.taskId))
   const { repo } = entry
   let structure: GateRelease | undefined
   let gates: PathGates | undefined
@@ -1389,22 +1807,172 @@ export const releaseWorkspace = (
     if (cause instanceof WorkspaceError && cause.outcome === 'blocked')
       return reported(
         subjectResult(
-          confirmed,
+          subject,
           'blocked',
           `A participating dev session still uses this workspace or its repository structure (${cause.message}); nothing was changed.`,
-          'End that use and release again; no automatic retry follows.'
+          'End that use; the next sweep or a fresh release rechecks it.'
         )
       )
     throw cause
   }
   try {
-    const gated = scopeOf(authority, request).find(
+    const gated = scopeOf(authority, request, decidedIds).find(
       item => item.workspace.id === request.workspaceId
     )
-    if (gated === undefined) return reported(noReservation(confirmed, request.taskId))
-    return reported(attemptUnderGates(authority, request, confirmed, gated, readers))
+    if (gated === undefined) return reported(noReservation(subject, request.taskId))
+    return reported(attemptUnderGates(authority, request, subject, gated, readers, context))
   } finally {
     if (gates !== undefined) releaseGates(gates)
     structure?.()
   }
+}
+
+export const releaseWorkspace = (
+  authority: WorkspaceAuthority,
+  request: ReleaseRequest,
+  readers: EvidenceReaders,
+  context: AssessmentContext = AT_QUIT
+): WorkspaceReleaseResult =>
+  releaseDecidedWorkspace(
+    authority,
+    request,
+    readers,
+    context,
+    new Set(request.decided.map(subject => subject.workspaceId))
+  )
+
+export interface SweepInput {
+  readonly repositoryId: WorkspaceId
+  readonly moment: SweepMoment
+  readonly deadline: number
+  readonly occupiedPaths: readonly string[]
+  readonly excluded?: ReadonlySet<WorkspaceId>
+}
+
+const SWEEP_BUDGET_MS: Record<SweepMoment, number> = {
+  quit: (WORKER_REQUEST_TIMEOUT_MS * 2) / 3,
+  allocation: WORKER_REQUEST_TIMEOUT_MS / 3,
+}
+export const sweepDeadline = (moment: SweepMoment, requestedAt: number): number =>
+  requestedAt + SWEEP_BUDGET_MS[moment]
+
+const attemptOutcome = (outcome: WorkspaceReleaseResult['outcome']): SweepOutcome =>
+  outcome === 'blocked' ? 'retained' : outcome
+
+export const sweepRepository = (
+  authority: WorkspaceAuthority,
+  input: SweepInput,
+  readers: EvidenceReaders
+): SweepReceipt => {
+  const commandId = newId()
+  const receipt: SweepRow[] = []
+  if (authority.inspectExisting() === undefined)
+    return { commandId, moment: input.moment, rows: receipt }
+  const context: AssessmentContext = {
+    moment: input.moment,
+    ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
+  }
+  const decider: ReleaseDecider = {
+    kind: 'completion',
+    policyVersion: COMPLETION_POLICY_VERSION,
+    moment: input.moment,
+  }
+  const seconds = SWEEP_BUDGET_MS[input.moment] / 1000
+  const taskIds = inDb(authority, input.repositoryId, db =>
+    rows(db, 'SELECT DISTINCT task_id FROM reservations ORDER BY task_id').map(row =>
+      WorkspaceId.make(textField(row, 'task_id'))
+    )
+  )
+  const deferFrom = (index: number, started: boolean): void => {
+    receipt.push(
+      ...taskIds.slice(index).map((taskId, offset) => ({
+        kind: 'task-deferred' as const,
+        taskId,
+        reason:
+          started && offset === 0
+            ? `The sweep used its ${seconds}-second budget during this task, so its remaining workspaces were not attempted; the next sweep assesses them.`
+            : `The sweep used its ${seconds}-second budget before this task, so nothing of it was assessed or attempted; the next sweep assesses it.`,
+      }))
+    )
+  }
+  let exhausted = false
+  for (const [index, taskId] of taskIds.entries()) {
+    if (now() >= input.deadline) {
+      deferFrom(index, false)
+      break
+    }
+    let assessments: readonly WorkspaceAssessment[]
+    try {
+      assessments = assessTask(authority, taskId, readers, context).map(
+        ({ assessment }) => assessment
+      )
+    } catch (cause) {
+      receipt.push({
+        kind: 'task-failure',
+        taskId,
+        reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
+      })
+      continue
+    }
+    const decided = assessments.map(assessment => assessment.subject)
+    const decidedIds = new Set(decided.map(subject => subject.workspaceId))
+    for (const assessment of assessments.toSorted((left, right) =>
+      left.workspaceId.localeCompare(right.workspaceId)
+    )) {
+      const row = {
+        kind: 'workspace' as const,
+        taskId,
+        workspaceId: assessment.workspaceId,
+        path: assessment.path,
+        origin: assessment.origin,
+        verdict: assessment.completion,
+      }
+      if (assessment.completion.kind === 'retained') {
+        receipt.push({
+          ...row,
+          outcome: RETAINED[assessment.completion.retained].sweep,
+          reason: assessment.completion.reason,
+        })
+        continue
+      }
+      if (now() >= input.deadline) {
+        deferFrom(index, true)
+        exhausted = true
+        break
+      }
+      try {
+        const result = releaseDecidedWorkspace(
+          authority,
+          {
+            taskId,
+            commandId,
+            decided,
+            decider,
+            workspaceId: assessment.workspaceId,
+            occupiedPaths: input.occupiedPaths,
+          },
+          readers,
+          context,
+          decidedIds
+        )
+        receipt.push({
+          ...row,
+          outcome: attemptOutcome(result.outcome),
+          reason: result.reason,
+          ...(result.operationId === undefined ? {} : { operationId: result.operationId }),
+        })
+      } catch (cause) {
+        receipt.push({
+          ...row,
+          outcome:
+            cause instanceof WorkspaceError && cause.outcome === 'invalid'
+              ? 'retained'
+              : 'review-required',
+          reason: `The attempt was refused or its outcome is uncertain: ${errorText(cause)}`,
+        })
+      }
+    }
+    if (exhausted) break
+  }
+  return { commandId, moment: input.moment, rows: receipt }
 }

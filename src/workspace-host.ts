@@ -1,15 +1,14 @@
 import {
   Cause,
   Deferred,
-  Duration,
   Effect,
   Exit,
   Fiber,
   FiberSet,
   Option,
-  Schedule,
   Schema,
   type Scope,
+  Stream,
 } from 'effect'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
@@ -28,31 +27,29 @@ import type {
 import type { ReplacedSessionContext } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import { errorText } from './error-text.ts'
 import {
-  chooseResumeCandidate,
   formatAssessments,
   formatReleaseRun,
+  formatSweepReceipt,
+  needsExplicitRelease,
+  noExplicitRelease,
   parseWorkspaceCommand,
   releaseConfirmation,
-  resumeCandidates,
   runReadOnlyWorkspaceCommand,
   runRelease,
-  type ResumeCandidate,
-  type SessionConsequences,
   type WorkspaceCommand,
 } from './workspace-command.ts'
 import {
   WorkspaceError,
-  type WorkspaceAssessment,
+  type SweepReceipt,
   type WorkspaceAttachment,
   type WorkspaceBinding,
   type BoundConversation,
   type WorkspaceConversation,
   type WorkspaceGrant,
   type WorkspaceHandoff,
-  type WorkspaceId,
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
-import { ghDestinationReader, makeEvidenceTool } from './workspace-evidence-tool.ts'
+import { ghDestinationReader, makeWorkspaceTool } from './workspace-tool.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
 import { canonicalConversationFile, decodeWriteOperand, isWithin } from './workspace-paths.ts'
 import { newId } from './workspace-platform.ts'
@@ -78,33 +75,14 @@ export interface RuntimeWorkspace {
   readonly cwd: string
 }
 
-export interface WorkspaceWorkStatus {
-  readonly taskId: string
-  readonly attemptId: string
-  readonly kind: 'process' | 'agent'
-  readonly status: string
-  readonly cwd: string
-}
-
-export interface WorkspaceWorkControls {
-  readonly running: Effect.Effect<readonly WorkspaceWorkStatus[], { readonly message: string }>
-  readonly stopAll: (reason: string) => Effect.Effect<void, { readonly message: string }>
-}
-
-export interface GuidedRelease {
-  readonly taskId: WorkspaceId
-  readonly commandId: WorkspaceId
-  readonly confirmed: readonly WorkspaceAssessment[]
-  readonly conversationFile: string
-}
-
 export interface WorkspaceHost {
   readonly extensionFactory: (api: ExtensionAPI) => void
   readonly attachment: WorkspaceAttachment
   readonly shellOperations: BashOperations
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
-  readonly guidedRelease: Deferred.Deferred<GuidedRelease>
+  readonly quitRequested: Deferred.Deferred<void>
+  interceptQuit(enabled: boolean): void
   isParked(): boolean
 
   isDetached(): boolean
@@ -119,7 +97,6 @@ export interface WorkspaceHost {
   }): Effect.Effect<RuntimeWorkspace, WorkspaceHostError | WorkspaceError>
   commitRuntime(attachment: WorkspaceAttachment): Effect.Effect<void, WorkspaceError>
   bindRuntime(runtime: AgentSessionRuntime): void
-  setWorkControls(controls: WorkspaceWorkControls): void
   readonly close: Effect.Effect<void, WorkspaceError>
 }
 
@@ -131,7 +108,7 @@ const reached = (transition: PendingTransition | undefined, stage: TransitionSta
 
 interface PendingTransition {
   readonly handoff: WorkspaceHandoff
-  readonly origin: 'tool-call' | 'user-bash' | 'command'
+  readonly origin: 'tool-call' | 'tool-resume' | 'user-bash'
   readonly surface: Surface
   readonly settled: Deferred.Deferred<void>
   readonly transitionSource: WorkspaceAttachment
@@ -158,12 +135,7 @@ type WriterAdmission =
   | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant }
   | { readonly kind: 'refused'; readonly refusal: ToolCallEventResult }
 
-type ResumeCommand = Extract<WorkspaceCommand, { readonly kind: 'resume' }>
 type ReleaseCommand = Extract<WorkspaceCommand, { readonly kind: 'release' }>
-const CESSATION_WAIT_MS = 30_000
-const CESSATION_POLL_MS = 250
-const describeWork = (work: WorkspaceWorkStatus): string =>
-  `- ${work.kind} task=${work.taskId} attempt=${work.attemptId} status=${work.status} cwd=${work.cwd}`
 
 interface ConversationIdentity {
   readonly sessionId: string
@@ -283,10 +255,10 @@ const switchNotices = (
   binding: WorkspaceBinding
 ): { readonly user: string; readonly model: string; readonly unqueued: string } => {
   const current = `Current workspace: ${handoff.target.workspaceId} at ${handoff.target.cwd}.`
-  return origin === 'command'
+  return origin === 'tool-resume'
     ? {
         user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}.`,
-        model: `The user switched this conversation's workspace with /workspace resume: ${handoff.reason}. ${current} Continue the conversation in this new context.`,
+        model: `This conversation resumed onto a retained workspace through the workspace tool: ${handoff.reason}. ${current} Continue the conversation in this new context.`,
         unqueued: 'Submit a new prompt.',
       }
     : {
@@ -299,7 +271,7 @@ const switchNotices = (
 export const keptConversationGuidance = (sessionFile: string): string =>
   `The conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
 
-type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner' | 'evidence'
+type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner' | 'workspace-tool'
 
 function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
   if (!tool) return undefined
@@ -309,12 +281,8 @@ function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
   if (source === 'sdk' && (path === '<sdk:write>' || path === '<sdk:edit>')) return 'native-write'
   if (source === 'inline' && path === '<inline:dev:work>' && tool.name === 'work')
     return 'work-owner'
-  if (
-    source === 'inline' &&
-    path === '<inline:dev:workspace-host>' &&
-    tool.name === 'workspace_evidence'
-  )
-    return 'evidence'
+  if (source === 'inline' && path === '<inline:dev:workspace-host>' && tool.name === 'workspace')
+    return 'workspace-tool'
   return undefined
 }
 
@@ -338,31 +306,6 @@ const workspaceConversation = (
     return Effect.succeed({ sessionId: manager.getSessionId(), sessionFile, dataHome })
   })
 
-const selectCandidate = Effect.fnUntraced(function* (
-  candidates: readonly ResumeCandidate[],
-  taskId: string,
-  context: ExtensionCommandContext
-) {
-  const selected = yield* Effect.promise(() =>
-    context.ui.select(
-      `Choose the exact retained workspace for task ${taskId}`,
-      candidates.map(
-        entry => `${entry.view.workspaceId} — ${entry.view.path} (${entry.view.origin})`
-      )
-    )
-  )
-  if (!selected) return undefined
-  const workspaceId = selected.slice(0, selected.indexOf(' — '))
-  const candidate = candidates.find(entry => entry.view.workspaceId === workspaceId)
-  if (!candidate)
-    notify(
-      context,
-      'Workspace selection did not match an exact candidate; no switch was started.',
-      'error'
-    )
-  return candidate
-})
-
 export const makeWorkspaceHost = Effect.fnUntraced(function* (
   options: WorkspaceHostOptions
 ): Effect.fn.Return<WorkspaceHost, never, Scope.Scope> {
@@ -373,14 +316,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let currentContext: ExtensionContext | undefined
   let currentApi: ExtensionAPI | undefined
 
-  let parked: false | 'switch' | 'guided-release' = false
+  let parked: false | 'switch' = false
   let closed = false
   let pending: PendingTransition | undefined
   let invokingHandoffSwitch = false
   let replacing = false
   let quitting = false
   const withdrawals = new Map<WorkspaceAttachment, Fiber.Fiber<void>>()
-  let workControls: WorkspaceWorkControls | undefined
+  let quitInterception: 'off' | 'armed' | 'handed-over' = 'off'
+  const quitRequested = Deferred.makeUnsafe<void>()
   let runtimePreparationSerial = 0
   let pendingReopen:
     | {
@@ -442,6 +386,31 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if ((yield* options.repositoryRoot(resolved)) !== undefined) return undefined
     return `The session was not imported: its working directory is not inside a Git checkout: ${resolved}\n${keptConversationGuidance(source)}`
   })
+
+  const showSweep = (receipt: SweepReceipt): void => {
+    const text = formatSweepReceipt(receipt)
+    if (currentApi === undefined || !currentContext?.hasUI) {
+      process.stderr.write(`${text}\n`)
+      return
+    }
+    try {
+      currentApi.sendMessage(
+        { customType: 'dev/workspace', content: text, display: true },
+        { triggerTurn: false }
+      )
+    } catch {
+      process.stderr.write(`${text}\n`)
+    }
+  }
+  const followedSweeps = new WeakSet<WorkspaceAttachment>()
+  const followSweeps = (attachment: WorkspaceAttachment): void => {
+    if (followedSweeps.has(attachment)) return
+    followedSweeps.add(attachment)
+    runInBackground(
+      Stream.runForEach(attachment.sweeps, receipt => Effect.sync(() => showSweep(receipt)))
+    )
+  }
+  followSweeps(options.attachment)
 
   const closeAttachmentOnce = (attachment: WorkspaceAttachment) =>
     Effect.suspend(() => {
@@ -881,7 +850,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       case 'work-owner':
         return Effect.void
       case 'read':
-      case 'evidence':
+      case 'workspace-tool':
         return admitRead(event.toolCallId, context)
       case 'workspace-shell':
         return Effect.map(admitWriter(context), writer =>
@@ -904,6 +873,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const conversation = yield* workspaceConversation(manager, options.dataHome)
     const attachment = existing ?? (yield* options.lifecycle.attach({ conversation, cwd }))
     if (attachment !== activeAttachment) preparedAttachments.add(attachment)
+    followSweeps(attachment)
     const effectiveCwd = attachment.binding.cwd
     let reopened = manager
     if (
@@ -995,6 +965,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
     return true
   })
+  const interceptQuit = Effect.fnUntraced(function* (rawDispose: () => Promise<void>) {
+    yield* Effect.yieldNow
+    if (quitInterception !== 'armed') return yield* piCall(rawDispose)
+    quitInterception = 'handed-over'
+    yield* Deferred.succeed(quitRequested, undefined)
+    return yield* Effect.never
+  })
+
   const guardedReplacement = <A, E>(
     cancelled: A,
     replace: Effect.Effect<A, E>
@@ -1189,279 +1167,91 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     yield* closeAttachmentOnce(activeAttachment)
   })
 
-  const resumeInTui = Effect.fnUntraced(
-    function* (command: ResumeCommand, context: ExtensionCommandContext) {
-      if (parked || pending) {
-        notify(
-          context,
-          'Workspace host is already parked or an earlier transition is unresolved; no second switch was started.',
-          'error'
-        )
-        return
-      }
-      const inspected = yield* Effect.exit(options.lifecycle.inspect({ taskId: command.taskId }))
-      if (Exit.isFailure(inspected)) {
-        notify(
-          context,
-          `Workspace inspection failed: ${errorText(Cause.squash(inspected.cause))}`,
-          'error'
-        )
-        return
-      }
-      const views = inspected.value
-      const candidates = resumeCandidates(views, command.taskId)
-      const candidate =
-        command.workspaceId === undefined && candidates.length > 1
-          ? yield* selectCandidate(candidates, command.taskId, context)
-          : yield* chooseResumeCandidate(views, command.taskId, command.workspaceId)
-      if (!candidate) return
-
-      const current = activeAttachment.binding
-      if (candidate.view.workspaceId === current.workspaceId && current.taskId === command.taskId) {
-        notify(
-          context,
-          `Task ${command.taskId} is already bound to workspace ${candidate.view.workspaceId}.`,
-          'info'
-        )
-        return
-      }
-
-      const controls = workControls
-      const activeWork =
-        controls === undefined
-          ? []
-          : yield* controls.running.pipe(
-              Effect.mapError(error =>
-                hostFailure(
-                  `Session-owned work could not be listed, so no switch was started: ${error.message}`
-                )
-              )
-            )
-      const liveShells = shell.live()
-      if (activeWork.length > 0 || liveShells > 0) {
-        const details = [
-          ...activeWork.map(
-            work =>
-              `- ${work.kind} task=${work.taskId} attempt=${work.attemptId} status=${work.status} cwd=${work.cwd}`
-          ),
-          ...(liveShells > 0
-            ? [`- ${liveShells} shell process group(s) started by this conversation`]
-            : []),
-        ].join('\n')
-        const confirmed = yield* Effect.promise(() =>
-          context.ui.confirm(
-            "Switch workspace and stop this conversation's session-owned work?",
-            `The old Pi session must shut down before rebinding. Its session-owned work will be closed; reservations and uncertain workspace observations remain recorded. This does not cancel by aborting the agent turn, and no tool payload will be replayed.\n\n${details}`
-          )
-        )
-        if (!confirmed) return
-        if (controls !== undefined)
-          yield* controls
-            .stopAll('workspace switch confirmed')
-            .pipe(
-              Effect.mapError(error =>
-                hostFailure(
-                  `Session-owned work could not be stopped, so no switch was started: ${error.message}`
-                )
-              )
-            )
-        yield* shell.stop
-      }
-
-      const selected = yield* Effect.exit(activeAttachment.select(candidate.selection))
-      if (Exit.isFailure(selected)) {
-        notify(
-          context,
-          `Workspace selection was rejected: ${errorText(Cause.squash(selected.cause))}`,
-          'error'
-        )
-        return
-      }
-      parked = 'switch'
-      const transition = makeTransition(selected.value, 'command', context, 'scheduled')
-      pending = transition
-      capturePendingInput(context)
-      yield* performPendingHandoff(transition)
-    },
-    (effect, _command, context) =>
-      effect.pipe(
-        Effect.catchTag(['WorkspaceCommandError', 'WorkspaceHostError'], error =>
-          Effect.sync(() => notify(context, error.message, 'error'))
-        )
+  const releaseInTui = Effect.fnUntraced(function* (
+    api: ExtensionAPI,
+    command: ReleaseCommand,
+    context: ExtensionCommandContext
+  ) {
+    if (parked || pending) {
+      notify(
+        context,
+        'Workspace host is parked or a transition is unresolved; no release was started.',
+        'error'
       )
-  )
-
-  const guidedRelease = Deferred.makeUnsafe<GuidedRelease>()
-
-  const ownLiveUses = (taskId: WorkspaceId, sessionId: string) =>
-    options.lifecycle
-      .inspect({ taskId })
-      .pipe(
-        Effect.map(views =>
-          views.flatMap(view =>
-            view.uses.filter(
-              use =>
-                use.execution?.sessionId === sessionId &&
-                use.stage !== 'quiescent' &&
-                use.stage !== 'unknown'
-            )
-          )
-        )
+      return
+    }
+    const { binding } = activeAttachment
+    if (binding.taskId === command.taskId) {
+      display(
+        api,
+        context,
+        `Task ${command.taskId} belongs to this conversation. Quitting dev (/quit) ends its uses and then sweeps the repository: finished workspaces are released automatically and the others stay retained with their reason. Use /workspace check ${command.taskId} to see what the sweep will do.`
       )
-  const awaitOwnCessation = (taskId: WorkspaceId, sessionId: string) =>
-    ownLiveUses(taskId, sessionId).pipe(
-      Effect.repeat({
-        schedule: Schedule.spaced(Duration.millis(CESSATION_POLL_MS)),
-        until: live => live.length === 0,
-      }),
-      Effect.timeoutOption(Duration.millis(CESSATION_WAIT_MS)),
-      Effect.map(Option.isSome)
-    )
-
-  const releaseInTui = Effect.fnUntraced(
-    function* (api: ExtensionAPI, command: ReleaseCommand, context: ExtensionCommandContext) {
-      if (parked || pending) {
-        notify(
-          context,
-          'Workspace host is parked, a transition is unresolved or a release is already in progress; no release was started.',
-          'error'
-        )
-        return
-      }
-      if (!context.hasUI) {
-        notify(
-          context,
-          'Workspace release needs an interactive confirmation; none is available here, so nothing was released.',
-          'error'
-        )
-        return
-      }
-      const checked = yield* Effect.exit(
-        options.lifecycle.check({
-          taskId: command.taskId,
-          ownConversation: activeAttachment.binding.conversation,
-        })
+      return
+    }
+    if (!context.hasUI) {
+      notify(
+        context,
+        'Workspace release needs an interactive confirmation; none is available here, so nothing was released.',
+        'error'
       )
-      if (Exit.isFailure(checked)) {
-        notify(
-          context,
-          `Workspace assessment failed; nothing was released: ${errorText(Cause.squash(checked.cause))}`,
-          'error'
-        )
-        return
-      }
-      const assessments = checked.value
-      const { binding } = activeAttachment
-      const containing = assessments.find(
-        assessment =>
-          assessment.origin === 'managed' &&
-          isWithin(assessment.path, binding.conversation.sessionFile)
-      )
-      if (containing !== undefined) {
-        notify(
-          context,
-          `Active conversation is inside managed worktree ${containing.workspaceId}. Preserve and open it outside that worktree before releasing this task. No release was started; work and the TUI stay active.`,
-          'error'
-        )
-        return
-      }
-      display(api, context, formatAssessments(command.taskId, assessments))
-      if (assessments.length === 0) return
-      const { sessionId } = binding.conversation
-      const involved =
-        binding.taskId === command.taskId ||
-        assessments.some(assessment => assessment.workspaceId === binding.workspaceId)
-      let session: SessionConsequences | undefined
-      if (involved) {
-        const running =
-          workControls === undefined
-            ? []
-            : yield* workControls.running.pipe(
-                Effect.mapError(error =>
-                  hostFailure(
-                    `Session-owned work could not be listed, so no release was started: ${error.message}`
-                  )
-                )
-              )
-        const inTask = (cwd: string) =>
-          assessments.some(assessment => isWithin(assessment.path, resolve(cwd)))
-        session = {
-          sessionId,
-          work: running.filter(work => inTask(work.cwd)).map(describeWork),
-          liveShells: shell.live(),
-          unrelatedWork: running.filter(work => !inTask(work.cwd)).map(describeWork),
-        }
-      }
-      const confirmation = releaseConfirmation(command.taskId, assessments, session)
-      const confirmed = yield* Effect.promise(() =>
-        context.ui.confirm(confirmation.title, confirmation.message)
-      )
-      if (!confirmed) {
-        notify(context, 'Release cancelled before confirmation; nothing was changed.', 'info')
-        return
-      }
-      const commandId = newId()
-      if (!involved) {
-        const run = yield* runRelease(options.lifecycle, {
-          taskId: command.taskId,
-          confirmed: assessments,
-          occupiedCwds: [resolve(process.cwd()), resolve(context.cwd)],
-          commandId,
-        })
-        display(api, context, formatReleaseRun(command.taskId, run))
-        return
-      }
-
-      parked = 'guided-release'
-      capturePendingInput(context)
-      const controls = workControls
-      const settled = yield* Effect.exit(
-        Effect.gen(function* () {
-          const currentRuntime = runtime
-          if (currentRuntime !== undefined && currentRuntime.session.isStreaming)
-            yield* fromPi(() => currentRuntime.session.abort())
-          yield* assertSessionIdle
-          if (controls !== undefined)
-            yield* controls
-              .stopAll('workspace release confirmed')
-              .pipe(Effect.mapError(error => hostFailure(error.message)))
-          yield* shell.stop
-          return yield* awaitOwnCessation(command.taskId, sessionId).pipe(
-            Effect.mapError(error => hostFailure(error.message))
-          )
-        })
-      )
-      if (Exit.isFailure(settled) || !settled.value) {
-        parked = false
-        restoreInput(context)
-        notify(
-          context,
-          Exit.isFailure(settled)
-            ? `This conversation's work could not be stopped and observed (${errorText(Cause.squash(settled.cause))}); work may already have stopped, but nothing was released and the TUI stays open.`
-            : `This conversation's work did not reach observed cessation within ${CESSATION_WAIT_MS / 1000} s; it may already have stopped, but nothing was released and the TUI stays open. Inspect the task and run a fresh release.`,
-          'error'
-        )
-        return
-      }
-      yield* Deferred.succeed(guidedRelease, {
+      return
+    }
+    const checked = yield* Effect.exit(
+      options.lifecycle.check({
         taskId: command.taskId,
-        commandId,
-        confirmed: assessments,
-        conversationFile: binding.conversation.sessionFile,
+        ownConversation: binding.conversation,
       })
-    },
-    (effect, _api, _command, context) =>
-      effect.pipe(
-        Effect.catchTag('WorkspaceHostError', error =>
-          Effect.sync(() => notify(context, error.message, 'error'))
-        )
+    )
+    if (Exit.isFailure(checked)) {
+      notify(
+        context,
+        `Workspace assessment failed; nothing was released: ${errorText(Cause.squash(checked.cause))}`,
+        'error'
       )
-  )
+      return
+    }
+    const assessments = checked.value
+    const containing = assessments.find(
+      assessment =>
+        assessment.origin === 'managed' &&
+        (isWithin(assessment.path, binding.conversation.sessionFile) ||
+          assessment.workspaceId === binding.workspaceId)
+    )
+    if (containing !== undefined) {
+      notify(
+        context,
+        `This conversation is inside or bound to managed worktree ${containing.workspaceId} of task ${command.taskId}; quitting sweeps it once it is finished. No release was started; work and the TUI stay active.`,
+        'error'
+      )
+      return
+    }
+    display(api, context, formatAssessments(command.taskId, assessments))
+    if (assessments.length === 0) return
+    if (!needsExplicitRelease(assessments)) {
+      display(api, context, noExplicitRelease(command.taskId))
+      return
+    }
+    const confirmation = releaseConfirmation(command.taskId, assessments)
+    const confirmed = yield* Effect.promise(() =>
+      context.ui.confirm(confirmation.title, confirmation.message)
+    )
+    if (!confirmed) {
+      notify(context, 'Release cancelled before confirmation; nothing was changed.', 'info')
+      return
+    }
+    const run = yield* runRelease(options.lifecycle, {
+      taskId: command.taskId,
+      confirmed: assessments,
+      occupiedPaths: [resolve(process.cwd()), resolve(context.cwd)],
+      commandId: newId(),
+    })
+    display(api, context, formatReleaseRun(command.taskId, run))
+  })
 
   const workspaceCommand = Effect.fnUntraced(
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
-      if (command.kind === 'resume') return yield* resumeInTui(command, context)
       if (command.kind === 'release') return yield* releaseInTui(api, command, context)
       const result = yield* runReadOnlyWorkspaceCommand(
         Effect.succeed(options.lifecycle),
@@ -1492,7 +1282,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     shellOperations: shell.operations,
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
-    guidedRelease,
+    quitRequested,
+    interceptQuit(enabled) {
+      if (quitInterception !== 'handed-over') quitInterception = enabled ? 'armed' : 'off'
+    },
     isParked: () => parked !== false,
     isDetached: () => detachedAttachments.has(activeAttachment),
     requestRebind: (handoff, source, context) =>
@@ -1508,7 +1301,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawDispose = nextRuntime.dispose.bind(nextRuntime)
       nextRuntime.dispose = () => {
         quitting = true
-        return rawDispose()
+        return quitInterception === 'armed' ? runPromise(interceptQuit(rawDispose)) : rawDispose()
       }
       const rawNew = nextRuntime.newSession.bind(nextRuntime)
       nextRuntime.newSession = newOptions =>
@@ -1529,9 +1322,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawImport = nextRuntime.importFromJsonl.bind(nextRuntime)
       nextRuntime.importFromJsonl = (inputPath, cwdOverride) =>
         runPromise(importConversation(rawSwitch, rawImport, inputPath, cwdOverride))
-    },
-    setWorkControls(controls) {
-      workControls = controls
     },
     close,
     extensionFactory(api) {
@@ -1586,7 +1376,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
 
       api.on('turn_end', (_event, context) => {
-        if (!pending || pending.origin !== 'tool-call') return
+        if (!pending || pending.origin === 'user-bash') return
         capturePendingInput(context)
         scheduleHandoff(pending)
       })
@@ -1618,11 +1408,13 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         handler: (args, context) => runPromise(workspaceCommand(api, args, context)),
       })
       api.registerTool(
-        makeEvidenceTool({
+        makeWorkspaceTool({
           lifecycle: options.lifecycle,
           attachment: () => activeAttachment,
           destinations: ghDestinationReader,
           runPromise,
+          requestResume: (handoff, context) =>
+            requestHandoff(handoff, 'tool-resume', context, false),
         })
       )
     },

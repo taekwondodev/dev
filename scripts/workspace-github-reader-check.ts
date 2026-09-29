@@ -11,11 +11,15 @@ const fail = (what: string, value: unknown): never => {
 }
 
 const pull = await claim(
-  'the reader normalizes a merged pull request: merged state, exact head, source and base repositories, base ref and merge result',
+  'the reader normalizes a merged pull request: merged state, merge time, exact head, source and base repositories, base ref and merge result',
   () => {
     const value = reader.pullRequest(repository, number)
     if (value === 'missing' || isUnavailable(value)) return fail('pull request', value)
     assert.equal(value.merged, true)
+    assert.ok(
+      value.mergedAt !== undefined && Number.isFinite(Date.parse(value.mergedAt)),
+      `merged_at reads back as a timestamp: ${String(value.mergedAt)}`
+    )
     assert.equal(value.headRepository, repository)
     assert.equal(value.baseRepository, repository)
     assert.equal(value.baseRef, 'trunk')
@@ -47,6 +51,13 @@ await claim(
     assert.ok(status === 'identical' || status === 'ahead', JSON.stringify(status))
     const behind = reader.compare(repository, tip, pull.headSha)
     assert.ok(behind === 'diverged' || behind === 'behind', JSON.stringify(behind))
+  }
+)
+await claim(
+  'the default branch of the repository reads back as the branch the merged pull request targets, and a missing repository is missing',
+  () => {
+    assert.equal(reader.defaultBranch(repository), pull.baseRef)
+    assert.equal(reader.defaultBranch('cli/no-such-repository-for-dev-check'), 'missing')
   }
 )
 await claim('a missing resource is reported as missing, not as an error or a guess', () => {

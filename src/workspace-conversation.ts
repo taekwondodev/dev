@@ -87,6 +87,14 @@ export interface AttachmentHandle {
   assertOpen(): void
 }
 
+export const conversationWorkspaces = (state: ConversationState): ReadonlySet<WorkspaceId> =>
+  new Set([
+    state.binding.workspaceId,
+    ...(state.pending === undefined ? [] : [state.pending.targetBinding.workspaceId]),
+    ...[...state.leases.values()].map(lease => lease.grant.workspaceId),
+    ...state.extraGates.map(held => held.workspaceId),
+  ])
+
 export const outgoingUses = (
   authority: WorkspaceAuthority,
   state: ConversationState,

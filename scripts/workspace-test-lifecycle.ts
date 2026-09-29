@@ -5,6 +5,8 @@ import {
   WorkspaceError,
   type PublicationReference,
   type ReleaseRequest,
+  type SweepReceipt,
+  type SweepRequest,
   type TaskTarget,
   type WorkspaceAssessment,
   type WorkspaceAttachment,
@@ -104,6 +106,7 @@ export interface TestLifecycle {
   validate(grant: WorkspaceGrant): Promise<void>
   check(taskId: WorkspaceId): Promise<readonly WorkspaceAssessment[]>
   release(request: ReleaseRequest): Promise<WorkspaceReleaseResult>
+  sweep(request: SweepRequest): Promise<SweepReceipt>
   recordTarget(taskId: WorkspaceId, target: TaskTarget): Promise<void>
   recordPublication(reference: PublicationReference): Promise<void>
   close(): Promise<void>
@@ -137,6 +140,7 @@ export const openLifecycle = async (options: {
     validate: grant => Effect.runPromise(lifecycle.validate(grant)),
     check: taskId => Effect.runPromise(lifecycle.check({ taskId })),
     release: request => Effect.runPromise(lifecycle.release(request)),
+    sweep: request => Effect.runPromise(lifecycle.sweep(request)),
     recordTarget: (taskId, target) => Effect.runPromise(lifecycle.recordTarget({ taskId, target })),
     recordPublication: reference => Effect.runPromise(lifecycle.recordPublication({ reference })),
     close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
