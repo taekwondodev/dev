@@ -1,5 +1,5 @@
-import { integrationUnknown, type CompletionFacts } from '../src/workspace-completion.ts'
-import type { CompletionVerdict } from '../src/workspace-domain.ts'
+import { integrationUnknown, type CompletionFacts } from '../../src/workspace-completion.ts'
+import type { CompletionVerdict } from '../../src/workspace-domain.ts'
 
 export const managedFacts = (overrides: Partial<CompletionFacts> = {}): CompletionFacts => ({
   moment: 'quit',

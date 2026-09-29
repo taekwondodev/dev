@@ -24,13 +24,13 @@ import {
   type TaskTarget,
   type WorkspaceGrant,
   type WorkspaceId,
-} from '../src/workspace-domain.ts'
-import { WorkspaceAuthority } from '../src/workspace-authority.ts'
-import { attemptedRows, formatSweepReceipt, sweepExitCode } from '../src/workspace-command.ts'
-import type { GitHubReader } from '../src/workspace-evidence.ts'
-import { checkTask } from '../src/workspace-release.ts'
-import type { StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
-import { newId } from '../src/workspace-platform.ts'
+} from '../../src/workspace-domain.ts'
+import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
+import { attemptedRows, formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
+import type { GitHubReader } from '../../src/workspace-evidence.ts'
+import { checkTask } from '../../src/workspace-release.ts'
+import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
+import { newId } from '../../src/workspace-platform.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
 import {

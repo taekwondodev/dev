@@ -16,14 +16,14 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionFactory,
-} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import { makeRuntimeFactory, sweepAtQuit } from '../src/launcher.ts'
-import { getProfile } from '../src/profiles.ts'
-import { acquireRuntime } from '../src/runtime-coordination.ts'
-import { createSessionGuard } from '../src/session-guard.ts'
-import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../src/workspace-command.ts'
-import { WorkspaceError, type WorkspaceView } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../src/workspace-host.ts'
+} from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
+import { makeRuntimeFactory, sweepAtQuit } from '../../src/launcher.ts'
+import { getProfile } from '../../src/profiles.ts'
+import { acquireRuntime } from '../../src/runtime-coordination.ts'
+import { createSessionGuard } from '../../src/session-guard.ts'
+import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../../src/workspace-command.ts'
+import { WorkspaceError, type WorkspaceView } from '../../src/workspace-domain.ts'
+import { makeWorkspaceHost } from '../../src/workspace-host.ts'
 import {
   deferred,
   loadInstalledPi,

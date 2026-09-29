@@ -1,6 +1,6 @@
 {
   "extends": ["./node_modules/oxc-standard/.oxlintrc.json"],
-  "jsPlugins": [{ "name": "dev", "specifier": "./scripts/code-policy.mjs" }],
+  "jsPlugins": [{ "name": "dev", "specifier": "./scripts/code-policy.ts" }],
   "rules": { "dev/no-source-comments": "error" },
   "overrides": [
     {

@@ -24,20 +24,20 @@ import type {
   ToolInfo,
   UserBashEvent,
   UserBashEventResult,
-} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import type { AgentSessionRuntime } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
-import { errorText } from '../src/error-text.ts'
-import { childWorkspaceExtension, type ControllerChannel } from '../src/work-child-workspace.ts'
-import { makeRuntimeFactory } from '../src/launcher.ts'
-import { getProfile } from '../src/profiles.ts'
-import { acquireRuntime } from '../src/runtime-coordination.ts'
-import { createSessionGuard } from '../src/session-guard.ts'
+} from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
+import type { AgentSessionRuntime } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
+import { errorText } from '../../src/error-text.ts'
+import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
+import { makeRuntimeFactory } from '../../src/launcher.ts'
+import { getProfile } from '../../src/profiles.ts'
+import { acquireRuntime } from '../../src/runtime-coordination.ts'
+import { createSessionGuard } from '../../src/session-guard.ts'
 import {
   noExplicitRelease,
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
   type WorkspaceCommandError,
-} from '../src/workspace-command.ts'
+} from '../../src/workspace-command.ts'
 import {
   WorkspaceError,
   type ReleaseRequest,
@@ -57,9 +57,9 @@ import {
   type WorkspaceOperation,
   type WorkspaceSelection,
   type WorkspaceView,
-} from '../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../src/workspace-host.ts'
-import { canonicalConversationFile, resolveWriteDestination } from '../src/workspace-paths.ts'
+} from '../../src/workspace-domain.ts'
+import { makeWorkspaceHost } from '../../src/workspace-host.ts'
+import { canonicalConversationFile, resolveWriteDestination } from '../../src/workspace-paths.ts'
 import {
   deferred,
   emitReply,

@@ -2,9 +2,9 @@ import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { NodeRuntime } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { launch } from '../src/launcher.ts'
-import type { WorkspaceLifecycle } from '../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { launch } from '../../src/launcher.ts'
+import type { WorkspaceLifecycle } from '../../src/workspace-domain.ts'
+import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
 import { loadInstalledPi } from './workspace-check-support.ts'
 
 const root = process.env.LAUNCHER_TUI_ROOT

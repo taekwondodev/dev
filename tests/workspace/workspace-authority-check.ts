@@ -23,8 +23,8 @@ import {
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceOperation,
-} from '../src/workspace-domain.ts'
-import { unsupportedAuthorityStorage } from '../src/workspace-authority.ts'
+} from '../../src/workspace-domain.ts'
+import { unsupportedAuthorityStorage } from '../../src/workspace-authority.ts'
 import { deferred, makeClaims } from './workspace-check-support.ts'
 import {
   faultInjector,
@@ -44,7 +44,7 @@ const repo = join(sandbox, 'repo')
 const root = join(sandbox, 'authority')
 const moduleUrl = new URL('./workspace-test-lifecycle.ts', import.meta.url).href
 const srcSpecifier = (module: string) =>
-  JSON.stringify(new URL(`../src/${module}`, import.meta.url).href)
+  JSON.stringify(new URL(`../../src/${module}`, import.meta.url).href)
 mkdirSync(repo)
 const git = (args: readonly string[], cwd = repo): string => {
   const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' })
@@ -1742,7 +1742,7 @@ try {
   await claim(
     'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME, and is never opened by the check',
     () => {
-      const devRoot = new URL('..', import.meta.url)
+      const devRoot = new URL('../..', import.meta.url)
       const secondInstallation = join(sandbox, 'second-installation')
       cpSync(new URL('src', devRoot), join(secondInstallation, 'src'), { recursive: true })
       cpSync(new URL('package.json', devRoot), join(secondInstallation, 'package.json'))

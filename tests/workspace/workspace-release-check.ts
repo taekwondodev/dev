@@ -27,8 +27,8 @@ import {
   type WorkspaceAssessment,
   type WorkspaceId,
   type WorkspaceLifecycle,
-} from '../src/workspace-domain.ts'
-import { decideCompletion } from '../src/workspace-completion.ts'
+} from '../../src/workspace-domain.ts'
+import { decideCompletion } from '../../src/workspace-completion.ts'
 import {
   integrationFacts,
   isUnavailable,
@@ -38,23 +38,23 @@ import {
   verifyInventory,
   type GitHubPullRequest,
   type GitHubReader,
-} from '../src/workspace-evidence.ts'
+} from '../../src/workspace-evidence.ts'
 import {
   WorkspaceToolError,
   makeWorkspaceTool,
   type PublicationDestinationReader,
-} from '../src/workspace-tool.ts'
-import type { StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
+} from '../../src/workspace-tool.ts'
+import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import {
   formatReleaseRun,
   releaseConfirmation,
   releaseExitCode,
   runRelease,
-} from '../src/workspace-command.ts'
-import { newId } from '../src/workspace-platform.ts'
-import { acquireMaintenance, acquireRuntime } from '../src/runtime-coordination.ts'
-import { authorityPaths } from '../src/workspace-authority-root.ts'
-import { acquirePathGates, releaseGates } from '../src/workspace-gates.ts'
+} from '../../src/workspace-command.ts'
+import { newId } from '../../src/workspace-platform.ts'
+import { acquireMaintenance, acquireRuntime } from '../../src/runtime-coordination.ts'
+import { authorityPaths } from '../../src/workspace-authority-root.ts'
+import { acquirePathGates, releaseGates } from '../../src/workspace-gates.ts'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Clock, Effect, Exit, Scope } from 'effect'
 import { makeClaims } from './workspace-check-support.ts'

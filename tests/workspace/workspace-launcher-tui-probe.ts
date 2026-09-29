@@ -80,8 +80,8 @@ try {
   const worktree = managed.grant.checkout
   await lifecycle.recordTarget(taskId, { kind: 'local', ref: 'refs/heads/main' })
   if (removeInstallation) {
-    const source = fileURLToPath(new URL('../', import.meta.url))
-    for (const path of ['src', 'scripts', 'profiles', 'package.json'])
+    const source = fileURLToPath(new URL('../../', import.meta.url))
+    for (const path of ['src', 'tests', 'profiles', 'package.json'])
       cpSync(join(source, path), join(worktree, path), { recursive: true })
     symlinkSync(join(source, 'node_modules'), join(worktree, 'node_modules'))
     git(['switch', '--quiet', '-c', 'delivered-installation'], worktree)
@@ -127,7 +127,7 @@ try {
   }
 
   const driverPath = removeInstallation
-    ? join(worktree, 'scripts', 'workspace-launcher-tui-driver.ts')
+    ? join(worktree, 'tests', 'workspace', 'workspace-launcher-tui-driver.ts')
     : fileURLToPath(new URL('./workspace-launcher-tui-driver.ts', import.meta.url))
   process.stdout.write(
     `\nDEV_LAUNCHER_TUI_INPUTS ${JSON.stringify({ TASK: taskId, REPO: repo, WORKTREE: worktree })}\n`
@@ -207,7 +207,7 @@ try {
         assert.equal(existsSync(worktree), false)
         assert.equal(listed, 1)
         assert.ok(existsSync(join(repo, 'AGENTS.md')))
-        assert.ok(existsSync(fileURLToPath(new URL('../node_modules/effect', import.meta.url))))
+        assert.ok(existsSync(fileURLToPath(new URL('../../node_modules/effect', import.meta.url))))
       })
   } finally {
     await after.close()

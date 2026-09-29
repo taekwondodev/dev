@@ -1,3 +1,5 @@
+import type { RuleTester } from 'oxlint/plugins-dev'
+
 export default {
   meta: { name: 'dev' },
   rules: {
@@ -20,6 +22,6 @@ export default {
           },
         }
       },
-    },
+    } satisfies Parameters<RuleTester['run']>[1],
   },
 }

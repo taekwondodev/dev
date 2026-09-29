@@ -10,16 +10,16 @@ import {
   type Proof,
   type PullRequestFact,
   type PullRequestSeed,
-} from '../src/workspace-completion.ts'
-import type { CompletionVerdict, TaskTarget } from '../src/workspace-domain.ts'
+} from '../../src/workspace-completion.ts'
+import type { CompletionVerdict, TaskTarget } from '../../src/workspace-domain.ts'
 import {
   deriveTarget,
   githubRepositoryOf,
   integrationFacts,
   recordedTarget,
   type GitHubReader,
-} from '../src/workspace-evidence.ts'
-import { symbolicBranch } from '../src/workspace-git.ts'
+} from '../../src/workspace-evidence.ts'
+import { symbolicBranch } from '../../src/workspace-git.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { checkoutFacts, managedFacts, verdictName } from './workspace-completion-fixtures.ts'
 

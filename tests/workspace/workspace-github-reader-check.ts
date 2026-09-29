@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { makeGitHubReader, isUnavailable } from '../src/workspace-evidence.ts'
+import { makeGitHubReader, isUnavailable } from '../../src/workspace-evidence.ts'
 import { makeClaims } from './workspace-check-support.ts'
 
 const repository = 'cli/cli'
