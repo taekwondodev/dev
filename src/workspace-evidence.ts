@@ -42,7 +42,7 @@ import {
 import type { ManifestEntry } from './workspace-records.ts'
 import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
 
-export const EVIDENCE_POLICY_VERSION = 3
+export const EVIDENCE_POLICY_VERSION = 4
 
 export const sha256Hex = (bytes: Uint8Array | string): string =>
   createHash('sha256').update(bytes).digest('hex')

@@ -8,7 +8,7 @@ import type {
   WorkspaceRole,
 } from './workspace-domain.ts'
 
-export const COMPLETION_POLICY_VERSION = 1
+export const COMPLETION_POLICY_VERSION = 2
 
 export type Proof =
   | { readonly kind: 'yes'; readonly reason: string }
@@ -76,8 +76,7 @@ const roleOf = (
 
 export const branchName = (ref: string): string => ref.replace(/^refs\/heads\//, '')
 
-const isClean = (residue: Residue): boolean =>
-  residue.tracked + residue.untracked + residue.ignored === 0
+const isClean = (residue: Residue): boolean => residue.tracked === 0 && residue.untracked === 0
 
 export const needsIntegration = (residue: Residue, ownCommits: boolean | undefined): boolean =>
   !isClean(residue) || ownCommits !== false
@@ -173,7 +172,7 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
   if (facts.origin === 'pre-existing') {
     if (facts.residue === undefined)
       return retain('residue-unreadable', 'The checkout contents could not be read.')
-    if (facts.residue.tracked > 0 || facts.residue.untracked > 0)
+    if (!isClean(facts.residue))
       return retain(
         'checkout-modified',
         `The checkout has ${facts.residue.tracked} tracked change(s) and ${facts.residue.untracked} untracked file(s); only a clean checkout loses its reservation automatically.`
@@ -205,7 +204,7 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
   )
     return finish(
       'no-residue',
-      'No tracked, untracked or ignored residue and no commits outside its base or target.'
+      'No tracked changes or non-ignored untracked files and no commits outside its base or target; Git-ignored files do not block completion.'
     )
 
   if (role === 'branch') {

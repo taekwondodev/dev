@@ -246,6 +246,35 @@ try {
   await liveOwner.owner.close()
 
   await claim(
+    'a detached worktree at its base with only Git-ignored files is automatically removed at quit',
+    async () => {
+      const checkout = userCheckout('ignored-detached')
+      const owner = await reserve(checkout)
+      const contender = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      const decision = await contender.authorize({ kind: 'write' })
+      assert.equal(decision.kind, 'rebind')
+      if (decision.kind !== 'rebind') throw new Error('Contended writer was not isolated')
+      const detached = decision.handoff.target
+      await contender.handoff(decision.handoff, async () => 'confirmed')
+      mkdirSync(join(detached.checkout, 'build'))
+      writeFileSync(join(detached.checkout, 'build', 'cache.bin'), 'ignored dependency\n')
+      await contender.close()
+      await owner.owner.close()
+      assert.equal(git(['status', '--porcelain'], detached.checkout), '')
+      assert.equal(git(['status', '--porcelain', '--ignored'], detached.checkout), '!! build/')
+      const view = (await lifecycle.check(taskOf(detached))).find(
+        item => item.workspaceId === detached.workspaceId
+      )
+      assert.equal(view?.completion.role, 'detached')
+      assert.equal(view?.inventory?.files, 1, 'ignored files still undergo inventory checks')
+      const removed = rowOf(await sweepAtQuit(detached.workspaceId), detached.workspaceId)
+      assert.deepEqual([removed.outcome, verdictOf(removed)], ['removed', 'no-residue'])
+      assert.equal(existsSync(detached.checkout), false)
+      assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(detached.checkout))
+    }
+  )
+
+  await claim(
     "a recorded target naming the worktree's own branch is ignored: a dirty branch worktree with unmerged commits is retained, not removed as in its target, and check says why",
     async () => {
       const selfOwner = await reserve(userCheckout('self-named-source'))
@@ -398,7 +427,7 @@ try {
           taskId: dirtyOwner.taskId,
           commandId: newId(),
           decided: [assessment.subject],
-          decider: { kind: 'completion', policyVersion: 1, moment: 'quit' },
+          decider: { kind: 'completion', policyVersion: 2, moment: 'quit' },
           workspaceId: assessment.workspaceId,
           occupiedPaths: [],
         }),
