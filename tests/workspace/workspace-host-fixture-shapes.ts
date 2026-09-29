@@ -148,7 +148,7 @@ export const makeFixtureAssessment = (input: {
       path: input.descriptor.path,
       effect: input.outcome === 'removable' ? 'remove-worktree' : 'none',
       stateDigest: 'a'.repeat(64),
-      policyVersion: 3,
+      policyVersion: 4,
     },
   } satisfies WorkspaceAssessment)
 

@@ -298,6 +298,18 @@ const rows: readonly Row[] = [
     role: 'detached',
   },
   {
+    name: 'a detached worktree with a non-ignored untracked file',
+    facts: managed({
+      allocation: 'checkout-contention',
+      residue: { tracked: 0, untracked: 1, ignored: 0 },
+      integration: integration({
+        headInTip: yes('HEAD is an ancestor of the current main tip'),
+      }),
+    }),
+    expected: 'retained:not-integrated',
+    role: 'detached',
+  },
+  {
     name: 'a managed worktree whose directory is gone with no removal by dev behind it',
     facts: managed({
       identity: 'absent',
@@ -406,6 +418,20 @@ await claim(
       assert.equal(verdict.role, row.role, row.name)
       for (const mention of row.mentions ?? [])
         assert.ok(verdict.reason.includes(mention), `${row.name}: ${verdict.reason}`)
+    }
+  }
+)
+await claim(
+  'Git-ignored files do not change completion verdicts or weaken retention safeguards',
+  () => {
+    for (const row of [...rows, ...precedence]) {
+      if (row.facts.residue === undefined) continue
+      const verdict = decideCompletion({
+        ...row.facts,
+        residue: { ...row.facts.residue, ignored: 6447 },
+      })
+      assert.equal(verdictName(verdict), row.expected, `${row.name}: ${verdict.reason}`)
+      assert.equal(verdict.role, row.role, row.name)
     }
   }
 )
