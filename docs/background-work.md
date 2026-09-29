@@ -184,8 +184,8 @@ Changed or unknown artifacts require reconciliation before accepting a result.
 
 ## Evidence boundary
 
-The implementation targets the installed Pi 0.87.1 SDK. Issues #12 and #24 retain
-daily-use acceptance: no new test suite, fixtures, benchmark campaign or prescribed
+The implementation targets the Pi SDK version verified in [references](references.md#local-evidence).
+Issues #12 and #24 retain daily-use acceptance: no new test suite, fixtures, benchmark campaign or prescribed
 manual checklist. Local execution evidence is reported with delivery; no
 reliability, efficiency or reasoning-quality improvement is inferred from the
 process architecture.

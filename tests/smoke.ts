@@ -64,7 +64,7 @@ const program = Effect.scoped(
       ],
       checkout
     )
-    if (!output.includes('pi: 0.87.1') || !output.includes('selection: general'))
+    if (!output.includes('pi: 0.99.0') || !output.includes('selection: general'))
       return yield* new SmokeError({ message: `Unexpected diagnostics:\n${output}` })
     yield* Effect.sync(() => {
       console.log(output.trim())
