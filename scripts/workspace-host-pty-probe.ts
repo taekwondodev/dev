@@ -12,7 +12,7 @@ import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { NodeServices } from '@effect/platform-node'
-import { Deferred, Effect, Exit, Schema, Scope } from 'effect'
+import { Effect, Exit, Scope, Stream } from 'effect'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -33,13 +33,12 @@ import { getProfile } from '../src/profiles.ts'
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { createSessionGuard } from '../src/session-guard.ts'
 import {
-  chooseResumeCandidate,
+  noExplicitRelease,
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
   type WorkspaceCommandError,
 } from '../src/workspace-command.ts'
 import {
-  WorkspaceAssessmentSchema,
   WorkspaceError,
   type ReleaseRequest,
   type WorkspaceAssessment,
@@ -59,11 +58,7 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../src/workspace-domain.ts'
-import {
-  makeWorkspaceHost,
-  type WorkspaceHost,
-  type WorkspaceWorkControls,
-} from '../src/workspace-host.ts'
+import { makeWorkspaceHost } from '../src/workspace-host.ts'
 import { canonicalConversationFile, resolveWriteDestination } from '../src/workspace-paths.ts'
 import {
   deferred,
@@ -80,6 +75,7 @@ import {
 } from './workspace-check-support.ts'
 import {
   fixtureId as id,
+  makeFixtureAssessment,
   makeFixtureBinding,
   makeFixtureGrant,
   makeFixtureHandoff,
@@ -137,9 +133,7 @@ const WS_RESUME_C = id(17)
 const WS_DELEGATED = id(18)
 const NAMESPACE_ID = id(32)
 
-process.stdout.write(
-  `\nDEV36_INPUTS ${JSON.stringify({ TASK_LEAD, TASK_RESUME, TASK_FAIL, WS_RESUME_A, WS_RESUME_C, WS_FAIL })}\n`
-)
+process.stdout.write(`\nDEV36_INPUTS ${JSON.stringify({ TASK_LEAD, TASK_B, TASK_RESUME })}\n`)
 
 const initProject = (path: string, label: string): void => {
   mkdir(join(path, '.pi', 'extensions'))
@@ -390,6 +384,19 @@ const makeAttachment = (
       }
     },
     async select(selection: WorkspaceSelection): Promise<WorkspaceHandoff> {
+      const live = [...owned]
+        .map(useId => uses.get(useId))
+        .find(
+          use =>
+            use !== undefined &&
+            executionOf(use.operation) !== undefined &&
+            !['quiescent', 'unknown', 'launch-failed'].includes(use.facts.at(-1)?.kind ?? '')
+        )
+      if (live !== undefined)
+        return refuse(
+          'blocked',
+          `This conversation still runs ${executionOf(live.operation)?.taskKey ?? 'a process'} in its workspace, so it cannot be switched yet. Wait for it to finish or stop it with /work stop.`
+        )
       const candidate = allDescriptors.find(
         item => item.taskId === selection.taskId && item.workspaceId === selection.workspaceId
       )
@@ -474,6 +481,7 @@ const makeAttachment = (
       fromAsync(() =>
         rules.handoff(transition, target => Effect.runPromise(Effect.orDie(replace(target))))
       ),
+    sweeps: Stream.empty,
     close: Effect.sync(() => {
       timeline.push({ kind: 'attachment-closed', workspaceId: attached.workspaceId })
     }),
@@ -517,11 +525,7 @@ const fixtureLifecycle = {
       ...descriptors.map(item =>
         makeView(item, item.path === targetB ? 'active' : 'preserved-for-resume')
       ),
-      ...resumeDescriptors.map(item =>
-        lingeringOwnUse && item.workspaceId === WS_RESUME_A
-          ? { ...makeView(item, 'active'), uses: [lingeringUse(initialSessionId)] }
-          : makeView(item, 'preserved-for-resume')
-      ),
+      ...resumeDescriptors.map(item => makeView(item, 'preserved-for-resume')),
     ]
     if (input.taskId !== undefined) rows = rows.filter(row => row.taskId === input.taskId)
     if (input.cwd !== undefined) {
@@ -543,46 +547,19 @@ const unsupported = () =>
     })
   )
 
-let lingeringOwnUse = false
 const releaseRequests: ReleaseRequest[] = []
-const lingeringUse = (sessionId: string): WorkspaceView['uses'][number] => ({
-  id: id(900),
-  access: 'write',
-  stage: 'started',
-  execution: {
-    sessionId,
-    taskKey: 'lingering-process',
-    attemptId: 'lingering-attempt',
-    generation: 'lead',
-  },
-})
-const eligibleAssessment = (item: FixtureDescriptor): WorkspaceAssessment => {
-  const reservationId = reservationIdOf(item)
-  return Schema.decodeSync(WorkspaceAssessmentSchema)({
-    repositoryId: item.repoId,
-    taskId: item.taskId,
-    workspaceId: item.workspaceId,
-    reservationId,
-    path: item.path,
-    origin: item.origin,
+const eligibleAssessment = (item: FixtureDescriptor): WorkspaceAssessment =>
+  makeFixtureAssessment({
+    descriptor: item,
     outcome: 'removable',
-    reasons: ['fixture: eligible at this check'],
-    nextActions: [],
-    residual: [],
-    subject: {
-      repositoryId: item.repoId,
-      workspaceId: item.workspaceId,
-      reservationId,
-      reservationRevision: 1,
-      workspaceRevision: 1,
-      origin: item.origin,
-      path: item.path,
-      effect: 'remove-worktree',
-      stateDigest: '0'.repeat(64),
-      policyVersion: 1,
+    completion: {
+      kind: 'finished',
+      role: 'child',
+      rule: 'child-delivered',
+      reason: 'fixture: a merged pull request of the task descends from the base',
     },
+    reservationId: reservationIdOf(item),
   })
-}
 const lifecycle: WorkspaceLifecycle = {
   attach: input => fromAsync(() => fixtureLifecycle.attach(input)),
   inspect: input => fromAsync(() => fixtureLifecycle.inspect(input)),
@@ -597,6 +574,7 @@ const lifecycle: WorkspaceLifecycle = {
     releaseRequests.push(input)
     return unsupported()
   },
+  sweep: unsupported,
   recordTarget: unsupported,
   recordPublication: unsupported,
 }
@@ -610,28 +588,15 @@ assert.deepEqual(parseCommand(['inspect', TASK_LEAD]), {
   kind: 'inspect',
   taskId: TASK_LEAD,
 })
-assert.deepEqual(parseCommand(['resume', TASK_RESUME]), {
-  kind: 'resume',
-  taskId: TASK_RESUME,
-})
-assert.deepEqual(parseCommand(['resume', TASK_RESUME, '--workspace', WS_RESUME_A]), {
-  kind: 'resume',
-  taskId: TASK_RESUME,
-  workspaceId: WS_RESUME_A,
-})
 assert.equal(
   refused(parseWorkspaceCommand(['inspect', `${TASK_LEAD.slice(0, 8)}*`])).exitCode,
   2,
   'a task prefix or pattern is a usage error, never a lookup'
 )
-assert.equal(refused(parseWorkspaceCommand(['resume', TASK_RESUME, '--workspace'])).exitCode, 2)
-const resumeViews = resumeDescriptors.map(item => makeView(item, 'preserved-for-resume'))
-const ambiguousResume = refused(chooseResumeCandidate(resumeViews, TASK_RESUME))
-assert.match(ambiguousResume.message, /multiple retained workspaces/)
-assert.equal(ambiguousResume.exitCode, 2)
 assert.equal(
-  Effect.runSync(chooseResumeCandidate(resumeViews, TASK_RESUME, WS_RESUME_C)).view.workspaceId,
-  WS_RESUME_C
+  refused(parseWorkspaceCommand(['resume', TASK_RESUME])).exitCode,
+  2,
+  'resume left the /workspace grammar for the workspace tool'
 )
 const leadScope = { repositoryRoot: Effect.succeed(lead) }
 const listResult = await Effect.runPromise(
@@ -668,6 +633,13 @@ const workProcess = (callId: string, taskId: string) =>
     taskId,
     command: `node -e "process.stdout.write('dev36-work-owner-started');setInterval(()=>{},1000)"`,
     cwd: targetB,
+  })
+
+const resumeTool = (callId: string, taskId: string, workspaceId?: string) =>
+  toolCall(callId, 'workspace', {
+    action: 'resume',
+    taskId,
+    ...(workspaceId === undefined ? {} : { workspaceId }),
   })
 
 interface ScriptStep extends ScriptedReply {
@@ -736,7 +708,7 @@ const script: readonly ScriptStep[] = [
         content: 'must not be written',
       }),
       toolCall('lead-bash-b', 'bash', {
-        command: 'echo dev36-lead-bash | tee lead-bash.txt; sleep 600 &',
+        command: 'echo dev36-lead-bash | tee lead-bash.txt; sleep 600 & echo $! > lead-bash.pid',
       }),
       readAgents('warned-read-b-again'),
     ],
@@ -772,7 +744,39 @@ const script: readonly ScriptStep[] = [
     delayMs: 40,
   },
   { id: 'retained-done', content: finalText, stopReason: 'stop', delayMs: 40 },
+  {
+    id: 'resume-ambiguous',
+    content: [resumeTool('resume-ambiguous', TASK_RESUME)],
+    stopReason: 'toolUse',
+    delayMs: 40,
+  },
+  { id: 'ambiguous-done', content: finalText, stopReason: 'stop', delayMs: 40 },
+  {
+    id: 'resume-live',
+    content: [resumeTool('resume-live', TASK_RESUME, WS_RESUME_A)],
+    stopReason: 'toolUse',
+    delayMs: 40,
+  },
+  { id: 'live-done', content: finalText, stopReason: 'stop', delayMs: 40 },
+  {
+    id: 'resume-explicit',
+    content: [resumeTool('resume-explicit', TASK_RESUME, WS_RESUME_A)],
+    stopReason: 'toolUse',
+    delayMs: 40,
+  },
   { id: 'resumed-a', content: finalText, stopReason: 'stop', delayMs: 40 },
+  {
+    id: 'resume-refused',
+    content: [resumeTool('resume-refused', TASK_RESUME, WS_RESUME_C)],
+    stopReason: 'toolUse',
+    delayMs: 40,
+  },
+  {
+    id: 'resume-fail',
+    content: [resumeTool('resume-fail', TASK_FAIL, WS_FAIL)],
+    stopReason: 'toolUse',
+    delayMs: 40,
+  },
 ]
 const staleContinuation: ScriptStep = {
   id: 'parked-continuation',
@@ -822,13 +826,14 @@ const {
 } = await makeOfflineModel({ pi, importFromPi, fixture, id: 'dev36-tui', stream: scriptedStream })
 
 const runStarted = deferred<void>()
-const selectorOpen = deferred<void>()
-const confirmOpen = deferred<void>()
 const mainTurnDone = deferred<void>()
 const backgroundTurnDone = deferred<void>()
 const abortedWithoutEscape = deferred<void>()
 const workToolReturned = deferred<void>()
 const retainedTurnDone = deferred<void>()
+const ambiguousTurnDone = deferred<void>()
+const liveTurnDone = deferred<void>()
+const resumedTurnDone = deferred<void>()
 const terminalEscape = deferred<void>()
 const commandDone = new Map<string, ReturnType<typeof deferred<void>>>()
 const waitForCommand = (key: string): Promise<void> => {
@@ -867,10 +872,8 @@ const runtimeSnapshots: {
 }[] = []
 const pendingEditorSnapshots: { readonly cwd: string; readonly editor: string }[] = []
 const toolRegistryByPath = new Map<string, ToolInfo[]>()
-let workControls: WorkspaceWorkControls | undefined
 const processResults = new Map<string, WorkResult>()
 const terminalInputs: string[] = []
-let confirmCount = 0
 let mainTurnWasDone = false
 
 const textOf = (content: readonly { readonly type: string; readonly text?: string }[]): string =>
@@ -915,21 +918,9 @@ const observeUi = <C extends ExtensionContext>(context: C): C => {
           timeline.push({ kind: 'notify', message: args[0], level: args[1] ?? 'info' })
           target.notify(...args)
         }
-      if (key === 'select')
-        return async (...args: Parameters<typeof target.select>) => {
-          process.stdout.write('\nDEV36_SELECTOR_OPEN\n')
-          selectorOpen.resolve()
-          return target.select(...args)
-        }
       if (key === 'confirm')
         return async (...args: Parameters<typeof target.confirm>) => {
           timeline.push({ kind: 'confirm', title: args[0], message: args[1] })
-          process.stdout.write(
-            args[0].startsWith('Release task')
-              ? '\nDEV36_RELEASE_CONFIRM_OPEN\n'
-              : `\nDEV36_CONFIRM_SWITCH_OPEN_${++confirmCount}\n`
-          )
-          confirmOpen.resolve()
           return target.confirm(...args)
         }
       const value: unknown = Reflect.get(target, key)
@@ -986,6 +977,17 @@ const instrumentHost =
               if (event === 'user_bash') return target.on(event, wrapUserBash(handler))
               return Reflect.apply(target.on, target, [event, handler])
             }
+          if (property === 'registerTool')
+            return (tool: Parameters<ExtensionAPI['registerTool']>[0]) =>
+              target.registerTool(
+                tool.name === 'workspace'
+                  ? {
+                      ...tool,
+                      execute: (toolCallId, input, signal, onUpdate, context) =>
+                        tool.execute(toolCallId, input, signal, onUpdate, observeUi(context)),
+                    }
+                  : tool
+              )
           if (property === 'registerCommand')
             return (name: string, command: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) =>
               target.registerCommand(
@@ -1076,6 +1078,9 @@ const observer =
       }
       if (lastStep === 'background-done' && stopReason === 'stop') backgroundTurnDone.resolve()
       if (lastStep === 'retained-done' && stopReason === 'stop') retainedTurnDone.resolve()
+      if (lastStep === 'ambiguous-done' && stopReason === 'stop') ambiguousTurnDone.resolve()
+      if (lastStep === 'live-done' && stopReason === 'stop') liveTurnDone.resolve()
+      if (lastStep === 'resumed-a' && stopReason === 'stop') resumedTurnDone.resolve()
       if (lastStep === 'agent-abort' && stopReason === 'aborted' && terminalInputs.length === 0)
         setImmediate(() => {
           assert.equal(terminalInputs.length, 0, 'model abort was not caused by a terminal Escape')
@@ -1115,17 +1120,6 @@ const observer =
     })
   }
 
-const runtimeHost: WorkspaceHost = new Proxy(workspaceHost, {
-  get(target, key) {
-    if (key === 'setWorkControls')
-      return (controls: WorkspaceWorkControls) => {
-        workControls = controls
-        target.setWorkControls(controls)
-      }
-    const value: unknown = Reflect.get(target, key)
-    return typeof value === 'function' ? value.bind(target) : value
-  },
-})
 const guard = createSessionGuard(
   await Effect.runPromise(
     Scope.provide(hostScope)(
@@ -1144,7 +1138,7 @@ const runtimeFactory = await Effect.runPromise(
       dataHome,
       profile: yield* getProfile('general'),
       guard,
-      workspaceHost: runtimeHost,
+      workspaceHost,
       lifecycle,
       modelRuntime: Effect.succeed(modelRuntime),
       model: offlineModel,
@@ -1270,19 +1264,14 @@ assert.ok(workLogs)
 await waitFor('real WorkOwner process output', () =>
   readFileSync(workLogs, 'utf8').includes('dev36-work-owner-started') ? true : undefined
 )
-const runningAttempts = async (): Promise<readonly string[]> => {
-  assert.ok(workControls, 'the runtime handed its background-work controls to the host')
-  return (await Effect.runPromise(workControls.running)).map(item => item.attemptId)
-}
 const cancelledWork = async (attemptId: string) => {
   const [use] = usesWhere(
     item => item.scope === 'opaque' && executionOf(item.operation)?.attemptId === attemptId
   )
   assert.ok(use, `attempt ${attemptId} was admitted as an opaque scoped use`)
-  const terminal = await waitFor(`settled attempt ${attemptId}`, async () => {
+  const terminal = await waitFor(`settled attempt ${attemptId}`, () => {
     const last = use.facts.at(-1)
-    const running = (await runningAttempts()).includes(attemptId)
-    return !running && (last?.kind === 'quiescent' || last?.kind === 'unknown') ? last : undefined
+    return last?.kind === 'quiescent' || last?.kind === 'unknown' ? last : undefined
   })
   assert.deepEqual(factKinds(use).slice(0, 3), ['launch-intent', 'spawned', 'started'])
   assert.deepEqual(terminal, {
@@ -1316,8 +1305,8 @@ const [retainedUse] = usesWhere(
 )
 assert.ok(retainedUse, 'the retained WorkOwner launch was admitted as an opaque scoped use')
 assert.ok(
-  (await runningAttempts()).includes(retainedProcess.id),
-  'the retained process is still running when the resume starts'
+  !settledShell(retainedUse),
+  'the retained process is still running when the resume is first attempted'
 )
 
 const [leadShellUse] = shellUses()
@@ -1326,20 +1315,43 @@ const leadShellSpawn = leadShellUse.facts.find(fact => fact.kind === 'spawned')
 assert.ok(leadShellSpawn?.kind === 'spawned')
 assert.ok(
   !settledShell(leadShellUse),
-  'the backgrounded lead-shell descendant keeps its use live until a handoff stops it'
+  'the backgrounded lead-shell descendant keeps its use live until it ends'
 )
 
 marker('DEV36_READY_FOR_COMMANDS')
 await within(waitForCommand('list:1'), 90000, 'TUI /workspace list')
 await within(waitForCommand('inspect:1'), 90000, 'TUI /workspace inspect')
-await within(selectorOpen.promise, 90000, 'TUI retained-workspace selector')
-const handoffsBeforeCancel = handoffs.length
-await within(waitForCommand('resume:1'), 90000, 'Escape-cancelled TUI resume')
-assert.equal(resolve(activeRuntime.cwd), resolve(targetB), 'Escape cancelled without rebinding')
-assert.equal(handoffs.length, handoffsBeforeCancel, 'cancelled selection started no handoff')
-const secondResume = waitForCommand('resume:2')
-await within(confirmOpen.promise, 90000, 'explicit confirmation before stopping live work')
-await within(secondResume, 90000, 'explicit same-conversation resume')
+await within(waitForCommand('release:1'), 90000, 'TUI /workspace release of another task')
+await within(waitForCommand('release:2'), 90000, "TUI /workspace release of the TUI's own task")
+assert.deepEqual(releaseRequests, [], 'neither release attempted anything')
+assert.equal(
+  timeline.filter(entry => entry.kind === 'confirm').length,
+  0,
+  'nothing asked for a release confirmation'
+)
+
+const handoffsBeforeResume = handoffs.length
+marker('DEV36_READY_FOR_AMBIGUOUS_RESUME')
+await within(ambiguousTurnDone.promise, 90000, 'ambiguous workspace tool resume')
+assert.equal(handoffs.length, handoffsBeforeResume, 'an ambiguous resume started no handoff')
+assert.equal(resolve(activeRuntime.cwd), resolve(targetB))
+marker('DEV36_READY_FOR_LIVE_RESUME')
+await within(liveTurnDone.promise, 90000, 'workspace tool resume refused while work runs')
+assert.equal(handoffs.length, handoffsBeforeResume, 'a refused resume started no handoff')
+assert.ok(!timeline.some(entry => entry.kind === 'select'), 'no selection was made')
+marker('DEV36_READY_FOR_WORK_STOP')
+const stoppedRetained = await cancelledWork(retainedProcess.id)
+const descendantPid = Number(readFileSync(join(targetB, 'lead-bash.pid'), 'utf8').trim())
+const descendant = leadShellUse.facts
+  .flatMap(fact => (fact.kind === 'observed' ? fact.processes : []))
+  .find(item => item.pid === descendantPid)
+assert.ok(descendant, 'the backgrounded lead-shell descendant was observed')
+process.kill(descendant.pid, 'SIGKILL')
+await waitFor('the ended lead-shell family to settle', () =>
+  settledShell(leadShellUse) ? true : undefined
+)
+marker('DEV36_READY_FOR_EXPLICIT_RESUME')
+await within(resumedTurnDone.promise, 90000, 'workspace tool resume onto the retained workspace')
 assert.equal(workspaceHost.isParked(), false)
 assert.equal(resolve(activeRuntime.cwd), resolve(targetA))
 assert.equal(activeRuntime.session.sessionManager.getSessionId(), initialSessionId)
@@ -1352,54 +1364,38 @@ assert.equal(runtimeSnapshots.filter(item => item.cwd === targetA).at(-1)?.shutd
 refusedHandoffTargets.add(WS_RESUME_C)
 const snapshotsBeforeRefusal = runtimeSnapshots.length
 marker('DEV36_READY_FOR_REFUSED_SWITCH')
-await within(waitForCommand('resume:3'), 90000, 'refused TUI resume')
-assert.equal(workspaceHost.isParked(), false, 'a switch refused before the host acted unparks')
+const refusalNotice = await within(
+  waitFor('the refused switch notice', () =>
+    timeline.find(
+      entry =>
+        entry.kind === 'notify' && entry.message.startsWith('Workspace switch was not performed')
+    )
+  ),
+  90000,
+  'refused workspace tool resume'
+)
+await waitFor('the refused switch to unpark', () => (workspaceHost.isParked() ? undefined : true))
 assert.equal(resolve(activeRuntime.cwd), resolve(targetA))
 assert.equal(workspaceHost.attachment.binding.workspaceId, WS_RESUME_A)
 assert.equal(runtimeSnapshots.length, snapshotsBeforeRefusal, 'no replacement runtime started')
-const refusalNotice = timeline.find(
-  entry => entry.kind === 'notify' && entry.message.startsWith('Workspace switch was not performed')
-)
-assert.ok(refusalNotice?.kind === 'notify', 'the refused switch was reported to the user')
+assert.ok(refusalNotice.kind === 'notify', 'the refused switch was reported to the user')
 assert.equal(refusalNotice.level, 'warning')
 assert.match(
   refusalNotice.message,
   /the current workspace is kept\. Workspace transition refused before the host acted; the current binding is kept: fixture target became unavailable/
 )
 
-lingeringOwnUse = true
-marker('DEV36_READY_FOR_GUIDED_RELEASE')
-await within(waitForCommand('release:1'), 90000, 'guided release without observed cessation')
-lingeringOwnUse = false
-const releaseConfirm = timeline.find(
-  entry => entry.kind === 'confirm' && entry.title === `Release task ${TASK_RESUME}?`
-)
-assert.ok(releaseConfirm?.kind === 'confirm', 'the guided release asked for confirmation')
-assert.ok(
-  releaseConfirm.message.includes(initialSessionId) &&
-    releaseConfirm.message.includes('closes this TUI'),
-  'the confirmation names this conversation and says its TUI closes'
-)
-const cessationNotice = timeline.find(
-  entry =>
-    entry.kind === 'notify' &&
-    entry.message.includes('nothing was released') &&
-    entry.message.includes('the TUI stays open')
-)
-assert.ok(cessationNotice?.kind === 'notify', 'the bounded cessation failure was reported')
-assert.equal(cessationNotice.level, 'error')
-assert.deepEqual(releaseRequests, [], 'no release attempt was made')
-assert.equal(
-  Deferred.isDoneUnsafe(workspaceHost.guidedRelease),
-  false,
-  'the guided release was not handed to the launcher'
-)
-assert.equal(workspaceHost.isParked(), false, 'the host unparked after the bounded wait')
-assert.equal(resolve(activeRuntime.cwd), resolve(targetA), 'the TUI kept its workspace')
-
 attachFailures.add(resolve(targetFail))
 marker('DEV36_READY_FOR_FAILED_REBIND')
-await within(waitForCommand('resume:4'), 90000, 'failed automatic rebind report')
+await within(
+  waitFor('the failed rebind to settle unknown', () =>
+    timeline.some(entry => entry.kind === 'handoff-settled' && entry.outcome === 'unknown')
+      ? true
+      : undefined
+  ),
+  90000,
+  'failed automatic rebind report'
+)
 assert.ok(
   attachCalls.some(
     call => call.path === resolve(targetFail) && call.sessionId === initialSessionId
@@ -1449,6 +1445,11 @@ for (const toolCallId of [
   'work-owner-process',
   'work-owner-escape',
   'work-owner-retained',
+  'resume-ambiguous',
+  'resume-live',
+  'resume-explicit',
+  'resume-refused',
+  'resume-fail',
 ])
   assert.equal(blockOf(toolCallId), undefined, `${toolCallId} was admitted`)
 
@@ -1468,7 +1469,14 @@ assert.deepEqual(
     ['escape-stream', targetB],
     ['work-retained', targetB],
     ['retained-done', targetB],
+    ['resume-ambiguous', targetB],
+    ['ambiguous-done', targetB],
+    ['resume-live', targetB],
+    ['live-done', targetB],
+    ['resume-explicit', targetB],
     ['resumed-a', targetA],
+    ['resume-refused', targetA],
+    ['resume-fail', targetA],
   ].map(([step = '', cwd = '']) => [step, resolve(cwd)]),
   'every unparked provider request ran in the expected runtime'
 )
@@ -1538,6 +1546,15 @@ assert.equal(readFileSync(join(targetB, 'fresh-native.txt'), 'utf8'), 'edited de
 for (const toolCallId of ['fresh-native-b', 'edit-native-b', 'lead-bash-b'])
   assert.equal(toolResults.get(toolCallId)?.isError, false, `${toolCallId} succeeded`)
 assert.match(toolResults.get('lead-bash-b')?.text ?? '', /^dev36-lead-bash\s*$/)
+assert.equal(toolResults.get('resume-ambiguous')?.isError, true)
+assert.ok(
+  (toolResults.get('resume-ambiguous')?.text ?? '').includes('several retained workspaces') &&
+    (toolResults.get('resume-ambiguous')?.text ?? '').includes(WS_RESUME_C),
+  'an ambiguous resume names the candidates'
+)
+assert.equal(toolResults.get('resume-live')?.isError, true)
+assert.equal(toolResults.get('resume-explicit')?.isError, false)
+assert.match(toolResults.get('resume-explicit')?.text ?? '', /"resumed":"requested"/)
 assert.equal(toolResults.get('empty-edit-b')?.isError, true)
 assert.match(toolResults.get('empty-edit-b')?.text ?? '', /edits must contain at least one/)
 for (const toolCallId of ['warned-read-b', 'warned-read-b-again']) {
@@ -1653,7 +1670,6 @@ assert.ok(
   ),
   'the backgrounded descendant was observed after the shell itself exited'
 )
-const resumeConfirm = timeline.findIndex(entry => entry.kind === 'confirm')
 const resumeSelect = timeline.findIndex(entry => entry.kind === 'select')
 const resumeHandoff = timeline.findIndex(
   (entry, index) => index > resumeSelect && entry.kind === 'handoff-started'
@@ -1664,29 +1680,16 @@ for (const [label, use] of [
 ] as const) {
   const settled = factIndex(use.grant.useId, 'quiescent')
   assert.ok(
-    resumeConfirm !== -1 && resumeConfirm < settled && settled < resumeSelect,
-    `the confirmed resume stopped the ${label} before selecting the target`
+    settled !== -1 && settled < resumeSelect,
+    `the ${label} was observed gone before the resume selected its target`
   )
 }
-assert.ok(resumeSelect < resumeHandoff)
+assert.ok(resumeSelect !== -1 && resumeSelect < resumeHandoff)
 assert.deepEqual(retainedUse.facts.at(-1), {
   kind: 'quiescent',
   reason: 'The owned process group and every tracked descendant were observed gone',
 })
-assert.equal(
-  timeline.filter(entry => entry.kind === 'confirm').length,
-  2,
-  'only the resume with live work and the guided release asked for confirmation'
-)
-const firstConfirm = timeline[resumeConfirm]
-assert.ok(firstConfirm?.kind === 'confirm')
-assert.ok(
-  firstConfirm.message.includes(
-    `- process task=retained-process attempt=${retainedProcess.id} status=running`
-  ),
-  'the resume confirmation listed the running WorkOwner process'
-)
-assert.match(firstConfirm.message, /- 1 shell process group\(s\) started by this conversation/)
+assert.equal(timeline.filter(entry => entry.kind === 'confirm').length, 0)
 assert.throws(() => process.kill(leadShellSpawn.process.pid, 0), /ESRCH/)
 
 assert.deepEqual(
@@ -1766,16 +1769,8 @@ assert.ok(
 )
 assert.deepEqual(
   workspaceCommands,
-  [
-    'list',
-    `inspect ${TASK_LEAD}`,
-    `resume ${TASK_RESUME}`,
-    `resume ${TASK_RESUME} --workspace ${WS_RESUME_A}`,
-    `resume ${TASK_RESUME} --workspace ${WS_RESUME_C}`,
-    `release ${TASK_RESUME}`,
-    `resume ${TASK_FAIL} --workspace ${WS_FAIL}`,
-  ],
-  'InteractiveMode dispatched the exact list/inspect/resume/release grammar'
+  ['list', `inspect ${TASK_LEAD}`, `release ${TASK_RESUME}`, `release ${TASK_B}`],
+  'InteractiveMode dispatched the exact list/inspect/release grammar'
 )
 assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB)))
 assert.ok(inspections.some(input => input.taskId === TASK_LEAD))
@@ -1788,7 +1783,7 @@ assert.deepEqual(
   [
     reevaluate('fixture competing writer required an isolated workspace', WS_A, targetA),
     reevaluate('fixture repeated contention required another isolated workspace', WS_B, targetB),
-    `The user switched this conversation's workspace with /workspace resume: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Continue the conversation in this new context.`,
+    `This conversation resumed onto a retained workspace through the workspace tool: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Continue the conversation in this new context.`,
   ],
   'the model was told why each switch happened, and only blocked operations were called blocked'
 )
@@ -1804,21 +1799,20 @@ assert.deepEqual(
       row(TASK_B, WS_B, true),
     ],
     [`Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`],
-    [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
     [
-      `Release eligibility for exact task ${TASK_RESUME} (a check grants nothing; release rechecks everything):`,
+      `Release eligibility for exact task ${TASK_RESUME} (a check grants nothing; the sweep at quit or before a worktree allocation rechecks everything):`,
       `workspace ${WS_RESUME_A} (managed) at ${targetA}`,
     ],
+    [noExplicitRelease(TASK_RESUME)],
+    [
+      `Task ${TASK_B} belongs to this conversation. Quitting dev (/quit) ends its uses and then sweeps the repository: finished workspaces are released automatically and the others stay retained with their reason. Use /workspace check ${TASK_B} to see what the sweep will do.`,
+    ],
+    [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
   ],
-  'the TUI showed each confirmed switch, the /workspace list, inspect and release assessment output'
+  'the TUI showed each switch, the /workspace list, inspect and both release answers'
 )
 assert.ok(terminalInputs.length > 0)
 assert.equal(processResults.size, 3)
-assert.equal(
-  Deferred.isDoneUnsafe(workspaceHost.guidedRelease),
-  false,
-  'no later step handed the failed guided release to the launcher'
-)
 
 class GrantingController extends EventEmitter implements ControllerChannel {
   readonly connected = true
@@ -1907,12 +1901,12 @@ const report = {
     attemptId: executionOf(use.operation)?.attemptId,
     facts: factKinds(use),
   })),
-  resumeConfirmation: firstConfirm.message,
+  resumeRefusedWhileWorkRan: toolResults.get('resume-live')?.text,
   refusedSwitchNotice: refusalNotice.message,
-  guidedReleaseCessationFailure: cessationNotice.message,
+  workStoppedBeforeResume: stoppedRetained,
   userBash: bashHistory(),
   workOwnerCancellationObservations: [abortObservation, escapeObservation],
-  retainedWorkStoppedBeforeSelect: retainedUse.facts.at(-1),
+  retainedWorkStoppedBeforeResume: retainedUse.facts.at(-1),
   pendingInputRestored: true,
   repeatedSameFileHandoffs: handoffs.length,
   failedRuntimeCreationStayedParked: workspaceHost.isParked(),
@@ -1929,7 +1923,8 @@ const report = {
   limits: [
     'WorkspaceLifecycle is a typed stub that issues grants and records the reported facts without judging them; admission rules, the execution stage machine, fencing, live-execution refusals, persistence and writer-grant restoration after a cancelled switch are covered by the real-authority probe and workspace-authority-check.ts, not here.',
     'The refused switch is fault-injected in the stub; the real triggers (a live execution appearing between select and handoff, an invalidated target) are not produced here.',
-    'The guided release cessation failure is fault-injected: the stub keeps reporting a live use of this conversation; a real process surviving stopAll is not produced here.',
+    "The stub's refusal to select while an attempt of this conversation is live mirrors the authority's check; the real refusal is covered by workspace-authority-check.ts.",
+    'The backgrounded lead-shell descendant is ended by the probe itself, as a user ending it would, so the shell observation settles its use before the resume.',
     'Shell quiescence is observed through the process group and tracked descendants; a descendant that leaves the group and is not a tracked child escapes observation and is not exercised here.',
     'Project extensions are gated only by Pi folder trust; their executable side effects are not bounded by tool-call instrumentation.',
   ],

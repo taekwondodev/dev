@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Cause, Effect, Exit, Schema } from 'effect'
+import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { Cause, Clock, Effect, Exit, Schema } from 'effect'
 import { errorText } from './error-text.ts'
+import { resumeCandidates } from './workspace-command.ts'
 import {
   GitHubRepositorySchema,
   RelativeFilePath,
@@ -11,13 +12,19 @@ import {
   WorkspaceId,
   type PublicationReference,
   type WorkspaceAttachment,
+  type WorkspaceHandoff,
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
 import { canonicalGitWorkspace } from './workspace-git.ts'
-import { newId, now } from './workspace-platform.ts'
+import { newId } from './workspace-platform.ts'
 
-const EvidenceInputSchema = Schema.Union([
+const WorkspaceToolInputSchema = Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal('resume'),
+    taskId: WorkspaceId,
+    workspaceId: Schema.optional(WorkspaceId),
+  }),
   Schema.Struct({
     action: Schema.Literal('set-target'),
     taskId: Schema.optional(WorkspaceId),
@@ -34,17 +41,17 @@ const EvidenceInputSchema = Schema.Union([
     }),
   }),
 ])
-type EvidenceInput = typeof EvidenceInputSchema.Type
-const parameters = Schema.toJsonSchemaDocument(EvidenceInputSchema, {
+type WorkspaceToolInput = typeof WorkspaceToolInputSchema.Type
+const parameters = Schema.toJsonSchemaDocument(WorkspaceToolInputSchema, {
   onExcessProperty: 'error',
 }).schema
-const decodeInput = Schema.decodeUnknownEffect(EvidenceInputSchema)
+const decodeInput = Schema.decodeUnknownEffect(WorkspaceToolInputSchema)
 
-export class EvidenceToolError extends Schema.TaggedError<EvidenceToolError>()(
-  'EvidenceToolError',
+export class WorkspaceToolError extends Schema.TaggedError<WorkspaceToolError>()(
+  'WorkspaceToolError',
   { message: Schema.String }
 ) {}
-const refuse = (message: string) => new EvidenceToolError({ message })
+const refuse = (message: string) => new WorkspaceToolError({ message })
 
 const BodyPayload = Schema.Struct({ body: Schema.NullOr(Schema.String), html_url: Schema.String })
 const decodeBody = Schema.decodeUnknownSync(BodyPayload)
@@ -54,13 +61,13 @@ export interface PublicationDestinationReader {
     repository: string,
     number: number,
     commentId: number | undefined
-  ): Effect.Effect<{ readonly body: string; readonly url: string }, EvidenceToolError>
-  attachment(url: string): Effect.Effect<Uint8Array, EvidenceToolError>
+  ): Effect.Effect<{ readonly body: string; readonly url: string }, WorkspaceToolError>
+  attachment(url: string): Effect.Effect<Uint8Array, WorkspaceToolError>
 }
 
 export const ghDestinationReader: PublicationDestinationReader = {
   body: (repository, number, commentId) =>
-    Effect.callback<{ readonly body: string; readonly url: string }, EvidenceToolError>(resume => {
+    Effect.callback<{ readonly body: string; readonly url: string }, WorkspaceToolError>(resume => {
       const endpoint =
         commentId === undefined
           ? `repos/${repository}/issues/${number}`
@@ -137,14 +144,20 @@ const utf8Text = (bytes: Uint8Array): string | undefined => {
   }
 }
 
-export interface EvidenceToolOptions {
+export interface WorkspaceToolOptions {
   readonly lifecycle: WorkspaceLifecycle
   readonly attachment: () => WorkspaceAttachment
   readonly destinations: PublicationDestinationReader
   readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>
+  readonly requestResume: (handoff: WorkspaceHandoff, context: ExtensionContext) => void
 }
 
-export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition => {
+interface ToolReply {
+  readonly value: unknown
+  readonly terminate: boolean
+}
+
+export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition => {
   const boundWorkspace = Effect.fnUntraced(function* (requestedTaskId: WorkspaceId | undefined) {
     const { binding } = options.attachment()
     const taskId = requestedTaskId ?? binding.taskId
@@ -159,18 +172,59 @@ export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition =
     return { taskId, binding, view, views }
   })
 
+  const resume = Effect.fnUntraced(function* (
+    input: Extract<WorkspaceToolInput, { readonly action: 'resume' }>,
+    context: ExtensionContext
+  ) {
+    const attachment = options.attachment()
+    const views = yield* options.lifecycle
+      .inspect({ taskId: input.taskId })
+      .pipe(Effect.mapError(error => refuse(`Workspace inspection failed: ${error.message}`)))
+    const candidates = resumeCandidates(views, input.taskId)
+    const candidate =
+      input.workspaceId === undefined
+        ? candidates.find(() => candidates.length === 1)
+        : candidates.find(entry => entry.view.workspaceId === input.workspaceId)
+    if (candidate === undefined)
+      return yield* refuse(
+        candidates.length === 0 || input.workspaceId !== undefined
+          ? `Task ${input.taskId} has no matching workspace preserved for resume: ${views.map(view => `${view.workspaceId} is ${view.outcome}`).join('; ') || 'no workspace records exist'}.`
+          : `Task ${input.taskId} has several retained workspaces; pass workspaceId, one of: ${candidates.map(entry => `${entry.view.workspaceId} at ${entry.view.path}`).join('; ')}.`
+      )
+    const { binding } = attachment
+    if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId)
+      return {
+        value: { resumed: 'already-bound', taskId: input.taskId, workspaceId: binding.workspaceId },
+        terminate: false,
+      }
+    const handoff = yield* attachment
+      .select(candidate.selection)
+      .pipe(Effect.mapError(error => refuse(`Workspace selection was refused: ${error.message}`)))
+    options.requestResume(handoff, context)
+    return {
+      value: {
+        resumed: 'requested',
+        taskId: input.taskId,
+        workspaceId: candidate.view.workspaceId,
+        path: candidate.view.path,
+        note: 'The conversation switches to this workspace when the current turn ends; no other tool runs before then.',
+      },
+      terminate: true,
+    }
+  })
+
   const setTarget = Effect.fnUntraced(function* (
-    input: Extract<EvidenceInput, { readonly action: 'set-target' }>
+    input: Extract<WorkspaceToolInput, { readonly action: 'set-target' }>
   ) {
     const { taskId } = yield* boundWorkspace(input.taskId)
     yield* options.lifecycle
       .recordTarget({ taskId, target: input.target })
       .pipe(Effect.mapError(error => refuse(`Target was not recorded: ${error.message}`)))
-    return { recorded: 'target', taskId, target: input.target }
+    return { value: { recorded: 'target', taskId, target: input.target }, terminate: false }
   })
 
   const recordPublication = Effect.fnUntraced(function* (
-    input: Extract<EvidenceInput, { readonly action: 'record-publication' }>
+    input: Extract<WorkspaceToolInput, { readonly action: 'record-publication' }>
   ) {
     const { taskId, binding, view } = yield* boundWorkspace(input.taskId)
     if (view === undefined)
@@ -237,27 +291,29 @@ export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition =
         readBack,
         url: destination.url,
       },
-      verifiedAt: now(),
+      verifiedAt: yield* Clock.currentTimeMillis,
     }
     yield* options.lifecycle
       .recordPublication({ reference })
       .pipe(Effect.mapError(error => refuse(`Publication was not recorded: ${error.message}`)))
-    return { recorded: 'publication', reference }
+    return { value: { recorded: 'publication', reference }, terminate: false }
   })
 
   return {
-    name: 'workspace_evidence',
-    label: 'Workspace evidence',
+    name: 'workspace',
+    label: 'Workspace',
     description:
-      "Record cleanup evidence for this conversation's workflow task in the workspace authority. set-target records the agreed integration target (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. None of these releases or removes a workspace: the user does that with /workspace release.",
+      "Operate this conversation's workspace task in the workspace authority. resume switches the conversation onto a workspace retained for a task (exact taskId, and workspaceId when the task retains several); the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree.",
     parameters,
-    async execute(_toolCallId, input, _signal, _onUpdate) {
-      const run: Effect.Effect<unknown, EvidenceToolError> = decodeInput(input, {
+    async execute(_toolCallId, input, _signal, _onUpdate, context) {
+      const run: Effect.Effect<ToolReply, WorkspaceToolError> = decodeInput(input, {
         onExcessProperty: 'error',
       }).pipe(
         Effect.mapError(cause => refuse(cause.message)),
-        Effect.flatMap((decoded): Effect.Effect<unknown, EvidenceToolError> => {
+        Effect.flatMap((decoded): Effect.Effect<ToolReply, WorkspaceToolError> => {
           switch (decoded.action) {
+            case 'resume':
+              return resume(decoded, context)
             case 'set-target':
               return setTarget(decoded)
             case 'record-publication':
@@ -268,8 +324,9 @@ export const makeEvidenceTool = (options: EvidenceToolOptions): ToolDefinition =
       const outcome = await options.runPromise(Effect.exit(run))
       if (Exit.isSuccess(outcome))
         return {
-          content: [{ type: 'text', text: JSON.stringify(outcome.value) }],
-          details: outcome.value,
+          content: [{ type: 'text', text: JSON.stringify(outcome.value.value) }],
+          details: outcome.value.value,
+          ...(outcome.value.terminate ? { terminate: true } : {}),
         }
 
       throw new Error(errorText(Cause.squash(outcome.cause)))

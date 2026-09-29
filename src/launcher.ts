@@ -36,19 +36,20 @@ import {
   makeWorkspaceHost,
   noUiTrustContext,
   sameConversation,
-  type GuidedRelease,
   type WorkspaceHost,
 } from './workspace-host.ts'
 import {
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
-  chooseResumeCandidate,
   formatAssessments,
   formatReleaseRun,
+  formatSweepReceipt,
+  needsExplicitRelease,
+  noExplicitRelease,
   releaseConfirmation,
   releaseExitCode,
   runRelease,
-  type ReleaseRun,
+  sweepExitCode,
 } from './workspace-command.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 
@@ -162,7 +163,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | resume <task> [--workspace <workspace>]]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only release eligibility of every workspace of the task\n  workspace release <task>     confirm interactively, then one release attempt per workspace\n  workspace resume <task> [--workspace <id>]  start a fresh conversation on a retained workspace\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     for review-required workspaces only: confirm interactively, then one attempt per workspace\n\nQuitting dev sweeps the repository: finished workspaces are released automatically and the receipt is printed.\n`
     )
   })
 
@@ -250,7 +251,6 @@ const createRuntime = Effect.fnUntraced(function* (
       isWorkspaceParked: workspaceHost.isParked,
     })
   )
-  yield* Effect.sync(() => workspaceHost.setWorkControls(work))
   const trustResolver: typeof PiProjectTrust = yield* fromPromise(
     'Cannot load Pi project-trust resolver',
     async () =>
@@ -349,18 +349,23 @@ const runInteractive = (
   api: PiApi,
   runtime: AgentRuntime,
   host: WorkspaceHost
-): Effect.Effect<GuidedRelease | undefined, LauncherError> =>
+): Effect.Effect<boolean, LauncherError> =>
   Effect.gen(function* () {
     const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
-    const closure = yield* Effect.raceFirst(
-      fromPromise('Pi interactive mode failed', () => mode.run()).pipe(Effect.as(undefined)),
-      Deferred.await(host.guidedRelease)
+    const quit = yield* Effect.acquireUseRelease(
+      Effect.sync(() => host.interceptQuit(true)),
+      () =>
+        Effect.raceFirst(
+          fromPromise('Pi interactive mode failed', () => mode.run()).pipe(Effect.as(false)),
+          Deferred.await(host.quitRequested).pipe(Effect.as(true))
+        ),
+      () => Effect.sync(() => host.interceptQuit(false))
     )
-    if (closure !== undefined)
+    if (quit)
       yield* Effect.sync(() => {
         mode.stop()
       })
-    return closure
+    return quit
   })
 
 type ReleaseExitCode = ReturnType<typeof releaseExitCode> | 130
@@ -370,7 +375,7 @@ const exitText = (code: ReleaseExitCode): string => {
     case 0:
       return 'done'
     case 1:
-      return 'at least one workspace did not reach a terminal outcome'
+      return 'at least one attempted workspace did not reach a terminal outcome'
     case 130:
       return 'interrupted; no workspace was attempted after the signal'
   }
@@ -381,65 +386,55 @@ const attemptRelease = Effect.fnUntraced(function* (
   input: {
     readonly taskId: WorkspaceId
     readonly confirmed: readonly WorkspaceAssessment[]
-    readonly occupiedCwds: readonly string[]
-    readonly commandId?: WorkspaceId
+    readonly occupiedPaths: readonly string[]
   },
-  epilogue: string,
   proceed: () => boolean
-): Effect.fn.Return<{ readonly run: ReleaseRun; readonly code: ReleaseExitCode }> {
+): Effect.fn.Return<ReleaseExitCode> {
   const run = yield* runRelease(lifecycle, { ...input, proceed })
   const code: ReleaseExitCode = proceed() ? releaseExitCode(run) : 130
   yield* write(formatReleaseRun(input.taskId, run))
-  yield* write(`Exit ${code}: ${exitText(code)}.${epilogue}`)
-  return { run, code }
+  yield* write(`Exit ${code}: ${exitText(code)}.`)
+  return code
 }, Effect.uninterruptible)
 
-const tuiClosedNotice = (request: GuidedRelease, detached: boolean): string =>
-  `\nThe TUI is closed and its work was stopped; ${detached ? 'its workspace attachment is closed' : 'closing its workspace attachment was not confirmed, so the release rechecks every use'}. ${keptConversationGuidance(request.conversationFile)}`
+const tuiClosedNotice = (detached: boolean): string =>
+  `\nThe TUI is closed and its session disposed; ${detached ? 'its workspace attachment is closed' : 'closing its workspace attachment was not confirmed, so the sweep rechecks every use'}.`
 
-const handoverNotice = (
-  request: GuidedRelease,
-  detached: boolean,
-  cause: Cause.Cause<unknown>
-): string => {
-  const retry = `Nothing was released. Run dev workspace release ${request.taskId} for a fresh attempt.`
-  return Cause.hasInterruptsOnly(cause)
-    ? `${tuiClosedNotice(request, detached)}\nThe release of task ${request.taskId} was interrupted before its attempt started. ${retry}\nExit 130: ${exitText(130)}.`
-    : `${tuiClosedNotice(request, detached)}\nClosing its session then failed (${errorText(Cause.squash(cause))}), so its workspace use may still be recorded. ${retry}\nExit 1.`
-}
+const quitFailureNotice = (detached: boolean, cause: Cause.Cause<unknown>): string =>
+  Cause.hasInterruptsOnly(cause)
+    ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before the sweep started; nothing was released.\nExit 130: ${exitText(130)}.`
+    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its workspace uses may still be recorded; nothing was swept or released.\nExit 1.`
 
-export const completeGuidedRelease = Effect.fnUntraced(function* (
+export const sweepAtQuit = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
-  request: GuidedRelease,
-  completion: {
-    readonly returnCwd: string
-    readonly proceed: () => boolean
+  input: {
+    readonly anchorWorkspaceId: WorkspaceId
+    readonly occupiedPaths: readonly string[]
     readonly detached: boolean
+    readonly proceed: () => boolean
   }
-): Effect.fn.Return<ReleaseRun> {
-  const { returnCwd, proceed, detached } = completion
-  yield* Effect.sync(() => {
-    try {
-      process.chdir(returnCwd)
-    } catch {}
-  })
+): Effect.fn.Return<void> {
   yield* write(
-    `${tuiClosedNotice(request, detached)}\nAttempting the confirmed release of task ${request.taskId}...`
+    `${tuiClosedNotice(input.detached)}\nSweeping the repository for finished workspaces...`
   )
-  const { run, code } = yield* attemptRelease(
-    lifecycle,
-    {
-      taskId: request.taskId,
-      confirmed: request.confirmed,
-      occupiedCwds: [resolve(returnCwd)],
-      commandId: request.commandId,
-    },
-    ' Do not resume into a removed workspace; the conversation file above keeps its history.',
-    proceed
+  const swept = yield* Effect.exit(
+    lifecycle.sweep({
+      anchorWorkspaceId: input.anchorWorkspaceId,
+      occupiedPaths: input.occupiedPaths.map(path => resolve(path)),
+    })
   )
+  if (Exit.isFailure(swept)) {
+    yield* write(
+      `The sweep did not report back (${errorText(Cause.squash(swept.cause))}), so its outcome is unknown: it may have released or removed some workspaces. Run dev workspace list in this repository, then dev workspace inspect <task>, to see each recorded outcome.\nExit 1.`
+    )
+    process.exitCode = 1
+    return
+  }
+  const code: ReleaseExitCode = input.proceed() ? sweepExitCode(swept.value) : 130
+  yield* write(formatSweepReceipt(swept.value))
+  yield* write(`Exit ${code}: ${code === 130 ? 'interrupted after the sweep' : exitText(code)}.`)
   process.exitCode = code
-  return run
-})
+}, Effect.uninterruptible)
 
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchCause(effect, cause =>
@@ -454,10 +449,12 @@ interface SignalHandlers {
 
 const installSignalHandlers = (
   runtime: AgentRuntime,
-  release: Effect.Effect<void, never>
+  release: Effect.Effect<void, never>,
+  host: WorkspaceHost
 ): Effect.Effect<SignalHandlers> =>
   Effect.sync(() => {
     const terminate = (exitCode: number): void => {
+      host.interceptQuit(false)
       Effect.runFork(
         reported(disposeRuntime(runtime)).pipe(
           Effect.andThen(reported(release)),
@@ -511,25 +508,28 @@ const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
     return Effect.sync(() => reader.close())
   })
 
-const cancellation = Effect.acquireRelease(
-  Effect.sync(() => {
-    let cancelled = false
-    const onSignal = (): void => {
-      cancelled = true
-      process.stderr.write(
-        '\nCancellation requested: workspaces not yet started are skipped; one already under way is observed to its recorded outcome.\n'
-      )
-    }
-    process.on('SIGINT', onSignal)
-    process.on('SIGTERM', onSignal)
-    return { proceed: () => !cancelled, onSignal }
-  }),
-  ({ onSignal }) =>
+const RELEASE_CANCELLED =
+  'Cancellation requested: workspaces not yet started are skipped; one already under way is observed to its recorded outcome.'
+
+const cancellation = (notice: () => string | undefined) =>
+  Effect.acquireRelease(
     Effect.sync(() => {
-      process.removeListener('SIGINT', onSignal)
-      process.removeListener('SIGTERM', onSignal)
-    })
-)
+      let cancelled = false
+      const onSignal = (): void => {
+        cancelled = true
+        const text = notice()
+        if (text !== undefined) process.stderr.write(`\n${text}\n`)
+      }
+      process.on('SIGINT', onSignal)
+      process.on('SIGTERM', onSignal)
+      return { proceed: () => !cancelled, onSignal }
+    }),
+    ({ onSignal }) =>
+      Effect.sync(() => {
+        process.removeListener('SIGINT', onSignal)
+        process.removeListener('SIGTERM', onSignal)
+      })
+  )
 
 const write = (text: string, stream: NodeJS.WriteStream = process.stdout): Effect.Effect<void> =>
   Effect.sync(() => {
@@ -556,7 +556,11 @@ const terminalRelease = Effect.fnUntraced(function* (
     return 1
   }
   yield* write(formatAssessments(taskId, assessments))
-  const confirmation = releaseConfirmation(taskId, assessments, undefined)
+  if (!needsExplicitRelease(assessments)) {
+    yield* write(`\n${noExplicitRelease(taskId)}`, process.stderr)
+    return 1
+  }
+  const confirmation = releaseConfirmation(taskId, assessments)
   yield* write(`\n${confirmation.message}\n`)
   const confirmed = yield* askConfirmation(
     `${confirmation.title} Type y to release, anything else to cancel: `
@@ -565,18 +569,16 @@ const terminalRelease = Effect.fnUntraced(function* (
     yield* write('Release cancelled before confirmation; nothing was changed.')
     return 130
   }
-  const cancel = yield* cancellation
-  const { code } = yield* attemptRelease(
+  const cancel = yield* cancellation(() => RELEASE_CANCELLED)
+  return yield* attemptRelease(
     lifecycle,
     {
       taskId,
       confirmed: assessments,
-      occupiedCwds: [resolve(process.cwd()), resolve(launchCwd)],
+      occupiedPaths: [resolve(process.cwd()), resolve(launchCwd)],
     },
-    '',
     cancel.proceed
   )
-  return code
 })
 
 const run = Effect.fnUntraced(function* (
@@ -586,8 +588,6 @@ const run = Effect.fnUntraced(function* (
   const options = yield* parseArgs(argv)
   if (options.help) return yield* printHelp()
 
-  let workspaceLifecycle: WorkspaceLifecycle | undefined
-  let workspaceResume: Effect.Success<ReturnType<typeof chooseResumeCandidate>> | undefined
   if (options.workspaceArgs !== undefined) {
     const command = yield* parseWorkspaceCommand(options.workspaceArgs)
     if (
@@ -605,7 +605,7 @@ const run = Effect.fnUntraced(function* (
       })
       return
     }
-    if (command.kind !== 'resume' && command.kind !== 'release') {
+    if (command.kind !== 'release') {
       const result = yield* runReadOnlyWorkspaceCommand(dependencies.workspaceLifecycle, command, {
         repositoryRoot: gitRoot(options.cwd),
       })
@@ -618,30 +618,17 @@ const run = Effect.fnUntraced(function* (
     if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
       yield* Effect.sync(() => {
         process.stderr.write(
-          command.kind === 'release'
-            ? 'Workspace release requires an interactive TTY for its confirmation; nothing was released and no unattended mode exists.\n'
-            : 'Workspace resume requires an interactive TTY; it never falls back to a silent workspace switch.\n'
+          'Workspace release requires an interactive TTY for its confirmation; nothing was released and no unattended mode exists.\n'
         )
         process.exitCode = 2
       })
       return
     }
-    if (command.kind === 'release') {
-      process.exitCode = yield* terminalRelease(dependencies, command.taskId, options.cwd)
-      return
-    }
-    workspaceLifecycle = yield* dependencies.workspaceLifecycle
-    const views = yield* workspaceLifecycle
-      .inspect({ taskId: command.taskId })
-      .pipe(
-        Effect.mapError(error =>
-          toLauncherError(error, 'Cannot inspect retained workspace candidates')
-        )
-      )
-    workspaceResume = yield* chooseResumeCandidate(views, command.taskId, command.workspaceId)
+    process.exitCode = yield* terminalRelease(dependencies, command.taskId, options.cwd)
+    return
   }
 
-  const launchCwd = workspaceResume?.view.path ?? options.cwd
+  const launchCwd = options.cwd
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const lease = yield* acquireRuntime(dataHome, dependencies.coordination)
   const root = yield* gitRoot(launchCwd)
@@ -723,7 +710,7 @@ const run = Effect.fnUntraced(function* (
     })
     return
   }
-  workspaceLifecycle ??= yield* dependencies.workspaceLifecycle
+  const workspaceLifecycle = yield* dependencies.workspaceLifecycle
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
     return yield* new LauncherError({
@@ -734,7 +721,6 @@ const run = Effect.fnUntraced(function* (
     .attach({
       conversation: { sessionId, sessionFile, dataHome },
       cwd: sessions.getCwd(),
-      ...(workspaceResume === undefined ? {} : { selection: workspaceResume.selection }),
     })
     .pipe(
       Effect.mapError(
@@ -808,8 +794,8 @@ const run = Effect.fnUntraced(function* (
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
 
-  let handover: { readonly request: GuidedRelease; readonly proceed: () => boolean } | undefined
-  let attemptStarted = false
+  let quit: { readonly proceed: () => boolean } | undefined
+  let sweepStarted = false
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(Effect.succeed(workspaceHost), host =>
@@ -841,31 +827,43 @@ const run = Effect.fnUntraced(function* (
       }
       const release = lease.release.pipe(Effect.orDie)
       const signals = yield* Effect.acquireRelease(
-        installSignalHandlers(runtime, release),
+        installSignalHandlers(runtime, release, workspaceHost),
         ({ remove }) => Effect.sync(remove)
       )
-      const request = yield* runInteractive(api, runtime, workspaceHost)
-      if (request !== undefined) {
+      if (yield* runInteractive(api, runtime, workspaceHost)) {
         signals.remove()
-        const { proceed } = yield* Scope.provide(outerScope)(cancellation)
-        handover = { request, proceed }
+        const { proceed } = yield* Scope.provide(outerScope)(
+          cancellation(() =>
+            sweepStarted
+              ? 'Interrupt received: the sweep runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+              : undefined
+          )
+        )
+        quit = { proceed }
       }
     })
   )
   return yield* Effect.gen(function* () {
     yield* sessionProgram
-    if (handover === undefined) return false
+    if (quit === undefined) return false
     yield* lease.release
-    const { request, proceed } = handover
+    const { binding } = workspaceHost.attachment
+    yield* Effect.sync(() => {
+      try {
+        process.chdir(returnCwd)
+      } catch {}
+    })
+    const { proceed } = quit
     yield* Effect.uninterruptible(
       Effect.sync(() => {
-        attemptStarted = true
+        sweepStarted = true
       }).pipe(
         Effect.andThen(
-          completeGuidedRelease(workspaceLifecycle, request, {
-            returnCwd,
-            proceed,
+          sweepAtQuit(workspaceLifecycle, {
+            anchorWorkspaceId: binding.workspaceId,
+            occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
             detached: workspaceHost.isDetached(),
+            proceed,
           })
         )
       )
@@ -873,9 +871,9 @@ const run = Effect.fnUntraced(function* (
     return true
   }).pipe(
     Effect.onExit(exit =>
-      handover === undefined || attemptStarted || Exit.isSuccess(exit)
+      quit === undefined || sweepStarted || Exit.isSuccess(exit)
         ? Effect.void
-        : write(handoverNotice(handover.request, workspaceHost.isDetached(), exit.cause))
+        : write(quitFailureNotice(workspaceHost.isDetached(), exit.cause))
     )
   )
 }, Effect.scoped)
@@ -893,8 +891,8 @@ export const launch = (
       })
     ),
 
-    Effect.tap(guided =>
-      guided === true ? Effect.sync(() => process.exit(process.exitCode ?? 0)) : Effect.void
+    Effect.tap(quit =>
+      quit === true ? Effect.sync(() => process.exit(process.exitCode ?? 0)) : Effect.void
     ),
     Effect.asVoid,
     Effect.provide(NodeServices.layer)

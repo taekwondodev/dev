@@ -52,26 +52,19 @@ STUB_ACTIONS = (
     Action('retained-work', 'DEV36_READY_FOR_RETAINED_WORK', 'start retained work\r'),
     Action('workspace-list', 'DEV36_READY_FOR_COMMANDS', '/workspace list\r'),
     Action('workspace-inspect', 'DEV36_COMMAND_DONE:list:1', '/workspace inspect {TASK_LEAD}\r'),
-    Action('resume-cancel', 'DEV36_COMMAND_DONE:inspect:1', '/workspace resume {TASK_RESUME}\r'),
-    Action('selector-escape', 'DEV36_SELECTOR_OPEN', '\x1b', delay=0.25),
-    Action('resume-explicit', 'DEV36_COMMAND_DONE:resume:1',
-           '/workspace resume {TASK_RESUME} --workspace {WS_RESUME_A}\r'),
-    Action('confirm-live-work', 'DEV36_CONFIRM_SWITCH_OPEN_1', 'y\r'),
-    Action('confirm-retained-work', 'DEV36_CONFIRM_SWITCH_OPEN_2', 'y\r', required=False),
-    Action('resume-refused', 'DEV36_READY_FOR_REFUSED_SWITCH',
-           '/workspace resume {TASK_RESUME} --workspace {WS_RESUME_C}\r'),
-    Action('guided-release', 'DEV36_READY_FOR_GUIDED_RELEASE', '/workspace release {TASK_RESUME}\r'),
-    Action('confirm-guided-release', 'DEV36_RELEASE_CONFIRM_OPEN', 'y\r', delay=0.25),
-    Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND',
-           '/workspace resume {TASK_FAIL} --workspace {WS_FAIL}\r'),
+    Action('release-other', 'DEV36_COMMAND_DONE:inspect:1', '/workspace release {TASK_RESUME}\r'),
+    Action('release-own', 'DEV36_COMMAND_DONE:release:1', '/workspace release {TASK_B}\r'),
+    Action('resume-ambiguous', 'DEV36_READY_FOR_AMBIGUOUS_RESUME', 'resume the retained task\r'),
+    Action('resume-live', 'DEV36_READY_FOR_LIVE_RESUME', 'resume its first workspace\r'),
+    Action('work-stop', 'DEV36_READY_FOR_WORK_STOP', '/work stop\r'),
+    Action('resume-explicit', 'DEV36_READY_FOR_EXPLICIT_RESUME', 'resume it now\r'),
+    Action('resume-refused', 'DEV36_READY_FOR_REFUSED_SWITCH', 'resume the other workspace\r'),
+    Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND', 'resume the failing task\r'),
 )
 
 
-LAUNCHER_ACTIONS = (
-    Action('release', 'Press ctrl+o to show full startup help',
-           '\x15/workspace release {TASK}\r', delay=2.0),
-    Action('confirm-yes', 'Release task {TASK}?', 'y\r', delay=0.5),
-    Action('stray-input', 'Release task {TASK}?', 'stray input after confirm\r', delay=1.0),
+QUIT_ACTIONS = (
+    Action('quit', 'Press ctrl+o to show full startup help', '\x15/quit\r', delay=2.0),
 )
 
 
@@ -98,79 +91,93 @@ PROBES = {
             Action('reload', 'DEV_REAL_AUTHORITY_READY_FOR_RELOAD', '\x15/reload\r'),
             Action('check', 'DEV_REAL_AUTHORITY_READY_FOR_CHECK',
                    '\x15/workspace check {TASK_HOST}\r'),
-            Action('release-cancel', 'DEV_REAL_AUTHORITY_READY_FOR_RELEASE_CANCEL',
+            Action('release-own', 'DEV_REAL_AUTHORITY_READY_FOR_OWN_RELEASE',
                    '\x15/workspace release {TASK_HOST}\r'),
-            Action('confirm-escape', 'DEV_REAL_AUTHORITY_CONFIRM_OPEN_1', '\x1b', delay=0.25),
-            Action('release-confirm', 'DEV_REAL_AUTHORITY_READY_FOR_CONFIRMED_RELEASE',
-                   '\x15/workspace release {TASK_HOST}\r'),
-            Action('confirm-yes', 'DEV_REAL_AUTHORITY_CONFIRM_OPEN_2', 'y\r', delay=0.25),
-            Action('stray-input', 'DEV_REAL_AUTHORITY_CONFIRM_OPEN_2',
-                   'stray input after confirm\r', delay=1.0),
+            Action('quit', 'DEV_REAL_AUTHORITY_READY_FOR_QUIT', '\x15/quit\r', delay=0.5),
         ),
+        expect=('Workspace sweep at quit', 'removed (automatic)', 'Exit 0: done.'),
     ),
 
 
-    'launcher': Probe(
+    'quit': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=LAUNCHER_ACTIONS,
-        expect=('its workspace attachment is closed', '(pre-existing) at', ': released', 'Exit 0'),
+        actions=QUIT_ACTIONS,
+        expect=('its workspace attachment is closed', 'Workspace sweep at quit',
+                ': released (automatic)', ': removed (automatic)', 'Exit 0: done.'),
     ),
 
 
-    'launcher-self-remove': Probe(
+    'quit-self-remove': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=LAUNCHER_ACTIONS,
-        expect=('its workspace attachment is closed', '(managed) at', ': removed', 'Exit 0'),
+        actions=QUIT_ACTIONS,
+        expect=('Workspace sweep at quit', '{WORKTREE}, task {TASK}: removed (automatic)',
+                'Exit 0: done.'),
         env=(('LAUNCHER_TUI_SELF_REMOVE', '1'),),
     ),
 
-    'launcher-contained-history': Probe(
+    'quit-contained-history': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
-        actions=(
-            LAUNCHER_ACTIONS[0],
-            Action('still-usable', 'Active conversation is inside',
-                   '\x15/workspace inspect {TASK}\r', delay=0.5),
-            Action('quit', 'pending operations: none recorded', '/quit\r', delay=0.5),
-            Action('unexpected-confirm', 'Release task {TASK}?', 'y\r', required=False, delay=0.5),
-        ),
-        expect=('Active conversation is inside', 'No release was started', 'pending operations: none recorded'),
+        timeout=240.0,
+        actions=QUIT_ACTIONS,
+        expect=('Workspace sweep at quit', 'the conversation being closed, is still inside this worktree',
+                'Exit 1:'),
         env=(('LAUNCHER_TUI_CONTAINED_HISTORY', '1'),),
     ),
 
-    'launcher-interrupt': Probe(
+    'quit-interrupt': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=LAUNCHER_ACTIONS,
-        expect=('its workspace attachment is closed', 'interrupted before its attempt started', 'Exit 130'),
-        env=(('LAUNCHER_TUI_FAULT', 'sigint-after-handover'),),
+        actions=QUIT_ACTIONS,
+        expect=('Quitting was interrupted before the sweep started; nothing was released.',
+                'Exit 130'),
+        env=(('LAUNCHER_TUI_FAULT', 'sigint-after-quit'),),
     ),
 
-    'launcher-shutdown-failure': Probe(
+    'quit-interrupt-during-sweep': Probe(
         script='scripts/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=LAUNCHER_ACTIONS,
+        actions=QUIT_ACTIONS,
+        expect=('Interrupt received: the sweep runs on and observes each attempt',
+                'Workspace sweep at quit', ': removed (automatic)',
+                'Exit 130: interrupted after the sweep'),
+        env=(('LAUNCHER_TUI_FAULT', 'sigint-during-sweep'),),
+    ),
+
+    'interactive-failure': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(),
+        expect=('Pi interactive mode failed', 'injected interactive mode failure'),
+        env=(('LAUNCHER_TUI_FAULT', 'interactive-failure'),),
+    ),
+
+    'quit-shutdown-failure': Probe(
+        script='scripts/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=QUIT_ACTIONS,
         expect=(
-            'The TUI is closed and its work was stopped',
-            'its workspace attachment is closed',
-            'Closing its session then failed',
+            'Closing the session failed',
             'injected session disposal failure',
-            'Nothing was released.',
-            'Run dev workspace release {TASK} for a fresh attempt.',
+            'nothing was swept or released',
             'Exit 1.',
         ),
-        env=(('LAUNCHER_TUI_FAULT', 'shutdown-after-handover'),),
+        env=(('LAUNCHER_TUI_FAULT', 'shutdown-after-quit'),),
     ),
 
     'release': Probe(

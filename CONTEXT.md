@@ -30,12 +30,13 @@ profile. Its ownership and paths must be checked before any migration.
 
 ## Workspace ownership vocabulary
 
-The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426)
-and [disposable-worktree delivery](https://github.com/taekwondodev/dev/issues/42)
-contracts define these terms. The latter supersedes the per-file certification
-predicates of the original cleanup and evidence contracts. The workspace lifecycle implements admission,
-reservations, conversation bindings, recovery facts, release eligibility checks and
-the explicit, confirmed release attempt.
+The approved [ownership](https://github.com/taekwondodev/dev/issues/28#issuecomment-5795841426),
+[disposable-worktree delivery](https://github.com/taekwondodev/dev/issues/42) and
+[automatic release](https://github.com/taekwondodev/dev/issues/44) contracts define
+these terms. The disposable-worktree contract supersedes the per-file certification
+predicates of the original cleanup and evidence contracts. The workspace lifecycle
+implements admission, reservations, conversation bindings, recovery facts, completion
+verdicts, the sweep and the fenced release attempt.
 
 **Workflow task**: A unit of work whose identity can span Pi conversations and
 execution attempts, with one or more associated workspaces.
@@ -54,20 +55,32 @@ in one workspace. A process use ends only when its process family is observed
 gone; an `unknown` use keeps its workspace blocked for writers until explicit
 recovery.
 
-**Task release**: An explicit user instruction to evaluate a workflow task's
-reserved workspaces for reservation release or safe removal, not a guarantee
-that either operation can proceed. One confirmed command makes one fenced attempt
-per workspace; a repeated release is a fresh command with fresh checks.
+**Completion verdict**: The role of a reserved workspace (pre-existing checkout,
+branch worktree, delegated child or detached worktree) and either the finished rule
+that lets it be released or the reason it is retained, decided from facts dev
+records or observes, never from a workflow declaration.
+
+**Sweep**: The release of every finished workspace of a repository, run by dev
+itself when the user quits and before it allocates a managed worktree. Each finished
+workspace gets one fenced attempt under the release gates; everything else is
+retained with its reason in the receipt. A sweep has a time budget; a task it
+cannot start in time is deferred to the next sweep.
+
+**Task release**: An explicit, confirmed user instruction to attempt the reserved
+workspaces of one task, kept for cases the sweep leaves `review-required`. One
+confirmed command makes one fenced attempt per workspace; a repeated release is a
+fresh command with fresh checks.
 
 **Disposable managed worktree**: A dev-created task checkout whose intended
 code/assets have been delivered and whose agent contributions have been
-reconciled by the workflow. Final confirmed release can discard its remaining
-contents, including dirty intermediate files and forgotten unselected outputs.
-It is not an archive or permission to remove a pre-existing checkout.
+reconciled by the workflow. A release decided by completion or confirmation can
+discard its remaining contents, including dirty intermediate files and forgotten
+unselected outputs. It is not an archive or permission to remove a pre-existing
+checkout.
 
-**Cleanup evidence**: Runtime-verifiable integration into the agreed target and
-exact matching of recorded publications, in addition to the use, identity and
-structural checks. Source ancestry within the independently bound merged PR can
+**Cleanup evidence**: Runtime-verifiable integration into the target, recorded as
+an override or derived from the origin remote, and exact matching of recorded
+publications, in addition to the use, identity and structural checks. Source ancestry within the independently bound merged PR can
 cover an intermediate commit; it does not prove that dirty edits were delivered.
 The workflow owns report selection, verified publication before merge and
 incomplete-work blockers. A pre-existing checkout needs no cleanup evidence,

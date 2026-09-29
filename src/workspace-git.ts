@@ -217,16 +217,62 @@ export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
   return changes
 }
 
-export const untrackedPaths = (checkout: string): readonly string[] => [
-  ...new Set(
-    [
-      git(checkout, ['ls-files', '--others', '--exclude-standard', '-z']),
-      git(checkout, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']),
-    ]
-      .flatMap(output => output.split('\0'))
-      .filter(entry => entry.length > 0)
+const nulSeparated = (output: string): readonly string[] =>
+  output.split('\0').filter(entry => entry.length > 0)
+
+export const untrackedPaths = (
+  checkout: string
+): { readonly untracked: readonly string[]; readonly ignored: readonly string[] } => ({
+  untracked: nulSeparated(git(checkout, ['ls-files', '--others', '--exclude-standard', '-z'])),
+  ignored: nulSeparated(
+    git(checkout, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])
   ),
-]
+})
+
+export const symbolicBranch = (checkout: string): string | undefined => {
+  const result = gitResult(checkout, ['symbolic-ref', '--quiet', 'HEAD'])
+  if (result.status === 0) return result.stdout.trim()
+  if (result.status === 1) return undefined
+  throw gitBlocked(`Cannot read the symbolic HEAD: ${failureText(result)}`)
+}
+
+export const remoteUrl = (checkout: string, remote: string): string | undefined => {
+  const result = gitResult(checkout, ['config', '--get', `remote.${remote}.url`])
+  if (result.status === 0) return result.stdout.trim()
+  if (result.status === 1) return undefined
+  throw gitBlocked(`Cannot read remote ${remote}: ${failureText(result)}`)
+}
+
+export const remoteNames = (checkout: string): readonly string[] =>
+  git(checkout, ['remote']).split('\n').filter(Boolean)
+
+export const remotePushUrls = (checkout: string, remote: string): readonly string[] =>
+  git(checkout, ['remote', 'get-url', '--push', '--all', '--', remote]).split('\n').filter(Boolean)
+
+export const branchPushRef = (checkout: string, branch: string): string | undefined => {
+  const result = gitResult(checkout, [
+    'rev-parse',
+    '--verify',
+    '--symbolic-full-name',
+    '--end-of-options',
+    `${branch}@{push}`,
+  ])
+  return result.status === 0 ? result.stdout.trim() : undefined
+}
+
+export type RemoteHead = { readonly ref: string } | 'missing' | { readonly error: string }
+export const remoteHead = (checkout: string, remote: string): RemoteHead => {
+  const result = gitResult(checkout, [
+    'ls-remote',
+    '--symref',
+    '--exit-code',
+    ...operands(remote, 'HEAD'),
+  ])
+  if (result.status === 2) return 'missing'
+  if (result.status !== 0) return { error: failureText(result) }
+  const ref = /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(result.stdout)?.[1]
+  return ref === undefined ? 'missing' : { ref }
+}
 
 export const isShallowRepository = (checkout: string): boolean =>
   git(checkout, ['rev-parse', '--is-shallow-repository']) === 'true'

@@ -1,7 +1,12 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
-import { requireReview, type WorkspaceId, type WorkspaceView } from './workspace-domain.ts'
+import {
+  requireReview,
+  type ReleaseDecider,
+  type WorkspaceId,
+  type WorkspaceView,
+} from './workspace-domain.ts'
 import { incarnationHeld } from './workspace-gates.ts'
 import { canonicalGitWorkspace } from './workspace-git.ts'
 import {
@@ -145,6 +150,11 @@ export const deletionHistory = (
     return parts.length === 0 ? [] : [`Release attempt ${operation.id} ${parts.join(' and ')}.`]
   })
 
+const deciderText = (decider: ReleaseDecider): string =>
+  decider.kind === 'user'
+    ? 'Confirmed by the user'
+    : `Automatic at ${decider.moment} (completion policy ${decider.policyVersion})`
+
 const receiptView = (
   repositoryId: WorkspaceId,
   workspace: WorkspaceRecord,
@@ -162,8 +172,7 @@ const receiptView = (
     path: workspace.path,
     origin: workspace.origin,
     outcome,
-    reason:
-      release.result ?? (removed ? 'Removed by a confirmed release.' : 'Reservation released.'),
+    reason: `${deciderText(release.decider)}: ${release.result ?? (removed ? 'Removed.' : 'Reservation released.')}`,
     nextAction: removed
       ? 'Do not resume a conversation into this path; start from an existing checkout with dev --cwd PATH.'
       : 'The checkout is unreserved; select or create a task before writing there.',

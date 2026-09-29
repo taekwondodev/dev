@@ -15,6 +15,7 @@ import {
   type WorkspaceAuthorization,
   type WorkspaceExecution,
   type WorkspaceHandoff,
+  type AllocationReason,
   type WorkspaceId,
 } from './workspace-domain.ts'
 import {
@@ -203,14 +204,22 @@ const allocatedUse = (
   updatedAt: now(),
 })
 
+export type AllocationSweep = (
+  authority: WorkspaceAuthority,
+  repositoryId: WorkspaceId,
+  state: ConversationState
+) => void
+
 const allocateWorktree = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   source: CurrentSource,
   taskId: WorkspaceId,
-  reason: 'delegated-writer' | 'checkout-contention',
+  reason: AllocationReason,
+  sweep: AllocationSweep,
   admitWriter: (allocation: Allocation) => WorkspaceAuthorization
 ): WorkspaceAuthorization => {
+  sweep(authority, source.repo, state)
   const workspaceIdValue = newId()
   const allocationId = newId()
   const reservationId = newId()
@@ -379,9 +388,10 @@ export const allocateDelegatedWorkspace = (
   state: ConversationState,
   source: CurrentSource,
   taskId: WorkspaceId,
-  execution: WorkspaceExecution | undefined
+  execution: WorkspaceExecution | undefined,
+  sweep: AllocationSweep
 ): WorkspaceAuthorization =>
-  allocateWorktree(authority, state, source, taskId, 'delegated-writer', allocation => {
+  allocateWorktree(authority, state, source, taskId, 'delegated-writer', sweep, allocation => {
     const use = allocatedUse(state, allocation, state.binding.revision, execution)
     const grant = toGrant(
       authority,
@@ -417,7 +427,8 @@ export const isolateContendedWriter = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   source: CurrentSource,
-  taskId: WorkspaceId
+  taskId: WorkspaceId,
+  sweep: AllocationSweep
 ): WorkspaceAuthorization => {
   const previousWriteGrant = state.writeGrant
   assertNoLiveExecution(
@@ -426,65 +437,73 @@ export const isolateContendedWriter = (
     { workspaceId: source.workspace.id },
     'moved to a separate worktree'
   )
-  return allocateWorktree(authority, state, source, taskId, 'checkout-contention', allocation => {
-    const destination = allocation.intent.targetPath
-    const handoffOperation: TransitionOperationRecord = {
-      ...allocation.intent,
-      id: newId(),
-      kind: 'handoff',
-      reason: 'isolate-contended-writer',
-      createdAt: now(),
+  return allocateWorktree(
+    authority,
+    state,
+    source,
+    taskId,
+    'checkout-contention',
+    sweep,
+    allocation => {
+      const destination = allocation.intent.targetPath
+      const handoffOperation: TransitionOperationRecord = {
+        ...allocation.intent,
+        id: newId(),
+        kind: 'handoff',
+        reason: 'isolate-contended-writer',
+        createdAt: now(),
+      }
+      const targetBinding: BindingRecord = {
+        ...state.binding,
+        taskId,
+        workspaceId: allocation.workspace.id,
+        cwd: destination,
+        revision: state.binding.revision + 1,
+        pendingOperationId: handoffOperation.id,
+      }
+      const use = allocatedUse(state, allocation, targetBinding.revision, undefined)
+      const grant = toGrant(authority, source.repo, allocation.workspace, use, destination, 'write')
+      const handoff: WorkspaceHandoff = {
+        operationId: handoffOperation.id,
+        from: toBinding(state.binding),
+        target: grant,
+        reason:
+          'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied',
+      }
+      const targetLease: GrantLease = {
+        grant,
+        repositoryId: source.repo,
+        useId: use.id,
+        gates: allocation.gates,
+        kind: 'ordinary',
+        released: false,
+      }
+      state.leases.set(use.id, targetLease)
+      state.writeGrant = grant
+      inDb(authority, source.repo, db =>
+        transaction(db, () => {
+          putWorkspace(db, allocation.workspace)
+          putReservation(db, allocation.reservation)
+          putUse(db, use)
+          saveOperation(db, allocation.confirmed)
+          putOperation(db, handoffOperation)
+          const current = getBinding(db, state.key)
+          if (current === undefined || current.revision !== state.binding.revision)
+            requireReview('Conversation binding changed before handoff publication')
+          putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
+        })
+      )
+      state.pending = {
+        handoff,
+        sourceRepositoryId: source.repo,
+        targetRepositoryId: source.repo,
+        targetBinding,
+        targetLease,
+        previousWriteGrant,
+        phase: 'intent',
+      }
+      state.parked = true
+      return { kind: 'rebind', handoff }
     }
-    const targetBinding: BindingRecord = {
-      ...state.binding,
-      taskId,
-      workspaceId: allocation.workspace.id,
-      cwd: destination,
-      revision: state.binding.revision + 1,
-      pendingOperationId: handoffOperation.id,
-    }
-    const use = allocatedUse(state, allocation, targetBinding.revision, undefined)
-    const grant = toGrant(authority, source.repo, allocation.workspace, use, destination, 'write')
-    const handoff: WorkspaceHandoff = {
-      operationId: handoffOperation.id,
-      from: toBinding(state.binding),
-      target: grant,
-      reason:
-        'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied',
-    }
-    const targetLease: GrantLease = {
-      grant,
-      repositoryId: source.repo,
-      useId: use.id,
-      gates: allocation.gates,
-      kind: 'ordinary',
-      released: false,
-    }
-    state.leases.set(use.id, targetLease)
-    state.writeGrant = grant
-    inDb(authority, source.repo, db =>
-      transaction(db, () => {
-        putWorkspace(db, allocation.workspace)
-        putReservation(db, allocation.reservation)
-        putUse(db, use)
-        saveOperation(db, allocation.confirmed)
-        putOperation(db, handoffOperation)
-        const current = getBinding(db, state.key)
-        if (current === undefined || current.revision !== state.binding.revision)
-          requireReview('Conversation binding changed before handoff publication')
-        putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
-      })
-    )
-    state.pending = {
-      handoff,
-      sourceRepositoryId: source.repo,
-      targetRepositoryId: source.repo,
-      targetBinding,
-      targetLease,
-      previousWriteGrant,
-      phase: 'intent',
-    }
-    state.parked = true
-    return { kind: 'rebind', handoff }
-  })
+  )
 }

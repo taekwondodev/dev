@@ -1,12 +1,25 @@
 import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threads'
-import { Deferred, Duration, Effect, Exit, FiberSet, type Scope } from 'effect'
+import {
+  type Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  FiberSet,
+  Queue,
+  type Scope,
+  Stream,
+} from 'effect'
 import {
   attachmentClosed,
   WorkspaceError,
   type HostReplace,
+  type SweepReceipt,
   type WorkspaceAttachment,
   type WorkspaceBinding,
   type WorkspaceLifecycle,
+  WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
 import {
   decodeWorkspaceWorkerMessage,
@@ -17,7 +30,7 @@ import {
 } from './workspace-protocol.ts'
 import { errorText } from './error-text.ts'
 
-const RPC_TIMEOUT = Duration.seconds(60)
+const RPC_TIMEOUT = Duration.millis(WORKER_REQUEST_TIMEOUT_MS)
 const STARTUP_TIMEOUT = Duration.seconds(12)
 const CLOSE_TIMEOUT = Duration.seconds(1)
 const MAX_PENDING_REQUESTS = 64
@@ -39,6 +52,7 @@ interface HostCallback {
 
 interface RemoteAttachment extends WorkspaceAttachment {
   refreshBinding(binding: WorkspaceBinding): void
+  deliverSweep(receipt: SweepReceipt): void
 }
 
 const unavailableError = (message: string): WorkspaceError =>
@@ -181,6 +195,9 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
         case 'host-callback':
           runHostCallback(message)
           return
+        case 'sweep-receipt':
+          attachments.get(message.attachmentId)?.deliverSweep(message.receipt)
+          return
         default: {
           const exhaustive: never = message
           fail(unavailableError(`Unexpected worker message: ${String(exhaustive)}`))
@@ -261,7 +278,8 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
         return yield* invalidError('Workspace callback ID is already in use')
       callbacks.set(callbackId, { replace: hostReplace, invoked: false, responded: false })
     }
-    const envelope = { id, request }
+    const sentAt = yield* Clock.currentTimeMillis
+    const envelope = { id, sentAt, request }
     if (byteLength(envelope) > MAX_MESSAGE_BYTES) {
       if (callbackId !== undefined) callbacks.delete(callbackId)
       return yield* invalidError('Workspace worker request exceeded its size limit')
@@ -294,7 +312,11 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   ): Effect.Effect<WorkspaceRpcResults[K], WorkspaceError> =>
     Deferred.await(ready).pipe(Effect.andThen(send(input, hostReplace, false)))
 
-  const makeAttachment = (attachmentId: number, binding: WorkspaceBinding): RemoteAttachment => {
+  const makeAttachment = (
+    attachmentId: number,
+    binding: WorkspaceBinding,
+    receipts: Queue.Queue<SweepReceipt, Cause.Done>
+  ): RemoteAttachment => {
     let current = binding
     let done = false
     const open = <A>(effect: Effect.Effect<A, WorkspaceError>) =>
@@ -306,6 +328,10 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       refreshBinding(next) {
         if (!done) current = next
       },
+      deliverSweep(receipt) {
+        if (!done) Queue.offerUnsafe(receipts, receipt)
+      },
+      sweeps: Stream.fromQueue(receipts),
       authorize: operation => open(request({ op: 'authorize', attachmentId, operation })),
       select: selection => open(request({ op: 'select', attachmentId, selection })),
       reportExecution: (grant, fact) =>
@@ -328,6 +354,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       close: Effect.suspend(() => {
         if (done) return Effect.void
         done = true
+        Queue.endUnsafe(receipts)
         attachments.delete(attachmentId)
         return request({ op: 'close-attachment', attachmentId }).pipe(Effect.asVoid)
       }),
@@ -363,17 +390,18 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     attach: input =>
       request({ op: 'attach', ...input }).pipe(
         Effect.flatMap(opened =>
-          Effect.suspend(() => {
+          Effect.gen(function* () {
             if (attachments.size >= MAX_ATTACHMENTS || attachments.has(opened.attachmentId)) {
               const cause = unavailableError(
                 'Workspace worker returned an invalid attachment identity'
               )
               fail(cause)
-              return Effect.fail(cause)
+              return yield* cause
             }
-            const attachment = makeAttachment(opened.attachmentId, opened.binding)
+            const receipts = yield* Queue.make<SweepReceipt, Cause.Done>()
+            const attachment = makeAttachment(opened.attachmentId, opened.binding, receipts)
             attachments.set(opened.attachmentId, attachment)
-            return Effect.succeed<WorkspaceAttachment>(attachment)
+            return attachment satisfies WorkspaceAttachment
           })
         )
       ),
@@ -386,6 +414,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
         ...(input.ownConversation === undefined ? {} : { ownConversation: input.ownConversation }),
       }),
     release: input => request({ op: 'release', request: input }),
+    sweep: input => request({ op: 'sweep', request: input }),
     recordTarget: input =>
       request({ op: 'record-target', taskId: input.taskId, target: input.target }).pipe(
         Effect.asVoid

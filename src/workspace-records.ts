@@ -1,10 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { Schema } from 'effect'
 import {
+  AllocationReasonSchema,
   blocked,
   requireReview,
   PublicationReferenceSchema,
   CommitSha,
+  ReleaseDeciderSchema,
   RelativeFilePath,
   Revision,
   Sha256Hex,
@@ -118,9 +120,8 @@ const OperationPhase = Schema.Literals([
   'unknown',
   'review-required',
 ])
-const TransitionOperationSchema = Schema.Struct({
+const TransitionOperationFields = {
   id: WorkspaceId,
-  kind: Schema.Literals(['allocation', 'handoff']),
   phase: OperationPhase,
   repositoryId: WorkspaceId,
   workspaceId: WorkspaceId,
@@ -134,19 +135,28 @@ const TransitionOperationSchema = Schema.Struct({
   targetPath: Schema.NonEmptyString,
   conversationKey: Schema.NonEmptyString,
   expectedBindingRevision: Revision,
-  reason: Schema.NonEmptyString,
   createdAt: Schema.Finite,
   result: Schema.optional(Schema.String),
-})
+}
+const TransitionOperationSchema = Schema.Union([
+  Schema.Struct({
+    ...TransitionOperationFields,
+    kind: Schema.Literal('allocation'),
+    reason: AllocationReasonSchema,
+  }),
+  Schema.Struct({
+    ...TransitionOperationFields,
+    kind: Schema.Literal('handoff'),
+    reason: Schema.Literals(['isolate-contended-writer', 'explicit-task-resume']),
+  }),
+])
 export const ManifestEntrySchema = Schema.Struct({
   path: RelativeFilePath,
-  kind: Schema.Literals(['file', 'symlink']),
   device: Schema.NonEmptyString,
   inode: Schema.NonEmptyString,
   size: Schema.Int,
   mtimeNs: Schema.String,
-  sha256: Schema.optional(Sha256Hex),
-  coverage: Schema.Literals(['published', 'regenerable']),
+  sha256: Sha256Hex,
   state: Schema.Literals(['pending', 'removed', 'absent', 'failed']),
   detail: Schema.optional(Schema.String),
 })
@@ -167,12 +177,12 @@ const ReleaseOperationFields = {
   reservationId: WorkspaceId,
   acquisitionId: Schema.optional(WorkspaceId),
   commandId: WorkspaceId,
+  decider: ReleaseDeciderSchema,
   targetPath: Schema.NonEmptyString,
   head: Schema.optional(CommitSha),
   stateDigest: Sha256Hex,
   policyVersion: Schema.Int,
   expectedReservationRevision: Revision,
-  reason: Schema.NonEmptyString,
   createdAt: Schema.Finite,
   result: Schema.optional(Schema.String),
 }
@@ -370,15 +380,19 @@ export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undef
     requireReview(`Binding columns disagree with payload: ${key}`)
   return value
 }
-export const putBinding = (db: DatabaseSync, value: BindingRecord): void => {
-  db.prepare(`INSERT INTO bindings(conversation_key,workspace_id,task_id,revision,payload) VALUES(?,?,?,?,?)
-    ON CONFLICT(conversation_key) DO UPDATE SET workspace_id=excluded.workspace_id,task_id=excluded.task_id,revision=excluded.revision,payload=excluded.payload`).run(
-    value.key,
-    value.workspaceId,
-    value.taskId ?? null,
-    value.revision,
-    encode(value)
+export const getBindingRows = (db: DatabaseSync, workspaceIdValue: string): BindingRecord[] =>
+  rows(
+    db,
+    'SELECT conversation_key FROM bindings WHERE workspace_id=? ORDER BY conversation_key',
+    workspaceIdValue
   )
+    .map(row => getBinding(db, textField(row, 'conversation_key')))
+    .filter((value): value is BindingRecord => value !== undefined)
+export const putBinding = (db: DatabaseSync, value: BindingRecord): void => {
+  db.prepare(
+    `INSERT INTO bindings(conversation_key,workspace_id,task_id,revision,payload) VALUES(?,?,?,?,?)
+    ON CONFLICT(conversation_key) DO UPDATE SET workspace_id=excluded.workspace_id,task_id=excluded.task_id,revision=excluded.revision,payload=excluded.payload`
+  ).run(value.key, value.workspaceId, value.taskId ?? null, value.revision, encode(value))
 }
 export const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
   const row = first(
@@ -505,6 +519,10 @@ export const isUnresolvedRelease = (
   (operation.phase === 'started' ||
     operation.phase === 'unknown' ||
     operation.phase === 'review-required')
+export const isEngineRecordedRelease = (
+  operation: OperationRecord
+): operation is ReleaseOperationRecord =>
+  isRelease(operation) && (operation.phase === 'unknown' || operation.phase === 'review-required')
 export const openOperations = (db: DatabaseSync, workspaceIdValue?: string): OperationRecord[] =>
   workspaceIdValue === undefined
     ? operationsWhere(db, `phase IN ${OPEN_PHASES}`)
@@ -558,14 +576,10 @@ export const getPublications = (db: DatabaseSync, taskId: string): PublicationRe
     return value
   })
 export const putPublication = (db: DatabaseSync, value: PublicationReference): void => {
-  db.prepare(`INSERT INTO publications(id,task_id,relative_path,sha256,payload) VALUES(?,?,?,?,?)
-    ON CONFLICT(task_id,relative_path,sha256) DO UPDATE SET id=excluded.id, payload=excluded.payload`).run(
-    value.id,
-    value.taskId,
-    value.relativePath,
-    value.sha256,
-    encode(value)
-  )
+  db.prepare(
+    `INSERT INTO publications(id,task_id,relative_path,sha256,payload) VALUES(?,?,?,?,?)
+    ON CONFLICT(task_id,relative_path,sha256) DO UPDATE SET id=excluded.id, payload=excluded.payload`
+  ).run(value.id, value.taskId, value.relativePath, value.sha256, encode(value))
 }
 export const getUseRows = (db: DatabaseSync, workspaceIdValue: string): UseRecord[] =>
   rows(db, 'SELECT id FROM uses WHERE workspace_id=? ORDER BY id', workspaceIdValue)

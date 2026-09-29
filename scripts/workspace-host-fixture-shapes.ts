@@ -2,11 +2,17 @@ import assert from 'node:assert/strict'
 import { Schema } from 'effect'
 import {
   CanonicalSessionFile,
+  SweepReceiptSchema,
+  WorkspaceAssessmentSchema,
   WorkspaceBindingSchema,
   WorkspaceGrantSchema,
   WorkspaceHandoffSchema,
   WorkspaceId,
   WorkspaceViewSchema,
+  type CompletionVerdict,
+  type SweepReceipt,
+  type SweepRow,
+  type WorkspaceAssessment,
   type WorkspaceBinding,
   type WorkspaceConversation,
   type WorkspaceGrant,
@@ -111,6 +117,66 @@ export const makeFixtureHandoff = (input: {
     reason: input.reason,
   } satisfies WorkspaceHandoff)
 
+export const makeFixtureAssessment = (input: {
+  readonly descriptor: FixtureDescriptor
+  readonly outcome: WorkspaceAssessment['outcome']
+  readonly completion: CompletionVerdict
+  readonly reservationId: WorkspaceId
+}) =>
+  conforming(WorkspaceAssessmentSchema)({
+    repositoryId: input.descriptor.repoId,
+    taskId: input.descriptor.taskId,
+    workspaceId: input.descriptor.workspaceId,
+    reservationId: input.reservationId,
+    path: input.descriptor.path,
+    origin: input.descriptor.origin,
+    outcome: input.outcome,
+    reasons: [input.completion.reason],
+    nextActions: ['fixture next action'],
+    evidence: { verdict: 'valid', reasons: [] },
+    inventory: { trackedChanges: 0, files: 0, published: 0, disposable: 0, blocking: 0 },
+    residual: [],
+    target: { source: 'override', description: 'local refs/heads/main, recorded for the task' },
+    completion: input.completion,
+    subject: {
+      repositoryId: input.descriptor.repoId,
+      workspaceId: input.descriptor.workspaceId,
+      reservationId: input.reservationId,
+      reservationRevision: 0,
+      workspaceRevision: 0,
+      origin: input.descriptor.origin,
+      path: input.descriptor.path,
+      effect: input.outcome === 'removable' ? 'remove-worktree' : 'none',
+      stateDigest: 'a'.repeat(64),
+      policyVersion: 3,
+    },
+  } satisfies WorkspaceAssessment)
+
+export const makeFixtureReceipt = (input: {
+  readonly commandId: WorkspaceId
+  readonly moment: SweepReceipt['moment']
+  readonly rows: readonly {
+    readonly descriptor: FixtureDescriptor
+    readonly outcome: Extract<SweepRow, { readonly kind: 'workspace' }>['outcome']
+    readonly verdict: CompletionVerdict
+    readonly reason: string
+  }[]
+}) =>
+  conforming(SweepReceiptSchema)({
+    commandId: input.commandId,
+    moment: input.moment,
+    rows: input.rows.map(row => ({
+      kind: 'workspace' as const,
+      taskId: row.descriptor.taskId,
+      workspaceId: row.descriptor.workspaceId,
+      path: row.descriptor.path,
+      origin: row.descriptor.origin,
+      verdict: row.verdict,
+      outcome: row.outcome,
+      reason: row.reason,
+    })),
+  } satisfies SweepReceipt)
+
 type ProducesEvery<Produced, Seam> = [Exclude<keyof Seam, keyof Produced>] extends [never]
   ? true
   : false
@@ -119,4 +185,6 @@ export const stubProducesEveryField: {
   readonly view: ProducesEvery<ReturnType<typeof makeFixtureView>, WorkspaceView>
   readonly binding: ProducesEvery<ReturnType<typeof makeFixtureBinding>, WorkspaceBinding>
   readonly handoff: ProducesEvery<ReturnType<typeof makeFixtureHandoff>, WorkspaceHandoff>
-} = { grant: true, view: true, binding: true, handoff: true }
+  readonly assessment: ProducesEvery<ReturnType<typeof makeFixtureAssessment>, WorkspaceAssessment>
+  readonly receipt: ProducesEvery<ReturnType<typeof makeFixtureReceipt>, SweepReceipt>
+} = { grant: true, view: true, binding: true, handoff: true, assessment: true, receipt: true }

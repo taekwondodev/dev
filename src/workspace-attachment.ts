@@ -17,7 +17,12 @@ import {
   type WorkspaceId,
   type WorkspaceSelection,
 } from './workspace-domain.ts'
-import { acquirePathGates, acquireConversationPresence, releaseGates } from './workspace-gates.ts'
+import {
+  acquirePathGates,
+  acquireConversationPresence,
+  conversationIdentity,
+  releaseGates,
+} from './workspace-gates.ts'
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, conversationFileSlot, isWithin } from './workspace-paths.ts'
 import {
@@ -65,7 +70,7 @@ export const conversationRecord = (
   return {
     conversation,
     key: hash(JSON.stringify(conversation)),
-    identity: hash(JSON.stringify({ sessionId: conversation.sessionId, sessionFile })),
+    identity: conversationIdentity(conversation),
   }
 }
 
@@ -77,7 +82,10 @@ export const attachConversation = (
     cwd: string
     selection?: WorkspaceSelection
   }
-): { readonly state: ConversationState; readonly targetOperationId?: WorkspaceId } => {
+): {
+  readonly state: ConversationState
+  readonly targetOperationId?: WorkspaceId
+} => {
   authority.initialize()
   const normalized = conversationRecord(input.conversation)
   const live = states.get(normalized.key)
@@ -166,7 +174,11 @@ export const attachConversation = (
             const current = getBinding(db, normalized.key)
             if (current === undefined || current.revision !== previous.binding.revision)
               requireReview('Conversation binding changed during explicit recovery')
-            putBinding(db, { ...current, superseded: true, pendingOperationId: undefined })
+            putBinding(db, {
+              ...current,
+              superseded: true,
+              pendingOperationId: undefined,
+            })
           })
         )
         inDb(authority, selected.repo, db => transaction(db, () => putBinding(db, binding)))
@@ -327,7 +339,10 @@ export const settleClosingState = (
     closing,
     use =>
       use.stage === 'authorized'
-        ? { stage: 'quiescent', reason: 'attachment-closed-before-operation-boundary' }
+        ? {
+            stage: 'quiescent',
+            reason: 'attachment-closed-before-operation-boundary',
+          }
         : {
             stage: 'unknown',
             reason: 'attachment-closed-without-authoritative-operation-cessation',

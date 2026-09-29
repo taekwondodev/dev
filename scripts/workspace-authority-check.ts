@@ -1515,6 +1515,10 @@ try {
       })
       const recoveryTarget = ready(await recoveryAllocator.authorize({ kind: 'delegated-write' }))
       await recoveryAllocator.close()
+      writeFileSync(
+        join(recoveryTarget.checkout, 'unfinished.txt'),
+        'kept by the allocation sweep\n'
+      )
       const otherAllocator = await recoveryLifecycle.attach({
         conversation: conversation('unstarted-recovery-other-allocator'),
         cwd: fenceRepo,
@@ -1938,6 +1942,50 @@ try {
       await mover.close()
       await holder.close()
       await switching.close()
+    }
+  )
+
+  await claim(
+    'a store from an earlier schema version is refused with the discard steps, never migrated, and stays as it was',
+    async () => {
+      const oldRoot = join(sandbox, 'old-schema-authority')
+      const oldRepo = join(sandbox, 'old-schema-repo')
+      initRepository(oldRepo, 'tracked.txt', 'old schema fixture\n')
+      const creating = await openLifecycle({ root: oldRoot })
+      const owner = await creating.attach({
+        conversation: conversation('old-schema'),
+        cwd: oldRepo,
+      })
+      await owner.close()
+      await creating.close()
+      const catalog = join(oldRoot, 'catalog.sqlite')
+      const downgrade = new DatabaseSync(catalog)
+      downgrade.exec('PRAGMA user_version = 4')
+      downgrade.close()
+      const refused = openLifecycle({ root: oldRoot }).then(async reopened => {
+        try {
+          return await reopened.inspect({ cwd: oldRepo })
+        } finally {
+          await reopened.close()
+        }
+      })
+      await assert.rejects(
+        refused,
+        error =>
+          error instanceof WorkspaceError &&
+          error.outcome === 'unavailable' &&
+          error.message.includes('unsupported schema') &&
+          error.message.includes('Discard the workspace authority')
+      )
+      const after = new DatabaseSync(catalog, { readOnly: true })
+      try {
+        assert.equal(
+          (after.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+          4
+        )
+      } finally {
+        after.close()
+      }
     }
   )
 

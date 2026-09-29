@@ -33,7 +33,7 @@ export const sqliteBusy = (cause: unknown): boolean => {
 }
 
 export const PROTOCOL_VERSION = 1
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 const BUSY_TIMEOUT_MS = 5000
 
 export type SqlRow = Record<string, unknown>
@@ -120,14 +120,6 @@ const SHARD_SQL = `
     sha256 TEXT NOT NULL,
     payload TEXT NOT NULL,
     UNIQUE(task_id, relative_path, sha256)
-  ) STRICT;
-  CREATE TABLE rule_approvals(
-    id TEXT PRIMARY KEY,
-    repository_id TEXT NOT NULL,
-    locator TEXT NOT NULL,
-    digest TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    UNIQUE(repository_id, locator, digest)
   ) STRICT;
   PRAGMA user_version = ${SCHEMA_VERSION};
 `
@@ -361,7 +353,9 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
     unavailable(`Workspace ${kind} database has unsafe durability settings: ${path}`)
   const version = numberField(first(db, 'PRAGMA user_version'), 'user_version')
   if (version !== SCHEMA_VERSION || schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
-    unavailable(`Workspace ${kind} database has an unsupported schema: ${path}`)
+    unavailable(
+      `Workspace ${kind} database has an unsupported schema: ${path}. dev never migrates it; quit every dev session and follow Discard the workspace authority in dev's docs/DEVELOPMENT.md.`
+    )
   if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
     requireReview(`Workspace ${kind} database is corrupt: ${path}`)
   databaseFile(path)

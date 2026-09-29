@@ -3,6 +3,8 @@ import {
   AbsolutePath,
   PublicationReferenceSchema,
   ReleaseRequestSchema,
+  SweepReceiptSchema,
+  SweepRequestSchema,
   TaskTargetSchema,
   WorkspaceAssessmentSchema,
   WorkspaceAuthorizationSchema,
@@ -21,6 +23,7 @@ import {
   type WorkspaceAuthorization,
   type WorkspaceBinding,
   type WorkspaceHandoff,
+  type SweepReceipt,
   type WorkspaceReleaseResult,
   type WorkspaceView,
 } from './workspace-domain.ts'
@@ -81,6 +84,10 @@ const ReleaseRequestRpcSchema = Schema.Struct({
   op: Schema.Literal('release'),
   request: ReleaseRequestSchema,
 })
+const SweepRpcRequestSchema = Schema.Struct({
+  op: Schema.Literal('sweep'),
+  request: SweepRequestSchema,
+})
 const RecordTargetRequestSchema = Schema.Struct({
   op: Schema.Literal('record-target'),
   taskId: WorkspaceId,
@@ -103,6 +110,7 @@ const WorkspaceRpcInputSchema = Schema.Union([
   CloseRequestSchema,
   CheckRequestSchema,
   ReleaseRequestRpcSchema,
+  SweepRpcRequestSchema,
   RecordTargetRequestSchema,
   RecordPublicationRequestSchema,
 ])
@@ -122,11 +130,12 @@ export interface WorkspaceRpcResults {
   readonly close: null
   readonly check: readonly WorkspaceAssessment[]
   readonly release: WorkspaceReleaseResult
+  readonly sweep: SweepReceipt
   readonly 'record-target': null
   readonly 'record-publication': null
 }
 
-const EnvelopeSchema = Schema.Struct({ id: RpcId, request: Schema.Unknown })
+const EnvelopeSchema = Schema.Struct({ id: RpcId, sentAt: Schema.Finite, request: Schema.Unknown })
 const SuccessSchema = Schema.Union([
   Schema.Struct({
     id: RpcId,
@@ -182,6 +191,12 @@ const SuccessSchema = Schema.Union([
     op: Schema.Literal('release'),
     value: WorkspaceReleaseResultSchema,
   }),
+  Schema.Struct({
+    id: RpcId,
+    ok: Schema.Literal(true),
+    op: Schema.Literal('sweep'),
+    value: SweepReceiptSchema,
+  }),
 ])
 const FailureSchema = Schema.Struct({
   id: RpcId,
@@ -211,6 +226,11 @@ const BindingsMessageSchema = Schema.Struct({
   type: Schema.Literal('bindings'),
   updates: Schema.Array(BindingUpdateSchema),
 })
+const SweepReceiptMessageSchema = Schema.Struct({
+  type: Schema.Literal('sweep-receipt'),
+  attachmentId: AttachmentId,
+  receipt: SweepReceiptSchema,
+})
 const CallbackResultSchema = Schema.Struct({
   type: Schema.Literal('callback-result'),
   id: CallbackId,
@@ -224,6 +244,7 @@ export const WorkspaceWorkerMessageSchema = Schema.Union([
   StartupFailureSchema,
   HostCallbackSchema,
   BindingsMessageSchema,
+  SweepReceiptMessageSchema,
   WorkspaceRpcResponseSchema,
 ])
 const WorkspaceWorkerDataSchema = Schema.Struct({

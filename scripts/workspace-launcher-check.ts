@@ -117,6 +117,7 @@ try {
   )
   assert.equal(bound.binding.workspaceId, allocated.grant.workspaceId)
   await bound.close()
+  writeFileSync(join(allocated.grant.checkout, 'unfinished.txt'), 'kept by the allocation sweep\n')
 
   const switchSessions = pi.SessionManager.create(repo, join(dataHome, 'sessions'))
   switchSessions.appendMessage(user)
@@ -481,7 +482,7 @@ try {
   )
 
   await claim(
-    'dev workspace check <task> returns the assessment with exit 0 even though it names blockers and eligibility, a malformed task ID is a usage error, and no unattended release flag exists',
+    'dev workspace check <task> returns the role, target and sweep verdict with exit 0 even though it names blockers and eligibility, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
     async () => {
       const checked = await readOnly(inspectRoot, [
         '--cwd',
@@ -497,6 +498,11 @@ try {
         checked.stdout
       )
       assert.ok(checked.stdout.includes('eligibility: releasable'), checked.stdout)
+      assert.ok(
+        checked.stdout.includes('role: pre-existing checkout') &&
+          checked.stdout.includes('sweep verdict: finished (clean-checkout)'),
+        checked.stdout
+      )
       const malformed = await readOnly(inspectRoot, ['workspace', 'check', 'not-a-task'])
       assert.equal(malformed.code, 2, malformed.stderr)
       assert.ok(malformed.stderr.includes('not-a-task'), malformed.stderr)
@@ -508,6 +514,12 @@ try {
       ])
       assert.equal(unattended.code, 2, unattended.stderr)
       assert.ok(unattended.stderr.includes('workspace release <task>'), unattended.stderr)
+      const resume = await readOnly(inspectRoot, ['workspace', 'resume', firstGrant.taskId])
+      assert.equal(resume.code, 2, resume.stderr)
+      assert.ok(
+        resume.stderr.includes('Unknown workspace command "resume"'),
+        'resume left the terminal surface'
+      )
     }
   )
   await claim(

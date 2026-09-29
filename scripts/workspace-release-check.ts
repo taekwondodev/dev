@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import {
   WorkspaceError,
+  type WorkspaceHandoff,
   type PublicationReference,
   type ReleaseRequest,
   type TaskTarget,
@@ -27,19 +28,22 @@ import {
   type WorkspaceId,
   type WorkspaceLifecycle,
 } from '../src/workspace-domain.ts'
+import { decideCompletion } from '../src/workspace-completion.ts'
 import {
+  integrationFacts,
   isUnavailable,
   makeGitHubReader,
-  proveIntegration,
-  verifyEvidence,
+  readInventory,
+  stateDigestOf,
+  verifyInventory,
   type GitHubPullRequest,
   type GitHubReader,
 } from '../src/workspace-evidence.ts'
 import {
-  EvidenceToolError,
-  makeEvidenceTool,
+  WorkspaceToolError,
+  makeWorkspaceTool,
   type PublicationDestinationReader,
-} from '../src/workspace-evidence-tool.ts'
+} from '../src/workspace-tool.ts'
 import type { StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
 import {
   formatReleaseRun,
@@ -52,8 +56,9 @@ import { acquireMaintenance, acquireRuntime } from '../src/runtime-coordination.
 import { authorityPaths } from '../src/workspace-authority-root.ts'
 import { acquirePathGates, releaseGates } from '../src/workspace-gates.ts'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Effect, Exit, Scope } from 'effect'
+import { Clock, Effect, Exit, Scope } from 'effect'
 import { makeClaims } from './workspace-check-support.ts'
+import { managedFacts, verdictName } from './workspace-completion-fixtures.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
 import {
   faultInjector,
@@ -134,9 +139,10 @@ const releaseOne = (
   lifecycle.release({
     taskId: only(assessments, workspaceId).taskId,
     commandId: newId(),
-    confirmed: assessments.map(item => item.subject),
+    decided: assessments.map(item => item.subject),
+    decider: { kind: 'user' },
     workspaceId,
-    occupiedCwds: [],
+    occupiedPaths: [],
     ...extra,
   })
 const reply = (text: string) =>
@@ -145,6 +151,8 @@ const reply = (text: string) =>
     readonly reference?: PublicationReference
   }
 const localMain: TaskTarget = { kind: 'local', ref: 'refs/heads/main' }
+const MERGED_AT = '2026-09-28T20:08:49Z'
+const seeded = (seed: string) => (_repository: string, sha: string) => (sha === seed ? [7] : [])
 const registered = (repo: string) =>
   git(['worktree', 'list', '--porcelain'], repo)
     .split('\n')
@@ -208,6 +216,15 @@ try {
   const repo = join(sandbox, 'repo')
   const mainCommit = initRepository(repo)
   const lifecycle = await openLifecycle({ root })
+  const deliverBranch = (checkout: string): string => {
+    const name = `delivered-${newId()}`
+    git(['switch', '--quiet', '-c', name], checkout)
+    writeFileSync(join(checkout, `${name}.txt`), `${name}\n`)
+    git(['add', `${name}.txt`], checkout)
+    git(['commit', '--quiet', '-m', name], checkout)
+    git(['merge', '--quiet', '--ff-only', name], repo)
+    return git(['rev-parse', 'HEAD'], checkout)
+  }
 
   const holder = await lifecycle.attach({ conversation: conversation(), cwd: repo })
   const held = ready(await holder.authorize({ kind: 'write' }))
@@ -272,9 +289,10 @@ try {
       const again = await lifecycle.release({
         taskId: taskA,
         commandId: newId(),
-        confirmed: [assessment!.subject],
+        decided: [assessment!.subject],
+        decider: { kind: 'user' },
         workspaceId: held.workspaceId,
-        occupiedCwds: [],
+        occupiedPaths: [],
       })
       assert.equal(again.outcome, 'blocked')
       assert.ok(
@@ -290,14 +308,18 @@ try {
   const taskB = first.taskId
   const m1 = first.managed
   await claim(
-    'a managed worktree without an agreed target is review-required with the missing target named, and a release bound to that assessment removes nothing',
+    'a dirty delegated child without a recorded or derivable target is review-required with the missing target named, and a release bound to that assessment removes nothing',
     async () => {
+      writeFileSync(join(m1.checkout, 'tracked.txt'), 'dirty child\n')
       const assessments = await lifecycle.check(taskB)
       const managed = only(assessments, m1.workspaceId)
       assert.equal(managed.outcome, 'review-required')
-      assert.equal(managed.evidence?.verdict, 'unknown')
+      assert.deepEqual(
+        [managed.completion.kind, managed.completion.role, managed.target.source],
+        ['retained', 'child', 'none']
+      )
       assert.ok(
-        managed.reasons.some(reason => reason.includes('set-target')),
+        managed.reasons.some(reason => reason.includes('no origin remote')),
         managed.reasons.join(' | ')
       )
       assert.equal(managed.subject.effect, 'none')
@@ -305,6 +327,7 @@ try {
       const result = await releaseOne(lifecycle, assessments, m1.workspaceId)
       assert.equal(result.outcome, 'review-required', result.reason)
       assert.ok(existsSync(m1.checkout))
+      git(['checkout', '--quiet', '--', 'tracked.txt'], m1.checkout)
     }
   )
   await claim(
@@ -334,11 +357,19 @@ try {
   )
   await lifecycle.recordTarget(taskB, localMain)
   await claim(
-    'with the agreed local target recorded, a clean managed worktree at an ancestor of the target tip is removable at this check only, and a check still creates no use',
+    'a clean managed worktree at its base is removable at this check only as no-residue, the recorded target shown as an override, and a check still creates no use',
     async () => {
       const managed = only(await lifecycle.check(taskB), m1.workspaceId)
       assert.equal(managed.outcome, 'removable')
       assert.equal(managed.evidence?.verdict, 'valid')
+      assert.deepEqual(
+        [
+          managed.completion.kind,
+          managed.completion.kind === 'finished' && managed.completion.rule,
+        ],
+        ['finished', 'no-residue']
+      )
+      assert.equal(managed.target.source, 'override')
       assert.equal(managed.subject.effect, 'remove-worktree')
       assert.equal(managed.subject.head, mainCommit)
       assert.ok(existsSync(m1.checkout), 'the check removed nothing')
@@ -396,12 +427,16 @@ try {
   await claim(
     'a release whose confirmed assessment no longer matches the worktree is blocked before any effect',
     async () => {
+      git(['switch', '--quiet', '-c', 'stale-confirmation'], m1.checkout)
+      const commit = (name: string) => {
+        writeFileSync(join(m1.checkout, name), `${name}\n`)
+        git(['add', name], m1.checkout)
+        git(['commit', '--quiet', '-m', name], m1.checkout)
+        git(['merge', '--quiet', '--ff-only', 'stale-confirmation'], repo)
+      }
+      commit('first.txt')
       const assessments = await lifecycle.check(taskB)
-      const late = join(m1.checkout, 'late.txt')
-      writeFileSync(late, 'appeared after the check\n')
-      await lifecycle.recordPublication(
-        publication(taskB, m1.workspaceId, 'late.txt', readFileSync(late))
-      )
+      commit('second.txt')
       assert.equal(
         only(await lifecycle.check(taskB), m1.workspaceId).outcome,
         'removable',
@@ -409,25 +444,33 @@ try {
       )
       const result = await releaseOne(lifecycle, assessments, m1.workspaceId)
       assert.equal(result.outcome, 'blocked', result.reason)
+      assert.ok(result.reason.includes('HEAD'), result.reason)
       assert.deepEqual(result.effects, [])
-      assert.ok(existsSync(late))
-      rmSync(late)
+      assert.ok(existsSync(join(m1.checkout, 'second.txt')))
+      git(['checkout', '--quiet', '--detach', mainCommit], m1.checkout)
+      git(['branch', '--quiet', '-D', 'stale-confirmation'], repo)
     }
   )
   await claim(
     'a workspace added to the task after confirmation refuses the whole attempt as a scope change; nothing is released',
     async () => {
+      writeFileSync(
+        join(m1.checkout, 'tracked.txt'),
+        'unfinished, so the allocation sweep keeps it\n'
+      )
       const assessments = await lifecycle.check(taskB)
       const second = await allocateManaged(lifecycle, repo, {
         taskId: taskB,
         workspaceId: first.repoWorkspaceId,
       })
+      assert.ok(existsSync(m1.checkout), 'the sweep before the allocation retained the dirty child')
       await expectError(releaseOne(lifecycle, assessments, m1.workspaceId), 'invalid', [
         taskB,
         second.managed.workspaceId,
       ])
       assert.ok(existsSync(m1.checkout))
       assert.ok(existsSync(second.managed.checkout))
+      git(['checkout', '--quiet', '--', 'tracked.txt'], m1.checkout)
     }
   )
   const commandB = newId()
@@ -456,9 +499,10 @@ try {
         lifecycle.release({
           taskId: taskB,
           commandId: commandB,
-          confirmed: assessments.map(item => item.subject),
+          decided: assessments.map(item => item.subject),
+          decider: { kind: 'user' },
           workspaceId: m1.workspaceId,
-          occupiedCwds: [],
+          occupiedPaths: [],
         }),
         'invalid',
         [commandB, m1.workspaceId]
@@ -482,7 +526,7 @@ try {
       assert.equal(assessments.length, 2)
       const consequence = { managed: 'delete this managed worktree', 'pre-existing': 'every file' }
       for (const assessment of assessments) {
-        const disclosed = releaseConfirmation(taskB, [assessment], undefined).message
+        const disclosed = releaseConfirmation(taskB, [assessment]).message
         assert.ok(disclosed.includes(assessment.path), disclosed)
         assert.ok(disclosed.includes(consequence[assessment.origin]), disclosed)
         assert.ok(disclosed.includes('pre-existing checkout files are never touched'), disclosed)
@@ -509,10 +553,11 @@ try {
   const m3 = third.managed
   await lifecycle.recordTarget(taskC, localMain)
   await freeCheckout(lifecycle, taskC, third.repoWorkspaceId)
+  const deliveredC = deliverBranch(m3.checkout)
   const outcomeOf = async (workspaceId: WorkspaceId, taskId: WorkspaceId) =>
     only(await lifecycle.check(taskId), workspaceId)
   await claim(
-    'dirty tracked residue and unselected reports are disposable, but an unintegrated local commit blocks removal',
+    'on a branch whose commits are in the target, dirty tracked residue and unselected reports are disposable, but an unintegrated local commit blocks removal',
     async () => {
       writeFileSync(join(m3.checkout, 'tracked.txt'), 'dirty\n')
       let managed = await outcomeOf(m3.workspaceId, taskC)
@@ -538,16 +583,26 @@ try {
       git(['commit', '--quiet', '-m', 'unintegrated'], m3.checkout)
       const unintegrated = git(['rev-parse', 'HEAD'], m3.checkout)
       managed = await outcomeOf(m3.workspaceId, taskC)
+      assert.equal(managed.outcome, 'blocked', 'a clean branch with an unmerged commit is retained')
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'residue beside the unintegrated commit\n')
+      managed = await outcomeOf(m3.workspaceId, taskC)
       assert.equal(managed.outcome, 'blocked')
-      assert.equal(managed.evidence?.verdict, 'invalid')
+      assert.equal(managed.evidence?.verdict, 'valid')
+      assert.deepEqual(
+        [
+          managed.completion.kind,
+          managed.completion.kind === 'retained' && managed.completion.retained,
+        ],
+        ['retained', 'not-integrated']
+      )
       assert.ok(
         managed.reasons.some(
           reason =>
-            reason.includes(unintegrated.slice(0, 12)) && reason.includes(mainCommit.slice(0, 12))
+            reason.includes(unintegrated.slice(0, 12)) && reason.includes(deliveredC.slice(0, 12))
         ),
         managed.reasons.join(' | ')
       )
-      git(['checkout', '--quiet', '--detach', mainCommit], m3.checkout)
+      git(['reset', '--quiet', '--hard', deliveredC], m3.checkout)
 
       writeFileSync(join(m3.checkout, 'report.txt'), 'evidence report\n')
       managed = await outcomeOf(m3.workspaceId, taskC)
@@ -710,7 +765,7 @@ try {
       const freed = await lifecycle.check(taskC)
       assert.equal(only(freed, m3.workspaceId).outcome, 'removable')
       const occupied = await releaseOne(lifecycle, freed, m3.workspaceId, {
-        occupiedCwds: [join(m3.checkout, 'build')],
+        occupiedPaths: [join(m3.checkout, 'build')],
       })
       assert.equal(occupied.outcome, 'blocked')
       assert.ok(occupied.reason.includes(join(m3.checkout, 'build')), occupied.reason)
@@ -741,6 +796,7 @@ try {
       await lifecycle.recordTarget(allocated.taskId, localMain)
       await freeCheckout(lifecycle, allocated.taskId, allocated.repoWorkspaceId)
       const { checkout } = allocated.managed
+      deliverBranch(checkout)
       writeFileSync(join(checkout, 'twice.txt'), 'published twice\n')
       const bytes = readFileSync(join(checkout, 'twice.txt'))
       await lifecycle.recordPublication(
@@ -788,6 +844,7 @@ try {
     const allocated = await allocateManaged(lifecycle, repo)
     await lifecycle.recordTarget(allocated.taskId, localMain)
     await freeCheckout(lifecycle, allocated.taskId, allocated.repoWorkspaceId)
+    deliverBranch(allocated.managed.checkout)
     await prepare(allocated.managed.checkout, allocated.taskId, allocated.managed.workspaceId)
     const assessments = await lifecycle.check(allocated.taskId)
     assert.equal(only(assessments, allocated.managed.workspaceId).outcome, 'removable')
@@ -1014,7 +1071,7 @@ try {
         runRelease(faulty.effect, {
           taskId: allocated.taskId,
           confirmed: assessments,
-          occupiedCwds: [],
+          occupiedPaths: [],
         })
       )
       await faulty.close()
@@ -1076,7 +1133,7 @@ try {
         runRelease(intruding, {
           taskId: allocated.taskId,
           confirmed: assessments,
-          occupiedCwds: [],
+          occupiedPaths: [],
         })
       )
       const [completed, refused] = run.results
@@ -1111,7 +1168,7 @@ try {
         runRelease(lifecycle.effect, {
           taskId: allocated.taskId,
           confirmed: assessments,
-          occupiedCwds: [],
+          occupiedPaths: [],
         })
       ).finally(() => chmodSync(admins, mode))
       const [stopped] = run.results
@@ -1203,7 +1260,7 @@ try {
         runRelease(lifecycle.effect, {
           taskId: allocated.taskId,
           confirmed: assessments,
-          occupiedCwds: [],
+          occupiedPaths: [],
         })
       ).finally(() => chmodSync(parent, mode))
       const [stopped] = run.results
@@ -1253,6 +1310,7 @@ try {
         const source = await allocateManaged(lifecycle, repo)
         await lifecycle.recordTarget(source.taskId, localMain)
         await freeCheckout(lifecycle, source.taskId, source.repoWorkspaceId)
+        deliverBranch(source.managed.checkout)
         const outside = mkdtempSync(join(sandbox, 'linked-coordination-'))
         writeFileSync(join(outside, 'sentinel'), 'outside coordination stays untouched')
         const link = join(source.managed.checkout, relative)
@@ -1290,6 +1348,7 @@ try {
       const source = await allocateManaged(lifecycle, repo)
       await lifecycle.recordTarget(source.taskId, localMain)
       await freeCheckout(lifecycle, source.taskId, source.repoWorkspaceId)
+      deliverBranch(source.managed.checkout)
       const options = { installationPath: source.managed.checkout, namespacePath: root }
       const dataHome = join(sandbox, 'source-session-outside-checkout')
       const scope = Scope.makeUnsafe()
@@ -1431,6 +1490,7 @@ try {
   const unknownSha = 'f'.repeat(40)
   const pull = (overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest => ({
     merged: true,
+    mergedAt: MERGED_AT,
     mergeCommit: squash,
     headSha: feature,
     headRepository: 'owner/repo',
@@ -1443,6 +1503,7 @@ try {
     overrides: Partial<GitHubReader> = {},
     pullOverrides: Partial<GitHubPullRequest> = {}
   ): GitHubReader => ({
+    defaultBranch: () => 'main',
     refTip: () => squash,
     pullRequest: () => pull(pullOverrides),
     pullRequestCommits: () => [feature],
@@ -1452,8 +1513,24 @@ try {
     ...overrides,
   })
   const target: TaskTarget = { kind: 'github', repository: 'owner/repo', ref: 'refs/heads/main' }
-  const prove = (provider: GitHubReader, source = feature, targetOverride: TaskTarget = target) =>
-    proveIntegration(provider, worktree, source, targetOverride)
+  const prove = (provider: GitHubReader, source = feature, targetOverride: TaskTarget = target) => {
+    const verdict = decideCompletion(
+      managedFacts({
+        allocation: 'checkout-contention',
+        branch: 'refs/heads/feature',
+        residue: { tracked: 1, untracked: 0, ignored: 0 },
+        ownCommits: true,
+        integration: integrationFacts(provider, worktree, {
+          target: targetOverride,
+          head: source,
+          base: undefined,
+          allocatedAt: undefined,
+          siblings: { heads: [], unknown: [] },
+        }),
+      })
+    )
+    return { outcome: verdictName(verdict), reason: verdict.reason }
+  }
   await claim(
     'GitHub calls of one request share a time budget and ask an identical read once: each call gets what is left, a spent budget answers unavailable without calling, and integration is then unknown instead of outlasting the worker request',
     () => {
@@ -1495,13 +1572,13 @@ try {
       const spent = makeGitHubReader(() => {
         throw new Error('a spent budget makes no call')
       }, 0)
-      assert.equal(prove(spent).verdict, 'unknown')
+      assert.equal(prove(spent).outcome, 'retained:integration-unknown')
     }
   )
   await claim(
     'a squash-merged pull request proves integration only with the exact source-at-merge binding: wrong target, wrong source repository, a different merged head, an unreachable merge result or no merged pull request are invalid, and provider failures or too many commits are unknown',
     () => {
-      assert.equal(prove(reader()).verdict, 'valid', prove(reader()).reasons.join(' | '))
+      assert.equal(prove(reader()).outcome, 'branch-merged', prove(reader()).reason)
       assert.equal(
         prove(
           reader(
@@ -1509,52 +1586,188 @@ try {
             { headSha: extendedSource, commits: 2 }
           ),
           feature
-        ).verdict,
-        'valid',
+        ).outcome,
+        'branch-merged',
         'an earlier local source commit is covered when proven an ancestor of the bound merged source'
       )
-      const bound = prove(reader()).reasons.join(' | ')
+      const bound = prove(reader()).reason
       assert.ok(bound.includes('owner/repo#7') && bound.includes(feature.slice(0, 12)), bound)
-      assert.equal(prove(reader({}, { baseRef: 'release' })).verdict, 'invalid')
-      assert.equal(prove(reader({}, { headRepository: 'fork/repo' })).verdict, 'invalid')
-      assert.ok(
-        prove(reader({}, { headRepository: 'fork/repo' })).reasons.some(reason =>
-          reason.includes('fork/repo')
-        )
-      )
+      assert.equal(prove(reader({}, { baseRef: 'release' })).outcome, 'retained:not-integrated')
       assert.equal(
-        prove(reader({ pullRequestCommits: () => [githubMain] }, { headSha: githubMain })).verdict,
-        'invalid',
+        prove(reader({}, { headRepository: 'fork/repo' })).outcome,
+        'retained:not-integrated'
+      )
+      assert.ok(prove(reader({}, { headRepository: 'fork/repo' })).reason.includes('fork/repo'))
+      assert.equal(
+        prove(reader({ pullRequestCommits: () => [githubMain] }, { headSha: githubMain })).outcome,
+        'retained:not-integrated',
         'a pull request whose merged head is another commit does not cover this worktree'
       )
       assert.equal(
-        prove(reader({ pullRequestCommits: () => [feature, githubMain] })).verdict,
-        'unknown',
+        prove(reader({ pullRequestCommits: () => [feature, githubMain] })).outcome,
+        'retained:integration-unknown',
         'provider facts that disagree on the merged head bind nothing'
       )
       assert.equal(
-        prove(reader({}, { headRepository: undefined })).verdict,
-        'unknown',
+        prove(reader({}, { headRepository: undefined })).outcome,
+        'retained:integration-unknown',
         'a deleted source repository leaves the merged source unresolved'
       )
-      assert.equal(prove(reader({}, { mergeCommit: unknownSha })).verdict, 'invalid')
-      assert.equal(prove(reader({}, { merged: false })).verdict, 'invalid')
-      assert.equal(prove(reader({ mergedPullRequestsForCommit: () => [] })).verdict, 'invalid')
       assert.equal(
-        prove(reader({ pullRequest: () => ({ unavailable: 'rate limited' }) })).verdict,
-        'unknown'
+        prove(reader({}, { mergeCommit: unknownSha })).outcome,
+        'retained:not-integrated'
       )
-      assert.equal(prove(reader({ refTip: () => ({ unavailable: 'offline' }) })).verdict, 'unknown')
-      assert.equal(prove(reader({}, { commits: 251 })).verdict, 'unknown')
+      assert.equal(prove(reader({}, { merged: false })).outcome, 'retained:not-integrated')
       assert.equal(
-        prove(reader({ mergedPullRequestsForCommit: () => ({ unavailable: 'offline' }) })).verdict,
-        'unknown'
+        prove(reader({ mergedPullRequestsForCommit: () => [] })).outcome,
+        'retained:not-integrated'
+      )
+      assert.equal(
+        prove(reader({ pullRequest: () => ({ unavailable: 'rate limited' }) })).outcome,
+        'retained:integration-unknown'
+      )
+      assert.equal(
+        prove(reader({ refTip: () => ({ unavailable: 'offline' }) })).outcome,
+        'retained:integration-unknown'
+      )
+      assert.equal(prove(reader({}, { commits: 251 })).outcome, 'retained:integration-unknown')
+      assert.equal(
+        prove(reader({ mergedPullRequestsForCommit: () => ({ unavailable: 'offline' }) })).outcome,
+        'retained:integration-unknown'
       )
       const explicit: TaskTarget = { ...target, pullRequest: 7 }
       assert.equal(
-        prove(reader({ mergedPullRequestsForCommit: () => [] }), feature, explicit).verdict,
-        'valid'
+        prove(reader({ mergedPullRequestsForCommit: () => [] }), feature, explicit).outcome,
+        'branch-merged'
       )
+    }
+  )
+  await claim(
+    'a delegated child is delivered by a pull request merged after its allocation whose source strictly descends from its base, found through a task-owned sibling HEAD it contains, its base or the recorded pull request; any refuted condition, or own commits no merged source or target keeps, leaves it not integrated, while unreadable sibling history leaves it unknown',
+    () => {
+      const allocatedAt = Date.parse(MERGED_AT) - 60_000
+      const childVerdict = (
+        provider: GitHubReader,
+        input: {
+          base: string
+          siblings: string[]
+          siblingsUnknown?: string[]
+          head?: string
+          allocatedAt?: number
+        },
+        targetOverride: TaskTarget = target
+      ) =>
+        decideCompletion(
+          managedFacts({
+            residue: { tracked: 2, untracked: 0, ignored: 0 },
+            ownCommits: input.head !== undefined && input.head !== input.base,
+            integration: integrationFacts(provider, worktree, {
+              target: targetOverride,
+              head: input.head ?? input.base,
+              base: input.base,
+              allocatedAt: input.allocatedAt ?? allocatedAt,
+              siblings: { heads: input.siblings, unknown: input.siblingsUnknown ?? [] },
+            }),
+          })
+        )
+      const sibling = childVerdict(reader({ mergedPullRequestsForCommit: seeded(feature) }), {
+        base: githubMain,
+        siblings: [feature],
+      })
+      assert.equal(verdictName(sibling), 'child-delivered', sibling.reason)
+      assert.ok(
+        sibling.reason.includes('owner/repo#7') && sibling.reason.includes('sibling'),
+        sibling.reason
+      )
+      const base = childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
+        base: githubMain,
+        siblings: [],
+      })
+      assert.equal(verdictName(base), 'child-delivered', base.reason)
+      assert.ok(base.reason.includes('base seed'), base.reason)
+      const recorded = childVerdict(
+        reader({ mergedPullRequestsForCommit: () => [] }),
+        { base: githubMain, siblings: [] },
+        { ...target, pullRequest: 7 }
+      )
+      assert.equal(verdictName(recorded), 'child-delivered', recorded.reason)
+      const cases = [
+        [
+          'no seed finds a merged pull request',
+          childVerdict(reader({ mergedPullRequestsForCommit: () => [] }), {
+            base: githubMain,
+            siblings: [],
+          }),
+        ],
+        [
+          'the pull request does not descend from the base',
+          childVerdict(reader({ mergedPullRequestsForCommit: seeded(feature) }), {
+            base: extendedSource,
+            siblings: [feature],
+          }),
+        ],
+        [
+          'the merged source is the base itself',
+          childVerdict(reader({ mergedPullRequestsForCommit: seeded(feature) }), {
+            base: feature,
+            siblings: [],
+          }),
+        ],
+        [
+          'the pull request was merged before the allocation',
+          childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
+            base: githubMain,
+            siblings: [],
+            allocatedAt: Date.parse(MERGED_AT) + 60_000,
+          }),
+        ],
+        [
+          'only a sibling commit the merged source does not contain found it',
+          childVerdict(reader({ mergedPullRequestsForCommit: seeded(extendedSource) }), {
+            base: githubMain,
+            siblings: [extendedSource],
+          }),
+        ],
+        [
+          "the child's own commits are in no merged pull request or target",
+          childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
+            base: githubMain,
+            head: extendedSource,
+            siblings: [],
+          }),
+        ],
+      ] as const
+      for (const [label, verdict] of cases)
+        assert.equal(verdictName(verdict), 'retained:not-integrated', `${label}: ${verdict.reason}`)
+      const unknownCases = [
+        [
+          'only a sibling found it and its merged head is not in the local object store',
+          childVerdict(
+            reader(
+              {
+                mergedPullRequestsForCommit: seeded(feature),
+                pullRequestCommits: () => [feature, unknownSha],
+              },
+              { headSha: unknownSha, commits: 2 }
+            ),
+            { base: githubMain, siblings: [feature] }
+          ),
+        ],
+        [
+          'a sibling workspace could not be read, so its pull requests were not searched',
+          childVerdict(reader({ mergedPullRequestsForCommit: () => [] }), {
+            base: githubMain,
+            siblings: [],
+            siblingsUnknown: ['The HEAD of sibling workspace w could not be read'],
+          }),
+        ],
+      ] as const
+      for (const [label, verdict] of unknownCases)
+        assert.equal(
+          verdictName(verdict),
+          'retained:integration-unknown',
+          `${label}: ${verdict.reason}`
+        )
     }
   )
   await claim(
@@ -1573,19 +1786,19 @@ try {
       const explicit: TaskTarget = { ...target, pullRequest: 7 }
       git(['checkout', '--quiet', '--detach', unrelated], worktree)
       try {
-        assert.equal(prove(reader(), unrelated, explicit).verdict, 'invalid')
+        assert.equal(prove(reader(), unrelated, explicit).outcome, 'retained:not-integrated')
         for (const changed of [feature, squash]) {
           git(['replace', '--graft', changed, unrelated], github)
           assert.equal(
-            prove(reader(), unrelated, explicit).verdict,
-            'invalid',
+            prove(reader(), unrelated, explicit).outcome,
+            'retained:not-integrated',
             'replacement history is not delivery'
           )
           git(['update-ref', '-d', `refs/replace/${changed}`], github)
           writeFileSync(grafts, `${changed} ${unrelated}\n`)
           assert.equal(
-            prove(reader(), unrelated, explicit).verdict,
-            'invalid',
+            prove(reader(), unrelated, explicit).outcome,
+            'retained:not-integrated',
             'grafted history is not delivery'
           )
           rmSync(grafts)
@@ -1607,8 +1820,8 @@ try {
           head === unknownSha && base === feature ? 'ahead' : 'diverged',
       })
       assert.equal(
-        prove(remote).verdict,
-        'valid',
+        prove(remote).outcome,
+        'branch-in-target',
         "the pull request's merge result is not reachable from this tip, so only the comparison proves it"
       )
       const diverged = reader({
@@ -1616,7 +1829,7 @@ try {
         compare: () => 'diverged',
         mergedPullRequestsForCommit: () => [],
       })
-      assert.equal(prove(diverged).verdict, 'invalid')
+      assert.equal(prove(diverged).outcome, 'retained:not-integrated')
       assert.equal(git(['rev-parse', 'HEAD'], worktree), feature, 'no ref was fetched or moved')
     }
   )
@@ -1624,23 +1837,22 @@ try {
     'local ancestry decides a local or remote target: a source reachable from the tip is valid, a missing ref or an unreadable remote is unknown, and a negative result in shallow history is unknown rather than proof',
     () => {
       const noGitHub = reader({ refTip: () => ({ unavailable: 'must not be consulted' }) })
-      assert.equal(proveIntegration(noGitHub, worktree, feature, localMain).verdict, 'invalid')
-      assert.equal(proveIntegration(noGitHub, worktree, githubMain, localMain).verdict, 'valid')
+      assert.equal(prove(noGitHub, feature, localMain).outcome, 'retained:not-integrated')
+      assert.equal(prove(noGitHub, githubMain, localMain).outcome, 'branch-in-target')
       assert.equal(
-        proveIntegration(noGitHub, worktree, feature, { kind: 'local', ref: 'refs/heads/nope' })
-          .verdict,
-        'unknown'
+        prove(noGitHub, feature, { kind: 'local', ref: 'refs/heads/nope' }).outcome,
+        'retained:integration-unknown'
       )
       git(['remote', 'add', 'origin', github], worktree)
       const remote: TaskTarget = { kind: 'remote', remote: 'origin', ref: 'refs/heads/main' }
-      assert.equal(proveIntegration(noGitHub, worktree, githubMain, remote).verdict, 'valid')
+      assert.equal(prove(noGitHub, githubMain, remote).outcome, 'branch-in-target')
       assert.equal(
-        proveIntegration(noGitHub, worktree, feature, {
+        prove(noGitHub, feature, {
           kind: 'remote',
           remote: 'nowhere',
           ref: 'refs/heads/main',
-        }).verdict,
-        'unknown'
+        }).outcome,
+        'retained:integration-unknown'
       )
       const shallow = join(sandbox, 'shallow')
       execFileSync('git', ['clone', '--quiet', '--depth', '1', `file://${github}`, shallow])
@@ -1650,53 +1862,49 @@ try {
       git(['add', 'more.txt'], shallow)
       git(['commit', '--quiet', '-m', 'more'], shallow)
       const more = git(['rev-parse', 'HEAD'], shallow)
-      const proof = proveIntegration(noGitHub, shallow, more, {
-        kind: 'local',
-        ref: 'refs/remotes/origin/main',
-      })
-      assert.equal(proof.verdict, 'unknown')
-      assert.ok(
-        proof.reasons.some(reason => reason.includes('refs/remotes/origin/main')),
-        proof.reasons.join(' | ')
+      const proof = decideCompletion(
+        managedFacts({
+          allocation: 'checkout-contention',
+          branch: 'refs/heads/main',
+          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          ownCommits: true,
+          integration: integrationFacts(noGitHub, shallow, {
+            target: { kind: 'local', ref: 'refs/remotes/origin/main' },
+            head: more,
+            base: undefined,
+            allocatedAt: undefined,
+            siblings: { heads: [], unknown: [] },
+          }),
+        })
       )
+      assert.equal(proof.kind === 'retained' && proof.retained, 'integration-unknown')
+      assert.ok(proof.reason.includes('refs/remotes/origin/main'), proof.reason)
     }
   )
   await claim(
     'the verifier fingerprints staged and unstaged tracked content even when status paths do not change',
     () => {
-      const composed = verifyEvidence(reader(), {
-        checkout: worktree,
-        head: feature,
-        target,
-        publications: [],
-      })
-      assert.equal(composed.verdict, 'valid')
+      const digest = () => {
+        const inventory = readInventory(worktree, feature)
+        assert.equal(verifyInventory(worktree, [], inventory).verdict, 'valid')
+        return stateDigestOf({ head: feature, inventory, targetTip: squash, publications: [] })
+      }
+      const composed = digest()
       writeFileSync(join(worktree, 'tracked.txt'), 'dirty\n')
-      const dirty = verifyEvidence(reader(), {
-        checkout: worktree,
-        head: feature,
-        target,
-        publications: [],
-      })
-      assert.equal(dirty.verdict, 'valid', dirty.reasons.join(' | '))
-      assert.notEqual(dirty.stateDigest, composed.stateDigest)
+      const dirty = digest()
+      assert.notEqual(dirty, composed)
       git(['add', 'tracked.txt'], worktree)
-      const staged = verifyEvidence(reader(), {
-        checkout: worktree,
-        head: feature,
-        target,
-        publications: [],
-      })
-      assert.notEqual(staged.stateDigest, dirty.stateDigest)
+      assert.notEqual(digest(), dirty)
     }
   )
 
   await claim(
-    'the evidence tool records the agreed target and records a publication only after the destination body or an attachment reads back the exact bytes',
+    'the workspace tool records a target override, records a publication only after the destination body or an attachment reads back the exact bytes, and resumes onto a retained workspace through the authority selection',
     async () => {
       const allocated = await allocateManaged(lifecycle, repo)
       await freeCheckout(lifecycle, allocated.taskId, allocated.repoWorkspaceId)
       const { checkout } = allocated.managed
+      deliverBranch(checkout)
       writeFileSync(join(checkout, 'report.txt'), 'published report\n')
       writeFileSync(join(checkout, 'shot.bin'), Buffer.from([1, 2, 3, 4]))
       writeFileSync(join(checkout, 'id_rsa'), 'private key fixture')
@@ -1708,7 +1916,7 @@ try {
             const key = `${repository}#${number}/${commentId ?? 'body'}`
             const body = bodies.get(key)
             return body === undefined
-              ? Effect.fail(new EvidenceToolError({ message: `no destination ${key}` }))
+              ? Effect.fail(new WorkspaceToolError({ message: `no destination ${key}` }))
               : Effect.succeed({
                   body,
                   url: `https://github.com/${repository}/issues/${number}#${commentId ?? ''}`,
@@ -1717,7 +1925,7 @@ try {
         attachment: url =>
           url.endsWith('shot')
             ? Effect.succeed(new Uint8Array([1, 2, 3, 4]))
-            : Effect.fail(new EvidenceToolError({ message: `no attachment ${url}` })),
+            : Effect.fail(new WorkspaceToolError({ message: `no attachment ${url}` })),
       }
       const bound = await lifecycle.attach({
         conversation: conversation(),
@@ -1726,11 +1934,24 @@ try {
       })
       const context = () =>
         ({ cwd: checkout, hasUI: true }) as unknown as Parameters<ToolDefinition['execute']>[4]
-      const tool = makeEvidenceTool({
+      const liveClock = Effect.runSync(Clock.Clock)
+      const clock: Clock.Clock = {
+        currentTimeMillis: Effect.succeed(1234),
+        currentTimeMillisUnsafe: () => 1234,
+        currentTimeNanos: liveClock.currentTimeNanos,
+        currentTimeNanosUnsafe: () => liveClock.currentTimeNanosUnsafe(),
+        monotonicTimeNanos: liveClock.monotonicTimeNanos,
+        monotonicTimeNanosUnsafe: () => liveClock.monotonicTimeNanosUnsafe(),
+        sleep: duration => liveClock.sleep(duration),
+      }
+      const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
         attachment: () => bound.effect,
         destinations,
-        runPromise: effect => Effect.runPromise(effect),
+        runPromise: effect => Effect.runPromise(Effect.provideService(effect, Clock.Clock, clock)),
+        requestResume: () => {
+          throw new Error('this claim resumes nothing')
+        },
       })
       const call = async (input: unknown) => {
         try {
@@ -1773,6 +1994,11 @@ try {
       })
       assert.ok(recorded.ok, recorded.text)
       assert.equal(reply(recorded.text).reference?.destination.readBack, 'text-in-body')
+      assert.equal(
+        reply(recorded.text).reference?.verifiedAt,
+        1234,
+        'publication uses the runtime Clock'
+      )
       const attached = await call({
         action: 'record-publication',
         path: 'shot.bin',
@@ -1798,6 +2024,33 @@ try {
       assert.equal(managed.outcome, 'removable', managed.reasons.join(' '))
       assert.equal(managed.inventory?.published, 2)
       assert.equal(managed.inventory?.disposable, 2)
+
+      const elsewhere = await lifecycle.attach({ conversation: conversation(), cwd: repo })
+      const requested: WorkspaceHandoff[] = []
+      const resumeTool = makeWorkspaceTool({
+        lifecycle: lifecycle.effect,
+        attachment: () => elsewhere.effect,
+        destinations,
+        runPromise: effect => Effect.runPromise(effect),
+        requestResume: handoff => {
+          requested.push(handoff)
+        },
+      })
+      const resumed = await resumeTool.execute(
+        'resume',
+        { action: 'resume', taskId: allocated.taskId } as never,
+        undefined,
+        undefined,
+        context()
+      )
+      assert.equal(resumed.terminate, true, 'a requested resume ends the tool batch')
+      assert.deepEqual(
+        requested.map(handoff => [handoff.target.workspaceId, handoff.target.taskId]),
+        [[allocated.managed.workspaceId, allocated.taskId]],
+        'the authority selected the retained workspace and handed the switch to the host'
+      )
+      await elsewhere.handoff(requested[0]!, async () => 'cancelled')
+      await elsewhere.close()
     }
   )
 

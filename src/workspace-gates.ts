@@ -111,7 +111,12 @@ export const createProtocolDatabase = (path: string, namespaceId: WorkspaceId): 
 export const validateProtocol = (path: string): WorkspaceId => {
   let db: DatabaseSync | undefined
   try {
-    db = openLock({ path, name: 'Workspace protocol gate', ddl: PROTOCOL_SQL, waitMs: 0 })
+    db = openLock({
+      path,
+      name: 'Workspace protocol gate',
+      ddl: PROTOCOL_SQL,
+      waitMs: 0,
+    })
     const row = first(db, 'SELECT version, namespace_id FROM protocol_marker WHERE id = 1')
     if (numberField(row, 'version') !== PROTOCOL_VERSION)
       unavailable(`Workspace protocol version mismatch at ${path}`)
@@ -264,7 +269,10 @@ const conversationGate = (
   identity: string
 ): { readonly key: string; readonly path: string } => {
   const key = hash(identity)
-  return { key, path: join(paths.gates, 'conversations', key, 'conversation.sqlite') }
+  return {
+    key,
+    path: join(paths.gates, 'conversations', key, 'conversation.sqlite'),
+  }
 }
 const incarnationGate = (paths: AuthorityPaths, incarnation: WorkspaceId): string =>
   join(paths.gates, 'incarnations', incarnation, 'incarnation.sqlite')
@@ -324,14 +332,19 @@ export const acquireConversationPresence = (
   }
 }
 
-export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId): boolean => {
-  const path = incarnationGate(paths, incarnation)
+const gateHeld = (path: string, identity: GateIdentity): boolean => {
   const removed = () => lstatIfExists(path) === undefined
   if (removed()) return false
   let db: DatabaseSync | undefined
   try {
-    db = openLock({ path, name: 'Workspace gate', ddl: GATE_SQL, waitMs: 0, readOnly: true })
-    verifyGateMarker(db, path, incarnationIdentity(incarnation))
+    db = openLock({
+      path,
+      name: 'Workspace gate',
+      ddl: GATE_SQL,
+      waitMs: 0,
+      readOnly: true,
+    })
+    verifyGateMarker(db, path, identity)
     return false
   } catch (cause) {
     if (sqliteBusy(cause)) return true
@@ -341,6 +354,26 @@ export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId)
   } finally {
     db?.close()
   }
+}
+export const incarnationHeld = (paths: AuthorityPaths, incarnation: WorkspaceId): boolean =>
+  gateHeld(incarnationGate(paths, incarnation), incarnationIdentity(incarnation))
+export const conversationIdentity = (conversation: {
+  readonly sessionId: string
+  readonly sessionFile: string
+}): string =>
+  hash(
+    JSON.stringify({
+      sessionId: conversation.sessionId,
+      sessionFile: conversation.sessionFile,
+    })
+  )
+export const conversationPresent = (paths: AuthorityPaths, identity: string): boolean => {
+  const gate = conversationGate(paths, identity)
+  return gateHeld(gate.path, {
+    kind: 'conversation',
+    path: identity,
+    key: gate.key,
+  })
 }
 export const releaseGates = (gates: PathGates): void => {
   gates.writer?.()

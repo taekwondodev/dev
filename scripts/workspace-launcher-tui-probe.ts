@@ -23,10 +23,26 @@ const git = (args: readonly string[], cwd: string) =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim()
 const { claim, passed } = makeClaims()
 
-const interruptedAfterHandover = process.env.LAUNCHER_TUI_FAULT === 'sigint-after-handover'
-const failedAfterHandover = process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-handover'
+const interruptedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'sigint-after-quit'
+const interruptedDuringSweep = process.env.LAUNCHER_TUI_FAULT === 'sigint-during-sweep'
+const failedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-quit'
+const failedInteractive = process.env.LAUNCHER_TUI_FAULT === 'interactive-failure'
 const containedHistory = process.env.LAUNCHER_TUI_CONTAINED_HISTORY === '1'
 const removeInstallation = process.env.LAUNCHER_TUI_SELF_REMOVE === '1' || containedHistory
+const keptClaim = (): string => {
+  if (interruptedAfterQuit)
+    return 'a SIGINT during the teardown after /quit, before the sweep, exits 130 and releases nothing: both reservations, the worktree and the files stay'
+  if (failedInteractive)
+    return 'a failure of Pi interactive mode, with no /quit, disposes the runtime without parking it and exits 1 without sweeping: both reservations, the worktree and the files stay, and the conversation is kept'
+  return 'a session disposal failure after /quit exits 1 without sweeping: both reservations, the worktree and the files stay, and the conversation is kept'
+}
+const sweptClaim = (): string => {
+  if (removeInstallation)
+    return 'quitting the TUI launched from a finished worktree releases its own installation claims first, then the sweep removes that worktree with the installation, releases the clean checkout and exits 0'
+  if (interruptedDuringSweep)
+    return 'a SIGINT to dev once the quit sweep has started lets the sweep run on: the finished worktree is removed, the clean checkout released, and dev exits 130 after the receipt'
+  return 'quitting the TUI disposes the runtime, then the sweep removes the finished worktree, releases the clean checkout, prints the receipt and exits 0'
+}
 try {
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
     throw new Error(
@@ -59,18 +75,22 @@ try {
   if (write.kind !== 'ready') throw new Error('The fixture could not reserve the checkout')
   const { taskId } = write.grant
   if (taskId === undefined) throw new Error('The fixture reservation carries no task')
-  let installation: string | undefined
+  const managed = await owner.authorize({ kind: 'delegated-write' })
+  if (managed.kind !== 'ready') throw new Error('The fixture could not allocate a worktree')
+  const worktree = managed.grant.checkout
+  await lifecycle.recordTarget(taskId, { kind: 'local', ref: 'refs/heads/main' })
   if (removeInstallation) {
-    const managed = await owner.authorize({ kind: 'delegated-write' })
-    if (managed.kind !== 'ready') throw new Error('The fixture could not allocate its installation')
-    installation = managed.grant.checkout
     const source = fileURLToPath(new URL('../', import.meta.url))
     for (const path of ['src', 'scripts', 'profiles', 'package.json'])
-      cpSync(join(source, path), join(installation, path), { recursive: true })
-    symlinkSync(join(source, 'node_modules'), join(installation, 'node_modules'))
-    await lifecycle.recordTarget(taskId, { kind: 'local', ref: 'refs/heads/main' })
+      cpSync(join(source, path), join(worktree, path), { recursive: true })
+    symlinkSync(join(source, 'node_modules'), join(worktree, 'node_modules'))
+    git(['switch', '--quiet', '-c', 'delivered-installation'], worktree)
+    writeFileSync(join(worktree, 'delivered.txt'), 'delivered\n')
+    git(['add', 'delivered.txt'], worktree)
+    git(['commit', '--quiet', '-m', 'delivered'], worktree)
+    git(['merge', '--quiet', '--ff-only', 'delivered-installation'], repo)
     if (containedHistory) {
-      dataHome = join(installation, '.dev')
+      dataHome = join(worktree, '.dev')
       mkdirSync(dataHome, { mode: 0o700 })
     }
   }
@@ -78,14 +98,14 @@ try {
   await lifecycle.close()
 
   let history: { path: string; text: string } | undefined
-  if (failedAfterHandover || containedHistory) {
+  if (failedAfterQuit || failedInteractive || containedHistory) {
     const { pi } = await loadInstalledPi()
     const sessions = pi.SessionManager.create(repo, join(dataHome, 'sessions'))
     sessions.appendMessage({ role: 'user', content: 'retain this conversation', timestamp: 1 })
     sessions.appendMessage({
       role: 'assistant',
       content: [
-        { type: 'text', text: 'history that must survive a refused release or failed shutdown' },
+        { type: 'text', text: 'history that must survive the quit sweep or a failed shutdown' },
       ],
       api: 'openai-completions',
       provider: 'fixture',
@@ -106,12 +126,11 @@ try {
     history = { path, text: readFileSync(path, 'utf8') }
   }
 
-  const driverPath =
-    installation === undefined
-      ? fileURLToPath(new URL('./workspace-launcher-tui-driver.ts', import.meta.url))
-      : join(installation, 'scripts', 'workspace-launcher-tui-driver.ts')
+  const driverPath = removeInstallation
+    ? join(worktree, 'scripts', 'workspace-launcher-tui-driver.ts')
+    : fileURLToPath(new URL('./workspace-launcher-tui-driver.ts', import.meta.url))
   process.stdout.write(
-    `\nDEV_LAUNCHER_TUI_INPUTS ${JSON.stringify({ TASK: taskId, REPO: repo })}\n`
+    `\nDEV_LAUNCHER_TUI_INPUTS ${JSON.stringify({ TASK: taskId, REPO: repo, WORKTREE: worktree })}\n`
   )
   signal('STARTING_LAUNCHER')
   const child = spawn(
@@ -134,7 +153,7 @@ try {
         PI_OFFLINE: '1',
         PI_TELEMETRY_DISABLED: '1',
         LAUNCHER_TUI_ROOT: root,
-        ...(installation === undefined ? {} : { LAUNCHER_TUI_INSTALLATION: installation }),
+        ...(removeInstallation ? { LAUNCHER_TUI_INSTALLATION: worktree } : {}),
       },
     }
   )
@@ -143,98 +162,55 @@ try {
       child.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }))
     }
   )
-  if (containedHistory) {
-    await claim(
-      'a release containing the active conversation in the default installation-local data home is refused before confirmation; the TUI remains usable until quit, with intact history, reservations and no release intent',
-      async () => {
-        const after = await openLifecycle({ root })
-        try {
-          assert.equal((await after.check(taskId)).length, 2, 'both reservations remain')
-          const views = await after.inspect({ taskId })
-          assert.ok(views.every(view => view.outcome === 'preserved-for-resume'))
-          assert.ok(
-            views.every(view => view.pending.length === 0),
-            'no release intent exists'
-          )
-        } finally {
-          await after.close()
-        }
+  const after = await openLifecycle({ root })
+  try {
+    const reserved = (await after.check(taskId)).map(assessment => assessment.workspaceId)
+    const outcomes = (await after.inspect({ taskId })).map(view => view.outcome).toSorted()
+    const listed = git(['worktree', 'list', '--porcelain'], repo).match(/^worktree /gm)?.length
+    if (interruptedAfterQuit || failedAfterQuit || failedInteractive)
+      await claim(keptClaim(), () => {
         assert.equal(exit.signal, null)
-        assert.equal(exit.code, 0)
-        assert.ok(history !== undefined)
-        assert.ok(readFileSync(history.path, 'utf8').startsWith(history.text))
-        assert.ok(installation !== undefined && existsSync(installation))
-        assert.equal(
-          git(['worktree', 'list', '--porcelain'], repo).match(/^worktree /gm)?.length,
-          2
+        assert.equal(exit.code, interruptedAfterQuit ? 130 : 1)
+        assert.deepEqual(
+          reserved.toSorted(),
+          [write.grant.workspaceId, managed.grant.workspaceId].toSorted()
         )
+        assert.deepEqual(outcomes, ['preserved-for-resume', 'preserved-for-resume'])
+        assert.ok(existsSync(worktree))
         assert.equal(readFileSync(join(repo, 'AGENTS.md'), 'utf8'), 'launcher tui probe\n')
-      }
-    )
-  } else if (interruptedAfterHandover || failedAfterHandover) {
-    await claim(
-      interruptedAfterHandover
-        ? 'a SIGINT during the teardown after the guided handover, before the attempt, exits 130 and releases nothing: the reservation and the files stay'
-        : 'a session disposal failure after the guided handover exits 1 without releasing the reservation or changing files, and keeps the conversation',
-      async () => {
-        assert.equal(exit.signal, null)
-        assert.equal(exit.code, interruptedAfterHandover ? 130 : 1)
-        const after = await openLifecycle({ root })
-        try {
-          const retained = await after.check(taskId)
-          assert.equal(retained.length, 1, 'the reservation is kept')
-          assert.equal(retained[0]?.workspaceId, write.grant.workspaceId)
-          const views = await after.inspect({ taskId })
-          assert.equal(views.length, 1)
-          assert.equal(views[0]?.outcome, 'preserved-for-resume')
-          assert.deepEqual(views[0]?.pending, [], 'no release intent was recorded')
-        } finally {
-          await after.close()
-        }
-        assert.equal(readFileSync(join(repo, 'AGENTS.md'), 'utf8'), 'launcher tui probe\n')
-        assert.equal(git(['status', '--porcelain'], repo), '')
         if (history !== undefined)
           assert.ok(
             readFileSync(history.path, 'utf8').startsWith(history.text),
             'the persisted conversation history remains intact'
           )
-      }
-    )
-  } else {
-    await claim(
-      'the launcher-driven TUI, released from inside itself, stops the TUI, disposes the runtime and exits 0 through its own guided path',
-      () => {
+      })
+    else if (containedHistory)
+      await claim(
+        'a finished worktree holding the quitting conversation is kept by the sweep, which exits 1 naming it, while the clean checkout is released and the history stays intact',
+        () => {
+          assert.equal(exit.signal, null)
+          assert.equal(exit.code, 1)
+          assert.deepEqual(reserved, [managed.grant.workspaceId])
+          assert.deepEqual(outcomes, ['preserved-for-resume', 'released'])
+          assert.ok(existsSync(worktree))
+          assert.equal(listed, 2)
+          assert.ok(history !== undefined)
+          assert.ok(readFileSync(history.path, 'utf8').startsWith(history.text))
+        }
+      )
+    else
+      await claim(sweptClaim(), () => {
         assert.equal(exit.signal, null)
-        assert.equal(exit.code, 0)
-      }
-    )
-    await claim(
-      'after the guided release all task reservations are gone, the pre-existing checkout keeps its files, and any disposable source installation was removed with an inspectable receipt',
-      async () => {
-        const after = await openLifecycle({ root })
-        try {
-          assert.deepEqual(await after.check(taskId), [], 'nothing of the task remains reserved')
-          assert.deepEqual(
-            (await after.inspect({ taskId })).map(view => view.outcome).toSorted(),
-            installation === undefined ? ['released'] : ['released', 'removed']
-          )
-          const views = await after.inspect({ cwd: repo })
-          assert.equal(views.length, 1)
-          assert.equal(views[0]?.taskId, undefined, 'the checkout holds no reservation any more')
-        } finally {
-          await after.close()
-        }
+        assert.equal(exit.code, interruptedDuringSweep ? 130 : 0)
+        assert.deepEqual(reserved, [], 'nothing of the task remains reserved')
+        assert.deepEqual(outcomes, ['released', 'removed'])
+        assert.equal(existsSync(worktree), false)
+        assert.equal(listed, 1)
         assert.ok(existsSync(join(repo, 'AGENTS.md')))
-        if (installation !== undefined) {
-          assert.equal(existsSync(installation), false)
-          assert.deepEqual(git(['worktree', 'list', '--porcelain'], repo).match(/^worktree /gm), [
-            'worktree ',
-          ])
-          assert.ok(existsSync(fileURLToPath(new URL('../node_modules/effect', import.meta.url))))
-        }
-        assert.equal(git(['status', '--porcelain'], repo), '')
-      }
-    )
+        assert.ok(existsSync(fileURLToPath(new URL('../node_modules/effect', import.meta.url))))
+      })
+  } finally {
+    await after.close()
   }
   process.stdout.write(
     `\nDEV_LAUNCHER_TUI_PROBE_PASSED ${JSON.stringify({ checks: passed, fixture: sandbox, exitCode: exit.code })}\n`

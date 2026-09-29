@@ -95,10 +95,12 @@ The attempt records the managed worktree path. `/work`, inspection and automatic
 outcomes show it with a reminder: `blocked` while the workspace use is unresolved,
 otherwise `review-required`, because the reservation and files are retained
 independently of the attempt. Neither status authorizes deletion. Dev removes a
-managed worktree only through an explicit, confirmed `dev workspace release` or
-`/workspace release`, after its evidence and no-live-use checks pass; the recorded
-path is not a live existence or exclusivity check. Use `dev workspace inspect
-<task>` for the durable state and `dev workspace check <task>` for eligibility.
+managed worktree itself only when its completion verdict is finished, in the sweep
+at quit or before the next managed allocation, or through an explicit, confirmed
+release of a `review-required` case; the attempt's use must be observed quiescent
+first. The recorded path is not a live existence or exclusivity check. Use
+`dev workspace inspect <task>` for the durable state and `dev workspace check
+<task>` for the verdict the sweep will act on.
 
 The `work` tool description teaches this protocol to the lead in every dev
 session; outcome messages repeat the relevant cleanup guidance. No per-project

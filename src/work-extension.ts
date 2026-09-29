@@ -147,17 +147,6 @@ const outcomeAttempts = (
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
   readonly bindSession: (session: WorkSession) => void
-  readonly running: Effect.Effect<
-    readonly {
-      readonly taskId: string
-      readonly attemptId: string
-      readonly kind: 'process' | 'agent'
-      readonly status: string
-      readonly cwd: string
-    }[],
-    WorkFailure
-  >
-  readonly stopAll: (reason: string) => Effect.Effect<void, WorkFailure>
   readonly close: (reason?: string) => Promise<void>
 }
 
@@ -600,39 +589,6 @@ export const createWorkExtension = ({
       return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
     })
 
-  const running: WorkExtension['running'] = Effect.suspend(() => {
-    const current = context
-    if (!current || sessionOwner?._tag !== 'active') return Effect.succeed([])
-    return runOwned(
-      current,
-      withOwner(owner => owner.snapshot)
-    ).pipe(
-      Effect.map(snapshot =>
-        snapshot.records
-          .filter(
-            record =>
-              record.status === 'running' ||
-              record.status === 'waiting' ||
-              record.status === 'unknown'
-          )
-          .map(record => ({
-            taskId: record.owner.taskId,
-            attemptId: record.id,
-            kind: record.kind,
-            status: record.status,
-            cwd: record.cwd,
-          }))
-      )
-    )
-  })
-
-  const stopAll: WorkExtension['stopAll'] = reason =>
-    Effect.suspend(() => {
-      const current = context
-      if (!current || sessionOwner?._tag !== 'active') return Effect.void
-      return interruptOwned(current, reason)
-    })
-
   const bindSession = (value: WorkSession): void => {
     removeSessionListener?.()
     session = value
@@ -817,8 +773,6 @@ export const createWorkExtension = ({
   return {
     factory,
     bindSession,
-    running,
-    stopAll,
     close,
   }
 }
