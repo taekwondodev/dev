@@ -1,8 +1,8 @@
 import { NodeRuntime } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { launch } from '../src/launcher.ts'
-import type { WorkspaceLifecycle } from '../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
+import { launch } from '../../src/launcher.ts'
+import type { WorkspaceLifecycle } from '../../src/workspace-domain.ts'
+import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
 
 const root = process.env.RELEASE_INTERRUPT_ROOT
 if (root === undefined || root.length === 0)

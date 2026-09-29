@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,7 @@ QUIT_ACTIONS = (
 PROBES = {
 
     'stub': Probe(
-        script='scripts/workspace-host-pty-probe.ts',
+        script='tests/workspace/workspace-host-pty-probe.ts',
         passed_marker='DEV36_TUI_HOST_PROBE_PASSED ',
         fixture_marker='DEV36_FIXTURE ',
         inputs_marker='DEV36_INPUTS ',
@@ -80,7 +80,7 @@ PROBES = {
 
 
     'real': Probe(
-        script='scripts/workspace-host-real-authority-probe.ts',
+        script='tests/workspace/workspace-host-real-authority-probe.ts',
         passed_marker='DEV_REAL_AUTHORITY_PROBE_PASSED ',
         inputs_marker='DEV_REAL_AUTHORITY_INPUTS ',
         actions=(
@@ -100,7 +100,7 @@ PROBES = {
 
 
     'quit': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -111,7 +111,7 @@ PROBES = {
 
 
     'quit-self-remove': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -122,7 +122,7 @@ PROBES = {
     ),
 
     'quit-contained-history': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -133,7 +133,7 @@ PROBES = {
     ),
 
     'quit-interrupt': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -144,7 +144,7 @@ PROBES = {
     ),
 
     'quit-interrupt-during-sweep': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -156,7 +156,7 @@ PROBES = {
     ),
 
     'interactive-failure': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -166,7 +166,7 @@ PROBES = {
     ),
 
     'quit-shutdown-failure': Probe(
-        script='scripts/workspace-launcher-tui-probe.ts',
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
@@ -181,7 +181,7 @@ PROBES = {
     ),
 
     'release': Probe(
-        script='scripts/workspace-release-pty-probe.ts',
+        script='tests/workspace/workspace-release-pty-probe.ts',
         passed_marker='DEV_RELEASE_PTY_PROBE_PASSED ',
         inputs_marker='DEV_RELEASE_INPUTS ',
         timeout=180.0,

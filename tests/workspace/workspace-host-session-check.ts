@@ -21,7 +21,7 @@ import {
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
   type WorkspaceLifecycle,
-} from '../src/workspace-domain.ts'
+} from '../../src/workspace-domain.ts'
 import {
   loadInstalledPi,
   makeClaims,

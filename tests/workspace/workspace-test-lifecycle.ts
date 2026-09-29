@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads'
 import { Effect, Exit, Schema, Scope } from 'effect'
-import { errorText } from '../src/error-text.ts'
+import { errorText } from '../../src/error-text.ts'
 import {
   WorkspaceError,
   type PublicationReference,
@@ -22,14 +22,14 @@ import {
   type WorkspaceReleaseResult,
   type WorkspaceSelection,
   type WorkspaceView,
-} from '../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle, type StartWorkspaceWorker } from '../src/workspace-lifecycle.ts'
-import { makeWorkspaceShell, type WorkspaceAdmission } from '../src/workspace-shell.ts'
+} from '../../src/workspace-domain.ts'
+import { makeWorkspaceLifecycle, type StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
+import { makeWorkspaceShell, type WorkspaceAdmission } from '../../src/workspace-shell.ts'
 import {
   WorkspaceWorkerMessageSchema,
   type WorkspaceRpcOperation,
-} from '../src/workspace-protocol.ts'
-import type { BashOperations } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
+} from '../../src/workspace-protocol.ts'
+import type { BashOperations } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js'
 
 const isWorkerMessage = Schema.is(WorkspaceWorkerMessageSchema)
 

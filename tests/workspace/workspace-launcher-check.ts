@@ -19,13 +19,13 @@ import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { Effect, Exit, Scope } from 'effect'
-import { acquireRuntime } from '../src/runtime-coordination.ts'
+import { acquireRuntime } from '../../src/runtime-coordination.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
 
-const devRoot = fileURLToPath(new URL('..', import.meta.url))
+const devRoot = fileURLToPath(new URL('../..', import.meta.url))
 const { pi } = await loadInstalledPi()
 const initRepository = (cwd: string) => {
   const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd })
@@ -156,9 +156,9 @@ try {
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
     import { Effect } from 'effect'
-    import { launch } from ${JSON.stringify(new URL('../src/launcher.ts', import.meta.url).href)}
-    import { WorkspaceError } from ${JSON.stringify(new URL('../src/workspace-domain.ts', import.meta.url).href)}
-    import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../src/workspace-lifecycle.ts', import.meta.url).href)}
+    import { launch } from ${JSON.stringify(new URL('../../src/launcher.ts', import.meta.url).href)}
+    import { WorkspaceError } from ${JSON.stringify(new URL('../../src/workspace-domain.ts', import.meta.url).href)}
+    import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
     const root = process.env.LAUNCHER_CHECK_ROOT
     const stopAfterAttach = lifecycle => ({
       ...lifecycle,

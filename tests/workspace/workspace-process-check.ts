@@ -17,17 +17,17 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
-import { makeWorkOwnerLayer, ownerEffect } from '../src/work-controller.ts'
-import { checkChildWorkspace, validateWorkspaceWritePath } from '../src/work-child-workspace.ts'
+import { makeWorkOwnerLayer, ownerEffect } from '../../src/work-controller.ts'
+import { checkChildWorkspace, validateWorkspaceWritePath } from '../../src/work-child-workspace.ts'
 import { deferred, makeClaims, waitUntil, within } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
-import { makeNativeWrites } from '../src/workspace-native-write.ts'
+import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import {
   WorkspaceError,
   type WorkspaceAttachment,
   type WorkspaceView,
-} from '../src/workspace-domain.ts'
-import type { AttemptView } from '../src/work-domain.ts'
+} from '../../src/workspace-domain.ts'
+import type { AttemptView } from '../../src/work-domain.ts'
 
 const exec = promisify(execFile)
 

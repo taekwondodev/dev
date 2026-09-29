@@ -9,7 +9,7 @@ import {
   type WorkspaceAttachment,
   type WorkspaceLifecycle,
   type WorkspaceSelection,
-} from '../src/workspace-domain.ts'
+} from '../../src/workspace-domain.ts'
 import {
   loadInstalledPi,
   makeClaims,

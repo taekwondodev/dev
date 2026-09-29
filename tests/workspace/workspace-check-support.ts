@@ -3,19 +3,19 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
-import type * as Pi from '../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
-import type * as PiEventStream from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
+import type * as Pi from '../../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
+import type * as PiEventStream from '../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 import type {
   AssistantMessage,
   Model,
-} from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
-import { makeRuntimeFactory } from '../src/launcher.ts'
-import { loadPi, loadPiPathResolver, type PiApi } from '../src/pi-runtime.ts'
-import { getProfile } from '../src/profiles.ts'
-import { acquireRuntime, type CoordinationOptions } from '../src/runtime-coordination.ts'
-import { createSessionGuard } from '../src/session-guard.ts'
-import type { WorkspaceAttachment, WorkspaceLifecycle } from '../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../src/workspace-host.ts'
+} from '../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
+import { makeRuntimeFactory } from '../../src/launcher.ts'
+import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'
+import { getProfile } from '../../src/profiles.ts'
+import { acquireRuntime, type CoordinationOptions } from '../../src/runtime-coordination.ts'
+import { createSessionGuard } from '../../src/session-guard.ts'
+import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
+import { makeWorkspaceHost } from '../../src/workspace-host.ts'
 
 class TimedOut extends Error {}
 

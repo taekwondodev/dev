@@ -18,8 +18,8 @@ import {
   type WorkspaceGrant,
   type WorkspaceHandoff,
   type WorkspaceView,
-} from '../src/workspace-domain.ts'
-import { canonicalConversationFile } from '../src/workspace-paths.ts'
+} from '../../src/workspace-domain.ts'
+import { canonicalConversationFile } from '../../src/workspace-paths.ts'
 
 export interface FixtureDescriptor {
   readonly repoId: WorkspaceId
