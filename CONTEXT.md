@@ -18,15 +18,19 @@ A profile is a selectable set of instructions, skills and domain resources for a
 
 ## Background work
 
-**Lead**: the Pi conversation the user pairs with. It owns the work it starts.
+**Lead**: the Pi conversation the user pairs with. It owns the work it starts and the leaves its coordinators start.
 
-**Attempt**: one owned execution of a workflow task, identified by its lead session, task, attempt and generation.
+**Attempt**: one owned execution of a workflow task, identified by its lead session, task, attempt and generation, and by its parent attempt when a coordinator started it.
 
 **Child**: a delegated Pi conversation running in a separate process with a focused assignment, `read-only` or `write` access, and a dispatch choice.
 
+**Coordinator**: a child the lead authorized, for one assignment, to start leaf children through a scoped `work` tool.
+
+**Leaf**: a child started by a coordinator. It cannot delegate, and its outcome is delivered to its coordinator.
+
 **Dispatch rule**: an entry of `config/crew-dispatch.json` mapping a task category (`when`) to a harness, model and effort.
 
-**Outcome delivery**: the arrival of an attempt's result in the lead conversation, acknowledged on the active conversation branch.
+**Outcome delivery**: the arrival of an attempt's result in the conversation that started it, the lead's or a coordinator's, acknowledged on that conversation's active branch.
 
 Behavior is in [work](docs/work.md).
 

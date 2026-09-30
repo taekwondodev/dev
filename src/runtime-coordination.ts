@@ -101,7 +101,7 @@ const sourcePresence = (options: CoordinationOptions): GateRelease => {
     throw cause
   }
 }
-const markerSql = 'CREATE TABLE guard (version INTEGER PRIMARY KEY CHECK (version = 1)) STRICT'
+const markerSql = 'CREATE TABLE guard (id INTEGER PRIMARY KEY CHECK (id = 1)) STRICT'
 const JournalMode = Schema.Struct({ journal_mode: Schema.Literal('delete') })
 
 const native = <A>(operation: () => A): Effect.Effect<A, CoordinationError> =>
@@ -175,7 +175,7 @@ const lockDatabase = (
     )
       throw new Error(`Unknown coordination format: ${path}`)
     database.exec(shared ? 'BEGIN' : 'BEGIN EXCLUSIVE')
-    if (database.prepare('SELECT version FROM guard').get()?.version !== 1)
+    if (database.prepare('SELECT id FROM guard WHERE id = 1').get() === undefined)
       throw new Error(`Invalid coordination marker: ${path}`)
     const acquired = database
     let closed = false

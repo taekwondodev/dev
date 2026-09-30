@@ -9,11 +9,17 @@ import type * as Pi from '@earendil-works/pi-coding-agent'
 
 import { GenerationId, SessionId, TaskId } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
-import { loadPi, type PiApi } from './pi-runtime.ts'
+import { loadPi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getProfile } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
+import {
+  acquireCoordinatorLink,
+  coordinate,
+  createCoordinatorWorkTool,
+  type CoordinatorLink,
+} from './work-child-coordination.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError>()('ChildError', {
   message: Schema.String,
@@ -55,6 +61,7 @@ export const ChildRequestEnvelope = Schema.Struct({
   access: Schema.Literals(ACCESS_MODES),
   workspace: WorkspaceGrantSchema,
   prompt: Schema.NonEmptyString,
+  coordinate: Schema.optional(Schema.Boolean),
   owner: Schema.Struct({
     sessionId: SessionId,
     taskId: TaskId,
@@ -63,7 +70,6 @@ export const ChildRequestEnvelope = Schema.Struct({
   }),
   model: Schema.optional(Schema.NonEmptyString),
   effort: Schema.optional(Schema.NonEmptyString),
-  skills: Schema.optional(Schema.UniqueArray(Schema.NonEmptyString)),
 })
 
 export type ChildRequest = typeof ChildRequestEnvelope.Type
@@ -106,13 +112,27 @@ interface ResourceContext {
   readonly access: AccessMode
   readonly profile: string
   readonly resources: Resources['provenance']
-  readonly skills: readonly { readonly name: string; readonly path: string }[]
+  readonly invokedSkill?: { readonly name: string; readonly path: string }
   readonly tools: readonly string[]
 }
 
 type ChildEmitter = (message: ChildMessage) => Promise<void>
-interface ChildRunOptions {
+type LoadedPi = Effect.Success<typeof loadPi>
+export interface ChildServeOptions {
+  readonly modelRuntime?: (
+    pi: LoadedPi,
+    request: ChildRequest
+  ) => Effect.Effect<Pi.ModelRuntime, ChildError>
+}
+interface ChildRunOptions extends ChildServeOptions {
   readonly signal?: AbortSignal
+}
+
+const SKILL_COMMAND = '/skill:'
+
+interface InitialPrompt {
+  readonly text: string
+  readonly skill?: Pi.Skill
 }
 
 interface ChildState {
@@ -220,78 +240,59 @@ function resolveExplicitModel(modelReferenceText: string, modelRuntime: Pi.Model
   fail(`Unsupported model "${modelReferenceText}". Use an exact supported provider/model-id.`)
 }
 
-const resolveTaskSkills = Effect.fn('resolveTaskSkills')(function* (
-  api: PiApi,
-  request: ChildRequest,
-  resources: Resources
-) {
-  const loaded = yield* Effect.try({
-    try: () =>
-      api.loadSkills({
-        cwd: request.cwd,
-        agentDir: globalPiAgentDir(),
-        skillPaths: [...resources.skillPaths],
-        includeDefaults: false,
-      }),
-    catch: toChildError,
-  })
-  const diagnostics = loaded.diagnostics.filter(diagnostic => diagnostic.type === 'error')
-  if (diagnostics.length > 0)
+const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
+  session: Pi.AgentSession,
+  prompt: string
+): Effect.fn.Return<InitialPrompt, ChildError, FileSystem.FileSystem> {
+  const invocation = prompt.trimStart()
+  if (!invocation.startsWith(SKILL_COMMAND)) return { text: prompt }
+  const [, name = '', assignment = ''] = /^\/skill:(\S*)\s*([\s\S]*)$/.exec(invocation) ?? []
+  if (name === '')
+    return yield* new ChildError({ message: 'A skill invocation needs a skill name' })
+  const skill = session.resourceLoader.getSkills().skills.find(candidate => candidate.name === name)
+  if (skill === undefined)
     return yield* new ChildError({
-      message: `Cannot load child skills: ${diagnostics.map(diagnostic => diagnostic.message).join('; ')}`,
+      message: `Skill "${name}" is not in this child's catalog; no model request was made`,
     })
-  const requestedSkills = request.skills
-  if (requestedSkills === undefined) return { selected: [] satisfies readonly Pi.Skill[] }
-  const byName = new Map(loaded.skills.map(skill => [skill.name, skill]))
-  const selected: Pi.Skill[] = []
-  for (const name of requestedSkills) {
-    const skill = byName.get(name)
-    if (!skill) fail(`Requested child skill "${name}" was not found in composed resources`)
-    selected.push(skill)
-  }
-  return {
-    selected,
-    filter: (base: { skills: Pi.Skill[]; diagnostics: Pi.ResourceDiagnostic[] }) => ({
-      ...base,
-      skills: base.skills.filter(skill => requestedSkills.includes(skill.name)),
-    }),
-  }
-})
-
-const taskSkillGuidance = Effect.fn('taskSkillGuidance')(function* (skills: readonly Pi.Skill[]) {
-  if (skills.length === 0) return ''
   const fs = yield* FileSystem.FileSystem
-  const blocks: string[] = [
-    'Task-specific skills were explicitly selected from the composed resources.',
-  ]
-  for (const skill of skills) {
-    const content = yield* fs.readFileString(skill.filePath).pipe(Effect.mapError(toChildError))
-    blocks.push(
-      `<skill name="${skill.name}" location="${skill.filePath}">\n${content.trim()}\n</skill>`
+  yield* fs.access(skill.filePath, { readable: true }).pipe(
+    Effect.mapError(
+      cause =>
+        new ChildError({
+          message: `Skill "${name}" is unreadable at ${skill.filePath}; no model request was made`,
+          cause,
+        })
     )
+  )
+  if (session.extensionRunner.getCommand(`skill:${name}`) !== undefined)
+    return yield* new ChildError({
+      message: `An extension command named "skill:${name}" would run instead of the skill; no model request was made`,
+    })
+  const text = assignment.trim()
+  return {
+    text: text === '' ? `${SKILL_COMMAND}${name}` : `${SKILL_COMMAND}${name} ${text}`,
+    skill,
   }
-  return blocks.join('\n\n')
 })
 
-function childBrief(
-  request: ChildRequest,
-  resources: Resources,
-  selectedSkills: readonly Pi.Skill[]
-): string {
+function childBrief(request: ChildRequest, resources: Resources): string {
+  const inspection =
+    request.coordinate === true
+      ? 'read, grep, find, ls, the safe git_inspect tool and the work tool'
+      : 'read, grep, find, ls, and the safe git_inspect tool'
   const access =
     request.access === 'read-only'
-      ? 'Review access is read-only. Use read, grep, find, ls, and the safe git_inspect tool only.'
+      ? `Review access is read-only. Use ${inspection} only.`
       : 'Work access is enabled for this child. Make only changes required by the assignment.'
-  const skillLine =
-    selectedSkills.length > 0
-      ? `Explicit task skills: ${selectedSkills.map(skill => `${skill.name} (${skill.filePath})`).join(', ')}`
-      : 'No task-specific skill names were supplied.'
+  const delegation =
+    request.coordinate === true
+      ? 'The lead authorized you to coordinate this assignment: the work tool starts leaf children, whose outcomes reach you after your turn ends. Do not treat noninteractive UI absence as approval.'
+      : 'Do not delegate work, start a background fleet, or treat noninteractive UI absence as approval.'
   return [
     'You are an independent Pi child process for one delegated attempt.',
     access,
-    'Do not delegate work, start a background fleet, or treat noninteractive UI absence as approval.',
+    delegation,
     `Profile resources: ${resources.provenance.map(item => `${item.source}: ${item.path}`).join('; ')}`,
-    skillLine,
   ].join('\n')
 }
 
@@ -590,11 +591,22 @@ function finalAssistantOutcome(session: Pi.AgentSession): SessionOutcome {
   return { text }
 }
 
+function turnFailed(session: Pi.AgentSession): boolean {
+  const assistant = session.messages.findLast(
+    (message): message is AssistantMessage => message.role === 'assistant'
+  )
+  return (
+    assistant === undefined ||
+    assistant.stopReason === 'error' ||
+    assistant.stopReason === 'aborted'
+  )
+}
+
 function makeContext(
   request: ChildRequest,
   packageInfo: { readonly version: string },
   resources: Resources,
-  selectedSkills: readonly Pi.Skill[],
+  invokedSkill: Pi.Skill | undefined,
   session: Pi.AgentSession
 ): ResourceContext {
   return {
@@ -603,7 +615,9 @@ function makeContext(
     access: request.access,
     profile: request.profile,
     resources: resources.provenance,
-    skills: selectedSkills.map(skill => ({ name: skill.name, path: skill.filePath })),
+    ...(invokedSkill === undefined
+      ? {}
+      : { invokedSkill: { name: invokedSkill.name, path: invokedSkill.filePath } }),
     tools: session.getActiveToolNames(),
   }
 }
@@ -700,7 +714,9 @@ function registerAbortSignal(
 
 const acquireSession = Effect.fn('acquireSession')(function* (
   state: ChildState,
-  request: ChildRequest
+  request: ChildRequest,
+  options: ChildServeOptions,
+  link: CoordinatorLink | undefined
 ) {
   if (request.access === 'read-only')
     yield* Effect.sync(() => {
@@ -714,9 +730,6 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     gitRoot: projectGitRoot,
     profile,
   }).pipe(Effect.mapError(toChildError))
-  const skillSelection = yield* resolveTaskSkills(loaded.api, request, resources)
-  const selectedSkills = skillSelection.selected
-  const taskSkills = yield* taskSkillGuidance(selectedSkills)
   const projectTrusted = yield* Effect.try({
     try: () =>
       request.access === 'write' &&
@@ -738,21 +751,22 @@ const acquireSession = Effect.fn('acquireSession')(function* (
       }),
     catch: toChildError,
   })
+  const modelRuntime = yield* options.modelRuntime === undefined
+    ? Effect.tryPromise({
+        try: () => loaded.api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
+        catch: toChildError,
+      })
+    : options.modelRuntime(loaded, request)
   const services = yield* Effect.tryPromise({
-    try: async () =>
+    try: () =>
       loaded.api.createAgentSessionServices({
         cwd: request.cwd,
         agentDir: globalPiAgentDir(),
-        modelRuntime: await loaded.api.ModelRuntime.create({ authPath: globalPiAuthPath() }),
+        modelRuntime,
         settingsManager,
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
-          appendSystemPrompt: [
-            resources.guidance,
-            childBrief(request, resources, selectedSkills),
-            taskSkills,
-          ].filter(Boolean),
-          ...(skillSelection.filter ? { skillsOverride: skillSelection.filter } : {}),
+          appendSystemPrompt: [resources.guidance, childBrief(request, resources)].filter(Boolean),
           noExtensions: request.access === 'read-only',
           extensionFactories: [
             { name: 'dev:child-workspace', factory: childWorkspaceExtension(request.workspace) },
@@ -778,10 +792,14 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     try: () => loaded.api.SessionManager.create(request.cwd, request.sessionDir),
     catch: toChildError,
   })
-  const customTools =
-    request.access === 'read-only' ? [createReviewGitTool(request.cwd)] : undefined
+  const customTools = [
+    ...(request.access === 'read-only' ? [createReviewGitTool(request.cwd)] : []),
+    ...(link === undefined ? [] : [createCoordinatorWorkTool(link)]),
+  ]
   const tools =
-    request.access === 'read-only' ? ['read', 'grep', 'find', 'ls', 'git_inspect'] : undefined
+    request.access === 'read-only'
+      ? ['read', 'grep', 'find', 'ls', 'git_inspect', ...(link === undefined ? [] : ['work'])]
+      : undefined
   const created = yield* Effect.tryPromise({
     try: () =>
       loaded.api.createAgentSessionFromServices({
@@ -789,7 +807,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
         sessionManager,
         model: explicitModel,
         tools,
-        customTools,
+        customTools: customTools.length === 0 ? undefined : customTools,
       }),
     catch: toChildError,
   })
@@ -827,17 +845,18 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     session.setThinkingLevel(effort)
     state.effort = session.thinkingLevel
   }
+  const initialPrompt = yield* resolveInitialPrompt(session, request.prompt)
   const resourceContext = makeContext(
     request,
     loaded.packageInfo,
     resources,
-    selectedSkills,
+    initialPrompt.skill,
     session
   )
   return {
     session,
     runtime,
-    selectedSkills,
+    initialPrompt,
     resourceContext,
     modelText,
     initialEffort,
@@ -845,16 +864,29 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   }
 })
 
+function skillExpanded(session: Pi.AgentSession, skill: Pi.Skill): boolean {
+  const first = session.messages.find(message => message.role === 'user')
+  if (first === undefined) return false
+  const text =
+    typeof first.content === 'string'
+      ? first.content
+      : first.content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('')
+  return text.startsWith(`<skill name="${skill.name}"`)
+}
+
 function runSession(
   state: ChildState,
   request: ChildRequest,
   send: (message: ChildMessage) => Effect.Effect<void, ChildError>,
-  signal: AbortSignal | undefined
+  options: ChildRunOptions
 ) {
+  const { signal } = options
   return Effect.gen(function* () {
     const context = yield* Effect.context()
-    const resource = yield* Effect.acquireRelease(acquireSession(state, request), acquired =>
-      releaseSession(state, acquired, signal)
+    const link = request.coordinate === true ? yield* acquireCoordinatorLink(signal) : undefined
+    const resource = yield* Effect.acquireRelease(
+      acquireSession(state, request, options, link),
+      acquired => releaseSession(state, acquired, signal)
     )
     state.managed = true
     yield* Effect.acquireRelease(registerAbortSignal(state, resource.session, signal), cleanup =>
@@ -889,11 +921,26 @@ function runSession(
     )
     if (signal?.aborted)
       return yield* new ChildError({ message: 'Child run cancelled before prompt' })
+    const { initialPrompt } = resource
     yield* Effect.tryPromise({
       try: () =>
-        resource.session.prompt(request.prompt, { expandPromptTemplates: false, source: 'rpc' }),
+        resource.session.prompt(initialPrompt.text, {
+          expandPromptTemplates: initialPrompt.skill !== undefined,
+          source: 'rpc',
+        }),
       catch: toChildError,
     })
+    if (signal?.aborted) return yield* new ChildError({ message: 'Child run cancelled' })
+    if (initialPrompt.skill !== undefined && !skillExpanded(resource.session, initialPrompt.skill))
+      return yield* new ChildError({
+        message: `Pi did not expand the invocation of skill "${initialPrompt.skill.name}"`,
+      })
+    if (link !== undefined)
+      yield* coordinate(
+        resource.session,
+        link,
+        () => signal?.aborted === true || turnFailed(resource.session)
+      ).pipe(Effect.mapError(toChildError))
     if (signal?.aborted) return yield* new ChildError({ message: 'Child run cancelled' })
     const outcome = finalAssistantOutcome(resource.session)
     const current = telemetry(resource.session)
@@ -934,7 +981,7 @@ export const runPiChild = Effect.fn('runPiChild')(function* (
     Effect.gen(function* () {
       const request = yield* validateRequest(rawRequest)
       state.request = request
-      return yield* Effect.result(runSession(state, request, send, options.signal))
+      return yield* Effect.result(runSession(state, request, send, options))
     })
   )
 
@@ -1002,7 +1049,7 @@ function decodeIpcMessage(message: unknown): IpcMessage | undefined {
   }
 }
 
-function runAsChild(): void {
+export function serveChild(options: ChildServeOptions = {}): void {
   if (typeof process.send !== 'function') {
     console.error('src/pi-child.ts must be launched with child_process.fork and IPC')
     process.exitCode = 2
@@ -1030,9 +1077,10 @@ function runAsChild(): void {
     started = true
     controller = new AbortController()
     if (pendingAbort) controller.abort()
-    const program = runPiChild(message.request, sendIpc, { signal: controller.signal }).pipe(
-      Effect.provide(NodeServices.layer)
-    )
+    const program = runPiChild(message.request, sendIpc, {
+      ...options,
+      signal: controller.signal,
+    }).pipe(Effect.provide(NodeServices.layer))
     void Effect.runPromise(program)
       .catch(error => {
         console.error(errorMessage(error))
@@ -1055,4 +1103,4 @@ function isMainModule(): boolean {
   }
 }
 
-if (isMainModule()) runAsChild()
+if (isMainModule()) serveChild()

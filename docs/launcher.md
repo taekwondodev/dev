@@ -57,6 +57,8 @@ npm unlink --global dev-pi-environment --ignore-scripts # remove the `dev` comma
 
 `--data-home` and `DEV_DATA_HOME` move the private data home only; dispatch and authentication stay where they are. Authentication is never copied: `/login` inside Pi writes the global file. Cloning the checkout carries dispatch policy, not credentials or conversations. Never force-add `.dev/`; what Git exclusion does not protect is in [SECURITY](../SECURITY.md#outside-the-protection).
 
+Dev's profile metadata and coordination databases carry only their current shape, with no format version or migration. Existing conversation text is not rewritten. If a coordination layout changes, stop all affected sessions and maintenance operations before the explicit [state discard](DEVELOPMENT.md#discard-other-dev-owned-state); never unlink live lock databases.
+
 ## Decisions
 
 [Pi SDK launcher](ARCHITECTURE.md#pi-sdk-launcher-not-a-fork), [profiles](ARCHITECTURE.md#profiles-not-separate-environments) and [versioned dispatch, local private state](ARCHITECTURE.md#versioned-dispatch-local-private-state) in ARCHITECTURE; [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) for the storage boundary.

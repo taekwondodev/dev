@@ -8,7 +8,7 @@ Dev runs the following as trusted code, with the permissions of the account that
 
 - The globally installed Pi (`@earendil-works/pi-coding-agent`) and its native tools.
 - Every extension, package, prompt and theme Pi loads from its global agent directory. Dev does not review, filter or sandbox them: whatever is installed there is trusted as your own. Their presentation, status, notification and preference effects need no workspace admission.
-- Dev's own extensions: the `work` tool, the `workspace` tool and the workspace host.
+- Dev's own extensions: the `work` tool, the `workspace` tool and the workspace host. A child the lead authorized to coordinate gets a scoped `work` tool: every request it makes is admitted by the lead's controller, which takes the requester's identity from its IPC channel and never grants more than the coordinator's own access.
 - Project resources under `.pi/` of a folder you trusted through Pi's folder trust. They load as Pi loads them, before workspace admission. A folder you have not trusted loads no project resources.
 - The workflow skill library the launcher requires at `~/.agents/skills` and the profile skills under `profiles/`.
 

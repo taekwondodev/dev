@@ -7,7 +7,7 @@ This document describes the architecture at the current commit and, for each cho
 Dev serves one person on one macOS account, working roughly 90% on code, UI prototypes and current technical documentation and 10% on personal research. Apple development is one profile, not the identity of the environment. Every choice below is measured against these recurring situations:
 
 1. **Pairing.** One lead conversation works with the user through investigate, decide, modify, build, inspect, review and resume. Human time to an accepted result is the metric; tokens and elapsed agent time are supporting measures.
-2. **Bounded delegation.** Reviews, alternative designs and investigations run in independent children with explicit model, access and scope, and their outcomes return to the task that owns them, failures and cancellations included.
+2. **Bounded delegation.** Reviews, alternative designs and investigations run in independent children with explicit model, access and scope, and their outcomes return to the task that owns them, failures and cancellations included. A whole phase can go to a coordinator that commissions its own reviewers or candidates, one level deep.
 3. **Long-running work.** Builds, tests and servers run without blocking the conversation and survive interruption with a truthful status.
 4. **Several sessions on one repository.** Two TUIs, or a lead and its writing children, work on the same checkout without silently overwriting each other, and the worktrees dev creates disappear once their work is delivered.
 5. **Resuming.** Settled decisions, scope and the next action survive a fresh session, and saved state is reconciled with live files and processes.
@@ -32,7 +32,8 @@ src/launcher.ts                    dev executable: startup selection, Pi service
 src/pi-runtime.ts                  resolves the installed global Pi SDK and its declarations
 src/preferences.ts                 private data paths, global auth path, profile preferences
 src/profiles.ts                    composes SOUL guidance and skill paths for a profile
-src/work-*.ts, src/pi-child.ts     background work: tool, controller, dispatch, lifecycle, store, child process
+src/work-*.ts, src/pi-child.ts     background work: tool, actions, controller, dispatch, lifecycle, store, child process
+                                   and its coordination link
 src/workspace-*.ts                 workspace authority: engine, worker, gates, records, admission, allocation,
                                    transitions, attachment, shell, native writes, host, commands, release,
                                    completion, evidence, tool
@@ -77,9 +78,9 @@ Pi owns inference, providers, conversation persistence, the TUI and project-inst
 
 **Use case:** bounded delegation and long-running work that must not stall the lead's event loop and must have a real cancellation boundary.
 
-**Choice:** each attempt is a separate Node process on the Pi SDK, owned by the lead conversation; one controller per conversation and one producer per child transcript; outcomes are delivered at Pi's settle boundary and acknowledged on the conversation branch.
+**Choice:** each attempt is a separate Node process on the Pi SDK, owned by the lead conversation; one controller per conversation and one producer per child transcript; outcomes are delivered at Pi's settle boundary and acknowledged on the conversation branch. A coordinator asks that same controller for its leaves over its own channel, so nesting adds no second controller and stops at one level.
 
-**Tradeoff:** a process boundary is not an OS sandbox, and the POSIX adapter cannot clean up arbitrary daemonized descendants. A permanent supervisor or worker fleet was rejected because ordinary edits do not need one. [ADR 0002](adr/0002-session-owned-background-work.md).
+**Tradeoff:** a process boundary is not an OS sandbox, and the POSIX adapter cannot clean up arbitrary daemonized descendants. A permanent supervisor or worker fleet was rejected because ordinary edits do not need one; a controller per coordinator because it splits cancellation, quota and usage accounting; unrestricted recursion because nothing would bound the attempts of a session. [ADR 0002](adr/0002-session-owned-background-work.md).
 
 ### Versioned dispatch, local private state
 

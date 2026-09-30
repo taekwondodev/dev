@@ -157,6 +157,11 @@ export const WorkspaceOperationSchema = Schema.Union([
     execution: WorkspaceExecutionSchema,
     cwd: Schema.optional(AbsolutePath),
   }),
+  Schema.Struct({
+    kind: Schema.Literal('leaf-read'),
+    coordinator: WorkspaceGrantSchema,
+    execution: WorkspaceExecutionSchema,
+  }),
 ])
 export type WorkspaceOperation = typeof WorkspaceOperationSchema.Type
 export type ScopedOperation = Extract<WorkspaceOperation, { readonly within: WorkspaceGrant }>

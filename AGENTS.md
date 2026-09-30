@@ -20,7 +20,7 @@ Before writing Effect code, read `node_modules/effect/AGENTS.md` completely and 
 
 Keep existing environments, credentials and runtime state separate and unchanged. Work in this repository must not modify other profiles or migrate shared assets without explicit authorization.
 
-The user authorizes discarding dev-owned session, runtime and workspace-authority data and wants no backward compatibility for this project. This does not authorize changes to credentials, other profiles or shared assets.
+Maintain only the current schema for dev-owned state. When a format changes, change the schema in place and discard affected obsolete dev-owned session, runtime or workspace-authority data instead of adding schema versions, compatibility checks, migrations or legacy fields. Before a reset, stop affected runtimes and preserve any undelivered source work in managed worktrees. Keep current-schema validation, integrity and ownership checks, live revision/generation fences, and release-decision semantics; these are not backward compatibility. This does not authorize changes to credentials, other profiles or shared assets.
 
 ## Conditional references
 

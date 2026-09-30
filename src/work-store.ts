@@ -34,6 +34,7 @@ type AttemptRecordCreateFields = Pick<AttemptRecord, 'kind' | 'cwd' | 'controlle
       | 'completedAt'
       | 'pid'
       | 'access'
+      | 'coordinator'
       | 'selection'
       | 'worktreePath'
       | 'workflowTaskId'
@@ -119,7 +120,7 @@ const persistenceError = (cause: unknown): WorkPersistenceError => {
 const safeRecord = (value: unknown): AttemptRecord => {
   let record: AttemptRecord
   try {
-    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value)
+    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value, { onExcessProperty: 'error' })
   } catch {
     throw new StorePreparationError('invalid-record')
   }
@@ -588,7 +589,6 @@ class WorkStoreImpl implements WorkStore {
           safeRecord({
             ...snapshot,
             owner: { ...snapshot.owner, attemptId: id },
-            version: 1,
             revision: 0,
             id,
             startedAt,
