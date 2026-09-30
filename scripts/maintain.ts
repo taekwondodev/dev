@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, FileSystem, Schema } from 'effect'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
+import { profileUsage } from './usage-profile.ts'
 
 export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('MaintenanceError', {
   message: Schema.String,
@@ -45,9 +46,12 @@ const run = (
     })
   })
 
-const argument = (name: string): string | undefined => {
+const argument = (name: string): Effect.Effect<string | undefined, MaintenanceError> => {
   const index = process.argv.indexOf(name)
-  return index === -1 ? undefined : process.argv[index + 1]
+  const value = index === -1 ? undefined : process.argv[index + 1]
+  return index !== -1 && value === undefined
+    ? Effect.fail(new MaintenanceError({ message: `${name} requires a value` }))
+    : Effect.succeed(value)
 }
 
 const assertPrivateDataProtected = (
@@ -70,7 +74,7 @@ const assertPrivateDataProtected = (
 const setup = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const dataHome = argument('--data-home') ?? (yield* defaultDataHome)
+    const dataHome = (yield* argument('--data-home')) ?? (yield* defaultDataHome)
     yield* acquireMaintenance()
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
@@ -106,14 +110,15 @@ const setup = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =
 
 const update = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const remote = (yield* argument('--remote')) ?? 'origin'
+    const requestedBranch = yield* argument('--branch')
     yield* acquireMaintenance()
     if ((yield* run('git', ['status', '--porcelain'])) !== '')
       return yield* new MaintenanceError({
         message:
           'Refusing update: dev checkout has local changes. Preserve them explicitly before updating.',
       })
-    const remote = argument('--remote') ?? 'origin'
-    const branch = argument('--branch') ?? (yield* run('git', ['branch', '--show-current']))
+    const branch = requestedBranch ?? (yield* run('git', ['branch', '--show-current']))
     yield* run('git', ['fetch', remote, branch])
     yield* assertPrivateDataProtected(`${remote}/${branch}`)
     yield* run('git', ['merge', '--ff-only', `${remote}/${branch}`])
@@ -127,8 +132,8 @@ const update = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> 
 
 const rollback = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const ref = yield* argument('--ref')
     yield* acquireMaintenance()
-    const ref = argument('--ref')
     if (ref === undefined)
       return yield* new MaintenanceError({
         message: 'Rollback requires an explicit --ref and changes only the dev checkout.',
@@ -156,13 +161,24 @@ const rollback = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem
     Effect.mapError(error => toMaintenanceError(error, 'Rollback failed'))
   )
 
+const profile = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const explicit = yield* argument('--data-home')
+    const dataHome = explicit === undefined ? yield* defaultDataHome : resolve(explicit)
+    const report = yield* profileUsage(dataHome, join(checkout, 'docs', 'performance'))
+    yield* Effect.sync(() => {
+      process.stdout.write(report)
+    })
+  }).pipe(Effect.mapError(error => toMaintenanceError(error, 'Profile failed')))
+
 const program = Effect.gen(function* () {
   const command = process.argv[2] ?? 'setup'
   if (command === 'setup') return yield* setup()
   if (command === 'update') return yield* update()
   if (command === 'rollback') return yield* rollback()
+  if (command === 'profile') return yield* profile()
   return yield* new MaintenanceError({
-    message: `Unknown maintenance command "${command}". Use setup, update, or rollback.`,
+    message: `Unknown maintenance command "${command}". Use setup, update, rollback, or profile.`,
   })
 }).pipe(
   Effect.catch(error =>

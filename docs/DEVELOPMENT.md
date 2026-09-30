@@ -27,7 +27,7 @@ The component map is in [ARCHITECTURE](ARCHITECTURE.md#components). Each source 
 | `src/work-*.ts`, `src/pi-child.ts`                                                                   | [work](work.md)           | [ADR 0002](adr/0002-session-owned-background-work.md), [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) |
 | `src/workspace-*.ts`, `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts` | [workspace](workspace.md) | [ADR 0005](adr/0005-scoped-runtime-coordination.md)                                                                      |
 
-`tests/smoke.ts` checks launcher diagnostics; `tests/workspace/` holds the workspace checks, fixtures, subprocess drivers and the Python pseudo-terminal runner; `tests/work/` holds the work checks, their child entry and its scripted model. Portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
+`tests/smoke.ts` checks launcher diagnostics; `tests/usage-profile-check.ts` checks the usage profile on fixture data homes; `tests/workspace/` holds the workspace checks, fixtures, subprocess drivers and the Python pseudo-terminal runner; `tests/work/` holds the work checks, their child entry and its scripted model. Portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
 
 The reading triggers for each boundary are the conditional references in [AGENTS.md](../AGENTS.md#conditional-references).
 
@@ -38,6 +38,8 @@ npm run lint              # typecheck, lint:effect (Effect diagnostics in strict
 npm run typecheck         # types:pi (regenerate the Pi declaration link), then tsc --noEmit
 npm run format:check      # oxfmt without writes; `format` and `lint:fix` are the opt-in mutations
 npm run smoke             # launcher diagnostics on temporary private storage; not a model response
+npm run profile:check     # usage profile on fixture data homes: baseline, charts, byte-identical rerun,
+                          # refusal without a lead session, forks, direct children
 npm run workspace:check   # completion table, authority, release, sweep, process adapters, host contract,
                           # host session flows in headless Pi, launcher on disposable storage
 npm run workspace:tui     # the real Pi TUI in a pseudo-terminal: stub lifecycle with fault injection,
@@ -48,7 +50,7 @@ npm run work:check        # current-schema attempt persistence; real children on
 npm run dev:probe         # SDK runtime creation without the TUI
 ```
 
-`start`, `dev` and `diagnostics` run the launcher on this checkout; the `dev:*` aliases pass the flag of the same name ([launcher](launcher.md#use)); `setup`, `update` and `rollback` are the maintenance commands there.
+`start`, `dev` and `diagnostics` run the launcher on this checkout; the `dev:*` aliases pass the flag of the same name ([launcher](launcher.md#use)); `setup`, `update`, `rollback` and `profile` are the maintenance commands there.
 
 What the scripts do not confess:
 
@@ -63,7 +65,7 @@ What the scripts do not confess:
 The pinned Pi version is the smoke expectation in `tests/smoke.ts`; the verification of each upgrade is its commit.
 
 1. Install the candidate in an isolated prefix. Compare SDK export names, coding-agent declaration files and native tool schemas with the current version.
-2. Verify the internals dev relies on: `findMostRecentSession`, `resolvePath` in `dist/utils/paths.js`, session header parsing, the `tool_result` adapter passing no `terminate` while pi-agent-core keeps the tool's own, and the runtime's `dispose` awaited by the interactive quit. `tests/workspace/workspace-host-session-check.ts` fails when the session internals or the terminate path change. For children: `AgentSession.prompt` expands `/skill:name` only with `expandPromptTemplates`, after trying extension commands, into a `<skill name="…">` block that opens the first user message; `extensionRunner.getCommand` finds a colliding command; and `sendCustomMessage` with `triggerTurn` runs a coordinator's turn to completion. `tests/work/work-skill-check.ts` and `tests/work/work-nested-check.ts` fail when these change.
+2. Verify the internals dev relies on: `findMostRecentSession`, `resolvePath` in `dist/utils/paths.js`, session header parsing, the `tool_result` adapter passing no `terminate` while pi-agent-core keeps the tool's own, and the runtime's `dispose` awaited by the interactive quit. `tests/workspace/workspace-host-session-check.ts` fails when the session internals or the terminate path change. For children: `AgentSession.prompt` expands `/skill:name` only with `expandPromptTemplates`, after trying extension commands, into a `<skill name="…">` block that opens the first user message; `extensionRunner.getCommand` finds a colliding command; and `sendCustomMessage` with `triggerTurn` runs a coordinator's turn to completion. `tests/work/work-skill-check.ts` and `tests/work/work-nested-check.ts` fail when these change. For `npm run profile`: the line `type` and ISO `timestamp`; the header `parentSession` of a fork, whose copied entries keep their original timestamps; the message `role`; the assistant `timestamp` in milliseconds and `usage.input`, `cacheRead` and `cacheWrite`; the tool result `toolName`, text blocks in `content` and, for `work`, the attempt `id`, `kind` and `owner.parent` in `details`; system messages written when a request starts. `profile:check` runs on fixtures, so after one session on the candidate `npm run profile` must count its requests and tool results with no undecodable line; `git restore docs/performance` afterwards unless the new numbers are meant to be published.
 3. Run lint, smoke, `workspace:check`, `workspace:tui`, `workspace:github` and `work:check`.
 4. Update the global installation, confirm it matches the candidate byte for byte, update the smoke expectation, and check `dev --diagnostics`.
 5. Apply the [extension rule](../SECURITY.md#adding-or-updating-an-extension) when the update changes extension or tool effects. MCP, codemode and tool search still need explicit SDK extension factories; dev does not enable them.

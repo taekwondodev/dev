@@ -27,6 +27,8 @@
     "setup": "node scripts/maintain.ts setup",
     "update": "node scripts/maintain.ts update",
     "rollback": "node scripts/maintain.ts rollback",
+    "profile": "node scripts/maintain.ts profile",
+    "profile:check": "node tests/usage-profile-check.ts",
     "types:pi": "node scripts/resolve-pi.ts",
     "typecheck": "npm run types:pi && tsc --noEmit",
     "lint:effect": "npm run types:pi && effect-tsgo diagnostics --project tsconfig.json --strict --format text",

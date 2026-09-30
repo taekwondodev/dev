@@ -41,4 +41,14 @@ Every flag, the session commands and the maintenance commands are in [launcher](
 
 ## Performance
 
-Still no benchmark or performance data. I am collecting data on my own usage, not on useless benchmarks.
+Measured on my own use of dev, not on benchmarks: every lead and child session file in my data home, abandoned branches included. Each chart names its sample size and date range.
+
+<p align="center">
+  <img src="docs/performance/usage.svg" alt="Lead cache hit rate, median tool calls per lead session, mean children per lead session, p50 model latency and mean tool result size">
+</p>
+
+<p align="center">
+  <img src="docs/performance/tools.svg" alt="Share of lead tool result bytes per tool">
+</p>
+
+The numbers come from `npm run profile`, which also prints the full report and writes `docs/performance/usage-baseline.json`. Only aggregates are committed: no path, project name or conversation text.
