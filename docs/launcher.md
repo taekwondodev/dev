@@ -29,10 +29,13 @@ npm ci && npm run setup && npm link --ignore-scripts    # first install: depende
 npm run setup -- --data-home PATH                       # setup against an explicit data home
 npm run update -- --remote origin --branch main         # fast-forward the checkout
 npm run rollback -- --ref REVISION                      # detach the checkout at REVISION
+npm run profile [-- --data-home PATH]                   # usage report and README charts from the sessions
 npm unlink --global dev-pi-environment --ignore-scripts # remove the `dev` command; checkout and data stay
 ```
 
 `npm link` exposes the checkout's `dev` executable through npm's global prefix: the `bin` directory of `npm config get prefix` must be on `PATH`, and a moved checkout is relinked from its new location. Setup, update and rollback take the installation gate exclusively, so every dev TUI must be closed first. Update and rollback refuse a dirty checkout and, when `.dev/` exists, any revision that would stop ignoring it or track its content.
+
+The usage profile resolves the data home like the launcher, reads every `.jsonl` file in its `sessions/` (lead) and `child-sessions/` (child), prints the report, and rewrites `docs/performance/usage-baseline.json`, `usage.svg` and `tools.svg` in the checkout. It takes no gate and records nothing at runtime: Pi's session files are the only source. A data home without a lead session that made a model request fails and leaves those files untouched.
 
 ## Behavior
 
@@ -43,6 +46,7 @@ npm unlink --global dev-pi-environment --ignore-scripts # remove the `dev` comma
 - `--continue` selects by session file modification time and the working directory in the Pi header, and does not fall through to the next session when that one is refused. `--resume` and `--continue` refuse a conversation that is open in another dev session, of any installation, and a conversation whose workspace or working directory is gone: the message names the session file, whose history is intact, and suggests `dev --cwd PATH`. A never-delivered workspace switch in the resumed conversation is withdrawn.
 - Independent repositories can each have a dev TUI open on the same data home. Several sessions on the same repository are the [workspace](workspace.md#behavior) tool's job.
 - `/quit` disposes the session, sweeps the repository and prints the receipt; the exit codes are in [workspace](workspace.md#exit-codes).
+- The usage profile counts every entry of a file, abandoned branches included, except the history Pi copies into a fork: a file whose header names a parent session counts only entries newer than its header. A lead file without an assistant message is counted as empty and excluded; an undecodable line is skipped and counted. Cache hit rate is cache-read tokens over input, cache-read and cache-write tokens. Model latency is an assistant entry's time minus its message time. Tool time and waiting time are the gaps before tool results and user messages, measured from the previous entry in the file; a system message does not count as the previous entry, because Pi writes it when the next request starts. Children are the distinct `agent` attempts without a parent in a lead's `work` results: a coordinator's leaves count as child sessions, not as children of the lead. Percentiles use the nearest rank.
 
 ## State
 
@@ -65,4 +69,4 @@ Dev's profile metadata and coordination databases carry only their current shape
 
 ## Verify
 
-`npm run smoke` checks launcher diagnostics on temporary private storage. `npm run dev:probe` creates the runtime without the TUI. `dev --diagnostics` prints the resolved composition for the current directory.
+`npm run smoke` checks launcher diagnostics on temporary private storage. `npm run profile:check` runs the usage profile on fixture data homes. `npm run dev:probe` creates the runtime without the TUI. `dev --diagnostics` prints the resolved composition for the current directory.
