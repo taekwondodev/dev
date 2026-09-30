@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`dev` is a personal, terminal-first development environment built on Pi: a launcher with selectable profiles, a `work` tool for background and delegated work, and a `workspace` authority for concurrent sessions on one repository. Global Pi and the shared workflow library are external dependencies.
+`dev` is a personal agent distro built on top of Pi: a launcher with selectable profiles, a `work` tool for background and delegated work, and a `workspace` authority for concurrent sessions on one repository. Global Pi and the shared workflow library are external dependencies.
 
 ## Scope
 

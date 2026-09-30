@@ -2,11 +2,11 @@
 
 ## Dev environment
 
-`dev` is a personal, terminal-first development environment built on Pi. Its purpose is to make the development loop easier to control across investigation, decisions, modification, builds, inspection, review and resume. The architecture and the use cases behind it are in [ARCHITECTURE](docs/ARCHITECTURE.md).
+`dev` is a personal agent distro built on top of Pi. Its purpose is to make the development loop easier to control across investigation, decisions, modification, builds, inspection, review and resume. The architecture and the use cases behind it are in [ARCHITECTURE](docs/ARCHITECTURE.md).
 
 ## Pi
 
-Pi is the runtime and integration target. This repository owns the Pi integration and configuration specific to `dev`; the installed global Pi package is the reference for supported APIs.
+[Pi](https://github.com/earendil-works/pi) is the coding agent dev is built on, and its integration target. This repository owns the Pi integration and configuration specific to `dev`; the installed global Pi package is the reference for supported APIs.
 
 ## Shared workflow library
 
