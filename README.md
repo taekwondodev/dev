@@ -1,54 +1,44 @@
-# dev
+<p align="center">
+  <img src="docs/logo.png" alt="dev logo" width="200">
+</p>
 
-A personal, terminal-first development environment built on Pi, with shared workflow skills and optional domain profiles.
+<h1 align="center">dev</h1>
 
-**Status:** checkout bootstrap implemented; global Pi and the shared workflow remain external dependencies.
+<p align="center">My personal agent distro built on top of <a href="https://github.com/earendil-works/pi">Pi</a>.</p>
+
+## Why I made this
+
+I wanted a terminal-first experience. I was a Hermes main, but I wanted to come back to the terminal, and its CLI was not that enjoyable. So I built the environment I wanted on Pi, which already owns inference, sessions and the TUI, and kept for myself only the parts Pi does not have.
+
+## What it does
+
+- **`dev`** opens Pi from the project you are working on, with a profile (`general` or `apple`) that selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
+- **`work`** runs commands and delegated Pi children in the background, in separate processes, with a versioned model dispatch and outcomes delivered back into the conversation. [work](docs/work.md)
+- **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
+- The workflow itself (sizing, grilling, specs, implementation, review) comes from a shared skill library; dev owns only the integration.
+
+Why each piece is shaped the way it is: [ARCHITECTURE](docs/ARCHITECTURE.md). What dev trusts and what it does not protect: [SECURITY](SECURITY.md).
 
 ## Use dev
 
-### One-time setup
+Dev is built for me: it assumes a globally installed `pi`, the skill library at `~/.agents/skills`, and Node 22.23.2 or newer with a SQLite that carries the WAL-reset fix. Read [SECURITY](SECURITY.md) before installing.
 
-Prerequisites: Node 22.23.2 or newer with a corrected bundled SQLite, the globally installed `pi` executable, and the live shared workflow library exposed at `~/.agents/skills`. Background work checks SQLite compatibility before opening its store; see [storage and recovery](docs/background-work.md#retention-and-recovery).
+```bash
+cd ~/Developer/dev
+npm ci
+npm run setup
+npm link --ignore-scripts
+```
 
-Run these commands from the dev checkout, not from the project you want to edit:
+Then, from any project:
 
-    cd ~/Developer/dev
-    npm ci
-    npm run setup
-    npm link --ignore-scripts
+```bash
+cd /path/to/your/project
+dev
+```
 
-`npm link` exposes the existing `dev` executable through npm's global prefix and keeps it linked to this checkout. It does not publish the package or install another copy of Pi. On macOS/Linux, the `bin` directory under `npm config get prefix` must be on `PATH`. If the checkout moves, relink it from its new location.
+Every flag, the session commands and the maintenance commands are in [launcher](docs/launcher.md). To change dev itself, start from [DEVELOPMENT](docs/DEVELOPMENT.md) and [AGENTS.md](AGENTS.md).
 
-### Work in a project
+## Performance
 
-    cd /path/to/your/project
-    dev
-
-The launch directory is the working project. You do not need to enter `~/Developer/dev` or add a dependency to the project's `package.json`. Use `dev --cwd /path/to/your/project` to select a directory explicitly, or `dev --diagnostics` to inspect the resolved working directory, data home and resources.
-
-Pi discovers project instructions such as `AGENTS.md` from the working directory and its ancestors, not from the executable's location. This checkout's `AGENTS.md` describes development of dev itself; the launcher does not inject it into unrelated projects. Selected guidance from `profiles/*/SOUL.md` is appended separately, without replacing the native project instructions.
-
-Use `dev --profile apple` for a temporary Apple session, `dev --save-profile apple` to save a repository preference, and `dev --continue` or `dev --resume PATH` to resume a conversation.
-
-- [Terminal commands](docs/COMMANDS-TERMINAL.md): daily use, setup, updates and removal of the command.
-- [Session commands](docs/COMMANDS-SESSION.md): commands entered inside Pi.
-- [Background work](docs/background-work.md): delegation, cancellation and retained outcomes.
-
-### Configuration and private data
-
-The installation, the working project and private state have separate roles:
-
-    ~/Developer/dev/         dev code and versioned configuration
-    /path/to/your/project/   working files and project instructions
-    ~/Developer/dev/.dev/    private dev settings, preferences and sessions
-    ~/.pi/agent/auth.json     global Pi authentication for all Pi and dev sessions
-
-Versioned delegation rules live in `config/crew-dispatch.json`. Dev's private data, logs and runtime locks stay in the installation's `.dev/`, excluded by `.gitignore`, even when launched from another repository. Pi authentication is deliberately not duplicated there: both global Pi and `dev` use the canonical `~/.pi/agent/auth.json`. `DEV_DATA_HOME` or `--data-home` changes dev's private storage without changing dispatch or authentication. Ignoring `.dev/` is not filesystem access control; never force-add it to Git.
-
-Setup does not copy credentials or merge existing data homes. Use Pi's `/login` flow explicitly; the credential is stored in the global Pi auth file, whose canonical directory is singular (`~/.pi/agent`, not `~/.pi/agents`). Global Pi, the live workflow library and other profiles remain separately managed; updating or rolling back dev does not restore those dependencies or private state. Cloning dev includes dispatch policy, not authentication or conversation history.
-
-## Develop dev
-
-To change the launcher or integration, work in this checkout and follow [Development](docs/DEVELOPMENT.md) and [AGENTS.md](AGENTS.md). These are contributor instructions, not setup steps for every project where dev is used.
-
-The [project brief](docs/project-brief.md) is the historical planning baseline. Consult current GitHub issue decisions and applicable ADRs for approved changes. [Evidence and references](docs/references.md) records integration sources and earlier observations, not a guarantee about the installed Pi version.
+Still no benchmark or performance data. I am collecting data on my own usage, not on useless benchmarks.

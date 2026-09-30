@@ -1,46 +1,93 @@
 # Develop dev
 
-This guide is for changing the dev environment itself. To use it in another repository, follow the [README](../README.md) and [terminal commands](COMMANDS-TERMINAL.md); no dev source files or npm dependencies belong in that working project.
+This guide is for changing dev itself. Daily use is in the [README](../README.md) and the tool docs ([launcher](launcher.md), [work](work.md), [workspace](workspace.md)). No dev source file or npm dependency belongs in a project dev is used on.
 
-## Work in the dev checkout
-
-Read [AGENTS.md](../AGENTS.md), [CONTEXT.md](../CONTEXT.md), and the ADRs applicable to the change. GitHub Issues in `taekwondodev/dev` hold current requirements and decisions. The [project brief](project-brief.md) is a historical planning baseline, not a statement that the runtime is still unimplemented.
-
-Use the shared `dev-cycle` workflow rather than duplicating its rules here. Consult [references](references.md) when choosing Pi APIs, and verify the installed package before relying on an API shape.
-
-For a clean or isolated setup, verify that the installed Pi loader can discover and invoke the required shared skills.
+## Setup
 
 ```bash
 cd ~/Developer/dev
 npm ci
 npm run lint
-npm start
+npm start          # a session whose working project is dev itself
 ```
 
-Installs dev-owned dependencies, checks the checkout and starts a session whose working project is dev itself. The npm scripts run in this checkout. To investigate another project with the same launcher, use `dev` from that project or pass `--cwd` explicitly.
+`npm start` and `npm run dev` inside the checkout work on dev; to use the launcher on another project from here, pass `--cwd`. `npm link --ignore-scripts` links the `dev` command to this checkout, so launcher edits take effect on the next launch without reinstalling.
 
-Application and maintenance code is strict, erasable TypeScript using the pinned Effect 4 release candidate. Node's native type stripping runs the sources directly; there is no build directory or runtime loader. Keep the Node minimum in `package.json` when choosing syntax and APIs.
+Sources are strict, erasable TypeScript on the pinned Effect 4 release candidate, run directly by Node's type stripping; there is no build step. Keep the Node minimum in `package.json` when choosing syntax and APIs. The Effect reading rule is in [AGENTS.md](../AGENTS.md#learning-more-about-effect).
 
-Checks and setup regenerate an ignored module-resolution link to the declarations of the actual global Pi package. Run `npm run types:pi` explicitly after changing Pi if your editor still sees stale declarations. Missing declarations fail the check; do not install a private Pi copy or add replacement ambient types. `DEV_PI_EXECUTABLE` selects the same installation for checking and runtime use.
+Checks and setup regenerate an ignored link to the declarations of the actual global Pi package. Run `npm run types:pi` after changing Pi if the editor still sees stale declarations; missing declarations fail the check. Do not install a private Pi copy or add ambient types. `DEV_PI_EXECUTABLE` selects the installation for both checking and runtime.
 
-`npm link --ignore-scripts` links the command to this checkout. Local launcher edits take effect on the next launch without reinstalling or copying the code. Setup, update, rollback and unlink commands are documented in the [maintenance section](COMMANDS-TERMINAL.md#manutenzione-dalla-cartella-di-installazione).
+## Where things live
 
-## Ownership
+The component map is in [ARCHITECTURE](ARCHITECTURE.md#components). Each source area has one owning doc and one decision record:
 
-- `src/launcher.ts` is the `dev` executable and owns startup selection and the connection to native Pi services and TUI.
-- `src/pi-runtime.ts` resolves the installed global Pi SDK and its declarations.
-- `src/preferences.ts` owns private data paths, the global Pi auth path and profile preferences.
-- `src/profiles.ts` composes selected guidance and skill paths; portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
-- `src/workspace-*.ts` implement the workspace authority: the engine's guarded entry point and its modules (platform helpers, SQLite, records, gates, authority root and catalog, conversation state, admission, allocation, transitions, attachment, inspect, release), the worker and its Effect client, Git and path identity, the lead shell, native writes and the Pi host integration. `src/workspace-evidence.ts` is the cleanup evidence verifier with its inventory, target derivation, integration facts and GitHub reader; `src/workspace-completion.ts` is the pure completion function that turns assessed facts into a role and a finished rule or retained reason; `src/workspace-evidence-records.ts` records the target override and verified-publication facts, and `src/workspace-tool.ts` is the lead's `workspace` tool for resume, target override and publication records. `src/workspace-release.ts` owns the assessment, check, the repository sweep and the fenced release attempt; `src/workspace-command.ts` owns the terminal and TUI command surface and the receipts shared by the launcher and the host. `src/error-text.ts` is the one error-to-text helper. `src/process-family.ts` holds the process table, launch gate and family observation step shared with background work. Read [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) before changing admission, shells or the tool gate, and its [Effect boundary](adr/0005-scoped-runtime-coordination.md#effect-boundary) before adding Promise code.
-- `src/work-*.ts` and `src/pi-child.ts` implement session-owned background work. Read [ADR 0002](adr/0002-session-owned-background-work.md) before changing that ownership, and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) for the lifecycle authority and transactional storage contract.
-- `scripts/` holds maintenance, Pi declaration resolution and the source-comment lint plugin. `tests/smoke.ts` checks launcher diagnostics; `tests/workspace/` holds the workspace checks, fixtures, subprocess drivers and Python pseudo-terminal runner. Run them through the npm commands below from the checkout root.
-- `config/crew-dispatch.json` is versioned policy; `.dev/` is private dev state and `~/.pi/agent/auth.json` is the shared Pi credential store. Read [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md) before changing that boundary.
+| Area                                                                                                 | Doc                       | Decisions                                                                                                                |
+| ---------------------------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `src/launcher.ts`, `src/pi-runtime.ts`, `src/preferences.ts`, `src/profiles.ts`, `scripts/`          | [launcher](launcher.md)   | [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md)                                                                 |
+| `src/work-*.ts`, `src/pi-child.ts`                                                                   | [work](work.md)           | [ADR 0002](adr/0002-session-owned-background-work.md), [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) |
+| `src/workspace-*.ts`, `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts` | [workspace](workspace.md) | [ADR 0005](adr/0005-scoped-runtime-coordination.md)                                                                      |
+
+`tests/smoke.ts` checks launcher diagnostics; `tests/workspace/` holds the workspace checks, fixtures, subprocess drivers and the Python pseudo-terminal runner. Portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
+
+The reading triggers for each boundary are the conditional references in [AGENTS.md](../AGENTS.md#conditional-references).
+
+## Verification
+
+```bash
+npm run lint              # typecheck, lint:effect (Effect diagnostics in strict mode), then Oxlint with warnings as errors
+npm run typecheck         # types:pi (regenerate the Pi declaration link), then tsc --noEmit
+npm run format:check      # oxfmt without writes; `format` and `lint:fix` are the opt-in mutations
+npm run smoke             # launcher diagnostics on temporary private storage; not a model response
+npm run workspace:check   # completion table, authority, release, sweep, process adapters, host contract,
+                          # host session flows in headless Pi, launcher on disposable storage
+npm run workspace:tui     # the real Pi TUI in a pseudo-terminal: stub lifecycle with fault injection,
+                          # real authority, quit and release probes
+npm run workspace:github  # the gh-backed GitHub reader once, read-only, against a public merged PR
+npm run dev:probe         # SDK runtime creation without the TUI
+```
+
+`start`, `dev` and `diagnostics` run the launcher on this checkout; the `dev:*` aliases pass the flag of the same name ([launcher](launcher.md#use)); `setup`, `update` and `rollback` are the maintenance commands there.
+
+What the scripts do not confess:
+
+- `workspace:github` is outside `workspace:check` on purpose: the contract wants the real reader observed once, not a recurring network gate. Run it whenever the GitHub reader or its adapter facts change; the fakes in `workspace:check` cannot see a regression there.
+- The pseudo-terminal driver is Python only because Node has no built-in pty; everything it drives is TypeScript. Run one probe with `python3 tests/workspace/run-workspace-pty-probes.py <name>`, where the name is `stub`, `real`, `quit`, `quit-self-remove`, `quit-contained-history`, `quit-interrupt`, `quit-interrupt-during-sweep`, `interactive-failure`, `quit-shutdown-failure` or `release`.
+- No check touches the real workspace authority, credentials or the network, except `workspace:github`. Every runtime under test comes from the launcher's `makeRuntimeFactory`, with an offline scripted model and an observer extension.
+- `scripts/code-policy.ts` rejects source comments, except shebangs and comment-like text inside literals, and never fixes or formats. Express intent through names and structure; move non-obvious rationale into the applicable ADR before deleting a comment. `floatingEffect` is an error at the terminal boundary, not only an editor diagnostic.
+- Match proof to the task. Do not add a test suite or benchmark campaign by default; use the actual TUI for interactive behavior.
+
+## Pi upgrade
+
+The pinned Pi version is the smoke expectation in `tests/smoke.ts`; the verification of each upgrade is its commit.
+
+1. Install the candidate in an isolated prefix. Compare SDK export names, coding-agent declaration files and native tool schemas with the current version.
+2. Verify the internals dev relies on: `findMostRecentSession`, `resolvePath` in `dist/utils/paths.js`, session header parsing, the `tool_result` adapter passing no `terminate` while pi-agent-core keeps the tool's own, and the runtime's `dispose` awaited by the interactive quit. `tests/workspace/workspace-host-session-check.ts` fails when the session internals or the terminate path change.
+3. Run lint, smoke, `workspace:check`, `workspace:tui` and `workspace:github`.
+4. Update the global installation, confirm it matches the candidate byte for byte, update the smoke expectation, and check `dev --diagnostics`.
+5. Apply the [extension rule](../SECURITY.md#adding-or-updating-an-extension) when the update changes extension or tool effects. MCP, codemode and tool search still need explicit SDK extension factories; dev does not enable them.
+
+Pi contracts for API choices, on `main` as discovery references while the installed package is the reference for the pinned release: [README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md), [skills](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md), [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md), [extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md), [SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md), [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md), [session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md), [compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md), [security](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/security.md). Starting points for independent workers and research components: the [official subagent example](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent) and the [Pi skills repository](https://github.com/badlogic/pi-skills); an example demonstrates an approach, not parity with dev's contracts.
+
+## Add a tool
+
+A tool dev adds gets one file `docs/<tool>.md` with these headings, in this order:
+
+1. **Purpose**: the use case it serves, in one paragraph.
+2. **Use**: terminal commands, session commands and tool actions, one line each.
+3. **Behavior**: the guarantees and limits an operator relies on.
+4. **State**: paths, formats, retention and recovery.
+5. **Decisions**: links to the ARCHITECTURE sections and ADRs that govern it.
+6. **Verify**: the scripts that cover it.
+
+A tool doc is complete when every heading has content or an explicit "none"; a heading may carry subsections. Then add the tool to the table above, a conditional pointer in `AGENTS.md`, its vocabulary to `CONTEXT.md` and a section to [ARCHITECTURE](ARCHITECTURE.md#choices) naming use case, choice and tradeoff. Native Pi commands are documented only where dev changes their behavior, in the owning tool file.
+
+## Record a decision
+
+An enduring decision with a real tradeoff gets an ADR in `docs/adr/`, with the next number and the format of the shared `domain-modeling` skill, and a section in ARCHITECTURE. Observable behavior goes in the tool doc, evidence stays in the issue; link the issue comment that accepted the decision.
 
 ## Private-state relocation
 
-Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home, and leave historical conversation text unchanged. Credentials, other profiles and shared assets remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries).
-
-Git exclusion is not access control: keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance checks](COMMANDS-TERMINAL.md#manutenzione-dalla-cartella-di-installazione).
+Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home and leave historical conversation text unchanged. Credentials, other profiles and shared assets remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries). Keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance commands](launcher.md#use).
 
 ## Discard the workspace authority
 
@@ -52,29 +99,3 @@ A revision that changes the store's schema version refuses an existing store ins
 4. Run `git worktree prune` in each repository that had managed worktrees, to drop the registrations of the deleted directories.
 
 Pre-existing checkouts, Pi conversations, credentials and other profiles stay untouched.
-
-## Existing verification commands
-
-```bash
-npm run lint
-npm run smoke
-```
-
-`lint` checks TypeScript, dedicated Effect diagnostics in strict mode, then Oxlint, propagating each failure and rejecting any Oxlint warning. `scripts/code-policy.ts` uses Oxlint's parser to reject source comments, excluding executable shebangs and comment-like text inside literals. Express intent through names and structure; preserve non-obvious architectural rationale in the applicable ADR before removing its comment. The rule offers no automatic deletion. It does not fix or format source. In particular, `floatingEffect` is an error at the terminal boundary, not merely an editor diagnostic. `lint:fix` and `format` are separate opt-in mutations; `format:check` checks formatting without writing. Oxlint remains unpatched. The TypeScript-only capitalization/error-constructor exceptions accommodate Effect's Schema and service factories; Effect diagnostics still check their usage.
-
-The smoke command checks launcher diagnostics with temporary private storage; it is not evidence of a successful model response.
-
-```bash
-npm run workspace:check
-npm run workspace:tui
-```
-
-`workspace:github` runs the gh-backed GitHub reader once, read-only, against a public merged pull request whose source branch was deleted; it needs the network and `gh` authentication and is deliberately outside `workspace:check`, since the contract wants the adapter facts observed through a real reader once, not a recurring availability gate.
-
-`workspace:check` exercises the completion rules as a table over fixture facts shaped after the live authority and the target derivation, the workspace authority, the release path (check and confirmed disposal of real temporary worktrees, dirty intermediate state and recorded publications, refusal at ownership/structural boundaries, worker crashes at each release boundary, and integration and pull request discovery against a fake GitHub reader), the sweep through the real authority and Git fixtures (removal of finished worktrees, retention with reasons, quit-only release of clean checkouts, exclusion at allocation, open bound conversations, missing directories, self-named targets, lazy target derivation, the time budget, idempotent reruns and crash recovery), real process adapters, the host's `/workspace` answers and allocation receipts and its session flows (a background process's rebind, fork and import) in headless Pi sessions, and the launcher on disposable storage under the system temporary directory; the launcher check injects a lifecycle through `launch` instead of opening the fixed per-account authority. `workspace:tui` drives the real Pi TUI in a pseudo-terminal, once against a stub lifecycle for fault injection, including resumes through the `workspace` tool, and once against the real authority, ending with a typed `/quit` that parks Pi's exit at the host's dispose boundary before the sweep removes the finished worktree; it also runs the terminal `dev workspace release` confirmation in a pseudo-terminal, including a run that a child under the launcher's `runMain` entry point interrupts with SIGINT. Both build every runtime with the launcher's `makeRuntimeFactory`, replacing only the model with an offline scripted one and adding an observer extension. One driver, `tests/workspace/run-workspace-pty-probes.py`, runs them from a table of the keys each probe expects at its markers, filled with the fixture identities the probe prints; pass `stub`, `real`, `quit`, `quit-self-remove`, `quit-contained-history`, `quit-interrupt`, `quit-interrupt-during-sweep`, `interactive-failure`, `quit-shutdown-failure` or `release` to run one. The `quit` probes run the real launcher as a child of the probe on the same pseudo-terminal and type `/quit`, except `interactive-failure`: `quit` expects the receipt and exit 0 after teardown, `quit-self-remove` removes the worktree the launcher itself runs from, `quit-contained-history` keeps a finished worktree that holds the conversation file and exits 1, `quit-interrupt` delivers SIGINT during the teardown before the sweep and expects nothing released and exit 130, `quit-interrupt-during-sweep` delivers SIGINT to dev alone once the sweep has started and expects the notice, the receipt, the removal and exit 130 (a terminal interrupt that also reaches a Git child is not driven), `interactive-failure` makes Pi's interactive mode stop and reject without a `/quit` and expects the runtime disposed without parking, nothing swept and exit 1, and `quit-shutdown-failure` injects an exception at Pi's `AgentSession.dispose` boundary after its real cleanup, only in the probe child, and expects exit 1 with nothing swept, the reservations kept and the conversation history preserved. This observes a disposal failure reaching the launcher, not every possible teardown failure; it adds no production hook. It is Python only because Node has no built-in pseudo-terminal; everything it drives is TypeScript. No probe touches the real workspace authority, credentials or the network; the GitHub reader is exercised only through fakes.
-
-```bash
-npm run dev:probe
-```
-
-Exercises SDK runtime creation without opening the TUI or calling a model. Use the actual TUI for changes to interactive behavior. Match proof to the approved task; do not introduce a new test suite or benchmark campaign by default. Preserve unrelated work, account for every changed file and report unobserved behavior explicitly.
