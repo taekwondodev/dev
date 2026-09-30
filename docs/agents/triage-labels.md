@@ -15,4 +15,4 @@ The workflow speaks in terms of canonical category, state, and workflow-marker r
 
 `needs-grilling` is the initial state for a quick issue that is intentionally waiting for a future grilling session. `ready-for-agent` replaces it when the complete spec is ready.
 
-When a skill mentions a role or marker, use the corresponding label string from this table. Edit the right-hand column if this repo's tracker already uses different names. Don't create duplicate labels for the same role.
+When a skill mentions a role or marker, use the corresponding label string from this table. Don't create duplicate labels for the same role.

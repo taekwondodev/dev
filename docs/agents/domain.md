@@ -1,29 +1,11 @@
 # Domain Docs
 
-How the dev-cycle skills should consume this repo's domain documentation when exploring the codebase.
+How the dev-cycle skills consume this repo's domain documentation when exploring the codebase.
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists: it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
-
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/wayfinder`'s Grilling tickets) creates them lazily when terms or decisions actually get resolved.
-
-## File structure
-
-Single-context repo (most repos):
-
-```
-/
-├── CONTEXT.md
-├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
-└── src/
-```
-
-Each context here is the same boundary as `/architect`'s "one domain package per bounded context". The map is that boundary, seen from the domain-language side.
+- **`CONTEXT.md`** at the repo root: the glossary of this single-context repository.
+- **`docs/adr/`**: the ADRs that touch the area you are about to work in. `docs/ARCHITECTURE.md` says which use case and tradeoff each one serves.
 
 ## Use the glossary's vocabulary
 
@@ -35,4 +17,4 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
-> _Contradicts ADR-0007 (event-sourced orders). It may be worth reopening because…_
+> _Contradicts ADR-0005 (scoped admission). It may be worth reopening because…_
