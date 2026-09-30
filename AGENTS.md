@@ -18,9 +18,9 @@ Before writing Effect code, read `node_modules/effect/AGENTS.md` completely and 
 
 ## Boundaries
 
-Keep existing environments, credentials and runtime state separate and unchanged. Work in this repository must not modify other profiles or migrate shared assets without explicit authorization.
+Credentials, other agent environments, dev's profiles under `profiles/` and global Pi stay unchanged unless the user explicitly authorizes the change.
 
-Maintain only the current schema for dev-owned state. When a format changes, change the schema in place and discard affected obsolete dev-owned session, runtime or workspace-authority data instead of adding schema versions, compatibility checks, migrations or legacy fields. Before a reset, stop affected runtimes and preserve any undelivered source work in managed worktrees. Keep current-schema validation, integrity and ownership checks, live revision/generation fences, and release-decision semantics; these are not backward compatibility. This does not authorize changes to credentials, other profiles or shared assets.
+Treat dev as unreleased: dev-owned state has exactly one schema, the final one. When a format changes, change the schema in place and, in the same change, delete any dev-owned data in an older shape, following [discard obsolete state](docs/DEVELOPMENT.md#discard-obsolete-state). Deleting dev-owned data is always safe and needs no confirmation. Write no schema versions, compatibility checks, migrations or legacy fields, and remove any you find. Keep current-schema validation, integrity and ownership checks, live revision and generation fences, and release-decision semantics: they protect the current data, not old formats.
 
 ## Conditional references
 

@@ -89,24 +89,20 @@ An enduring decision with a real tradeoff gets an ADR in `docs/adr/`, with the n
 
 ## Private-state relocation
 
-Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home and leave historical conversation text unchanged. Credentials, other profiles and shared assets remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries). Keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance commands](launcher.md#use).
+Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home and leave historical conversation text unchanged. Credentials, dev's profiles and global Pi remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries). Keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance commands](launcher.md#use).
 
-## Discard the workspace authority
+## Discard obsolete state
 
-Dev keeps one current schema, without schema or protocol version markers, historical shapes or migrations ([ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md)). It validates the actual layout and refuses a non-canonical or damaged store without changing it. Discard obsolete authority data explicitly; dev never resets it at startup:
+Dev keeps one current schema, without schema or protocol version markers, historical shapes or migrations ([ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md)). It validates the actual layout, refuses a non-canonical or damaged store without changing it and never resets state at startup. The rule for deleting old-shape data is in [AGENTS.md](../AGENTS.md#boundaries); delete the paths for the format that changed:
 
-1. Stop every dev session and maintenance operation across installations, so no worker holds the authority gates. Use the same current code when restarting; do not mix old and new runtimes across the reset.
-2. Deliver or copy anything a managed worktree still holds. Managed worktrees live inside the authority, so the next step deletes them.
-3. Remove `~/Library/Application Support/dev/workspace-authority/`.
-4. Run `git worktree prune` in each repository that had managed worktrees, to drop the registrations of the deleted directories.
+| Changed format                                  | Delete                                                                                                                            |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace authority, managed worktrees included | `~/Library/Application Support/dev/workspace-authority/`, then `git worktree prune` in each repository that had managed worktrees |
+| Attempt state                                   | `<data-home>/work/attempts.sqlite` with its `-wal`, `-shm` and `-journal` sidecars, and `<data-home>/work/attempts/`              |
+| Dev metadata in conversations                   | `<data-home>/sessions/` and `<data-home>/child-sessions/`                                                                         |
+| Profile preferences                             | `<data-home>/preferences/`                                                                                                        |
+| Installation and conversation locks             | `<installation>/.dev/coordination/`, which stays in the checkout under any data-home override                                     |
 
-Pre-existing checkouts, Pi conversations, credentials and other profiles stay untouched.
+`<data-home>` is `.dev/` in the checkout or an explicit `--data-home` or `DEV_DATA_HOME` override; cover each one in use.
 
-## Discard other dev-owned state
-
-With all affected runtimes and maintenance operations stopped, discard only the artifacts whose format changed:
-
-- Attempt state: `<data-home>/work/attempts.sqlite`, its `-wal`, `-shm` and `-journal` sidecars if present, and `<data-home>/work/attempts/`. Keep `<data-home>/sessions/` and `<data-home>/child-sessions/`.
-- Installation and conversation lock state: `<installation>/.dev/coordination/`. This location does not follow `--data-home`. Reset it only for a changed lock layout, never as ordinary cleanup: unlinking a database while a runtime holds it splits ownership across inodes.
-
-Inspect explicit data-home overrides separately. Do not remove the whole `.dev/` directory, profile preferences, credentials or shared resources. Existing conversation text is not rewritten when dev metadata fields change.
+Quit dev before deleting a lock database: `<installation>/.dev/coordination/` or the authority's `gates/`. Unlinking one while a running dev holds it splits ownership across inodes.
