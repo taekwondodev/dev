@@ -13,13 +13,10 @@ import {
 import type { GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
 import {
-  PROTOCOL_VERSION,
-  SCHEMA_VERSION,
   PROTOCOL_SQL,
   GATE_SQL,
   first,
   textField,
-  numberField,
   schemaCatalog,
   expectedCatalog,
   createPublishedDatabase,
@@ -34,7 +31,6 @@ export type GateRelease = () => void
 
 const lockFormatSupported = (db: DatabaseSync, ddl: string): boolean =>
   textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase() === 'delete' &&
-  numberField(first(db, 'PRAGMA user_version'), 'user_version') === SCHEMA_VERSION &&
   schemaCatalog(db) === expectedCatalog(ddl)
 
 const openLock = (lock: {
@@ -102,10 +98,7 @@ const holdLock = (lock: {
 
 export const createProtocolDatabase = (path: string, namespaceId: WorkspaceId): void =>
   createPublishedDatabase(path, 'protocol', db => {
-    db.prepare('INSERT INTO protocol_marker(id, version, namespace_id) VALUES(1, ?, ?)').run(
-      PROTOCOL_VERSION,
-      namespaceId
-    )
+    db.prepare('INSERT INTO protocol_marker(id, namespace_id) VALUES(1, ?)').run(namespaceId)
   })
 
 export const validateProtocol = (path: string): WorkspaceId => {
@@ -117,9 +110,7 @@ export const validateProtocol = (path: string): WorkspaceId => {
       ddl: PROTOCOL_SQL,
       waitMs: 0,
     })
-    const row = first(db, 'SELECT version, namespace_id FROM protocol_marker WHERE id = 1')
-    if (numberField(row, 'version') !== PROTOCOL_VERSION)
-      unavailable(`Workspace protocol version mismatch at ${path}`)
+    const row = first(db, 'SELECT namespace_id FROM protocol_marker WHERE id = 1')
     const actual = textField(row, 'namespace_id')
     if (!Schema.is(WorkspaceId)(actual))
       return requireReview(`Workspace protocol identity mismatch at ${path}`)
@@ -144,11 +135,8 @@ export const acquireProtocolGate = (
     waitMs: 0,
     exclusive: false,
     verifyMarker: db => {
-      const marker = first(db, 'SELECT version, namespace_id FROM protocol_marker WHERE id=1')
-      if (
-        numberField(marker, 'version') !== PROTOCOL_VERSION ||
-        textField(marker, 'namespace_id') !== namespaceId
-      )
+      const marker = first(db, 'SELECT namespace_id FROM protocol_marker WHERE id=1')
+      if (textField(marker, 'namespace_id') !== namespaceId)
         requireReview(`Workspace protocol identity changed at ${path}`)
     },
     verifyHeld: db => {
@@ -179,9 +167,8 @@ interface GateIdentity {
 }
 
 const verifyGateMarker = (db: DatabaseSync, path: string, identity: GateIdentity): void => {
-  const marker = first(db, 'SELECT version, kind, path, key FROM gate_marker WHERE id=1')
+  const marker = first(db, 'SELECT kind, path, key FROM gate_marker WHERE id=1')
   if (
-    numberField(marker, 'version') !== PROTOCOL_VERSION ||
     textField(marker, 'kind') !== identity.kind ||
     textField(marker, 'path') !== identity.path ||
     textField(marker, 'key') !== identity.key
@@ -195,8 +182,7 @@ const acquireGate = (path: string, identity: GateIdentity, exclusive: boolean): 
   privateDirectory(dirname(path), false)
   if (lstatIfExists(path) === undefined)
     createPublishedDatabase(path, 'gate', db => {
-      db.prepare('INSERT INTO gate_marker(id, version, kind, path, key) VALUES(1, ?, ?, ?, ?)').run(
-        PROTOCOL_VERSION,
+      db.prepare('INSERT INTO gate_marker(id, kind, path, key) VALUES(1, ?, ?, ?)').run(
         identity.kind,
         identity.path,
         identity.key

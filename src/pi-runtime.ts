@@ -84,7 +84,6 @@ export const loadPi = Effect.gen(function* () {
     'createAgentSessionRuntime',
     'SessionManager',
     'InteractiveMode',
-    'loadSkills',
   ] as const) {
     if (typeof api[name] !== 'function')
       return yield* new PiError({ message: `Installed Pi does not provide ${name}` })

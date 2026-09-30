@@ -32,8 +32,6 @@ export const sqliteBusy = (cause: unknown): boolean => {
   return code === 5 || code === 6
 }
 
-export const PROTOCOL_VERSION = 1
-export const SCHEMA_VERSION = 5
 const BUSY_TIMEOUT_MS = 5000
 
 export type SqlRow = Record<string, unknown>
@@ -41,10 +39,8 @@ export type SqlRow = Record<string, unknown>
 export const PROTOCOL_SQL = `
   CREATE TABLE protocol_marker(
     id INTEGER PRIMARY KEY CHECK(id = 1),
-    version INTEGER NOT NULL,
     namespace_id TEXT NOT NULL
   ) STRICT;
-  PRAGMA user_version = ${SCHEMA_VERSION};
 `
 const CATALOG_SQL = `
   CREATE TABLE catalog_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -60,7 +56,6 @@ const CATALOG_SQL = `
     payload TEXT NOT NULL
   ) STRICT;
   CREATE UNIQUE INDEX repositories_by_physical_identity ON repositories(device, inode);
-  PRAGMA user_version = ${SCHEMA_VERSION};
 `
 const SHARD_SQL = `
   CREATE TABLE shard_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -121,17 +116,14 @@ const SHARD_SQL = `
     payload TEXT NOT NULL,
     UNIQUE(task_id, relative_path, sha256)
   ) STRICT;
-  PRAGMA user_version = ${SCHEMA_VERSION};
 `
 export const GATE_SQL = `
   CREATE TABLE gate_marker(
     id INTEGER PRIMARY KEY CHECK(id = 1),
-    version INTEGER NOT NULL,
     kind TEXT NOT NULL,
     path TEXT NOT NULL,
     key TEXT NOT NULL
   ) STRICT;
-  PRAGMA user_version = ${SCHEMA_VERSION};
 `
 
 export const encode = (value: unknown): string => {
@@ -351,8 +343,7 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   const fullfsync = numberField(first(db, 'PRAGMA fullfsync'), 'fullfsync')
   if (synchronous !== 2 || fullfsync !== 1)
     unavailable(`Workspace ${kind} database has unsafe durability settings: ${path}`)
-  const version = numberField(first(db, 'PRAGMA user_version'), 'user_version')
-  if (version !== SCHEMA_VERSION || schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
+  if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
     unavailable(
       `Workspace ${kind} database has an unsupported schema: ${path}. dev never migrates it; quit every dev session and follow Discard the workspace authority in dev's docs/DEVELOPMENT.md.`
     )

@@ -381,6 +381,8 @@ const makeAttachment = (
         case 'native-file-write':
         case 'opaque':
           return authorizeScoped(owned, operation)
+        case 'leaf-read':
+          throw new Error('the stub lifecycle admits no leaf')
       }
     },
     async select(selection: WorkspaceSelection): Promise<WorkspaceHandoff> {

@@ -1946,25 +1946,26 @@ try {
   )
 
   await claim(
-    'a store from an earlier schema version is refused with the discard steps, never migrated, and stays as it was',
+    'a non-canonical store layout is refused with the discard steps, never migrated, and stays byte-identical',
     async () => {
-      const oldRoot = join(sandbox, 'old-schema-authority')
-      const oldRepo = join(sandbox, 'old-schema-repo')
-      initRepository(oldRepo, 'tracked.txt', 'old schema fixture\n')
-      const creating = await openLifecycle({ root: oldRoot })
+      const invalidRoot = join(sandbox, 'non-canonical-authority')
+      const invalidRepo = join(sandbox, 'non-canonical-repo')
+      initRepository(invalidRepo, 'tracked.txt', 'non-canonical schema fixture\n')
+      const creating = await openLifecycle({ root: invalidRoot })
       const owner = await creating.attach({
-        conversation: conversation('old-schema'),
-        cwd: oldRepo,
+        conversation: conversation('non-canonical-schema'),
+        cwd: invalidRepo,
       })
       await owner.close()
       await creating.close()
-      const catalog = join(oldRoot, 'catalog.sqlite')
-      const downgrade = new DatabaseSync(catalog)
-      downgrade.exec('PRAGMA user_version = 4')
-      downgrade.close()
-      const refused = openLifecycle({ root: oldRoot }).then(async reopened => {
+      const catalog = join(invalidRoot, 'catalog.sqlite')
+      const altered = new DatabaseSync(catalog)
+      altered.exec('CREATE TABLE unexpected(value TEXT NOT NULL) STRICT')
+      altered.close()
+      const before = readFileSync(catalog)
+      const refused = openLifecycle({ root: invalidRoot }).then(async reopened => {
         try {
-          return await reopened.inspect({ cwd: oldRepo })
+          return await reopened.inspect({ cwd: invalidRepo })
         } finally {
           await reopened.close()
         }
@@ -1977,17 +1978,44 @@ try {
           error.message.includes('unsupported schema') &&
           error.message.includes('Discard the workspace authority')
       )
-      const after = new DatabaseSync(catalog, { readOnly: true })
-      try {
-        assert.equal(
-          (after.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-          4
-        )
-      } finally {
-        after.close()
-      }
+      assert.deepEqual(readFileSync(catalog), before)
     }
   )
+
+  for (const kind of ['catalog', 'shard'] as const) {
+    await claim(`obsolete ${kind} metadata is refused without changing its bytes`, async () => {
+      const invalidRoot = join(sandbox, `obsolete-${kind}-authority`)
+      const invalidRepo = join(sandbox, `obsolete-${kind}-repo`)
+      initRepository(invalidRepo, 'tracked.txt', 'obsolete metadata fixture\n')
+      const creating = await openLifecycle({ root: invalidRoot })
+      const owner = await creating.attach({
+        conversation: conversation(`obsolete-${kind}`),
+        cwd: invalidRepo,
+      })
+      const { repositoryId } = ready(await owner.authorize({ kind: 'read' }))
+      await owner.close()
+      await creating.close()
+      const path =
+        kind === 'catalog'
+          ? join(invalidRoot, 'catalog.sqlite')
+          : join(invalidRoot, 'repos', repositoryId, 'records.sqlite')
+      const altered = new DatabaseSync(path)
+      altered
+        .prepare(`INSERT INTO ${kind}_meta(key, value) VALUES(?, ?)`)
+        .run('protocol_version', '1')
+      altered.close()
+      const before = readFileSync(path)
+      const refused = openLifecycle({ root: invalidRoot }).then(async reopened => {
+        try {
+          return await reopened.inspect({ cwd: invalidRepo })
+        } finally {
+          await reopened.close()
+        }
+      })
+      await expectWorkspaceError(refused, 'review-required')
+      assert.deepEqual(readFileSync(path), before)
+    })
+  }
 
   console.log(
     JSON.stringify(

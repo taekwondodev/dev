@@ -1,15 +1,12 @@
 import { Cause, Effect, ManagedRuntime, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import { executeWork } from './work-actions.ts'
 import { WorkOwner, makeWorkOwnerLayer } from './work-controller.ts'
 import {
-  asAttemptId,
   asSessionId,
-  AttemptId as AttemptIdSchema,
   WorkError,
-  type AgentStartRequest,
   type AttemptId,
   type AttemptView,
-  type ProcessStartRequest,
   type SessionId,
   type WorkFailure,
   type WorkOwnerService,
@@ -17,6 +14,13 @@ import {
   type WorkSnapshot,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
+import {
+  decodeWorkInput,
+  LeadWorkInputSchema,
+  outcomeAttempts,
+  outcomeMessage,
+  type WorkInput,
+} from './work-protocol.ts'
 import type {
   WorkspaceAttachment,
   WorkspaceHandoff,
@@ -24,36 +28,11 @@ import type {
 } from './workspace-domain.ts'
 import { errorText } from './error-text.ts'
 
-const WorkInputSchema = Schema.Struct({
-  action: Schema.Literals(['process', 'delegate', 'dispatch', 'list', 'inspect', 'cancel']),
-  taskId: Schema.optionalKey(Schema.String),
-  command: Schema.optionalKey(Schema.String),
-  prompt: Schema.optionalKey(Schema.String),
-  cwd: Schema.optionalKey(Schema.String),
-  id: Schema.optionalKey(Schema.String),
-  access: Schema.optionalKey(Schema.Literals(['read-only', 'write'])),
-  harness: Schema.optionalKey(Schema.String),
-  model: Schema.optionalKey(Schema.String),
-  effort: Schema.optionalKey(Schema.String),
-  rule: Schema.optionalKey(Schema.String),
-  skills: Schema.optionalKey(Schema.Array(Schema.String)),
-  stream: Schema.optionalKey(Schema.Literals(['stdout', 'stderr', 'result'])),
-  offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-})
-type WorkInput = typeof WorkInputSchema.Type
-
-const parameters = Schema.toJsonSchemaDocument(WorkInputSchema, {
+const parameters = Schema.toJsonSchemaDocument(LeadWorkInputSchema, {
   onExcessProperty: 'error',
 }).schema
 
-const decodeInput = (input: unknown): Effect.Effect<WorkInput, WorkError> =>
-  Schema.decodeUnknownEffect(WorkInputSchema)(input, { onExcessProperty: 'error' }).pipe(
-    Effect.mapError(cause => new WorkError({ message: cause.message, cause }))
-  )
-
-const decodeDeliveryDetails = Schema.decodeUnknownResult(
-  Schema.Struct({ attempts: Schema.Array(AttemptIdSchema) })
-)
+const decodeInput = decodeWorkInput(LeadWorkInputSchema)
 
 type WorkSession = Pick<
   Pi.AgentSession,
@@ -105,44 +84,11 @@ const withOwner = <A>(
   f: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>
 ): Effect.Effect<A, WorkFailure, WorkOwner> => Effect.flatMap(WorkOwner, f)
 
-const summary = (record: AttemptView) => ({
-  id: record.id,
-  taskId: record.owner.taskId,
-  workflowTaskId: record.workflowTaskId,
-  workspaceId: record.workspaceId,
-  workspaceUseId: record.workspaceUseId,
-  cwd: record.cwd,
-  status: record.status,
-  kind: record.kind,
-  worktree: record.worktree,
-  model: record.model ?? 'unavailable',
-  context: record.context ?? 'unavailable',
-  usage: record.usage ?? 'unavailable',
-  error: record.error ?? record.observationError ?? record.persistenceError,
-  deliveryError: record.deliveryError,
-  cleanupError: record.cleanupError,
-  processObservation: record.processObservation,
-  recovery: record.recovery,
-})
+const LEAD_OUTCOME_GUIDANCE =
+  'Background work outcomes. These are producer observations, not verification; reconcile artifacts and honor dev-cycle checkpoints before proceeding. Report any recorded worktree and follow its cleanup guidance.'
 
-const outcomeMessage = (items: readonly AttemptView[]) => ({
-  customType: 'dev/work-outcome',
-  display: true,
-  content: `Background work outcomes. These are producer observations, not verification; reconcile artifacts and honor dev-cycle checkpoints before proceeding. Report any recorded worktree and follow its cleanup guidance.\n${JSON.stringify(items)}`,
-  details: { attempts: items.map(record => record.id) },
-})
-
-const outcomeAttempts = (
-  entries: readonly (Pi.SessionEntry | Pi.SessionBoundaryDraft)[]
-): Set<AttemptId> => {
-  const ids = new Set<AttemptId>()
-  for (const entry of entries) {
-    if (entry.type !== 'custom_message' || entry.customType !== 'dev/work-outcome') continue
-    const details = decodeDeliveryDetails(entry.details)
-    if (details._tag === 'Success') for (const id of details.success.attempts) ids.add(id)
-  }
-  return ids
-}
+const leadOutcomeMessage = (items: readonly AttemptView[]) =>
+  outcomeMessage(items, LEAD_OUTCOME_GUIDANCE)
 
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
@@ -258,12 +204,18 @@ export const createWorkExtension = ({
       record =>
         record.kind === 'agent' && (record.status === 'running' || record.status === 'waiting')
     )
+    const taskOf = new Map(snapshot.records.map(record => [record.id, record.owner.taskId]))
     const models = agents
       .map(record => {
         const percentage = record.context?.percent
         const pressure =
           typeof percentage === 'number' ? `${percentage.toFixed(1)}%` : 'unavailable'
-        return `${record.owner.taskId}: ${record.model ?? 'model pending'} context ${pressure}`
+        const { parent } = record.owner
+        const label =
+          parent === undefined
+            ? record.owner.taskId
+            : `${taskOf.get(parent) ?? parent}>${record.owner.taskId}`
+        return `${label}: ${record.model ?? 'model pending'} context ${pressure}`
       })
       .join(' · ')
     return (
@@ -459,7 +411,7 @@ export const createWorkExtension = ({
     const sending = reserve(items, 'sending')
 
     void scope.session
-      .sendCustomMessage(outcomeMessage(items.map(({ item }) => item.attempt)), {
+      .sendCustomMessage(leadOutcomeMessage(items.map(({ item }) => item.attempt)), {
         triggerTurn: canReactivate,
         deliverAs: 'followUp',
       })
@@ -503,91 +455,13 @@ export const createWorkExtension = ({
   }
 
   const execute = (input: WorkInput): Effect.Effect<unknown, WorkFailure, WorkOwner> =>
-    withOwner(owner => {
-      if (isWorkspaceParked() && (input.action === 'process' || input.action === 'delegate'))
-        return Effect.fail(
-          new WorkError({ message: 'Workspace host is parked; no background work was started' })
-        )
-      if (input.action === 'process') {
-        const request: ProcessStartRequest = {
-          taskId: input.taskId ?? '',
-          command: input.command ?? '',
-          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-        }
-        return owner.startProcess(request)
-      }
-      if (input.action === 'delegate') {
-        const request: AgentStartRequest = {
-          taskId: input.taskId ?? '',
-          prompt: input.prompt ?? '',
-          access: input.access ?? 'read-only',
-          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-          ...(input.skills === undefined ? {} : { skills: input.skills }),
-          ...(input.rule === undefined ? {} : { rule: input.rule }),
-          ...(input.harness === undefined ? {} : { harness: input.harness }),
-          ...(input.model === undefined ? {} : { model: input.model }),
-          ...(input.effort === undefined ? {} : { effort: input.effort }),
-        }
-        return owner.startAgent(request)
-      }
-      if (input.action === 'dispatch') return owner.dispatch
-      if (input.action === 'list') {
-        return owner.snapshot.pipe(
-          Effect.map(snapshot => {
-            const offset = input.offset ?? 0
-            return {
-              ...snapshot,
-              total: snapshot.records.length,
-              records: snapshot.records.slice(offset, offset + 20).map(summary),
-              nextOffset: offset + 20 < snapshot.records.length ? offset + 20 : null,
-            }
-          })
-        )
-      }
-      if (input.action === 'cancel') {
-        const { id } = input
-        return id === undefined
-          ? owner.interrupt('explicit stop').pipe(
-              Effect.andThen(owner.snapshot),
-              Effect.map(snapshot => ({
-                cancellationRequested: true,
-                ...snapshot,
-                records: snapshot.records.map(summary),
-              }))
-            )
-          : Effect.try({
-              try: () => asAttemptId(id),
-              catch: cause =>
-                new WorkError({
-                  message: cause instanceof Error ? cause.message : String(cause),
-                  cause,
-                }),
-            }).pipe(Effect.flatMap(attemptId => owner.cancel(attemptId)))
-      }
-      if (input.action === 'inspect') {
-        return owner.snapshot.pipe(
-          Effect.flatMap(snapshot => {
-            const record = snapshot.records.find(item => item.id === input.id)
-            if (record === undefined)
-              return Effect.fail(
-                new WorkError({
-                  message: 'Result is unavailable in this session (unknown or expired attempt)',
-                })
-              )
-            return input.stream === undefined
-              ? owner.inspect(record.id).pipe(Effect.map(value => value as unknown))
-              : owner
-                  .readLog({
-                    id: record.id,
-                    stream: input.stream,
-                    ...(input.offset === undefined ? {} : { offset: input.offset }),
-                  })
-                  .pipe(Effect.map(value => value as unknown))
-          })
-        )
-      }
-      return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
-    })
+    withOwner(owner =>
+      isWorkspaceParked() && (input.action === 'process' || input.action === 'delegate')
+        ? Effect.fail(
+            new WorkError({ message: 'Workspace host is parked; no background work was started' })
+          )
+        : executeWork(owner, input)
+    )
 
   const bindSession = (value: WorkSession): void => {
     removeSessionListener?.()
@@ -666,7 +540,7 @@ export const createWorkExtension = ({
           ...event.entries,
           {
             type: 'custom_message' as const,
-            ...outcomeMessage(items.map(({ item }) => item.attempt)),
+            ...leadOutcomeMessage(items.map(({ item }) => item.attempt)),
           },
         ],
         continue: event.continue || (event.outcome === 'completed' && canReactivate),
@@ -713,7 +587,7 @@ export const createWorkExtension = ({
       name: 'work',
       label: 'Background work',
       description:
-        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId is a controller-local key, distinct from the durable workflowTaskId; each launch creates an attempt and a workspace use. Give children a focused self-contained prompt and pertinent skill names, never a full transcript by default. Reviews use read-only access; WorkspaceLifecycle allocates a distinct workspace for each delegated writer without copying dirty files. Admission may require a host rebind: no command then runs, and a fresh decision is required. worktree.path records the managed checkout. A workspace use ends only when the whole owned process group is observed gone; a process that detaches into its own session escapes that observation, and lost observation leaves the workspace blocked for explicit recovery. Report retained workspaces in your handoff; do not release reservations or remove worktrees through this tool. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
+        'Run local commands or separate Pi children without blocking the lead. Inspect dispatch before delegating: resolve natural-language rules yourself into a rule index (or default) and explicit harness/model/effort overrides. taskId is a controller-local key, distinct from the durable workflowTaskId; each launch creates an attempt and a workspace use. Give children a focused self-contained prompt, never a full transcript by default. To load one skill, start the prompt with /skill:name followed by the assignment: Pi expands it natively, an unknown skill fails the attempt before any model request, and the child can still read every other skill of its profile. Set coordinate: true on a delegate call only to let that child run a whole phase: it gets a scoped work tool to start leaf children, never beyond its own access, and leaves cannot delegate further; you still see and stop every attempt, leaves included, through list, inspect and cancel, and only the outcome of the coordinator is delivered to you. Reviews use read-only access; WorkspaceLifecycle allocates a distinct workspace for each delegated writer without copying dirty files. Admission may require a host rebind: no command then runs, and a fresh decision is required. worktree.path records the managed checkout. A workspace use ends only when the whole owned process group is observed gone; a process that detaches into its own session escapes that observation, and lost observation leaves the workspace blocked for explicit recovery. Report retained workspaces in your handoff; do not release reservations or remove worktrees through this tool. Completion arrives automatically without polling or another user message. dev-cycle owns decisions, checkpoints and recovery; process outcomes are not verification. inspect pages retained logs by byte offset. cancel with no id interrupts all owned work. Quota exhaustion blocks agents, not existing local commands.',
       parameters,
       execute: (toolCallId, input, _signal, _onUpdate, ctx) =>
         Effect.runPromise(

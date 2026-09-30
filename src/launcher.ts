@@ -777,7 +777,6 @@ const run = Effect.fnUntraced(function* (
   if (recorded === undefined)
     yield* Effect.sync(() => {
       sessions.appendCustomEntry('dev/profile', {
-        version: 1,
         profile: profile.name,
         source: effectiveSelection.source,
       })

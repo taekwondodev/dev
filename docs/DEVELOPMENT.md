@@ -27,7 +27,7 @@ The component map is in [ARCHITECTURE](ARCHITECTURE.md#components). Each source 
 | `src/work-*.ts`, `src/pi-child.ts`                                                                   | [work](work.md)           | [ADR 0002](adr/0002-session-owned-background-work.md), [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md) |
 | `src/workspace-*.ts`, `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts` | [workspace](workspace.md) | [ADR 0005](adr/0005-scoped-runtime-coordination.md)                                                                      |
 
-`tests/smoke.ts` checks launcher diagnostics; `tests/workspace/` holds the workspace checks, fixtures, subprocess drivers and the Python pseudo-terminal runner. Portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
+`tests/smoke.ts` checks launcher diagnostics; `tests/workspace/` holds the workspace checks, fixtures, subprocess drivers and the Python pseudo-terminal runner; `tests/work/` holds the work checks, their child entry and its scripted model. Portable guidance lives under `profiles/`, not in this repository's `AGENTS.md`.
 
 The reading triggers for each boundary are the conditional references in [AGENTS.md](../AGENTS.md#conditional-references).
 
@@ -43,6 +43,8 @@ npm run workspace:check   # completion table, authority, release, sweep, process
 npm run workspace:tui     # the real Pi TUI in a pseudo-terminal: stub lifecycle with fault injection,
                           # real authority, quit and release probes
 npm run workspace:github  # the gh-backed GitHub reader once, read-only, against a public merged PR
+npm run work:check        # current-schema attempt persistence; real children on an offline scripted model: skills,
+                          # coordinator authorization, outcome routing, interruption, leaf read
 npm run dev:probe         # SDK runtime creation without the TUI
 ```
 
@@ -52,7 +54,7 @@ What the scripts do not confess:
 
 - `workspace:github` is outside `workspace:check` on purpose: the contract wants the real reader observed once, not a recurring network gate. Run it whenever the GitHub reader or its adapter facts change; the fakes in `workspace:check` cannot see a regression there.
 - The pseudo-terminal driver is Python only because Node has no built-in pty; everything it drives is TypeScript. Run one probe with `python3 tests/workspace/run-workspace-pty-probes.py <name>`, where the name is `stub`, `real`, `quit`, `quit-self-remove`, `quit-contained-history`, `quit-interrupt`, `quit-interrupt-during-sweep`, `interactive-failure`, `quit-shutdown-failure` or `release`.
-- No check touches the real workspace authority, credentials or the network, except `workspace:github`. Every runtime under test comes from the launcher's `makeRuntimeFactory`, with an offline scripted model and an observer extension.
+- No check touches the real workspace authority, credentials or the network, except `workspace:github`. Every lead runtime under test comes from the launcher's `makeRuntimeFactory`, with an offline scripted model and an observer extension. The work checks fork the real child runner through the controller's `childEntry` option, which exists only for them: the entry in `tests/work/` injects the offline model, whose replies follow a `SCRIPT` line in the assignment. Production code reads no environment variable and loads no other entry.
 - `scripts/code-policy.ts` rejects source comments, except shebangs and comment-like text inside literals, and never fixes or formats. Express intent through names and structure; move non-obvious rationale into the applicable ADR before deleting a comment. `floatingEffect` is an error at the terminal boundary, not only an editor diagnostic.
 - Match proof to the task. Do not add a test suite or benchmark campaign by default; use the actual TUI for interactive behavior.
 
@@ -61,8 +63,8 @@ What the scripts do not confess:
 The pinned Pi version is the smoke expectation in `tests/smoke.ts`; the verification of each upgrade is its commit.
 
 1. Install the candidate in an isolated prefix. Compare SDK export names, coding-agent declaration files and native tool schemas with the current version.
-2. Verify the internals dev relies on: `findMostRecentSession`, `resolvePath` in `dist/utils/paths.js`, session header parsing, the `tool_result` adapter passing no `terminate` while pi-agent-core keeps the tool's own, and the runtime's `dispose` awaited by the interactive quit. `tests/workspace/workspace-host-session-check.ts` fails when the session internals or the terminate path change.
-3. Run lint, smoke, `workspace:check`, `workspace:tui` and `workspace:github`.
+2. Verify the internals dev relies on: `findMostRecentSession`, `resolvePath` in `dist/utils/paths.js`, session header parsing, the `tool_result` adapter passing no `terminate` while pi-agent-core keeps the tool's own, and the runtime's `dispose` awaited by the interactive quit. `tests/workspace/workspace-host-session-check.ts` fails when the session internals or the terminate path change. For children: `AgentSession.prompt` expands `/skill:name` only with `expandPromptTemplates`, after trying extension commands, into a `<skill name="…">` block that opens the first user message; `extensionRunner.getCommand` finds a colliding command; and `sendCustomMessage` with `triggerTurn` runs a coordinator's turn to completion. `tests/work/work-skill-check.ts` and `tests/work/work-nested-check.ts` fail when these change.
+3. Run lint, smoke, `workspace:check`, `workspace:tui`, `workspace:github` and `work:check`.
 4. Update the global installation, confirm it matches the candidate byte for byte, update the smoke expectation, and check `dev --diagnostics`.
 5. Apply the [extension rule](../SECURITY.md#adding-or-updating-an-extension) when the update changes extension or tool effects. MCP, codemode and tool search still need explicit SDK extension factories; dev does not enable them.
 
@@ -91,11 +93,20 @@ Stop dev runtimes and inventory dev-owned metadata before moving private state. 
 
 ## Discard the workspace authority
 
-A revision that changes the store's schema version refuses an existing store instead of migrating it ([ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md)). The user discards it by hand; dev never does:
+Dev keeps one current schema, without schema or protocol version markers, historical shapes or migrations ([ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md)). It validates the actual layout and refuses a non-canonical or damaged store without changing it. Discard obsolete authority data explicitly; dev never resets it at startup:
 
-1. Quit every dev session, so no worker holds the authority gates.
+1. Stop every dev session and maintenance operation across installations, so no worker holds the authority gates. Use the same current code when restarting; do not mix old and new runtimes across the reset.
 2. Deliver or copy anything a managed worktree still holds. Managed worktrees live inside the authority, so the next step deletes them.
 3. Remove `~/Library/Application Support/dev/workspace-authority/`.
 4. Run `git worktree prune` in each repository that had managed worktrees, to drop the registrations of the deleted directories.
 
 Pre-existing checkouts, Pi conversations, credentials and other profiles stay untouched.
+
+## Discard other dev-owned state
+
+With all affected runtimes and maintenance operations stopped, discard only the artifacts whose format changed:
+
+- Attempt state: `<data-home>/work/attempts.sqlite`, its `-wal`, `-shm` and `-journal` sidecars if present, and `<data-home>/work/attempts/`. Keep `<data-home>/sessions/` and `<data-home>/child-sessions/`.
+- Installation and conversation lock state: `<installation>/.dev/coordination/`. This location does not follow `--data-home`. Reset it only for a changed lock layout, never as ordinary cleanup: unlinking a database while a runtime holds it splits ownership across inodes.
+
+Inspect explicit data-home overrides separately. Do not remove the whole `.dev/` directory, profile preferences, credentials or shared resources. Existing conversation text is not rewritten when dev metadata fields change.

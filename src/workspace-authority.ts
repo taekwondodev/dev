@@ -34,8 +34,6 @@ import {
   type UseRecord,
 } from './workspace-records.ts'
 import {
-  PROTOCOL_VERSION,
-  SCHEMA_VERSION,
   encode,
   parseRecord,
   assertSqliteSafety,
@@ -117,13 +115,18 @@ const assertSupportedStorage = (root: string): void => {
   if (reason !== undefined) unavailable(reason)
 }
 
-const catalogMeta = (db: DatabaseSync, key: 'namespace_id' | 'protocol_version'): string =>
-  textField(first(db, 'SELECT value FROM catalog_meta WHERE key=?', key), 'value')
+const catalogNamespace = (db: DatabaseSync): string =>
+  textField(
+    first(
+      db,
+      "SELECT value FROM catalog_meta WHERE key='namespace_id' AND (SELECT count(*) FROM catalog_meta)=1"
+    ),
+    'value'
+  )
 const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => {
   createPublishedDatabase(path, 'catalog', db => {
     const insert = db.prepare('INSERT INTO catalog_meta(key, value) VALUES(?, ?)')
     insert.run('namespace_id', namespaceId)
-    insert.run('protocol_version', String(PROTOCOL_VERSION))
   })
 
   let db: DatabaseSync | undefined
@@ -224,10 +227,7 @@ export class WorkspaceAuthority {
     try {
       const catalog = this.openCatalog()
       try {
-        if (
-          catalogMeta(catalog, 'namespace_id') !== id ||
-          catalogMeta(catalog, 'protocol_version') !== String(PROTOCOL_VERSION)
-        )
+        if (catalogNamespace(catalog) !== id)
           requireReview(`Workspace catalog does not match namespace ${this.root}`)
       } finally {
         catalog.close()
@@ -301,11 +301,14 @@ export class WorkspaceAuthority {
   private openCatalog(): DatabaseSync {
     const namespaceId = this.namespaceId ?? validateProtocol(this.paths.protocol)
     const db = openRecordDb(this.paths.catalog, 'catalog')
-    if (catalogMeta(db, 'namespace_id') !== namespaceId) {
+    try {
+      if (catalogNamespace(db) !== namespaceId)
+        requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
+      return db
+    } catch (cause) {
       db.close()
-      requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
+      throw cause
     }
-    return db
   }
 
   private readRepository(repositoryId: WorkspaceId): RepositoryCatalogRecord | undefined {
@@ -352,16 +355,20 @@ export class WorkspaceAuthority {
               ['common_device', repository.commonIdentity.device],
               ['common_inode', repository.commonIdentity.inode],
               ['object_format', repository.objectFormat],
-              ['protocol_version', String(PROTOCOL_VERSION)],
             ]
             const insert = candidate.prepare('INSERT INTO shard_meta(key, value) VALUES(?, ?)')
             for (const [key, value] of values) insert.run(key, value)
           }
         : undefined
     )
-    this.validateShardMeta(db, record)
-    if (record.state === 'provisioning') this.markRepositoryReady(repositoryId)
-    return db
+    try {
+      this.validateShardMeta(db, record)
+      if (record.state === 'provisioning') this.markRepositoryReady(repositoryId)
+      return db
+    } catch (cause) {
+      db.close()
+      throw cause
+    }
   }
 
   private validateShardMeta(db: DatabaseSync, expected: RepositoryCatalogRecord): void {
@@ -372,13 +379,12 @@ export class WorkspaceAuthority {
       ])
     )
     if (
-      numberField(first(db, 'PRAGMA user_version'), 'user_version') !== SCHEMA_VERSION ||
+      values.size !== 5 ||
       values.get('repository_id') !== expected.id ||
       values.get('common_path') !== expected.commonPath ||
       values.get('common_device') !== expected.device ||
       values.get('common_inode') !== expected.inode ||
-      values.get('object_format') !== expected.objectFormat ||
-      values.get('protocol_version') !== String(PROTOCOL_VERSION)
+      values.get('object_format') !== expected.objectFormat
     )
       requireReview(`Repository shard identity or schema mismatch: ${expected.id}`)
   }

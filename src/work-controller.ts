@@ -7,6 +7,7 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Option,
   Queue,
   Semaphore,
   Schema,
@@ -59,7 +60,16 @@ import {
 } from './work-lifecycle.ts'
 import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.ts'
 import { compactText, makeWorkStore, type WorkStore } from './work-store.ts'
-import { parseChildMessage } from './work-protocol.ts'
+import { executeWork, type WorkActions } from './work-actions.ts'
+import {
+  ChildMessageSchema,
+  CoordinatorWorkInputSchema,
+  decodeWorkInput,
+  isCoordinationMessage,
+  parseChildMessage,
+  type ControllerWorkMessage,
+  type CoordinationMessage,
+} from './work-protocol.ts'
 import { globalPiAgentDir } from './preferences.ts'
 import {
   observeFamily,
@@ -73,10 +83,12 @@ import {
   WorkspaceError,
   WorkspaceProcessSchema,
   type WorkspaceAttachment,
+  type WorkspaceExecution,
   type WorkspaceExecutionFact,
   type WorkspaceGrant,
   type WorkspaceHandoff,
   type WorkspaceLifecycle,
+  type WorkspaceOperation,
 } from './workspace-domain.ts'
 
 const execFilePromise = promisify(execFile)
@@ -98,7 +110,39 @@ interface Job {
   readonly workspace: WorkspaceGrant
   observedProcesses?: string
   workspaceLaunch: 'identity-unrecorded' | 'identity-recorded' | 'settled'
+  readonly parent?: Job
+  readonly inbox?: Queue.Queue<CoordinationRequest>
+  pendingRequests: number
+  readonly undelivered: Map<AttemptId, AttemptView>
+  readonly leaves: Set<Job>
 }
+
+type CoordinationRequest = Exclude<CoordinationMessage, { readonly type: 'work-outcomes-ack' }>
+
+interface TaskScope {
+  readonly parent: AttemptId | undefined
+  readonly taskId: TaskId
+}
+
+const admissionOf = (
+  request: StartRequest,
+  parent: Job | undefined,
+  cwd: string | undefined,
+  execution: WorkspaceExecution
+): WorkspaceOperation => {
+  if (request.kind === 'process') return { kind: 'write', cwd }
+  if (parent !== undefined && request.access === 'read-only')
+    return { kind: 'leaf-read', coordinator: parent.workspace, execution }
+  return { kind: request.access === 'read-only' ? 'read' : 'delegated-write', cwd, execution }
+}
+
+const workspaceTaskKey = (parent: Job | undefined, taskId: TaskId): string =>
+  parent === undefined ? taskId : `${parent.lifecycle.snapshot().owner.taskId}/${taskId}`
+const scopeKey = (scope: TaskScope): string => `${scope.parent ?? 'lead'}\n${scope.taskId}`
+const scopeOf = (record: AttemptRecord): TaskScope => ({
+  parent: record.owner.parent,
+  taskId: record.owner.taskId,
+})
 
 export interface WorkOwnerOptions {
   readonly dataHome: string
@@ -112,7 +156,10 @@ export interface WorkOwnerOptions {
   }
   readonly onChange?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
+  readonly childEntry?: URL
 }
+
+const PI_CHILD_ENTRY = new URL('./pi-child.ts', import.meta.url)
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
@@ -288,14 +335,31 @@ const sendIpc = (child: ChildProcess, message: object): Effect.Effect<void, Work
     return Effect.void
   })
 
+const decodeChildMessage = Schema.decodeUnknownOption(ChildMessageSchema)
+
+const refuseStaleRequest = (job: Job, raw: unknown): Effect.Effect<void> => {
+  const request = decodeChildMessage(raw)
+  const { child } = job
+  if (child === undefined || Option.isNone(request) || request.value.type !== 'work-request')
+    return Effect.void
+  const refusal: ControllerWorkMessage = {
+    type: 'work-reply',
+    requestId: request.value.requestId,
+    ok: false,
+    error: 'This attempt is no longer current; the request was not executed',
+  }
+  return Effect.ignore(sendIpc(child, refusal))
+}
+
 export class WorkOwner extends Context.Service<WorkOwner, WorkOwnerService>()(
   'dev/work/WorkOwner'
 ) {}
 
 class WorkOwnerImpl implements WorkOwnerService {
   private readonly active = new Map<AttemptId, Job>()
-  private readonly latest = new Map<TaskId, AttemptId>()
-  private readonly reservations = new Set<TaskId>()
+  private readonly latest = new Map<string, AttemptId>()
+  private readonly reservations = new Set<string>()
+  private readonly quotaReporters = new Set<AttemptId>()
   private readonly state = {
     generation: asGenerationId(randomUUID()),
     closed: false,
@@ -309,6 +373,7 @@ class WorkOwnerImpl implements WorkOwnerService {
   private readonly workspace: WorkOwnerOptions['workspace']
   private readonly onChange: () => void
   private readonly onOutcome: (attempt: AttemptView) => void
+  private readonly childEntry: URL
   private readonly store: WorkStore
 
   private readonly fs: FileSystem.FileSystem
@@ -330,6 +395,7 @@ class WorkOwnerImpl implements WorkOwnerService {
     this.workspace = options.workspace
     this.onChange = options.onChange ?? (() => undefined)
     this.onOutcome = options.onOutcome ?? (() => undefined)
+    this.childEntry = options.childEntry ?? PI_CHILD_ENTRY
   }
 
   get snapshot(): Effect.Effect<WorkSnapshot, WorkFailure> {
@@ -363,10 +429,17 @@ class WorkOwnerImpl implements WorkOwnerService {
     if (typeof request.command !== 'string' || !request.command.trim()) {
       return Effect.fail(new WorkError({ message: 'command is required' }))
     }
-    return this.start({ kind: 'process', ...request }).pipe(Effect.mapError(toFailure))
+    return this.start({ kind: 'process', ...request }, undefined).pipe(Effect.mapError(toFailure))
   }
 
   startAgent(request: AgentStartRequest): Effect.Effect<AttemptView, WorkFailure> {
+    return this.delegate(request, undefined)
+  }
+
+  private delegate(
+    request: AgentStartRequest,
+    parent: Job | undefined
+  ): Effect.Effect<AttemptView, WorkFailure> {
     return Effect.gen({ self: this }, function* () {
       if (request.access !== 'read-only' && request.access !== 'write') {
         return yield* new WorkError({ message: 'Delegate access must be read-only or write' })
@@ -374,18 +447,21 @@ class WorkOwnerImpl implements WorkOwnerService {
       if (typeof request.prompt !== 'string' || !request.prompt.trim()) {
         return yield* new WorkError({ message: 'prompt is required' })
       }
-      if (
-        request.skills !== undefined &&
-        (!Array.isArray(request.skills) ||
-          request.skills.some(skill => typeof skill !== 'string' || !skill.trim()))
-      ) {
-        return yield* new WorkError({ message: 'skills must contain skill names' })
+      if (parent !== undefined) {
+        if (request.coordinate === true || request.cwd !== undefined)
+          return yield* new WorkError({
+            message: "A leaf runs in its coordinator's workspace and cannot coordinate",
+          })
+        if (parent.lifecycle.snapshot().access !== 'write' && request.access === 'write')
+          return yield* new WorkError({
+            message: 'A read-only coordinator can start only read-only leaves',
+          })
       }
       const selection = yield* resolveDispatch(request).pipe(
         Effect.provideService(FileSystem.FileSystem, this.fs),
         Effect.mapError(toFailure)
       )
-      return yield* this.start({ kind: 'agent', ...request, selection })
+      return yield* this.start({ kind: 'agent', ...request, selection }, parent)
     }).pipe(Effect.mapError(toFailure))
   }
 
@@ -487,6 +563,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       yield* this.admission.withPermit(
         Effect.sync(() => {
           this.state.exhausted = true
+          if (except !== undefined) this.quotaReporters.add(except)
         })
       )
       yield* this.cancelMany(
@@ -524,14 +601,15 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   private start(
-    request: StartRequest & { readonly selection?: DispatchProfile }
+    request: StartRequest & { readonly selection?: DispatchProfile },
+    parent: Job | undefined
   ): Effect.Effect<AttemptView, WorkFailure> {
     return Effect.gen({ self: this }, function* () {
-      const reservation = yield* this.reserve(request.taskId, request.kind)
+      const reservation = yield* this.reserve(request.taskId, request.kind, parent)
       let grant: WorkspaceGrant | undefined
       let installed = false
       const result = yield* Effect.gen({ self: this }, function* () {
-        const requestedCwd = yield* this.resolveCwd(request.cwd)
+        const requestedCwd = parent === undefined ? yield* this.resolveCwd(request.cwd) : undefined
         const id = asAttemptId(randomUUID())
         const { workspace } = this
         if (workspace === undefined)
@@ -540,20 +618,14 @@ class WorkOwnerImpl implements WorkOwnerService {
           })
         const execution = {
           sessionId: reservation.sessionId,
-          taskKey: reservation.taskId,
+          taskKey: workspaceTaskKey(parent, reservation.task.taskId),
           attemptId: id,
           generation: reservation.generation,
           logs: this.store.plannedLogPath(id, 'stdout'),
         }
         const admission = yield* Effect.gen({ self: this }, function* () {
           const allocated = yield* workspace.attachment.authorize(
-            request.kind === 'process'
-              ? { kind: 'write', cwd: requestedCwd }
-              : {
-                  kind: request.access === 'read-only' ? 'read' : 'delegated-write',
-                  cwd: requestedCwd,
-                  execution,
-                }
+            admissionOf(request, parent, requestedCwd, execution)
           )
           if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
           return yield* workspace.attachment.authorize({
@@ -575,7 +647,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         yield* this.assertPrepared(
           reservation.sessionId,
           reservation.generation,
-          reservation.taskId,
+          reservation.task,
           request.kind
         )
         const record = yield* this.store.create(id, {
@@ -589,23 +661,30 @@ class WorkOwnerImpl implements WorkOwnerService {
           ...(grant.origin === 'managed' ? { worktreePath: grant.checkout } : {}),
           owner: {
             sessionId: reservation.sessionId,
-            taskId: reservation.taskId,
+            taskId: reservation.task.taskId,
             generation: reservation.generation,
+            ...(parent === undefined ? {} : { parent: parent.lifecycle.token.attemptId }),
           },
           ...(request.kind === 'agent'
-            ? { access: request.access, selection: request.selection }
+            ? {
+                access: request.access,
+                selection: request.selection,
+                ...(request.coordinate === true ? { coordinator: true } : {}),
+              }
             : {}),
           artifactAtStart,
         })
         yield* this.assertPrepared(
           reservation.sessionId,
           reservation.generation,
-          reservation.taskId,
+          reservation.task,
           request.kind
         )
         const settled = yield* Deferred.make<AttemptView>()
         const prepared = yield* Deferred.make<void>()
         const events = yield* Queue.unbounded<ProcessEvent>()
+        const inbox =
+          record.coordinator === true ? yield* Queue.unbounded<CoordinationRequest>() : undefined
         const job: Job = {
           lifecycle: makeAttemptLifecycle(record),
           prepared,
@@ -614,6 +693,11 @@ class WorkOwnerImpl implements WorkOwnerService {
           executionReleased: false,
           workspace: grant,
           workspaceLaunch: 'identity-unrecorded',
+          ...(parent === undefined ? {} : { parent }),
+          ...(inbox === undefined ? {} : { inbox }),
+          pendingRequests: 0,
+          undelivered: new Map(),
+          leaves: new Set(),
         }
         yield* this.admission.withPermit(
           Effect.try({
@@ -621,12 +705,13 @@ class WorkOwnerImpl implements WorkOwnerService {
               this.assertPreparedUnsafe(
                 reservation.sessionId,
                 reservation.generation,
-                reservation.taskId,
+                reservation.task,
                 request.kind
               )
               this.active.set(record.id, job)
+              parent?.leaves.add(job)
               installed = true
-              this.latest.set(reservation.taskId, record.id)
+              this.latest.set(scopeKey(reservation.task), record.id)
             },
             catch: cause => new WorkError({ message: errorMessage(cause), cause }),
           })
@@ -648,7 +733,7 @@ class WorkOwnerImpl implements WorkOwnerService {
                 .pipe(Effect.mapError(toFailure))
             : Effect.void
         }),
-        Effect.ensuring(Effect.sync(() => this.reservations.delete(reservation.taskId)))
+        Effect.ensuring(Effect.sync(() => this.reservations.delete(scopeKey(reservation.task))))
       )
       return result
     }).pipe(Effect.uninterruptible, Effect.mapError(toFailure))
@@ -656,9 +741,10 @@ class WorkOwnerImpl implements WorkOwnerService {
 
   private reserve(
     taskId: string,
-    kind: WorkKind
+    kind: WorkKind,
+    parent: Job | undefined
   ): Effect.Effect<
-    { readonly generation: GenerationId; readonly sessionId: SessionId; readonly taskId: TaskId },
+    { readonly generation: GenerationId; readonly sessionId: SessionId; readonly task: TaskScope },
     WorkFailure
   > {
     return this.admission.withPermit(
@@ -671,15 +757,15 @@ class WorkOwnerImpl implements WorkOwnerService {
           if (this.state.closed) throw new Error('This work owner has shut down')
           if (kind === 'agent' && this.state.exhausted)
             throw new Error('Subscription exhausted; no new agents may start in this session')
-          const typed = asTaskId(requiredString(taskId, 'taskId'))
-          if (
-            this.reservations.has(typed) ||
-            [...this.active.values()].some(job => job.lifecycle.snapshot().owner.taskId === typed)
-          ) {
-            throw new Error('This task already has an active attempt')
+          const task: TaskScope = {
+            parent: parent?.lifecycle.token.attemptId,
+            taskId: asTaskId(requiredString(taskId, 'taskId')),
           }
-          this.reservations.add(typed)
-          return { generation: this.state.generation, sessionId: this.sessionId, taskId: typed }
+          if (parent !== undefined) this.assertCoordinatingUnsafe(parent)
+          if (this.reservations.has(scopeKey(task)) || this.hasActiveTaskUnsafe(task))
+            throw new Error('This task already has an active attempt')
+          this.reservations.add(scopeKey(task))
+          return { generation: this.state.generation, sessionId: this.sessionId, task }
         },
         catch: cause => new WorkError({ message: errorMessage(cause), cause }),
       })
@@ -689,22 +775,141 @@ class WorkOwnerImpl implements WorkOwnerService {
   private assertPrepared(
     sessionId: SessionId,
     generation: GenerationId,
-    taskId: TaskId,
+    task: TaskScope,
     kind: WorkKind,
     except?: AttemptId
   ): Effect.Effect<void, WorkFailure> {
     return this.admission.withPermit(
       Effect.try({
-        try: () => this.assertPreparedUnsafe(sessionId, generation, taskId, kind, except),
+        try: () => this.assertPreparedUnsafe(sessionId, generation, task, kind, except),
         catch: cause => new WorkError({ message: errorMessage(cause), cause }),
       })
     )
   }
 
+  private hasActiveTaskUnsafe(task: TaskScope, except?: AttemptId): boolean {
+    return [...this.active.values()].some(job => {
+      const record = job.lifecycle.snapshot()
+      return record.id !== except && scopeKey(scopeOf(record)) === scopeKey(task)
+    })
+  }
+
+  private isCoordinatingUnsafe(job: Job): boolean {
+    const record = job.lifecycle.snapshot()
+    return (
+      record.coordinator === true &&
+      !this.state.closed &&
+      this.active.get(record.id) === job &&
+      job.lifecycle.isActive() &&
+      !job.lifecycle.hasExited() &&
+      !job.lifecycle.hasResult() &&
+      record.cancelRequestedAt === undefined &&
+      record.owner.generation === this.state.generation
+    )
+  }
+
+  private assertCoordinatingUnsafe(job: Job): void {
+    if (!this.isCoordinatingUnsafe(job))
+      throw new Error('This attempt is not a running coordinator authorized by the lead')
+  }
+
+  private routeLeaf(job: Job): void {
+    const { parent } = job
+    if (parent === undefined || !parent.leaves.delete(job)) return
+    if (!this.isCoordinatingUnsafe(parent)) return
+    const view = viewOf(job.lifecycle.snapshot())
+    parent.undelivered.set(view.id, view)
+    const wake: ControllerWorkMessage = { type: 'work-wake' }
+    try {
+      if (parent.child?.connected) parent.child.send(wake, () => undefined)
+    } catch {}
+  }
+
+  private cancelLeaves(job: Job, reason: string): Effect.Effect<void, never> {
+    return Effect.suspend(() =>
+      this.cancelMany(
+        [...job.leaves]
+          .map(leaf => leaf.lifecycle.token.attemptId)
+          .filter(id => !this.quotaReporters.has(id)),
+        reason
+      )
+    ).pipe(Effect.ignore)
+  }
+
+  private scoped(job: Job): WorkActions {
+    const coordinator = job.lifecycle.token.attemptId
+    const refused = new WorkError({ message: 'Attempt is not a leaf of this coordinator' })
+    const owned = <A>(id: AttemptId, use: Effect.Effect<A, WorkFailure>) =>
+      this.recordFor(id).pipe(
+        Effect.mapError(() => refused),
+        Effect.flatMap(record => (record.owner.parent === coordinator ? use : Effect.fail(refused)))
+      )
+    return {
+      snapshot: this.snapshot.pipe(
+        Effect.map(snapshot => ({
+          ...snapshot,
+          unavailable: [],
+          records: snapshot.records.filter(record => record.owner.parent === coordinator),
+        }))
+      ),
+      dispatch: this.dispatch,
+      startAgent: request => this.delegate(request, job),
+      cancel: id => owned(id, this.cancel(id, 'cancelled by its coordinator')),
+      inspect: id => owned(id, this.inspect(id)),
+      readLog: request => owned(request.id, this.readLog(request)),
+      interrupt: reason => this.cancelLeaves(job, reason ?? 'cancelled by its coordinator'),
+    }
+  }
+
+  private serveCoordinator(job: Job, inbox: Queue.Queue<CoordinationRequest>): Effect.Effect<void> {
+    return Queue.take(inbox).pipe(
+      Effect.flatMap(message =>
+        this.coordinatorRequest(job, message).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              job.pendingRequests -= 1
+            })
+          )
+        )
+      ),
+      Effect.forever,
+      Effect.ignore
+    )
+  }
+
+  private coordinatorRequest(job: Job, message: CoordinationRequest): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const { child } = job
+      if (child === undefined) return
+      const { requestId } = message
+      const reply = (answer: ControllerWorkMessage): Effect.Effect<void> =>
+        Effect.ignore(sendIpc(child, answer))
+      if (message.type === 'work-idle') {
+        const live = job.leaves.size
+        const outcomes = yield* Effect.forEach([...job.undelivered.values()], view =>
+          this.inspect(view.id).pipe(Effect.orElseSucceed(() => view))
+        )
+        return yield* reply({ type: 'work-pending', requestId, live, outcomes })
+      }
+      const result = yield* Effect.result(
+        Effect.gen({ self: this }, function* () {
+          yield* Effect.try({ try: () => this.assertCoordinatingUnsafe(job), catch: toFailure })
+          const input = yield* decodeWorkInput(CoordinatorWorkInputSchema)(message.input)
+          return yield* executeWork(this.scoped(job), input)
+        })
+      )
+      yield* reply(
+        result._tag === 'Success'
+          ? { type: 'work-reply', requestId, ok: true, result: result.success ?? {} }
+          : { type: 'work-reply', requestId, ok: false, error: errorMessage(result.failure) }
+      )
+    })
+  }
+
   private assertPreparedUnsafe(
     sessionId: SessionId,
     generation: GenerationId,
-    taskId: TaskId,
+    task: TaskScope,
     kind: WorkKind,
     except?: AttemptId
   ): void {
@@ -716,20 +921,19 @@ class WorkOwnerImpl implements WorkOwnerService {
     ) {
       throw new Error('Work owner invalidated before launch')
     }
-    if (
-      [...this.active.values()].some(
-        job =>
-          job.lifecycle.snapshot().id !== except && job.lifecycle.snapshot().owner.taskId === taskId
-      )
-    ) {
+    if (this.hasActiveTaskUnsafe(task, except))
       throw new Error('This task already has an active attempt')
+    if (task.parent !== undefined) {
+      const parent = this.active.get(task.parent)
+      if (parent === undefined) throw new Error('The coordinator of this leaf is gone')
+      this.assertCoordinatingUnsafe(parent)
     }
   }
 
   private withPreparedPermit<A>(
     sessionId: SessionId,
     generation: GenerationId,
-    taskId: TaskId,
+    task: TaskScope,
     kind: WorkKind,
     except: AttemptId,
     effect: Effect.Effect<A, WorkFailure>
@@ -737,7 +941,7 @@ class WorkOwnerImpl implements WorkOwnerService {
     return this.admission.withPermit(
       Effect.gen({ self: this }, function* () {
         yield* Effect.try({
-          try: () => this.assertPreparedUnsafe(sessionId, generation, taskId, kind, except),
+          try: () => this.assertPreparedUnsafe(sessionId, generation, task, kind, except),
           catch: cause => new WorkError({ message: errorMessage(cause), cause }),
         })
         return yield* effect
@@ -816,7 +1020,13 @@ class WorkOwnerImpl implements WorkOwnerService {
   }
 
   private settle(job: Job): Effect.Effect<void, never> {
-    return Deferred.succeed(job.settled, viewOf(job.lifecycle.snapshot())).pipe(Effect.ignore)
+    return Effect.suspend(() => {
+      this.routeLeaf(job)
+      return Deferred.succeed(job.settled, viewOf(job.lifecycle.snapshot()))
+    }).pipe(
+      Effect.andThen(job.inbox === undefined ? Effect.void : Queue.shutdown(job.inbox)),
+      Effect.ignore
+    )
   }
 
   private commitCurrentBestEffort(
@@ -860,7 +1070,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         kind: 'launch-intent',
         execution: {
           sessionId: record.owner.sessionId,
-          taskKey: record.owner.taskId,
+          taskKey: workspaceTaskKey(job.parent, record.owner.taskId),
           attemptId: record.id,
           generation: record.owner.generation,
           logs: this.store.logPath(record.id, 'stdout'),
@@ -869,7 +1079,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       yield* this.withPreparedPermit(
         token.sessionId,
         generation,
-        record.owner.taskId,
+        scopeOf(record),
         request.kind,
         record.id,
         Effect.try({
@@ -883,7 +1093,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       const child = yield* this.withPreparedPermit(
         token.sessionId,
         generation,
-        record.owner.taskId,
+        scopeOf(record),
         request.kind,
         record.id,
         Effect.try({
@@ -901,7 +1111,7 @@ class WorkOwnerImpl implements WorkOwnerService {
             }
             const spawned =
               request.kind === 'agent'
-                ? fork(new URL('./pi-child.ts', import.meta.url), [], {
+                ? fork(this.childEntry, [], {
                     ...options,
                     execArgv: [],
                     stdio: ['ignore', stdout, stderr, 'ipc'],
@@ -955,7 +1165,7 @@ class WorkOwnerImpl implements WorkOwnerService {
               this.assertPreparedUnsafe(
                 token.sessionId,
                 generation,
-                record.owner.taskId,
+                scopeOf(record),
                 request.kind,
                 record.id
               ),
@@ -994,7 +1204,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         yield* this.withPreparedPermit(
           token.sessionId,
           generation,
-          record.owner.taskId,
+          scopeOf(record),
           request.kind,
           record.id,
           Effect.gen({ self: this }, function* () {
@@ -1008,7 +1218,7 @@ class WorkOwnerImpl implements WorkOwnerService {
                 sessionDir: join(this.dataHome, 'child-sessions'),
                 access: request.access,
                 prompt: request.prompt,
-                skills: request.skills,
+                ...(record.coordinator === true ? { coordinate: true } : {}),
                 owner: record.owner,
                 workspace: job.workspace,
                 model: request.selection?.model,
@@ -1020,12 +1230,14 @@ class WorkOwnerImpl implements WorkOwnerService {
       yield* this.withPreparedPermit(
         token.sessionId,
         generation,
-        record.owner.taskId,
+        scopeOf(record),
         request.kind,
         record.id,
         Effect.gen({ self: this }, function* () {
           yield* this.store.save(job.lifecycle.snapshot())
           yield* Effect.forkIn(this.scope)(this.waitForOwnedExit(job))
+          if (job.inbox !== undefined)
+            yield* Effect.forkIn(this.scope)(this.serveCoordinator(job, job.inbox))
         })
       )
       this.onChange()
@@ -1084,7 +1296,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         job.lifecycle.hasResult() ||
         token.generation !== this.state.generation
       )
-        return
+        return yield* refuseStaleRequest(job, raw)
       const record = job.lifecycle.snapshot()
       const message = yield* parseChildMessage(raw, {
         cwd: record.cwd,
@@ -1110,7 +1322,7 @@ class WorkOwnerImpl implements WorkOwnerService {
                 this.assertPreparedUnsafe(
                   token.sessionId,
                   token.generation,
-                  record.owner.taskId,
+                  scopeOf(record),
                   record.kind,
                   record.id
                 ),
@@ -1127,6 +1339,16 @@ class WorkOwnerImpl implements WorkOwnerService {
         })
         return
       }
+      if (isCoordinationMessage(message)) {
+        if (message.type === 'work-outcomes-ack')
+          for (const id of message.attempts) job.undelivered.delete(id)
+        else if (job.inbox === undefined) yield* this.coordinatorRequest(job, message)
+        else {
+          job.pendingRequests += 1
+          Queue.offerUnsafe(job.inbox, message)
+        }
+        return
+      }
       if (message.type === 'ready' || message.type === 'progress') {
         const outcome = yield* this.commitCurrentBestEffort(job, token, () =>
           job.lifecycle.transition.progress(token, {
@@ -1140,6 +1362,11 @@ class WorkOwnerImpl implements WorkOwnerService {
         )
         if (outcome !== undefined) this.onChange()
       } else {
+        const unresolved = job.pendingRequests + job.leaves.size + job.undelivered.size
+        if (message.error === undefined && unresolved > 0)
+          return yield* new WorkProtocolError({
+            message: `A coordinator reported its result while ${unresolved} request(s) or leaf outcome(s) were unresolved`,
+          })
         const outcome = yield* this.commitCurrentBestEffort(job, token, () =>
           job.lifecycle.transition.result(token, {
             ...(message.model === undefined ? {} : { model: message.model }),
@@ -1156,6 +1383,8 @@ class WorkOwnerImpl implements WorkOwnerService {
           })
         )
         if (outcome === undefined) return
+        if (message.error !== undefined)
+          yield* Effect.forkIn(this.scope)(this.cancelLeaves(job, 'coordinator reported a failure'))
         if (outcome.accepted && (outcome.quotaExhausted || quotaExhausted(message.error)))
           yield* this.exhaust(record.id)
         this.onChange()
@@ -1169,7 +1398,10 @@ class WorkOwnerImpl implements WorkOwnerService {
               ? job.lifecycle.transition.rejectedMessage(token, message)
               : job.lifecycle.transition.persistenceError(token, message)
           )
-          if (outcome !== undefined) yield* this.cancelJob(job, 'invalid child message')
+          if (outcome !== undefined)
+            yield* Effect.forkIn(this.scope)(
+              Effect.ignore(this.cancelJob(job, 'invalid child message'))
+            )
         })
       )
     )
@@ -1196,6 +1428,8 @@ class WorkOwnerImpl implements WorkOwnerService {
               yield* this.commitBestEffort(job, () =>
                 job.lifecycle.transition.exit(token, null, null)
               )
+            if (job.lifecycle.hasExited())
+              yield* Effect.forkIn(this.scope)(this.cancelLeaves(job, 'coordinator exited'))
             return
           }
           const pending = yield* Queue.poll(job.events)
@@ -1337,11 +1571,12 @@ class WorkOwnerImpl implements WorkOwnerService {
         return
       }
       yield* Queue.shutdown(job.events).pipe(Effect.ignore)
+      this.routeLeaf(job)
       this.active.delete(saved.success.snapshot.id)
       const completed = viewOf(job.lifecycle.snapshot())
       yield* this.settle(job)
       this.onChange()
-      if (this.canDeliverUnsafe(completed)) this.onOutcome(completed)
+      if (job.parent === undefined && this.canDeliverUnsafe(completed)) this.onOutcome(completed)
     })
   }
 
@@ -1351,11 +1586,18 @@ class WorkOwnerImpl implements WorkOwnerService {
       attempt.owner.sessionId === this.sessionId &&
       attempt.completedAt !== undefined &&
       attempt.owner.generation === this.state.generation &&
-      this.latest.get(attempt.owner.taskId) === attempt.id
+      this.latest.get(scopeKey(scopeOf(attempt))) === attempt.id
     )
   }
 
   private cancelJob(job: Job, reason: string): Effect.Effect<AttemptView, WorkFailure> {
+    return Effect.all(
+      [this.terminate(job, reason), this.cancelLeaves(job, `coordinator stopped: ${reason}`)],
+      { concurrency: 'unbounded' }
+    ).pipe(Effect.map(([view]) => view))
+  }
+
+  private terminate(job: Job, reason: string): Effect.Effect<AttemptView, WorkFailure> {
     const { token } = job.lifecycle
     return Effect.gen({ self: this }, function* () {
       const requestedAt = yield* Clock.currentTimeMillis

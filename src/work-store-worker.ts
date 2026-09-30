@@ -33,7 +33,6 @@ import {
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const RETENTION_COUNT = 64
-const DATABASE_VERSION = 1
 const BUSY_TIMEOUT_MS = 5000
 const LOG_FILES = new Set(['stdout.log', 'stderr.log', 'result.txt'])
 const CANONICAL_SCHEMA = `
@@ -62,7 +61,6 @@ const CANONICAL_SCHEMA = `
       UPDATE attempts SET retention_blocked = 0 WHERE id = NEW.id;
     END;
   CREATE TABLE cleanup(id TEXT PRIMARY KEY) STRICT;
-  PRAGMA user_version = 1;
 `
 
 class StoreFault extends Error {
@@ -271,7 +269,7 @@ const decodePayload = (row: AttemptRow): AttemptRecord => {
   }
   let record: AttemptRecord
   try {
-    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value)
+    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value, { onExcessProperty: 'error' })
   } catch {
     return fail('corrupt-record')
   }
@@ -402,9 +400,6 @@ const canonicalCatalog = (): string => {
 }
 
 const validateExistingSchema = (db: DatabaseSync): void => {
-  const userVersionRow = db.prepare('PRAGMA user_version').get()
-  const userVersion = numberField(userVersionRow ?? {}, 'user_version')
-  if (userVersion !== DATABASE_VERSION) fail('unsupported-format')
   if (schemaCatalog(db) !== canonicalCatalog()) fail('unsupported-format')
 }
 

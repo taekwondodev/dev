@@ -128,6 +128,8 @@ const admit = (
     blocked('Workspace admission is parked during a host transition')
   if (operation.kind === 'native-file-write' || operation.kind === 'opaque')
     return authorizeScoped(authority, attachment, operation)
+  if (operation.kind === 'leaf-read')
+    return authorizeLeafRead(authority, attachment, operation.coordinator, operation.execution)
   const source = currentSource(authority, state)
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
@@ -445,6 +447,65 @@ const executionUse = (
     released: false,
   }
   state.leases.set(use.id, lease)
+  return { kind: 'ready', grant }
+}
+
+const authorizeLeafRead = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  coordinator: WorkspaceGrant,
+  execution: WorkspaceExecution
+): WorkspaceAuthorization => {
+  const { state } = attachment
+  const owners = state.leaseAttachments.get(coordinator.useId)
+  if (owners === undefined || !owners.has(attachment.token))
+    requireReview('Coordinator grant was not issued to this attachment')
+  const lease = validateGrant(authority, state, coordinator)
+  if (lease.kind !== 'execution')
+    invalid('A leaf reads only the workspace of a delegated coordinator')
+  const use = inDb(authority, coordinator.repositoryId, db =>
+    transaction(db, () => {
+      const running = fencedUse(db, coordinator, 'Coordinator grant has no live workspace use')
+      if (running.use.stage !== 'started')
+        blocked(
+          `The coordinator is not running in its workspace: ${running.use.id} (${running.use.stage})`
+        )
+      const reservation = getReservation(db, running.workspace.id)
+      const leaf = {
+        id: newId(),
+        workspaceId: running.workspace.id,
+        taskId: running.use.taskId,
+        ...(reservation === undefined ? {} : { reservationId: reservation.id }),
+        access: 'read',
+        stage: 'authorized',
+        execution,
+        processes: [],
+        incarnation: state.incarnation,
+        bindingRevision: running.use.bindingRevision,
+        revision: 0,
+        createdAt: now(),
+        updatedAt: now(),
+      } satisfies UseRecord
+      putUse(db, leaf)
+      return { leaf, workspace: running.workspace }
+    })
+  )
+  const grant = toGrant(
+    authority,
+    coordinator.repositoryId,
+    use.workspace,
+    use.leaf,
+    coordinator.cwd,
+    'read'
+  )
+  state.leases.set(use.leaf.id, {
+    kind: 'execution',
+    execution,
+    grant,
+    repositoryId: coordinator.repositoryId,
+    useId: use.leaf.id,
+    released: false,
+  })
   return { kind: 'ready', grant }
 }
 

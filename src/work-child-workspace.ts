@@ -112,7 +112,8 @@ export const childWorkspaceExtension =
             grant.access === 'read' &&
             event.toolName === 'git_inspect' &&
             tool?.sourceInfo.source === 'sdk'
-          const read = (builtin && readTools.has(event.toolName)) || reviewGit
+          const coordination = event.toolName === 'work' && tool?.sourceInfo.source === 'sdk'
+          const read = (builtin && readTools.has(event.toolName)) || reviewGit || coordination
           if (!read && grant.access !== 'write')
             return yield* new WorkspaceError({
               outcome: 'blocked',

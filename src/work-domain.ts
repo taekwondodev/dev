@@ -85,18 +85,16 @@ export const OwnerIdentitySchema = Schema.Struct({
   taskId: TaskId,
   attemptId: AttemptId,
   generation: GenerationId,
+  parent: Schema.optional(AttemptId),
 })
 export type OwnerIdentity = typeof OwnerIdentitySchema.Type
 
-export const ArtifactStateSchema = Schema.StructWithRest(
-  Schema.Struct({
-    head: Schema.optional(Schema.String),
-    trackedDigest: Schema.optional(Schema.String),
-    untracked: Schema.optional(Schema.Boolean),
-    unavailable: Schema.optional(Schema.Literal(true)),
-  }),
-  [Schema.Record(Schema.String, Schema.Unknown)]
-)
+export const ArtifactStateSchema = Schema.Struct({
+  head: Schema.optional(Schema.String),
+  trackedDigest: Schema.optional(Schema.String),
+  untracked: Schema.optional(Schema.Boolean),
+  unavailable: Schema.optional(Schema.Literal(true)),
+})
 export type ArtifactState = typeof ArtifactStateSchema.Type
 
 export interface WorktreeReminder {
@@ -126,6 +124,11 @@ export const ContextUsageSchema = Schema.Struct({
 })
 export type ContextUsage = typeof ContextUsageSchema.Type
 
+const InvokedSkillSchema = Schema.Struct({
+  name: Schema.NonEmptyString,
+  path: Schema.NonEmptyString,
+})
+
 export const ChildResourcesSchema = Schema.Struct({
   packageVersion: Schema.NonEmptyString,
   cwd: Schema.NonEmptyString,
@@ -138,25 +141,15 @@ export const ChildResourcesSchema = Schema.Struct({
       precedence: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
     })
   ),
-  skills: Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, path: Schema.NonEmptyString })),
+  invokedSkill: Schema.optional(InvokedSkillSchema),
   tools: Schema.Array(Schema.NonEmptyString),
 })
 export type ChildResources = typeof ChildResourcesSchema.Type
 
 const SignalSchema = Schema.NullOr(Schema.String)
 const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
-const retainedFields = <Fields extends Schema.Struct.Fields>(schema: Schema.Struct<Fields>) =>
-  Schema.StructWithRest(schema, [Schema.Record(Schema.String, Schema.Unknown)])
-const RetainedResourcesSchema = retainedFields(
-  Schema.Struct({
-    ...ChildResourcesSchema.fields,
-    resources: Schema.Array(retainedFields(ChildResourcesSchema.fields.resources.value)),
-    skills: Schema.Array(retainedFields(ChildResourcesSchema.fields.skills.value)),
-  })
-)
 const NoCompletionTime = Schema.optional(Schema.Never)
 const AttemptRecordFactFields = {
-  version: Schema.Literal(1),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   id: AttemptId,
   startedAt: Schema.Finite,
@@ -164,9 +157,10 @@ const AttemptRecordFactFields = {
   cwd: Schema.String,
   controllerPid: Schema.Int,
   pid: Schema.optional(PositiveInt),
-  owner: retainedFields(OwnerIdentitySchema),
+  owner: OwnerIdentitySchema,
   access: Schema.optional(WorkAccessSchema),
-  selection: Schema.optional(retainedFields(DispatchProfileSchema)),
+  coordinator: Schema.optional(Schema.Boolean),
+  selection: Schema.optional(DispatchProfileSchema),
   worktreePath: Schema.optional(Schema.String),
   workflowTaskId: Schema.optional(Schema.String),
   workspaceId: Schema.optional(Schema.String),
@@ -190,29 +184,26 @@ const AttemptRecordFactFields = {
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   sessionFile: Schema.optional(Schema.String),
-  resources: Schema.optional(RetainedResourcesSchema),
-  context: Schema.optional(retainedFields(ContextUsageSchema)),
-  usage: Schema.optional(retainedFields(UsageSchema)),
+  resources: Schema.optional(ChildResourcesSchema),
+  context: Schema.optional(ContextUsageSchema),
+  usage: Schema.optional(UsageSchema),
 } as const
 
-const retainedAttemptRecord = <
+const attemptRecord = <
   const Status extends Schema.Schema<string>,
   const Completion extends Schema.Schema<number | undefined>,
 >(
   status: Status,
   completedAt: Completion
-) =>
-  Schema.StructWithRest(Schema.Struct({ ...AttemptRecordFactFields, status, completedAt }), [
-    Schema.Record(Schema.String, Schema.Unknown),
-  ])
+) => Schema.Struct({ ...AttemptRecordFactFields, status, completedAt })
 
 export const AttemptRecordSchema = Schema.Union([
-  retainedAttemptRecord(Schema.Literal('running'), NoCompletionTime),
-  retainedAttemptRecord(Schema.Literal('waiting'), NoCompletionTime),
-  retainedAttemptRecord(Schema.Literal('completed'), Schema.Finite),
-  retainedAttemptRecord(Schema.Literal('failed'), Schema.Finite),
-  retainedAttemptRecord(Schema.Literal('cancelled'), Schema.Finite),
-  retainedAttemptRecord(Schema.Literal('unknown'), NoCompletionTime),
+  attemptRecord(Schema.Literal('running'), NoCompletionTime),
+  attemptRecord(Schema.Literal('waiting'), NoCompletionTime),
+  attemptRecord(Schema.Literal('completed'), Schema.Finite),
+  attemptRecord(Schema.Literal('failed'), Schema.Finite),
+  attemptRecord(Schema.Literal('cancelled'), Schema.Finite),
+  attemptRecord(Schema.Literal('unknown'), NoCompletionTime),
 ]).pipe(Schema.toTaggedUnion('status'))
 
 type Mutable<T> = T extends object ? { -readonly [K in keyof T]: T[K] } : T
@@ -299,8 +290,8 @@ export interface AgentStartRequest {
   readonly taskId: string
   readonly prompt: string
   readonly access: WorkAccess
+  readonly coordinate?: boolean
   readonly cwd?: string
-  readonly skills?: readonly string[]
   readonly rule?: string
   readonly harness?: string
   readonly model?: string
