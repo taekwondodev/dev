@@ -26,36 +26,55 @@ const suites = [
 ] as const
 type Suite = (typeof suites)[number]
 const pullRequestBodyLimit = 65_536
-const suitesSectionReserve = 640
+const suiteTimesReserve = 64
 const piSources = 'https://github.com/earendil-works/pi/blob/main/packages/coding-agent/'
 const failureTailLines = 80
 
+const piSdkApi =
+  /createAgentSession|\bAgentSession|InteractiveMode|ModelRuntime|ProjectTrust|defineTool|ToolDefinition/
+const sdkWord =
+  /(?<!(?:Anthropic|OpenAI|AWS|Azure|Google|GenAI|Gemini|Vercel AI|Cloudflare|Mistral|Bedrock) )\bSDK\b/
+const providerContext = /\bproviders?\b|SDK-backed/i
+
+const matching = (pattern: RegExp) => (prose: string) => pattern.test(prose)
+
 const integrationSurfaces = [
   {
-    name: 'SDK exports',
-    pattern:
-      /\bSDK\b|createAgentSession|\bAgentSession|InteractiveMode|ModelRuntime|ProjectTrust|defineTool|ToolDefinition/,
+    label: 'SDK',
+    matches: (prose: string) =>
+      piSdkApi.test(prose) || (sdkWord.test(prose) && !providerContext.test(prose)),
   },
   {
-    name: 'session manager and path resolution',
-    pattern:
-      /session ?manager|findMostRecentSession|resolvePath|path resolution|switchSession|newSession|importFromJsonl|\bfork/i,
+    label: 'sessions',
+    matches: matching(
+      /session ?manager|findMostRecentSession|resolvePath|path resolution|switchSession|newSession|importFromJsonl|\bfork/i
+    ),
   },
   {
-    name: 'session format',
-    pattern: /session (?:file|format|header|entr)|\bJSONL\b|parentSession/i,
+    label: 'session format',
+    matches: matching(/session (?:file|format|header|entr)|\bJSONL\b|parentSession/i),
   },
   {
-    name: 'extensions and tool effects',
-    pattern:
-      /\bextensions?\b|\btool_(?:call|result)\b|\bterminate\b|\buser_bash\b|`(?:bash|edit|write)`|register(?:Tool|Command)|send(?:Custom)?Message|getCommand/i,
+    label: 'extensions',
+    matches: matching(
+      /\bextensions?\b|\btool_(?:call|result)\b|\bterminate\b|\buser_bash\b|`(?:bash|edit|write)`|register(?:Tool|Command)|send(?:Custom)?Message|getCommand/i
+    ),
   },
-  { name: 'skills', pattern: /\bskills?\b|expandPromptTemplates|prompt templates?/i },
-  { name: 'RPC', pattern: /\bRPC\b|RpcClient/ },
-  { name: 'compaction', pattern: /\bcompact(?:ion|ed|ing|s)?\b/i },
-  { name: 'settings', pattern: /\bsettings?\b|SettingsManager/i },
-  { name: 'resource loader', pattern: /resource ?loader|AGENTS\.md|SYSTEM\.md|system prompt/i },
+  { label: 'skills', matches: matching(/\bskills?\b|expandPromptTemplates|prompt templates?/i) },
+  { label: 'RPC', matches: matching(/\bRPC\b|RpcClient/) },
+  { label: 'compaction', matches: matching(/\bcompact(?:ion|ed|ing|s)?\b/i) },
+  { label: 'settings', matches: matching(/\bsettings?\b|SettingsManager/i) },
+  {
+    label: 'resource loader',
+    matches: matching(/resource ?loader|AGENTS\.md|SYSTEM\.md|system prompt/i),
+  },
 ] as const
+
+type SurfaceLabel = (typeof integrationSurfaces)[number]['label']
+
+const unusedSurfaces = /\bMCP\b|codemode|\btool[ _]search\b/i
+
+const repeatedSection = /^### New Features\s*$/
 
 const PiVersion = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/)).pipe(
   Schema.brand('dev/PiVersion')
@@ -73,11 +92,23 @@ const SurfaceProbe = Schema.fromJsonString(
   })
 )
 
+const severities = ['critical', 'high', 'moderate', 'low', 'info'] as const
+type Severity = (typeof severities)[number]
+
 const AuditReport = Schema.fromJsonString(
   Schema.Struct({
-    metadata: Schema.Struct({ vulnerabilities: Schema.Record(Schema.String, Schema.Finite) }),
-    vulnerabilities: Schema.Record(Schema.String, Schema.Struct({ severity: Schema.String })),
+    vulnerabilities: Schema.Record(
+      Schema.String,
+      Schema.Struct({ severity: Schema.Literals(severities) })
+    ),
   })
+)
+
+const AuditFailure = Schema.fromJsonString(
+  Schema.Union([
+    Schema.Struct({ error: Schema.Struct({ summary: Schema.NonEmptyString }) }),
+    Schema.Struct({ message: Schema.String }),
+  ])
 )
 
 const surfaceProbe = `
@@ -98,10 +129,29 @@ interface Upgrade {
   readonly candidate: PiVersion
 }
 
+interface LineToRead {
+  readonly surfaces: readonly SurfaceLabel[]
+  readonly text: string
+}
+
 type Changelog =
   | { readonly kind: 'same release' }
-  | { readonly kind: 'unplaced' }
-  | { readonly kind: 'range'; readonly sections: readonly string[] }
+  | { readonly kind: 'not compared' }
+  | {
+      readonly kind: 'range'
+      readonly lines: readonly LineToRead[]
+      readonly leftOut: readonly LineToRead[]
+    }
+
+type AuditSummary =
+  | {
+      readonly kind: 'report'
+      readonly bySeverity: readonly {
+        readonly severity: Severity
+        readonly packages: readonly string[]
+      }[]
+    }
+  | { readonly kind: 'unavailable'; readonly reason: string }
 
 interface Delta {
   readonly added: readonly string[]
@@ -127,6 +177,23 @@ interface SuiteResult {
   readonly output: string
 }
 
+interface SuiteRun {
+  readonly results: readonly SuiteResult[]
+  readonly failed: SuiteResult | undefined
+}
+
+interface Comparison {
+  readonly upgrade: Upgrade
+  readonly newRelease: boolean
+  readonly drifted: boolean
+  readonly summary: string
+  readonly changelog: Changelog
+  readonly surfaces: Surfaces
+  readonly pages: readonly string[]
+  readonly docs: readonly DocChange[]
+  readonly audit: AuditSummary
+}
+
 const lastLines = (output: string, count: number): string =>
   output.trimEnd().split('\n').slice(-count).join('\n')
 
@@ -136,28 +203,14 @@ const fence = (language: string, body: string): string => {
   return `${marks}${language}\n${body.trimEnd()}\n${marks}`
 }
 
-const counted = (count: number, noun: string): string =>
-  `${count === 0 ? 'no' : count} ${noun}${count === 1 ? '' : 's'}`
+const counted = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`
+
+const withoutFinalPeriod = (text: string): string => text.trim().replace(/\.+$/, '')
 
 const listed = (names: readonly string[]): string => names.map(name => `\`${name}\``).join(', ')
 
-const demoteHeading = (line: string): string => `#${line}`
-
-interface MarkedLine {
-  readonly text: string
-  readonly highlighted: boolean
-}
-
-const markLine = (line: string): MarkedLine => {
-  if (line.startsWith('#')) return { text: demoteHeading(line), highlighted: false }
-  const matched = integrationSurfaces.filter(surface => surface.pattern.test(line))
-  if (matched.length === 0) return { text: line, highlighted: false }
-  const [, bullet = '', rest = ''] = /^(\s*[-*] )?(.*)$/.exec(line) ?? []
-  return {
-    text: `${bullet}**[${matched.map(surface => surface.name).join(', ')}]** ${rest}`,
-    highlighted: true,
-  }
-}
+const withoutReferences = (line: string): string =>
+  line.replace(/\s*\((?:\[[^\]]+\]\([^)]+\)(?:,\s*|\s+by\s+)?)+\)(\.?)$/, '$1')
 
 const linkedForPullRequest = (line: string): string =>
   line
@@ -171,106 +224,213 @@ const linkedForPullRequest = (line: string): string =>
     )
     .join('')
 
-const markChangelog = (lines: readonly string[]) => {
-  const marked: MarkedLine[] = []
-  let inFence = false
-  for (const line of lines) {
-    const fenceMark = line.trimStart().startsWith('```')
-    if (fenceMark) inFence = !inFence
-    marked.push(
-      fenceMark || inFence
-        ? { text: line, highlighted: false }
-        : markLine(linkedForPullRequest(line))
-    )
-  }
-  return marked
-}
+const withoutLinkTargets = (line: string): string => line.replace(/\]\([^)]*\)/g, ']')
 
-const renderChangelog = (changelog: Changelog, upgrade: Upgrade, baseline: string): string => {
-  switch (changelog.kind) {
-    case 'same release':
-      return '## Changelog: no highlighted lines\n\nNo release between the baseline and the candidate.'
-    case 'unplaced':
-      return `## Changelog: not compared\n\nThe candidate changelog has no sections from ${upgrade.candidate} down to ${baseline}; read it in full before deciding.`
-    case 'range': {
-      const lines = markChangelog(changelog.sections.join('').trimEnd().split('\n'))
-      return `## Changelog: ${counted(lines.filter(line => line.highlighted).length, 'highlighted line')}\n\n${lines.map(line => line.text).join('\n')}`
-    }
+const readChangelog = (sections: readonly string[]): Changelog => {
+  const lines: LineToRead[] = []
+  const leftOut: LineToRead[] = []
+  let bullets = 0
+  let content = 0
+  let inFence = false
+  let skipped = false
+  for (const line of sections.join('').split(/\r?\n/)) {
+    if (line.trimStart().startsWith('```')) inFence = !inFence
+    if (inFence) continue
+    if (line.startsWith('### ')) skipped = repeatedSection.test(line)
+    if (line.trim() !== '' && !line.startsWith('#')) content += 1
+    const bullet = /^\s*[-*] (.*)$/.exec(line)
+    if (bullet === null) continue
+    bullets += 1
+    const prose = withoutLinkTargets(line)
+    const surfaces = integrationSurfaces
+      .filter(surface => surface.matches(prose))
+      .map(surface => surface.label)
+    if (skipped || surfaces.length === 0) continue
+    const read = { surfaces, text: linkedForPullRequest(withoutReferences(bullet[1])) }
+    if (unusedSurfaces.test(prose)) leftOut.push(read)
+    else lines.push(read)
   }
+  return content > 0 && bullets === 0 ? { kind: 'not compared' } : { kind: 'range', lines, leftOut }
 }
 
 const differenceCount = (delta: Delta): number =>
   delta.added.length + delta.removed.length + delta.changed.length
 
-const renderDelta = (label: string, delta: Delta): string => {
-  const parts = (
+const deltaParts = (delta: Delta) =>
+  (
     [
       ['added', delta.added],
       ['removed', delta.removed],
       ['changed', delta.changed],
     ] as const
-  )
-    .filter(([, names]) => names.length > 0)
+  ).filter(([, names]) => names.length > 0)
+
+const describeDelta = (delta: Delta): string =>
+  deltaParts(delta)
     .map(([kind, names]) => `${names.length} ${kind} (${listed(names)})`)
-  return `- ${label}: ${parts.length === 0 ? 'no difference' : parts.join('; ')}`
+    .join(', ')
+
+const apisDevUses = (surfaces: Surfaces): string => {
+  const apis = [
+    ['SDK exports', surfaces.exports],
+    ['native tools', surfaces.tools],
+  ] as const
+  if (apis.every(([, delta]) => differenceCount(delta) === 0))
+    return `unchanged: ${apis.map(([label]) => label).join(', ')}`
+  return apis
+    .map(([label, delta]) =>
+      differenceCount(delta) === 0 ? `${label} unchanged` : `${label}: ${describeDelta(delta)}`
+    )
+    .join('; ')
 }
 
-const renderSurfaces = (surfaces: Surfaces): string =>
-  [
-    `## Surfaces: ${counted(differenceCount(surfaces.exports) + differenceCount(surfaces.declarations) + differenceCount(surfaces.tools), 'difference')}`,
-    [
-      renderDelta('SDK exports', surfaces.exports),
-      renderDelta('Declaration files', surfaces.declarations),
-      renderDelta('Native tools', surfaces.tools),
-    ].join('\n'),
-  ].join('\n\n')
+const leftOutNote = (count: number): string =>
+  `${count === 1 ? 'mentions' : 'mention'} MCP, codemode or tool search`
+
+const changelogReading = ({
+  changelog,
+  upgrade,
+  drifted,
+}: Comparison): {
+  readonly headline: string
+  readonly row: string
+  readonly lines: readonly LineToRead[]
+  readonly leftOut: readonly LineToRead[]
+} => {
+  switch (changelog.kind) {
+    case 'same release':
+      return { headline: 'nothing to read', row: 'none, same release', lines: [], leftOut: [] }
+    case 'not compared':
+      return {
+        headline: 'changelog not compared',
+        row: "not compared: read Pi's changelog in full",
+        lines: [],
+        leftOut: [],
+      }
+    case 'range': {
+      const { lines, leftOut } = changelog
+      const since = drifted ? ` since the pinned ${upgrade.pin}` : ''
+      const leftOutSuffix =
+        leftOut.length === 0 ? '' : `; ${leftOut.length} more ${leftOutNote(leftOut.length)}`
+      return {
+        headline:
+          lines.length === 0
+            ? 'nothing to read'
+            : `${counted(lines.length, 'changelog line')} to read`,
+        row: `${lines.length === 0 ? 'none' : counted(lines.length, 'line')}${since}${leftOutSuffix}`,
+        lines,
+        leftOut,
+      }
+    }
+  }
+}
+
+const renderLines = (lines: readonly LineToRead[]): string =>
+  lines.map(line => `- [${line.surfaces.join(', ')}] ${line.text}`).join('\n')
+
+const auditRow = (audit: AuditSummary): string => {
+  if (audit.kind === 'unavailable') return `unavailable: ${audit.reason}`
+  if (audit.bySeverity.length === 0) return 'no known vulnerabilities'
+  return audit.bySeverity
+    .map(({ severity, packages }) => `${packages.length} ${severity}: ${packages.join(', ')}`)
+    .join('; ')
+}
+
+const suitesRow = ({ results, failed }: SuiteRun): string => {
+  const passed = results.filter(result => result.passed).length
+  return failed === undefined
+    ? `${passed}/${suites.length} green`
+    : `red at \`${failed.suite}\` after ${passed}/${suites.length} passed`
+}
+
+const cell = (text: string): string => text.replaceAll('|', String.raw`\|`)
+
+const collapsed = (summary: string, body: string): string =>
+  `<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`
 
 const renderDocs = (pages: readonly string[], changes: readonly DocChange[]): string => {
   const unchanged = pages.filter(page => !changes.some(change => change.page === page))
-  return [
-    `## Docs: ${counted(changes.length, 'contract page')} changed`,
-    ...changes.map(change => `### ${change.page}\n\n${change.change}`),
-    ...(unchanged.length > 0 ? [`Unchanged: ${listed(unchanged)}.`] : []),
-  ].join('\n\n')
-}
-
-const severities = ['critical', 'high', 'moderate', 'low', 'info'] as const
-
-const renderAudit = (report: typeof AuditReport.Type): string => {
-  const counts = severities.flatMap(severity => {
-    const count = report.metadata.vulnerabilities[severity] ?? 0
-    return count > 0 ? [`${count} ${severity}`] : []
-  })
-  const packages = Object.entries(report.vulnerabilities).map(
-    ([name, vulnerability]) => `- \`${name}\`: ${vulnerability.severity}`
+  return collapsed(
+    `Changed docs: ${changes.length === 0 ? 'none' : counted(changes.length, 'page')}`,
+    [
+      ...changes.map(change => `#### ${change.page}\n\n${change.change}`),
+      ...(unchanged.length > 0 ? [`Unchanged: ${listed(unchanged)}.`] : []),
+    ].join('\n\n')
   )
-  return [
-    `## Audit: ${counts.length === 0 ? 'no known vulnerabilities' : counts.join(', ')}`,
-    ...(packages.length > 0 ? [packages.join('\n')] : []),
-  ].join('\n\n')
 }
 
-const renderSuites = (results: readonly SuiteResult[]): string => {
-  const failed = results.find(result => !result.passed)
-  const rows = suites.map(suite => {
-    const ran = results.find(result => result.suite === suite)
-    if (ran === undefined) return `| \`${suite}\` | not run | |`
-    return `| \`${suite}\` | ${ran.passed ? 'passed' : 'failed'} | ${Math.round(ran.ms / 1000)} s |`
-  })
-  return [
-    `## Suites: ${failed === undefined ? 'green' : `red at \`${failed.suite}\``}`,
-    ['| Suite | Result | Time |', '| --- | --- | --- |', ...rows].join('\n'),
-    ...(failed === undefined
+const renderDeclarations = (declarations: Delta): string => {
+  const count = differenceCount(declarations)
+  return collapsed(
+    `Changed declaration files: ${count === 0 ? 'none' : count}`,
+    count === 0
+      ? 'No declaration file differs.'
+      : deltaParts(declarations)
+          .map(
+            ([kind, names]) =>
+              `${kind[0].toUpperCase()}${kind.slice(1)}:\n\n${names.map(name => `- \`${name}\``).join('\n')}`
+          )
+          .join('\n\n')
+  )
+}
+
+const renderSuiteTimes = ({ results }: SuiteRun): string =>
+  collapsed(
+    'Suites and times',
+    [
+      '| Suite | Result | Time |',
+      '| --- | --- | --- |',
+      ...suites.map(suite => {
+        const ran = results.find(result => result.suite === suite)
+        if (ran === undefined) return `| \`${suite}\` | not run | |`
+        return `| \`${suite}\` | ${ran.passed ? 'passed' : 'failed'} | ${Math.round(ran.ms / 1000)} s |`
+      }),
+    ].join('\n')
+  )
+
+const renderReport = (comparison: Comparison, suiteRun: SuiteRun, date: string): string => {
+  const { upgrade } = comparison
+  const reading = changelogReading(comparison)
+  const headline =
+    suiteRun.failed === undefined
+      ? `suites green, ${reading.headline}`
+      : `suites red at ${suiteRun.failed.suite}`
+  return `${[
+    `## Pi ${upgrade.candidate}: ${headline}`,
+    comparison.summary,
+    [
+      '| Check | Result |',
+      '| --- | --- |',
+      `| Suites | ${cell(suitesRow(suiteRun))} |`,
+      `| APIs dev uses | ${cell(apisDevUses(comparison.surfaces))} |`,
+      `| Changelog to read | ${cell(reading.row)} |`,
+      `| Audit | ${cell(auditRow(comparison.audit))} |`,
+    ].join('\n'),
+    ...(suiteRun.failed === undefined
       ? []
       : [
-          `End of the \`${failed.suite}\` output:\n\n${fence('text', lastLines(failed.output, failureTailLines))}`,
+          `### \`${suiteRun.failed.suite}\` failed\n\n${fence('text', lastLines(suiteRun.failed.output, failureTailLines))}`,
         ]),
-    'Session format: the usage profile did not run on the candidate, because the work checks delete their fixture sessions when they close. Run `npm run profile` after one live session on the candidate.',
-  ].join('\n\n')
+    ...(reading.lines.length > 0 ? [`### Changelog to read\n\n${renderLines(reading.lines)}`] : []),
+    ...(reading.leftOut.length > 0
+      ? [
+          collapsed(
+            `Left out: ${counted(reading.leftOut.length, 'line')} that ${leftOutNote(reading.leftOut.length)}`,
+            renderLines(reading.leftOut)
+          ),
+        ]
+      : []),
+    renderDocs(comparison.pages, comparison.docs),
+    renderDeclarations(comparison.surfaces.declarations),
+    renderSuiteTimes(suiteRun),
+    ...(suiteRun.failed === undefined && comparison.newRelease
+      ? [
+          `After merging: \`npm run pi:install -- --version ${upgrade.candidate}\`, then \`npm run profile\` after one live session.`,
+        ]
+      : []),
+    `Verified on ${date} with Node ${process.version}.`,
+  ].join('\n\n')}\n`
 }
-
-const renderReport = (comparison: string, results: readonly SuiteResult[], date: string): string =>
-  `${[comparison, renderSuites(results), `Verified on ${date} with Node ${process.version}.`].join('\n\n')}\n`
 
 const failure = (what: string) => (cause: unknown) =>
   new PiUpgradeError({ message: `${what}: ${errorText(cause)}`, cause })
@@ -441,26 +601,53 @@ const compareDocs = Effect.fnUntraced(function* (
 })
 
 const changelogSections = Effect.fnUntraced(function* (
-  baseline: PiInstallation,
+  upgrade: Upgrade,
+  newRelease: boolean,
   candidate: PiInstallation
 ) {
-  if (baseline.version === candidate.version) return { kind: 'same release' } satisfies Changelog
+  if (!newRelease) return { kind: 'same release' } satisfies Changelog
   const fs = yield* FileSystem.FileSystem
   const sections = (yield* fs.readFileString(join(candidate.root, 'CHANGELOG.md'))).split(
     /^(?=## )/m
   )
-  const start = sections.findIndex(section => section.startsWith(`## [${candidate.version}]`))
-  const end = sections.findIndex(section => section.startsWith(`## [${baseline.version}]`))
+  const start = sections.findIndex(section => section.startsWith(`## [${upgrade.candidate}]`))
+  const end = sections.findIndex(section => section.startsWith(`## [${upgrade.pin}]`))
   return start === -1 || end === -1 || start > end
-    ? ({ kind: 'unplaced' } satisfies Changelog)
-    : ({ kind: 'range', sections: sections.slice(start, end) } satisfies Changelog)
+    ? ({ kind: 'not compared' } satisfies Changelog)
+    : readChangelog(sections.slice(start, end))
 })
+
+const oneLine = (text: string): string => withoutFinalPeriod(text.replace(/\s*\n\s*/g, ' '))
 
 const auditCandidate = (candidate: PiInstallation) =>
   run('npm', ['audit', '--json'], { cwd: candidate.root, exitCodes: [0, 1] }).pipe(
-    Effect.flatMap(({ stdout }) => Schema.decodeEffect(AuditReport)(stdout)),
-    Effect.map(renderAudit),
-    Effect.catch(error => Effect.succeed(`## Audit: unavailable\n\n${errorText(error)}`))
+    Effect.flatMap(({ stdout }) =>
+      Schema.decodeEffect(AuditReport)(stdout).pipe(
+        Effect.map(
+          (report): AuditSummary => ({
+            kind: 'report',
+            bySeverity: severities.flatMap(severity => {
+              const packages = Object.entries(report.vulnerabilities)
+                .filter(([, vulnerability]) => vulnerability.severity === severity)
+                .map(([name]) => name)
+              return packages.length > 0 ? [{ severity, packages }] : []
+            }),
+          })
+        ),
+        Effect.catch(decodeError =>
+          Schema.decodeEffect(AuditFailure)(stdout).pipe(
+            Effect.map(npmError =>
+              'error' in npmError ? npmError.error.summary : npmError.message
+            ),
+            Effect.orElseSucceed(() => errorText(decodeError)),
+            Effect.map((reason): AuditSummary => ({ kind: 'unavailable', reason: oneLine(reason) }))
+          )
+        )
+      )
+    ),
+    Effect.catch(error =>
+      Effect.succeed<AuditSummary>({ kind: 'unavailable', reason: oneLine(errorText(error)) })
+    )
   )
 
 const resolveCandidate = resolvePiPackage.pipe(
@@ -517,7 +704,7 @@ const runSuites = Effect.gen(function* () {
     results.push({ suite, ...result })
     if (!result.passed) break
   }
-  return results
+  return { results, failed: results.find(result => !result.passed) } satisfies SuiteRun
 }).pipe(
   Effect.ensuring(
     linkPiDeclarations.pipe(
@@ -550,8 +737,6 @@ const shellWord = (argument: string): string =>
 
 const openPullRequestCommand = (upgrade: Upgrade): string =>
   ['gh', ...pullRequestArguments(upgrade)].map(shellWord).join(' ')
-
-const withoutFinalPeriod = (text: string): string => text.trim().replace(/\.+$/, '')
 
 const publicationRefusal = Effect.fnUntraced(function* (upgrade: Upgrade, reportLength: number) {
   if (reportLength > pullRequestBodyLimit)
@@ -641,44 +826,49 @@ export const verifyPi = Effect.fn('verifyPi')(
       candidate: requested === undefined ? yield* latestVersion : yield* decodeVersion(requested),
     }
     const baseline = yield* resolvePiPackage
+    const newRelease = upgrade.pin !== upgrade.candidate
+    const drifted = baseline.version !== upgrade.pin
     const candidate = yield* installCandidate(upgrade.candidate)
     const pages = yield* contractPages
     const [changelog, surfaces, docs, audit] = yield* Effect.all(
       [
-        changelogSections(baseline, candidate),
+        changelogSections(upgrade, newRelease, candidate),
         compareSurfaces(baseline, candidate),
         compareDocs(pages, baseline, candidate),
         auditCandidate(candidate),
       ],
       { concurrency: 'unbounded' }
     )
-    const summary = `Candidate ${upgrade.candidate} from the npm registry; baseline ${baseline.version}, the Pi dev runs today.${baseline.version === upgrade.pin ? '' : ` The checkout pins ${upgrade.pin}, not the baseline.`}`
-    const comparison = [
-      `## Pi ${upgrade.candidate}\n\n${summary}`,
-      renderChangelog(changelog, upgrade, baseline.version),
-      renderSurfaces(surfaces),
-      renderDocs(pages, docs),
+    const summary = `Candidate ${upgrade.candidate} from the npm registry; baseline ${baseline.version}, the Pi dev runs today.${drifted ? ` The checkout pins ${upgrade.pin}, not the baseline.` : ''}`
+    const comparison: Comparison = {
+      upgrade,
+      newRelease,
+      drifted,
+      summary,
+      changelog,
+      surfaces,
+      pages,
+      docs,
       audit,
-    ].join('\n\n')
-    const newRelease = upgrade.pin !== upgrade.candidate
+    }
     if (newRelease) {
-      yield* announcePublication(upgrade, comparison.length + suitesSectionReserve)
+      const draft = renderReport(comparison, { results: [], failed: undefined }, 'YYYY-MM-DD')
+      yield* announcePublication(upgrade, draft.length + suiteTimesReserve)
       yield* pinCandidate(upgrade)
     }
-    const results = yield* runSuites
+    const suiteRun = yield* runSuites
     const date = DateTime.formatIsoDate(
       DateTime.setZone(yield* DateTime.now, DateTime.zoneMakeLocal())
     )
-    const report = renderReport(comparison, results, date)
+    const report = renderReport(comparison, suiteRun, date)
     yield* Effect.sync(() => {
       process.stdout.write(report)
     })
     const fs = yield* FileSystem.FileSystem
     yield* fs.writeFileString(reportPath, report)
-    const failed = results.find(result => !result.passed)
-    if (failed !== undefined)
+    if (suiteRun.failed !== undefined)
       return yield* new PiUpgradeError({
-        message: `Pi ${upgrade.candidate} failed ${failed.suite}; nothing was bumped or published. The candidate stays in ${candidatePrefix}.`,
+        message: `Pi ${upgrade.candidate} failed ${suiteRun.failed.suite}; nothing was bumped or published. The candidate stays in ${candidatePrefix}.`,
       })
     if (newRelease)
       return yield* publish(upgrade, summary, report).pipe(
