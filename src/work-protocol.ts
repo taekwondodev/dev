@@ -240,8 +240,6 @@ export const trackOutcomeAttempts = (
   }
 }
 
-export type ChildReadyMessage = Extract<ChildMessage, { readonly type: 'ready' }>
-export type ChildProgressMessage = Extract<ChildMessage, { readonly type: 'progress' }>
 export type ChildResultMessage = Extract<ChildMessage, { readonly type: 'result' }>
 
 const validateSessionFile = (value: string, sessionDir: string): string => {

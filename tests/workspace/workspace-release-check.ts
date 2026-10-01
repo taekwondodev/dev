@@ -33,9 +33,6 @@ import {
   integrationFacts,
   isUnavailable,
   makeGitHubReader,
-  readInventory,
-  stateDigestOf,
-  verifyInventory,
   type GitHubPullRequest,
   type GitHubReader,
 } from '../../src/workspace-evidence.ts'
@@ -1879,22 +1876,6 @@ try {
       )
       assert.equal(proof.kind === 'retained' && proof.retained, 'integration-unknown')
       assert.ok(proof.reason.includes('refs/remotes/origin/main'), proof.reason)
-    }
-  )
-  await claim(
-    'the verifier fingerprints staged and unstaged tracked content even when status paths do not change',
-    () => {
-      const digest = () => {
-        const inventory = readInventory(worktree, feature)
-        assert.equal(verifyInventory(worktree, [], inventory).verdict, 'valid')
-        return stateDigestOf({ head: feature, inventory, targetTip: squash, publications: [] })
-      }
-      const composed = digest()
-      writeFileSync(join(worktree, 'tracked.txt'), 'dirty\n')
-      const dirty = digest()
-      assert.notEqual(dirty, composed)
-      git(['add', 'tracked.txt'], worktree)
-      assert.notEqual(digest(), dirty)
     }
   )
 

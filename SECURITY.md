@@ -33,6 +33,7 @@ Pi authentication lives in `~/.pi/agent/auth.json`, shared by global Pi, dev and
 ## Outside the protection
 
 - No OS sandbox: read-only tools, workspace admission and process observation constrain cooperating dev participants, not arbitrary programs, Xcode, external terminals or code that a trusted extension runs.
+- A child runs with the lead's environment: `NODE_OPTIONS` and every other variable of the shell that launched dev reach it unchanged; the controller sets only the data home and the Pi agent directory.
 - A process that detaches into its own session escapes observation; what a lost observation does to its checkout is in [workspace](docs/workspace.md#behavior).
 - During a release, a process outside dev can move a selected file's parent and redirect the deletion; dev does not guarantee atomic filesystem containment against concurrent external changes. Stop independently started tools and avoid external edits while a release runs.
 - Git-ignoring `.dev/` and the data home's file permissions are not access control against other software running as your account.

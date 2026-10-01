@@ -153,5 +153,3 @@ export const quotaExhausted = (message: string | undefined): boolean =>
   /insufficient_quota|quota.{0,40}(exceed|exhaust)|usage.limit|usage_limit|credit.balance|billing.hard.limit|subscription.{0,40}(limit|exhaust)/i.test(
     message ?? ''
   )
-
-export const dispatchConfigPath = DISPATCH_PATH

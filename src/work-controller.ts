@@ -149,7 +149,7 @@ export interface WorkOwnerOptions {
   readonly cwd: string
   readonly sessionId: string
   readonly profile: string
-  readonly workspace?: {
+  readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
     readonly requestRebind: (handoff: WorkspaceHandoff) => void
@@ -612,10 +612,6 @@ class WorkOwnerImpl implements WorkOwnerService {
         const requestedCwd = parent === undefined ? yield* this.resolveCwd(request.cwd) : undefined
         const id = asAttemptId(randomUUID())
         const { workspace } = this
-        if (workspace === undefined)
-          return yield* new WorkError({
-            message: 'Workspace authority is unavailable; no work was started',
-          })
         const execution = {
           sessionId: reservation.sessionId,
           taskKey: workspaceTaskKey(parent, reservation.task.taskId),
@@ -724,7 +720,7 @@ class WorkOwnerImpl implements WorkOwnerService {
         Effect.tapError(() => {
           const selected = grant
           const { workspace } = this
-          return !installed && selected !== undefined && workspace !== undefined
+          return !installed && selected !== undefined
             ? workspace.attachment
                 .reportExecution(selected, {
                   kind: 'launch-failed',
@@ -1305,7 +1301,7 @@ class WorkOwnerImpl implements WorkOwnerService {
       if (message.type === 'workspace-check') {
         const { workspace } = this
         const { child } = job
-        if (workspace === undefined || child === undefined)
+        if (child === undefined)
           return yield* new WorkError({ message: 'Child workspace owner is unavailable' })
         const checked = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
@@ -1758,8 +1754,6 @@ class WorkOwnerImpl implements WorkOwnerService {
     fact: WorkspaceExecutionFact
   ): Effect.Effect<void, WorkFailure> {
     const { workspace } = this
-    if (workspace === undefined)
-      return Effect.fail(new WorkError({ message: 'Workspace authority is unavailable' }))
     if (job.workspaceLaunch === 'settled') return Effect.void
     return workspace.attachment
       .reportExecution(job.workspace, fact)
@@ -1800,7 +1794,3 @@ export const makeWorkOwnerLayer = (
       owner => owner.close('session scope closed').pipe(Effect.orDie)
     )
   ).pipe(Layer.provide(NodeFileSystem.layer))
-
-export const ownerEffect = <A>(
-  f: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>
-): Effect.Effect<A, WorkFailure, WorkOwner> => Effect.flatMap(WorkOwner, f)

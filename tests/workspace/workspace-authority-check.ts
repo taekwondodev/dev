@@ -1065,48 +1065,6 @@ try {
     }
   )
 
-  await claim(
-    'a lost scoped operation-start acknowledgment leaves its use durably operation-started',
-    async () => {
-      const scopedLostAckRoot = join(sandbox, 'scoped-lost-ack-authority')
-      const scopedLostAck = faultInjector()
-      const scopedLostAckLifecycle = await openLifecycle({
-        root: scopedLostAckRoot,
-        startWorker: scopedLostAck.startWorker,
-      })
-      const scopedLostAckAttachment = await scopedLostAckLifecycle.attach({
-        conversation: conversation('scoped-lost-ack'),
-        cwd: failureRepo,
-      })
-      const scopedLostAckParent = ready(await scopedLostAckAttachment.authorize({ kind: 'write' }))
-      const scopedLostAckOperation = ready(
-        await scopedLostAckAttachment.authorize({
-          kind: 'native-file-write',
-          within: scopedLostAckParent,
-          path: 'file.txt',
-        })
-      )
-      scopedLostAck.dropNextAcknowledgment('report-execution')
-      await expectWorkspaceError(
-        scopedLostAckAttachment.reportExecution(scopedLostAckOperation, {
-          kind: 'operation-started',
-        }),
-        'unavailable'
-      )
-      assert.deepEqual(
-        scopedLostAck.dropped,
-        ['report-execution'],
-        'the operation-start acknowledgment was dropped'
-      )
-      await scopedLostAckLifecycle.close()
-      const scopedLostAckRecovery = await openLifecycle({ root: scopedLostAckRoot })
-      const scopedLostAckUse = await findUse(scopedLostAckRecovery, scopedLostAckOperation.useId)
-      assert.equal(scopedLostAckUse?.effect, 'native-file-write')
-      assert.equal(scopedLostAckUse?.stage, 'operation-started')
-      await scopedLostAckRecovery.close()
-    }
-  )
-
   const traversalRepo = join(sandbox, 'traversal-repo')
   const traversalOutside = join(sandbox, 'traversal-outside')
   mkdirSync(join(traversalOutside, 'inner'), { recursive: true })

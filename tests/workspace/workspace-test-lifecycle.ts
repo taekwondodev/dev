@@ -112,7 +112,7 @@ export interface TestLifecycle {
   close(): Promise<void>
 }
 
-export const promisedAttachment = (attachment: WorkspaceAttachment): TestAttachment => ({
+const promisedAttachment = (attachment: WorkspaceAttachment): TestAttachment => ({
   effect: attachment,
   get binding() {
     return attachment.binding

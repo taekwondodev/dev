@@ -17,19 +17,15 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import { makeRuntimeFactory, sweepAtQuit } from '../../src/launcher.ts'
-import { getProfile } from '../../src/profiles.ts'
-import { acquireRuntime } from '../../src/runtime-coordination.ts'
-import { createSessionGuard } from '../../src/session-guard.ts'
+import { sweepAtQuit } from '../../src/launcher.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../../src/workspace-command.ts'
 import { WorkspaceError, type WorkspaceView } from '../../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../../src/workspace-host.ts'
 import {
   deferred,
   loadInstalledPi,
-  loadImportPathResolver,
   makeClaims,
   makeOfflineModel,
+  openHostRuntime,
   replay,
   type ScriptedContent,
   toolCall,
@@ -37,11 +33,9 @@ import {
   within,
 } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
-import { NodeServices } from '@effect/platform-node'
-import { Deferred, Effect, Exit, Scope } from 'effect'
+import { Deferred, Effect } from 'effect'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
-const resolveImportPath = await loadImportPathResolver(packageInfo.root)
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-real-authority-')))
 const lead = join(fixture, 'projects', 'lead')
@@ -161,20 +155,6 @@ const hostAttachment = await lifecycle.attach({
   },
   cwd: lead,
 })
-const hostScope = Scope.makeUnsafe()
-const workspaceHost = await Effect.runPromise(
-  Scope.provide(hostScope)(
-    makeWorkspaceHost({
-      lifecycle: lifecycle.effect,
-      attachment: hostAttachment.effect,
-      dataHome,
-      openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
-      repositoryRoot: cwd => Effect.promise(() => gitRoot(cwd)),
-      resolveImportPath,
-    })
-  )
-)
-
 const observer: ExtensionFactory = (api: ExtensionAPI) => {
   api.registerTool({
     name: 'probe_unverified',
@@ -265,43 +245,30 @@ const recordHostNotices =
       })
     )
 
-const guard = createSessionGuard(
-  await Effect.runPromise(
-    Scope.provide(hostScope)(
-      acquireRuntime(dataHome, { installationPath: fixture, namespacePath: authorityRoot })
-    )
-  )
-)
-const runtimeFactory = await Effect.runPromise(
-  Effect.gen(function* () {
-    return yield* makeRuntimeFactory({
-      api: pi,
-      packageRoot: packageInfo.root,
-      dataHome,
-      profile: yield* getProfile('general'),
-      guard,
-      workspaceHost,
-      lifecycle: lifecycle.effect,
-      modelRuntime: Effect.succeed(modelRuntime),
-      model: offlineModel,
-      extensions: dev => [
-        { name: 'probe:observer', factory: observer },
-        ...dev.map(item =>
-          item.name === 'dev:workspace-host'
-            ? { ...item, factory: recordHostNotices(item.factory) }
-            : item
-        ),
-      ],
-    })
-  }).pipe(Effect.provide(NodeServices.layer))
-)
-const runtime = await pi.createAgentSessionRuntime(runtimeFactory, {
-  cwd: lead,
+const opened = await openHostRuntime({
+  coordination: { installationPath: fixture, namespacePath: authorityRoot },
+  pi,
+  packageRoot: packageInfo.root,
+  lifecycle: lifecycle.effect,
+  attachment: hostAttachment.effect,
+  dataHome,
+  sessionDir,
   agentDir,
-  sessionManager: initialManager,
+  manager: initialManager,
+  cwd: lead,
+  repositoryRoot: cwd => Effect.promise(() => gitRoot(cwd)),
+  offline: { model: offlineModel, modelRuntime },
+  extensions: dev => [
+    { name: 'probe:observer', factory: observer },
+    ...dev.map(item =>
+      item.name === 'dev:workspace-host'
+        ? { ...item, factory: recordHostNotices(item.factory) }
+        : item
+    ),
+  ],
 })
-workspaceHost.bindRuntime(runtime)
-guard.bind(runtime)
+const workspaceHost = opened.host
+const { runtime } = opened
 const bindingBeforeRefusal = structuredClone(workspaceHost.attachment.binding)
 
 const mode = new pi.InteractiveMode(runtime, {
@@ -706,9 +673,7 @@ await claim(
     assert.ok(existsSync(managed))
   }
 )
-await runtime.dispose()
-await Effect.runPromise(workspaceHost.close)
-await Effect.runPromise(Scope.close(hostScope, Exit.void))
+await opened.close()
 await claim(
   "once the runtime is disposed after the quit, the conversation's live shell family is stopped and its use settled",
   async () => {

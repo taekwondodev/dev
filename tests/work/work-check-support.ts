@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type Effect, ManagedRuntime } from 'effect'
-import { makeWorkOwnerLayer, ownerEffect } from '../../src/work-controller.ts'
+import { makeWorkOwnerLayer } from '../../src/work-controller.ts'
 import type {
   AgentStartRequest,
   AttemptView,
@@ -20,7 +20,7 @@ import type {
   WorkOwnerService,
 } from '../../src/work-domain.ts'
 import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
-import { waitFor } from '../workspace/workspace-check-support.ts'
+import { ownerEffect, waitFor } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
 
