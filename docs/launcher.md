@@ -30,10 +30,12 @@ npm run setup -- --data-home PATH                       # setup against an expli
 npm run update -- --remote origin --branch main         # fast-forward the checkout
 npm run rollback -- --ref REVISION                      # detach the checkout at REVISION
 npm run profile [-- --data-home PATH]                   # usage report and README charts from the sessions
+npm run pi:verify [-- --version X.Y.Z]                  # verify a Pi release against dev; on green, open its pin pull request
+npm run pi:install -- --version X.Y.Z                   # install the verified, pinned Pi release globally
 npm unlink --global dev-pi-environment --ignore-scripts # remove the `dev` command; checkout and data stay
 ```
 
-`npm link` exposes the checkout's `dev` executable through npm's global prefix: the `bin` directory of `npm config get prefix` must be on `PATH`, and a moved checkout is relinked from its new location. Setup, update and rollback take the installation gate exclusively, so every dev TUI must be closed first. Update and rollback refuse a dirty checkout and, when `.dev/` exists, any revision that would stop ignoring it or track its content.
+`npm link` exposes the checkout's `dev` executable through npm's global prefix: the `bin` directory of `npm config get prefix` must be on `PATH`, and a moved checkout is relinked from its new location. Setup, update, rollback, `pi:verify` and `pi:install` take the installation gate exclusively, so every dev TUI must be closed first. Update, rollback and `pi:verify` refuse a dirty checkout; update and rollback also refuse, when `.dev/` exists, any revision that would stop ignoring it or track its content. The Pi upgrade commands are described in [DEVELOPMENT](DEVELOPMENT.md#pi-upgrade).
 
 The usage profile resolves the data home like the launcher, reads every `.jsonl` file in its `sessions/` (lead) and `child-sessions/` (child), prints the report, and rewrites `docs/performance/usage-baseline.json`, `usage.svg` and `tools.svg` in the checkout. It takes no gate and records nothing at runtime: Pi's session files are the only source. A data home without a lead session that made a model request fails and leaves those files untouched.
 
@@ -56,6 +58,7 @@ The usage profile resolves the data home like the launcher, reads every `.jsonl`
 | `/path/to/project/`                                      | working files and the project's own instructions                                                                                 |
 | `~/Developer/dev/.dev/`                                  | default private data home, Git-ignored: `sessions/`, `child-sessions/`, `work/`, profile preferences, the dependency observation |
 | `~/Developer/dev/.dev/coordination/`                     | installation admission and conversation claims; stays in the checkout under any data-home override                               |
+| `~/Developer/dev/.dev/pi-candidate/`                     | the Pi release `pi:verify` installed last and its `report.md`, kept until the next verification or its global install            |
 | `~/.pi/agent/auth.json`                                  | Pi authentication, shared by global Pi, dev and dev's children                                                                   |
 | `~/Library/Application Support/dev/workspace-authority/` | workspace authority and managed worktrees, per OS account                                                                        |
 
