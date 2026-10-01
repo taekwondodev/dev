@@ -1,15 +1,8 @@
 import { Schema } from 'effect'
-import {
-  AttemptId,
-  AttemptRecordSchema,
-  SessionId,
-  type AttemptRecord,
-  type SessionId as SessionIdType,
-} from './work-domain.ts'
+import { AttemptId, AttemptRecordSchema, SessionId } from './work-domain.ts'
 
 const RpcId = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
 const Timestamp = Schema.Finite
-const LogStreamSchema = Schema.Literals(['stdout', 'stderr', 'result'] as const)
 const AttemptIds = Schema.Array(AttemptId)
 
 const SessionRequestFields = {
@@ -151,10 +144,3 @@ export const decodeWorkerData = (value: unknown): WorkerData =>
 
 export const decodeListValue = (value: unknown): ListValue =>
   Schema.decodeUnknownSync(ListValueSchema)(value)
-
-export type StoreSession = SessionIdType
-export type StoreRecord = AttemptRecord
-export type StoreId = AttemptId
-export type StoreStream = typeof LogStreamSchema.Type
-
-export const isStoreStream = Schema.is(LogStreamSchema)

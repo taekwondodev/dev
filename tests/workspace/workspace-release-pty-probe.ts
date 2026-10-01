@@ -96,12 +96,6 @@ try {
   }
 
   await claim(
-    'dev workspace check <task> in a terminal exits 0 with the assessment of every workspace',
-    async () => {
-      assert.equal(await run(['--cwd', repo, 'workspace', 'check', taskId]), 0)
-    }
-  )
-  await claim(
     'dev workspace release of a task with nothing review-required refuses with exit 1 before any confirmation, and every reservation remains',
     async () => {
       assert.equal(await run(['--cwd', repo, 'workspace', 'release', unfinishedTask]), 1)

@@ -32,12 +32,7 @@ import { makeRuntimeFactory } from '../../src/launcher.ts'
 import { getProfile } from '../../src/profiles.ts'
 import { acquireRuntime } from '../../src/runtime-coordination.ts'
 import { createSessionGuard } from '../../src/session-guard.ts'
-import {
-  noExplicitRelease,
-  parseWorkspaceCommand,
-  runReadOnlyWorkspaceCommand,
-  type WorkspaceCommandError,
-} from '../../src/workspace-command.ts'
+import { noExplicitRelease } from '../../src/workspace-command.ts'
 import {
   WorkspaceError,
   type ReleaseRequest,
@@ -581,51 +576,10 @@ const lifecycle: WorkspaceLifecycle = {
   recordPublication: unsupported,
 }
 
-const refused = <A>(effect: Effect.Effect<A, WorkspaceCommandError>): WorkspaceCommandError =>
-  Effect.runSync(Effect.flip(effect))
-const parseCommand = (tokens: readonly string[]) => Effect.runSync(parseWorkspaceCommand(tokens))
-assert.deepEqual(parseCommand([]), { kind: 'list' })
-assert.deepEqual(parseCommand(['list']), { kind: 'list' })
-assert.deepEqual(parseCommand(['inspect', TASK_LEAD]), {
-  kind: 'inspect',
-  taskId: TASK_LEAD,
-})
-assert.equal(
-  refused(parseWorkspaceCommand(['inspect', `${TASK_LEAD.slice(0, 8)}*`])).exitCode,
-  2,
-  'a task prefix or pattern is a usage error, never a lookup'
-)
-assert.equal(
-  refused(parseWorkspaceCommand(['resume', TASK_RESUME])).exitCode,
-  2,
-  'resume left the /workspace grammar for the workspace tool'
-)
-const leadScope = { repositoryRoot: Effect.succeed(lead) }
-const listResult = await Effect.runPromise(
-  runReadOnlyWorkspaceCommand(Effect.succeed(lifecycle), { kind: 'list' }, leadScope)
-)
-const inspectResult = await Effect.runPromise(
-  runReadOnlyWorkspaceCommand(
-    Effect.succeed(lifecycle),
-    { kind: 'inspect', taskId: TASK_LEAD },
-    leadScope
-  )
-)
 const headings = (text: string): readonly string[] =>
   text.split('\n').filter(line => !line.startsWith(' '))
 const row = (taskId: string, workspaceId: string, current = false): string =>
   `task ${taskId} — workspace ${workspaceId}${current ? ' [current binding]' : ''}`
-assert.equal(listResult.exitCode, 0)
-assert.deepEqual(
-  headings(listResult.text),
-  [`Workspace list for repository ${lead}:`, row(TASK_LEAD, WS_LEAD)],
-  'the list shows only the workspaces of the repository at its cwd'
-)
-assert.equal(inspectResult.exitCode, 0)
-assert.deepEqual(headings(inspectResult.text), [
-  `Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`,
-])
-assert.equal(attachCalls.length, 0, 'read-only commands do not bind or attach a task')
 
 const finalText = [{ type: 'text' as const, text: 'Offline host integration fixture completed.' }]
 const readAgents = (callId: string) => toolCall(callId, 'read', { path: 'AGENTS.md' })

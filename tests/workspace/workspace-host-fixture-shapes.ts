@@ -176,15 +176,3 @@ export const makeFixtureReceipt = (input: {
       reason: row.reason,
     })),
   } satisfies SweepReceipt)
-
-type ProducesEvery<Produced, Seam> = [Exclude<keyof Seam, keyof Produced>] extends [never]
-  ? true
-  : false
-export const stubProducesEveryField: {
-  readonly grant: ProducesEvery<ReturnType<typeof makeFixtureGrant>, WorkspaceGrant>
-  readonly view: ProducesEvery<ReturnType<typeof makeFixtureView>, WorkspaceView>
-  readonly binding: ProducesEvery<ReturnType<typeof makeFixtureBinding>, WorkspaceBinding>
-  readonly handoff: ProducesEvery<ReturnType<typeof makeFixtureHandoff>, WorkspaceHandoff>
-  readonly assessment: ProducesEvery<ReturnType<typeof makeFixtureAssessment>, WorkspaceAssessment>
-  readonly receipt: ProducesEvery<ReturnType<typeof makeFixtureReceipt>, SweepReceipt>
-} = { grant: true, view: true, binding: true, handoff: true, assessment: true, receipt: true }

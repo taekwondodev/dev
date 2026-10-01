@@ -31,6 +31,7 @@ import type { GitHubReader } from '../../src/workspace-evidence.ts'
 import { checkTask } from '../../src/workspace-release.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
+import { verdictName } from './workspace-completion-fixtures.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
 import {
@@ -77,8 +78,6 @@ const rowOf = (receipt: SweepReceipt, workspaceId: WorkspaceId): WorkspaceRow =>
     throw new Error(`no receipt row for ${workspaceId}: ${JSON.stringify(receipt.rows)}`)
   return row
 }
-const verdictOf = (row: WorkspaceRow): string =>
-  row.verdict.kind === 'finished' ? row.verdict.rule : `retained:${row.verdict.retained}`
 const receiptsOf = async (attachment: TestAttachment) => {
   const closing = attachment.close()
   const receipts = await Effect.runPromise(Stream.runCollect(attachment.effect.sweeps))
@@ -188,27 +187,33 @@ try {
       const receipt = await sweepAtQuit(finishedOwner.write.workspaceId)
       assert.equal(receipt.moment, 'quit')
       const removed = rowOf(receipt, finished.workspaceId)
-      assert.deepEqual([removed.outcome, verdictOf(removed)], ['removed', 'branch-in-target'])
+      assert.deepEqual(
+        [removed.outcome, verdictName(removed.verdict)],
+        ['removed', 'branch-in-target']
+      )
       assert.ok(removed.operationId !== undefined)
       assert.equal(existsSync(finished.checkout), false, 'the worktree and its residue are gone')
 
       const main = rowOf(receipt, finishedOwner.write.workspaceId)
-      assert.deepEqual([main.outcome, verdictOf(main)], ['released', 'clean-checkout'])
+      assert.deepEqual([main.outcome, verdictName(main.verdict)], ['released', 'clean-checkout'])
       assert.equal(readFileSync(join(repo, 'tracked.txt'), 'utf8'), 'tracked\n')
 
       const live = rowOf(receipt, liveChild.workspaceId)
-      assert.deepEqual([live.outcome, verdictOf(live)], ['retained', 'retained:use-live'])
+      assert.deepEqual([live.outcome, verdictName(live.verdict)], ['retained', 'retained:use-live'])
       assert.ok(existsSync(liveChild.checkout))
       assert.deepEqual(
         [
           rowOf(receipt, liveOwner.write.workspaceId).outcome,
-          verdictOf(rowOf(receipt, liveOwner.write.workspaceId)),
+          verdictName(rowOf(receipt, liveOwner.write.workspaceId).verdict),
         ],
         ['retained', 'retained:use-live']
       )
 
       const kept = rowOf(receipt, unmerged.workspaceId)
-      assert.deepEqual([kept.outcome, verdictOf(kept)], ['retained', 'retained:not-integrated'])
+      assert.deepEqual(
+        [kept.outcome, verdictName(kept.verdict)],
+        ['retained', 'retained:not-integrated']
+      )
       assert.ok(existsSync(join(unmerged.checkout, 'feature.txt')))
       assert.deepEqual(
         [rowOf(receipt, unmergedOwner.write.workspaceId).outcome],
@@ -218,7 +223,7 @@ try {
 
       const dirty = rowOf(receipt, dirtyOwner.write.workspaceId)
       assert.deepEqual(
-        [dirty.outcome, verdictOf(dirty)],
+        [dirty.outcome, verdictName(dirty.verdict)],
         ['retained', 'retained:checkout-modified']
       )
       assert.equal(
@@ -268,7 +273,7 @@ try {
       assert.equal(view?.completion.role, 'detached')
       assert.equal(view?.inventory?.files, 1, 'ignored files still undergo inventory checks')
       const removed = rowOf(await sweepAtQuit(detached.workspaceId), detached.workspaceId)
-      assert.deepEqual([removed.outcome, verdictOf(removed)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
       assert.equal(existsSync(detached.checkout), false)
       assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(detached.checkout))
     }
@@ -300,7 +305,10 @@ try {
       assert.notEqual(view.target.source, 'override')
       const receipt = await sweepAtQuit(selfOwner.write.workspaceId)
       const row = rowOf(receipt, self.workspaceId)
-      assert.deepEqual([row.outcome, verdictOf(row)], ['retained', 'retained:integration-unknown'])
+      assert.deepEqual(
+        [row.outcome, verdictName(row.verdict)],
+        ['retained', 'retained:integration-unknown']
+      )
       git(['update-ref', 'refs/remotes/origin/self-named', 'HEAD'], self.checkout)
       await lifecycle.recordTarget(selfOwner.taskId, {
         kind: 'local',
@@ -308,7 +316,7 @@ try {
       })
       const tracking = rowOf(await sweepAtQuit(selfOwner.write.workspaceId), self.workspaceId)
       assert.deepEqual(
-        [tracking.outcome, verdictOf(tracking)],
+        [tracking.outcome, verdictName(tracking.verdict)],
         ['retained', 'retained:integration-unknown'],
         'its remote-tracking ref is its own branch too'
       )
@@ -458,7 +466,7 @@ try {
       })
       const held = await sweepAtQuit(boundOwner.write.workspaceId)
       const kept = rowOf(held, bound.workspaceId)
-      assert.deepEqual([kept.outcome, verdictOf(kept)], ['retained', 'retained:use-live'])
+      assert.deepEqual([kept.outcome, verdictName(kept.verdict)], ['retained', 'retained:use-live'])
       assert.ok(kept.reason.includes('open dev conversation'), kept.reason)
       assert.ok(existsSync(bound.checkout))
       const view = (await lifecycle.check(boundOwner.taskId)).find(
@@ -486,7 +494,7 @@ try {
       await attached.close()
       const swept = await sweepAtQuit(boundOwner.write.workspaceId)
       const removed = rowOf(swept, bound.workspaceId)
-      assert.deepEqual([removed.outcome, verdictOf(removed)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
       assert.equal(existsSync(bound.checkout), false)
     }
   )
@@ -524,13 +532,16 @@ try {
       assert.ok(receipt !== undefined)
       assert.equal(receipt.moment, 'allocation')
       const skipped = rowOf(receipt, own.workspaceId)
-      assert.deepEqual([skipped.outcome, verdictOf(skipped)], ['skipped', 'retained:excluded'])
+      assert.deepEqual(
+        [skipped.outcome, verdictName(skipped.verdict)],
+        ['skipped', 'retained:excluded']
+      )
       assert.ok(existsSync(own.checkout))
       const clean = rowOf(receipt, exclusionOwner.write.workspaceId)
-      assert.deepEqual([clean.outcome, verdictOf(clean)], ['skipped', 'retained:skipped'])
+      assert.deepEqual([clean.outcome, verdictName(clean.verdict)], ['skipped', 'retained:skipped'])
       assert.ok((await reservedTasks()).includes(exclusionOwner.taskId))
       const removed = rowOf(receipt, other.workspaceId)
-      assert.deepEqual([removed.outcome, verdictOf(removed)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
       assert.equal(existsSync(other.checkout), false)
       const attempted = attemptedRows(receipt).map(row => row.workspaceId)
       assert.ok(attempted.includes(other.workspaceId), JSON.stringify(receipt.rows))
@@ -654,7 +665,7 @@ try {
       const kept = await sweepAtQuit(goneOwner.write.workspaceId)
       const missing = rowOf(kept, gone.workspaceId)
       assert.deepEqual(
-        [missing.outcome, verdictOf(missing)],
+        [missing.outcome, verdictName(missing.verdict)],
         ['retained', 'retained:directory-missing']
       )
       const reserved = await lifecycle.check(goneOwner.taskId)
@@ -681,7 +692,11 @@ try {
       assert.equal(existsSync(crashed.managed.checkout), false, 'dev removed it before crashing')
       const observed = await sweepAtQuit(crashed.owner.write.workspaceId)
       const row = rowOf(observed, crashed.managed.workspaceId)
-      assert.deepEqual([row.outcome, verdictOf(row)], ['already-absent', 'no-residue'], row.reason)
+      assert.deepEqual(
+        [row.outcome, verdictName(row.verdict)],
+        ['already-absent', 'no-residue'],
+        row.reason
+      )
       const rerun = await sweepAtQuit(crashed.owner.write.workspaceId)
       assert.ok(
         !rerun.rows.some(
@@ -720,7 +735,11 @@ try {
       )
       const settled = await sweepAtQuit(half.owner.write.workspaceId)
       const row = rowOf(settled, half.managed.workspaceId)
-      assert.deepEqual([row.outcome, verdictOf(row)], ['already-absent', 'no-residue'], row.reason)
+      assert.deepEqual(
+        [row.outcome, verdictName(row.verdict)],
+        ['already-absent', 'no-residue'],
+        row.reason
+      )
     }
   )
 
@@ -782,7 +801,7 @@ try {
       const next = await sweepAtQuit(kept.owner.write.workspaceId)
       const cleanDelivered = rowOf(next, kept.managed.workspaceId)
       assert.deepEqual(
-        [cleanDelivered.outcome, verdictOf(cleanDelivered)],
+        [cleanDelivered.outcome, verdictName(cleanDelivered.verdict)],
         ['removed', 'branch-in-target'],
         'a clean branch whose commits reached the target is removed as delivered'
       )
@@ -855,7 +874,7 @@ try {
       const later = await sweepAtQuit(owner.write.workspaceId)
       const skipped = rowOf(later, managed.workspaceId)
       assert.deepEqual(
-        [skipped.outcome, verdictOf(skipped), skipped.operationId],
+        [skipped.outcome, verdictName(skipped.verdict), skipped.operationId],
         ['review-required', 'retained:release-review', undefined]
       )
       assert.equal(sweepExitCode(later), 0, 'a retained workspace is not an attempt')

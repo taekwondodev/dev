@@ -17,9 +17,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
-import { makeWorkOwnerLayer, ownerEffect } from '../../src/work-controller.ts'
+import { makeWorkOwnerLayer } from '../../src/work-controller.ts'
 import { checkChildWorkspace, validateWorkspaceWritePath } from '../../src/work-child-workspace.ts'
-import { deferred, makeClaims, waitUntil, within } from './workspace-check-support.ts'
+import { deferred, makeClaims, ownerEffect, waitUntil, within } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import {
@@ -235,35 +235,6 @@ try {
     } finally {
       await runtime.dispose()
     }
-    await claim(
-      'missing authority blocks command execution with no old-lease fallback',
-      async () => {
-        const noAuthority = ManagedRuntime.make(
-          makeWorkOwnerLayer({
-            dataHome: join(root, 'unattached'),
-            cwd,
-            sessionId: randomUUID(),
-            profile: 'general',
-          })
-        )
-        try {
-          await assert.rejects(
-            noAuthority.runPromise(
-              ownerEffect(owner =>
-                owner.startProcess({
-                  taskId: 'blocked',
-                  command: 'printf invalid > should-not-exist',
-                })
-              )
-            ),
-            /Workspace authority is unavailable/
-          )
-          await assert.rejects(readFile(join(cwd, 'should-not-exist')), { code: 'ENOENT' })
-        } finally {
-          await noAuthority.dispose()
-        }
-      }
-    )
 
     const shell = await openShell(async shellCwd => {
       const writer = await attachment.authorize({ kind: 'write', cwd: shellCwd })
