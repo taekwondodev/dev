@@ -23,7 +23,7 @@
     "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",
-    "work:check": "npm run types:pi && node tests/work/work-store-check.ts && node tests/work/work-skill-check.ts && node tests/work/work-nested-check.ts",
+    "work:check": "npm run types:pi && node tests/work/work-dispatch-check.ts && node tests/work/work-store-check.ts && node tests/work/work-skill-check.ts && node tests/work/work-nested-check.ts",
     "setup": "node scripts/maintain.ts setup",
     "update": "node scripts/maintain.ts update",
     "rollback": "node scripts/maintain.ts rollback",

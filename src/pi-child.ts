@@ -7,7 +7,7 @@ import { NodeServices } from '@effect/platform-node'
 import { Clock, Effect, FileSystem, Predicate, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 
-import { GenerationId, SessionId, TaskId } from './work-domain.ts'
+import { GenerationId, SKILL_COMMAND, SessionId, TaskId, skillInvocation } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
@@ -128,8 +128,6 @@ interface ChildRunOptions extends ChildServeOptions {
   readonly signal?: AbortSignal
 }
 
-const SKILL_COMMAND = '/skill:'
-
 interface InitialPrompt {
   readonly text: string
   readonly skill?: Pi.Skill
@@ -244,9 +242,9 @@ const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
   session: Pi.AgentSession,
   prompt: string
 ): Effect.fn.Return<InitialPrompt, ChildError, FileSystem.FileSystem> {
-  const invocation = prompt.trimStart()
-  if (!invocation.startsWith(SKILL_COMMAND)) return { text: prompt }
-  const [, name = '', assignment = ''] = /^\/skill:(\S*)\s*([\s\S]*)$/.exec(invocation) ?? []
+  const invocation = skillInvocation(prompt)
+  if (invocation === undefined) return { text: prompt }
+  const { name, assignment } = invocation
   if (name === '')
     return yield* new ChildError({ message: 'A skill invocation needs a skill name' })
   const skill = session.resourceLoader.getSkills().skills.find(candidate => candidate.name === name)

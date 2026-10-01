@@ -28,7 +28,7 @@ A profile is a selectable set of instructions, skills and domain resources for a
 
 **Leaf**: a child started by a coordinator. It cannot delegate, and its outcome is delivered to its coordinator.
 
-**Dispatch rule**: an entry of `config/crew-dispatch.json` mapping a task category (`when`) to a harness, model and effort.
+**Dispatch rule**: an entry of `config/crew-dispatch.json`, keyed by skill name, mapping that skill to a harness, model and effort. The file's `default` applies to a prompt that invokes no configured skill.
 
 **Outcome delivery**: the arrival of an attempt's result in the conversation that started it, the lead's or a coordinator's, acknowledged on that conversation's active branch.
 

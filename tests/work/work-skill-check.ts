@@ -3,6 +3,7 @@ import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
 import { openWorkFixture, script } from './work-check-support.ts'
+import { CHILD_MODEL } from './work-child-model.ts'
 
 const count = (text: string, part: string): number => text.split(part).length - 1
 
@@ -51,6 +52,21 @@ try {
         assert.equal(count(text, '/skill:alpha'), 0)
         assert.match(text, /SYSTEM-SKILL-BLOCKS 0/)
         assert.deepEqual(view.resources?.invokedSkill, { name: 'alpha', path: alpha })
+      }
+    )
+    await claim(
+      'a delegation without a rule completes against the shipped configuration',
+      async () => {
+        const started = await general.call(owner =>
+          owner.startAgent({
+            access: 'read-only',
+            taskId: 'unruled',
+            prompt: '/skill:alpha Dispatch me without a rule.',
+            model: CHILD_MODEL,
+          })
+        )
+        const view = await general.outcome(started.id)
+        assert.equal(view.status, 'completed', view.error)
       }
     )
     await claim('a plain prompt reaches the model unchanged and records no skill', async () => {
