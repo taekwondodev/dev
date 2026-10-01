@@ -54,7 +54,7 @@ The usage profile resolves the data home like the launcher, reads every `.jsonl`
 
 | Path                                                     | Content                                                                                                                          |
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `~/Developer/dev/`                                       | code and versioned configuration, including `config/crew-dispatch.json`                                                          |
+| `~/Developer/dev/`                                       | code and versioned configuration, including `config/crew-dispatch.json`: dispatch rules keyed by skill name and the default      |
 | `/path/to/project/`                                      | working files and the project's own instructions                                                                                 |
 | `~/Developer/dev/.dev/`                                  | default private data home, Git-ignored: `sessions/`, `child-sessions/`, `work/`, profile preferences, the dependency observation |
 | `~/Developer/dev/.dev/coordination/`                     | installation admission and conversation claims; stays in the checkout under any data-home override                               |

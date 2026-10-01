@@ -6,7 +6,7 @@ The `work` tool runs local commands and delegated Pi children in the background,
 
 ## Use
 
-Ask the lead in natural language to run a command in the background or to delegate an assignment; the lead calls `work` with `action: "process"` or `action: "delegate"`. There is no `/work start`. A delegation carries a task ID, a focused prompt, `access` (`read-only` or `write`), an optional `coordinate: true` and a dispatch choice: the lead reads `work` with `action: "dispatch"`, matches the `when` of a rule in `config/crew-dispatch.json` and passes the rule index as a string, or `"default"`. Explicit `model` (`provider/model-id`) and `effort` override the rule. Give a child file paths, facts and acceptance conditions, not a transcript. A prompt that starts with `/skill:name` loads that skill natively, with the rest of the prompt as its assignment.
+Ask the lead in natural language to run a command in the background or to delegate an assignment; the lead calls `work` with `action: "process"` or `action: "delegate"`. There is no `/work start`. A delegation carries a task ID, a focused prompt, `access` (`read-only` or `write`) and an optional `coordinate: true`. Give a child file paths, facts and acceptance conditions, not a transcript. A prompt that starts with `/skill:name` loads that skill natively, with the rest of the prompt as its assignment. Dispatch is resolved from that prompt: when it invokes a skill that has a rule in `config/crew-dispatch.json`, the child uses that rule, otherwise the file's `default`. Pass `rule` only to override that choice with a configured skill name or `"default"`; explicit `model` (`provider/model-id`) and `effort` override the selected profile, and the tool tells the lead and a coordinator to pass them only when the user asked for that model or effort.
 
 `coordinate: true` delegates a whole phase: that child is a coordinator, with a scoped `work` tool (`dispatch`, `delegate`, `list`, `inspect`, `cancel`) to start leaf children for its assignment. Only its outcome comes back to the lead.
 
@@ -14,7 +14,7 @@ Session commands:
 
 ```text
 /work                        attempts of this session with their state, leaves with their coordinator as `parent` (same as /work list)
-/work dispatch               the dispatch rules, read from the dev checkout
+/work dispatch               the dispatch rules and default, read from the dev checkout
 /work inspect <id>           outcome, log summary and artifact changes to re-evaluate
 /work inspect <id> stdout 0  retained output from offset 0; pass the returned nextOffset for the next page
 /work inspect <id> stderr 0  same for stderr; `result` is a child's retained final answer
@@ -36,7 +36,7 @@ A writer attempt shows its managed worktree path with a reminder: `blocked` whil
 - A finished process or a child's report is not verification of the artifact. Artifact comparison covers tracked Git changes only; untracked files and external dependencies are not compared.
 - Session, task, attempt and generation identify every observation. Esc while the lead runs, `/work stop`, confirmed `/tree` navigation, `/new`, `/resume`, `/fork` and `/quit` invalidate the current generation and stop the session's work; `/reload` keeps shells and closes work. A cancelled switch, fork or resume preview does not close the session's work; a confirmed one does. Earlier outcomes stay inspectable and are not replayed into a new branch. Cancelling a coordinator, its failure or its exit stop its leaves, those that already reported a result included, and a leaf outcome that arrives afterwards is dropped. A request a coordinator sends after it was stopped or the generation changed is answered with a refusal and starts nothing. Cancellation is observed through process exit and surviving descendants, and never undoes edits.
 - The `work` tool description teaches this protocol, and outcome messages repeat the worktree reminder, in every dev session. That is instruction, not a guarantee that every model follows it.
-- Invalid dispatch fails: a missing or unreadable rules file, an unsupported harness, an invalid effort or an unresolvable model never substitute another model. Omitted model or effort use the child's Pi defaults, not the lead's picker.
+- Invalid dispatch fails: a missing or unreadable rules file, a rule that is not configured, an unsupported harness, an invalid effort or an unresolvable model never substitute another model. Omitted model or effort use the child's Pi defaults, not the lead's picker.
 - A subscription-exhaustion report, from any attempt of the session, leaves included, blocks new agents and automatic continuation for the rest of the session; a new user message does not clear it. Running commands finish and their outcomes are still recorded. A final provider or transport failure, after Pi's own retries, suspends dev's automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
 - The extension status line shows background states and the active children's models and context pressure, a leaf as `coordinator>leaf`. Listing and inspection show each attempt's parent, invoked skill, tools and observed usage; usage is counted once per attempt, never summed into its coordinator, with unavailable values distinct from zero.
 
@@ -60,4 +60,4 @@ After a crash, records describe observations, not survival: an absent PID reveal
 
 ## Verify
 
-`npm run work:check` forks real children with an offline scripted model: native skill invocation, coordinator authorization, outcome routing, interruption and the leaf read of a coordinator's worktree. `npm run workspace:check` covers the real process adapters and the host session flows of a background process (rebind, fork, import) in headless Pi sessions. Delivery timing is checked in the real TUI.
+`npm run work:check` checks dispatch resolution against crafted and shipped configurations, then forks real children with an offline scripted model: a delegation without a rule against the shipped configuration, native skill invocation, coordinator authorization, outcome routing, interruption and the leaf read of a coordinator's worktree. `npm run workspace:check` covers the real process adapters and the host session flows of a background process (rebind, fork, import) in headless Pi sessions. Delivery timing is checked in the real TUI.

@@ -53,31 +53,52 @@ export const DispatchEffortSchema = Schema.Literals([
 
 export const DispatchProfileSchema = Schema.Struct({
   harness: Schema.Literal('pi'),
-  model: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty())),
   effort: Schema.optional(DispatchEffortSchema),
 })
 export type DispatchProfile = typeof DispatchProfileSchema.Type
 
-export const DispatchRuleSchema = Schema.Struct({
-  when: Schema.String,
-  use: DispatchProfileSchema,
-  why: Schema.optional(Schema.String),
-})
-export type DispatchRule = typeof DispatchRuleSchema.Type
+export const DispatchRulesSchema = Schema.Record(Schema.String, DispatchProfileSchema).check(
+  Schema.makeFilter((rules: Readonly<Record<string, DispatchProfile>>) => {
+    const names = Object.keys(rules)
+    if (names.includes('default'))
+      return 'A dispatch rule cannot be named "default"; that word selects the default profile'
+    const invalid = names.find(name => !/^\S+$/.test(name))
+    return invalid === undefined
+      ? undefined
+      : `Dispatch rule key "${invalid}" must be a nonempty skill name without whitespace`
+  })
+)
 
 export const DispatchConfigSchema = Schema.Struct({
   path: Schema.String,
   configured: Schema.Literal(true),
-  rules: Schema.Array(DispatchRuleSchema),
+  rules: DispatchRulesSchema,
   default: DispatchProfileSchema,
 })
 export type DispatchConfig = typeof DispatchConfigSchema.Type
 
 export interface DispatchInput {
+  readonly prompt: string
   readonly rule?: string
   readonly harness?: string
   readonly model?: string
   readonly effort?: string
+}
+
+export const SKILL_COMMAND = '/skill:'
+
+export interface SkillInvocation {
+  readonly name: string
+  readonly assignment: string
+}
+
+export const skillInvocation = (prompt: string): SkillInvocation | undefined => {
+  const invocation = prompt.trimStart()
+  if (!invocation.startsWith(SKILL_COMMAND)) return undefined
+  const [, name = '', assignment = ''] =
+    /^(\S*)\s*([\s\S]*)$/.exec(invocation.slice(SKILL_COMMAND.length)) ?? []
+  return { name, assignment }
 }
 
 export const OwnerIdentitySchema = Schema.Struct({

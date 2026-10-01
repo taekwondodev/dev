@@ -45,7 +45,7 @@ npm run workspace:check   # completion table, authority, release, sweep, process
 npm run workspace:tui     # the real Pi TUI in a pseudo-terminal: stub lifecycle with fault injection,
                           # real authority, quit and release probes
 npm run workspace:github  # the gh-backed GitHub reader once, read-only, against a public merged PR
-npm run work:check        # current-schema attempt persistence; real children on an offline scripted model: skills,
+npm run work:check        # dispatch resolution, current-schema attempt persistence; real children on an offline scripted model: skills,
                           # coordinator authorization, outcome routing, interruption, leaf read
 npm run dev:probe         # SDK runtime creation without the TUI
 ```
