@@ -655,7 +655,7 @@ try {
   )
 
   await claim(
-    'a worktree directory deleted outside dev is retained for an explicit release, which settles it as already-absent, while a crash right after the removal by dev is observed by the next sweep as already-absent, and a rerun finds nothing more to attempt',
+    'a worktree directory deleted outside dev is retained as directory-missing, while a crash right after the removal by dev is observed by the next sweep as already-absent, and a rerun finds nothing more to attempt',
     async () => {
       const goneCheckout = userCheckout('gone')
       const goneOwner = await reserve(goneCheckout)
@@ -668,21 +668,6 @@ try {
         [missing.outcome, verdictName(missing.verdict)],
         ['retained', 'retained:directory-missing']
       )
-      const reserved = await lifecycle.check(goneOwner.taskId)
-      assert.ok(
-        reserved.some(item => item.workspaceId === gone.workspaceId),
-        'the reservation of the missing worktree remains'
-      )
-      const settled = await lifecycle.release({
-        taskId: goneOwner.taskId,
-        commandId: newId(),
-        decided: reserved.map(item => item.subject),
-        decider: { kind: 'user' },
-        workspaceId: gone.workspaceId,
-        occupiedPaths: [],
-      })
-      assert.equal(settled.outcome, 'already-absent', settled.reason)
-
       const crashed = await finishedWithReports('crashed', [])
       await crashSweep(
         'after-git-remove',

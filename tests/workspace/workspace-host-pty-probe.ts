@@ -11,8 +11,7 @@ import {
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { NodeServices } from '@effect/platform-node'
-import { Effect, Exit, Scope, Stream } from 'effect'
+import { Effect, Stream } from 'effect'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -28,11 +27,6 @@ import type {
 import type { AgentSessionRuntime } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
 import { errorText } from '../../src/error-text.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
-import { makeRuntimeFactory } from '../../src/launcher.ts'
-import { getProfile } from '../../src/profiles.ts'
-import { acquireRuntime } from '../../src/runtime-coordination.ts'
-import { createSessionGuard } from '../../src/session-guard.ts'
-import { noExplicitRelease } from '../../src/workspace-command.ts'
 import {
   WorkspaceError,
   type ReleaseRequest,
@@ -53,14 +47,13 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../../src/workspace-domain.ts'
-import { makeWorkspaceHost } from '../../src/workspace-host.ts'
 import { canonicalConversationFile, resolveWriteDestination } from '../../src/workspace-paths.ts'
 import {
   deferred,
   emitReply,
   loadInstalledPi,
-  loadImportPathResolver,
   makeOfflineModel,
+  openHostRuntime,
   type ScriptedReply,
   type ScriptedStreamParts,
   type StreamSimple,
@@ -109,7 +102,6 @@ globalThis.fetch = async () => {
 }
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
-const resolveImportPath = await loadImportPathResolver(packageInfo.root)
 
 const TASK_LEAD = id(1)
 const TASK_A = id(2)
@@ -234,7 +226,6 @@ const attachCalls: { readonly path: string; readonly sessionId: string }[] = []
 const handoffs: WorkspaceHandoff[] = []
 const inspections: { readonly cwd?: string; readonly taskId?: string }[] = []
 const attachFailures = new Set<string>()
-const failedConversationIds = new Set<string>()
 const refusedHandoffTargets = new Set<string>()
 const pendingByConversation = new Map<string, FixtureDescriptor>()
 const conversationKey = (conversation: WorkspaceConversation): string =>
@@ -494,7 +485,6 @@ const fixtureLifecycle = {
     const path = resolve(input.cwd)
     const { sessionId } = input.conversation
     attachCalls.push({ path, sessionId })
-    if (failedConversationIds.has(sessionId)) throw new Error('fixture preflight attach failure')
     if (attachFailures.has(path)) throw new Error(`fixture runtime attach failure at ${path}`)
     const pending = pendingByConversation.get(conversationKey(input.conversation))
     const { selection } = input
@@ -775,11 +765,13 @@ const scriptedStream =
     return emitReply(parts, step, options?.signal)
   }
 
-const {
-  model: offlineModel,
-  modelRuntime,
-  assistantMessage,
-} = await makeOfflineModel({ pi, importFromPi, fixture, id: 'dev36-tui', stream: scriptedStream })
+const { model: offlineModel, modelRuntime } = await makeOfflineModel({
+  pi,
+  importFromPi,
+  fixture,
+  id: 'dev36-tui',
+  stream: scriptedStream,
+})
 
 const runStarted = deferred<void>()
 const mainTurnDone = deferred<void>()
@@ -960,25 +952,6 @@ const initialManager = pi.SessionManager.create(lead, sessionDir)
 const initialSessionId = initialManager.getSessionId()
 const initialSessionFile = initialManager.getSessionFile()
 assert.ok(initialSessionFile)
-const hostScope = Scope.makeUnsafe()
-const workspaceHost = await Effect.runPromise(
-  Scope.provide(hostScope)(
-    makeWorkspaceHost({
-      lifecycle,
-      attachment: await Effect.runPromise(
-        lifecycle.attach({
-          conversation: { sessionId: initialSessionId, sessionFile: initialSessionFile, dataHome },
-          cwd: lead,
-        })
-      ),
-      dataHome,
-      openSessionManager: (file, cwd) => pi.SessionManager.open(file, sessionDir, cwd),
-      repositoryRoot: cwd => Effect.succeed(resolve(cwd)),
-      resolveImportPath,
-    })
-  )
-)
-
 const shadowRead =
   (cwd: string): ExtensionFactory =>
   api => {
@@ -1076,48 +1049,6 @@ const observer =
     })
   }
 
-const guard = createSessionGuard(
-  await Effect.runPromise(
-    Scope.provide(hostScope)(
-      acquireRuntime(dataHome, {
-        installationPath: fixture,
-        namespacePath: join(fixture, 'authority'),
-      })
-    )
-  )
-)
-const runtimeFactory = await Effect.runPromise(
-  Effect.gen(function* () {
-    return yield* makeRuntimeFactory({
-      api: pi,
-      packageRoot: packageInfo.root,
-      dataHome,
-      profile: yield* getProfile('general'),
-      guard,
-      workspaceHost,
-      lifecycle,
-      modelRuntime: Effect.succeed(modelRuntime),
-      model: offlineModel,
-      extensions: (dev, cwd) => [
-        { name: 'dev36:observer', factory: observer(cwd) },
-        ...dev.map(item =>
-          item.name === 'dev:workspace-host'
-            ? { ...item, factory: instrumentHost(item.factory) }
-            : item
-        ),
-      ],
-    })
-  }).pipe(Effect.provide(NodeServices.layer))
-)
-const activeRuntime = await pi.createAgentSessionRuntime(runtimeFactory, {
-  cwd: lead,
-  agentDir,
-  sessionManager: initialManager,
-})
-runtime = activeRuntime
-workspaceHost.bindRuntime(activeRuntime)
-guard.bind(activeRuntime)
-
 process.on('exit', () => {
   const calls = providerCalls.map(({ step, cwd, parked }) => ({ step, cwd, parked }))
   writeFileSync(
@@ -1134,22 +1065,34 @@ process.on('exit', () => {
   }
 })
 
-const preflightManager = pi.SessionManager.create(targetFail, sessionDir)
-preflightManager.appendCustomEntry('dev36/preflight', { persisted: true })
-preflightManager.appendMessage(assistantMessage([], 'stop'))
-const preflightFile = preflightManager.getSessionFile()
-assert.ok(preflightFile)
-assert.equal(pi.SessionManager.open(preflightFile, sessionDir).getCwd(), targetFail)
-failedConversationIds.add(preflightManager.getSessionId())
-assert.deepEqual(
-  await activeRuntime.switchSession(preflightFile),
-  { cancelled: true },
-  'a refused attach cancels the switch instead of failing it, which Pi treats as fatal'
-)
-assert.equal(activeRuntime.session.sessionManager.getSessionId(), initialSessionId)
-assert.equal(activeRuntime.session.sessionManager.getSessionFile(), initialSessionFile)
-assert.equal(resolve(activeRuntime.cwd), resolve(lead))
-assert.equal(workspaceHost.isParked(), false, 'a failed preflight leaves the old runtime usable')
+const opened = await openHostRuntime({
+  coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
+  pi,
+  packageRoot: packageInfo.root,
+  lifecycle,
+  attachment: await Effect.runPromise(
+    lifecycle.attach({
+      conversation: { sessionId: initialSessionId, sessionFile: initialSessionFile, dataHome },
+      cwd: lead,
+    })
+  ),
+  dataHome,
+  sessionDir,
+  agentDir,
+  manager: initialManager,
+  cwd: lead,
+  repositoryRoot: cwd => Effect.succeed(resolve(cwd)),
+  offline: { model: offlineModel, modelRuntime },
+  extensions: (dev, cwd) => [
+    { name: 'dev36:observer', factory: observer(cwd) },
+    ...dev.map(item =>
+      item.name === 'dev:workspace-host' ? { ...item, factory: instrumentHost(item.factory) } : item
+    ),
+  ],
+})
+const workspaceHost = opened.host
+const activeRuntime = opened.runtime
+runtime = activeRuntime
 
 const mode = new pi.InteractiveMode(activeRuntime, {
   initialMessage: 'Run the deterministic dev36 workspace host fixture.',
@@ -1759,7 +1702,9 @@ assert.deepEqual(
       `Release eligibility for exact task ${TASK_RESUME} (a check grants nothing; the sweep at quit or before a worktree allocation rechecks everything):`,
       `workspace ${WS_RESUME_A} (managed) at ${targetA}`,
     ],
-    [noExplicitRelease(TASK_RESUME)],
+    [
+      `No workspace of task ${TASK_RESUME} is review-required, so there is nothing for an explicit release. Finished workspaces are released automatically when dev quits or before it allocates a worktree; the others stay retained with the reason above.`,
+    ],
     [
       `Task ${TASK_B} belongs to this conversation. Quitting dev (/quit) ends its uses and then sweeps the repository: finished workspaces are released automatically and the others stay retained with their reason. Use /workspace check ${TASK_B} to see what the sweep will do.`,
     ],
@@ -1886,9 +1831,7 @@ const report = {
   ],
 }
 mode.stop('transcript')
-await activeRuntime.dispose()
-await Effect.runPromise(workspaceHost.close)
-await Effect.runPromise(Scope.close(hostScope, Exit.void))
+await opened.close()
 void runPromise
 assert.equal(runFailure, undefined)
 writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`)

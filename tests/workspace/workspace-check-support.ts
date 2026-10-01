@@ -9,7 +9,7 @@ import type {
   AssistantMessage,
   Model,
 } from '../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
-import { makeRuntimeFactory } from '../../src/launcher.ts'
+import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher.ts'
 import { WorkOwner } from '../../src/work-controller.ts'
 import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'
@@ -253,6 +253,7 @@ export const openHostRuntime = async (input: {
   readonly cwd: string
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
   readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
+  readonly extensions?: RuntimeParts['extensions']
 }) => {
   const resolveImportPath = await loadImportPathResolver(input.packageRoot)
   const scope = Scope.makeUnsafe()
@@ -285,6 +286,7 @@ export const openHostRuntime = async (input: {
           guard,
           workspaceHost: host,
           lifecycle: input.lifecycle,
+          extensions: input.extensions,
           ...(input.offline === undefined
             ? {}
             : {
@@ -306,6 +308,7 @@ export const openHostRuntime = async (input: {
       runtime,
       close: async () => {
         await runtime.dispose()
+        await Effect.runPromise(host.close)
         await Effect.runPromise(Scope.close(scope, Exit.void))
       },
     }
