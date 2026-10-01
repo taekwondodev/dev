@@ -28,6 +28,8 @@
     "update": "node scripts/maintain.ts update",
     "rollback": "node scripts/maintain.ts rollback",
     "profile": "node scripts/maintain.ts profile",
+    "pi:verify": "node scripts/maintain.ts pi-verify",
+    "pi:install": "node scripts/maintain.ts pi-install",
     "profile:check": "node tests/usage-profile-check.ts",
     "types:pi": "node scripts/resolve-pi.ts",
     "typecheck": "npm run types:pi && tsc --noEmit",
@@ -52,6 +54,9 @@
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.115"
+  },
+  "config": {
+    "pi": "0.99.1"
   },
   "engines": {
     "node": ">=22.23.2"

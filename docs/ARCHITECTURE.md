@@ -41,7 +41,7 @@ src/process-family.ts              process table, launch gate and family observa
 src/runtime-coordination.ts        installation admission and conversation claims
 src/session-guard.ts               claims a Pi session switch target before Pi opens it
 src/error-text.ts                  the one error-to-text helper
-scripts/                           setup, update, rollback, usage profile, Pi declaration resolution, source-comment lint
+scripts/                           setup, update, rollback, usage profile, Pi upgrade verification and install, Pi declaration resolution, source-comment lint
 profiles/                          SOUL.md and skills per profile
 config/crew-dispatch.json          versioned dispatch rules
 ```

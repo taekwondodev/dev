@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, FileSystem, Schema } from 'effect'
+import { readPiPin } from '../scripts/pi-upgrade.ts'
 
 export class SmokeError extends Schema.TaggedError<SmokeError>()('SmokeError', {
   message: Schema.String,
@@ -64,7 +65,8 @@ const program = Effect.scoped(
       ],
       checkout
     )
-    if (!output.includes('pi: 0.99.1') || !output.includes('selection: general'))
+    const pin = yield* readPiPin
+    if (!output.includes(`pi: ${pin} (`) || !output.includes('selection: general'))
       return yield* new SmokeError({ message: `Unexpected diagnostics:\n${output}` })
     yield* Effect.sync(() => {
       console.log(output.trim())
