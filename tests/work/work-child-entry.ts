@@ -3,8 +3,10 @@ import { Option, Predicate, Schema } from 'effect'
 import { ChildRequestEnvelope, serveChild } from '../../src/pi-child.ts'
 import { ControllerWorkMessageSchema } from '../../src/work-protocol.ts'
 import {
+  cancelLog,
   directive,
   DROP_FIRST_ACK,
+  HOLD_CANCEL,
   ipcLog,
   RAW_AFTER_REPLY_MARKER,
   RAW_MARKER,
@@ -13,6 +15,7 @@ import {
 } from './work-child-model.ts'
 
 const REPLY_GRACE_MS = 3000
+const HOLD_CANCEL_MS = 1500
 
 const decodeStart = Schema.decodeUnknownOption(
   Schema.Struct({ type: Schema.Literal('start'), request: ChildRequestEnvelope })
@@ -23,7 +26,9 @@ const decodeReply = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
 const assignment = {
   prompt: '',
   log: '',
+  cancels: '',
   dropAck: false,
+  holdCancel: false,
   awaited: 0,
   closing: false,
   replied: false,
@@ -68,11 +73,14 @@ process.on('message', (raw: unknown) => {
     const { request } = start.value
     assignment.prompt = request.prompt
     assignment.log = ipcLog(request.dataHome, request.owner.attemptId)
+    assignment.cancels = cancelLog(request.dataHome, request.owner.attemptId)
     assignment.dropAck = request.prompt.includes(DROP_FIRST_ACK)
+    assignment.holdCancel = request.prompt.includes(HOLD_CANCEL)
     sendRaw(directive(request.prompt, RAW_MARKER))
     return
   }
   if (Option.isSome(decodeCancel(raw))) {
+    if (assignment.cancels !== '') appendFileSync(assignment.cancels, 'cancel\n')
     assignment.awaited += sendRaw(directive(assignment.prompt, RAW_ON_CANCEL_MARKER))
     return
   }
@@ -88,4 +96,13 @@ process.on('message', (raw: unknown) => {
   if (assignment.closing && assignment.awaited === 0 && process.connected) channelDisconnect?.()
 })
 
+const listen = process.on.bind(process)
+process.on = ((event: string, listener: (...args: unknown[]) => void) =>
+  listen(event, (...args: unknown[]) => {
+    const cancelling =
+      event === 'SIGTERM' || (event === 'message' && Option.isSome(decodeCancel(args[0])))
+    if (assignment.holdCancel && cancelling) setTimeout(() => listener(...args), HOLD_CANCEL_MS)
+    else listener(...args)
+  })) as typeof process.on
 serveChild({ modelRuntime: scriptedModelRuntime })
+process.on = listen
