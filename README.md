@@ -30,7 +30,7 @@ npm run setup
 npm link --ignore-scripts
 ```
 
-Then, from any project:
+Then, from any Git project:
 
 ```bash
 cd /path/to/your/project
