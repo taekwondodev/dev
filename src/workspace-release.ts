@@ -103,6 +103,7 @@ import { errorText } from './error-text.ts'
 import { holdExistingInstallationForRemoval } from './runtime-coordination.ts'
 import { rows, textField, transaction } from './workspace-sqlite.ts'
 import { hasErrorCode, newId, now } from './workspace-platform.ts'
+import { observePhysicalIdentity, type PhysicalObservation } from './workspace-identity.ts'
 
 export interface EvidenceReaders {
   readonly github: GitHubReader
@@ -1167,11 +1168,16 @@ interface Deletion {
   readonly effects: string[]
   readonly failed?: ManifestEntry
 }
-const deleteSelected = (checkout: string, manifest: readonly ManifestEntry[]): Deletion => {
+const deleteSelected = (
+  checkout: string,
+  manifest: readonly ManifestEntry[],
+  root: PhysicalObservation | undefined
+): Deletion => {
   const entries = manifest.map(entry => ({ ...entry }))
   const effects: string[] = []
   for (const entry of entries) {
-    const check = entryUnchanged(checkout, entry)
+    const check =
+      root === undefined ? { state: 'absent' as const } : entryUnchanged(checkout, entry, root)
     if (check.state === 'absent') {
       entry.state = 'absent'
       continue
@@ -1301,6 +1307,29 @@ const removeManagedWorktree = (
         'Unlock it with Git only if it is safe to do so, then check and release again.'
       )
   }
+  let removalRoot: PhysicalObservation | undefined
+  if (before.directory !== 'absent') {
+    try {
+      removalRoot = observePhysicalIdentity(checkout)
+    } catch (cause) {
+      return releaseResult(
+        assessment,
+        'review-required',
+        `The checkout's volume identity could not be verified; nothing was changed: ${errorText(cause)}`,
+        'Resolve the filesystem identity observation failure, then check and release again.'
+      )
+    }
+    if (
+      removalRoot.identity.volumeUuid !== workspace.physical.volumeUuid ||
+      removalRoot.identity.inode !== workspace.physical.inode
+    )
+      return releaseResult(
+        assessment,
+        'review-required',
+        'The checkout physical identity changed before removal; nothing was changed.',
+        'Inspect the managed checkout and its recorded identity before any removal.'
+      )
+  }
   const intent: WorktreeRemovalRecord = {
     ...releaseOperationBase(assessed, commandId, decider),
     phase: 'intent',
@@ -1318,7 +1347,7 @@ const removeManagedWorktree = (
   )
   let operation = withStep({ ...intent, phase: 'started' }, 'selected-files', 'started')
   save(authority, repo, operation)
-  const deleted = deleteSelected(checkout, operation.manifest)
+  const deleted = deleteSelected(checkout, operation.manifest, removalRoot)
   const { effects } = deleted
   if (deleted.failed !== undefined) {
     const { failed } = deleted
@@ -1529,9 +1558,17 @@ const reconcileInterruptedReleases = (
     const observation = observeRemoval(workspace)
     if (!observable(observation))
       return { kind: 'unobservable', reason: observationText(observation) }
+    let root: PhysicalObservation | undefined
+    if (observation.directory === 'present')
+      try {
+        root = observePhysicalIdentity(workspace.path)
+      } catch (cause) {
+        return { kind: 'unobservable', reason: errorText(cause) }
+      }
     const manifest = operation.manifest.map(entry => {
       if (entry.state !== 'pending' && entry.state !== 'failed') return entry
-      const check = entryUnchanged(workspace.path, entry)
+      if (root === undefined) return { ...entry, state: 'absent' as const }
+      const check = entryUnchanged(workspace.path, entry, root)
       if (check.state === 'absent') return { ...entry, state: 'absent' as const }
       if (check.state === 'same') return { ...entry, detail: 'present' }
       return { ...entry, detail: check.detail }

@@ -1,26 +1,25 @@
-import { realpathSync, statSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { basename, isAbsolute, resolve } from 'node:path'
 import { Option, Schema } from 'effect'
 import { WorkspaceError } from './workspace-domain.ts'
+import { FileIdentitySchema, observePhysicalIdentities } from './workspace-identity.ts'
 import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
 
-export const FileIdentitySchema = Schema.Struct({
-  device: Schema.NonEmptyString,
-  inode: Schema.NonEmptyString,
-})
 const GitWorkspaceSchema = Schema.Struct({
   path: Schema.NonEmptyString,
   identity: FileIdentitySchema,
+  identityDevice: Schema.NonEmptyString,
   commonPath: Schema.NonEmptyString,
   commonIdentity: FileIdentitySchema,
+  commonDevice: Schema.NonEmptyString,
   gitAdminPath: Schema.NonEmptyString,
   gitAdminIdentity: FileIdentitySchema,
+  gitAdminDevice: Schema.NonEmptyString,
   objectFormat: Schema.NonEmptyString,
   head: Schema.String,
 })
-export type FileIdentity = typeof FileIdentitySchema.Type
 export type GitWorkspace = typeof GitWorkspaceSchema.Type
 const decodeGitWorkspace = Schema.decodeUnknownOption(GitWorkspaceSchema)
 
@@ -80,12 +79,6 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
   return result.stdout.replace(/\n$/, '')
 }
 
-const physicalIdentity = (path: string): FileIdentity => {
-  const info = statSync(path)
-  if (!info.isDirectory()) throw gitBlocked(`Git identity is not a directory: ${path}`)
-  return { device: String(info.dev), inode: String(info.ino) }
-}
-
 export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   if (!isAbsolute(cwd)) throw gitBlocked(`Workspace cwd must be absolute: ${cwd}`)
   let checkout: string
@@ -107,13 +100,23 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   } catch {
     head = ''
   }
+  const [physical, commonPhysical, adminPhysical] = observePhysicalIdentities([
+    checkout,
+    common,
+    admin,
+  ])
+  if (physical === undefined || commonPhysical === undefined || adminPhysical === undefined)
+    throw gitBlocked(`Filesystem identity observation was incomplete for ${checkout}`)
   const workspace = decodeGitWorkspace({
     path: checkout,
-    identity: physicalIdentity(checkout),
+    identity: physical.identity,
+    identityDevice: physical.device,
     commonPath: common,
-    commonIdentity: physicalIdentity(common),
+    commonIdentity: commonPhysical.identity,
+    commonDevice: commonPhysical.device,
     gitAdminPath: admin,
-    gitAdminIdentity: physicalIdentity(admin),
+    gitAdminIdentity: adminPhysical.identity,
+    gitAdminDevice: adminPhysical.device,
     objectFormat,
     head,
   })
@@ -348,7 +351,8 @@ export const addDetachedWorktree = (
   if (
     created.path !== resolve(destination) ||
     created.commonPath !== source.commonPath ||
-    created.commonIdentity.device !== source.commonIdentity.device ||
+    created.commonDevice !== source.commonDevice ||
+    created.commonIdentity.volumeUuid !== source.commonIdentity.volumeUuid ||
     created.commonIdentity.inode !== source.commonIdentity.inode ||
     created.objectFormat !== source.objectFormat ||
     created.head !== commit

@@ -10,6 +10,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  renameSync,
   symlinkSync,
   readFileSync,
   writeFileSync,
@@ -68,6 +69,40 @@ const conversation = (name: string) => {
   writeFileSync(sessionFile, '{}\n', { mode: 0o600 })
   return { sessionId: `session-${name}`, sessionFile, dataHome }
 }
+const initializeSeparateRepository = (path: string, common: string) => {
+  mkdirSync(path)
+  git(['init', '--quiet', '-b', 'main', '--separate-git-dir', common], path)
+  git(['config', 'user.name', 'Identity Replacement Test'], path)
+  git(['config', 'user.email', 'identity-replacement@example.invalid'], path)
+  writeFileSync(join(path, 'tracked.txt'), 'replacement fixture\n')
+  git(['add', 'tracked.txt'], path)
+  git(['commit', '--quiet', '-m', 'fixture'], path)
+}
+const authorizeRead = async (
+  authorityRoot: string,
+  path: string,
+  session: ReturnType<typeof conversation>
+) => {
+  const owner = await openLifecycle({ root: authorityRoot })
+  let attachment: TestAttachment | undefined
+  try {
+    attachment = await owner.attach({ conversation: session, cwd: path })
+    return { outcome: (await attachment.authorize({ kind: 'read' })).kind }
+  } catch (cause) {
+    return {
+      outcome: cause instanceof WorkspaceError ? cause.outcome : 'error',
+      message: cause instanceof Error ? cause.message : String(cause),
+    }
+  } finally {
+    await attachment?.close()
+    await owner.close()
+  }
+}
+const replaceDirectoryAtSamePath = (path: string) => {
+  const backup = `${path}.original`
+  renameSync(path, backup)
+  cpSync(backup, path, { recursive: true })
+}
 const expectWorkspaceError = async (
   promise: Promise<unknown>,
   outcome: WorkspaceError['outcome']
@@ -108,6 +143,55 @@ const runChild = (code: string): Promise<string> =>
         : reject(new Error(`Child failed (${codeValue}): ${stderr}`))
     )
   })
+const deviceObserver = join(sandbox, 'simulated-device.mjs')
+writeFileSync(
+  deviceObserver,
+  `import fs from 'node:fs'
+import childProcess from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import { resolve, sep } from 'node:path'
+const observe = original => (path, options) => {
+  const result = original(path, options)
+  if (result === undefined || result === null) return result
+  const base = process.env.DEV_IDENTITY_PATH
+  const resolved = resolve(String(path))
+  if (base === undefined || (resolved !== base && !resolved.startsWith(base + sep))) return result
+  const device = process.env.DEV_IDENTITY_DEVICE
+  return new Proxy(result, {
+    get(target, property) {
+      if (property === 'dev' && device !== undefined)
+        return typeof target.dev === 'bigint' ? BigInt(device) : Number(device)
+      return Reflect.get(target, property, target)
+    }
+  })
+}
+fs.statSync = observe(fs.statSync)
+fs.lstatSync = observe(fs.lstatSync)
+const originalExecFileSync = childProcess.execFileSync
+childProcess.execFileSync = (file, args, options) => {
+  if (file === '/usr/bin/osascript' && process.env.DEV_IDENTITY_BEHAVIOR === 'fail')
+    throw Object.assign(new Error('fixture volume lookup failure'), { code: 'ENOENT' })
+  const output = originalExecFileSync(file, args, options)
+  if (file === '/usr/bin/osascript' && process.env.DEV_IDENTITY_BEHAVIOR === 'replace') {
+    const base = process.env.DEV_IDENTITY_PATH
+    if (base !== undefined) {
+      fs.renameSync(base, base + '.identity-original')
+      fs.cpSync(base + '.identity-original', base, { recursive: true })
+    }
+  }
+  return output
+}
+syncBuiltinESMExports()
+`
+)
+const simulatedDevice = (path: string, device: string, behavior = ''): string => `
+  import { Worker } from 'node:worker_threads'
+  const startWorker = (url, options) => new Worker(url, {
+    ...options,
+    env: { ...process.env, DEV_IDENTITY_PATH: ${JSON.stringify(path)}, DEV_IDENTITY_DEVICE: ${JSON.stringify(device)}, DEV_IDENTITY_BEHAVIOR: ${JSON.stringify(behavior)} },
+    execArgv: [...(options.execArgv ?? []), '--import', ${JSON.stringify(pathToFileURL(deviceObserver).href)}]
+  })
+`
 const processExecution = (name: string): WorkspaceExecution => ({
   sessionId: `${name}-session`,
   taskKey: `${name}-task`,
@@ -174,6 +258,150 @@ try {
   git(['add', 'tracked.txt', '.gitignore'])
   git(['commit', '--quiet', '-m', 'fixture'])
   const commit = git(['rev-parse', 'HEAD'])
+
+  await claim(
+    'a fresh attachment and a resumed conversation recognize the same checkout when its observed device number changes after reopening the authority',
+    async () => {
+      const identityRepo = join(sandbox, 'reboot-identity-repo')
+      const identityRoot = join(sandbox, 'reboot-identity-authority')
+      initRepository(identityRepo, 'tracked.txt', 'reboot identity fixture\n')
+      const resumedConversation = conversation('reboot-identity-resume')
+      const freshConversation = conversation('reboot-identity-fresh')
+      const initial = JSON.parse(
+        await runChild(`
+          ${simulatedDevice(identityRepo, '16777234')}
+          const { openLifecycle } = await import(${JSON.stringify(moduleUrl)})
+          const lifecycle = await openLifecycle({ root: ${JSON.stringify(identityRoot)}, startWorker })
+          let attachment
+          let outcome
+          try {
+            attachment = await lifecycle.attach({ conversation: ${JSON.stringify(resumedConversation)}, cwd: ${JSON.stringify(identityRepo)} })
+            outcome = (await attachment.authorize({ kind: 'read' })).kind
+          } catch (error) {
+            outcome = error.outcome ?? 'error'
+          } finally {
+            if (attachment) await attachment.close()
+            await lifecycle.close()
+          }
+          console.log(JSON.stringify({ outcome }))
+        `)
+      ) as { outcome: string }
+      assert.equal(initial.outcome, 'ready')
+      const reopened = JSON.parse(
+        await runChild(`
+          ${simulatedDevice(identityRepo, '16777232')}
+          const { openLifecycle } = await import(${JSON.stringify(moduleUrl)})
+          const lifecycle = await openLifecycle({ root: ${JSON.stringify(identityRoot)}, startWorker })
+          const attach = async conversation => {
+            let attachment
+            try {
+              attachment = await lifecycle.attach({ conversation, cwd: ${JSON.stringify(identityRepo)} })
+              return { outcome: (await attachment.authorize({ kind: 'read' })).kind }
+            } catch (error) {
+              return { outcome: error.outcome ?? 'error', message: error.message }
+            } finally {
+              if (attachment) await attachment.close()
+            }
+          }
+          const fresh = await attach(${JSON.stringify(freshConversation)})
+          const resumed = await attach(${JSON.stringify(resumedConversation)})
+          await lifecycle.close()
+          console.log(JSON.stringify({ fresh, resumed }))
+        `)
+      ) as {
+        fresh: { outcome: string; message?: string }
+        resumed: { outcome: string; message?: string }
+      }
+      assert.deepEqual(reopened, {
+        fresh: { outcome: 'ready' },
+        resumed: { outcome: 'ready' },
+      })
+    }
+  )
+
+  await claim(
+    'volume UUID lookup failures refuse without fallback and path replacement during lookup is detected',
+    async () => {
+      for (const behavior of ['fail', 'replace'] as const) {
+        const path = join(sandbox, `resolver-${behavior}-repo`)
+        const authorityRoot = join(sandbox, `resolver-${behavior}-authority`)
+        initRepository(path, 'tracked.txt', `resolver ${behavior} fixture\\n`)
+        const outcome = JSON.parse(
+          await runChild(`
+            ${simulatedDevice(path, '16777232', behavior)}
+            const { openLifecycle } = await import(${JSON.stringify(moduleUrl)})
+            const lifecycle = await openLifecycle({ root: ${JSON.stringify(authorityRoot)}, startWorker })
+            let attachment
+            let result
+            let message
+            try {
+              attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation(`resolver-${behavior}`))}, cwd: ${JSON.stringify(path)} })
+              result = (await attachment.authorize({ kind: 'read' })).kind
+            } catch (error) {
+              result = error.outcome ?? 'error'
+              message = error.message
+            } finally {
+              if (attachment) await attachment.close()
+              await lifecycle.close()
+            }
+            console.log(JSON.stringify({ outcome: result, message }))
+          `)
+        ) as { outcome: string; message?: string }
+        assert.equal(
+          outcome.outcome,
+          behavior === 'fail' ? 'unavailable' : 'review-required',
+          JSON.stringify(outcome)
+        )
+      }
+    }
+  )
+
+  await claim(
+    'checkout, common-directory and Git-admin replacements at unchanged paths still refuse a resumed workspace',
+    async () => {
+      const checkoutPath = join(sandbox, 'replaced-checkout')
+      const checkoutGitDir = join(sandbox, 'replaced-checkout-git')
+      const checkoutAuthority = join(sandbox, 'replaced-checkout-authority')
+      initializeSeparateRepository(checkoutPath, checkoutGitDir)
+      const checkoutConversation = conversation('replaced-checkout')
+      assert.deepEqual(await authorizeRead(checkoutAuthority, checkoutPath, checkoutConversation), {
+        outcome: 'ready',
+      })
+      replaceDirectoryAtSamePath(checkoutPath)
+      const checkoutResult = await authorizeRead(
+        checkoutAuthority,
+        checkoutPath,
+        checkoutConversation
+      )
+      assert.equal(checkoutResult.outcome, 'review-required', checkoutResult.message)
+
+      const commonPath = join(sandbox, 'replaced-common-checkout')
+      const commonGitDir = join(sandbox, 'replaced-common-git')
+      const commonAuthority = join(sandbox, 'replaced-common-authority')
+      initializeSeparateRepository(commonPath, commonGitDir)
+      const commonConversation = conversation('replaced-common')
+      assert.deepEqual(await authorizeRead(commonAuthority, commonPath, commonConversation), {
+        outcome: 'ready',
+      })
+      replaceDirectoryAtSamePath(commonGitDir)
+      const commonResult = await authorizeRead(commonAuthority, commonPath, commonConversation)
+      assert.equal(commonResult.outcome, 'review-required', commonResult.message)
+
+      const sourcePath = join(sandbox, 'replaced-admin-source')
+      const adminPath = join(sandbox, 'replaced-admin-worktree')
+      const adminAuthority = join(sandbox, 'replaced-admin-authority')
+      initRepository(sourcePath, 'tracked.txt', 'admin replacement fixture\n')
+      git(['worktree', 'add', '--quiet', '--detach', adminPath, 'HEAD'], sourcePath)
+      const adminDirectory = git(['rev-parse', '--path-format=absolute', '--git-dir'], adminPath)
+      const adminConversation = conversation('replaced-admin')
+      assert.deepEqual(await authorizeRead(adminAuthority, adminPath, adminConversation), {
+        outcome: 'ready',
+      })
+      replaceDirectoryAtSamePath(adminDirectory)
+      const adminResult = await authorizeRead(adminAuthority, adminPath, adminConversation)
+      assert.equal(adminResult.outcome, 'review-required', adminResult.message)
+    }
+  )
 
   const lifecycle = await openLifecycle({ root })
   const first = await lifecycle.attach({ conversation: conversation('first'), cwd: repo })

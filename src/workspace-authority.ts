@@ -151,7 +151,7 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
 }
 
 const REPOSITORY_ROW =
-  'SELECT id, common_path, device, inode, object_format, state, provision_id, revision, payload FROM repositories'
+  'SELECT id, common_path, volume_uuid, inode, object_format, state, provision_id, revision, payload FROM repositories'
 const repositoryRow = (db: DatabaseSync, where: string, ...params: string[]): SqlRow | undefined =>
   first(db, `${REPOSITORY_ROW} WHERE ${where}`, ...params)
 const registrationRows = (
@@ -161,8 +161,8 @@ const registrationRows = (
   byPath: repositoryRow(db, 'common_path=?', repository.commonPath),
   byPhysical: repositoryRow(
     db,
-    'device=? AND inode=?',
-    repository.commonIdentity.device,
+    'volume_uuid=? AND inode=?',
+    repository.commonIdentity.volumeUuid,
     repository.commonIdentity.inode
   ),
 })
@@ -176,7 +176,7 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
   if (
     value.id !== textField(row, 'id') ||
     value.commonPath !== textField(row, 'common_path') ||
-    value.device !== textField(row, 'device') ||
+    value.volumeUuid !== textField(row, 'volume_uuid') ||
     value.inode !== textField(row, 'inode') ||
     value.objectFormat !== textField(row, 'object_format') ||
     value.state !== textField(row, 'state') ||
@@ -188,7 +188,7 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
 }
 const matchesRepository = (record: RepositoryCatalogRecord, repository: GitWorkspace): boolean =>
   record.commonPath === repository.commonPath &&
-  record.device === repository.commonIdentity.device &&
+  record.volumeUuid === repository.commonIdentity.volumeUuid &&
   record.inode === repository.commonIdentity.inode &&
   record.objectFormat === repository.objectFormat
 const validateRepositoryRecord = (
@@ -352,7 +352,7 @@ export class WorkspaceAuthority {
             const values: readonly [string, string][] = [
               ['repository_id', repositoryId],
               ['common_path', repository.commonPath],
-              ['common_device', repository.commonIdentity.device],
+              ['common_volume_uuid', repository.commonIdentity.volumeUuid],
               ['common_inode', repository.commonIdentity.inode],
               ['object_format', repository.objectFormat],
             ]
@@ -382,7 +382,7 @@ export class WorkspaceAuthority {
       values.size !== 5 ||
       values.get('repository_id') !== expected.id ||
       values.get('common_path') !== expected.commonPath ||
-      values.get('common_device') !== expected.device ||
+      values.get('common_volume_uuid') !== expected.volumeUuid ||
       values.get('common_inode') !== expected.inode ||
       values.get('object_format') !== expected.objectFormat
     )
@@ -434,7 +434,7 @@ export class WorkspaceAuthority {
         const provisioning: RepositoryCatalogRecord = {
           id: newId(),
           commonPath: repository.commonPath,
-          device: repository.commonIdentity.device,
+          volumeUuid: repository.commonIdentity.volumeUuid,
           inode: repository.commonIdentity.inode,
           objectFormat: repository.objectFormat,
           state: 'provisioning',
@@ -443,12 +443,12 @@ export class WorkspaceAuthority {
         }
         transaction(catalog, () => {
           catalog
-            .prepare(`INSERT INTO repositories(id, common_path, device, inode, object_format, state, provision_id, revision, payload)
+            .prepare(`INSERT INTO repositories(id, common_path, volume_uuid, inode, object_format, state, provision_id, revision, payload)
             VALUES(?,?,?,?,?,'provisioning',?,0,?)`)
             .run(
               provisioning.id,
               provisioning.commonPath,
-              provisioning.device,
+              provisioning.volumeUuid,
               provisioning.inode,
               provisioning.objectFormat,
               provisioning.provisionId,
