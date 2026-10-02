@@ -3,18 +3,33 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import type { EditOperations, WriteOperations } from '@earendil-works/pi-coding-agent'
 import { Deferred, Duration, Effect, Exit, Schema } from 'effect'
 import type { WorkspaceAttachment, WorkspaceError, WorkspaceGrant } from './workspace-domain.ts'
-import { canonicalPath, isWithin } from './workspace-paths.ts'
+import {
+  assertDestinationUnchanged,
+  isWithin,
+  type WriteDestination,
+  type WriteScope,
+} from './workspace-paths.ts'
+import { errorText } from './error-text.ts'
 
 export class NativeWriteRefused extends Schema.TaggedError<NativeWriteRefused>()(
   'NativeWriteRefused',
   { message: Schema.String }
 ) {}
 
-interface NativeWrite {
+export interface NativeWriteAdmission {
   readonly toolCallId: string
-  readonly attachment: WorkspaceAttachment
-  readonly grant: WorkspaceGrant
-  readonly destination: string
+  readonly scope: WriteScope
+  readonly destination: WriteDestination
+  readonly lifecycle:
+    | {
+        readonly kind: 'workspace'
+        readonly attachment: WorkspaceAttachment
+        readonly grant: WorkspaceGrant
+      }
+    | { readonly kind: 'local'; readonly validate: Effect.Effect<void, WorkspaceError> }
+}
+
+interface NativeWrite extends NativeWriteAdmission {
   readonly identity: string
   started?: Effect.Effect<void, WorkspaceError>
 }
@@ -22,11 +37,7 @@ interface NativeWrite {
 export interface NativeWrites {
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
-  admit(input: {
-    readonly toolCallId: string
-    readonly attachment: WorkspaceAttachment
-    readonly grant: WorkspaceGrant
-  }): Effect.Effect<void, NativeWriteRefused>
+  admit(input: NativeWriteAdmission): Effect.Effect<void, NativeWriteRefused>
   finish(toolCallId: string): Effect.Effect<void>
   readonly settle: Effect.Effect<void>
 }
@@ -51,8 +62,9 @@ export const makeNativeWrites = (options: {
   const complete = (write: NativeWrite): Effect.Effect<void> =>
     Effect.suspend(() => {
       writes.delete(write.toolCallId)
-      return write.attachment
-        .reportExecution(write.grant, { kind: 'operation-completed' })
+      if (write.lifecycle.kind === 'local') return Effect.void
+      return write.lifecycle.attachment
+        .reportExecution(write.lifecycle.grant, { kind: 'operation-completed' })
         .pipe(
           Effect.catch(error =>
             Effect.sync(() =>
@@ -68,21 +80,29 @@ export const makeNativeWrites = (options: {
     path: string,
     role: 'destination' | 'parent'
   ): Effect.fn.Return<void, NativeWriteRefused | WorkspaceError> {
-    const actual = canonicalPath(path).path
     const matched = [...writes.values()].filter(write =>
       role === 'destination'
-        ? write.destination === actual
-        : write.destination !== actual && isWithin(actual, write.destination)
+        ? write.destination.operand === path
+        : write.destination.operand !== path && isWithin(path, write.destination.operand)
     )
     if (matched.length === 0)
       return yield* new NativeWriteRefused({
         message: `Native file operation on ${path} matches no admitted destination`,
       })
     for (const write of matched) {
-      write.started ??= yield* Effect.cached(
-        write.attachment.reportExecution(write.grant, { kind: 'operation-started' })
-      )
-      yield* write.started
+      yield* Effect.try({
+        try: () => assertDestinationUnchanged(write.scope, write.destination),
+        catch: cause => new NativeWriteRefused({ message: errorText(cause) }),
+      })
+      if (write.lifecycle.kind === 'local') yield* write.lifecycle.validate
+      else {
+        write.started ??= yield* Effect.cached(
+          write.lifecycle.attachment.reportExecution(write.lifecycle.grant, {
+            kind: 'operation-started',
+          })
+        )
+        yield* write.started
+      }
     }
   })
 
@@ -136,10 +156,15 @@ export const makeNativeWrites = (options: {
       Effect.suspend(() => {
         if (closing)
           return Effect.fail(new NativeWriteRefused({ message: 'The session is closing' }))
-        const destination = input.grant.path
-        if (destination === undefined)
+        const destination = input.destination.path
+        if (
+          input.lifecycle.kind === 'workspace' &&
+          (input.destination.kind !== 'workspace' || input.lifecycle.grant.path !== destination)
+        )
           return Effect.fail(
-            new NativeWriteRefused({ message: 'A native write grant has no destination' })
+            new NativeWriteRefused({
+              message: 'A native write grant does not match its destination',
+            })
           )
         const identity = destinationIdentity(destination)
         if ([...writes.values()].some(write => write.identity === identity))
@@ -148,7 +173,7 @@ export const makeNativeWrites = (options: {
               message: `Another native write to ${destination} is still in flight`,
             })
           )
-        writes.set(input.toolCallId, { ...input, destination, identity })
+        writes.set(input.toolCallId, { ...input, identity })
         return Effect.void
       }),
     finish: toolCallId =>

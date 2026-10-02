@@ -514,6 +514,7 @@ export interface WorkspaceAttachment {
 }
 
 export interface WorkspaceLifecycle {
+  readonly root: string
   attach(input: {
     readonly conversation: WorkspaceConversation
     readonly cwd: string

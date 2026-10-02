@@ -47,7 +47,8 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../../src/workspace-domain.ts'
-import { canonicalConversationFile, resolveWriteDestination } from '../../src/workspace-paths.ts'
+import { canonicalConversationFile, classifyWriteDestination } from '../../src/workspace-paths.ts'
+import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import {
   deferred,
   emitReply,
@@ -317,7 +318,11 @@ const authorizeScoped = (
     'write',
     cwd,
     operation.kind === 'native-file-write'
-      ? resolveWriteDestination(checkout.path, cwd, operation.path)
+      ? classifyWriteDestination(
+          { checkout: checkout.path, authorityRoot: join(fixture, 'authority') },
+          cwd,
+          operation.path
+        ).path
       : undefined
   )
   return {
@@ -548,6 +553,7 @@ const eligibleAssessment = (item: FixtureDescriptor): WorkspaceAssessment =>
     reservationId: reservationIdOf(item),
   })
 const lifecycle: WorkspaceLifecycle = {
+  root: join(fixture, 'authority'),
   attach: input => fromAsync(() => fixtureLifecycle.attach(input)),
   inspect: input => fromAsync(() => fixtureLifecycle.inspect(input)),
   validate: grant => fromAsync(() => fixtureLifecycle.validate(grant)),
@@ -1745,7 +1751,20 @@ const childRead = async (grant: WorkspaceGrant, extensions: readonly ExtensionFa
       noExtensions: true,
       extensionFactories: [
         ...extensions.map((factory, index) => ({ name: `dev36:child-fixture-${index}`, factory })),
-        { name: 'dev:child-workspace', factory: childWorkspaceExtension(grant, controller) },
+        {
+          name: 'dev:child-workspace',
+          factory: childWorkspaceExtension(
+            grant,
+            join(fixture, 'authority'),
+            makeNativeWrites({
+              runPromise: Effect.runPromise,
+              onError: message => {
+                throw new Error(message)
+              },
+            }),
+            controller
+          ),
+        },
       ],
     },
   })

@@ -29,6 +29,7 @@ import {
   type WorkspaceWorkerMessage,
 } from './workspace-protocol.ts'
 import { errorText } from './error-text.ts'
+import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 
 const RPC_TIMEOUT = Duration.millis(WORKER_REQUEST_TIMEOUT_MS)
 const STARTUP_TIMEOUT = Duration.seconds(12)
@@ -387,6 +388,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   )
 
   return {
+    root: options?.root ?? defaultAuthorityRoot(),
     attach: input =>
       request({ op: 'attach', ...input }).pipe(
         Effect.flatMap(opened =>

@@ -188,6 +188,58 @@ const pendingAtLead = async () =>
   (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending)
 
 try {
+  await claim(
+    'native external write/edit preserves checkout contention without allocating or rebinding a workspace',
+    async () => {
+      mkdirSync(join(fixture, 'configuration'))
+      symlinkSync(join(fixture, 'configuration'), join(fixture, 'configuration-alias'))
+      const paths = [
+        join(fixture, 'external-tmp', 'git-repro.py'),
+        join(fixture, 'configuration-alias', '.pi', 'agent', 'extensions', 'calm', 'index.ts'),
+      ]
+      const { offline, script } = await offlineScript('external-native', [
+        paths.map((path, i) => toolCall(`external-write-${i}`, 'write', { path, content: 'one' })),
+        paths.map((path, i) =>
+          toolCall(`external-edit-${i}`, 'edit', { path, oldText: 'one', newText: 'two' })
+        ),
+      ])
+      const { manager, attached } = await attachLeadConversation()
+      const before = await lifecycle.inspect({ cwd: lead })
+      const opened = await openLeadHost({ attachment: attached.effect, manager, offline })
+      try {
+        await opened.runtime.session.prompt('Write and edit both external fixture files.')
+        await opened.runtime.session.waitForIdle()
+        for (const [i, path] of paths.entries()) {
+          for (const operation of ['write', 'edit']) {
+            const result = toolResults(opened.runtime)(`external-${operation}-${i}`)
+            assert.equal(result.isError, false, result.text)
+          }
+          assert.equal(readFileSync(path, 'utf8'), 'two')
+        }
+        assert.equal(script.calls(), 3)
+        assert.equal(opened.runtime.cwd, lead)
+        assert.equal(opened.host.isParked(), false)
+        assert.deepEqual(await lifecycle.inspect({ cwd: lead }), before)
+        assert.deepEqual(await pendingAtLead(), [])
+        await Effect.runPromise(opened.host.close)
+        const latePath = join(fixture, 'after-quit.txt')
+        const late = await opened.runtime.session.extensionRunner.emitToolCall({
+          type: 'tool_call',
+          toolName: 'write',
+          toolCallId: 'after-quit',
+          input: { path: latePath, content: 'forbidden' },
+        })
+        assert.equal(late?.block, true)
+        await assert.rejects(
+          opened.host.writeOperations.writeFile(latePath, 'forbidden'),
+          /no admitted destination/
+        )
+        assert.ok(!existsSync(latePath))
+      } finally {
+        await opened.close()
+      }
+    }
+  )
   const { script: lead1, offline } = await offlineScript('host-session', [
     [workProcess],
     [

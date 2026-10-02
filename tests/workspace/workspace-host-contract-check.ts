@@ -139,6 +139,7 @@ const attachment: WorkspaceAttachment = {
   close: Effect.void,
 }
 const lifecycle: WorkspaceLifecycle = {
+  root: join(fixture, 'authority'),
   attach: () => Effect.fail(refused),
   inspect: () => Effect.succeed([]),
   validate: () => Effect.void,

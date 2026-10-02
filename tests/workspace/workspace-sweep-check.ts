@@ -31,6 +31,8 @@ import type { GitHubReader } from '../../src/workspace-evidence.ts'
 import { checkTask } from '../../src/workspace-release.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
+import { makeNativeWrites } from '../../src/workspace-native-write.ts'
+import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { verdictName } from './workspace-completion-fixtures.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -144,6 +146,24 @@ try {
 
   const finishedOwner = await reserve(repo)
   const finished = ready(await finishedOwner.owner.authorize({ kind: 'delegated-write' }))
+  const external = join(sandbox, 'external-config.txt')
+  const writes = makeNativeWrites({
+    runPromise: Effect.runPromise,
+    onError: message => {
+      throw new Error(message)
+    },
+  })
+  const scope = { checkout: finished.checkout, authorityRoot: root }
+  await Effect.runPromise(
+    writes.admit({
+      toolCallId: 'external-config',
+      scope,
+      destination: classifyWriteDestination(scope, finished.cwd, external),
+      lifecycle: { kind: 'local', validate: Effect.void },
+    })
+  )
+  await writes.writeOperations.writeFile(external, 'two')
+  await Effect.runPromise(writes.settle)
   await finishedOwner.owner.close()
   await lifecycle.recordTarget(finishedOwner.taskId, localMain)
   writeFileSync(join(finished.checkout, 'tracked.txt'), 'dirty intermediate edit\n')
@@ -193,6 +213,11 @@ try {
       )
       assert.ok(removed.operationId !== undefined)
       assert.equal(existsSync(finished.checkout), false, 'the worktree and its residue are gone')
+      assert.equal(
+        readFileSync(external, 'utf8'),
+        'two',
+        'external native writes never become cleanup-owned'
+      )
 
       const main = rowOf(receipt, finishedOwner.write.workspaceId)
       assert.deepEqual([main.outcome, verdictName(main.verdict)], ['released', 'clean-checkout'])
