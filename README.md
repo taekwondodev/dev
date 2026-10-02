@@ -44,7 +44,7 @@ Every flag, the session commands and the maintenance commands are in [launcher](
 Measured on my own use of dev, not on benchmarks: every lead and child session file in my data home, abandoned branches included. Each chart names its sample size and date range.
 
 <p align="center">
-  <img src="docs/performance/usage.svg" alt="Lead cache hit rate, median tool calls per lead session, mean children per lead session, p50 model latency and mean tool result size">
+  <img src="docs/performance/usage.svg" alt="Lead cache-read share, median tool calls per lead session, mean children per lead session, p50 model latency and mean tool result size">
 </p>
 
-The numbers come from `npm run profile`, which also prints the full report and writes `docs/performance/usage-baseline.json`. Only aggregates are committed: no path, project name or conversation text.
+The numbers come from `npm run profile -- --export docs/performance`, which also prints the full report and writes `docs/performance/usage-baseline.json`. Only allowlisted aggregates are committed: no path, project name, model, skill or conversation text. Without `--export`, the report and its drilldowns stay private in the data home.

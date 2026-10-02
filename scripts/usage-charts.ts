@@ -1,74 +1,12 @@
 import { Effect, Schema } from 'effect'
-
-const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
-const Amount = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
-const Share = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
-const IsoDate = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/))
-
-const CacheUsage = Schema.Struct({
-  requests: Count,
-  input: Amount,
-  cacheRead: Amount,
-  cacheWrite: Amount,
-  hitRate: Schema.NullOr(Share),
-})
-export type CacheUsage = typeof CacheUsage.Type
-
-const ToolSizes = Schema.Struct({
-  name: Schema.String,
-  count: Count,
-  bytes: Count,
-  meanBytes: Amount,
-  medianBytes: Count,
-  p90Bytes: Count,
-  share: Share,
-})
-export type ToolSizes = typeof ToolSizes.Type
-
-const ToolResults = Schema.Struct({
-  count: Count,
-  bytes: Count,
-  meanBytes: Schema.NullOr(Amount),
-  tools: Schema.Array(ToolSizes),
-})
-export type ToolResults = typeof ToolResults.Type
-
-const TimeSplit = Schema.Struct({
-  modelMs: Schema.Finite,
-  toolMs: Schema.Finite,
-  userMs: Schema.Finite,
-})
-export type TimeSplit = typeof TimeSplit.Type
-
-const Baseline = Schema.Struct({
-  sample: Schema.Struct({
-    leadSessions: Count,
-    emptyLeadSessions: Count,
-    childSessions: Count,
-    undecodableLines: Count,
-    firstDate: IsoDate,
-    lastDate: IsoDate,
-  }),
-  cache: Schema.Struct({ lead: CacheUsage, child: CacheUsage }),
-  toolCallsPerSession: Schema.Struct({ median: Count, minimum: Count, maximum: Count }),
-  children: Schema.Struct({
-    agentAttempts: Count,
-    processAttempts: Count,
-    meanPerSession: Amount,
-    sessionShare: Share,
-  }),
-  latency: Schema.Struct({ requests: Count, p50Ms: Schema.Finite, p90Ms: Schema.Finite }),
-  timeSplit: TimeSplit,
-  toolResults: Schema.Struct({ lead: ToolResults, child: ToolResults }),
-})
-export type Baseline = typeof Baseline.Type
+import { UsageExport } from './usage-export.ts'
 
 interface Charts {
   readonly usage: string
   readonly tools: string
 }
 
-const decodeBaseline = Schema.decodeUnknownEffect(Schema.fromJsonString(Baseline))
+const decodeExport = Schema.decodeUnknownEffect(Schema.fromJsonString(UsageExport))
 
 export const percent = (share: number): string =>
   share > 0 && share < 0.0005 ? '<0.1%' : `${(share * 100).toFixed(1)}%`
@@ -117,7 +55,7 @@ const text = (
 ): string =>
   `  <text x="${x}" y="${y}" text-anchor="${options.anchor ?? 'middle'}" fill="${options.fill}" font-family="${options.font ?? TEXT}" font-size="${options.size}">${escape(content)}</text>\n`
 
-const dateRange = ({ sample: { firstDate, lastDate } }: Baseline): string =>
+const dateRange = ({ sample: { firstDate, lastDate } }: UsageExport): string =>
   firstDate === lastDate ? firstDate : `${firstDate} to ${lastDate}`
 
 const frame = (width: number, height: number, title: string, subtitle: string): string =>
@@ -141,35 +79,36 @@ const TILE_GAP = 24
 const TILE_MARGIN = 42
 const BODY_TOP = 100
 
-const renderUsage = (baseline: Baseline): string => {
+const renderUsage = (usage: UsageExport): string => {
+  const { lead } = usage
   const tiles: readonly Tile[] = [
     {
-      label: 'Cache hit rate',
-      value: orUnavailable(baseline.cache.lead.hitRate, percent),
-      caption: 'lead input tokens',
+      label: 'Cache-read share',
+      value: orUnavailable(usage.usage.byRole.lead.cacheReadShare, percent),
+      caption: 'lead prompt tokens',
       color: '#7DFFB3',
     },
     {
       label: 'Tool calls',
-      value: String(baseline.toolCallsPerSession.median),
+      value: orUnavailable(lead?.toolCallsPerSession.median ?? null, String),
       caption: 'median per lead session',
       color: '#64D2FF',
     },
     {
       label: 'Children',
-      value: baseline.children.meanPerSession.toFixed(2),
+      value: orUnavailable(lead?.children.meanPerSession ?? null, mean => mean.toFixed(2)),
       caption: 'mean per lead session',
       color: '#FFD60A',
     },
     {
       label: 'Model latency',
-      value: seconds(baseline.latency.p50Ms),
+      value: orUnavailable(lead?.latency.p50Ms ?? null, seconds),
       caption: 'p50 per lead request',
       color: '#FF9F0A',
     },
     {
       label: 'Tool result size',
-      value: orUnavailable(baseline.toolResults.lead.meanBytes, size),
+      value: orUnavailable(lead?.toolResults.meanBytes ?? null, size),
       caption: 'mean per lead result',
       color: '#BF5AF2',
     },
@@ -191,7 +130,7 @@ const renderUsage = (baseline: Baseline): string => {
     width,
     BODY_TOP + 200,
     'dev in real use',
-    `${baseline.sample.leadSessions} lead and ${baseline.sample.childSessions} child sessions, ${dateRange(baseline)}`
+    `${usage.sample.leadSessions} lead and ${usage.sample.childSessions} child sessions, ${dateRange(usage)}`
   )}${body}</svg>\n`
 }
 
@@ -209,20 +148,20 @@ const bar = (y: number, width: number): string => {
   return `  <path d="M${BAR_START} ${y}h${straight}a4 4 0 0 1 4 4v${BAR_HEIGHT - 8}a4 4 0 0 1 -4 4h-${straight}z" fill="#64D2FF"/>\n`
 }
 
-const renderTools = (baseline: Baseline): string => {
-  const { lead } = baseline.toolResults
-  const rows = lead.tools.length === 0 ? 1 : lead.tools.length
+const renderTools = (usage: UsageExport): string => {
+  const tools = usage.lead?.toolResults.byTool ?? []
+  const rows = tools.length === 0 ? 1 : tools.length
   const height = BODY_TOP + rows * ROW_HEIGHT + 36
-  const subtitle = `${lead.count} results from ${baseline.sample.leadSessions} lead sessions, ${dateRange(baseline)}`
+  const subtitle = `${usage.lead?.toolResults.results ?? 0} results from ${usage.lead?.sessions ?? 0} lead sessions, ${dateRange(usage)}`
   const body =
-    lead.tools.length === 0
+    tools.length === 0
       ? text(TOOLS_WIDTH / 2, BODY_TOP + 20, 'No tool results', { fill: SECONDARY, size: 13 })
-      : lead.tools
+      : tools
           .map((tool, index) => {
             const top = BODY_TOP + index * ROW_HEIGHT
             const width = Math.round(tool.share * BAR_SPAN * 10) / 10
             return [
-              text(NAME_END, top + 15, tool.name, { fill: SECONDARY, size: 13, anchor: 'end' }),
+              text(NAME_END, top + 15, tool.tool, { fill: SECONDARY, size: 13, anchor: 'end' }),
               bar(top + 1, width),
               text(BAR_START + width + 8, top + 15, percent(tool.share), {
                 fill: PRIMARY,
@@ -235,7 +174,7 @@ const renderTools = (baseline: Baseline): string => {
   return `${frame(TOOLS_WIDTH, height, 'Share of tool result bytes, lead sessions', subtitle)}${body}</svg>\n`
 }
 
-export const renderCharts = (baselineJson: string): Effect.Effect<Charts, Schema.SchemaError> =>
-  decodeBaseline(baselineJson, { onExcessProperty: 'error' }).pipe(
-    Effect.map(baseline => ({ usage: renderUsage(baseline), tools: renderTools(baseline) }))
+export const renderCharts = (exportJson: string): Effect.Effect<Charts, Schema.SchemaError> =>
+  decodeExport(exportJson, { onExcessProperty: 'error' }).pipe(
+    Effect.map(usage => ({ usage: renderUsage(usage), tools: renderTools(usage) }))
   )
