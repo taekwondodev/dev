@@ -70,6 +70,16 @@ QUIT_ACTIONS = (
 
 PROBES = {
 
+    'compaction': Probe(
+        script='tests/workspace/compaction-pty-probe.ts',
+        passed_marker='DEV_COMPACTION_PTY_PASSED ',
+        timeout=120.0,
+        actions=(
+            Action('idle-escape', 'DEV_COMPACTION_IDLE_ESCAPE', '\x1b'),
+            Action('ready-escape', 'DEV_COMPACTION_READY_ESCAPE', '\x1b'),
+        ),
+    ),
+
     'stub': Probe(
         script='tests/workspace/workspace-host-pty-probe.ts',
         passed_marker='DEV36_TUI_HOST_PROBE_PASSED ',

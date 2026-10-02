@@ -26,6 +26,7 @@ import {
 import { errorText } from './error-text.ts'
 import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
+import { createBackgroundCompaction } from './background-compaction.ts'
 import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
@@ -272,7 +273,11 @@ const createRuntime = Effect.fnUntraced(function* (
         api.ModelRuntime.create({ authPath: globalPiAuthPath() })
       )
   )
+  const compaction = yield* createBackgroundCompaction(api, packageRoot).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
+  )
   const extensions: readonly NamedExtension[] = [
+    { name: 'dev:background-compaction', factory: compaction.factory },
     { name: 'dev:session-guard', factory: guard.factory },
     { name: 'dev:work', factory: work.factory },
     { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
@@ -328,6 +333,7 @@ const createRuntime = Effect.fnUntraced(function* (
       Effect.mapError(error => toLauncherError(error, 'Cannot commit workspace runtime binding'))
     )
   yield* Effect.sync(() => {
+    compaction.bindSession(result.session)
     work.bindSession(result.session)
   })
   return { ...result, services, diagnostics: services.diagnostics }

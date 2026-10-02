@@ -1,4 +1,11 @@
 import { join } from 'node:path'
+import {
+  BACKGROUND_COMPACTION_USAGE,
+  COMPACTION_OBSERVATION,
+  decodeCompactionObservation,
+  decodePreparationId,
+  type CompactionObservation,
+} from '../src/compaction-observation.ts'
 import { DateTime, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
 
 const TokenCount = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
@@ -111,7 +118,12 @@ const decodeStandaloneUsage = Schema.decodeUnknownOption(
     usage: Schema.Unknown,
     provider: Schema.optional(Schema.String),
     model: Schema.optional(Schema.String),
+    kind: Schema.optional(Schema.Unknown),
+    note: Schema.optional(Schema.Unknown),
   })
+)
+const decodeObservationEntry = Schema.decodeUnknownOption(
+  Schema.Struct({ customType: Schema.String, data: Schema.optional(Schema.Unknown) })
 )
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(
@@ -230,7 +242,15 @@ type Payload =
       readonly cwd: CwdRecord
     }
   | { readonly kind: 'branch-summary'; readonly usage: Usage }
-  | { readonly kind: 'standalone'; readonly usage: Usage; readonly model: string | undefined }
+  | {
+      readonly kind: 'standalone'
+      readonly usage: Usage
+      readonly model: string | undefined
+      readonly usageKind: typeof BACKGROUND_COMPACTION_USAGE | undefined
+      readonly usageNote: string | undefined
+    }
+  | { readonly kind: 'observation'; readonly value: CompactionObservation }
+  | { readonly kind: 'observation-invalid' }
   | { readonly kind: 'thinking-level'; readonly level: string }
   | { readonly kind: 'context-edit'; readonly target: string }
   | { readonly kind: 'handoff' }
@@ -458,6 +478,12 @@ const payloadOf = (type: string, value: unknown, at: number): Payload | undefine
           kind: 'standalone',
           usage: usageOf(entry.usage),
           model: modelName(entry.provider, entry.model),
+          usageKind:
+            entry.kind === BACKGROUND_COMPACTION_USAGE ? BACKGROUND_COMPACTION_USAGE : undefined,
+          usageNote:
+            entry.kind === BACKGROUND_COMPACTION_USAGE
+              ? Option.getOrUndefined(decodePreparationId(entry.note))
+              : undefined,
         }))
       )
     case 'thinking_level_change':
@@ -474,6 +500,14 @@ const payloadOf = (type: string, value: unknown, at: number): Payload | undefine
           target: entry.targetId,
         }))
       )
+    case 'custom': {
+      const entry = Option.getOrUndefined(decodeObservationEntry(value))
+      if (entry?.customType !== COMPACTION_OBSERVATION) return { kind: 'other' }
+      return Option.match(decodeCompactionObservation(entry.data), {
+        onNone: (): Payload => ({ kind: 'observation-invalid' }),
+        onSome: (observation): Payload => ({ kind: 'observation', value: observation }),
+      })
+    }
     case 'custom_message':
       return customMessagePayload(value)
     default:

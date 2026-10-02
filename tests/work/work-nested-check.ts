@@ -95,6 +95,17 @@ try {
       })
       assert.deepEqual([...receipts()].toSorted(), [first, second])
       assert.ok(reads <= 2, 'appending two entries must not traverse their existing history')
+      session.appendCompaction('receipts summarized', secondReceipt, 1000)
+      session.appendContextEdit(secondReceipt, null)
+      assert.equal(
+        session.buildSessionProjection().messages.some(message => message.role === 'custom'),
+        false
+      )
+      assert.deepEqual(
+        [...receipts()].toSorted(),
+        [first, second],
+        'context replacement must not erase raw-branch delivery receipts'
+      )
       session.branch(firstReceipt)
       assert.deepEqual([...receipts()], [first])
       session.branch(root)

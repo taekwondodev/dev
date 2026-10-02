@@ -30,6 +30,8 @@ The constraints every choice below respects:
 ```text
 src/launcher.ts                    dev executable: startup selection, Pi services and TUI
 src/pi-runtime.ts                  resolves the installed global Pi SDK and its declarations
+src/background-compaction.ts       session-local speculative summary preparation, cancellation, safe application and observations
+src/compaction-observation.ts      diagnostic-only native-entry contract shared with the private usage profile
 src/preferences.ts                 private data paths, global auth path, profile preferences
 src/profiles.ts                    composes SOUL guidance and skill paths for a profile
 src/work-*.ts, src/pi-child.ts     background work: tool, actions, controller, dispatch, lifecycle, store, child process
