@@ -8,11 +8,12 @@ import {
   type WorkspaceHandoff,
   type WorkspaceId,
 } from './workspace-domain.ts'
-import type { PathGates } from './workspace-gates.ts'
+import { releaseGates, type PathGates } from './workspace-gates.ts'
 import type { GitWorkspace } from './workspace-git.ts'
 import {
   activeDependentUses,
   getUse,
+  isActiveUse,
   saveUse,
   type BindingRecord,
   type UseRecord,
@@ -94,6 +95,51 @@ export const conversationWorkspaces = (state: ConversationState): ReadonlySet<Wo
     ...[...state.leases.values()].map(lease => lease.grant.workspaceId),
     ...state.extraGates.map(held => held.workspaceId),
   ])
+
+export const releaseQuiescentWorkspaceGates = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  workspace: Pick<WorkspaceGrant, 'repositoryId' | 'workspaceId'>
+): void => {
+  const matches = (repositoryId: WorkspaceId, workspaceId: WorkspaceId): boolean =>
+    repositoryId === workspace.repositoryId && workspaceId === workspace.workspaceId
+  const { pending } = state
+  if (
+    matches(state.repositoryId, state.binding.workspaceId) ||
+    (pending !== undefined &&
+      (matches(pending.sourceRepositoryId, pending.handoff.from.workspaceId) ||
+        matches(pending.targetRepositoryId, pending.targetBinding.workspaceId)))
+  )
+    return
+  const leases = [...state.leases.values()].filter(lease =>
+    matches(lease.repositoryId, lease.grant.workspaceId)
+  )
+  const quiescent = inDb(authority, workspace.repositoryId, db =>
+    leases.every(lease => {
+      const use = getUse(db, lease.useId)
+      if (
+        use === undefined ||
+        use.workspaceId !== workspace.workspaceId ||
+        use.incarnation !== state.incarnation
+      )
+        requireReview(`Workspace gate lost its owning use: ${lease.useId}`)
+      return !isActiveUse(use)
+    })
+  )
+  if (!quiescent) return
+  for (const lease of leases) {
+    if (lease.gates === undefined) continue
+    releaseGates(lease.gates)
+    lease.gates = undefined
+  }
+  for (let index = state.extraGates.length - 1; index >= 0; index--) {
+    const held = state.extraGates[index]
+    if (held !== undefined && matches(held.repositoryId, held.workspaceId)) {
+      releaseGates(held.gates)
+      state.extraGates.splice(index, 1)
+    }
+  }
+}
 
 export const outgoingUses = (
   authority: WorkspaceAuthority,

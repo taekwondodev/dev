@@ -9,6 +9,7 @@ import {
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   isScoped,
+  releaseQuiescentWorkspaceGates,
   type AttachmentHandle,
   type ConversationState,
   type CurrentSource,
@@ -699,6 +700,7 @@ export const reportExecutionFact = (
         updatedAt,
       })
       lease.released = true
+      releaseQuiescentWorkspaceGates(authority, state, grant)
       return
     }
     case 'quiescent': {
@@ -714,6 +716,7 @@ export const reportExecutionFact = (
         updatedAt,
       })
       lease.released = true
+      releaseQuiescentWorkspaceGates(authority, state, grant)
       return
     }
     default: {
