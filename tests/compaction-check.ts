@@ -915,6 +915,37 @@ try {
   )
 
   await claim(
+    'observations failing the contract are never written and do not prevent application',
+    async () => {
+      const rig = await open()
+      const now = performance.now.bind(performance)
+      try {
+        performance.now = () => Number.NaN
+        await rig.start()
+        const summary = await rig.summary()
+        summary.finish()
+        const compacted = await rig.applied()
+        assert.equal(rig.compactions().length, 1)
+        assert.ok(compacted.id)
+        const kinds = rig.manager
+          .getEntries()
+          .flatMap(entry =>
+            entry.type === 'custom' && entry.customType === COMPACTION_OBSERVATION
+              ? [(entry.data as { readonly kind: string }).kind]
+              : []
+          )
+        assert.ok(kinds.includes('background-started'))
+        assert.ok(!kinds.includes('background-ready'))
+        assert.ok(!kinds.includes('background-ended'))
+        assert.equal(rig.observations().length, kinds.length)
+      } finally {
+        performance.now = now
+        await rig.close()
+      }
+    }
+  )
+
+  await claim(
     'an observed cost is retained even when the provider supplies no positive token counts',
     async () => {
       const rig = await open()

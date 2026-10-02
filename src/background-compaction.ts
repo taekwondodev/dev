@@ -19,6 +19,7 @@ import {
   BACKGROUND_COMPACTION_USAGE,
   COMPACTION_OBSERVATION,
   CompactionRunId,
+  decodeCompactionObservation,
   NativeSpanId,
   PreparationId,
   type CompactionObservation,
@@ -119,7 +120,9 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
   const observe = (run: () => void) => runSync(Effect.sync(run).pipe(Effect.ignoreCause))
   const record = (active: AgentSession, event: CompactionObservation) =>
     observe(() => {
-      active.sessionManager.appendCustomEntry(COMPACTION_OBSERVATION, event)
+      const valid = decodeCompactionObservation(event)
+      if (Option.isSome(valid))
+        active.sessionManager.appendCustomEntry(COMPACTION_OBSERVATION, valid.value)
     })
   let nativeSpan:
     | {
