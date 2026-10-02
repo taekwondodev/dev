@@ -56,73 +56,88 @@ const textOf = (content: unknown): string => {
     .join('')
 }
 
-const scriptedStream =
-  (calls: string, attemptId: string) =>
-  (parts: ScriptedStreamParts): StreamSimple =>
-  (_model, context, options) => {
-    appendFileSync(calls, `${attemptId}\n`)
-    const messages: readonly unknown[] = context.messages
-    const byRole = (role: string) =>
-      messages.flatMap(message =>
-        Predicate.isObject(message) && message.role === role ? [textOf(message.content)] : []
+const scriptedStream = (calls: string, attemptId: string) => {
+  let assignment: string | undefined
+  let turn = 0
+  return (parts: ScriptedStreamParts): StreamSimple =>
+    (_model, context, options) => {
+      const messages: readonly unknown[] = context.messages
+      const byRole = (role: string) =>
+        messages.flatMap(message =>
+          Predicate.isObject(message) && message.role === role ? [textOf(message.content)] : []
+        )
+      const [first = '', ...later] = byRole('user')
+      const system = [
+        'systemPrompt' in context && typeof context.systemPrompt === 'string'
+          ? context.systemPrompt
+          : '',
+        ...byRole('system'),
+      ].join('\n')
+      if (system.includes('You are a context summarization assistant.')) {
+        appendFileSync(calls, `summary:${attemptId}\n`)
+        return emitReply(
+          parts,
+          {
+            content: [{ type: 'text', text: 'Scripted review summary' }],
+            stopReason: 'stop',
+            delayMs: 20,
+          },
+          options?.signal
+        )
+      }
+      appendFileSync(calls, `${attemptId}\n`)
+      assignment ??= first
+      const script = directive(assignment, SCRIPT_MARKER)
+      const step = (script === undefined ? [] : decodeScript(script))[turn++]
+      const usage = directive(assignment, USAGE_MARKER)
+      const metered: ScriptedStreamParts =
+        usage === undefined
+          ? parts
+          : {
+              ...parts,
+              assistantMessage: (content, stopReason) => {
+                const { input, output } = decodeUsage(usage)
+                const message = parts.assistantMessage(content, stopReason)
+                return {
+                  ...message,
+                  usage: { ...message.usage, input, output, totalTokens: input + output },
+                }
+              },
+            }
+      const timed = step !== undefined && isContent(step) ? { content: step } : step
+      if (timed?.error !== undefined) {
+        const stream = metered.eventStreams.createAssistantMessageEventStream()
+        stream.push({
+          type: 'error',
+          reason: 'error',
+          error: { ...metered.assistantMessage([], 'error'), errorMessage: timed.error },
+        })
+        stream.end()
+        return stream
+      }
+      const echo: ScriptedContent = [
+        {
+          type: 'text',
+          text: [
+            'MODEL-SAW',
+            assignment,
+            `SYSTEM-SKILL-BLOCKS ${system.split('<skill name=').length - 1}`,
+            'TOOL-RESULTS',
+            ...byRole('toolResult'),
+            'LATER-MESSAGES',
+            ...later,
+          ].join('\n'),
+        },
+      ]
+      const content = timed?.content === undefined ? echo : (timed.content as ScriptedContent)
+      const stopReason = content.some(part => part.type === 'toolCall') ? 'toolUse' : 'stop'
+      return emitReply(
+        metered,
+        { content, stopReason, delayMs: timed?.delayMs ?? 10 },
+        options?.signal
       )
-    const [assignment = '', ...later] = byRole('user')
-    const system = [
-      'systemPrompt' in context && typeof context.systemPrompt === 'string'
-        ? context.systemPrompt
-        : '',
-      ...byRole('system'),
-    ].join('\n')
-    const script = directive(assignment, SCRIPT_MARKER)
-    const step = (script === undefined ? [] : decodeScript(script))[byRole('assistant').length]
-    const usage = directive(assignment, USAGE_MARKER)
-    const metered: ScriptedStreamParts =
-      usage === undefined
-        ? parts
-        : {
-            ...parts,
-            assistantMessage: (content, stopReason) => {
-              const { input, output } = decodeUsage(usage)
-              const message = parts.assistantMessage(content, stopReason)
-              return {
-                ...message,
-                usage: { ...message.usage, input, output, totalTokens: input + output },
-              }
-            },
-          }
-    const timed = step !== undefined && isContent(step) ? { content: step } : step
-    if (timed?.error !== undefined) {
-      const stream = metered.eventStreams.createAssistantMessageEventStream()
-      stream.push({
-        type: 'error',
-        reason: 'error',
-        error: { ...metered.assistantMessage([], 'error'), errorMessage: timed.error },
-      })
-      stream.end()
-      return stream
     }
-    const echo: ScriptedContent = [
-      {
-        type: 'text',
-        text: [
-          'MODEL-SAW',
-          assignment,
-          `SYSTEM-SKILL-BLOCKS ${system.split('<skill name=').length - 1}`,
-          'TOOL-RESULTS',
-          ...byRole('toolResult'),
-          'LATER-MESSAGES',
-          ...later,
-        ].join('\n'),
-      },
-    ]
-    const content = timed?.content === undefined ? echo : (timed.content as ScriptedContent)
-    const stopReason = content.some(part => part.type === 'toolCall') ? 'toolUse' : 'stop'
-    return emitReply(
-      metered,
-      { content, stopReason, delayMs: timed?.delayMs ?? 10 },
-      options?.signal
-    )
-  }
+}
 
 export const scriptedModelRuntime: NonNullable<ChildServeOptions['modelRuntime']> = (
   { api, packageInfo },
