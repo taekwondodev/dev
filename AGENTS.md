@@ -47,6 +47,10 @@ Issues, specifications and tickets live in GitHub Issues for `taekwondodev/dev`,
 
 The canonical dev-cycle labels are `needs-grilling` and `ready-for-agent`. See `docs/agents/triage-labels.md`.
 
+### Delivery
+
+The default route is PRs targeting `taekwondodev/dev` on `main`. Before implementation or delivery, read `docs/agents/delivery.md` for route and target defaults.
+
 ### Domain docs
 
 This is a single-context repository. Read `CONTEXT.md` and applicable ADRs before changing related behavior. See `docs/agents/domain.md`.
