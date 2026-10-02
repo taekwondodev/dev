@@ -9,7 +9,8 @@ import {
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   isScoped,
-  releaseQuiescentWorkspaceGates,
+  retryDeferredGateReleases,
+  settleWorkspaceGates,
   type AttachmentHandle,
   type ConversationState,
   type CurrentSource,
@@ -26,6 +27,7 @@ import {
   type WorkspaceAuthorization,
   type WorkspaceExecution,
   type WorkspaceExecutionFact,
+  type WorkspaceExecutionReport,
   type WorkspaceGrant,
   type WorkspaceId,
   type ScopedOperation,
@@ -127,6 +129,7 @@ const admit = (
   const { state } = attachment
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
+  retryDeferredGateReleases(authority, state)
   if (operation.kind === 'native-file-write' || operation.kind === 'opaque')
     return authorizeScoped(authority, attachment, operation)
   if (operation.kind === 'leaf-read')
@@ -601,15 +604,36 @@ export const validateDurableGrant = (
   validateWorkspace(authority, workspace)
 }
 
+const withWarnings = (
+  report: WorkspaceExecutionReport,
+  warnings: readonly string[]
+): WorkspaceExecutionReport => {
+  const all = [...warnings, ...(report.warning === undefined ? [] : [report.warning])]
+  return all.length === 0 ? report : { ...report, warning: all.join('\n') }
+}
+
 export const reportExecutionFact = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
   grant: WorkspaceGrant,
   fact: WorkspaceExecutionFact
-): void => {
+): WorkspaceExecutionReport => {
   attachment.assertOpen()
+  if (attachment.state.closing) blocked('Execution reporting is fenced during attachment closure')
+  const retried = retryDeferredGateReleases(authority, attachment.state)
+  return withWarnings(recordExecutionFact(authority, attachment, grant, fact), retried)
+}
+
+const settled = (warning: string | undefined): WorkspaceExecutionReport =>
+  warning === undefined ? {} : { warning }
+
+const recordExecutionFact = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  grant: WorkspaceGrant,
+  fact: WorkspaceExecutionFact
+): WorkspaceExecutionReport => {
   const { state } = attachment
-  if (state.closing) blocked('Execution reporting is fenced during attachment closure')
 
   if (
     state.parked &&
@@ -624,7 +648,10 @@ export const reportExecutionFact = (
   }
   if (lease.kind === 'ordinary')
     invalid('Legacy workspace grants do not carry scoped operation authority')
-  if (lease.kind === 'native-file-write') return reportScopedOperation(authority, lease, fact)
+  if (lease.kind === 'native-file-write') {
+    reportScopedOperation(authority, lease, fact)
+    return {}
+  }
   if (fact.kind === 'operation-started' || fact.kind === 'operation-completed')
     invalid('Operation boundary facts are only valid for non-process scoped operations')
   const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
@@ -645,7 +672,7 @@ export const reportExecutionFact = (
       if (current.stage !== 'authorized')
         requireReview(`Cannot record launch intent after ${current.stage}`)
       update({ ...current, stage: 'launch-intent', revision: current.revision + 1, updatedAt })
-      return
+      return {}
     }
     case 'spawned': {
       if (current.stage !== 'launch-intent')
@@ -657,7 +684,7 @@ export const reportExecutionFact = (
         revision: current.revision + 1,
         updatedAt,
       })
-      return
+      return {}
     }
     case 'started': {
       if (current.stage !== 'spawned')
@@ -665,7 +692,7 @@ export const reportExecutionFact = (
           `Cannot release user code after ${current.stage}; process identity must be recorded first`
         )
       update({ ...current, stage: 'started', revision: current.revision + 1, updatedAt })
-      return
+      return {}
     }
     case 'observed': {
       if (!['spawned', 'started', 'observed'].includes(current.stage))
@@ -677,7 +704,7 @@ export const reportExecutionFact = (
         revision: current.revision + 1,
         updatedAt,
       })
-      return
+      return {}
     }
     case 'unknown': {
       update({
@@ -687,7 +714,7 @@ export const reportExecutionFact = (
         revision: current.revision + 1,
         updatedAt,
       })
-      return
+      return {}
     }
     case 'launch-failed': {
       if (current.stage !== 'authorized' && current.stage !== 'launch-intent')
@@ -700,8 +727,7 @@ export const reportExecutionFact = (
         updatedAt,
       })
       lease.released = true
-      releaseQuiescentWorkspaceGates(authority, state, grant)
-      return
+      return settled(settleWorkspaceGates(authority, state, grant))
     }
     case 'quiescent': {
       if (current.stage !== 'observed' || current.processes.length > 0)
@@ -716,8 +742,7 @@ export const reportExecutionFact = (
         updatedAt,
       })
       lease.released = true
-      releaseQuiescentWorkspaceGates(authority, state, grant)
-      return
+      return settled(settleWorkspaceGates(authority, state, grant))
     }
     default: {
       const exhaustive: never = fact

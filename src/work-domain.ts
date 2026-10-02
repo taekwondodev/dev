@@ -198,6 +198,7 @@ const AttemptRecordFactFields = {
   observationError: Schema.optional(Schema.String),
   persistenceError: Schema.optional(Schema.String),
   cleanupError: Schema.optional(Schema.String),
+  gateReleaseWarning: Schema.optional(Schema.String),
   deliveryError: Schema.optional(Schema.String),
   protocolError: Schema.optional(Schema.String),
   processObservation: Schema.optional(Schema.String),

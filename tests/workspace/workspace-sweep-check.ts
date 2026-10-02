@@ -46,6 +46,8 @@ import {
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-sweep-check-')))
 const root = join(sandbox, 'authority')
 const FAULT_PRELOAD = new URL('./workspace-release-fault-preload.ts', import.meta.url).href
+const GATE_CLOSE_FAULT_PRELOAD = new URL('./workspace-gate-close-fault-preload.ts', import.meta.url)
+  .href
 const { claim, passed } = makeClaims()
 
 const git = (args: readonly string[], cwd: string): string =>
@@ -240,6 +242,78 @@ try {
         assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(failed.grant.checkout))
       } finally {
         await owner.owner.close()
+        await sweeper.close()
+      }
+    }
+  )
+
+  await claim(
+    'a gate close failing after settlement keeps the settlement, warns its reporter and retries at the next admission',
+    async () => {
+      const arm = join(sandbox, 'gate-close-fault')
+      const faulty = await openLifecycle({
+        root,
+        startWorker: (url, options) =>
+          new Worker(url, {
+            ...options,
+            execArgv: [...(options.execArgv ?? []), '--import', GATE_CLOSE_FAULT_PRELOAD],
+            env: {
+              ...process.env,
+              DEV_GATE_CLOSE_FAULT_ARM: arm,
+              DEV_GATE_CLOSE_FAULT_GATES: join(root, 'gates'),
+            },
+          }),
+      })
+      const owner = await faulty.attach({
+        conversation: conversation(),
+        cwd: userCheckout('deferred-gate-release'),
+      })
+      const sweeper = await openLifecycle({ root })
+      try {
+        const anchor = ready(await owner.authorize({ kind: 'write' }))
+        const child = ready(
+          await owner.authorize({
+            kind: 'delegated-write',
+            execution: {
+              sessionId: 'deferred-gate-release',
+              taskKey: newId(),
+              attemptId: newId(),
+              generation: '1',
+            },
+          })
+        )
+        writeFileSync(arm, '')
+        const report = await owner.reportExecution(child, {
+          kind: 'launch-failed',
+          reason: 'The child was not spawned',
+        })
+        assert.equal(existsSync(arm), false, 'the injected close failure fired')
+        assert.match(report.warning ?? '', /gate release deferred.*injected gate close failure/)
+        const views = await sweeper.inspect({ taskId: taskOf(child) })
+        const use = views
+          .find(view => view.workspaceId === child.workspaceId)
+          ?.uses.find(item => item.id === child.useId)
+        assert.equal(use?.stage, 'quiescent', 'the settlement is durable despite the warning')
+
+        const held = await sweepWith(sweeper, anchor.workspaceId)
+        assert.match(rowOf(held, child.workspaceId).reason, /still uses this workspace/)
+        assert.ok(existsSync(child.checkout), 'a held gate still protects the worktree')
+
+        assert.equal(
+          ready(await owner.authorize({ kind: 'write' })).workspaceId,
+          anchor.workspaceId
+        )
+        const swept = await sweepWith(sweeper, anchor.workspaceId)
+        const row = rowOf(swept, child.workspaceId)
+        assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'no-residue'])
+        assert.equal(existsSync(child.checkout), false)
+        await assert.rejects(
+          owner.reportExecution(child, { kind: 'launch-failed', reason: 'duplicate' }),
+          (cause: unknown) => cause instanceof WorkspaceError && cause.outcome === 'review-required'
+        )
+      } finally {
+        await owner.close()
+        await faulty.close()
         await sweeper.close()
       }
     }
