@@ -20,8 +20,11 @@ export const RAW_MARKER = 'RAW '
 export const RAW_ON_CANCEL_MARKER = 'RAW-ON-CANCEL '
 export const RAW_AFTER_REPLY_MARKER = 'RAW-AFTER-REPLY '
 export const DROP_FIRST_ACK = 'DROP-FIRST-ACK'
+export const HOLD_CANCEL = 'HOLD-CANCEL'
 export const ipcLog = (dataHome: string, attemptId: string): string =>
   join(dataHome, `ipc-${attemptId}.jsonl`)
+export const cancelLog = (dataHome: string, attemptId: string): string =>
+  join(dataHome, `cancel-${attemptId}.log`)
 
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
 

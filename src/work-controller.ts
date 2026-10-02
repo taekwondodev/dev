@@ -1597,10 +1597,11 @@ class WorkOwnerImpl implements WorkOwnerService {
     const { token } = job.lifecycle
     return Effect.gen({ self: this }, function* () {
       const requestedAt = yield* Clock.currentTimeMillis
-      yield* this.commitBestEffort(job, () =>
+      const requested = yield* this.commitBestEffort(job, () =>
         job.lifecycle.transition.cancel(token, requestedAt, reason)
       )
-      if (!job.lifecycle.isActive()) return yield* Deferred.await(job.settled)
+      if (!requested.accepted || !job.lifecycle.isActive())
+        return yield* Deferred.await(job.settled)
       if (job.child === undefined) {
         yield* this.failObservation(job, new Error('Cancellation raced with launch setup'))
         return yield* Deferred.await(job.settled)
