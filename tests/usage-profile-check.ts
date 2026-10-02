@@ -1431,7 +1431,9 @@ try {
       ])
       for (const value of [
         '44.4%',
-        '>5<',
+        'Tool calls success',
+        '>80.0%<',
+        '20.0% with error',
         '0.00',
         '2.0 s',
         'mean per lead result',
@@ -1447,6 +1449,23 @@ try {
       ])
         assert.ok(files['tools.svg']?.includes(value), `tools.svg lacks ${value}`)
 
+      for (const [home, args, noError, withError] of [
+        [toolsHome, [], '29.4%', '70.6%'],
+        [periodsHome, ['--period', '2026-10-02..'], 'n/a', 'n/a'],
+      ] as const) {
+        const result = maintain('--data-home', home, ...args, '--export', exportDirectory)
+        assert.equal(result.status, 0, result.stderr)
+        const chart = readFileSync(join(exportDirectory, 'usage.svg'), 'utf8')
+        assert.match(
+          chart,
+          new RegExp(
+            String.raw`>Tool calls success</text>\s*<text[^>]*>${escapeRegExp(noError)}</text>`
+          )
+        )
+        assert.ok(chart.includes(`>${withError} with error<`))
+        assert.ok(!chart.includes('Tool calls: all sessions;'))
+        assert.ok(!chart.includes('median per lead session'))
+      }
       assert.deepEqual(digestTree(join(entryHome, 'sessions')), sessions)
       assert.deepEqual(digestTree(join(entryHome, 'child-sessions')), children)
       assert.deepEqual(repositoryState(), before)

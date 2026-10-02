@@ -80,7 +80,9 @@ const TILE_MARGIN = 42
 const BODY_TOP = 100
 
 const renderUsage = (usage: UsageExport): string => {
-  const { lead } = usage
+  const { lead, tools } = usage
+  const toolPercent = (count: number): string =>
+    tools.matched === 0 ? 'n/a' : percent(count / tools.matched)
   const tiles: readonly Tile[] = [
     {
       label: 'Cache-read share',
@@ -89,9 +91,9 @@ const renderUsage = (usage: UsageExport): string => {
       color: '#7DFFB3',
     },
     {
-      label: 'Tool calls',
-      value: orUnavailable(lead?.toolCallsPerSession.median ?? null, String),
-      caption: 'median per lead session',
+      label: 'Tool calls success',
+      value: toolPercent(tools.outcomes.returned),
+      caption: `${toolPercent(tools.matched - tools.outcomes.returned)} with error`,
       color: '#64D2FF',
     },
     {
