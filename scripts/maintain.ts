@@ -1,13 +1,13 @@
 import { join, resolve } from 'node:path'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
-import { Effect, FileSystem, Schema } from 'effect'
+import { Array as Arr, Effect, FileSystem, Schema } from 'effect'
 import type { ChildProcessSpawner } from 'effect/unstable/process'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 import { checkout, checkoutIsClean, git } from './checkout.ts'
 import { installPi, type PiUpgradeError, verifyPi } from './pi-upgrade.ts'
-import { profileUsage } from './usage-profile.ts'
+import { ALL_TIME, parsePeriod, profileUsage } from './usage-profile.ts'
 
 export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('MaintenanceError', {
   message: Schema.String,
@@ -136,11 +136,46 @@ const rollback = (): MaintenanceCommand =>
     Effect.mapError(error => toMaintenanceError(error, 'Rollback failed'))
   )
 
+const profileOptions = Effect.gen(function* () {
+  const args = process.argv.slice(3)
+  const single = new Map<string, string>()
+  const periods: string[] = []
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index] ?? ''
+    const value = args[index + 1]
+    if (value === undefined)
+      return yield* new MaintenanceError({ message: `${flag} requires a value` })
+    if (flag === '--period') periods.push(value)
+    else if (flag !== '--data-home' && flag !== '--export')
+      return yield* new MaintenanceError({
+        message: `Unknown profile option "${flag}". Use --data-home PATH, --period START..END (repeatable) or --export DIR.`,
+      })
+    else if (single.has(flag))
+      return yield* new MaintenanceError({ message: `${flag} may be given only once` })
+    else single.set(flag, value)
+  }
+  return { dataHome: single.get('--data-home'), exportTo: single.get('--export'), periods }
+})
+
 const profile = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const explicit = yield* argument('--data-home')
-    const dataHome = explicit === undefined ? yield* defaultDataHome : resolve(explicit)
-    const report = yield* profileUsage(dataHome, join(checkout, 'docs', 'performance'))
+    const options = yield* profileOptions
+    const dataHome =
+      options.dataHome === undefined ? yield* defaultDataHome : resolve(options.dataHome)
+    const parsed = yield* Effect.forEach(options.periods, parsePeriod)
+    const periods = Arr.isReadonlyArrayNonEmpty(parsed) ? parsed : Arr.of(ALL_TIME)
+    const [period, ...more] = periods
+    if (options.exportTo !== undefined && more.length > 0)
+      return yield* new MaintenanceError({
+        message: 'An export takes exactly one period; nothing was written',
+      })
+    const report = yield* profileUsage({
+      dataHome,
+      selection:
+        options.exportTo === undefined
+          ? { kind: 'report', periods }
+          : { kind: 'export', period, directory: resolve(options.exportTo) },
+    })
     yield* Effect.sync(() => {
       process.stdout.write(report)
     })

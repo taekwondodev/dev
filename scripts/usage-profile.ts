@@ -1,26 +1,22 @@
 import { join } from 'node:path'
+import { DateTime, Effect, FileSystem, Option, Schema } from 'effect'
+import { orUnavailable, percent, renderCharts, seconds, size } from './usage-charts.ts'
+import { ROLES, type TokenTotals, USAGE_SOURCES } from './usage-export.ts'
 import {
-  Array as Arr,
-  DateTime,
-  Effect,
-  FileSystem,
-  Number as Num,
-  Option,
-  Order,
-  Schema,
-} from 'effect'
-import {
-  type Baseline,
-  type CacheUsage,
-  orUnavailable,
-  percent,
-  renderCharts,
-  seconds,
-  size,
-  type TimeSplit,
-  type ToolResults,
-  type ToolSizes,
-} from './usage-charts.ts'
+  type Analysis,
+  analyze,
+  type Comparison,
+  compare,
+  type Drilldowns,
+  drilldowns,
+  exportNames,
+  type GroupRow,
+  type Period,
+  type PeriodSummary,
+  privateNames,
+  summarize,
+} from './usage-report.ts'
+import { readSessions } from './usage-sessions.ts'
 
 export class UsageProfileError extends Schema.TaggedError<UsageProfileError>()(
   'UsageProfileError',
@@ -30,288 +26,143 @@ export class UsageProfileError extends Schema.TaggedError<UsageProfileError>()(
   }
 ) {}
 
-const except = (used: readonly string[]) =>
-  Schema.String.check(Schema.makeFilter(value => !used.includes(value)))
+export const ALL_TIME: Period = { label: 'all', start: undefined, end: undefined }
 
-const Usage = Schema.Struct({
-  input: Schema.Finite,
-  cacheRead: Schema.Finite,
-  cacheWrite: Schema.Finite,
-})
-type Usage = typeof Usage.Type
+const decodeDay = Schema.decodeUnknownOption(
+  Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/))
+)
+const decodeInstant = Schema.decodeUnknownOption(Schema.DateTimeUtcFromString)
 
-const Timestamp = Schema.DateTimeUtcFromString
+const day = (text: string): Effect.Effect<number | undefined, UsageProfileError> => {
+  if (text === '') return Effect.undefined
+  const instant = Option.flatMap(decodeDay(text), valid => decodeInstant(`${valid}T00:00:00Z`))
+  return Option.isSome(instant) && DateTime.formatIsoDateUtc(instant.value) === text
+    ? Effect.succeed(DateTime.toEpochMillis(instant.value))
+    : Effect.fail(
+        new UsageProfileError({ message: `Invalid period date "${text}": use YYYY-MM-DD` })
+      )
+}
 
-const decodeHeader = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      type: Schema.Literal('session'),
-      timestamp: Timestamp,
-      parentSession: Schema.optional(Schema.String),
+export const parsePeriod = Effect.fn('parsePeriod')(function* (text: string) {
+  const parts = text.split('..')
+  if (parts.length !== 2)
+    return yield* new UsageProfileError({
+      message: `Invalid period "${text}": use START..END, either side optional, START inclusive and END exclusive`,
     })
-  )
-)
-
-const SessionLine = Schema.fromJsonString(
-  Schema.Union([
-    Schema.Struct({
-      type: Schema.Literal('message'),
-      timestamp: Timestamp,
-      message: Schema.Union([
-        Schema.Struct({
-          role: Schema.Literal('assistant'),
-          timestamp: Schema.Finite,
-          usage: Usage,
-        }),
-        Schema.Struct({
-          role: Schema.Literal('toolResult'),
-          toolName: Schema.String,
-          content: Schema.Array(
-            Schema.Union([
-              Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
-              Schema.Struct({ type: except(['text']) }),
-            ])
-          ),
-          details: Schema.optional(Schema.Unknown),
-        }),
-        Schema.Struct({ role: except(['assistant', 'toolResult']) }),
-      ]),
-    }),
-    Schema.Struct({ type: except(['session', 'message']), timestamp: Timestamp }),
-  ])
-)
-const decodeLine = Schema.decodeUnknownOption(SessionLine)
-
-const WorkAttempt = Schema.Struct({
-  id: Schema.String,
-  kind: Schema.Literals(['agent', 'process']),
-  owner: Schema.Struct({ parent: Schema.optional(Schema.String) }),
-})
-type WorkAttempt = typeof WorkAttempt.Type
-const decodeWorkAttempt = Schema.decodeUnknownOption(WorkAttempt)
-
-const directAttempt = (details: unknown): WorkAttempt | undefined =>
-  Option.getOrUndefined(
-    Option.filter(decodeWorkAttempt(details), attempt => attempt.owner.parent === undefined)
-  )
-
-interface Position {
-  readonly at: number
-}
-
-interface Request extends Position {
-  readonly kind: 'request'
-  readonly latencyMs: number
-  readonly usage: Usage
-}
-
-interface ToolResult extends Position {
-  readonly kind: 'toolResult'
-  readonly tool: string
-  readonly bytes: number
-  readonly attempt: WorkAttempt | undefined
-}
-
-interface OtherEntry extends Position {
-  readonly kind: 'user' | 'system' | 'other'
-}
-
-type SessionEntry = Request | ToolResult | OtherEntry
-
-interface SessionFile {
-  readonly entries: readonly SessionEntry[]
-  readonly undecodable: number
-}
-
-const toEntry = (line: typeof SessionLine.Type): SessionEntry => {
-  const position = { at: DateTime.toEpochMillis(line.timestamp) }
-  if (!('message' in line)) return { kind: 'other', ...position }
-  const { message } = line
-  if ('usage' in message)
-    return {
-      kind: 'request',
-      ...position,
-      latencyMs: position.at - message.timestamp,
-      usage: message.usage,
-    }
-  if ('toolName' in message)
-    return {
-      kind: 'toolResult',
-      ...position,
-      tool: message.toolName,
-      bytes: message.content.reduce(
-        (total, block) => ('text' in block ? total + Buffer.byteLength(block.text, 'utf8') : total),
-        0
-      ),
-      attempt: message.toolName === 'work' ? directAttempt(message.details) : undefined,
-    }
-  return {
-    kind: message.role === 'user' || message.role === 'system' ? message.role : 'other',
-    ...position,
-  }
-}
-
-const decodeSessionFile = (content: string): SessionFile => {
-  const [first, ...rest] = content.split('\n').filter(line => line.trim() !== '')
-  if (first === undefined) return { entries: [], undecodable: 0 }
-  const header = Option.getOrUndefined(decodeHeader(first))
-  const forkedAt =
-    header?.parentSession === undefined ? undefined : DateTime.toEpochMillis(header.timestamp)
-  const lines = rest.map(line => decodeLine(line))
-  return {
-    entries: Arr.getSomes(lines)
-      .map(toEntry)
-      .filter(entry => forkedAt === undefined || entry.at >= forkedAt),
-    undecodable: (header === undefined ? 1 : 0) + lines.filter(Option.isNone).length,
-  }
-}
-
-const readSessionFiles = Effect.fn('readSessionFiles')(function* (directory: string) {
-  const fs = yield* FileSystem.FileSystem
-  if (!(yield* fs.exists(directory))) return []
-  const names = (yield* fs.readDirectory(directory)).filter(name => name.endsWith('.jsonl'))
-  return yield* Effect.forEach(names.toSorted(), name =>
-    fs.readFileString(join(directory, name)).pipe(Effect.map(decodeSessionFile))
-  )
+  const [from = '', to = ''] = parts
+  const start = yield* day(from)
+  const end = yield* day(to)
+  if (start !== undefined && end !== undefined && start >= end)
+    return yield* new UsageProfileError({
+      message: `Empty period "${text}": START must precede END`,
+    })
+  return start === undefined && end === undefined
+    ? ALL_TIME
+    : { label: `${from}..${to}`, start, end }
 })
 
-const nearestRank = (values: Arr.NonEmptyReadonlyArray<number>, percentile: number): number =>
-  Arr.sort(values, Order.Number)[Math.ceil((percentile * values.length) / 100) - 1]
+type Selection =
+  | { readonly kind: 'report'; readonly periods: readonly [Period, ...Period[]] }
+  | { readonly kind: 'export'; readonly period: Period; readonly directory: string }
 
-const isoDate = (epochMillis: number): string =>
-  DateTime.formatIsoDateUtc(DateTime.makeUnsafe(epochMillis))
-
-const requestsOf = (entries: readonly SessionEntry[]) =>
-  entries.filter(entry => entry.kind === 'request')
-
-const toolResultsOf = (entries: readonly SessionEntry[]) =>
-  entries.filter(entry => entry.kind === 'toolResult')
-
-const cacheUsage = (requests: readonly Request[]): CacheUsage => {
-  const input = Num.sumAll(requests.map(request => request.usage.input))
-  const cacheRead = Num.sumAll(requests.map(request => request.usage.cacheRead))
-  const cacheWrite = Num.sumAll(requests.map(request => request.usage.cacheWrite))
-  const prompt = input + cacheRead + cacheWrite
-  return {
-    requests: requests.length,
-    input,
-    cacheRead,
-    cacheWrite,
-    hitRate: prompt === 0 ? null : cacheRead / prompt,
-  }
+interface ProfileOptions {
+  readonly dataHome: string
+  readonly selection: Selection
 }
 
-const byBytesThenName = Order.combine(
-  Order.flip(Order.mapInput(Order.Number, (tool: ToolSizes) => tool.bytes)),
-  Order.mapInput(Order.String, (tool: ToolSizes) => tool.name)
-)
+interface Report {
+  readonly selection: readonly string[]
+  readonly sources: {
+    readonly leadFiles: number
+    readonly childFiles: number
+    readonly undecodableLines: number
+    readonly copiedEntries: number
+  }
+  readonly periods: readonly (PeriodSummary & { readonly drilldowns: Drilldowns })[]
+  readonly comparison: Comparison | null
+}
 
-const toolSizes = (results: readonly ToolResult[]): ToolResults => {
-  const bytes = Num.sumAll(results.map(result => result.bytes))
-  const tools = Object.entries(Arr.groupBy(results, result => result.tool)).map(([name, group]) => {
-    const sizes = Arr.map(group, result => result.bytes)
-    const toolBytes = Num.sumAll(sizes)
-    return {
-      name,
-      count: sizes.length,
-      bytes: toolBytes,
-      meanBytes: toolBytes / sizes.length,
-      medianBytes: nearestRank(sizes, 50),
-      p90Bytes: nearestRank(sizes, 90),
-      share: bytes === 0 ? 0 : toolBytes / bytes,
-    }
+const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`
+
+const exportFiles = Effect.fn('exportFiles')(function* (
+  analysis: Analysis,
+  period: Period,
+  directory: string
+) {
+  const summary = summarize(analysis.facts, period, exportNames)
+  const content = json({
+    period: { start: summary.period.start, end: summary.period.end },
+    undecodableLinesInDataHome: analysis.undecodableLines,
+    sample: summary.sample,
+    usage: summary.usage,
+    attribution: summary.attribution,
+    tools: summary.tools,
+    reads: summary.reads,
+    git: summary.git,
+    context: summary.context,
+    lead: summary.lead,
   })
-  return {
-    count: results.length,
-    bytes,
-    meanBytes: results.length === 0 ? null : bytes / results.length,
-    tools: Arr.sort(tools, byBytesThenName),
+  const charts = yield* renderCharts(content).pipe(
+    Effect.mapError(
+      cause => new UsageProfileError({ message: `Invalid usage export: ${cause.message}`, cause })
+    )
+  )
+  return [
+    [join(directory, 'usage-baseline.json'), content],
+    [join(directory, 'usage.svg'), charts.usage],
+    [join(directory, 'tools.svg'), charts.tools],
+  ] as const
+})
+
+export const profileUsage = Effect.fn('profileUsage')(function* ({
+  dataHome,
+  selection,
+}: ProfileOptions) {
+  const periods: readonly [Period, ...Period[]] =
+    selection.kind === 'report' ? selection.periods : [selection.period]
+  const sessions = [
+    ...(yield* readSessions(dataHome, 'sessions', 'lead')),
+    ...(yield* readSessions(dataHome, 'child-sessions', 'child')),
+  ]
+  const analysis = analyze(sessions)
+  const reported = periods.map(period => ({
+    ...summarize(analysis.facts, period, privateNames),
+    drilldowns: drilldowns(analysis.facts, period),
+  }))
+  const labels = periods.map(period => period.label)
+  if (reported.every(summary => summary.sample === null))
+    return yield* new UsageProfileError({
+      message: `Nothing measurable in ${dataHome} for ${labels.join(', ')} (${sessions.length} session files, ${analysis.undecodableLines} undecodable lines); existing reports were not changed`,
+    })
+  const report: Report = {
+    selection: labels,
+    sources: {
+      leadFiles: analysis.leadFiles,
+      childFiles: analysis.childFiles,
+      undecodableLines: analysis.undecodableLines,
+      copiedEntries: analysis.copiedEntries,
+    },
+    periods: reported,
+    comparison: compare(reported),
   }
-}
-
-const distinctAttempts = (results: readonly ToolResult[], kind: WorkAttempt['kind']): number =>
-  new Set(results.flatMap(({ attempt }) => (attempt?.kind === kind ? [attempt.id] : []))).size
-
-const timeSplit = (entries: readonly SessionEntry[]): TimeSplit => {
-  let previous: number | undefined
-  let modelMs = 0
-  let toolMs = 0
-  let userMs = 0
-  for (const entry of entries) {
-    if (entry.kind === 'system') continue
-    const gap = previous === undefined ? 0 : entry.at - previous
-    if (entry.kind === 'request') modelMs += entry.latencyMs
-    if (entry.kind === 'toolResult') toolMs += gap
-    if (entry.kind === 'user') userMs += gap
-    previous = entry.at
-  }
-  return { modelMs, toolMs, userMs }
-}
-
-const aggregate = (
-  lead: readonly SessionFile[],
-  child: readonly SessionFile[]
-): Option.Option<Baseline> => {
-  const measured = lead.flatMap(({ entries }) => {
-    const requests = requestsOf(entries)
-    return Arr.isReadonlyArrayNonEmpty(requests)
-      ? [{ entries, requests, toolResults: toolResultsOf(entries) }]
+  const reports = join(dataHome, 'usage')
+  const privateReport = join(reports, `${labels.join('+')}.json`)
+  const exported =
+    selection.kind === 'export'
+      ? yield* exportFiles(analysis, selection.period, selection.directory)
       : []
+  const fs = yield* FileSystem.FileSystem
+  yield* fs.makeDirectory(reports, { recursive: true, mode: 0o700 })
+  if (yield* fs.exists(privateReport)) yield* fs.chmod(privateReport, 0o600)
+  yield* fs.writeFileString(privateReport, json(report), { mode: 0o600 })
+  if (selection.kind === 'export') yield* fs.makeDirectory(selection.directory, { recursive: true })
+  yield* Effect.forEach(exported, ([path, content]) => fs.writeFileString(path, content), {
+    discard: true,
   })
-  if (!Arr.isReadonlyArrayNonEmpty(measured)) return Option.none()
-  const leadRequests = Arr.flatMap(measured, session => session.requests)
-  const childEntries = child.flatMap(({ entries }) => entries)
-  const childRequests = requestsOf(childEntries)
-  const latencies = Arr.map(leadRequests, request => request.latencyMs)
-  const toolCalls = Arr.map(measured, session => session.toolResults.length)
-  const children = measured.map(session => distinctAttempts(session.toolResults, 'agent'))
-  const agentAttempts = Num.sumAll(children)
-  const requestTimes = Arr.appendAll(
-    Arr.map(leadRequests, request => request.at),
-    childRequests.map(request => request.at)
-  )
-  const splits = measured.map(session => timeSplit(session.entries))
-  return Option.some({
-    sample: {
-      leadSessions: measured.length,
-      emptyLeadSessions: lead.length - measured.length,
-      childSessions: child.length,
-      undecodableLines: Num.sumAll([...lead, ...child].map(file => file.undecodable)),
-      firstDate: isoDate(Arr.min(requestTimes, Order.Number)),
-      lastDate: isoDate(Arr.max(requestTimes, Order.Number)),
-    },
-    cache: { lead: cacheUsage(leadRequests), child: cacheUsage(childRequests) },
-    toolCallsPerSession: {
-      median: nearestRank(toolCalls, 50),
-      minimum: Arr.min(toolCalls, Order.Number),
-      maximum: Arr.max(toolCalls, Order.Number),
-    },
-    children: {
-      agentAttempts,
-      processAttempts: Num.sumAll(
-        measured.map(session => distinctAttempts(session.toolResults, 'process'))
-      ),
-      meanPerSession: agentAttempts / measured.length,
-      sessionShare: children.filter(count => count > 0).length / measured.length,
-    },
-    latency: {
-      requests: latencies.length,
-      p50Ms: nearestRank(latencies, 50),
-      p90Ms: nearestRank(latencies, 90),
-    },
-    timeSplit: {
-      modelMs: Num.sumAll(splits.map(split => split.modelMs)),
-      toolMs: Num.sumAll(splits.map(split => split.toolMs)),
-      userMs: Num.sumAll(splits.map(split => split.userMs)),
-    },
-    toolResults: {
-      lead: toolSizes(measured.flatMap(session => session.toolResults)),
-      child: toolSizes(toolResultsOf(childEntries)),
-    },
-  })
-}
+  return formatReport(report, [privateReport, ...exported.map(([path]) => path)])
+})
 
-const tokens = (value: number): string => value.toLocaleString('en-US')
+const tokens = (value: number): string => Math.round(value).toLocaleString('en-US')
 
 const duration = (ms: number): string => {
   if (Math.abs(ms) < 60_000) return seconds(ms)
@@ -319,87 +170,256 @@ const duration = (ms: number): string => {
   return `${(ms / 3_600_000).toFixed(1)} h`
 }
 
-const cacheLine = (name: string, cache: CacheUsage): string =>
-  `  ${name.padEnd(6)}${orUnavailable(cache.hitRate, percent).padStart(7)}` +
-  `  over ${cache.requests} requests: ${tokens(cache.input)} input, ${tokens(cache.cacheRead)} cache read, ${tokens(cache.cacheWrite)} cache write tokens`
-
-const toolTable = (name: string, results: ToolResults): string => {
-  const heading = `Tool results, ${name}: ${results.count} results, ${size(results.bytes)}, mean ${orUnavailable(results.meanBytes, size)}`
-  if (results.tools.length === 0) return heading
-  const width = Math.max(4, ...results.tools.map(tool => tool.name.length))
-  const row = (cells: readonly string[]) =>
-    `  ${cells[0]?.padEnd(width)}${cells
-      .slice(1)
-      .map(cell => cell.padStart(10))
-      .join('')}`
-  return [
-    heading,
-    row(['tool', 'count', 'mean', 'median', 'p90', 'share']),
-    ...results.tools.map(tool =>
-      row([
-        tool.name,
-        String(tool.count),
-        size(tool.meanBytes),
-        size(tool.medianBytes),
-        size(tool.p90Bytes),
-        percent(tool.share),
-      ])
-    ),
-  ].join('\n')
+const table = (headers: readonly string[], rows: readonly (readonly string[])[]): string[] => {
+  const widths = headers.map((header, column) =>
+    Math.max(header.length, ...rows.map(row => row[column]?.length ?? 0))
+  )
+  const line = (cells: readonly string[]) =>
+    `  ${cells
+      .map((cell, column) =>
+        column === 0 ? cell.padEnd(widths[column] ?? 0) : cell.padStart(widths[column] ?? 0)
+      )
+      .join('  ')}`
+  return [line(headers), ...rows.map(line)]
 }
 
-const formatReport = (baseline: Baseline, written: readonly string[]): string => {
-  const { sample, toolCallsPerSession, children, latency, timeSplit: split } = baseline
+const tokenCells = (totals: TokenTotals, label: string): string[] => [
+  label,
+  String(totals.entries),
+  String(totals.unknown),
+  tokens(totals.input),
+  tokens(totals.output),
+  totals.reasoningEntries === 0 ? 'n/a' : tokens(totals.reasoning),
+  tokens(totals.cacheRead),
+  tokens(totals.cacheWrite),
+  tokens(totals.uncached),
+  orUnavailable(totals.cacheReadShare, percent),
+]
+
+const TOKEN_HEADERS = [
+  'entries',
+  'unknown',
+  'input',
+  'output',
+  'reasoning',
+  'cache read',
+  'cache write',
+  'uncached',
+  'cache-read share',
+]
+
+const groupLines = (title: string, rows: readonly GroupRow[]): string[] =>
+  rows.length === 0
+    ? []
+    : table(
+        [title, ...TOKEN_HEADERS],
+        rows.map(row => tokenCells(row.tokens, row.key))
+      )
+
+const usageLines = (summary: PeriodSummary): string[] => [
+  'Usage tokens: cumulative consumption, not context occupancy; reasoning is part of output; unknown usage is not zero',
+  ...table(
+    ['source', ...TOKEN_HEADERS],
+    [
+      ...USAGE_SOURCES.map(source => tokenCells(summary.usage.bySource[source], source)),
+      tokenCells(summary.usage.total, 'total'),
+      tokenCells(summary.usage.requests.first, 'first requests'),
+      tokenCells(summary.usage.requests.later, 'later requests'),
+    ]
+  ),
+  ...groupLines(
+    'role',
+    ROLES.map(role => ({ key: role, tokens: summary.usage.byRole[role] })).filter(
+      row => row.tokens.entries + row.tokens.unknown > 0
+    )
+  ),
+  ...groupLines(
+    'effort',
+    summary.usage.byEffort.map(row => ({ key: row.effort, tokens: row.tokens }))
+  ),
+  ...groupLines('model', summary.groups.model),
+  ...groupLines('skill', summary.groups.skill),
+  `Attribution: model unrecorded on ${summary.attribution.modelUnrecorded} and effort on ${summary.attribution.effortUnrecorded} of ${summary.attribution.entries} usage entries; ${summary.attribution.unattributedChildSessions} of ${summary.attribution.childSessions} child sessions without a recorded role`,
+]
+
+const toolLines = (summary: PeriodSummary): string[] => {
+  const { tools } = summary
+  return [
+    `Tool calls: ${tools.invocations} invocations, ${tools.matched} with a result, ${tools.unmatchedCalls} without (${tools.interruptedUnmatched} in interrupted responses), ${tools.unmatchedResults} results without a call. A result without error does not establish task correctness.`,
+    ...table(
+      [
+        'tool',
+        'calls',
+        'returned',
+        'invocation',
+        'execution',
+        'blocked',
+        'cancelled',
+        'unclassified',
+        'unmatched',
+        'mean',
+        'p90',
+        'share',
+      ],
+      tools.byTool.map(row => [
+        row.tool,
+        String(row.invocations),
+        String(row.outcomes.returned),
+        String(row.outcomes.invocation),
+        String(row.outcomes.execution),
+        String(row.outcomes.blocked),
+        String(row.outcomes.cancelled),
+        String(row.outcomes.unclassified),
+        String(row.outcomes.unmatched),
+        orUnavailable(row.meanBytes, size),
+        orUnavailable(row.p90Bytes, size),
+        percent(row.share),
+      ])
+    ),
+    `Candidate sequences, same tool on one branch, relation not established: ${tools.candidateSequences.repeatedErrors} repeated errors, ${tools.candidateSequences.recoveries} recoveries`,
+  ]
+}
+
+const readLines = (summary: PeriodSummary & { readonly drilldowns: Drilldowns }): string[] => {
+  const { reads } = summary
+  const { relations, overlap, truncation } = reads
+  return [
+    `Reads: ${reads.calls} with a result (${reads.failed} failed, ${reads.unknownCoverage} with unknown coverage), ${size(reads.bytes)} returned text; bytes are not billed tokens or proven waste`,
+    `  first ${relations.first}, pagination ${relations.pagination}, disjoint ${relations.disjoint}, overlap ${relations.overlap}, unknown ${relations.unknown}`,
+    `  overlaps: ${overlap.identical} identical and ${overlap.changed} changed text over ${overlap.lines} lines (${size(overlap.bytes)}); ${overlap.afterCompaction} after compaction, ${overlap.afterContextEdit} after a context edit, ${overlap.afterOwnWrite} after an own write`,
+    `  truncated by lines ${truncation.lines}, by bytes ${truncation.bytes}, first line too long ${truncation.firstLine}; stopped by limit ${reads.limited}; ${reads.crossAgent.paths} paths read by several agents (${reads.crossAgent.reads} reads)`,
+    ...(summary.drilldowns.reads.length === 0
+      ? []
+      : table(
+          [
+            'repeated path',
+            'session',
+            'reads',
+            'overlaps',
+            'identical',
+            'bytes',
+            'returned lines',
+            'first call',
+          ],
+          summary.drilldowns.reads.map(row => [
+            row.path,
+            row.session,
+            String(row.reads),
+            String(row.overlaps),
+            String(row.identical),
+            size(row.bytes),
+            row.calls
+              .map(call =>
+                call.returned === null ? '?' : `${call.returned.start}-${call.returned.end}`
+              )
+              .join(' '),
+            row.calls[0]?.ref ?? '',
+          ])
+        )),
+  ]
+}
+
+const gitLines = (summary: PeriodSummary): string[] => {
+  const { git } = summary
+  if (git.requests === 0) return ['Git: no requests']
+  return [
+    `Git: ${git.requests} requests (${git.whole} alone in their call, ${git.inCompound} inside a compound shell command, whose output is not attributable to one request), ${git.truncated} with truncated call output; ${git.repeats.requests} repeated requests with ${git.repeats.identicalResults} identical, ${git.repeats.changedResults} changed and ${git.repeats.unknownResults} unknown results`,
+    ...table(
+      ['tool', 'operation', 'requests', 'repeats', 'identical', 'truncated'],
+      git.byOperation.map(row => [
+        row.tool,
+        row.operation,
+        String(row.requests),
+        String(row.repeats),
+        String(row.identicalResults),
+        String(row.truncated),
+      ])
+    ),
+  ]
+}
+
+const distributionText = (label: string, value: PeriodSummary['context']['initialTokens']) =>
+  value === null
+    ? `${label} n/a`
+    : `${label} median ${tokens(value.median)}, p90 ${tokens(value.p90)}, max ${tokens(value.max)}`
+
+const contextLines = ({ context }: PeriodSummary): string[] => [
+  `Context per request (input, cache read and cache write tokens of one request): ${context.sessions} sessions started; ${distributionText('initial', context.initialTokens)}; ${distributionText('peak', context.peakTokens)}; ${distributionText('growth', context.growthTokens)}`,
+  `  ${context.compactions} compactions, tokens before recorded on ${context.tokensBefore.recorded} (median ${orUnavailable(context.tokensBefore.median, tokens)}); synthesis ${tokens(context.synthesis.uncached + context.synthesis.cacheRead + context.synthesis.output)} tokens over ${context.synthesis.entries} entries, ${context.synthesis.unknown} unknown; ${context.afterCompaction.requests} requests after a compaction, ${context.afterCompaction.withoutCacheRead} without cache read (an association, not proof of invalidation)`,
+]
+
+const leadLines = ({ lead }: PeriodSummary): string[] => {
+  if (lead === null) return ['Lead: no lead request in this period']
+  const { toolCallsPerSession: calls, children, latency, timeSplit: split } = lead
   const measuredMs = split.modelMs + split.toolMs + split.userMs
   const part = (label: string, ms: number) =>
     `${label} ${duration(ms)}${measuredMs > 0 ? ` (${percent(ms / measuredMs)})` : ''}`
-  return `${[
-    `Sample: ${sample.leadSessions} lead sessions (${sample.emptyLeadSessions} empty excluded), ${sample.childSessions} child sessions, ${sample.firstDate} to ${sample.lastDate}; ${sample.undecodableLines} undecodable lines skipped`,
-    '',
-    'Cache hit rate',
-    cacheLine('lead', baseline.cache.lead),
-    cacheLine('child', baseline.cache.child),
-    `Tool calls per lead session: median ${toolCallsPerSession.median}, minimum ${toolCallsPerSession.minimum}, maximum ${toolCallsPerSession.maximum}`,
-    `Children per lead session: mean ${children.meanPerSession.toFixed(2)}, in ${percent(children.sessionShare)} of sessions (${children.agentAttempts} agent attempts); ${children.processAttempts} process attempts`,
-    `Model latency: p50 ${seconds(latency.p50Ms)}, p90 ${seconds(latency.p90Ms)} over ${latency.requests} lead requests`,
-    `Lead session time: ${[part('model', split.modelMs), part('tools', split.toolMs), part('waiting for you', split.userMs)].join(', ')}`,
-    '',
-    toolTable('lead', baseline.toolResults.lead),
-    '',
-    toolTable('child', baseline.toolResults.child),
-    '',
-    `Wrote ${written.join(', ')}`,
-  ].join('\n')}\n`
+  return [
+    `Lead: ${lead.sessions} sessions; tool calls per session median ${calls.median}, minimum ${calls.minimum}, maximum ${calls.maximum}; children per session mean ${children.meanPerSession.toFixed(2)}, in ${percent(children.sessionShare)} of sessions (${children.agentAttempts} agent attempts), ${children.processAttempts} process attempts`,
+    `  model latency p50 ${seconds(latency.p50Ms)}, p90 ${seconds(latency.p90Ms)} over ${latency.requests} requests; time ${[part('model', split.modelMs), part('tools', split.toolMs), part('waiting for you', split.userMs)].join(', ')}`,
+  ]
 }
 
-export const profileUsage = Effect.fn('profileUsage')(function* (dataHome: string, output: string) {
-  const leadDirectory = join(dataHome, 'sessions')
-  const lead = yield* readSessionFiles(leadDirectory)
-  const baseline = aggregate(lead, yield* readSessionFiles(join(dataHome, 'child-sessions')))
-  if (Option.isNone(baseline))
-    return yield* new UsageProfileError({
-      message: `No measurable lead session in ${leadDirectory} (${lead.length} files, ${Num.sumAll(lead.map(file => file.undecodable))} undecodable lines); nothing was written`,
-    })
-  const json = `${JSON.stringify(baseline.value, null, 2)}\n`
-  const charts = yield* renderCharts(json).pipe(
-    Effect.mapError(
-      cause => new UsageProfileError({ message: `Invalid usage baseline: ${cause.message}`, cause })
-    )
-  )
-  const files = [
-    ['usage-baseline.json', json],
-    ['usage.svg', charts.usage],
-    ['tools.svg', charts.tools],
-  ] as const
-  const fs = yield* FileSystem.FileSystem
-  yield* fs.makeDirectory(output, { recursive: true })
-  yield* Effect.forEach(
-    files,
-    ([name, content]) => fs.writeFileString(join(output, name), content),
-    { discard: true }
-  )
-  return formatReport(
-    baseline.value,
-    files.map(([name]) => join(output, name))
-  )
-})
+const periodLines = (summary: PeriodSummary & { readonly drilldowns: Drilldowns }): string[] => {
+  const { sample } = summary
+  if (sample === null) return [`Period ${summary.period.label}: no measurable entries`]
+  return [
+    `Period ${summary.period.label}: ${sample.leadSessions} lead and ${sample.childSessions} child sessions, ${sample.firstDate} to ${sample.lastDate}; ${sample.requests} requests, ${sample.toolCalls} tool calls`,
+    ...usageLines(summary),
+    '',
+    ...toolLines(summary),
+    '',
+    ...readLines(summary),
+    '',
+    ...gitLines(summary),
+    '',
+    ...contextLines(summary),
+    ...leadLines(summary),
+  ]
+}
+
+const cell = <A>(value: A | null, format: (value: A) => string) =>
+  value === null ? '-' : format(value)
+
+const comparisonLines = (comparison: Comparison | null, labels: readonly string[]): string[] => {
+  if (comparison === null) return []
+  return [
+    `Comparison, inclusive start and exclusive end, against ${comparison.baseline}`,
+    ...table(
+      ['dimension', 'key', ...labels.map(label => `${label} entries/uncached/share`)],
+      comparison.usage.map(row => [
+        row.dimension,
+        row.key,
+        ...row.periods.map(value =>
+          cell(
+            value,
+            present =>
+              `${present.entries}/${tokens(present.uncached)}/${orUnavailable(present.cacheReadShare, percent)}`
+          )
+        ),
+      ])
+    ),
+    ...table(
+      ['tool', ...labels.map(label => `${label} calls/failures/bytes`)],
+      comparison.tools.map(row => [
+        row.tool,
+        ...row.periods.map(value =>
+          cell(
+            value,
+            present => `${present.invocations}/${present.failures}/${size(present.bytes)}`
+          )
+        ),
+      ])
+    ),
+    ...comparison.limitations.map(limitation => `Limitation: ${limitation}`),
+  ]
+}
+
+const formatReport = (report: Report, written: readonly string[]): string =>
+  `${[
+    `Data home: ${report.sources.leadFiles} lead and ${report.sources.childFiles} child session files; ${report.sources.undecodableLines} undecodable lines skipped; ${report.sources.copiedEntries} copied fork entries excluded`,
+    '',
+    ...report.periods.flatMap(summary => [...periodLines(summary), '']),
+    ...comparisonLines(report.comparison, report.selection),
+    `Wrote ${written.join(', ')}`,
+  ].join('\n')}\n`
