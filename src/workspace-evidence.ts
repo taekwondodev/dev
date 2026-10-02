@@ -41,6 +41,7 @@ import {
 } from './workspace-git.ts'
 import type { ManifestEntry } from './workspace-records.ts'
 import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
+import { observePhysicalIdentity, type PhysicalObservation } from './workspace-identity.ts'
 
 export const EVIDENCE_POLICY_VERSION = 4
 
@@ -226,8 +227,9 @@ export type InventoryFile =
       readonly kind: 'file' | 'symlink'
       readonly path: string
       readonly size: number
-      readonly device: string
+      readonly volumeUuid: string
       readonly inode: string
+      readonly device: string
       readonly mtimeNs: string
     }
   | {
@@ -296,20 +298,28 @@ export const sensitiveName = (relativePath: string): boolean => {
 }
 
 const identityOf = (
-  stat: BigIntStats
+  stat: BigIntStats,
+  volumeUuid: string
 ): {
   readonly size: number
-  readonly device: string
+  readonly volumeUuid: string
   readonly inode: string
+  readonly device: string
   readonly mtimeNs: string
 } => ({
   size: Number(stat.size),
-  device: String(stat.dev),
+  volumeUuid,
   inode: String(stat.ino),
+  device: String(stat.dev),
   mtimeNs: String(stat.mtimeNs),
 })
 
-const inventoryFileOf = (checkout: string, device: string, entry: string): InventoryFile => {
+const inventoryFileOf = (
+  checkout: string,
+  volumeUuid: string,
+  device: string,
+  entry: string
+): InventoryFile => {
   if (entry.endsWith('/')) return { path: entry.slice(0, -1), kind: 'nested-repository' }
   let stat
   try {
@@ -324,7 +334,7 @@ const inventoryFileOf = (checkout: string, device: string, entry: string): Inven
       detail: errorText(cause),
     }
   }
-  const identity = identityOf(stat)
+  const identity = identityOf(stat, volumeUuid)
   if (identity.device !== device)
     return { path: entry, kind: 'other', detail: 'crosses a mount boundary' }
   if (stat.isSymbolicLink()) return { path: entry, kind: 'symlink', ...identity }
@@ -336,10 +346,10 @@ const inventoryFileOf = (checkout: string, device: string, entry: string): Inven
 }
 
 export const readInventory = (checkout: string, head: string | undefined): Inventory => {
-  const device = String(lstatSync(checkout, { bigint: true }).dev)
+  const root = observePhysicalIdentity(checkout)
   const index = indexSnapshot(checkout)
   const trackedFiles = index.paths.flatMap(entry => {
-    const file = inventoryFileOf(checkout, device, entry)
+    const file = inventoryFileOf(checkout, root.identity.volumeUuid, root.device, entry)
     if (file.kind === 'absent') return []
     if (file.kind !== 'file' && file.kind !== 'symlink')
       return blocked(`Cannot inspect tracked entry ${file.path}: ${file.kind}`)
@@ -347,7 +357,7 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
   })
   const others = untrackedPaths(checkout)
   const files = [...others.untracked, ...others.ignored].map(entry =>
-    inventoryFileOf(checkout, device, entry)
+    inventoryFileOf(checkout, root.identity.volumeUuid, root.device, entry)
   )
   assertUnfilteredIndex(checkout, index.paths)
   const trackedDigest = sha256Hex(
@@ -376,21 +386,31 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
 
 export const entryUnchanged = (
   checkout: string,
-  entry: ManifestEntry
+  entry: ManifestEntry,
+  root: PhysicalObservation
 ):
   | { readonly state: 'same' }
   | { readonly state: 'absent' }
   | { readonly state: 'changed'; readonly detail: string } => {
+  let rootStat
   let stat
   try {
+    rootStat = lstatSync(checkout, { bigint: true })
+    if (
+      !rootStat.isDirectory() ||
+      String(rootStat.dev) !== root.device ||
+      String(rootStat.ino) !== root.identity.inode
+    )
+      return { state: 'changed', detail: 'workspace directory changed since the check' }
     stat = lstatSync(join(checkout, entry.path), { bigint: true })
   } catch (cause) {
     if (hasErrorCode(cause, 'ENOENT')) return { state: 'absent' }
     return { state: 'changed', detail: errorText(cause) }
   }
-  const identity = identityOf(stat)
+  const identity = identityOf(stat, root.identity.volumeUuid)
   if (
-    identity.device !== entry.device ||
+    identity.device !== root.device ||
+    identity.volumeUuid !== entry.volumeUuid ||
     identity.inode !== entry.inode ||
     identity.size !== entry.size ||
     identity.mtimeNs !== entry.mtimeNs
@@ -881,7 +901,7 @@ export const stateDigestOf = (input: {
           ? null
           : [...input.inventory.trackedFiles, ...input.inventory.files].map(file =>
               file.kind === 'file' || file.kind === 'symlink'
-                ? [file.kind, file.path, file.size, file.device, file.inode, file.mtimeNs]
+                ? [file.kind, file.path, file.size, file.volumeUuid, file.inode, file.mtimeNs]
                 : [file.kind, file.path]
             ),
       publications: input.publications
@@ -944,7 +964,7 @@ export const verifyInventory = (
     if (file.kind !== 'file' && file.kind !== 'symlink') continue
     const identity = {
       path: file.path,
-      device: file.device,
+      volumeUuid: file.volumeUuid,
       inode: file.inode,
       size: file.size,
       mtimeNs: file.mtimeNs,

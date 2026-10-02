@@ -315,6 +315,7 @@ const allocateWorktree = (
     if (
       actual.head !== commit ||
       actual.commonPath !== source.git.commonPath ||
+      actual.commonDevice !== source.git.commonDevice ||
       !sameIdentity(actual.commonIdentity, source.git.commonIdentity)
     )
       requireReview(`Git did not publish the exact requested detached worktree: ${destination}`)

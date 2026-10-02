@@ -102,7 +102,7 @@ Pi owns inference, providers, conversation persistence, the TUI and project-inst
 
 **Use case:** several sessions on one repository, across installations and data homes, with process death releasing what a dead session held.
 
-**Choice:** one workspace authority per OS account, outside any data home, with repository-sharded records and SQLite lock databases as presence, writer and structure gates. The checkout is the contention unit. Installation admission and conversation claims are separate lock databases in `.dev/coordination/`.
+**Choice:** one workspace authority per OS account, outside any data home, with repository-sharded records and SQLite lock databases as presence, writer and structure gates. The checkout is the contention unit. Persist the macOS volume UUID and lossless inode for checkout and Git directories rather than the reboot-unstable `st_dev`; use numeric devices only for same-observation mount checks. Installation admission and conversation claims are separate lock databases in `.dev/coordination/`.
 
 **Tradeoff:** the authority coordinates cooperating dev runtimes only. External programs, detached processes and Xcode are outside it, and a lost observation blocks a checkout until an explicit recovery that does not exist yet. A global mutex, PID registries and a repository-wide fence were rejected because they serialized independent work. [ADR 0005](adr/0005-scoped-runtime-coordination.md).
 

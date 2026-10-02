@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type Cause, Effect, Queue, Stream } from 'effect'
+import { keptConversationGuidance } from '../../src/workspace-host.ts'
 import {
   WorkspaceError,
   type SweepReceipt,
@@ -59,6 +68,37 @@ const { claim, passed } = makeClaims()
 const manager = pi.SessionManager.create(current.path, sessionDir)
 const sessionFile = manager.getSessionFile()
 if (sessionFile === undefined) throw new Error('Pi did not name the session file')
+await claim(
+  'workspace refusal guidance reports the current file state without inferring lost history or turning conversation-specific refusals into checkout-wide blocks',
+  () => {
+    assert.ok(
+      !existsSync(sessionFile),
+      'Pi has not created the session file before a message is delivered'
+    )
+    const unwritten = keptConversationGuidance(sessionFile)
+    assert.match(unwritten, /No conversation file currently exists at:/)
+    assert.ok(unwritten.includes(sessionFile))
+    assert.match(unwritten, /A new conversation does not bypass repository identity checks/)
+    assert.ok(!unwritten.includes('will reach the same refusal'))
+    assert.ok(!unwritten.includes('Pi has not written'))
+    assert.ok(!unwritten.includes('dev --cwd PATH'))
+
+    const transcript = join(fixture, 'existing-transcript.jsonl')
+    const original = Buffer.from('{"type":"message","message":{"role":"user"}}\n')
+    writeFileSync(transcript, original)
+    const existing = keptConversationGuidance(transcript)
+    assert.match(existing, /existing conversation file and its saved history were not modified/)
+    assert.match(existing, /Resolve the reported refusal before retrying this conversation/)
+    assert.ok(!existing.includes('will reach the same refusal'))
+    assert.deepEqual(readFileSync(transcript), original)
+
+    rmSync(transcript)
+    const removed = keptConversationGuidance(transcript)
+    assert.match(removed, /No conversation file currently exists at:/)
+    assert.ok(removed.includes(transcript))
+    assert.ok(!removed.includes('Pi has not written'))
+  }
+)
 const conversation = { sessionId: manager.getSessionId(), sessionFile, dataHome }
 const selections: WorkspaceSelection[] = []
 const checked: string[] = []

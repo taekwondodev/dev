@@ -22,12 +22,13 @@ import {
   type WorkspaceBinding,
   type WorkspaceOrigin,
 } from './workspace-domain.ts'
+import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import {
-  canonicalGitWorkspace,
   FileIdentitySchema,
+  InodeSchema,
+  VolumeUuidSchema,
   type FileIdentity,
-  type GitWorkspace,
-} from './workspace-git.ts'
+} from './workspace-identity.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
 import { encode, parseRecord, rows, first, textField, numberField } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
@@ -43,8 +44,8 @@ const TaskSchema = Schema.Struct({
 export const RepositoryCatalogSchema = Schema.Struct({
   id: WorkspaceId,
   commonPath: Schema.NonEmptyString,
-  device: Schema.NonEmptyString,
-  inode: Schema.NonEmptyString,
+  volumeUuid: VolumeUuidSchema,
+  inode: InodeSchema,
   objectFormat: Schema.NonEmptyString,
   state: Schema.Literals(['provisioning', 'ready']),
   provisionId: WorkspaceId,
@@ -152,8 +153,8 @@ const TransitionOperationSchema = Schema.Union([
 ])
 export const ManifestEntrySchema = Schema.Struct({
   path: RelativeFilePath,
-  device: Schema.NonEmptyString,
-  inode: Schema.NonEmptyString,
+  volumeUuid: VolumeUuidSchema,
+  inode: InodeSchema,
   size: Schema.Int,
   mtimeNs: Schema.String,
   sha256: Sha256Hex,
@@ -223,7 +224,7 @@ export const operationRevision = (operation: OperationRecord): number =>
 const OPEN_PHASES = "('intent','started','unknown','review-required')"
 
 export const sameIdentity = (left: FileIdentity, right: FileIdentity): boolean =>
-  left.device === right.device && left.inode === right.inode
+  left.volumeUuid === right.volumeUuid && left.inode === right.inode
 
 export const getTask = (db: DatabaseSync, id: string): TaskRecord | undefined => {
   const row = first(db, 'SELECT id, revision, payload FROM tasks WHERE id=?', id)

@@ -20,6 +20,7 @@ import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 import { acquirePathGates, type GateRelease } from './workspace-gates.ts'
 import { WorkspaceId } from './workspace-domain.ts'
 import { getWorkspace } from './workspace-records.ts'
+import { observePhysicalIdentity } from './workspace-identity.ts'
 
 export class CoordinationError extends Schema.TaggedError<CoordinationError>()(
   'CoordinationError',
@@ -70,8 +71,8 @@ const sourcePresence = (options: CoordinationOptions): GateRelease => {
     if (authority.inspectExisting() === undefined)
       throw new CoordinationError({ message: 'Managed installation authority is unavailable' })
     release = acquirePathGates(authority.paths, root, 'reader').use
-    const after = lstatSync(root, { bigint: true })
-    if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino)
+    const after = observePhysicalIdentity(root)
+    if (before.dev !== BigInt(after.device) || String(before.ino) !== after.identity.inode)
       throw new CoordinationError({ message: 'Installation workspace changed during startup' })
     const db = authority.openShard(repository)
     try {
@@ -81,8 +82,8 @@ const sourcePresence = (options: CoordinationOptions): GateRelease => {
         recorded.status !== 'ready' ||
         recorded.origin !== 'managed' ||
         recorded.path !== root ||
-        recorded.physical.device !== String(after.dev) ||
-        recorded.physical.inode !== String(after.ino)
+        recorded.physical.volumeUuid !== after.identity.volumeUuid ||
+        recorded.physical.inode !== after.identity.inode
       )
         throw new CoordinationError({
           message: 'Installation workspace no longer matches its authority record',

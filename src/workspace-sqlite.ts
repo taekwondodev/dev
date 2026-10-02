@@ -47,7 +47,7 @@ const CATALOG_SQL = `
   CREATE TABLE repositories(
     id TEXT PRIMARY KEY,
     common_path TEXT NOT NULL UNIQUE,
-    device TEXT NOT NULL,
+    volume_uuid TEXT NOT NULL,
     inode TEXT NOT NULL,
     object_format TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('provisioning', 'ready')),
@@ -55,7 +55,7 @@ const CATALOG_SQL = `
     revision INTEGER NOT NULL,
     payload TEXT NOT NULL
   ) STRICT;
-  CREATE UNIQUE INDEX repositories_by_physical_identity ON repositories(device, inode);
+  CREATE UNIQUE INDEX repositories_by_physical_identity ON repositories(volume_uuid, inode);
 `
 const SHARD_SQL = `
   CREATE TABLE shard_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;

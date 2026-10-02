@@ -231,13 +231,19 @@ try {
     'general',
   ]
   await claim(
-    'dev --resume of a conversation whose workspace was removed exits 1, names the unchanged conversation file and points to dev --cwd PATH, without recreating the workspace',
+    'dev --resume of a conversation whose workspace was removed exits 1, names the unchanged conversation file and directs the user to resolve that refusal without recreating the workspace',
     async () => {
       const outcome = await runLauncher(resumeArgs(sessionFile))
       assert.equal(outcome.code, 1, outcome.stderr)
       assert.match(outcome.stderr, /no longer exists and is not recreated/)
       assert.ok(outcome.stderr.includes(sessionFile), outcome.stderr)
-      assert.match(outcome.stderr, /dev --cwd PATH/)
+      assert.match(
+        outcome.stderr,
+        /existing conversation file and its saved history were not modified/
+      )
+      assert.match(outcome.stderr, /Resolve the reported refusal before retrying this conversation/)
+      assert.ok(!outcome.stderr.includes('will reach the same refusal'), outcome.stderr)
+      assert.ok(!outcome.stderr.includes('dev --cwd PATH'), outcome.stderr)
       assert.equal(
         createHash('sha256').update(readFileSync(sessionFile)).digest('hex'),
         historyBefore,
@@ -586,7 +592,7 @@ try {
     )
   })
   await claim(
-    'dev --resume of a dangling link is refused by the authority, which keeps the history and points to dev --cwd PATH',
+    'dev --resume of a dangling link is refused and explains the invalid entry without suggesting another conversation in the blocked checkout',
     async () => {
       const target = join(sandbox, 'nowhere.jsonl')
       const dangling = join(dataHome, 'sessions', 'dangling.jsonl')
@@ -594,7 +600,8 @@ try {
       const outcome = await runLauncher(resumeArgs(dangling), { STOP_AFTER_ATTACH: '1' })
       assert.equal(outcome.code, 1, outcome.stderr)
       assert.match(outcome.stderr, /Conversation file is not a regular, uniquely linked file/)
-      assert.match(outcome.stderr, /dev --cwd PATH/)
+      assert.match(outcome.stderr, /session path is not a regular conversation file/)
+      assert.ok(!outcome.stderr.includes('dev --cwd PATH'), outcome.stderr)
       assert.ok(!existsSync(target), 'the link target was not created')
     }
   )

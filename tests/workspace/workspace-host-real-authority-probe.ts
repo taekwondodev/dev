@@ -463,7 +463,7 @@ const held = await holder.attach({
   cwd: lead,
 })
 const keptConversation = (file: string) =>
-  `The conversation file is unchanged and keeps its history: ${file}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
+  `The existing conversation file and its saved history were not modified: ${file}\nResolve the reported refusal before retrying this conversation. A new conversation does not bypass repository identity checks.`
 await claim(
   'switching the TUI runtime to a conversation that another lifecycle keeps live is cancelled with a notice, leaving the session and host usable, instead of failing, which Pi treats as fatal',
   async () => {

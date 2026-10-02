@@ -10,7 +10,7 @@ import {
   type Scope,
   Stream,
 } from 'effect'
-import { existsSync, readFileSync } from 'node:fs'
+import { lstatSync, existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import type {
   AgentSessionRuntime,
@@ -52,7 +52,7 @@ import {
 import { ghDestinationReader, makeWorkspaceTool } from './workspace-tool.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
 import { canonicalConversationFile, decodeWriteOperand, isWithin } from './workspace-paths.ts'
-import { newId } from './workspace-platform.ts'
+import { newId, hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
@@ -268,8 +268,28 @@ const switchNotices = (
       }
 }
 
-export const keptConversationGuidance = (sessionFile: string): string =>
-  `The conversation file is unchanged and keeps its history: ${sessionFile}\nTo keep working, start a new conversation in an existing checkout: dev --cwd PATH`
+export const keptConversationGuidance = (
+  sessionFile: string,
+  scope: 'workspace' | 'import' = 'workspace'
+): string => {
+  let fileState: string
+  try {
+    const stat = lstatSync(sessionFile)
+    fileState =
+      stat.isFile() && !stat.isSymbolicLink()
+        ? `The existing conversation file and its saved history were not modified: ${sessionFile}`
+        : `The session path is not a regular conversation file; its filesystem entry was not modified: ${sessionFile}`
+  } catch (cause) {
+    fileState = hasErrorCode(cause, 'ENOENT')
+      ? `No conversation file currently exists at: ${sessionFile}`
+      : `The conversation file state could not be verified; dev did not modify it: ${sessionFile}`
+  }
+  const nextAction =
+    scope === 'workspace'
+      ? 'Resolve the reported refusal before retrying this conversation. A new conversation does not bypass repository identity checks.'
+      : 'Resolve the session import refusal before retrying; dev did not modify the source file.'
+  return `${fileState}\n${nextAction}`
+}
 
 type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner' | 'workspace-tool'
 
@@ -384,7 +404,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const resolved = options.resolveImportPath(cwd)
     if (!(yield* Effect.sync(() => existsSync(resolved)))) return undefined
     if ((yield* options.repositoryRoot(resolved)) !== undefined) return undefined
-    return `The session was not imported: its working directory is not inside a Git checkout: ${resolved}\n${keptConversationGuidance(source)}`
+    return `The session was not imported: its working directory is not inside a Git checkout: ${resolved}\n${keptConversationGuidance(source, 'import')}`
   })
 
   const showSweep = (receipt: SweepReceipt): void => {

@@ -125,4 +125,6 @@ Dev keeps one current schema, without schema or protocol version markers, histor
 
 `<data-home>` is `.dev/` in the checkout or an explicit `--data-home` or `DEV_DATA_HOME` override; cover each one in use.
 
+The workspace authority now records physical identity as volume UUID plus inode instead of device number plus inode. Its repository catalog, shard metadata, workspace records and removal evidence therefore require the current shape; do not translate old fields or fall back to path identity. Apply the workspace-authority discard above only at the approved stop-and-activation checkpoint, with all affected dev runtimes closed.
+
 Quit dev before deleting a lock database: `<installation>/.dev/coordination/` or the authority's `gates/`. Unlinking one while a running dev holds it splits ownership across inodes.
