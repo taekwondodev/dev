@@ -37,6 +37,7 @@ export const summary = (record: AttemptView) => ({
   error: record.error ?? record.observationError ?? record.persistenceError,
   deliveryError: record.deliveryError,
   cleanupError: record.cleanupError,
+  gateReleaseWarning: record.gateReleaseWarning,
   processObservation: record.processObservation,
   recovery: record.recovery,
 })

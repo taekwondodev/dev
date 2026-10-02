@@ -52,6 +52,7 @@ type AttemptRecordCreateFields = Pick<AttemptRecord, 'kind' | 'cwd' | 'controlle
       | 'observationError'
       | 'persistenceError'
       | 'cleanupError'
+      | 'gateReleaseWarning'
       | 'deliveryError'
       | 'protocolError'
       | 'processObservation'

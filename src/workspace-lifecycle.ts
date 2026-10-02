@@ -335,7 +335,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       authorize: operation => open(request({ op: 'authorize', attachmentId, operation })),
       select: selection => open(request({ op: 'select', attachmentId, selection })),
       reportExecution: (grant, fact) =>
-        open(request({ op: 'report-execution', attachmentId, grant, fact })).pipe(Effect.asVoid),
+        open(request({ op: 'report-execution', attachmentId, grant, fact })),
       handoff: (transition, replace) =>
         open(
           Effect.suspend(() => {

@@ -12,6 +12,7 @@ import {
   WorkspaceConversationSchema,
   WorkspaceError,
   WorkspaceExecutionFactSchema,
+  WorkspaceExecutionReportSchema,
   WorkspaceGrantSchema,
   WorkspaceHandoffSchema,
   WorkspaceId,
@@ -22,6 +23,7 @@ import {
   type WorkspaceAssessment,
   type WorkspaceAuthorization,
   type WorkspaceBinding,
+  type WorkspaceExecutionReport,
   type WorkspaceHandoff,
   type SweepReceipt,
   type WorkspaceReleaseResult,
@@ -122,7 +124,7 @@ export interface WorkspaceRpcResults {
   readonly attach: { readonly attachmentId: number; readonly binding: WorkspaceBinding }
   readonly authorize: WorkspaceAuthorization
   readonly select: WorkspaceHandoff
-  readonly 'report-execution': null
+  readonly 'report-execution': WorkspaceExecutionReport
   readonly handoff: null
   readonly 'close-attachment': null
   readonly inspect: readonly WorkspaceView[]
@@ -155,9 +157,14 @@ const SuccessSchema = Schema.Union([
     op: Schema.Literal('select'),
     value: WorkspaceHandoffSchema,
   }),
+  Schema.Struct({
+    id: RpcId,
+    ok: Schema.Literal(true),
+    op: Schema.Literal('report-execution'),
+    value: WorkspaceExecutionReportSchema,
+  }),
   ...(
     [
-      'report-execution',
       'handoff',
       'close-attachment',
       'validate',

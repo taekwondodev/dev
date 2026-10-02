@@ -1755,9 +1755,16 @@ class WorkOwnerImpl implements WorkOwnerService {
   ): Effect.Effect<void, WorkFailure> {
     const { workspace } = this
     if (job.workspaceLaunch === 'settled') return Effect.void
-    return workspace.attachment
-      .reportExecution(job.workspace, fact)
-      .pipe(Effect.mapError(toFailure))
+    return workspace.attachment.reportExecution(job.workspace, fact).pipe(
+      Effect.mapError(toFailure),
+      Effect.flatMap(({ warning }) =>
+        warning === undefined
+          ? Effect.void
+          : this.commitBestEffort(job, () =>
+              job.lifecycle.transition.gateReleaseWarning(job.lifecycle.token, warning)
+            ).pipe(Effect.asVoid)
+      )
+    )
   }
 
   private recordFor(id: AttemptId): Effect.Effect<AttemptRecord, WorkFailure> {

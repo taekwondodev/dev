@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { once } from 'node:events'
 import {
   chmodSync,
   existsSync,
@@ -22,6 +23,7 @@ import {
   type SweepReceipt,
   type SweepRow,
   type TaskTarget,
+  type WorkspaceExecution,
   type WorkspaceGrant,
   type WorkspaceId,
 } from '../../src/workspace-domain.ts'
@@ -31,6 +33,7 @@ import type { GitHubReader } from '../../src/workspace-evidence.ts'
 import { checkTask } from '../../src/workspace-release.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
+import { observeFamily, processTable } from '../../src/process-family.ts'
 import { verdictName } from './workspace-completion-fixtures.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -43,6 +46,8 @@ import {
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-sweep-check-')))
 const root = join(sandbox, 'authority')
 const FAULT_PRELOAD = new URL('./workspace-release-fault-preload.ts', import.meta.url).href
+const GATE_CLOSE_FAULT_PRELOAD = new URL('./workspace-gate-close-fault-preload.ts', import.meta.url)
+  .href
 const { claim, passed } = makeClaims()
 
 const git = (args: readonly string[], cwd: string): string =>
@@ -141,6 +146,178 @@ try {
   const sweepAtQuit = (anchor: WorkspaceId) => sweepWith(lifecycle, anchor)
   const reservedTasks = async (): Promise<readonly (WorkspaceId | undefined)[]> =>
     (await lifecycle.inspect({ cwd: repo })).map(view => view.taskId)
+
+  await claim(
+    'quiescent and failed-launch child workspaces are swept while their lead stays open, including gates regrouped by another allocation',
+    async () => {
+      const owner = await reserve(userCheckout('quiescent-children'))
+      const sweeper = await openLifecycle({ root })
+      const allocate = async () => {
+        const execution: WorkspaceExecution = {
+          sessionId: 'quiescent-children',
+          taskKey: newId(),
+          attemptId: newId(),
+          generation: '1',
+        }
+        const grant = ready(await owner.owner.authorize({ kind: 'delegated-write', execution }))
+        return { grant, execution }
+      }
+      try {
+        const children = [await allocate(), await allocate()]
+        for (const { grant, execution } of children) {
+          await owner.owner.reportExecution(grant, { kind: 'launch-intent', execution })
+          const child = spawn('/bin/sh', ['-c', 'read line'], {
+            cwd: grant.checkout,
+            detached: true,
+            stdio: ['pipe', 'ignore', 'ignore'],
+          })
+          const exited = once(child, 'exit')
+          await once(child, 'spawn')
+          const identity = (await Effect.runPromise(processTable)).find(
+            entry => entry.pid === child.pid
+          )
+          try {
+            assert.ok(identity !== undefined)
+            await owner.owner.reportExecution(grant, { kind: 'spawned', process: identity })
+            await owner.owner.reportExecution(grant, { kind: 'started' })
+          } finally {
+            child.stdin.end('finish\n')
+            await exited
+          }
+          const family = await Effect.runPromise(
+            observeFamily(
+              { pid: child.pid, root: identity, known: [identity], reported: undefined },
+              {
+                rootExited: true,
+                report: processes =>
+                  owner.owner.effect.reportExecution(grant, { kind: 'observed', processes }),
+              }
+            )
+          )
+          assert.deepEqual(family.known, [])
+          await owner.owner.reportExecution(grant, {
+            kind: 'quiescent',
+            reason: 'The child process family was observed gone',
+          })
+          await assert.rejects(
+            owner.owner.reportExecution(grant, {
+              kind: 'quiescent',
+              reason: 'A duplicate report must still be refused',
+            })
+          )
+        }
+        const views = await sweeper.inspect({ taskId: owner.taskId })
+        for (const { grant } of children) {
+          const view = views.find(item => item.workspaceId === grant.workspaceId)
+          assert.equal(view?.uses.find(use => use.id === grant.useId)?.stage, 'quiescent')
+          assert.ok(existsSync(grant.checkout), 'settlement does not remove the worktree')
+          assert.ok(view?.taskId === owner.taskId, 'settlement preserves the reservation')
+        }
+        const receipt = await sweepWith(sweeper, owner.write.workspaceId)
+        for (const { grant } of children) {
+          const row = rowOf(receipt, grant.workspaceId)
+          assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'no-residue'])
+          assert.equal(existsSync(grant.checkout), false)
+          assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(grant.checkout))
+        }
+        assert.equal(sweepExitCode(receipt), 0)
+        assert.equal(rowOf(receipt, owner.write.workspaceId).outcome, 'retained')
+        assert.equal(
+          ready(await owner.owner.authorize({ kind: 'write' })).workspaceId,
+          owner.write.workspaceId
+        )
+        const failed = await allocate()
+        await owner.owner.reportExecution(failed.grant, {
+          kind: 'launch-failed',
+          reason: 'The child was not spawned',
+        })
+        const failedReceipt = await sweepWith(sweeper, owner.write.workspaceId)
+        const failedRow = rowOf(failedReceipt, failed.grant.workspaceId)
+        assert.deepEqual(
+          [failedRow.outcome, verdictName(failedRow.verdict)],
+          ['removed', 'no-residue']
+        )
+        assert.equal(sweepExitCode(failedReceipt), 0)
+        assert.equal(existsSync(failed.grant.checkout), false)
+        assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(failed.grant.checkout))
+      } finally {
+        await owner.owner.close()
+        await sweeper.close()
+      }
+    }
+  )
+
+  await claim(
+    'a gate close failing after settlement keeps the settlement, warns its reporter and retries at the next admission',
+    async () => {
+      const arm = join(sandbox, 'gate-close-fault')
+      const faulty = await openLifecycle({
+        root,
+        startWorker: (url, options) =>
+          new Worker(url, {
+            ...options,
+            execArgv: [...(options.execArgv ?? []), '--import', GATE_CLOSE_FAULT_PRELOAD],
+            env: {
+              ...process.env,
+              DEV_GATE_CLOSE_FAULT_ARM: arm,
+              DEV_GATE_CLOSE_FAULT_GATES: join(root, 'gates'),
+            },
+          }),
+      })
+      const owner = await faulty.attach({
+        conversation: conversation(),
+        cwd: userCheckout('deferred-gate-release'),
+      })
+      const sweeper = await openLifecycle({ root })
+      try {
+        const anchor = ready(await owner.authorize({ kind: 'write' }))
+        const child = ready(
+          await owner.authorize({
+            kind: 'delegated-write',
+            execution: {
+              sessionId: 'deferred-gate-release',
+              taskKey: newId(),
+              attemptId: newId(),
+              generation: '1',
+            },
+          })
+        )
+        writeFileSync(arm, '')
+        const report = await owner.reportExecution(child, {
+          kind: 'launch-failed',
+          reason: 'The child was not spawned',
+        })
+        assert.equal(existsSync(arm), false, 'the injected close failure fired')
+        assert.match(report.warning ?? '', /gate release deferred.*injected gate close failure/)
+        const views = await sweeper.inspect({ taskId: taskOf(child) })
+        const use = views
+          .find(view => view.workspaceId === child.workspaceId)
+          ?.uses.find(item => item.id === child.useId)
+        assert.equal(use?.stage, 'quiescent', 'the settlement is durable despite the warning')
+
+        const held = await sweepWith(sweeper, anchor.workspaceId)
+        assert.match(rowOf(held, child.workspaceId).reason, /still uses this workspace/)
+        assert.ok(existsSync(child.checkout), 'a held gate still protects the worktree')
+
+        assert.equal(
+          ready(await owner.authorize({ kind: 'write' })).workspaceId,
+          anchor.workspaceId
+        )
+        const swept = await sweepWith(sweeper, anchor.workspaceId)
+        const row = rowOf(swept, child.workspaceId)
+        assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'no-residue'])
+        assert.equal(existsSync(child.checkout), false)
+        await assert.rejects(
+          owner.reportExecution(child, { kind: 'launch-failed', reason: 'duplicate' }),
+          (cause: unknown) => cause instanceof WorkspaceError && cause.outcome === 'review-required'
+        )
+      } finally {
+        await owner.close()
+        await faulty.close()
+        await sweeper.close()
+      }
+    }
+  )
 
   const finishedOwner = await reserve(repo)
   const finished = ready(await finishedOwner.owner.authorize({ kind: 'delegated-write' }))

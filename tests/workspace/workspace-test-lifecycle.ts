@@ -14,6 +14,7 @@ import {
   type WorkspaceBinding,
   type WorkspaceConversation,
   type WorkspaceExecutionFact,
+  type WorkspaceExecutionReport,
   type WorkspaceGrant,
   type WorkspaceHandoff,
   type WorkspaceId,
@@ -84,7 +85,10 @@ export interface TestAttachment {
   readonly binding: WorkspaceBinding
   authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization>
   select(selection: WorkspaceSelection): Promise<WorkspaceHandoff>
-  reportExecution(grant: WorkspaceGrant, fact: WorkspaceExecutionFact): Promise<void>
+  reportExecution(
+    grant: WorkspaceGrant,
+    fact: WorkspaceExecutionFact
+  ): Promise<WorkspaceExecutionReport>
   handoff(
     transition: WorkspaceHandoff,
     replace: (target: WorkspaceGrant) => Promise<'confirmed' | 'cancelled'>
