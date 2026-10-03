@@ -1637,6 +1637,27 @@ try {
         prove(reader({ mergedPullRequestsForCommit: () => [] }), feature, explicit).outcome,
         'branch-merged'
       )
+      let discoveryCalls = 0
+      const explicitProof = integrationFacts(
+        reader({
+          mergedPullRequestsForCommit: () => {
+            discoveryCalls += 1
+            return []
+          },
+        }),
+        worktree,
+        {
+          target: explicit,
+          completionRole: 'branch',
+          head: feature,
+          base: githubMain,
+          allocatedAt: Date.parse(MERGED_AT) - 60_000,
+          siblings: { heads: [], unknown: [] },
+        }
+      )
+      assert.equal(explicitProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.equal(explicitProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
+      assert.equal(discoveryCalls, 0, 'a sufficient recorded PR proof skips commit-to-PR discovery')
     }
   )
   await claim(
