@@ -2119,6 +2119,11 @@ export const sweepRepositoryAtQuit = async (
   readers: EvidenceReaders
 ): Promise<SweepReceipt> => {
   const sweep = startSweep(authority, input, readers)
+  if (sweep.taskIds.length > 0)
+    inDb(authority, input.repositoryId, db => {
+      for (const taskId of sweep.taskIds)
+        void prefetchEvidence(readers, getTask(db, taskId)?.target)
+    })
   for (const [index, taskId] of sweep.taskIds.entries()) {
     if (sweep.expired(index)) break
     let assessed: readonly Assessed[]
