@@ -20,6 +20,7 @@ import {
   type PublicationReference,
   type TargetView,
   type TaskTarget,
+  type WorkspaceRole,
   WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
 import {
@@ -65,7 +66,22 @@ export interface Unavailable {
 export const isUnavailable = (value: unknown): value is Unavailable =>
   typeof value === 'object' && value !== null && 'unavailable' in value
 
+export type GitHubCommitListEvidence =
+  | { readonly kind: 'complete'; readonly commits: readonly string[] }
+  | { readonly kind: 'incomplete' }
+
+export interface GitHubPullRequestEvidence {
+  readonly tip: string | 'missing' | Unavailable
+  readonly pullRequest: GitHubPullRequest | 'missing' | Unavailable
+  readonly commits: GitHubCommitListEvidence | Unavailable | undefined
+}
+
 export interface GitHubReader {
+  pullRequestEvidence?(
+    repository: string,
+    ref: string,
+    number: number
+  ): GitHubPullRequestEvidence | Unavailable
   defaultBranch(repository: string): string | 'missing' | Unavailable
   refTip(repository: string, ref: string): string | 'missing' | Unavailable
   pullRequest(repository: string, number: number): GitHubPullRequest | 'missing' | Unavailable
@@ -95,6 +111,31 @@ const PullListPayload = Schema.Array(
 const ComparePayload = Schema.Struct({
   status: Schema.Literals(['identical', 'ahead', 'behind', 'diverged']),
 })
+const GraphqlPullRequestEvidencePayload = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(
+      Schema.Struct({
+        ref: Schema.NullOr(Schema.Struct({ target: Schema.Struct({ oid: CommitSha }) })),
+        pullRequest: Schema.NullOr(
+          Schema.Struct({
+            mergedAt: Schema.NullOr(Schema.String),
+            baseRefName: Schema.String,
+            baseRepository: Schema.Struct({ nameWithOwner: Schema.String }),
+            headRefOid: CommitSha,
+            headRepository: Schema.NullOr(Schema.Struct({ nameWithOwner: Schema.String })),
+            mergeCommit: Schema.NullOr(Schema.Struct({ oid: CommitSha })),
+            commits: Schema.Struct({
+              totalCount: Schema.Int,
+              nodes: Schema.Array(Schema.Struct({ commit: Schema.Struct({ oid: CommitSha }) })),
+              pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
+            }),
+          })
+        ),
+      })
+    ),
+  }),
+  errors: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))),
+})
 
 export const PROVIDER_BUDGET_MS = WORKER_REQUEST_TIMEOUT_MS / 2
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
@@ -107,10 +148,76 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(
     return { unavailable: `GitHub returned an unexpected shape: ${errorText(cause)}` }
   }
 }
-type GhCall = (
-  endpoint: string,
+interface GhResponse {
+  readonly status: 'ok' | 'not-found'
+  readonly text: string
+}
+type GhCall = (endpoint: string, timeoutMs: number) => GhResponse
+type GhGraphqlCall = (
+  repository: string,
+  ref: string,
+  number: number,
   timeoutMs: number
-) => { readonly status: 'ok' | 'not-found'; readonly text: string }
+) => GhResponse
+const PULL_REQUEST_EVIDENCE_QUERY = `query($owner: String!, $name: String!, $number: Int!, $ref: String!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $ref) { target { oid } }
+    pullRequest(number: $number) {
+      mergedAt
+      baseRefName
+      baseRepository { nameWithOwner }
+      headRefOid
+      headRepository { nameWithOwner }
+      mergeCommit { oid }
+      commits(first: 100) {
+        totalCount
+        nodes { commit { oid } }
+        pageInfo { hasNextPage }
+      }
+    }
+  }
+}`
+const ghGraphql: GhGraphqlCall = (repository, ref, number, timeoutMs) => {
+  const [owner, name] = repository.split('/')
+  if (owner === undefined || name === undefined)
+    throw new Error(`Invalid GitHub repository name: ${repository}`)
+  try {
+    const text = execFileSync(
+      'gh',
+      [
+        'api',
+        'graphql',
+        '-H',
+        'Accept: application/vnd.github+json',
+        '-f',
+        `query=${PULL_REQUEST_EVIDENCE_QUERY}`,
+        '-f',
+        `owner=${owner}`,
+        '-f',
+        `name=${name}`,
+        '-F',
+        `number=${number}`,
+        '-f',
+        `ref=${ref}`,
+      ],
+      {
+        encoding: 'utf8',
+        timeout: timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
+      }
+    )
+    return { status: 'ok', text }
+  } catch (cause) {
+    const stderr =
+      typeof cause === 'object' && cause !== null && 'stderr' in cause
+        ? String((cause as { stderr: unknown }).stderr)
+        : ''
+    if (/HTTP 404/.test(stderr)) return { status: 'not-found', text: '' }
+    throw new Error(`gh api graphql failed: ${stderr.trim() || errorText(cause)}`, { cause })
+  }
+}
 const ghApi: GhCall = (endpoint, timeoutMs) => {
   try {
     const text = execFileSync(
@@ -142,11 +249,13 @@ const orUnavailable = <A>(value: A | 'missing' | Unavailable, what: string): A |
 export const makeGitHubReader = (
   call: GhCall = ghApi,
   budgetMs: number = PROVIDER_BUDGET_MS,
-  clock: () => number = () => performance.now()
+  clock: () => number = () => performance.now(),
+  graphqlCall: GhGraphqlCall = ghGraphql
 ): GitHubReader => {
   const deadline = clock() + budgetMs
 
   const answered = new Map<string, ReturnType<GhCall> | Unavailable>()
+  const answeredGraphql = new Map<string, GitHubPullRequestEvidence | Unavailable>()
   const ask = (endpoint: string): ReturnType<GhCall> | Unavailable => {
     const known = answered.get(endpoint)
     if (known !== undefined) return known
@@ -173,7 +282,69 @@ export const makeGitHubReader = (
     if (response.status === 'not-found') return 'missing'
     return decode(schema, response.text)
   }
+  const decodeGraphqlEvidence = (
+    response: GhResponse | Unavailable
+  ): GitHubPullRequestEvidence | Unavailable => {
+    if (isUnavailable(response)) return response
+    if (response.status === 'not-found')
+      return { tip: 'missing', pullRequest: 'missing', commits: undefined }
+    const payload = decode(GraphqlPullRequestEvidencePayload, response.text)
+    if (isUnavailable(payload)) return payload
+    if (payload.errors !== undefined && payload.errors.length > 0)
+      return {
+        unavailable: `GitHub GraphQL returned errors: ${payload.errors.map(error => error.message).join('; ')}`,
+      }
+    const data = payload.data.repository
+    const refValue = data?.ref
+    const pull = data?.pullRequest
+    const tip = refValue === null || refValue === undefined ? 'missing' : refValue.target.oid
+    const pullRequest: GitHubPullRequest | 'missing' =
+      pull === null || pull === undefined
+        ? 'missing'
+        : {
+            merged: pull.mergedAt !== null,
+            mergedAt: pull.mergedAt ?? undefined,
+            mergeCommit: pull.mergeCommit?.oid,
+            headSha: pull.headRefOid,
+            headRepository: pull.headRepository?.nameWithOwner,
+            baseRepository: pull.baseRepository.nameWithOwner,
+            baseRef: pull.baseRefName,
+            commits: pull.commits.totalCount,
+          }
+    let commits: GitHubCommitListEvidence | undefined
+    if (pull !== null && pull !== undefined) {
+      commits =
+        pull.commits.totalCount > 100 || pull.commits.pageInfo.hasNextPage
+          ? { kind: 'incomplete' }
+          : { kind: 'complete', commits: pull.commits.nodes.map(node => node.commit.oid) }
+    }
+    return { tip, pullRequest, commits }
+  }
+  const pullRequestEvidence = (
+    repository: string,
+    ref: string,
+    number: number
+  ): GitHubPullRequestEvidence | Unavailable => {
+    const key = `graphql:${repository}:${ref}:${number}`
+    const known = answeredGraphql.get(key)
+    if (known !== undefined) return known
+    const remaining = deadline - clock()
+    if (remaining <= 0)
+      return {
+        unavailable: `this request's ${budgetMs / 1000} s GitHub time budget was spent before this read`,
+      }
+    let response: GhResponse | Unavailable
+    try {
+      response = graphqlCall(repository, ref, number, Math.ceil(remaining))
+    } catch (cause) {
+      response = { unavailable: errorText(cause) }
+    }
+    const evidence = decodeGraphqlEvidence(response)
+    answeredGraphql.set(key, evidence)
+    return evidence
+  }
   return {
+    pullRequestEvidence,
     defaultBranch(repository) {
       const value = read(`repos/${repository}`, RepositoryPayload)
       return value === 'missing' || isUnavailable(value) ? value : value.default_branch
@@ -583,8 +754,14 @@ export const recordedTarget = (
     : describeTarget({ source: 'override', target: override })
 
 type Tip = { readonly sha: string; readonly local: boolean } | { readonly unknown: string }
+type CommitPresence = (sha: string) => boolean
 
-const resolveTip = (reader: GitHubReader, checkout: string, target: TaskTarget): Tip => {
+const resolveTip = (
+  reader: GitHubReader,
+  checkout: string,
+  target: TaskTarget,
+  commitPresent: CommitPresence
+): Tip => {
   if (target.kind === 'local') {
     const resolved = resolveLocalRef(checkout, target.ref)
     return resolved === undefined
@@ -596,13 +773,13 @@ const resolveTip = (reader: GitHubReader, checkout: string, target: TaskTarget):
     if (remote === 'missing') return { unknown: `Remote ${target.remote} has no ref ${target.ref}` }
     if ('error' in remote)
       return { unknown: `Remote ${target.remote} could not be read: ${remote.error}` }
-    return { sha: remote.sha, local: hasCommit(checkout, remote.sha) }
+    return { sha: remote.sha, local: commitPresent(remote.sha) }
   }
   const remote = reader.refTip(target.repository, target.ref)
   if (remote === 'missing') return { unknown: `${target.repository} has no ref ${target.ref}` }
   if (isUnavailable(remote))
     return { unknown: `GitHub ref ${target.repository} ${target.ref}: ${remote.unavailable}` }
-  return { sha: remote, local: hasCommit(checkout, remote) }
+  return { sha: remote, local: commitPresent(remote) }
 }
 
 const tipAncestry = (
@@ -664,11 +841,18 @@ const bindPullRequest = (
   checkout: string,
   target: Extract<TaskTarget, { readonly kind: 'github' }>,
   number: number,
-  tip: string
+  tip: string,
+  preloaded:
+    | {
+        readonly pullRequest: GitHubPullRequest
+        readonly commits?: readonly string[]
+      }
+    | undefined,
+  commitPresent: CommitPresence
 ): Binding => {
   const label = `${target.repository}#${number}`
   const expectedSource = target.sourceRepository ?? target.repository
-  const pull = reader.pullRequest(target.repository, number)
+  const pull = preloaded?.pullRequest ?? reader.pullRequest(target.repository, number)
   if (pull === 'missing')
     return unbound(`Pull request #${number} does not exist in ${target.repository}`)
   if (isUnavailable(pull)) return unboundable(`GitHub pull request #${number}: ${pull.unavailable}`)
@@ -687,7 +871,7 @@ const bindPullRequest = (
     )
   if (pull.commits > 250)
     return unboundable(`${label} has more than 250 commits; its merged head cannot be bound`)
-  const commits = reader.pullRequestCommits(target.repository, number)
+  const commits = preloaded?.commits ?? reader.pullRequestCommits(target.repository, number)
   if (isUnavailable(commits)) return unboundable(`${label} commits: ${commits.unavailable}`)
   const mergedHead = commits.at(-1)
   if (mergedHead === undefined) return unboundable(`${label} lists no commits`)
@@ -698,7 +882,7 @@ const bindPullRequest = (
   if (pull.mergeCommit === undefined) return unboundable(`${label} reports no merge result commit`)
   const result = pull.mergeCommit
   let reachable: 'ancestor' | 'not-ancestor' | undefined
-  if (hasCommit(checkout, result) && hasCommit(checkout, tip)) {
+  if (commitPresent(result) && commitPresent(tip)) {
     const local = ancestry(checkout, result, tip)
     if (typeof local === 'string') reachable = local
   }
@@ -719,10 +903,11 @@ const sourceContains = (
   checkout: string,
   label: string,
   mergedHead: string,
-  commit: string
+  commit: string,
+  commitPresent: CommitPresence
 ): Proof => {
   if (commit === mergedHead) return yes(`${label} merged source is ${short(commit)} itself`)
-  if (!hasCommit(checkout, mergedHead) || !hasCommit(checkout, commit))
+  if (!commitPresent(mergedHead) || !commitPresent(commit))
     return unknownProof(
       `${label} source history is not locally readable; dev does not fetch to prove ancestry`
     )
@@ -743,11 +928,12 @@ const sourceAncestry = (
   bound: Extract<Binding, { readonly kind: 'bound' }>,
   tip: string,
   commit: string | undefined,
-  what: 'HEAD' | 'base'
+  what: 'HEAD' | 'base',
+  commitPresent: CommitPresence
 ): Proof => {
   const { label, mergedHead, mergeCommit } = bound
   if (commit === undefined) return no(`this worktree records no ${what} commit`)
-  const contained = sourceContains(checkout, label, mergedHead, commit)
+  const contained = sourceContains(checkout, label, mergedHead, commit, commitPresent)
   switch (contained.kind) {
     case 'yes':
       return yes(
@@ -768,7 +954,8 @@ const baseDescent = (
   bound: Extract<Binding, { readonly kind: 'bound' }>,
   tip: string,
   base: string | undefined,
-  allocatedAt: number | undefined
+  allocatedAt: number | undefined,
+  commitPresent: CommitPresence
 ): Proof => {
   const { label, mergedHead, mergedAt } = bound
   if (base === undefined) return no('this worktree records no base commit')
@@ -782,7 +969,7 @@ const baseDescent = (
   if (Number.isNaN(merged)) return unknownProof(`${label} reports no readable merge time`)
   if (merged <= allocatedAt)
     return no(`${label} was merged at ${mergedAt}, before this worktree was allocated`)
-  return sourceAncestry(checkout, target, bound, tip, base, 'base')
+  return sourceAncestry(checkout, target, bound, tip, base, 'base', commitPresent)
 }
 
 export interface Siblings {
@@ -791,6 +978,7 @@ export interface Siblings {
 }
 export interface IntegrationInput {
   readonly target: TaskTarget
+  readonly completionRole?: WorkspaceRole
   readonly head: string | undefined
   readonly base: string | undefined
   readonly allocatedAt: number | undefined
@@ -806,7 +994,40 @@ export const integrationFacts = (
   input: IntegrationInput
 ): IntegrationResult => {
   const { target, head, base } = input
-  const tip = resolveTip(reader, checkout, target)
+  const knownCommits = new Map<string, boolean>()
+  const commitPresent: CommitPresence = sha => {
+    const known = knownCommits.get(sha)
+    if (known !== undefined) return known
+    const present = hasCommit(checkout, sha)
+    knownCommits.set(sha, present)
+    return present
+  }
+  let bundledEvidence:
+    | {
+        readonly tip: string
+        readonly pullRequest: GitHubPullRequest
+        readonly commits?: readonly string[]
+      }
+    | undefined
+  let tip: Tip
+  if (target.kind === 'github' && target.pullRequest !== undefined && reader.pullRequestEvidence) {
+    const evidence = reader.pullRequestEvidence(target.repository, target.ref, target.pullRequest)
+    if (!isUnavailable(evidence) && evidence.tip !== 'missing' && !isUnavailable(evidence.tip)) {
+      tip = { sha: evidence.tip, local: commitPresent(evidence.tip) }
+      if (evidence.pullRequest !== 'missing' && !isUnavailable(evidence.pullRequest)) {
+        const commitList = evidence.commits
+        bundledEvidence = {
+          tip: evidence.tip,
+          pullRequest: evidence.pullRequest,
+          ...(commitList !== undefined &&
+          !isUnavailable(commitList) &&
+          commitList.kind === 'complete'
+            ? { commits: commitList.commits }
+            : {}),
+        }
+      }
+    } else tip = resolveTip(reader, checkout, target, commitPresent)
+  } else tip = resolveTip(reader, checkout, target, commitPresent)
   if ('unknown' in tip) return { tip: undefined, ...integrationUnknown(tip.unknown) }
   const headInTip =
     head === undefined
@@ -824,6 +1045,58 @@ export const integrationFacts = (
       siblingSeeds.set(number, [...(siblingSeeds.get(number) ?? []), commit])
   }
   const unknown: string[] = [...input.siblings.unknown]
+  if (target.pullRequest !== undefined) {
+    const preloaded =
+      bundledEvidence === undefined
+        ? undefined
+        : {
+            pullRequest: bundledEvidence.pullRequest,
+            ...(bundledEvidence.commits === undefined ? {} : { commits: bundledEvidence.commits }),
+          }
+    const bound = bindPullRequest(
+      reader,
+      checkout,
+      target,
+      target.pullRequest,
+      bundledEvidence?.tip ?? tip.sha,
+      preloaded,
+      commitPresent
+    )
+    if (bound.kind === 'bound') {
+      const containsHead = sourceAncestry(
+        checkout,
+        target,
+        bound,
+        tip.sha,
+        head,
+        'HEAD',
+        commitPresent
+      )
+      const descendsFromBase = baseDescent(
+        checkout,
+        target,
+        bound,
+        tip.sha,
+        base,
+        input.allocatedAt,
+        commitPresent
+      )
+      if (
+        containsHead.kind === 'yes' &&
+        (input.completionRole === 'branch' ||
+          (input.completionRole === 'child' && descendsFromBase.kind === 'yes'))
+      )
+        return {
+          tip: tip.sha,
+          headInTip,
+          pullRequests: [
+            { label: bound.label, seeds: ['override'], containsHead, descendsFromBase },
+          ],
+          rejected: [],
+          unknown,
+        }
+    }
+  }
   const seeds: readonly (readonly [PullRequestSeed, string])[] = [
     ...(head === undefined ? [] : [['head', head] as const]),
     ...(base === undefined ? [] : [['base', base] as const]),
@@ -841,7 +1114,15 @@ export const integrationFacts = (
   const pullRequests: PullRequestFact[] = []
   const rejected: string[] = []
   for (const [number, via] of [...found].toSorted(([left], [right]) => left - right)) {
-    const bound = bindPullRequest(reader, checkout, target, number, tip.sha)
+    const bound = bindPullRequest(
+      reader,
+      checkout,
+      target,
+      number,
+      tip.sha,
+      undefined,
+      commitPresent
+    )
     if (bound.kind === 'rejected') {
       rejected.push(bound.reason)
       continue
@@ -852,7 +1133,7 @@ export const integrationFacts = (
     }
     if (via.every(seed => seed === 'sibling')) {
       const containment = (siblingSeeds.get(number) ?? []).map(commit =>
-        sourceContains(checkout, bound.label, bound.mergedHead, commit)
+        sourceContains(checkout, bound.label, bound.mergedHead, commit, commitPresent)
       )
       if (!containment.some(proof => proof.kind === 'yes')) {
         const unproven = containment.filter(proof => proof.kind === 'unknown')
@@ -870,8 +1151,16 @@ export const integrationFacts = (
     pullRequests.push({
       label: bound.label,
       seeds: via,
-      containsHead: sourceAncestry(checkout, target, bound, tip.sha, head, 'HEAD'),
-      descendsFromBase: baseDescent(checkout, target, bound, tip.sha, base, input.allocatedAt),
+      containsHead: sourceAncestry(checkout, target, bound, tip.sha, head, 'HEAD', commitPresent),
+      descendsFromBase: baseDescent(
+        checkout,
+        target,
+        bound,
+        tip.sha,
+        base,
+        input.allocatedAt,
+        commitPresent
+      ),
     })
   }
   if (found.size === 0 && unknown.length === 0)

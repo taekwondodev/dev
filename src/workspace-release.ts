@@ -12,6 +12,7 @@ import {
   decideCompletion,
   integrationUnknown,
   needsIntegration,
+  roleOf,
   type CompletionFacts,
   type IntegrationFacts,
   type Residue,
@@ -823,6 +824,11 @@ const assessWorkspace = (
       try {
         const facts = integrationFacts(readers.github, workspace.path, {
           target: derived.target,
+          completionRole: roleOf({
+            origin: workspace.origin,
+            branch,
+            allocation: allocation.reason,
+          }),
           head,
           base: allocation.base,
           allocatedAt: allocation.allocatedAt,
