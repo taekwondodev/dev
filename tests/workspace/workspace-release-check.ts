@@ -1573,7 +1573,7 @@ try {
     }
   )
   await claim(
-    'a squash-merged pull request proves integration only with the exact source-at-merge binding: wrong target, wrong source repository, a different merged head, an unreachable merge result or no merged pull request are invalid, and provider failures or too many commits are unknown',
+    'a squash-merged pull request proves integration only with the exact source-at-merge binding, also from one batched provider read: wrong target, wrong source repository, a different merged head, an unreachable merge result or no merged pull request are invalid, and provider failures or too many commits are unknown',
     () => {
       assert.equal(prove(reader()).outcome, 'branch-merged', prove(reader()).reason)
       assert.equal(
@@ -1658,6 +1658,91 @@ try {
       assert.equal(explicitProof.pullRequests[0]?.containsHead.kind, 'yes')
       assert.equal(explicitProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
       assert.equal(discoveryCalls, 0, 'a sufficient recorded PR proof skips commit-to-PR discovery')
+      let graphqlCalls = 0
+      const batchedReader = makeGitHubReader(
+        () => {
+          throw new Error('the batched proof should not issue REST calls')
+        },
+        30_000,
+        () => 0,
+        () => {
+          graphqlCalls += 1
+          return {
+            status: 'ok',
+            text: JSON.stringify({
+              data: {
+                repository: {
+                  ref: { target: { oid: squash } },
+                  pullRequest: {
+                    mergedAt: MERGED_AT,
+                    baseRefName: 'main',
+                    baseRepository: { nameWithOwner: 'owner/repo' },
+                    headRefOid: feature,
+                    headRepository: { nameWithOwner: 'owner/repo' },
+                    mergeCommit: { oid: squash },
+                    commits: {
+                      totalCount: 1,
+                      nodes: [{ commit: { oid: feature } }],
+                      pageInfo: { hasNextPage: false },
+                    },
+                  },
+                },
+              },
+            }),
+          }
+        }
+      )
+      const batchedProof = integrationFacts(batchedReader, worktree, {
+        target: explicit,
+        completionRole: 'branch',
+        head: feature,
+        base: githubMain,
+        allocatedAt: Date.parse(MERGED_AT) - 60_000,
+        siblings: { heads: [], unknown: [] },
+      })
+      assert.equal(batchedProof.tip, squash)
+      assert.equal(batchedProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.equal(batchedProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
+      assert.equal(
+        graphqlCalls,
+        1,
+        'the target tip and sufficient PR evidence use one provider call'
+      )
+      let unavailableRestCalls = 0
+      const unavailableReader = makeGitHubReader(
+        () => {
+          unavailableRestCalls += 1
+          throw new Error('offline')
+        },
+        30_000,
+        () => 0,
+        () => {
+          throw new Error('offline')
+        }
+      )
+      const unavailableIntegration = integrationFacts(unavailableReader, worktree, {
+        target: explicit,
+        completionRole: 'branch',
+        head: feature,
+        base: githubMain,
+        allocatedAt: Date.parse(MERGED_AT) - 60_000,
+        siblings: { heads: [], unknown: [] },
+      })
+      const unavailableVerdict = decideCompletion(
+        managedFacts({
+          allocation: 'checkout-contention',
+          branch: 'refs/heads/feature',
+          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          ownCommits: true,
+          integration: unavailableIntegration,
+        })
+      )
+      assert.equal(verdictName(unavailableVerdict), 'retained:integration-unknown')
+      assert.equal(
+        unavailableRestCalls,
+        1,
+        'failed GraphQL evidence falls back to REST within budget'
+      )
     }
   )
   await claim(
