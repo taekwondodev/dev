@@ -13,12 +13,12 @@ I wanted a terminal-first experience. I was a Hermes main, but I wanted to come 
 ## What it does
 
 - **`dev`** opens Pi from the project you are working on, with a profile (`general` or `apple`) that selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
-- **`work`** runs commands and delegated Pi children in the background, in separate processes, with a versioned model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch notes](config/README.md)
+- **`work`** runs commands and delegated Pi children in the background, in separate processes, with version-controlled model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch](config/README.md)
 - **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
 - Long sessions prepare compaction in the background, independently for the lead and each child, then apply it at the first safe boundary. Pi's native blocking recovery remains available. [compaction](docs/compaction.md)
 - The workflow itself (sizing, grilling, specs, implementation, review) comes from a shared skill library; dev owns only the integration.
 
-Why each piece is shaped the way it is: [ARCHITECTURE](docs/ARCHITECTURE.md). What dev trusts and what it does not protect: [SECURITY](SECURITY.md).
+The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECTURE.md). What dev trusts and what it does not protect: [SECURITY](SECURITY.md).
 
 ## Use dev
 
@@ -38,7 +38,21 @@ cd /path/to/your/project
 dev
 ```
 
-Every flag, the session commands and the maintenance commands are in [launcher](docs/launcher.md). To change dev itself, start from [DEVELOPMENT](docs/DEVELOPMENT.md) and [AGENTS.md](AGENTS.md).
+## Documentation
+
+| Task                                        | Start here                             |
+| ------------------------------------------- | -------------------------------------- |
+| Launch, select a profile or resume          | [Launcher](docs/launcher.md)           |
+| Run background commands or delegate         | [Work](docs/work.md)                   |
+| Inspect retained work and release worktrees | [Workspace](docs/workspace.md)         |
+| Understand long-session context handling    | [Compaction](docs/compaction.md)       |
+| Interpret private metrics or export charts  | [Usage profile](docs/usage-profile.md) |
+| Upgrade the installed Pi                    | [Pi upgrade](docs/pi-upgrade.md)       |
+| Change dev's code                           | [Development](docs/DEVELOPMENT.md)     |
+| Find components and decision records        | [Architecture](docs/ARCHITECTURE.md)   |
+| Look up domain terms                        | [CONTEXT](CONTEXT.md)                  |
+
+Agent contributors start from [AGENTS.md](AGENTS.md); the [security model](SECURITY.md) applies to every integration.
 
 ## Performance
 
@@ -50,4 +64,4 @@ Measured on my own use of dev, not on benchmarks: every lead and child session f
 
 Tool-call percentages cover lead and child sessions, counting only calls with a recorded result. Calls without a result are excluded. “Success” means the tool returned without a recorded error, not that the task was correct.
 
-The numbers come from `npm run profile -- --export docs/performance`, which also prints the full report and writes `docs/performance/usage-baseline.json`. Only allowlisted aggregates are committed: no path, project name, model, skill or conversation text. Without `--export`, the report and its drilldowns stay private in the data home.
+Regenerate the aggregates with `npm run profile -- --export docs/performance`. Only allowlisted aggregates are committed; reports and drilldowns stay private unless explicitly exported. [Usage profile](docs/usage-profile.md) defines the metrics, sample rules and export boundary.

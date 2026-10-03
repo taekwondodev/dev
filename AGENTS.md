@@ -24,10 +24,10 @@ Treat dev as unreleased: dev-owned state has exactly one schema, the final one. 
 
 ## Conditional references
 
-- Read `docs/ARCHITECTURE.md` before changing an ownership, storage, admission or release boundary, and when a change needs the use case a choice optimizes for. Read the ADR it links before changing that boundary.
+- Read `docs/ARCHITECTURE.md` for component responsibilities and before changing an ownership, storage, admission or release boundary. Its decision-record index points to the rationale; read the relevant record before changing that boundary.
 - Read `SECURITY.md` before adding or updating an extension, changing resource loading, or routing project effects through tools, event handlers or child processes.
-- Read `docs/launcher.md`, `docs/work.md`, `docs/workspace.md` or `docs/compaction.md` before changing the behavior it documents, and update it in the same change.
-- Read `docs/DEVELOPMENT.md` before adding a tool, recording a decision, upgrading Pi or relocating private state.
+- Read the owning guide before changing behavior, and update it in the same change: `docs/launcher.md`, `docs/work.md`, `docs/workspace.md`, `docs/compaction.md` or `docs/usage-profile.md`.
+- Read `docs/DEVELOPMENT.md` for verification, documentation ownership, adding a tool, recording a decision or relocating private state. Before upgrading Pi, also read `docs/pi-upgrade.md`.
 
 ## Evidence labels
 
@@ -39,18 +39,6 @@ Distinguish these explicitly in plans and reports:
 
 ## Dev cycle
 
-### Issue tracker
-
-Issues, specifications and tickets live in GitHub Issues for `taekwondodev/dev`, operated through `gh`. See `docs/agents/issue-tracker.md`.
-
-### Issue labels
-
-The canonical dev-cycle labels are `needs-grilling` and `ready-for-agent`. See `docs/agents/triage-labels.md`.
-
-### Delivery
-
-The default route is PRs targeting `taekwondodev/dev` on `main`. Before implementation or delivery, read `docs/agents/delivery.md` for route and target defaults.
-
-### Domain docs
-
-This is a single-context repository. Read `CONTEXT.md` and applicable ADRs before changing related behavior. See `docs/agents/domain.md`.
+- **Tracker:** before issue operations, read `docs/agents/issue-tracker.md` for repository conventions and `docs/agents/triage-labels.md` for label mappings.
+- **Delivery:** before implementation or delivery, read `docs/agents/delivery.md` for the default route and target.
+- **Domain:** read `CONTEXT.md` and applicable ADRs before changing related behavior. `docs/agents/domain.md` defines their workflow use.

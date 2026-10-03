@@ -2,74 +2,130 @@
 
 ## Purpose
 
-The workspace authority lets several dev conversations, and the children they delegate, read and write the same repository without overwriting each other, and removes the worktrees it created once their work is delivered. The uncontended writer keeps its checkout; contention and delegated writers are isolated into managed worktrees; reservations survive conversation changes and crashes; finished worktrees are released at quit and before the next allocation.
+The workspace authority coordinates dev conversations and their children on one repository. The uncontended writer keeps its checkout; contending tasks and delegated writers receive isolated managed worktrees. Reservations survive sessions and crashes, while finished workspaces are released at quit and before allocation.
 
 ## Use
 
-Terminal, read-only unless stated:
+Terminal commands are read-only unless stated:
 
 ```bash
-dev workspace                 # tasks and workspaces of the current repository (same as list)
-dev workspace inspect <task>  # every workspace of that exact task, across repositories: path, origin, uses, pending operations, next safe action
-dev workspace check <task>    # role, target and the verdict the sweep would apply, with blockers and evidence
-dev workspace release <task>  # review-required workspaces only: assessment, terminal confirmation, one attempt per workspace
+dev workspace                 # list this repository's tasks and workspaces
+dev workspace inspect <task>  # inspect the exact task across repositories, including next safe action
+dev workspace check <task>    # assess role, target, completion verdict, blockers and evidence
+dev workspace release <task>  # confirm one release attempt for review-required workspaces
 ```
 
-Session:
+Session commands mirror them:
 
 ```text
-/workspace                  same as `dev workspace list`, marking the current binding and effective directory
+/workspace                  also shows the current binding and effective directory
 /workspace inspect <task>
-/workspace check <task>     this conversation's own uses count as ending at quit
-/workspace release <task>   another task's review-required workspaces; for this conversation's task it answers that /quit sweeps it
+/workspace check <task>     treats this conversation's own uses as ending at quit
+/workspace release <task>   for another task; the current task is swept at /quit
 ```
 
-`/workspace release` is refused before any confirmation when the conversation is inside, or bound to, a managed worktree of that task; quitting sweeps it once it is finished.
+Release is refused before confirmation when the conversation is inside, or bound to, a managed worktree of that task. Quit closes that use before sweeping.
 
-The lead's `workspace` tool: `resume` rebinds the conversation to a retained workspace at the end of the turn, without moving files, and is refused while a shell or work of the conversation is live; `set-target` records an integration target other than the one derived from `origin`; `record-publication` records a report published to an issue or PR after reading it back byte for byte. The tool uploads nothing, fetches no refs and knows no unrecorded selection.
+The lead's `workspace` tool has three actions:
 
-Native Pi commands dev wraps:
+| Action               | Effect                                                                                                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `resume`             | Rebind to a retained workspace at turn end without moving files; refused while the conversation has live shells or work |
+| `set-target`         | Record an integration target overriding the one derived from `origin`                                                   |
+| `record-publication` | Verify byte-for-byte readback of an already published issue/PR artifact, then record the evidence                       |
 
-- `/resume`, and `/import` of a conversation already in dev's sessions, attach the target before Pi tears the current session down; a refusal cancels them with a notice. A conversation open in another dev session, or whose workspace is gone, is refused this way.
-- `/new`, `/fork` and `/import` of a copied conversation attach after teardown, so an authority refusal there ends the session. `/import` of a copy whose working directory is outside any Git checkout is refused before teardown.
-- `/fork` starts in the current workspace as a new conversation without the task: its first write is isolated into a new worktree from the current commit, without uncommitted files. Commit before forking to carry them.
-- Every replacement is refused with a notice while a workspace switch is pending. All of them stop the leaving session's shells and work.
-- `!`, `!!` and the lead's bash run through dev's shell in the conversation's workspace.
-- `/quit` runs the sweep. `/reload` keeps shells alive and observed.
+The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 
 ## Behavior
 
-- Admission: every project write, shell and `work` launch is admitted before it runs. Native file operations classify their destination first; ordinary files outside checkouts need no workspace writer grant. The first writer keeps its checkout; another task's reservation on it allocates a worktree from the exact current commit, copying nothing. Readers share presence with a writer and see a warning. A read-only leaf is admitted as a reader on the workspace of its running coordinator, the only read outside the conversation's own workspace ([work](work.md#behavior)). A tool without a recorded effect classification is refused with a visible reason, without ending the turn. Project extensions and packages under a trusted folder's `.pi/` load under Pi's folder trust ([SECURITY](../SECURITY.md#trusted-base)).
-- Shells: a shell occupies only its checkout, until its process group and every tracked descendant are observed gone. While a process of the conversation lives, switching workspace or being isolated into a worktree is refused with guidance to wait or `/work stop`. A process that detaches into its own session escapes observation; a lost observation records an `unknown` use that blocks the checkout for writers until an explicit recovery exists, and none does yet.
-- Native writes: lead and writing-child write/edit accept ordinary external files, including temporary files and configuration, without additional consent, allowlists or relocation. An external operation does not reserve a checkout or allocate/rebind a worktree. Writes into the current workspace retain its admission; another checkout, including a nested or linked one, must be selected and admitted first. Git administration and dev authority/coordination metadata remain protected, including canonical aliases. Missing parents are resolved through their existing ancestor; unreadable ancestry refuses rather than granting external access. Permits pin the destination and its classification, revalidate at the operation boundary and open writes without following a final link. Raw `..`, Pi shorthand, final symlinks, hard links and changed destinations are refused. Distinct destinations proceed together; a duplicate destination in one host is refused while in flight. There is no cross-session external-file locking. Writing children still require their live controller; read-only children remain read-only. External files acquire no cleanup ownership and are never removed by workspace disposal.
-- Concurrency: separate TUIs on different conversations coexist. A conversation open in another dev session, of any installation, cannot be attached. Independent checkouts and linked worktrees progress independently; only dev's own structural Git effects on one repository serialize.
-- Child gate lifetime: once a child's process family is observed gone, or its launch fails before a process starts, dev persists its use as `quiescent` and releases the conversation's gates for that workspace when none of its other uses, current binding or pending transition still needs them. An `unknown` use remains blocking. The settlement is persisted first; if closing a gate then fails, the report still succeeds with a warning, the gate stays held, and the lead retries the release at its next admission or execution report, and at close at the latest; a retry that fails again is warned on that next report. Only gate-close failures are deferred: a lost owning use still fails as `review-required`. The lead can stay open; the reservation and files remain until an authorized sweep or release succeeds. Installation-source presence is independent and stays held for that runtime's lifetime.
-- Sweep: at quit and before every managed allocation, dev assesses every task of the repository, decides completion from recorded and observed facts, and makes one fenced attempt per finished workspace. Finished rules: `clean-checkout` (a pre-existing checkout without changes, at quit only), `no-residue`, `branch-merged`, `branch-in-target` and `child-delivered`. Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, a live or `unknown` use, an open conversation bound to the workspace and a release ending `unknown` or `review-required`. The target is a recorded override, else the `origin` GitHub slug and default branch, else the remote HEAD branch. The budget is 40 seconds at quit and 20 before an allocation, counted from the request; tasks it cannot start are `task-deferred` to the next sweep. A worktree holding the quitting conversation's file is kept. The receipt prints in the shell at quit and appears in the conversation before an allocation when it has rows.
-- Release: `release` proceeds only when some workspace of the task is `review-required`; otherwise it explains and exits 1. It shows assessment and consequences, confirms in an interactive terminal (no `--yes`, no `--force`) and makes one attempt per confirmed workspace under the structure, presence and writer gates, rechecking everything. A pre-existing checkout loses only the reservation. A managed worktree is removed when its verdict is finished, recorded publications still match and no live or uncertain use holds it; everything left inside is discarded, including uncommitted edits, caches and forgotten files. A failing Git command, for example one stopped by a held lock, changed identities, nested repositories and mount crossings block. Running `release` from a shell inside a removable worktree keeps that worktree. A release interrupted before recording its outcome shows as `review-required`, refuses resume, and is observed and closed by the next sweep or explicit release, which then re-assesses; the files it recorded as deleted stay listed. Repeating the command is a fresh request with fresh checks.
-- What release does not prove: source-history inclusion is not semantic equivalence and never covers dirty edits. Before release, the workflow delivers code and assets, reconciles agent contributions and publishes the reports it wants kept, recording them with `record-publication`; a failed publication stays in the task checkpoint and stops delivery. A local copy is not a publication.
-- Quit: `/quit` stops the session's work and shells, closes the attachment, releases installation and source claims, then sweeps uninterruptibly and prints the receipt. Ctrl-C before the sweep releases nothing; during the sweep it lets each attempt reach its recorded outcome (a Git step it also reached ends `partial`, for an explicit release). SIGHUP after quit ends dev without a receipt; the next sweep observes interrupted attempts. Signals, crashes, launcher start, turn end and session replacements never sweep. A sweep that does not report back leaves its outcome unknown: the launcher says so and points to `inspect`.
+### Admission and isolation
+
+Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files. Readers share presence with a writer and receive a warning.
+
+Independent checkouts and linked worktrees progress concurrently. Only dev's structural Git effects serialize across a repository. Separate conversations can coexist, but the same conversation cannot attach in another dev session, even from another installation.
+
+Tools need a recorded effect classification; an unknown tool is refused visibly without ending the turn. Trusted project resources load under [Pi folder trust](../SECURITY.md#trusted-base). A read-only leaf is admitted on its running coordinator's workspace, the sole read outside the conversation's own binding ([work](work.md#coordinators-and-leaves)).
+
+### Native writes
+
+Lead and writing-child write/edit classify destinations before writer admission:
+
+- Current-workspace files retain scoped admission.
+- Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or rebind.
+- Another checkout, including nested or linked checkouts, must be selected and admitted first.
+- Git administration and dev authority/coordination metadata remain protected, including canonical aliases.
+
+Use literal paths without raw `..` or Pi shorthand. Final symlinks, hard links, changed destinations and unreadable ancestry are refused. Missing parent directories are allowed only when their existing ancestor can be checked. Distinct destinations can proceed together; duplicate in-flight destinations in one host are refused.
+
+External permits provide no cross-session file locking or cleanup ownership. Workspace disposal never removes external files. Writing children still require their live controller; read-only children gain no write capability.
+
+### Process uses and gates
+
+A shell occupies only its checkout until its process group and every tracked descendant are observed gone. While a conversation has a live process, workspace switching or isolation is refused with guidance to wait or stop work. A process that detaches into its own session escapes observation. Lost observation records an `unknown` use, which blocks writers; no explicit recovery command exists yet.
+
+A child's use becomes `quiescent` when its process family is observed gone, or launch fails before a process starts. Once no other use, binding or pending switch needs access, that child no longer blocks the workspace. Its reservation and files remain retained until release.
+
+A gate-close failure is deferred: the report succeeds with a warning, the gate remains held, and the lead retries at its next admission or execution report and at close at the latest. Another failed retry is warned on that report. A lost owning use is different: it fails as `review-required`, not a deferred close. Installation-source presence remains held for the runtime's lifetime.
+
+### Session commands
+
+- `/resume` and imports of conversations already in dev's sessions attach the target before Pi tears down the current session. Refusal leaves a notice and preserves the current session.
+- `/new`, `/fork` and imports of copied conversations attach after teardown, so an authority refusal ends the session. A copied conversation outside any Git checkout is refused before teardown.
+- A fork begins in the current workspace as a new conversation without the original task. Its first write isolates from the current commit; commit changes before forking to carry them.
+- All replacements are refused while a workspace switch is pending. Confirmed replacements stop the leaving session's shells and work; `/reload` keeps shells observed.
+- `!`, `!!` and lead bash use dev's shell in the conversation's workspace.
+
+### Sweep
+
+At quit and before managed allocation, dev assesses every task of the repository and makes one fenced attempt per finished workspace. Completion comes from recorded and observed facts, not declarations that work is done.
+
+| Finished rule      | Meaning                                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `clean-checkout`   | A pre-existing checkout with no completion residue, at quit only; release removes the reservation, not files |
+| `no-residue`       | A managed workspace has no remaining work under the completion rules                                         |
+| `branch-merged`    | A bound merged PR's source includes the workspace HEAD                                                       |
+| `branch-in-target` | The workspace HEAD is included in its target                                                                 |
+| `child-delivered`  | Task PR evidence establishes delivery of a delegated child's committed work                                  |
+
+These are verdict labels, not manual deletion predicates: use `check` to see the assessment. Ignored files alone do not block completion, but unsafe filesystem structure can still block removal.
+
+Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, an open conversation binding, and an uncertain prior release. The integration target is a recorded override, otherwise the `origin` GitHub repository and default branch, otherwise the remote HEAD branch.
+
+The budget is 40 seconds at quit and 20 before allocation, measured from the request. Tasks not started become `task-deferred` for the next sweep. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. A worktree containing the quitting conversation's file is retained. The receipt prints at quit, or appears in the conversation before allocation when it has rows.
+
+### Release
+
+Explicit release proceeds only when a task has a `review-required` workspace; otherwise it explains and exits 1. It shows the assessment and consequences, requires an interactive terminal confirmation and makes one attempt per confirmed workspace. There is no `--yes` or `--force` bypass.
+
+Every release rechecks evidence under structure, presence and writer gates. A pre-existing checkout loses only its reservation. A managed worktree is removed only when completion and recorded publications still match and no live or uncertain use holds it. **Everything left in a released managed worktree is discarded, including dirty edits, caches and forgotten files.**
+
+Changed identities, nested repositories, mount crossings and failed Git commands, including held locks, block removal. Running release inside a removable worktree retains it. An interrupted release is retained for review and refuses resume until the next sweep or explicit release observes and closes the attempt before reassessment. Files already recorded as deleted remain listed. Repeating release is a fresh request with fresh checks.
+
+Before delivery, the workflow must integrate code and assets, reconcile contributions and publish wanted reports, then record exact publication readback. A failed publication remains in the task checkpoint and stops delivery. A local copy is not a publication. Source-history inclusion proves neither semantic equivalence nor delivery of dirty edits.
+
+External programs are not coordinated. Stop independently started tools and avoid external edits during release; the [accepted filesystem race](../SECURITY.md#outside-the-protection) is not closed by these gates.
+
+### Quit and interruption
+
+`/quit` stops owned work and shells, closes the attachment, releases installation/source claims, then sweeps uninterruptibly and prints a receipt. Ctrl-C before the sweep releases nothing. During the sweep, an attempt reaches its recorded outcome; a Git step also interrupted by the signal ends `partial` for explicit release.
+
+SIGHUP after quit can end dev without a receipt; the next sweep observes interrupted attempts. Signals, crashes, startup, turn end and session replacements do not initiate sweeps. If a sweep does not report back, its outcome remains unknown and the launcher points to `inspect`.
 
 ### Exit codes
 
-| Code | Meaning                                                                                                                                                        |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | observation returned, or every confirmed release ended `released`, `removed` or `already-absent`; `/quit` with every attempted workspace at a terminal outcome |
-| 1    | observation unavailable, release blocked, partial or uncertain, sweep outcome unknown, disposal failure, or nothing to release                                 |
-| 2    | invalid or ambiguous arguments, or a required interaction is missing                                                                                           |
-| 130  | confirmation cancelled, release interrupted, or `/quit` interrupted before or during the sweep; the attempt in flight completes and is reported                |
+| Code | Meaning                                                                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Observation returned; all confirmed releases ended `released`, `removed` or `already-absent`; or quit reached terminal outcomes for every attempted workspace |
+| 1    | Observation unavailable, blocked/partial/uncertain release, unknown sweep outcome, disposal failure or nothing to release                                     |
+| 2    | Invalid or ambiguous arguments, or missing required interaction                                                                                               |
+| 130  | Cancelled confirmation, interrupted release, or quit interrupted before/during the sweep; an in-flight attempt completes and is reported                      |
 
-A `check` exits 0 even when it lists blockers; its exit is not a permission to remove anything.
+A successful `check` can list blockers. Exit 0 is not permission to remove anything.
 
 ## State
 
-The authority lives at `~/Library/Application Support/dev/workspace-authority/` per OS account, resolved from the account rather than `HOME`, the installation or the data home, so compatible installations see the same reservations and gates. Managed worktrees live inside it. Records are repository-sharded SQLite with WAL, `synchronous=FULL` and `fullfsync=ON`. An absent authority is created on first use; a partially present one, a missing shard of a known repository, or a non-canonical or damaged store is refused, never migrated. There is one current schema, validated by its actual layout and identities without schema or protocol version markers. Installation admission and conversation claims are SQLite lock databases in `.dev/coordination/`; leave them on disk during normal operation. Dev never resets the authority itself; after a format change, delete it as described in [DEVELOPMENT](DEVELOPMENT.md#discard-obsolete-state).
+The authority lives at `~/Library/Application Support/dev/workspace-authority/`, resolved from the OS account rather than `HOME`, the installation or data home. All installations use the same reservations and gates. Managed worktrees live inside it.
 
-Repository, checkout, common Git-directory and Git-admin physical identities are the persistent volume UUID plus the lossless decimal inode. On macOS, each bounded observation resolves all paths in one `/usr/bin/osascript` Foundation call; malformed, missing or changing identity data is a typed refusal, never a path-only or current-device fallback. Numeric `st_dev` is used only inside the same observation to detect mount crossings and filesystem races. Replacing an object at the same path remains a refusal.
+First use creates an absent authority. Missing parts of a known authority, invalid layout or damaged storage are refused; startup does not reset them. Leave installation/conversation lock databases in `<installation>/.dev/coordination/` during normal operation. Obsolete-state removal is a contributor operation covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 
-## Decisions
-
-[SQLite authority with kernel-lock gates](ARCHITECTURE.md#sqlite-authority-with-kernel-lock-gates) and [disposable worktrees with automatic release](ARCHITECTURE.md#disposable-worktrees-with-automatic-release) in ARCHITECTURE; [ADR 0005](adr/0005-scoped-runtime-coordination.md) for the enduring constraints.
-
-## Verify
-
-`npm run workspace:check`, `npm run workspace:tui` and `npm run workspace:github`; what each covers and their gotchas are in [DEVELOPMENT](DEVELOPMENT.md#verification).
+Admission checks physical identity, not just path names. Replacing a checkout or its Git metadata at the same path does not preserve its identity and can make resume fail. Inspect the reported reason rather than deleting coordination files to bypass it.

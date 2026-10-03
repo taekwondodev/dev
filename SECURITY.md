@@ -12,7 +12,9 @@ Dev runs the following as trusted code, with the permissions of the account that
 - Project resources under `.pi/` of a folder you trusted through Pi's folder trust. They load as Pi loads them, before workspace admission. A folder you have not trusted loads no project resources.
 - The workflow skill library the launcher requires at `~/.agents/skills` and the profile skills under `profiles/`.
 
-Trust does not exempt project writes: a write to a repository by the lead, a shell, a native file operation or a delegated child is admitted by the workspace authority first ([workspace](docs/workspace.md#behavior)). Native write/edit classify destinations before acquiring a project writer grant. Ordinary files outside checkouts need no additional consent or allowlist, but still pass exact-destination, link and operation-lifecycle checks. Foreign checkouts, Git administrative data and dev authority/coordination metadata are not ordinary external files. External writes establish neither cross-session ownership nor cleanup permission.
+The lead's project tools, shells, native file operations and delegated children require [workspace admission](docs/workspace.md#behavior). Native write/edit classify destinations first; ordinary external files use the [native destination policy](docs/workspace.md#native-writes), without acquiring cross-session ownership or cleanup permission.
+
+Trusted project-resource initialization is an explicit exception to the initialization refusal below: Pi folder trust permits it before workspace admission. This accepts the user's own project code as trusted, not contained. It does not exempt integrated project tool effects from admission. [ADR 0005](docs/adr/0005-scoped-runtime-coordination.md#executable-extensions) records this boundary.
 
 ## Adding or updating an extension
 

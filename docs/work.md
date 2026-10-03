@@ -2,64 +2,84 @@
 
 ## Purpose
 
-The `work` tool runs local commands and delegated Pi children in the background, so the lead conversation keeps pairing with the user while builds, tests, reviews and bounded investigations run. The shared dev-cycle decides whether to delegate and what to assign; dev owns the processes, their outcomes and the delivery of those outcomes back to the conversation.
+`work` runs local commands and delegated Pi children in the background while the lead remains available to the user. The shared workflow decides what to delegate and verifies the result; dev owns process execution, observation and outcome delivery.
 
 ## Use
 
-Ask the lead in natural language to run a command in the background or to delegate an assignment; the lead calls `work` with `action: "process"` or `action: "delegate"`. There is no `/work start`. A delegation carries a task ID, a focused prompt, `access` (`read-only` or `write`) and an optional `coordinate: true`. Give a child file paths, facts and acceptance conditions, not a transcript. A prompt that starts with `/skill:name` loads that skill natively, with the rest of the prompt as its assignment. Dispatch is resolved from that prompt: when it invokes a skill that has a rule in `config/crew-dispatch.json`, the child uses that rule, otherwise the file's `default`. Pass `rule` only to override that choice with a configured skill name or `"default"`; explicit `model` (`provider/model-id`) and `effort` override the selected profile, and the tool tells the lead and a coordinator to pass them only when the user asked for that model or effort.
+Ask the lead to run a command or delegate an assignment. It calls `work` with `action: "process"` or `action: "delegate"`; there is no `/work start`.
 
-`coordinate: true` delegates a whole phase: that child is a coordinator, with a scoped `work` tool (`dispatch`, `delegate`, `list`, `inspect`, `cancel`) to start leaf children for its assignment. Only its outcome comes back to the lead.
+A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). Give paths, facts and acceptance conditions, not the lead's transcript. This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
 
-Session commands:
+A leading `/skill:name` loads the skill natively and selects dispatch as described in [Dispatch](../config/README.md#resolution). Leave `rule`, `model` and `effort` unset for normal delegation; use explicit model/effort overrides only when the user requested them.
+
+Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 
 ```text
-/work                        attempts of this session with their state, leaves with their coordinator as `parent` (same as /work list)
-/work dispatch               the dispatch rules and default, read from the dev checkout
-/work inspect <id>           outcome, log summary and artifact changes to re-evaluate
-/work inspect <id> stdout 0  retained output from offset 0; pass the returned nextOffset for the next page
-/work inspect <id> stderr 0  same for stderr; `result` is a child's retained final answer
-/work stop <id>              cancel one attempt; a coordinator takes its leaves with it
-/work stop                   cancel every attempt of this session, also while the lead is idle
+/work                        list this session's attempts, including leaves and their parent
+/work dispatch               inspect configured dispatch rules; not a prerequisite to launch
+/work inspect <id>           inspect outcome, logs and tracked artifact changes
+/work inspect <id> stdout 0  page output by byte offset; continue with nextOffset
+/work inspect <id> stderr 0  page stderr; use result for a child's retained answer
+/work stop <id>              cancel an attempt and, for a coordinator, its leaves
+/work stop                   cancel all owned attempts, including while the lead is idle
 ```
 
-A writer attempt shows its managed worktree path with a reminder: `blocked` while its workspace use is unresolved, otherwise `review-required`. Neither authorizes deletion; the reservation and files are retained independently of the attempt ([workspace](workspace.md#behavior)).
+Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Protocol reminders in descriptions and outcomes guide the model; they do not enforce compliance or authorize deletion. [Workspace](workspace.md) owns reservation and release.
 
 ## Behavior
 
-- Every launch returns an attempt ID once the process exists. A local command runs Bash in the requested directory with the user's permissions, in the lead checkout under the lead's writer admission. A delegated writer gets its own managed worktree at the lead's current commit, without modified, untracked or ignored files, and a task reservation that outlives the attempt. A read-only child gets inspection tools, no shell or edit tools. A child receives the project instructions, the base Pi prompt, the profile guidance and the full skill catalog of its profile, not the lead's conversation.
-- Native write/edit in a writing child use the same [destination policy](workspace.md#behavior) as the lead: ordinary external files are writable without being reserved or cleanup-owned, while other checkouts and protected metadata are refused. Controller checks remain mandatory through the file-operation boundary. Read-only children still have no write/edit tools.
-- Each child, coordinators and read-only leaves included, gets its own [background compaction](compaction.md). This adds no tool or project-write capability and does not enable ordinary extensions for read-only children. Cancellation stops pending preparation; native compaction and discarded-summary usage remain part of that child's totals, even when context replacement removes its last projected assistant message. Raw active-branch entries remain delivery-receipt authority.
-- Skills: a prompt starting with `/skill:name` is expanded once by Pi into the first user message, hidden skills included, and the attempt records that skill only. An unknown or unreadable skill, or an extension command that would run in its place, fails the attempt before any model request. No other command or prompt template is ever expanded.
-- Nesting is one level: lead, coordinator, leaf. Only a child the lead delegated with `coordinate: true` starts leaves, never beyond its own access: a read-only coordinator starts only read-only leaves, no coordinator starts a local command, and a leaf cannot delegate. The lead's controller admits, launches, records and cancels every attempt; a coordinator lists, inspects and cancels only its own leaves. A read-only leaf runs in its coordinator's working directory and reads its files as they are, uncommitted ones included; a writer leaf gets its own managed worktree like any delegated writer, without its coordinator's changes.
-- Leaf outcomes are delivered to their coordinator's conversation after its turn ends, not to the lead, and a repeated delivery adds no message. A coordinator's result is withheld while a request of its own is pending, a leaf is live or an outcome is undelivered; a coordinator that reports earlier is stopped as a protocol failure. The outcome message carries each leaf's inspection, retained result included. A leaf whose termination is not observed reaches its coordinator as `unknown`.
-- Aborting one coordinator tool call interrupts its local wait, not an IPC request already sent: the controller may still admit the leaf. Stop the coordinator to cancel its owned work; cancellation never rolls back effects already performed.
-- What a command may contain is in [SECURITY](../SECURITY.md#credentials).
-- Outcomes arrive at Pi's final actionable boundary (`agent_before_settle`) and, when late, at idle. An eligible batch can continue a successful lead run without a new user message; checkpoints still apply. Delivery is acknowledged from raw entries on the active conversation branch, so compaction and context edits cannot erase it. Failed or unconfirmed delivery stays visible in `/work`; retries wait for natural events and never start a model call.
-- A finished process or a child's report is not verification of the artifact. Artifact comparison covers tracked Git changes only; untracked files and external dependencies are not compared.
-- Session, task, attempt and generation identify every observation. Esc while the lead runs, `/work stop`, confirmed `/tree` navigation, `/new`, `/resume`, `/fork` and `/quit` invalidate the current generation and stop the session's work; `/reload` keeps shells and closes work. A cancelled switch, fork or resume preview does not close the session's work; a confirmed one does. Earlier outcomes stay inspectable and are not replayed into a new branch. Cancelling a coordinator, its failure or its exit stop its leaves, those that already reported a result included, and a leaf outcome that arrives afterwards is dropped. A request a coordinator sends after it was stopped or the generation changed is answered with a refusal and starts nothing. Cancellation is observed through process exit and surviving descendants, and never undoes edits.
-- The `work` tool description teaches this protocol, and outcome messages repeat the worktree reminder, in every dev session. That is instruction, not a guarantee that every model follows it.
-- Invalid dispatch fails: a missing or unreadable rules file, a rule that is not configured, an unsupported harness, an invalid effort or an unresolvable model never substitute another model. Omitted model or effort use the child's Pi defaults, not the lead's picker.
-- A subscription-exhaustion report, from any attempt of the session, leaves included, blocks new agents and automatic continuation for the rest of the session; a new user message does not clear it. Running commands finish and their outcomes are still recorded. A final provider or transport failure, after Pi's own retries, suspends dev's automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
-- The extension status line shows background states and the active children's models and context pressure, a leaf as `coordinator>leaf`. Listing and inspection show each attempt's parent, invoked skill, tools and observed usage, and a `gateReleaseWarning` when its workspace settled but a gate release was deferred, which leaves the attempt's status unchanged; usage is counted once per attempt, never summed into its coordinator, with unavailable values distinct from zero.
+### Execution and access
+
+A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions in the requested directory, under the lead checkout's writer admission. A delegated writer receives a distinct worktree from the lead's exact current commit: modified, untracked and ignored files are not copied. Its reservation outlives the attempt.
+
+A read-only child has inspection tools, no shell or edit tools. Every child receives project instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Writing children use the same [native destination policy](workspace.md#native-writes) as the lead, with controller checks through the file-operation boundary.
+
+Pi expands a verified leading skill invocation once in the first user message, including hidden skills. Unknown or unreadable skills and extension-command collisions fail before a model request. Other commands and prompt templates are not expanded. The attempt records the invoked skill, not every skill the child later reads.
+
+Every child has independent [background compaction](compaction.md), including read-only children without enabling ordinary extensions.
+
+Command text must follow the [credential rule](../SECURITY.md#credentials). Process separation and read-only tools are not an OS sandbox.
+
+### Coordinators and leaves
+
+Nesting stops at lead, coordinator, leaf. A coordinator starts no local commands and grants no access beyond its own; a read-only coordinator starts only read-only leaves. The lead's controller owns admission, launch, records and cancellation for all attempts. Coordinators can inspect and cancel only their own leaves; leaves cannot delegate.
+
+A read-only leaf reads its coordinator's admitted workspace, including uncommitted files. A writing leaf gets a separate worktree from the lead's commit, without the coordinator's edits.
+
+Leaf outcomes arrive after the coordinator's turn ends and include retained inspection/results. Repeated delivery adds no message. The controller withholds the coordinator's result while a request is pending, a leaf is live or an outcome remains undelivered; an early report is a protocol failure. Unobserved leaf termination is reported as `unknown`.
+
+Aborting a coordinator tool call interrupts its local wait, not an IPC request already sent: the controller may still admit that leaf. Stop the coordinator to cancel its owned work. Cancellation never rolls back performed effects.
+
+### Delivery and verification
+
+Outcomes arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
+
+A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.
+
+### Cancellation and session changes
+
+Esc during a lead run, `/work stop`, confirmed tree navigation, `/new`, `/resume`, `/fork` and `/quit` stop owned work. Cancelled navigation or replacement previews preserve it. `/reload` closes work but keeps the lead's shells observed. Earlier outcomes stay inspectable and are not replayed into a new branch.
+
+A coordinator's cancellation, failure or exit stops its leaves, including leaves that already reported. Late leaf outcomes are dropped; requests after stop or generation change are refused. Cancellation is complete only as process exit and surviving descendants are observed; it never undoes edits.
+
+### Failures and visibility
+
+Subscription exhaustion from any attempt, including a leaf, blocks new agents and automatic continuation for the rest of the session; another user message does not clear it. Existing commands finish and their outcomes are recorded. A final lead provider or transport failure after Pi retries suspends automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
+
+The status line shows states, active models and context pressure, with leaves as `coordinator>leaf`. Inspection includes parent, invoked skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator, with unavailable values distinct from zero. A deferred workspace gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains its retry boundary.
 
 ## State
 
-| Path                                   | Content                                                                        |
-| -------------------------------------- | ------------------------------------------------------------------------------ |
-| `<data-home>/work/attempts.sqlite`     | authoritative attempt records; session ownership is committed with the payload |
-| `<data-home>/work/attempts/<attempt>/` | temporary full logs                                                            |
-| `<data-home>/child-sessions/`          | child conversations, outside `--continue` selection                            |
+| Path                                   | Content                                                                           |
+| -------------------------------------- | --------------------------------------------------------------------------------- |
+| `<data-home>/work/attempts.sqlite`     | Authoritative persisted attempt facts, with ownership committed alongside payload |
+| `<data-home>/work/attempts/<attempt>/` | Temporary full logs                                                               |
+| `<data-home>/child-sessions/`          | Child conversations, excluded from lead `--continue` selection                    |
 
-Retention keeps seven days from completion and the newest 64 completed results in that window; active or unresolved attempts are kept. The store is WAL with `synchronous=NORMAL`: process crashes are recoverable, a power loss can drop recent updates. It accepts only its current schema and rejects other layouts without deleting them; a corrupt database fails closed and is never rebuilt from logs. Preserve the database with its WAL and SHM companions together, with sessions stopped. Node must be 22.23.2 or newer and its SQLite must carry the WAL-reset fix; that check runs before the store opens, and a numerically newer Node from another release line can still ship an older SQLite and is refused. An expired result is unavailable, not reconstructed from an old summary.
+Retention keeps seven days from completion and the newest 64 completed results within that window. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries.
 
-Records and the database carry no format version. Persistence refuses unknown record fields rather than retaining or silently stripping them. A format change replaces the current schema; delete the obsolete attempt state following [DEVELOPMENT](DEVELOPMENT.md#discard-obsolete-state), rather than migrating it or keeping legacy fields. Ownership checks and live revisions remain enforced.
+Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks Node 22.23.2 or newer and an embedded SQLite with the WAL-reset fix; a newer Node number from another release line alone does not establish safety.
 
-After a crash, records describe observations, not survival: an absent PID reveals no exit code and a present PID proves no identity. Reopening never restarts work or kills a recovered PID. What an unresolved workspace use does to its checkout is in [workspace](workspace.md#behavior).
+Invalid or corrupt storage is refused, not rebuilt from logs. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 
-## Decisions
-
-[Session-owned children](ARCHITECTURE.md#session-owned-children-in-separate-processes), [authoritative lifecycle](ARCHITECTURE.md#authoritative-lifecycle-incremental-store) and [versioned dispatch](ARCHITECTURE.md#versioned-dispatch-local-private-state) in ARCHITECTURE; [ADR 0002](adr/0002-session-owned-background-work.md) and [ADR 0004](adr/0004-authoritative-lifecycle-incremental-store.md).
-
-## Verify
-
-`npm run work:check` checks dispatch resolution against crafted and shipped configurations, then forks real children with an offline scripted model: a delegation without a rule against the shipped configuration, native skill invocation, coordinator authorization, outcome routing, interruption and the leaf read of a coordinator's worktree. `npm run workspace:check` covers the real process adapters and the host session flows of a background process (rebind, fork, import) in headless Pi sessions. Delivery timing is checked in the real TUI.
+After a crash, an absent PID supplies no exit code and a present PID proves no identity. Reopening neither restarts work nor kills a recovered PID. An unresolved [workspace use](workspace.md#process-uses-and-gates) can keep the checkout blocked independently of attempt retention.
