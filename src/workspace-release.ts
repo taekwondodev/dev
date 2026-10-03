@@ -12,6 +12,7 @@ import {
   decideCompletion,
   integrationUnknown,
   needsIntegration,
+  roleOf,
   type CompletionFacts,
   type IntegrationFacts,
   type Residue,
@@ -821,13 +822,13 @@ const assessWorkspace = (
     if (derived.source === 'none') integration = integrationUnknown(derived.reason)
     else
       try {
-        let completionRole: 'branch' | 'child' | 'detached'
-        if (branch !== undefined) completionRole = 'branch'
-        else if (allocation.reason === 'delegated-writer') completionRole = 'child'
-        else completionRole = 'detached'
         const facts = integrationFacts(readers.github, workspace.path, {
           target: derived.target,
-          completionRole,
+          completionRole: roleOf({
+            origin: workspace.origin,
+            branch,
+            allocation: allocation.reason,
+          }),
           head,
           base: allocation.base,
           allocatedAt: allocation.allocatedAt,

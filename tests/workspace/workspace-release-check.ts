@@ -1743,6 +1743,164 @@ try {
         1,
         'failed GraphQL evidence falls back to REST within budget'
       )
+      const restEndpoints = (
+        headRepository: string | null,
+        commitList: readonly string[]
+      ): { readonly calls: string[]; readonly call: Parameters<typeof makeGitHubReader>[0] } => {
+        const calls: string[] = []
+        const responses = new Map<string, unknown>([
+          ['repos/owner/repo/git/ref/heads/main', { object: { sha: squash } }],
+          [
+            'repos/owner/repo/pulls/7',
+            {
+              merged: true,
+              merged_at: MERGED_AT,
+              merge_commit_sha: squash,
+              head: {
+                sha: feature,
+                repo: headRepository === null ? null : { full_name: headRepository },
+              },
+              base: { ref: 'main', repo: { full_name: 'owner/repo' } },
+              commits: commitList.length,
+            },
+          ],
+          ['repos/owner/repo/pulls/7/commits?per_page=250', commitList.map(sha => ({ sha }))],
+        ])
+        return {
+          calls,
+          call: endpoint => {
+            calls.push(endpoint)
+            const response = responses.get(endpoint)
+            if (endpoint.includes('/pulls?')) return { status: 'ok', text: '[]' }
+            if (response === undefined) throw new Error(`unexpected REST read ${endpoint}`)
+            return { status: 'ok', text: JSON.stringify(response) }
+          },
+        }
+      }
+      const graphqlPull = (
+        overrides: {
+          readonly headRepository?: { readonly nameWithOwner: string } | null
+          readonly commits?: unknown
+        } = {}
+      ) => ({
+        mergedAt: MERGED_AT,
+        baseRefName: 'main',
+        baseRepository: { nameWithOwner: 'owner/repo' },
+        headRefOid: feature,
+        headRepository: { nameWithOwner: 'owner/repo' },
+        mergeCommit: { oid: squash },
+        commits: {
+          totalCount: 1,
+          nodes: [{ commit: { oid: feature } }],
+          pageInfo: { hasNextPage: false },
+        },
+        ...overrides,
+      })
+      const explicitBranchFacts = (provider: GitHubReader) =>
+        integrationFacts(provider, worktree, {
+          target: explicit,
+          completionRole: 'branch',
+          head: feature,
+          base: githubMain,
+          allocatedAt: Date.parse(MERGED_AT) - 60_000,
+          siblings: { heads: [], unknown: [] },
+        })
+
+      const erroredRest = restEndpoints('owner/repo', [feature])
+      const erroredProof = explicitBranchFacts(
+        makeGitHubReader(
+          erroredRest.call,
+          30_000,
+          () => 0,
+          () => ({
+            status: 'ok',
+            text: JSON.stringify({
+              data: { repository: { ref: { target: { oid: squash } }, pullRequest: null } },
+              errors: [{ type: 'NOT_FOUND', message: 'Could not resolve to a PullRequest' }],
+            }),
+          })
+        )
+      )
+      assert.equal(erroredProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.deepEqual(
+        erroredRest.calls,
+        [
+          'repos/owner/repo/git/ref/heads/main',
+          'repos/owner/repo/pulls/7',
+          'repos/owner/repo/pulls/7/commits?per_page=250',
+        ],
+        'a GraphQL errors payload returned with HTTP 200 is discarded and REST supplies the proof'
+      )
+
+      const deletedForkRest = restEndpoints(null, [feature])
+      const deletedForkIntegration = explicitBranchFacts(
+        makeGitHubReader(
+          deletedForkRest.call,
+          30_000,
+          () => 0,
+          () => ({
+            status: 'ok',
+            text: JSON.stringify({
+              data: {
+                repository: {
+                  ref: { target: { oid: squash } },
+                  pullRequest: graphqlPull({ headRepository: null }),
+                },
+              },
+            }),
+          })
+        )
+      )
+      const deletedForkVerdict = decideCompletion(
+        managedFacts({
+          allocation: 'checkout-contention',
+          branch: 'refs/heads/feature',
+          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          ownCommits: true,
+          integration: deletedForkIntegration,
+        })
+      )
+      assert.equal(
+        verdictName(deletedForkVerdict),
+        'retained:integration-unknown',
+        'a pull request whose source repository was deleted cannot be bound'
+      )
+
+      const longHistory = [
+        ...Array.from({ length: 100 }, (_, index) => (index + 1).toString(16).padStart(40, '0')),
+        feature,
+      ]
+      const longRest = restEndpoints('owner/repo', longHistory)
+      const longProof = explicitBranchFacts(
+        makeGitHubReader(
+          longRest.call,
+          30_000,
+          () => 0,
+          () => ({
+            status: 'ok',
+            text: JSON.stringify({
+              data: {
+                repository: {
+                  ref: { target: { oid: squash } },
+                  pullRequest: graphqlPull({
+                    commits: {
+                      totalCount: longHistory.length,
+                      nodes: longHistory.slice(0, 100).map(oid => ({ commit: { oid } })),
+                      pageInfo: { hasNextPage: true },
+                    },
+                  }),
+                },
+              },
+            }),
+          })
+        )
+      )
+      assert.equal(longProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.deepEqual(
+        longRest.calls,
+        ['repos/owner/repo/pulls/7/commits?per_page=250'],
+        'an incomplete GraphQL commit page keeps the batched tip and pull request and reads only the commit list through REST'
+      )
     }
   )
   await claim(

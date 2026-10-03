@@ -66,7 +66,7 @@ export interface CompletionFacts {
   readonly integration: IntegrationFacts
 }
 
-const roleOf = (
+export const roleOf = (
   facts: Pick<CompletionFacts, 'origin' | 'branch' | 'allocation'>
 ): WorkspaceRole => {
   if (facts.origin === 'pre-existing') return 'pre-existing'

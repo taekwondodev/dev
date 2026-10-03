@@ -20,6 +20,7 @@ import {
   type PublicationReference,
   type TargetView,
   type TaskTarget,
+  type WorkspaceRole,
   WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
 import {
@@ -977,7 +978,7 @@ export interface Siblings {
 }
 export interface IntegrationInput {
   readonly target: TaskTarget
-  readonly completionRole?: 'branch' | 'child' | 'detached'
+  readonly completionRole?: WorkspaceRole
   readonly head: string | undefined
   readonly base: string | undefined
   readonly allocatedAt: number | undefined
