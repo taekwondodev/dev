@@ -791,6 +791,7 @@ export interface Siblings {
 }
 export interface IntegrationInput {
   readonly target: TaskTarget
+  readonly completionRole?: 'branch' | 'child' | 'detached'
   readonly head: string | undefined
   readonly base: string | undefined
   readonly allocatedAt: number | undefined
@@ -824,6 +825,34 @@ export const integrationFacts = (
       siblingSeeds.set(number, [...(siblingSeeds.get(number) ?? []), commit])
   }
   const unknown: string[] = [...input.siblings.unknown]
+  if (target.pullRequest !== undefined) {
+    const bound = bindPullRequest(reader, checkout, target, target.pullRequest, tip.sha)
+    if (bound.kind === 'bound') {
+      const containsHead = sourceAncestry(checkout, target, bound, tip.sha, head, 'HEAD')
+      const descendsFromBase = baseDescent(
+        checkout,
+        target,
+        bound,
+        tip.sha,
+        base,
+        input.allocatedAt
+      )
+      if (
+        containsHead.kind === 'yes' &&
+        (input.completionRole === 'branch' ||
+          (input.completionRole === 'child' && descendsFromBase.kind === 'yes'))
+      )
+        return {
+          tip: tip.sha,
+          headInTip,
+          pullRequests: [
+            { label: bound.label, seeds: ['override'], containsHead, descendsFromBase },
+          ],
+          rejected: [],
+          unknown,
+        }
+    }
+  }
   const seeds: readonly (readonly [PullRequestSeed, string])[] = [
     ...(head === undefined ? [] : [['head', head] as const]),
     ...(base === undefined ? [] : [['base', base] as const]),
