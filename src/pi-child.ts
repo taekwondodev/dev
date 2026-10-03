@@ -15,6 +15,7 @@ import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getProfile } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
+import { makeNativeWrites } from './workspace-native-write.ts'
 import {
   acquireCoordinatorLink,
   coordinate,
@@ -61,6 +62,7 @@ export const ChildRequestEnvelope = Schema.Struct({
   sessionDir: AbsolutePath,
   access: Schema.Literals(ACCESS_MODES),
   workspace: WorkspaceGrantSchema,
+  authorityRoot: AbsolutePath,
   prompt: Schema.NonEmptyString,
   coordinate: Schema.optional(Schema.Boolean),
   owner: Schema.Struct({
@@ -737,6 +739,10 @@ const acquireSession = Effect.fn('acquireSession')(function* (
         catch: toChildError,
       })
     : options.modelRuntime(loaded, request)
+  const nativeWrites = makeNativeWrites({
+    runPromise: Effect.runPromise,
+    onError: message => console.error(message),
+  })
   const compaction = yield* createBackgroundCompaction(loaded.api, loaded.packageInfo.root).pipe(
     Effect.mapError(toChildError)
   )
@@ -753,7 +759,14 @@ const acquireSession = Effect.fn('acquireSession')(function* (
           noExtensions: request.access === 'read-only',
           extensionFactories: [
             { name: 'dev:background-compaction', factory: compaction.factory },
-            { name: 'dev:child-workspace', factory: childWorkspaceExtension(request.workspace) },
+            {
+              name: 'dev:child-workspace',
+              factory: childWorkspaceExtension(
+                request.workspace,
+                request.authorityRoot,
+                nativeWrites
+              ),
+            },
           ],
         },
       }),
@@ -777,7 +790,20 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     catch: toChildError,
   })
   const customTools = [
-    ...(request.access === 'read-only' ? [createReviewGitTool(request.cwd)] : []),
+    ...(request.access === 'read-only'
+      ? [createReviewGitTool(request.cwd)]
+      : [
+          loaded.api.defineTool(
+            loaded.api.createWriteToolDefinition(request.cwd, {
+              operations: nativeWrites.writeOperations,
+            })
+          ),
+          loaded.api.defineTool(
+            loaded.api.createEditToolDefinition(request.cwd, {
+              operations: nativeWrites.editOperations,
+            })
+          ),
+        ]),
     ...(link === undefined ? [] : [createCoordinatorWorkTool(link)]),
   ]
   const tools =

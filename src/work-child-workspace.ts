@@ -2,7 +2,8 @@ import { Effect, Option, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { WorkspaceError, WorkspaceId, type WorkspaceGrant } from './workspace-domain.ts'
 import type { ChildMessage } from './work-protocol.ts'
-import { decodeWriteOperand, resolveWriteDestination } from './workspace-paths.ts'
+import { classifyWriteDestination, decodeWriteOperand } from './workspace-paths.ts'
+import type { NativeWrites } from './workspace-native-write.ts'
 import { newId } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
 
@@ -29,18 +30,6 @@ export interface ControllerChannel {
 
 const unavailableError = (message: string) =>
   new WorkspaceError({ outcome: 'unavailable', message })
-
-export const validateWorkspaceWritePath = (
-  grant: WorkspaceGrant,
-  input: unknown
-): Effect.Effect<string, WorkspaceError> =>
-  Effect.try({
-    try: () => resolveWriteDestination(grant.checkout, grant.cwd, decodeWriteOperand(input)),
-    catch: cause =>
-      cause instanceof WorkspaceError
-        ? cause
-        : new WorkspaceError({ outcome: 'invalid', message: errorText(cause) }),
-  })
 
 export const checkChildWorkspace = (
   grant: WorkspaceGrant,
@@ -101,13 +90,26 @@ export const checkChildWorkspace = (
   )
 
 export const childWorkspaceExtension =
-  (grant: WorkspaceGrant, channel: ControllerChannel = process): Pi.ExtensionFactory =>
+  (
+    grant: WorkspaceGrant,
+    authorityRoot: string,
+    nativeWrites: NativeWrites,
+    channel: ControllerChannel = process
+  ): Pi.ExtensionFactory =>
   pi => {
+    const scope = { checkout: grant.checkout, authorityRoot }
+    pi.on('tool_result', event => Effect.runPromise(nativeWrites.finish(event.toolCallId)))
+    pi.on('session_shutdown', () => Effect.runPromise(nativeWrites.settle))
     pi.on('tool_call', event =>
       Effect.runPromise(
         Effect.gen(function* () {
           const tool = pi.getAllTools().find(candidate => candidate.name === event.toolName)
           const builtin = tool?.sourceInfo.source === 'builtin'
+          const nativeWrite =
+            (event.toolName === 'write' || event.toolName === 'edit') &&
+            (builtin ||
+              (tool?.sourceInfo.source === 'sdk' &&
+                tool.sourceInfo.path === `<sdk:${event.toolName}>`))
           const reviewGit =
             grant.access === 'read' &&
             event.toolName === 'git_inspect' &&
@@ -119,9 +121,20 @@ export const childWorkspaceExtension =
               outcome: 'blocked',
               message: 'Child workspace is read-only',
             })
-          if (builtin && (event.toolName === 'write' || event.toolName === 'edit'))
-            yield* validateWorkspaceWritePath(grant, event.input)
           yield* checkChildWorkspace(grant, read ? 'read' : 'write', channel)
+          if (nativeWrite) {
+            const destination = yield* Effect.try({
+              try: () =>
+                classifyWriteDestination(scope, grant.cwd, decodeWriteOperand(event.input)),
+              catch: cause => new WorkspaceError({ outcome: 'invalid', message: errorText(cause) }),
+            })
+            yield* nativeWrites.admit({
+              toolCallId: event.toolCallId,
+              scope,
+              destination,
+              lifecycle: { kind: 'local', validate: checkChildWorkspace(grant, 'write', channel) },
+            })
+          }
           return undefined
         }).pipe(Effect.catch(error => Effect.succeed({ block: true, reason: error.message })))
       )

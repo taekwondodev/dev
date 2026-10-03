@@ -1217,6 +1217,7 @@ class WorkOwnerImpl implements WorkOwnerService {
                 ...(record.coordinator === true ? { coordinate: true } : {}),
                 owner: record.owner,
                 workspace: job.workspace,
+                authorityRoot: this.workspace.lifecycle.root,
                 model: request.selection?.model,
                 effort: request.selection?.effort,
               },

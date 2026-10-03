@@ -124,6 +124,57 @@ try {
   const owner = fixture.openOwner('general')
   try {
     await claim(
+      'writing children edit external files but cannot write another checkout; read-only children cannot change external files',
+      async () => {
+        const paths = [
+          join(fixture.root, 'external-tmp', 'repro.py'),
+          join(fixture.home, '.config', 'fixture', 'settings.txt'),
+        ]
+        const writer = await owner.run({
+          taskId: 'external-native-writer',
+          access: 'write',
+          prompt: phase(
+            'external native writes',
+            paths.map((path, i) => toolCall(`write-${i}`, 'write', { path, content: 'one' })),
+            paths.map((path, i) =>
+              toolCall(`edit-${i}`, 'edit', { path, oldText: 'one', newText: 'two' })
+            ),
+            [
+              toolCall('foreign', 'write', {
+                path: join(fixture.repository, 'foreign.txt'),
+                content: 'forbidden',
+              }),
+            ]
+          ),
+        })
+        assert.equal(writer.view.status, 'completed', writer.view.error)
+        for (const path of paths) {
+          assert.ok(existsSync(path), writer.text)
+          assert.equal(readFileSync(path, 'utf8'), 'two')
+        }
+        assert.ok(!existsSync(join(fixture.repository, 'foreign.txt')))
+        const reader = await owner.run({
+          taskId: 'external-native-reader',
+          access: 'read-only',
+          prompt: phase(
+            'attempt external writes',
+            [toolCall('readonly-write', 'write', { path: paths[0], content: 'forbidden' })],
+            [
+              toolCall('readonly-edit', 'edit', {
+                path: paths[1],
+                oldText: 'two',
+                newText: 'forbidden',
+              }),
+            ]
+          ),
+        })
+        assert.equal(reader.view.status, 'completed', reader.view.error)
+        assert.equal(reader.view.resources?.tools.includes('write'), false)
+        assert.equal(reader.view.resources?.tools.includes('edit'), false)
+        for (const path of paths) assert.equal(readFileSync(path, 'utf8'), 'two')
+      }
+    )
+    await claim(
       'a delayed leaf outcome resumes only its coordinator, no coordinator result arrives while its leaf is live, and only coordinator outcomes reach the lead',
       async () => {
         const held = await owner.delegate({

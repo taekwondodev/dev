@@ -34,7 +34,11 @@ import {
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
-import { assertDestinationUnchanged, isWithin, resolveWriteDestination } from './workspace-paths.ts'
+import {
+  assertDestinationUnchanged,
+  classifyWriteDestination,
+  isWithin,
+} from './workspace-paths.ts'
 import {
   getTask,
   putTask,
@@ -296,10 +300,17 @@ const authorizeScoped = (
     operation.kind === 'native-file-write'
       ? { kind: operation.kind, withinUseId: withinUse.id }
       : { kind: operation.kind, withinUseId: withinUse.id, execution: operation.execution }
-  const operationPath =
+  const destination =
     operation.kind === 'native-file-write'
-      ? resolveWriteDestination(workspace.path, cwd, operation.path)
+      ? classifyWriteDestination(
+          { checkout: workspace.path, authorityRoot: authority.root },
+          cwd,
+          operation.path
+        )
       : undefined
+  if (destination?.kind === 'external')
+    invalid('An external destination cannot use a workspace-scoped write grant')
+  const operationPath = destination?.path
   const use = {
     id: newId(),
     workspaceId: workspace.id,
@@ -783,7 +794,10 @@ const reportScopedOperation = (
           const workspace = getWorkspace(db, latest.workspaceId)
           if (workspace === undefined)
             requireReview(`Scoped operation lost its workspace: ${latest.workspaceId}`)
-          assertDestinationUnchanged(workspace.path, latest.operationPath)
+          assertDestinationUnchanged(
+            { checkout: workspace.path, authorityRoot: authority.root },
+            { kind: 'workspace', operand: latest.operationPath, path: latest.operationPath }
+          )
         }
         const started: UseRecord = {
           ...latest,

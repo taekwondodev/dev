@@ -108,6 +108,14 @@ Pi owns inference, providers, conversation persistence, the TUI and project-inst
 
 **Tradeoff:** the authority coordinates cooperating dev runtimes only. External programs, detached processes and Xcode are outside it, and a lost observation blocks a checkout until an explicit recovery that does not exist yet. A global mutex, PID registries and a repository-wide fence were rejected because they serialized independent work. [ADR 0005](adr/0005-scoped-runtime-coordination.md).
 
+### Checkout-aware native writes
+
+**Use case:** temporary reproductions and external configuration edits should use native write/edit without reserving or isolating an unrelated project.
+
+**Choice:** classify the destination before writer admission. Current-workspace writes keep scoped authority operations; ordinary external files use session-local permits in the same native adapter. Lead, authority and writing children share destination policy; Git administration, foreign checkouts and authority/coordination storage remain protected.
+
+**Tradeoff:** no cross-session locking or cleanup ownership for arbitrary external files. Broadening a workspace grant was rejected because a contended project would still allocate a worktree for an external edit; temp-directory exceptions miss configurations. [ADR 0005, native writes](adr/0005-scoped-runtime-coordination.md#native-file-destinations).
+
 ### Disposable worktrees with automatic release
 
 **Use case:** delegated writers and contended sessions get their own worktree, and those worktrees vanish once the workflow delivered the work, without per-file approvals.

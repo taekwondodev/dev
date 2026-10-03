@@ -51,7 +51,12 @@ import {
 } from './workspace-domain.ts'
 import { ghDestinationReader, makeWorkspaceTool } from './workspace-tool.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
-import { canonicalConversationFile, decodeWriteOperand, isWithin } from './workspace-paths.ts'
+import {
+  canonicalConversationFile,
+  classifyWriteDestination,
+  decodeWriteOperand,
+  isWithin,
+} from './workspace-paths.ts'
 import { newId, hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
@@ -803,14 +808,49 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     event: HostToolCallEvent,
     context: ExtensionContext
   ): Effect.fn.Return<ToolCallEventResult | undefined> {
-    const writer = yield* admitWriter(context)
-    if (writer.kind === 'refused') return writer.refusal
     const attachment = activeAttachment
+    const { binding } = attachment
     return yield* Effect.gen(function* () {
+      const checkout = yield* options.repositoryRoot(binding.cwd)
+      if (checkout === undefined) return yield* hostFailure('Cannot identify the current checkout')
+      const scope = { checkout, authorityRoot: options.lifecycle.root }
       const path = yield* Effect.try({
         try: () => decodeWriteOperand(event.input),
         catch: cause => hostFailure(errorText(cause)),
       })
+      const destination = yield* Effect.try({
+        try: () => classifyWriteDestination(scope, context.cwd, path),
+        catch: cause => hostFailure(errorText(cause)),
+      })
+      const validate = Effect.suspend(() =>
+        !closed &&
+        !quitting &&
+        !replacing &&
+        !parked &&
+        !detachedAttachments.has(attachment) &&
+        activeAttachment === attachment &&
+        attachment.binding.revision === binding.revision &&
+        resolve(context.cwd) === resolve(binding.cwd)
+          ? Effect.void
+          : Effect.fail(
+              new WorkspaceError({
+                outcome: 'blocked',
+                message: 'Native write belongs to a stale or parked workspace host',
+              })
+            )
+      )
+      yield* validate
+      if (destination.kind === 'external') {
+        yield* nativeWrites.admit({
+          toolCallId: event.toolCallId,
+          scope,
+          destination,
+          lifecycle: { kind: 'local', validate },
+        })
+        return undefined
+      }
+      const writer = yield* admitWriter(context)
+      if (writer.kind === 'refused') return writer.refusal
       const operation = yield* attachment.authorize({
         kind: 'native-file-write',
         within: writer.grant,
@@ -820,7 +860,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       if (operation.kind !== 'ready')
         return yield* hostFailure('the workspace changed before the native write was admitted')
       yield* nativeWrites
-        .admit({ toolCallId: event.toolCallId, attachment, grant: operation.grant })
+        .admit({
+          toolCallId: event.toolCallId,
+          scope,
+          destination,
+          lifecycle: { kind: 'workspace', attachment, grant: operation.grant },
+        })
         .pipe(
           Effect.tapError(() =>
             attachment

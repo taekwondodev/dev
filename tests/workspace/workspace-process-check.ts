@@ -9,6 +9,7 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -18,7 +19,8 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
 import { makeWorkOwnerLayer } from '../../src/work-controller.ts'
-import { checkChildWorkspace, validateWorkspaceWritePath } from '../../src/work-child-workspace.ts'
+import { checkChildWorkspace } from '../../src/work-child-workspace.ts'
+import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { deferred, makeClaims, ownerEffect, waitUntil, within } from './workspace-check-support.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
@@ -85,10 +87,10 @@ try {
     if (admission.kind !== 'ready') throw new Error('Unexpected fixture handoff')
     const checkoutGrant = admission.grant
     assert.equal(checkoutGrant.cwd, cwd)
-    const validatePath = (path: string) =>
-      Effect.runPromise(validateWorkspaceWritePath(checkoutGrant, { path }))
+    const checkoutScope = { checkout: cwd, authorityRoot: authority.effect.root }
+    const validatePath = async (path: string) => classifyWriteDestination(checkoutScope, cwd, path)
     await claim(
-      'native writes reject traversal, escaping links, Git admin and hard-linked destinations',
+      'native writes classify external aliases and refuse traversal, foreign checkouts, metadata and hard links',
       async () => {
         await validatePath('new/directory/file.txt')
         await assert.rejects(validatePath('../escape.txt'), /traverse/)
@@ -103,7 +105,57 @@ try {
         const outside = join(root, 'outside')
         await mkdir(outside)
         await symlink(outside, join(cwd, 'escape'))
-        await assert.rejects(validatePath('escape/file.txt'), /escapes/)
+        assert.deepEqual(await validatePath('escape/file.txt'), {
+          kind: 'external',
+          operand: join(cwd, 'escape', 'file.txt'),
+          path: join(outside, 'file.txt'),
+        })
+        assert.deepEqual(await validatePath(join(outside, 'new', 'file.txt')), {
+          kind: 'external',
+          operand: join(outside, 'new', 'file.txt'),
+          path: join(outside, 'new', 'file.txt'),
+        })
+        await assert.rejects(
+          validatePath(join(authority.effect.root, 'catalog.sqlite')),
+          /authority metadata/
+        )
+        await assert.rejects(
+          validatePath(join(outside, '.dev', 'coordination', 'installation.sqlite')),
+          /coordination metadata/
+        )
+        const foreign = join(root, 'foreign')
+        await exec('git', ['init', '--quiet', foreign])
+        await assert.rejects(validatePath(join(foreign, 'missing', 'file.txt')), /another checkout/)
+        const linked = join(root, 'linked')
+        await exec('git', ['-C', cwd, 'worktree', 'add', '--quiet', '--detach', linked, 'HEAD'])
+        await assert.rejects(validatePath(join(linked, 'file.txt')), /another checkout/)
+        await writeFile(join(outside, 'HEAD'), 'ordinary configuration')
+        await mkdir(join(outside, 'refs'))
+        assert.equal((await validatePath(join(outside, 'file.txt'))).kind, 'external')
+        await writeFile(join(cwd, 'HEAD'), 'ordinary project file')
+        await mkdir(join(cwd, 'refs'))
+        await mkdir(join(cwd, 'objects'))
+        assert.equal((await validatePath('ordinary.txt')).kind, 'workspace')
+        const bare = join(root, 'bare')
+        await exec('git', ['init', '--bare', '--quiet', bare])
+        await assert.rejects(validatePath(join(bare, 'config')), /administrative/)
+        await symlink(foreign, join(outside, 'foreign-alias'))
+        await assert.rejects(
+          validatePath(join(outside, 'foreign-alias', 'file.txt')),
+          /another checkout/
+        )
+        await writeFile(join(outside, 'file-parent'), 'sentinel')
+        await assert.rejects(
+          validatePath(join(outside, 'file-parent', 'child')),
+          /directory|ENOTDIR/
+        )
+        const unreadable = join(outside, 'unreadable')
+        await mkdir(unreadable, { mode: 0o000 })
+        try {
+          await assert.rejects(validatePath(join(unreadable, 'file')), /EACCES/)
+        } finally {
+          await chmod(unreadable, 0o700)
+        }
 
         for (const path of ['escape/../file.txt', 'escape/../../file.txt', './escape/../file.txt'])
           await assert.rejects(validatePath(path), /traverse/)
@@ -485,8 +537,14 @@ try {
       async () => {
         const admitNative = async (toolCallId: string, path: string) => {
           const operation = await authorizeNative(path)
+          assert.ok(operation.path)
           await Effect.runPromise(
-            nativeWrites.admit({ toolCallId, attachment: attachment.effect, grant: operation })
+            nativeWrites.admit({
+              toolCallId,
+              scope: { checkout: grant.checkout, authorityRoot: authority.effect.root },
+              destination: { kind: 'workspace', operand: operation.path, path: operation.path },
+              lifecycle: { kind: 'workspace', attachment: attachment.effect, grant: operation },
+            })
           )
           return operation
         }
@@ -520,20 +578,25 @@ try {
           ['Café.txt', 'CAFÉ.TXT'],
           ['straße.txt', 'STRASSE.txt'],
         ] as const) {
+          const firstGrant = await authorizeNative(first)
+          assert.ok(firstGrant.path)
           await Effect.runPromise(
             nativeWrites.admit({
               toolCallId: `fold-${first}`,
-              attachment: attachment.effect,
-              grant: await authorizeNative(first),
+              scope: { checkout: grant.checkout, authorityRoot: authority.effect.root },
+              destination: { kind: 'workspace', operand: firstGrant.path, path: firstGrant.path },
+              lifecycle: { kind: 'workspace', attachment: attachment.effect, grant: firstGrant },
             })
           )
           const refused = await authorizeNative(second)
+          assert.ok(refused.path)
           await assert.rejects(
             Effect.runPromise(
               nativeWrites.admit({
                 toolCallId: `fold-${second}`,
-                attachment: attachment.effect,
-                grant: refused,
+                scope: { checkout: grant.checkout, authorityRoot: authority.effect.root },
+                destination: { kind: 'workspace', operand: refused.path, path: refused.path },
+                lifecycle: { kind: 'workspace', attachment: attachment.effect, grant: refused },
               })
             ),
             /still in flight/,
@@ -542,6 +605,92 @@ try {
           await attachment.reportExecution(refused, { kind: 'operation-completed' })
         }
         await Effect.runPromise(nativeWrites.settle)
+      }
+    )
+
+    await claim(
+      'external native permits refuse changed destinations, metadata transitions, links, duplicate writes and lost controllers; settlement leaves no permit',
+      async () => {
+        const external = join(root, 'native-external')
+        await mkdir(external)
+        const scope = { checkout: grant.checkout, authorityRoot: authority.effect.root }
+        const admit = (path: string) =>
+          Effect.runPromise(
+            nativeWrites.admit({
+              toolCallId: path,
+              scope,
+              destination: classifyWriteDestination(scope, grant.cwd, path),
+              lifecycle: { kind: 'local', validate: Effect.void },
+            })
+          )
+        const sentinel = join(external, 'sentinel')
+        await writeFile(sentinel, 'two')
+        await admit(sentinel)
+        await assert.rejects(admit(sentinel), /still in flight/)
+        await Effect.runPromise(nativeWrites.finish(sentinel))
+        for (const kind of ['ancestor', 'checkout', 'final-link', 'hard-link']) {
+          const directory = join(external, kind)
+          const file = join(directory, 'file')
+          await mkdir(directory)
+          await writeFile(file, 'one')
+          await admit(file)
+          if (kind === 'ancestor') {
+            await rename(directory, `${directory}-moved`)
+            await symlink(external, directory)
+          } else if (kind === 'checkout') await exec('git', ['init', '--quiet', directory])
+          else {
+            await rm(file)
+            if (kind === 'final-link') await symlink(sentinel, file)
+            else await link(sentinel, file)
+          }
+          await assert.rejects(
+            nativeWrites.writeOperations.writeFile(file, 'forbidden'),
+            /changed|now resolves elsewhere|no admitted destination/
+          )
+          await Effect.runPromise(nativeWrites.finish(file))
+          assert.equal(await readFile(sentinel, 'utf8'), 'two')
+          if (kind === 'hard-link') await rm(file)
+          assert.ok(!existsSync(join(external, 'file')))
+        }
+        const original = join(external, 'original')
+        const alternative = join(external, 'alternative')
+        const alias = join(external, 'alias')
+        await mkdir(original)
+        await mkdir(alternative)
+        await writeFile(join(original, 'file'), 'one')
+        await writeFile(join(alternative, 'file'), 'two')
+        await symlink(original, alias)
+        await admit(join(alias, 'file'))
+        await admit(join(alternative, 'file'))
+        await rm(alias)
+        await symlink(alternative, alias)
+        await assert.rejects(
+          nativeWrites.writeOperations.writeFile(join(alias, 'file'), 'forbidden'),
+          /now resolves elsewhere/
+        )
+        assert.equal(await readFile(join(original, 'file'), 'utf8'), 'one')
+        assert.equal(await readFile(join(alternative, 'file'), 'utf8'), 'two')
+        const disconnected = join(external, 'disconnected')
+        await Effect.runPromise(
+          nativeWrites.admit({
+            toolCallId: 'disconnected',
+            scope,
+            destination: classifyWriteDestination(scope, grant.cwd, disconnected),
+            lifecycle: { kind: 'local', validate: checkChildWorkspace(grant, 'write') },
+          })
+        )
+        await assert.rejects(
+          nativeWrites.writeOperations.writeFile(disconnected, 'forbidden'),
+          /IPC is unavailable/
+        )
+        assert.ok(!existsSync(disconnected))
+        await admit(sentinel)
+        await Effect.runPromise(nativeWrites.settle)
+        await assert.rejects(
+          nativeWrites.writeOperations.writeFile(sentinel, 'forbidden'),
+          /no admitted destination/
+        )
+        assert.equal(await readFile(sentinel, 'utf8'), 'two')
       }
     )
 
