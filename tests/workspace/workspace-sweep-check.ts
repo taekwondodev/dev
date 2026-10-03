@@ -29,8 +29,13 @@ import {
 } from '../../src/workspace-domain.ts'
 import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
 import { attemptedRows, formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
-import type { GitHubReader } from '../../src/workspace-evidence.ts'
-import { checkTask } from '../../src/workspace-release.ts'
+import { makeGitHubReader, type GitHubReader } from '../../src/workspace-evidence.ts'
+import {
+  checkTask,
+  sweepDeadline,
+  sweepRepositoryAtQuit,
+  type EvidenceReaders,
+} from '../../src/workspace-release.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
@@ -621,6 +626,136 @@ try {
         assert.equal(view.completion.retained, 'integration-unknown')
         assert.ok(view.completion.reason.includes(sibling.workspaceId), view.completion.reason)
         assert.ok(existsSync(child.checkout), 'the uncertain child stays on disk')
+      } finally {
+        authority.close()
+      }
+    }
+  )
+
+  await claim(
+    "quit prefetch starts every task's recorded pull request read while the first task still awaits its evidence, and gated release retains a workspace changed while the provider is pending",
+    async () => {
+      const asyncRepo = join(sandbox, 'async-overlap-repo')
+      mkdirSync(asyncRepo)
+      git(['init', '--quiet', '-b', 'main'], asyncRepo)
+      git(['config', 'user.name', 'Sweep Check'], asyncRepo)
+      git(['config', 'user.email', 'sweep-check@example.invalid'], asyncRepo)
+      writeFileSync(join(asyncRepo, 'tracked.txt'), 'base\n')
+      git(['add', '.'], asyncRepo)
+      git(['commit', '--quiet', '-m', 'base'], asyncRepo)
+      const owner = await reserve(asyncRepo)
+      const child = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
+      const deliveryBranch = `async-delivery-${newId()}`
+      git(['switch', '--quiet', '-c', deliveryBranch], child.checkout)
+      writeFileSync(join(child.checkout, 'feature.txt'), 'delivered\n')
+      git(['add', 'feature.txt'], child.checkout)
+      git(['commit', '--quiet', '-m', 'delivered'], child.checkout)
+      const head = git(['rev-parse', 'HEAD'], child.checkout)
+      await owner.owner.close()
+      git(['merge', '--quiet', '--ff-only', deliveryBranch], asyncRepo)
+      await lifecycle.recordTarget(owner.taskId, {
+        kind: 'github',
+        repository: 'owner/async-overlap',
+        ref: 'refs/heads/main',
+        pullRequest: 7,
+      })
+      const otherCheckout = join(sandbox, 'async-overlap-other')
+      git(['worktree', 'add', '--quiet', '-b', 'async-other', otherCheckout, 'main'], asyncRepo)
+      const other = await reserve(otherCheckout)
+      await other.owner.close()
+      await lifecycle.recordTarget(other.taskId, {
+        kind: 'github',
+        repository: 'owner/async-overlap',
+        ref: 'refs/heads/main',
+        pullRequest: 8,
+      })
+
+      const started: number[] = []
+      let graphqlCalls = 0
+      let synchronousGraphqlCalls = 0
+      let resolveResponse:
+        | ((response: { readonly status: 'ok'; readonly text: string }) => void)
+        | undefined
+      const response = new Promise<{ readonly status: 'ok'; readonly text: string }>(resolve => {
+        resolveResponse = resolve
+      })
+      const readers: EvidenceReaders = {
+        github: makeGitHubReader(
+          () => {
+            throw new Error('the batched GraphQL evidence should satisfy this assessment')
+          },
+          30_000,
+          undefined,
+          () => {
+            synchronousGraphqlCalls += 1
+            throw new Error('the async evidence must populate the shared reader cache')
+          },
+          async (repository, ref, number, timeoutMs) => {
+            assert.deepEqual([repository, ref], ['owner/async-overlap', 'refs/heads/main'])
+            assert.ok(timeoutMs > 0 && timeoutMs <= 30_000, `invalid timeout ${timeoutMs}`)
+            started.push(number)
+            if (number !== 7) return { status: 'not-found', text: '' }
+            graphqlCalls += 1
+            return response
+          }
+        ),
+      }
+      const requestedAt = Date.now()
+      const deadline = sweepDeadline('quit', requestedAt)
+      const authority = new WorkspaceAuthority(root)
+      try {
+        const pendingSweep = sweepRepositoryAtQuit(
+          authority,
+          {
+            repositoryId: owner.write.repositoryId,
+            moment: 'quit',
+            deadline,
+            occupiedPaths: [],
+          },
+          readers
+        )
+        assert.deepEqual(
+          started.toSorted(),
+          [7, 8],
+          'every task with a recorded pull request starts its read while the first task still awaits its evidence'
+        )
+        if (resolveResponse === undefined) throw new Error('async GraphQL request did not start')
+        writeFileSync(join(child.checkout, 'tracked.txt'), 'changed during provider wait\n')
+        resolveResponse({
+          status: 'ok',
+          text: JSON.stringify({
+            data: {
+              repository: {
+                ref: { target: { oid: head } },
+                pullRequest: {
+                  mergedAt: new Date(Date.now() + 60_000).toISOString(),
+                  baseRefName: 'main',
+                  baseRepository: { nameWithOwner: 'owner/async-overlap' },
+                  headRefOid: head,
+                  headRepository: { nameWithOwner: 'owner/async-overlap' },
+                  mergeCommit: { oid: head },
+                  commits: {
+                    totalCount: 1,
+                    nodes: [{ commit: { oid: head } }],
+                    pageInfo: { hasNextPage: false },
+                  },
+                },
+              },
+            },
+          }),
+        })
+        const receipt = await pendingSweep
+        const row = rowOf(receipt, child.workspaceId)
+        assert.equal(verdictName(row.verdict), 'branch-merged', row.reason)
+        assert.equal(row.outcome, 'retained', row.reason)
+        assert.match(row.reason, /changed after the sweep assessed it/i)
+        assert.equal(
+          readFileSync(join(child.checkout, 'tracked.txt'), 'utf8'),
+          'changed during provider wait\n'
+        )
+        assert.ok(existsSync(child.checkout), 'fresh gated assessment prevents removal')
+        assert.equal(graphqlCalls, 1, 'gated re-assessment reuses the request-scoped evidence')
+        assert.equal(synchronousGraphqlCalls, 0)
       } finally {
         authority.close()
       }

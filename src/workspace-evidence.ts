@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFile as execFileCallback, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, readlinkSync, realpathSync, type BigIntStats } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -82,6 +82,11 @@ export interface GitHubReader {
     ref: string,
     number: number
   ): GitHubPullRequestEvidence | Unavailable
+  prefetchPullRequestEvidence?(
+    repository: string,
+    ref: string,
+    number: number
+  ): Promise<GitHubPullRequestEvidence | Unavailable>
   defaultBranch(repository: string): string | 'missing' | Unavailable
   refTip(repository: string, ref: string): string | 'missing' | Unavailable
   pullRequest(repository: string, number: number): GitHubPullRequest | 'missing' | Unavailable
@@ -159,6 +164,13 @@ type GhGraphqlCall = (
   number: number,
   timeoutMs: number
 ) => GhResponse
+type GhGraphqlCallAsync = (
+  repository: string,
+  ref: string,
+  number: number,
+  timeoutMs: number,
+  signal: AbortSignal
+) => Promise<GhResponse>
 const PULL_REQUEST_EVIDENCE_QUERY = `query($owner: String!, $name: String!, $number: Int!, $ref: String!) {
   repository(owner: $owner, name: $name) {
     ref(qualifiedName: $ref) { target { oid } }
@@ -177,93 +189,110 @@ const PULL_REQUEST_EVIDENCE_QUERY = `query($owner: String!, $name: String!, $num
     }
   }
 }`
-const ghGraphql: GhGraphqlCall = (repository, ref, number, timeoutMs) => {
+const GH_OPTIONS = {
+  encoding: 'utf8',
+  maxBuffer: 16 * 1024 * 1024,
+  env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
+} as const
+const graphqlArgs = (repository: string, ref: string, number: number): string[] => {
   const [owner, name] = repository.split('/')
   if (owner === undefined || name === undefined)
     throw new Error(`Invalid GitHub repository name: ${repository}`)
+  return [
+    'api',
+    'graphql',
+    '-H',
+    'Accept: application/vnd.github+json',
+    '-f',
+    `query=${PULL_REQUEST_EVIDENCE_QUERY}`,
+    '-f',
+    `owner=${owner}`,
+    '-f',
+    `name=${name}`,
+    '-F',
+    `number=${number}`,
+    '-f',
+    `ref=${ref}`,
+  ]
+}
+const ghFailure = (what: string, stderr: unknown, cause: unknown): GhResponse => {
+  const message = String(stderr ?? '').trim()
+  if (/HTTP 404/.test(message)) return { status: 'not-found', text: '' }
+  throw new Error(`${what} failed: ${message || errorText(cause)}`, { cause })
+}
+const stderrOf = (cause: unknown): unknown =>
+  typeof cause === 'object' && cause !== null && 'stderr' in cause
+    ? (cause as { stderr: unknown }).stderr
+    : undefined
+const ghSync = (args: readonly string[], timeoutMs: number, what: string): GhResponse => {
   try {
-    const text = execFileSync(
-      'gh',
-      [
-        'api',
-        'graphql',
-        '-H',
-        'Accept: application/vnd.github+json',
-        '-f',
-        `query=${PULL_REQUEST_EVIDENCE_QUERY}`,
-        '-f',
-        `owner=${owner}`,
-        '-f',
-        `name=${name}`,
-        '-F',
-        `number=${number}`,
-        '-f',
-        `ref=${ref}`,
-      ],
-      {
-        encoding: 'utf8',
-        timeout: timeoutMs,
-        maxBuffer: 16 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
-      }
-    )
+    const text = execFileSync('gh', args, {
+      ...GH_OPTIONS,
+      timeout: timeoutMs,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     return { status: 'ok', text }
   } catch (cause) {
-    const stderr =
-      typeof cause === 'object' && cause !== null && 'stderr' in cause
-        ? String((cause as { stderr: unknown }).stderr)
-        : ''
-    if (/HTTP 404/.test(stderr)) return { status: 'not-found', text: '' }
-    throw new Error(`gh api graphql failed: ${stderr.trim() || errorText(cause)}`, { cause })
+    return ghFailure(what, stderrOf(cause), cause)
   }
 }
-const ghApi: GhCall = (endpoint, timeoutMs) => {
-  try {
-    const text = execFileSync(
+const ghGraphql: GhGraphqlCall = (repository, ref, number, timeoutMs) =>
+  ghSync(graphqlArgs(repository, ref, number), timeoutMs, 'gh api graphql')
+const ghGraphqlAsync: GhGraphqlCallAsync = (repository, ref, number, timeoutMs, signal) =>
+  new Promise((resolve, reject) => {
+    execFileCallback(
       'gh',
-      ['api', '-H', 'Accept: application/vnd.github+json', endpoint],
-      {
-        encoding: 'utf8',
-        timeout: timeoutMs,
-        maxBuffer: 16 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
+      graphqlArgs(repository, ref, number),
+      { ...GH_OPTIONS, timeout: timeoutMs, signal },
+      (cause, stdout, stderr) => {
+        if (cause === null) {
+          resolve({ status: 'ok', text: stdout })
+          return
+        }
+        try {
+          resolve(ghFailure('gh api graphql', stderr, cause))
+        } catch (failure) {
+          reject(failure)
+        }
       }
     )
-    return { status: 'ok', text }
-  } catch (cause) {
-    const stderr =
-      typeof cause === 'object' && cause !== null && 'stderr' in cause
-        ? String((cause as { stderr: unknown }).stderr)
-        : ''
-    if (/HTTP 404/.test(stderr)) return { status: 'not-found', text: '' }
-    throw new Error(`gh api ${endpoint} failed: ${stderr.trim() || errorText(cause)}`, { cause })
-  }
-}
+  })
+const ghApi: GhCall = (endpoint, timeoutMs) =>
+  ghSync(
+    ['api', '-H', 'Accept: application/vnd.github+json', endpoint],
+    timeoutMs,
+    `gh api ${endpoint}`
+  )
 const refPath = (ref: string): string => ref.replace(/^refs\//, '')
 
 const orUnavailable = <A>(value: A | 'missing' | Unavailable, what: string): A | Unavailable =>
   value === 'missing' ? { unavailable: `${what} was not found` } : value
 
+const evidenceKey = (repository: string, ref: string, number: number): string =>
+  `graphql:${repository}:${ref}:${number}`
+
 export const makeGitHubReader = (
   call: GhCall = ghApi,
   budgetMs: number = PROVIDER_BUDGET_MS,
   clock: () => number = () => performance.now(),
-  graphqlCall: GhGraphqlCall = ghGraphql
+  graphqlCall: GhGraphqlCall = ghGraphql,
+  graphqlCallAsync: GhGraphqlCallAsync = ghGraphqlAsync
 ): GitHubReader => {
   const deadline = clock() + budgetMs
 
   const answered = new Map<string, ReturnType<GhCall> | Unavailable>()
   const answeredGraphql = new Map<string, GitHubPullRequestEvidence | Unavailable>()
+  const budgetUnavailable = (when: 'before' | 'during'): Unavailable => ({
+    unavailable:
+      when === 'before'
+        ? `this request's ${budgetMs / 1000} s GitHub time budget was spent before this read`
+        : `this request's ${budgetMs / 1000} s GitHub time budget expired during this read`,
+  })
   const ask = (endpoint: string): ReturnType<GhCall> | Unavailable => {
     const known = answered.get(endpoint)
     if (known !== undefined) return known
     const remaining = deadline - clock()
-    if (remaining <= 0)
-      return {
-        unavailable: `this request's ${budgetMs / 1000} s GitHub time budget was spent before this read`,
-      }
+    if (remaining <= 0) return budgetUnavailable('before')
     let response: ReturnType<GhCall> | Unavailable
     try {
       response = call(endpoint, Math.ceil(remaining))
@@ -320,31 +349,75 @@ export const makeGitHubReader = (
     }
     return { tip, pullRequest, commits }
   }
+  const settleEvidence = (
+    key: string,
+    response: GhResponse | Unavailable
+  ): GitHubPullRequestEvidence | Unavailable => {
+    const evidence =
+      clock() >= deadline ? budgetUnavailable('during') : decodeGraphqlEvidence(response)
+    answeredGraphql.set(key, evidence)
+    return evidence
+  }
   const pullRequestEvidence = (
     repository: string,
     ref: string,
     number: number
   ): GitHubPullRequestEvidence | Unavailable => {
-    const key = `graphql:${repository}:${ref}:${number}`
+    const key = evidenceKey(repository, ref, number)
     const known = answeredGraphql.get(key)
     if (known !== undefined) return known
     const remaining = deadline - clock()
-    if (remaining <= 0)
-      return {
-        unavailable: `this request's ${budgetMs / 1000} s GitHub time budget was spent before this read`,
-      }
+    if (remaining <= 0) return budgetUnavailable('before')
     let response: GhResponse | Unavailable
     try {
       response = graphqlCall(repository, ref, number, Math.ceil(remaining))
     } catch (cause) {
       response = { unavailable: errorText(cause) }
     }
-    const evidence = decodeGraphqlEvidence(response)
-    answeredGraphql.set(key, evidence)
-    return evidence
+    return settleEvidence(key, response)
   }
+  const inFlightGraphql = new Map<string, Promise<GitHubPullRequestEvidence | Unavailable>>()
+  const prefetchPullRequestEvidence = (
+    repository: string,
+    ref: string,
+    number: number
+  ): Promise<GitHubPullRequestEvidence | Unavailable> => {
+    const key = evidenceKey(repository, ref, number)
+    const known = answeredGraphql.get(key)
+    if (known !== undefined) return Promise.resolve(known)
+    const inFlight = inFlightGraphql.get(key)
+    if (inFlight !== undefined) return inFlight
+    const remaining = deadline - clock()
+    if (remaining <= 0) {
+      const spent = budgetUnavailable('before')
+      answeredGraphql.set(key, spent)
+      return Promise.resolve(spent)
+    }
+    const controller = new AbortController()
+    let timeout: NodeJS.Timeout | undefined
+    const expired = new Promise<Unavailable>(resolve => {
+      timeout = setTimeout(() => {
+        controller.abort()
+        resolve(budgetUnavailable('during'))
+      }, remaining)
+    })
+    const pending = Promise.race([
+      graphqlCallAsync(repository, ref, number, Math.ceil(remaining), controller.signal),
+      expired,
+    ])
+      .catch((cause: unknown): Unavailable => ({ unavailable: errorText(cause) }))
+      .then(response => settleEvidence(key, response))
+      .finally(() => {
+        clearTimeout(timeout)
+        inFlightGraphql.delete(key)
+      })
+    inFlightGraphql.set(key, pending)
+    return pending
+  }
+
   return {
     pullRequestEvidence,
+    prefetchPullRequestEvidence,
     defaultBranch(repository) {
       const value = read(`repos/${repository}`, RepositoryPayload)
       return value === 'missing' || isUnavailable(value) ? value : value.default_branch
