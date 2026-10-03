@@ -1045,10 +1045,10 @@ const assessTaskAtQuit = (
   const entries = taskWorkspaces(authority, taskId)
   const siblingsFor = taskSiblings(authority, taskId, entries)
   return Promise.all(
-    entries.map(({ repo, reservation, workspace }) =>
-      inDb(authority, repo, async db => {
-        const evidence = prefetchEvidence(readers, getTask(db, reservation.taskId)?.target)
-        const staged = stageWorkspace(
+    entries.map(async ({ repo, reservation, workspace }) => {
+      const { evidence, staged } = inDb(authority, repo, db => ({
+        evidence: prefetchEvidence(readers, getTask(db, reservation.taskId)?.target),
+        staged: stageWorkspace(
           authority,
           db,
           repo,
@@ -1058,12 +1058,12 @@ const assessTaskAtQuit = (
           context,
           siblingsFor(workspace.id),
           false
-        )
-        if (!isStaged(staged)) return staged
-        await evidence
-        return staged.integrate()
-      })
-    )
+        ),
+      }))
+      if (!isStaged(staged)) return staged
+      await evidence
+      return staged.integrate()
+    })
   )
 }
 

@@ -588,16 +588,11 @@ export const inDb = <A>(
   git?: GitWorkspace
 ): A => {
   const db = authority.openShard(repo, create, git)
-  let result: A
   try {
-    result = callback(db)
-  } catch (cause) {
+    return callback(db)
+  } finally {
     db.close()
-    throw cause
   }
-  if (result instanceof Promise) return result.finally(() => db.close()) as A
-  db.close()
-  return result
 }
 export const taskWorkspaces = (
   authority: WorkspaceAuthority,

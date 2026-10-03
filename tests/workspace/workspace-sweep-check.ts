@@ -633,7 +633,7 @@ try {
   )
 
   await claim(
-    "quit prefetch starts every task's recorded pull request read before any local inventory, and gated release retains a workspace changed while the provider is pending",
+    "quit prefetch starts every task's recorded pull request read while the first task still awaits its evidence, and gated release retains a workspace changed while the provider is pending",
     async () => {
       const asyncRepo = join(sandbox, 'async-overlap-repo')
       mkdirSync(asyncRepo)
@@ -717,7 +717,7 @@ try {
         assert.deepEqual(
           started.toSorted(),
           [7, 8],
-          'every task with a recorded pull request starts its read before the first task is assessed'
+          'every task with a recorded pull request starts its read while the first task still awaits its evidence'
         )
         if (resolveResponse === undefined) throw new Error('async GraphQL request did not start')
         writeFileSync(join(child.checkout, 'tracked.txt'), 'changed during provider wait\n')
