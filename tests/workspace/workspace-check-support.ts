@@ -4,11 +4,11 @@ import { pathToFileURL } from 'node:url'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Scope } from 'effect'
 import type * as Pi from '../../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
-import type * as PiEventStream from '../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
+import type * as PiEventStream from '../../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 import type {
   AssistantMessage,
   Model,
-} from '../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js'
+} from '../../node_modules/@earendil-works/pi-ai/dist/index.js'
 import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher.ts'
 import { WorkOwner } from '../../src/work-controller.ts'
 import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
@@ -219,7 +219,7 @@ export const makeOfflineModel = async (input: {
     },
   })
   const eventStreams = await input.importFromPi<typeof PiEventStream>(
-    'node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
+    '../pi-ai/dist/utils/event-stream.js'
   )
   const streamSimple = input.stream({ assistantMessage, eventStreams })
   const modelRuntime = await input.pi.ModelRuntime.create({

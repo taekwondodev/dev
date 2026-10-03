@@ -15,7 +15,7 @@ npm start          # a session whose working project is dev itself
 
 Sources are strict, erasable TypeScript on the pinned Effect 4 release candidate, run directly by Node's type stripping; there is no build step. Keep the Node minimum in `package.json` when choosing syntax and APIs. The Effect reading rule is in [AGENTS.md](../AGENTS.md#learning-more-about-effect).
 
-Checks and setup regenerate an ignored link to the declarations of the actual global Pi package. Run `npm run types:pi` after changing Pi if the editor still sees stale declarations; missing declarations fail the check. Do not install a private Pi copy or add ambient types. `DEV_PI_EXECUTABLE` selects the installation for both checking and runtime.
+Pi is installed with the pi.dev installer (`curl -fsSL https://pi.dev/install.sh | sh`); an npm installation is refused. Dev follows the `pi` on `PATH` to the installer's `install/` directory and uses the release named in its `current-version`: `releases/<version>/node_modules/@earendil-works/`, with Pi's own packages side by side. Checks and setup regenerate an ignored link from `node_modules/@earendil-works` to that directory, so declarations of `pi-coding-agent`, `pi-tui` and `pi-ai` come from the release dev runs. Run `npm run types:pi` after changing Pi if the editor still sees stale declarations; missing declarations fail the check. Do not install a private Pi copy or add ambient types. `DEV_PI_RELEASE` names another release directory, such as a `pi:verify` candidate, for both checking and runtime.
 
 ## Where things live
 
@@ -53,7 +53,7 @@ npm run work:check        # native-session background compaction, dispatch resol
 npm run dev:probe         # SDK runtime creation without the TUI
 ```
 
-`start`, `dev` and `diagnostics` run the launcher on this checkout; the `dev:*` aliases pass the flag of the same name ([launcher](launcher.md#use)); `setup`, `update`, `rollback`, `profile`, `pi:verify` and `pi:install` are the maintenance commands there.
+`start`, `dev` and `diagnostics` run the launcher on this checkout; the `dev:*` aliases pass the flag of the same name ([launcher](launcher.md#use)); `setup`, `update`, `rollback`, `profile`, `pi:verify` and `pi:update` are the maintenance commands there.
 
 What the scripts do not confess:
 
@@ -66,14 +66,14 @@ What the scripts do not confess:
 
 ## Pi upgrade
 
-The pinned Pi release is `config.pi` in `package.json`; smoke fails when the Pi dev resolves is another release. `npm run pi:verify` checks a candidate, by default the latest published `@earendil-works/pi-coding-agent`, against the Pi dev runs today, from a clean checkout under the installation gate:
+The pinned Pi release is `config.pi` in `package.json`; smoke fails when the Pi dev resolves is another release. `npm run pi:verify` checks a candidate, by default the latest release `https://pi.dev/api/latest-version` announces and `pi update` would install, against the Pi dev runs today, from a clean checkout under the installation gate:
 
-1. Installs the candidate from the npm registry into `.dev/pi-candidate/` and runs `npm audit` there. Audit findings are reported and never decide the verdict.
+1. Builds the candidate in `.dev/pi-candidate/release/` as `pi update` builds a managed release: it downloads that version's `package.json` and `package-lock.json` from `https://pi.dev/api/installer/releases/<version>/` and runs `npm ci` with the installer's options, so every transitive dependency is the one `pi update` will install. It runs `npm audit` on that lockfile. Audit findings are reported and never decide the verdict.
 2. Compares SDK export names, `.d.ts` files, native tool metadata and schemas, and the shipped copy of each contract page linked below, and reads the changelog sections between the pinned release and the candidate.
-3. Pins the candidate in the working tree and runs lint, smoke, `workspace:check`, `workspace:tui`, `workspace:github` and `work:check` with `DEV_PI_EXECUTABLE` at the candidate. The first failing suite stops the run: the pin is restored and nothing is published.
+3. Pins the candidate in the working tree and runs lint, smoke, `workspace:check`, `workspace:tui`, `workspace:github` and `work:check` with `DEV_PI_RELEASE` at the candidate. The first failing suite stops the run: the pin is restored and nothing is published.
 4. Prints the report: a title stating the suites and the number of changelog lines to read; the candidate and baseline sentence; a table of suites, APIs dev uses, changelog to read and audit; on red, the failing suite's output, expanded; the lines to read; collapsed sections with the lines left out, the docs diffs, the changed `.d.ts` files and the suite times; the steps after merging; the date. On green with a new release, from `main` at `origin/main`, it commits the pin on `chore/pi-<version>`, pushes the branch and opens a pull request whose description is the report. The pull request is the upgrade's evidence record. A run that cannot publish, because of another branch, a `main` away from `origin/main`, an existing `chore/pi-<version>` or a report over GitHub's body limit, says so before the suites and still verifies. Every run saves its report to `.dev/pi-candidate/report.md`. A failed push deletes the local branch; a failed pull request leaves the pushed branch and prints the `gh pr create` command that opens it with that report.
 
-After merging it and updating the checkout, `npm run pi:install -- --version X.Y.Z` installs that release globally. It refuses a release the checkout does not pin or that has no verified candidate, fails when the Pi dev then resolves is not the candidate byte for byte, runs smoke, deletes the candidate, then runs `dev --diagnostics` once the installation gate is released. A red candidate stays in `.dev/pi-candidate/` for investigation: `DEV_PI_EXECUTABLE="$PWD/.dev/pi-candidate/bin/pi" npm run <suite>` from the checkout reruns one suite on it, smoke excepted because the pin is restored, and `npm run types:pi` afterwards links the declarations back to the installed Pi.
+After merging it and updating the checkout, `npm run pi:update -- --version X.Y.Z` runs `pi update`. It refuses a release the checkout does not pin, one without a verified candidate, and one that is no longer the release `pi update` would install, since `pi update` takes no version: verify the newer release first. After `pi update` it fails when the active release is another version or its `package-lock.json` differs from the candidate's: the lockfile pins every package by integrity hash and `npm ci` enforces it, so an equal lockfile is the same installation. It then runs smoke, deletes the candidate release and runs `dev --diagnostics` once the installation gate is released. `pi update` keeps the previous release in `releases/`; on a failure after activation the error names the `current-version` write that reactivates it. A red candidate stays in `.dev/pi-candidate/release/` for investigation: `DEV_PI_RELEASE="$PWD/.dev/pi-candidate/release" npm run <suite>` from the checkout reruns one suite on it, smoke excepted because the pin is restored, and `npm run types:pi` afterwards links the declarations back to the active release.
 
 A changelog line is to read when it names a surface dev uses; the report gives Pi's text verbatim, prefixed with its surfaces, without the trailing issue and author references. Lines that mention MCP, codemode or tool search, which dev does not enable, are left out of the list and shown in their own collapsed section; Pi's New Features section, which repeats Added and Changed entries, is skipped. "SDK" counts only for Pi's own SDK: not after a vendor name such as Anthropic or Mistral, and not in a line about a provider unless the line names a Pi API such as `ModelRuntime`. The surfaces, by the label the report prints, and the internals dev relies on:
 
@@ -113,7 +113,7 @@ An enduring decision with a real tradeoff gets an ADR in `docs/adr/`, with the n
 
 ## Private-state relocation
 
-Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home and leave historical conversation text unchanged. Credentials, dev's profiles and global Pi remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries). Keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance commands](launcher.md#use).
+Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home and leave historical conversation text unchanged. Credentials, dev's profiles and the Pi installation remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries). Keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy the [maintenance commands](launcher.md#use).
 
 ## Discard obsolete state
 

@@ -6,7 +6,7 @@ import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 import { checkout, checkoutIsClean, git } from './checkout.ts'
-import { installPi, type PiUpgradeError, verifyPi } from './pi-upgrade.ts'
+import { type PiUpgradeError, updatePi, verifyPi } from './pi-upgrade.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from './usage-profile.ts'
 
 export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('MaintenanceError', {
@@ -199,14 +199,14 @@ const piVerify = (): MaintenanceCommand =>
     yield* verifyPi(version).pipe(Effect.mapError(fromPiUpgrade))
   })
 
-const piInstall = (): MaintenanceCommand =>
+const piUpdate = (): MaintenanceCommand =>
   Effect.gen(function* () {
     const version = yield* versionArgument
     if (version === undefined)
       return yield* new MaintenanceError({
-        message: 'Pi install requires an explicit --version and changes only global Pi.',
+        message: 'Pi update requires an explicit --version and changes only the managed Pi.',
       })
-    yield* installPi(version).pipe(Effect.mapError(fromPiUpgrade))
+    yield* updatePi(version).pipe(Effect.mapError(fromPiUpgrade))
   })
 
 const program = Effect.gen(function* () {
@@ -216,9 +216,9 @@ const program = Effect.gen(function* () {
   if (command === 'rollback') return yield* rollback()
   if (command === 'profile') return yield* profile()
   if (command === 'pi-verify') return yield* piVerify()
-  if (command === 'pi-install') return yield* piInstall()
+  if (command === 'pi-update') return yield* piUpdate()
   return yield* new MaintenanceError({
-    message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, pi-verify, or pi-install.`,
+    message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, pi-verify, or pi-update.`,
   })
 }).pipe(
   Effect.catch(error =>

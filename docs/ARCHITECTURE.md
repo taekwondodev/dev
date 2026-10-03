@@ -29,7 +29,7 @@ The constraints every choice below respects:
 
 ```text
 src/launcher.ts                    dev executable: startup selection, Pi services and TUI
-src/pi-runtime.ts                  resolves the installed global Pi SDK and its declarations
+src/pi-runtime.ts                  resolves the active managed Pi release and its declarations
 src/background-compaction.ts       session-local speculative summary preparation, cancellation, safe application and observations
 src/compaction-observation.ts      diagnostic-only native-entry contract shared with the private usage profile
 src/preferences.ts                 private data paths, global auth path, profile preferences
@@ -56,7 +56,7 @@ Pi owns inference, providers, conversation persistence, the TUI and project-inst
 
 **Use case:** pairing and resuming with Pi's native TUI, sessions and provider handling, plus dev's tools.
 
-**Choice:** `dev` is a launcher on the installed global Pi SDK. Extensions are inline factories, the installed package is resolved at start and its declarations are linked for type checking rather than vendored.
+**Choice:** `dev` is a launcher on the Pi SDK of the installation the pi.dev installer manages. Extensions are inline factories, the active release is resolved at start from the installer's `current-version` and its declarations are linked for type checking rather than vendored. Pi updates go through `pi update`, which installs the installer's lockfile, so every transitive dependency is pinned.
 
 **Tradeoff:** every Pi upgrade is a compatibility check against the internals dev relies on, listed in [DEVELOPMENT](DEVELOPMENT.md#pi-upgrade). In exchange there is no runtime fork and no private Pi copy to maintain. Decided in [#7](https://github.com/taekwondodev/dev/issues/7) and [#11](https://github.com/taekwondodev/dev/issues/11).
 
@@ -86,9 +86,9 @@ Pi owns inference, providers, conversation persistence, the TUI and project-inst
 
 ### Versioned dispatch, local private state
 
-**Use case:** cloning the checkout reproduces model policy, a code update can change policy without moving private data, and logging in from global Pi or dev yields one credential.
+**Use case:** cloning the checkout reproduces model policy, a code update can change policy without moving private data, and logging in from Pi or dev yields one credential.
 
-**Choice:** dispatch rules are versioned in `config/`; private state defaults to Git-ignored `.dev/` in the checkout; authentication is the global Pi file. Invalid dispatch fails instead of substituting a model.
+**Choice:** dispatch rules are versioned in `config/`; private state defaults to Git-ignored `.dev/` in the checkout; authentication is Pi's own file. Invalid dispatch fails instead of substituting a model.
 
 **Tradeoff:** dispatch is edited in the checkout, not per project, and private state travels with the checkout. [ADR 0003](adr/0003-versioned-dispatch-local-runtime.md).
 

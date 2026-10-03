@@ -6,7 +6,7 @@ Dev is a personal agent distro built on top of Pi, for one person. Its trust mod
 
 Dev runs the following as trusted code, with the permissions of the account that launches it:
 
-- The globally installed Pi (`@earendil-works/pi-coding-agent`) and its native tools.
+- The Pi release the pi.dev installer manages in `~/.pi/agent/install/` (`@earendil-works/pi-coding-agent` with its locked dependencies) and its native tools.
 - Every extension, package, prompt and theme Pi loads from its global agent directory. Dev does not review, filter or sandbox them: whatever is installed there is trusted as your own. Their presentation, status, notification and preference effects need no workspace admission.
 - Dev's own extensions: the `work` tool, the `workspace` tool and the workspace host. A child the lead authorized to coordinate gets a scoped `work` tool: every request it makes is admitted by the lead's controller, which takes the requester's identity from its IPC channel and never grants more than the coordinator's own access.
 - Project resources under `.pi/` of a folder you trusted through Pi's folder trust. They load as Pi loads them, before workspace admission. A folder you have not trusted loads no project resources.
@@ -28,7 +28,7 @@ Pi asks extensions about a `!` command in load order and takes the first answer,
 
 ## Credentials
 
-Pi authentication lives in `~/.pi/agent/auth.json`, shared by global Pi, dev and dev's children. Dev never copies it into its data home, prints it in diagnostics or records it in attempt outcomes. Command text is not copied into work records; Pi's tool-call history still records tool inputs, so commands reference credentials through the environment or existing tooling.
+Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's children. Dev never copies it into its data home, prints it in diagnostics or records it in attempt outcomes. Command text is not copied into work records; Pi's tool-call history still records tool inputs, so commands reference credentials through the environment or existing tooling.
 
 ## Outside the protection
 

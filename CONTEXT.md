@@ -6,7 +6,7 @@
 
 ## Pi
 
-[Pi](https://github.com/earendil-works/pi) is the coding agent dev is built on, and its integration target. This repository owns the Pi integration and configuration specific to `dev`; the installed global Pi package is the reference for supported APIs.
+[Pi](https://github.com/earendil-works/pi) is the coding agent dev is built on, and its integration target. This repository owns the Pi integration and configuration specific to `dev`; the Pi release active in the installer-managed installation is the reference for supported APIs.
 
 ## Shared workflow library
 
