@@ -1967,77 +1967,130 @@ export const sweepDeadline = (moment: SweepMoment, requestedAt: number): number 
 const attemptOutcome = (outcome: WorkspaceReleaseResult['outcome']): SweepOutcome =>
   outcome === 'blocked' ? 'retained' : outcome
 
-const releaseAssessedTask = (
+interface SweepRun {
+  readonly taskIds: readonly WorkspaceId[]
+  readonly context: AssessmentContext
+  readonly expired: (index: number) => boolean
+  readonly fail: (taskId: WorkspaceId, cause: unknown) => void
+  readonly settle: (index: number, taskId: WorkspaceId, assessed: readonly Assessed[]) => boolean
+  readonly receipt: () => SweepReceipt
+}
+
+const startSweep = (
   authority: WorkspaceAuthority,
   input: SweepInput,
-  readers: EvidenceReaders,
-  context: AssessmentContext,
-  decider: ReleaseDecider,
-  commandId: WorkspaceId,
-  receipt: SweepRow[],
-  index: number,
-  taskId: WorkspaceId,
-  assessments: readonly WorkspaceAssessment[],
-  deferFrom: (index: number, started: boolean) => void
-): boolean => {
-  const decided = assessments.map(assessment => assessment.subject)
-  const decidedIds = new Set(decided.map(subject => subject.workspaceId))
-  for (const assessment of assessments.toSorted((left, right) =>
-    left.workspaceId.localeCompare(right.workspaceId)
-  )) {
-    const row = {
-      kind: 'workspace' as const,
-      taskId,
-      workspaceId: assessment.workspaceId,
-      path: assessment.path,
-      origin: assessment.origin,
-      verdict: assessment.completion,
-    }
-    if (assessment.completion.kind === 'retained') {
-      receipt.push({
-        ...row,
-        outcome: RETAINED[assessment.completion.retained].sweep,
-        reason: assessment.completion.reason,
-      })
-      continue
-    }
-    if (now() >= input.deadline) {
-      deferFrom(index, true)
-      return true
-    }
-    try {
-      const result = releaseDecidedWorkspace(
-        authority,
-        {
-          taskId,
-          commandId,
-          decided,
-          decider,
-          workspaceId: assessment.workspaceId,
-          occupiedPaths: input.occupiedPaths,
-        },
-        readers,
-        context,
-        decidedIds
-      )
-      receipt.push({
-        ...row,
-        outcome: attemptOutcome(result.outcome),
-        reason: result.reason,
-        ...(result.operationId === undefined ? {} : { operationId: result.operationId }),
-      })
-    } catch (cause) {
-      receipt.push({
-        ...row,
-        outcome:
-          cause instanceof WorkspaceError && cause.outcome === 'invalid'
-            ? 'retained'
-            : 'review-required',
-        reason: `The attempt was refused or its outcome is uncertain: ${errorText(cause)}`,
-      })
-    }
+  readers: EvidenceReaders
+): SweepRun => {
+  const commandId = newId()
+  const receipt: SweepRow[] = []
+  const context: AssessmentContext = {
+    moment: input.moment,
+    ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
   }
-  return false
+  const decider: ReleaseDecider = {
+    kind: 'completion',
+    policyVersion: COMPLETION_POLICY_VERSION,
+    moment: input.moment,
+  }
+  const seconds = SWEEP_BUDGET_MS[input.moment] / 1000
+  const taskIds =
+    authority.inspectExisting() === undefined
+      ? []
+      : inDb(authority, input.repositoryId, db =>
+          rows(db, 'SELECT DISTINCT task_id FROM reservations ORDER BY task_id').map(row =>
+            WorkspaceId.make(textField(row, 'task_id'))
+          )
+        )
+  const deferFrom = (index: number, started: boolean): void => {
+    receipt.push(
+      ...taskIds.slice(index).map((taskId, offset) => ({
+        kind: 'task-deferred' as const,
+        taskId,
+        reason:
+          started && offset === 0
+            ? `The sweep used its ${seconds}-second budget during this task, so its remaining workspaces were not attempted; the next sweep assesses them.`
+            : `The sweep used its ${seconds}-second budget before this task, so nothing of it was assessed or attempted; the next sweep assesses it.`,
+      }))
+    )
+  }
+  return {
+    taskIds,
+    context,
+    expired: index => {
+      if (now() < input.deadline) return false
+      deferFrom(index, false)
+      return true
+    },
+    fail: (taskId, cause) => {
+      receipt.push({
+        kind: 'task-failure',
+        taskId,
+        reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
+      })
+    },
+    settle: (index, taskId, assessed) => {
+      const assessments = assessed.map(({ assessment }) => assessment)
+      const decided = assessments.map(assessment => assessment.subject)
+      const decidedIds = new Set(decided.map(subject => subject.workspaceId))
+      for (const assessment of assessments.toSorted((left, right) =>
+        left.workspaceId.localeCompare(right.workspaceId)
+      )) {
+        const row = {
+          kind: 'workspace' as const,
+          taskId,
+          workspaceId: assessment.workspaceId,
+          path: assessment.path,
+          origin: assessment.origin,
+          verdict: assessment.completion,
+        }
+        if (assessment.completion.kind === 'retained') {
+          receipt.push({
+            ...row,
+            outcome: RETAINED[assessment.completion.retained].sweep,
+            reason: assessment.completion.reason,
+          })
+          continue
+        }
+        if (now() >= input.deadline) {
+          deferFrom(index, true)
+          return true
+        }
+        try {
+          const result = releaseDecidedWorkspace(
+            authority,
+            {
+              taskId,
+              commandId,
+              decided,
+              decider,
+              workspaceId: assessment.workspaceId,
+              occupiedPaths: input.occupiedPaths,
+            },
+            readers,
+            context,
+            decidedIds
+          )
+          receipt.push({
+            ...row,
+            outcome: attemptOutcome(result.outcome),
+            reason: result.reason,
+            ...(result.operationId === undefined ? {} : { operationId: result.operationId }),
+          })
+        } catch (cause) {
+          receipt.push({
+            ...row,
+            outcome:
+              cause instanceof WorkspaceError && cause.outcome === 'invalid'
+                ? 'retained'
+                : 'review-required',
+            reason: `The attempt was refused or its outcome is uncertain: ${errorText(cause)}`,
+          })
+        }
+      }
+      return false
+    },
+    receipt: () => ({ commandId, moment: input.moment, rows: receipt }),
+  }
 }
 
 export const sweepRepositoryForAllocation = (
@@ -2045,73 +2098,19 @@ export const sweepRepositoryForAllocation = (
   input: SweepInput & { readonly moment: 'allocation' },
   readers: EvidenceReaders
 ): SweepReceipt => {
-  const commandId = newId()
-  const receipt: SweepRow[] = []
-  if (authority.inspectExisting() === undefined)
-    return { commandId, moment: input.moment, rows: receipt }
-  const context: AssessmentContext = {
-    moment: input.moment,
-    ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
-  }
-  const decider: ReleaseDecider = {
-    kind: 'completion',
-    policyVersion: COMPLETION_POLICY_VERSION,
-    moment: input.moment,
-  }
-  const seconds = SWEEP_BUDGET_MS[input.moment] / 1000
-  const taskIds = inDb(authority, input.repositoryId, db =>
-    rows(db, 'SELECT DISTINCT task_id FROM reservations ORDER BY task_id').map(row =>
-      WorkspaceId.make(textField(row, 'task_id'))
-    )
-  )
-  const deferFrom = (index: number, started: boolean): void => {
-    receipt.push(
-      ...taskIds.slice(index).map((taskId, offset) => ({
-        kind: 'task-deferred' as const,
-        taskId,
-        reason:
-          started && offset === 0
-            ? `The sweep used its ${seconds}-second budget during this task, so its remaining workspaces were not attempted; the next sweep assesses them.`
-            : `The sweep used its ${seconds}-second budget before this task, so nothing of it was assessed or attempted; the next sweep assesses it.`,
-      }))
-    )
-  }
-  for (const [index, taskId] of taskIds.entries()) {
-    if (now() >= input.deadline) {
-      deferFrom(index, false)
-      break
-    }
-    let assessments: readonly WorkspaceAssessment[]
+  const sweep = startSweep(authority, input, readers)
+  for (const [index, taskId] of sweep.taskIds.entries()) {
+    if (sweep.expired(index)) break
+    let assessed: readonly Assessed[]
     try {
-      assessments = assessTask(authority, taskId, readers, context).map(
-        ({ assessment }) => assessment
-      )
+      assessed = assessTask(authority, taskId, readers, sweep.context)
     } catch (cause) {
-      receipt.push({
-        kind: 'task-failure',
-        taskId,
-        reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
-      })
+      sweep.fail(taskId, cause)
       continue
     }
-    if (
-      releaseAssessedTask(
-        authority,
-        input,
-        readers,
-        context,
-        decider,
-        commandId,
-        receipt,
-        index,
-        taskId,
-        assessments,
-        deferFrom
-      )
-    )
-      break
+    if (sweep.settle(index, taskId, assessed)) break
   }
-  return { commandId, moment: input.moment, rows: receipt }
+  return sweep.receipt()
 }
 
 export const sweepRepositoryAtQuit = async (
@@ -2119,71 +2118,17 @@ export const sweepRepositoryAtQuit = async (
   input: SweepInput & { readonly moment: 'quit' },
   readers: EvidenceReaders
 ): Promise<SweepReceipt> => {
-  const commandId = newId()
-  const receipt: SweepRow[] = []
-  if (authority.inspectExisting() === undefined)
-    return { commandId, moment: input.moment, rows: receipt }
-  const context: AssessmentContext = {
-    moment: input.moment,
-    ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
-  }
-  const decider: ReleaseDecider = {
-    kind: 'completion',
-    policyVersion: COMPLETION_POLICY_VERSION,
-    moment: input.moment,
-  }
-  const seconds = SWEEP_BUDGET_MS[input.moment] / 1000
-  const taskIds = inDb(authority, input.repositoryId, db =>
-    rows(db, 'SELECT DISTINCT task_id FROM reservations ORDER BY task_id').map(row =>
-      WorkspaceId.make(textField(row, 'task_id'))
-    )
-  )
-  const deferFrom = (index: number, started: boolean): void => {
-    receipt.push(
-      ...taskIds.slice(index).map((taskId, offset) => ({
-        kind: 'task-deferred' as const,
-        taskId,
-        reason:
-          started && offset === 0
-            ? `The sweep used its ${seconds}-second budget during this task, so its remaining workspaces were not attempted; the next sweep assesses them.`
-            : `The sweep used its ${seconds}-second budget before this task, so nothing of it was assessed or attempted; the next sweep assesses it.`,
-      }))
-    )
-  }
-  for (const [index, taskId] of taskIds.entries()) {
-    if (now() >= input.deadline) {
-      deferFrom(index, false)
-      break
-    }
-    let assessments: readonly WorkspaceAssessment[]
+  const sweep = startSweep(authority, input, readers)
+  for (const [index, taskId] of sweep.taskIds.entries()) {
+    if (sweep.expired(index)) break
+    let assessed: readonly Assessed[]
     try {
-      assessments = (await assessTaskAtQuit(authority, taskId, readers, context)).map(
-        ({ assessment }) => assessment
-      )
+      assessed = await assessTaskAtQuit(authority, taskId, readers, sweep.context)
     } catch (cause) {
-      receipt.push({
-        kind: 'task-failure',
-        taskId,
-        reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
-      })
+      sweep.fail(taskId, cause)
       continue
     }
-    if (
-      releaseAssessedTask(
-        authority,
-        input,
-        readers,
-        context,
-        decider,
-        commandId,
-        receipt,
-        index,
-        taskId,
-        assessments,
-        deferFrom
-      )
-    )
-      break
+    if (sweep.settle(index, taskId, assessed)) break
   }
-  return { commandId, moment: input.moment, rows: receipt }
+  return sweep.receipt()
 }
