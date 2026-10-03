@@ -1,25 +1,15 @@
-# Dispatch notes
+# Dispatch configuration
 
-## Rules to paste
+`crew-dispatch.json` is the authoritative model policy for delegated work. Inspect the current choices there or with `/work dispatch`; documentation does not maintain a second list of model assignments.
 
-```json
-"rules": {
-  "code-review": { "harness": "pi", "model": "openai/gpt-6-luna" },
-  "interrogate": { "harness": "pi", "model": "openai/gpt-6-luna" },
-  "implement": { "harness": "pi", "model": "openai/gpt-6-luna" },
-  "investigation": { "harness": "pi", "model": "openai/gpt-6-luna" },
-  "how": { "harness": "pi", "model": "openai/gpt-6-luna" },
-  "coding-standards": { "harness": "pi", "model": "openai/gpt-6-luna" },
-  "arena": { "harness": "pi", "model": "openai/gpt-6-luna" }
-}
-```
+## Resolution
 
-## Why each rule
+A prompt beginning with `/skill:name` selects that skill's entry in `rules`, if configured, otherwise `default`. The skill still loads when it has no dispatch rule. An explicit `rule` chooses a configured skill key or `"default"`; an explicit `model` or `effort` overrides that selection. The [work protocol](../docs/work.md#use) limits those overrides to user-requested model/effort choices.
 
-- **code-review**: Equal strength, another provider. A reviewer judges the lead's own work; a different model family shares fewer of its blind spots, and a weaker one lowers the gate.
-- **interrogate**: Equal or stronger, another provider. The adversarial worker hunts what the lead missed; it cannot be weaker than the author of the mistake.
-- **implement**: Equal strength, same provider is fine. A writer leaf produces code the lead then reviews; a weaker model moves the cost into review rounds and fixes.
-- **investigation**: Equal strength. Root-cause work is reasoning heavy; it gains little from provider diversity and loses a lot from a cheaper model.
-- **how**: Cheaper. Read-only tracing over many files needs a large context and fast reads, and the lead verifies the merged findings; a smaller model is enough.
-- **coding-standards**: Cheaper. Delegated research is search and extraction with cited sources; a smaller model with reliable tool use is enough.
-- **arena**: Equal strength. Candidates are compared by the lead; ideally each candidate comes from a different provider, which one rule per skill cannot express.
+Each selection specifies the `pi` harness and may specify `model` as `provider/model-id` and `effort`. Omitted values use the child's Pi defaults, not the lead's picker.
+
+Missing/unreadable configuration, unknown rules, unsupported harnesses, invalid effort and unresolvable models fail explicitly. Dev never substitutes a different model to make a bad selection run.
+
+## Where to edit
+
+Edit `config/crew-dispatch.json` in the dev installation. Configuration is not read from the working project or data home. Changes apply to subsequent delegations.

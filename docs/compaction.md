@@ -1,21 +1,25 @@
 # Background compaction
 
-The lead and every child independently prepare Pi's native summary while ordinary work continues. With automatic compaction enabled, preparation starts strictly above `contextWindow - reserveTokens - 32768`, using Pi's effective model-specific reserve and recent-history budgets and a valid cut. There is at most one preparation per session. Above Pi's native blocking threshold, native compaction takes precedence.
+The lead and each child can prepare a Pi summary while ordinary work continues, then apply it at a safe boundary. Each session handles its own context independently.
 
-A ready summary applies at the first safe turn or settle boundary, or immediately when idle without a new model request. The selected recent suffix and messages appended during preparation stay verbatim; raw history stays stored. Changes to the summarized context, branch or session invalidate the result rather than restoring old context. Preparation failure leaves ordinary work and native recovery available. `/compact` still accepts custom instructions and runs configured hooks.
+## Controls
 
-Esc and programmatic abort cancel preparation and discard ready-but-unapplied results, even while idle. Navigation, reload, replacement and closing fence old work; interruption schedules no automatic continuation. An already-applied summary is not rolled back. Reopening restores Pi's stored history, never pending preparation. Observed summarization usage, including completed discarded results, contributes once to native usage totals; unavailable usage remains unknown. Background preparation is not a guarantee of shorter runs or equivalent summary quality.
+Background preparation follows Pi's automatic-compaction setting and needs no separate command. `/compact` still runs native manual compaction, including custom instructions and configured hooks.
 
-## Private observations
+Esc or programmatic abort cancels pending preparation and discards a ready summary that has not applied, even while idle. It does not undo an already-applied summary or start another turn.
 
-Normal lead and child sessions automatically record bounded compaction lifecycle metadata. `npm run profile` reads it with the existing usage report; there is no profiling switch, extra inference or polling. The private report distinguishes preparation, readiness, actual committed application (idle or boundary), discarded/failed work and native manual/threshold/overflow spans. Proposed or rejected boundary drafts are not applications. Preparation duration and ordinary-run overlap use a process-local monotonic clock; overlap stops at readiness, not application. The ready wait ends at the observed application.
+## What happens to context
 
-Native usage entries carry preparation identifiers so retries, split requests and late responses remain attributable after cancellation. The compaction breakdown is part of the already-counted consumption, not another charge. Missing observations or usage remain unknown. An instrumented session with no starts differs from a session without instrumentation; unfinished or cross-period spans are reported separately, and copied fork history is not counted again.
+Preparation begins ahead of Pi's native blocking threshold when there is a valid cut. At most one preparation runs per session. Native compaction takes precedence if the blocking threshold is reached.
 
-The metadata consists only of identifiers, bounded events/outcomes/reasons and numeric observations. It lives in native `custom` entries under `dev:compaction-observation`, outside model context, and expires with its session file. It contains no prompt, code, summary, path, credential or raw error text. Each event is validated against the same contract, excess fields rejected, before it is written as well as when it is read; an event that fails is dropped like a failed write. Pending preparations still live only in memory; the runtime never reads these diagnostics for recovery or scheduling. A diagnostic write failure does not block ordinary work or compaction, but reduces report coverage. Existing public exports and README charts do not include the new detail.
+A ready summary applies at the first safe turn or settle boundary, or immediately while idle without a model request. The selected recent history and messages added during preparation remain verbatim. Raw conversation history stays stored.
 
-Native spans start where Pi emits its start event, after manual abort or automatic cut preparation, not at the beginning of perceived waiting. A manual compaction or session replacement can therefore discard a preparation with the observed reason `abort`; the report does not infer a more specific cause. Hard process death can leave unfinished observations and lose late usage.
+Changing the summarized context, branch or session invalidates a pending result. Navigation, reload and closing discard pending work; reopening restores stored history, not an unfinished preparation. Preparation failure leaves ordinary work and native recovery available.
 
-After merge, inspect one or two normal sessions. Without enough observed compactions, the answer is insufficient evidence, not success. Observed overlap is not saved time or useful work; recorded consumption is not complete provider billing. The user's assessment of usefulness and information loss remains necessary, and the report cannot establish causal speedup or equivalent summary quality.
+Compaction grants children no extra tools or write permissions. Observed summarization usage counts once in the session's totals, including completed summaries that were discarded.
 
-The [approved spec](https://github.com/taekwondodev/dev/issues/62) and [profiling design](https://github.com/taekwondodev/dev/issues/62#issuecomment-5954797030) record the requirements and diagnostic-only persistence exception. Native-session, actual-child and PTY checks exercise recording without changed cancellation or permissions; `npm run profile:check` covers interpretation and private/export boundaries.
+## Inspect compaction activity
+
+Run `npm run profile` and read the [compaction figures](usage-profile.md#timing-and-compaction). Observations are collected automatically in session files, outside model context, without extra inference. Diagnostic-write failures reduce report coverage without blocking work or compaction.
+
+The report can show what was prepared, applied or discarded. It cannot establish that a run became faster or that a summary retained everything useful; inspect the conversation when assessing information loss.
