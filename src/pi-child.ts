@@ -10,6 +10,7 @@ import type * as Pi from '@earendil-works/pi-coding-agent'
 import { GenerationId, SKILL_COMMAND, SessionId, TaskId, skillInvocation } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
+import { createBackgroundCompaction } from './background-compaction.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, getProfile } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
@@ -89,7 +90,6 @@ interface Resources {
 
 type SessionMessage = Pi.AgentSession['messages'][number]
 type AssistantMessage = Extract<SessionMessage, { role: 'assistant' }>
-type SessionStats = ReturnType<Pi.AgentSession['getSessionStats']>
 type ContextUsage = ReturnType<Pi.AgentSession['getContextUsage']>
 
 interface Telemetry {
@@ -525,29 +525,11 @@ function createReviewGitTool(cwd: string): Pi.ToolDefinition {
   }
 }
 
-function usageTotal(usage: AssistantMessage['usage'] | undefined): number {
-  if (!usage) return 0
-  return [usage.input, usage.output, usage.cacheRead, usage.cacheWrite].reduce(
-    (total, value) => total + (Number.isFinite(value) ? value : 0),
-    0
-  )
-}
-
-function hasAssistantUsage(session: Pi.AgentSession, stats: SessionStats): boolean {
-  return (
-    Number.isFinite(stats.tokens.total) &&
-    stats.tokens.total > 0 &&
-    session.messages.some(
-      (message): message is AssistantMessage =>
-        message.role === 'assistant' && usageTotal(message.usage) > 0
-    )
-  )
-}
-
 function telemetry(session: Pi.AgentSession): Telemetry {
   const stats = session.getSessionStats()
   const contextUsage = session.getContextUsage()
-  if (!hasAssistantUsage(session, stats)) return contextUsage ? { context: contextUsage } : {}
+  if (!Number.isFinite(stats.tokens.total) || stats.tokens.total <= 0)
+    return contextUsage ? { context: contextUsage } : {}
   return {
     usage: {
       ...stats.tokens,
@@ -761,6 +743,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     runPromise: Effect.runPromise,
     onError: message => console.error(message),
   })
+  const compaction = yield* createBackgroundCompaction(loaded.api, loaded.packageInfo.root).pipe(
+    Effect.mapError(toChildError)
+  )
   const services = yield* Effect.tryPromise({
     try: () =>
       loaded.api.createAgentSessionServices({
@@ -773,6 +758,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
           appendSystemPrompt: [resources.guidance, childBrief(request, resources)].filter(Boolean),
           noExtensions: request.access === 'read-only',
           extensionFactories: [
+            { name: 'dev:background-compaction', factory: compaction.factory },
             {
               name: 'dev:child-workspace',
               factory: childWorkspaceExtension(
@@ -837,6 +823,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   })
   const { session } = created
   state.session = session
+  compaction.bindSession(session)
   const { sessionFile } = session
   if (!sessionFile)
     return yield* new ChildError({ message: 'Pi did not create a session file for the child run' })

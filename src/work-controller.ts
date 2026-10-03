@@ -1598,10 +1598,11 @@ class WorkOwnerImpl implements WorkOwnerService {
     const { token } = job.lifecycle
     return Effect.gen({ self: this }, function* () {
       const requestedAt = yield* Clock.currentTimeMillis
-      yield* this.commitBestEffort(job, () =>
+      const requested = yield* this.commitBestEffort(job, () =>
         job.lifecycle.transition.cancel(token, requestedAt, reason)
       )
-      if (!job.lifecycle.isActive()) return yield* Deferred.await(job.settled)
+      if (!requested.accepted || !job.lifecycle.isActive())
+        return yield* Deferred.await(job.settled)
       if (job.child === undefined) {
         yield* this.failObservation(job, new Error('Cancellation raced with launch setup'))
         return yield* Deferred.await(job.settled)
@@ -1756,9 +1757,16 @@ class WorkOwnerImpl implements WorkOwnerService {
   ): Effect.Effect<void, WorkFailure> {
     const { workspace } = this
     if (job.workspaceLaunch === 'settled') return Effect.void
-    return workspace.attachment
-      .reportExecution(job.workspace, fact)
-      .pipe(Effect.mapError(toFailure))
+    return workspace.attachment.reportExecution(job.workspace, fact).pipe(
+      Effect.mapError(toFailure),
+      Effect.flatMap(({ warning }) =>
+        warning === undefined
+          ? Effect.void
+          : this.commitBestEffort(job, () =>
+              job.lifecycle.transition.gateReleaseWarning(job.lifecycle.token, warning)
+            ).pipe(Effect.asVoid)
+      )
+    )
   }
 
   private recordFor(id: AttemptId): Effect.Effect<AttemptRecord, WorkFailure> {

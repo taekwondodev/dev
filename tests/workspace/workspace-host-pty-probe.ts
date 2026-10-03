@@ -469,7 +469,8 @@ const makeAttachment = (
     },
     authorize: operation => fromAsync(() => rules.authorize(operation)),
     select: selection => fromAsync(() => rules.select(selection)),
-    reportExecution: (grant, fact) => fromAsync(() => rules.reportExecution(grant, fact)),
+    reportExecution: (grant, fact) =>
+      fromAsync(() => rules.reportExecution(grant, fact)).pipe(Effect.as({})),
     handoff: (transition, replace) =>
       fromAsync(() =>
         rules.handoff(transition, target => Effect.runPromise(Effect.orDie(replace(target))))

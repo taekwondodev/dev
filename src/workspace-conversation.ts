@@ -8,11 +8,12 @@ import {
   type WorkspaceHandoff,
   type WorkspaceId,
 } from './workspace-domain.ts'
-import type { PathGates } from './workspace-gates.ts'
+import { releaseGates, type PathGates } from './workspace-gates.ts'
 import type { GitWorkspace } from './workspace-git.ts'
 import {
   activeDependentUses,
   getUse,
+  isActiveUse,
   saveUse,
   type BindingRecord,
   type UseRecord,
@@ -20,6 +21,7 @@ import {
 } from './workspace-records.ts'
 import { transaction } from './workspace-sqlite.ts'
 import { now } from './workspace-platform.ts'
+import { errorText } from './error-text.ts'
 
 export type LeaseKind =
   | { readonly kind: 'ordinary' }
@@ -52,6 +54,7 @@ export interface GateIntent {
   readonly path: string
   readonly writer: boolean
 }
+export type GateWorkspace = Pick<WorkspaceGrant, 'repositoryId' | 'workspaceId'>
 export interface HeldPathGate extends GateIntent {
   readonly gates: PathGates
 }
@@ -72,6 +75,7 @@ export interface ConversationState {
   readonly leases: Map<WorkspaceId, GrantLease>
   readonly leaseAttachments: Map<WorkspaceId, Set<WorkspaceId>>
   readonly extraGates: HeldPathGate[]
+  readonly deferredGateReleases: Map<string, GateWorkspace>
   refs: number
   parked: boolean
   closing: boolean
@@ -94,6 +98,86 @@ export const conversationWorkspaces = (state: ConversationState): ReadonlySet<Wo
     ...[...state.leases.values()].map(lease => lease.grant.workspaceId),
     ...state.extraGates.map(held => held.workspaceId),
   ])
+
+const releaseQuiescentWorkspaceGates = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  workspace: GateWorkspace
+): readonly unknown[] => {
+  const matches = (repositoryId: WorkspaceId, workspaceId: WorkspaceId): boolean =>
+    repositoryId === workspace.repositoryId && workspaceId === workspace.workspaceId
+  const { pending } = state
+  if (
+    matches(state.repositoryId, state.binding.workspaceId) ||
+    (pending !== undefined &&
+      (matches(pending.sourceRepositoryId, pending.handoff.from.workspaceId) ||
+        matches(pending.targetRepositoryId, pending.targetBinding.workspaceId)))
+  )
+    return []
+  const leases = [...state.leases.values()].filter(lease =>
+    matches(lease.repositoryId, lease.grant.workspaceId)
+  )
+  const quiescent = inDb(authority, workspace.repositoryId, db =>
+    leases.every(lease => {
+      const use = getUse(db, lease.useId)
+      if (
+        use === undefined ||
+        use.workspaceId !== workspace.workspaceId ||
+        use.incarnation !== state.incarnation
+      )
+        requireReview(`Workspace gate lost its owning use: ${lease.useId}`)
+      return !isActiveUse(use)
+    })
+  )
+  if (!quiescent) return []
+  const failures: unknown[] = []
+  const released = (gates: PathGates): boolean => {
+    try {
+      releaseGates(gates)
+      return true
+    } catch (cause) {
+      failures.push(cause)
+      return false
+    }
+  }
+  for (const lease of leases) {
+    if (lease.gates !== undefined && released(lease.gates)) lease.gates = undefined
+  }
+  for (let index = state.extraGates.length - 1; index >= 0; index--) {
+    const held = state.extraGates[index]
+    if (held !== undefined && matches(held.repositoryId, held.workspaceId) && released(held.gates))
+      state.extraGates.splice(index, 1)
+  }
+  return failures
+}
+
+const gateWorkspaceKey = (workspace: GateWorkspace): string =>
+  `${workspace.repositoryId}/${workspace.workspaceId}`
+
+export const settleWorkspaceGates = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  workspace: GateWorkspace
+): string | undefined => {
+  const key = gateWorkspaceKey(workspace)
+  state.deferredGateReleases.delete(key)
+  const failures = releaseQuiescentWorkspaceGates(authority, state, workspace)
+  if (failures.length === 0) return undefined
+  state.deferredGateReleases.set(key, {
+    repositoryId: workspace.repositoryId,
+    workspaceId: workspace.workspaceId,
+  })
+  return `Workspace gate release deferred; the lead retries it at its next workspace admission or execution report and releases it at close: ${failures.map(errorText).join('; ')}`
+}
+
+export const retryDeferredGateReleases = (
+  authority: WorkspaceAuthority,
+  state: ConversationState
+): string[] =>
+  [...state.deferredGateReleases.values()].flatMap(workspace => {
+    const warning = settleWorkspaceGates(authority, state, workspace)
+    return warning === undefined ? [] : [warning]
+  })
 
 export const outgoingUses = (
   authority: WorkspaceAuthority,

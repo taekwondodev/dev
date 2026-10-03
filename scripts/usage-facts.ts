@@ -990,7 +990,12 @@ const timeFacts = (index: SessionIndex): TimeFact[] => {
   if (index.role !== 'lead') return []
   let previous: number | undefined
   return index.measured.flatMap((entry): TimeFact[] => {
-    if (entry.kind === 'system') return []
+    if (
+      entry.kind === 'system' ||
+      entry.kind === 'observation' ||
+      entry.kind === 'observation-invalid'
+    )
+      return []
     const gap = previous === undefined ? 0 : entry.at - previous
     previous = entry.at
     const located = index.located(entry)

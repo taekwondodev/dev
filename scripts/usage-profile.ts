@@ -17,6 +17,7 @@ import {
   summarize,
 } from './usage-report.ts'
 import { readSessions } from './usage-sessions.ts'
+import { compactionReport, type CompactionReport } from './usage-compaction.ts'
 
 export class UsageProfileError extends Schema.TaggedError<UsageProfileError>()(
   'UsageProfileError',
@@ -70,6 +71,11 @@ interface ProfileOptions {
   readonly selection: Selection
 }
 
+type PrivatePeriod = PeriodSummary & {
+  readonly compaction: CompactionReport
+  readonly drilldowns: Drilldowns
+}
+
 interface Report {
   readonly selection: readonly string[]
   readonly sources: {
@@ -78,7 +84,7 @@ interface Report {
     readonly undecodableLines: number
     readonly copiedEntries: number
   }
-  readonly periods: readonly (PeriodSummary & { readonly drilldowns: Drilldowns })[]
+  readonly periods: readonly PrivatePeriod[]
   readonly comparison: Comparison | null
 }
 
@@ -127,10 +133,18 @@ export const profileUsage = Effect.fn('profileUsage')(function* ({
   const analysis = analyze(sessions)
   const reported = periods.map(period => ({
     ...summarize(analysis.facts, period, privateNames),
+    compaction: compactionReport(sessions, period.start, period.end),
     drilldowns: drilldowns(analysis.facts, period),
   }))
   const labels = periods.map(period => period.label)
-  if (reported.every(summary => summary.sample === null))
+  if (
+    reported.every(
+      summary =>
+        summary.sample === null &&
+        (selection.kind === 'export' ||
+          (summary.compaction.observations === 0 && summary.compaction.malformed === 0))
+    )
+  )
     return yield* new UsageProfileError({
       message: `Nothing measurable in ${dataHome} for ${labels.join(', ')} (${sessions.length} session files, ${analysis.undecodableLines} undecodable lines); existing reports were not changed`,
     })
@@ -343,9 +357,9 @@ const distributionText = (label: string, value: PeriodSummary['context']['initia
     ? `${label} n/a`
     : `${label} median ${tokens(value.median)}, p90 ${tokens(value.p90)}, max ${tokens(value.max)}`
 
-const contextLines = ({ context }: PeriodSummary): string[] => [
+const contextLines = ({ context, compaction }: PrivatePeriod): string[] => [
   `Context per request (input, cache read and cache write tokens of one request): ${context.sessions} sessions started; ${distributionText('initial', context.initialTokens)}; ${distributionText('peak', context.peakTokens)}; ${distributionText('growth', context.growthTokens)}`,
-  `  ${context.compactions} compactions, tokens before recorded on ${context.tokensBefore.recorded} (median ${orUnavailable(context.tokensBefore.median, tokens)}); synthesis ${tokens(context.synthesis.uncached + context.synthesis.cacheRead + context.synthesis.output)} tokens over ${context.synthesis.entries} entries, ${context.synthesis.unknown} unknown; ${context.afterCompaction.requests} requests after a compaction, ${context.afterCompaction.withoutCacheRead} without cache read (an association, not proof of invalidation)`,
+  `  ${context.compactions} compactions, tokens before recorded on ${context.tokensBefore.recorded} (median ${orUnavailable(context.tokensBefore.median, tokens)}); inline synthesis ${tokens(context.synthesis.uncached + context.synthesis.cacheRead + context.synthesis.output)} tokens over ${context.synthesis.entries} entries, ${context.synthesis.unknown} without usable inline usage (${compaction.separatelyRecordedApplications} background applications carry separate usage below, not another missing charge); ${context.afterCompaction.requests} requests after a compaction, ${context.afterCompaction.withoutCacheRead} without cache read (an association, not proof of invalidation)`,
 ]
 
 const leadLines = ({ lead }: PeriodSummary): string[] => {
@@ -360,9 +374,76 @@ const leadLines = ({ lead }: PeriodSummary): string[] => {
   ]
 }
 
-const periodLines = (summary: PeriodSummary & { readonly drilldowns: Drilldowns }): string[] => {
+const timings = (values: readonly number[]): string => {
+  if (values.length === 0) return 'n/a'
+  const sorted = values.toSorted((a, b) => a - b)
+  const median = sorted[Math.floor((sorted.length - 1) / 2)]
+  const maximum = sorted.at(-1)
+  return `${values.length} samples, median ${orUnavailable(median ?? null, value => `${value.toFixed(1)} ms`)}, max ${orUnavailable(maximum ?? null, value => `${value.toFixed(1)} ms`)}`
+}
+
+const compactionLines = ({ compaction }: PrivatePeriod): string[] => {
+  const usage = compaction.observedUsage
+  const consumed =
+    usage.tokens.input + usage.tokens.output + usage.tokens.cacheRead + usage.tokens.cacheWrite
+  const accounting = `  observed background usage: ${tokens(consumed)} tokens in ${usage.entries} records (${usage.unknown} unknown), ${compaction.unattributedUsage} unattributed; ${compaction.preparationsWithoutUsage} preparations without recorded usage. Already in native totals, not another charge or complete provider billing.`
+  if (compaction.coverage === 'unavailable')
+    return [
+      'Private compaction observations: unavailable; no instrumentation in the selected data.',
+      accounting,
+      '  Insufficient compaction observations for a usefulness assessment.',
+    ]
+  const nativeCompleted = Object.values(compaction.native).reduce(
+    (sum, value) => sum + value.completed,
+    0
+  )
+  const applications = (compaction.appliedIdle ?? 0) + (compaction.appliedBoundary ?? 0)
+  return [
+    `Private compaction observations: ${compaction.coverage}; ${compaction.instrumentedSessions}/${compaction.selectedSessions} sessions instrumented, ${compaction.partiallyObservedSessions} only partly covered, ${compaction.openRuns} runs without detachment.`,
+    `  observed ${compaction.starts} starts, ${compaction.readiness} ready, ${compaction.appliedIdle} idle and ${compaction.appliedBoundary} boundary applications, ${compaction.discards} discards, ${compaction.failures} failures; ${compaction.incomplete} incomplete, ${compaction.crossPeriod} cross-period, ${compaction.malformed} malformed, ${compaction.unattributedApplications} unverified application claims; ${compaction.sessionsWithoutStarts} instrumented sessions without starts`,
+    `  discard reasons: ${
+      Object.entries(compaction.discardReasons)
+        .map(([reason, count]) => `${reason} ${count}`)
+        .join(', ') || 'none observed'
+    }`,
+    `  preparation ${timings(compaction.preparationMs)}; ready wait ${timings(compaction.readyWaitMs)}; start-to-outcome ${timings(compaction.elapsedMs)}; preparation/ordinary-run overlap ${timings(compaction.overlapMs)} (not saved time or useful work)`,
+    ...Object.entries(compaction.native).map(
+      ([reason, value]) =>
+        `  native ${reason}: ${value.starts} starts, ${value.completed} completed, ${value.aborted} aborted, ${value.failed} failed, ${value.incomplete} incomplete, ${value.crossPeriod} cross-period; event spans ${timings(value.durations)} (not full perceived delay)`
+    ),
+    accounting,
+    applications + nativeCompleted === 0
+      ? '  Insufficient compaction observations for a usefulness assessment.'
+      : '  Observational sample only: usefulness and information loss need user assessment; no causal speedup or quality equivalence is established.',
+    ...(compaction.drilldowns.length === 0
+      ? []
+      : [
+          `  Preparations: first ${Math.min(12, compaction.drilldowns.length)} of ${compaction.drilldowns.length}; complete drilldowns are in the private JSON report.`,
+          ...table(
+            ['session', 'preparation', 'outcome', 'reason', 'coverage', 'usage records', 'entries'],
+            compaction.drilldowns
+              .slice(0, 12)
+              .map(row => [
+                row.session,
+                row.preparation,
+                row.outcome,
+                row.reason ?? '-',
+                `${row.complete ? 'complete' : 'incomplete'}${row.crossPeriod ? ', cross-period' : ''}${row.outcomeInPeriod ? '' : ', outcome outside period/unrecorded'}`,
+                `${row.usageEntries} (${row.unknownUsage} unknown, ${row.usageOutsidePeriod} outside period; ${row.usageCoverage})`,
+                row.refs.join(' '),
+              ])
+          ),
+        ]),
+  ]
+}
+
+const periodLines = (summary: PrivatePeriod): string[] => {
   const { sample } = summary
-  if (sample === null) return [`Period ${summary.period.label}: no measurable entries`]
+  if (sample === null)
+    return [
+      `Period ${summary.period.label}: no requests or tool outcomes`,
+      ...compactionLines(summary),
+    ]
   return [
     `Period ${summary.period.label}: ${sample.leadSessions} lead and ${sample.childSessions} child sessions, ${sample.firstDate} to ${sample.lastDate}; ${sample.requests} requests, ${sample.toolCalls} tool calls`,
     ...usageLines(summary),
@@ -374,6 +455,7 @@ const periodLines = (summary: PeriodSummary & { readonly drilldowns: Drilldowns 
     ...gitLines(summary),
     '',
     ...contextLines(summary),
+    ...compactionLines(summary),
     ...leadLines(summary),
   ]
 }

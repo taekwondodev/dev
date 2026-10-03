@@ -227,6 +227,7 @@ export const attachConversation = (
       leases: new Map(),
       leaseAttachments: new Map(),
       extraGates: [],
+      deferredGateReleases: new Map(),
       refs: 0,
       parked: false,
       closing: false,
@@ -365,5 +366,6 @@ export const settleClosingState = (
       releaseGates(held.gates)
     } catch {}
   }
+  state.deferredGateReleases.clear()
   state.closing = false
 }

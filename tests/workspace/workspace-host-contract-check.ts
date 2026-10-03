@@ -133,7 +133,7 @@ const attachment: WorkspaceAttachment = {
     selections.push(selection)
     return Effect.fail(refused)
   },
-  reportExecution: () => Effect.void,
+  reportExecution: () => Effect.succeed({}),
   handoff: () => Effect.void,
   sweeps: Stream.fromQueue(receipts),
   close: Effect.void,

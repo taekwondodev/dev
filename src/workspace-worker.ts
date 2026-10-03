@@ -201,10 +201,9 @@ if (port !== null && engine !== undefined) {
       }
       case 'report-execution': {
         const attachment = requireAttachment(request.attachmentId)
-        await engine.run(authority =>
+        return await engine.run(authority =>
           reportExecutionFact(authority, attachment, request.grant, request.fact)
         )
-        return null
       }
       case 'handoff': {
         const attachment = requireAttachment(request.attachmentId)

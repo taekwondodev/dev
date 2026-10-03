@@ -26,7 +26,7 @@ Treat dev as unreleased: dev-owned state has exactly one schema, the final one. 
 
 - Read `docs/ARCHITECTURE.md` before changing an ownership, storage, admission or release boundary, and when a change needs the use case a choice optimizes for. Read the ADR it links before changing that boundary.
 - Read `SECURITY.md` before adding or updating an extension, changing resource loading, or routing project effects through tools, event handlers or child processes.
-- Read `docs/launcher.md`, `docs/work.md` or `docs/workspace.md` before changing the behavior it documents, and update it in the same change.
+- Read `docs/launcher.md`, `docs/work.md`, `docs/workspace.md` or `docs/compaction.md` before changing the behavior it documents, and update it in the same change.
 - Read `docs/DEVELOPMENT.md` before adding a tool, recording a decision, upgrading Pi or relocating private state.
 
 ## Evidence labels

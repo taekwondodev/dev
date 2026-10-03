@@ -15,6 +15,7 @@ I wanted a terminal-first experience. I was a Hermes main, but I wanted to come 
 - **`dev`** opens Pi from the project you are working on, with a profile (`general` or `apple`) that selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
 - **`work`** runs commands and delegated Pi children in the background, in separate processes, with a versioned model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch notes](config/README.md)
 - **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
+- Long sessions prepare compaction in the background, independently for the lead and each child, then apply it at the first safe boundary. Pi's native blocking recovery remains available. [compaction](docs/compaction.md)
 - The workflow itself (sizing, grilling, specs, implementation, review) comes from a shared skill library; dev owns only the integration.
 
 Why each piece is shaped the way it is: [ARCHITECTURE](docs/ARCHITECTURE.md). What dev trusts and what it does not protect: [SECURITY](SECURITY.md).
@@ -44,7 +45,9 @@ Every flag, the session commands and the maintenance commands are in [launcher](
 Measured on my own use of dev, not on benchmarks: every lead and child session file in my data home, abandoned branches included. Each chart names its sample size and date range.
 
 <p align="center">
-  <img src="docs/performance/usage.svg" alt="Lead cache-read share, median tool calls per lead session, mean children per lead session, p50 model latency and mean tool result size">
+  <img src="docs/performance/usage.svg" alt="Lead cache-read share, tool calls without and with error across all sessions, mean children per lead session, p50 model latency and mean tool result size">
 </p>
+
+Tool-call percentages cover lead and child sessions, counting only calls with a recorded result. Calls without a result are excluded. “Success” means the tool returned without a recorded error, not that the task was correct.
 
 The numbers come from `npm run profile -- --export docs/performance`, which also prints the full report and writes `docs/performance/usage-baseline.json`. Only allowlisted aggregates are committed: no path, project name, model, skill or conversation text. Without `--export`, the report and its drilldowns stay private in the data home.

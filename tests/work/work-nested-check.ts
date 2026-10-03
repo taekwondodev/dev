@@ -26,6 +26,7 @@ import {
 
 const SLOW_ADMISSION_MS = 7000
 const count = (text: string, part: string): number => text.split(part).length - 1
+const GATE_WARNING = 'Workspace gate release deferred: injected'
 const say = (text: string) => [{ type: 'text', text }]
 const slow = (delayMs: number) => ({ delayMs, content: say('slow reply') })
 type ToolInput = Parameters<typeof toolCall>[2]
@@ -95,6 +96,17 @@ try {
       })
       assert.deepEqual([...receipts()].toSorted(), [first, second])
       assert.ok(reads <= 2, 'appending two entries must not traverse their existing history')
+      session.appendCompaction('receipts summarized', secondReceipt, 1000)
+      session.appendContextEdit(secondReceipt, null)
+      assert.equal(
+        session.buildSessionProjection().messages.some(message => message.role === 'custom'),
+        false
+      )
+      assert.deepEqual(
+        [...receipts()].toSorted(),
+        [first, second],
+        'context replacement must not erase raw-branch delivery receipts'
+      )
       session.branch(firstReceipt)
       assert.deepEqual([...receipts()], [first])
       session.branch(root)
@@ -686,6 +698,7 @@ try {
 const uncertain = await openWorkFixture('work-nested-unknown')
 try {
   const lost = new Set<string>()
+  const warned = new Set<string>()
   const losing = (base: WorkspaceAttachment): WorkspaceAttachment => ({
     get binding() {
       return base.binding
@@ -704,6 +717,12 @@ try {
               authorization.kind === 'ready'
             )
               lost.add(authorization.grant.useId)
+            if (
+              operation.kind === 'read' &&
+              operation.execution?.taskKey === 'gate-warning' &&
+              authorization.kind === 'ready'
+            )
+              warned.add(authorization.grant.useId)
           })
         )
       )
@@ -715,7 +734,15 @@ try {
     reportExecution: (grant, fact) =>
       lost.has(grant.useId) && (fact.kind === 'observed' || fact.kind === 'quiescent')
         ? Effect.fail(new WorkspaceError({ outcome: 'unavailable', message: 'observation lost' }))
-        : base.reportExecution(grant, fact),
+        : base
+            .reportExecution(grant, fact)
+            .pipe(
+              Effect.map(report =>
+                warned.has(grant.useId) && fact.kind === 'quiescent'
+                  ? { warning: GATE_WARNING }
+                  : report
+              )
+            ),
   })
   const owner = uncertain.openOwner('general', losing)
   try {
@@ -746,6 +773,18 @@ try {
           [],
           'the interrupted request started a leaf'
         )
+      }
+    )
+
+    await claim(
+      'a gate release deferred after settlement is recorded on the attempt and leaves its status unchanged',
+      async () => {
+        const { view } = await owner.run({ taskId: 'gate-warning', prompt: 'Gate warning child' })
+        assert.equal(view.status, 'completed', view.error)
+        const record = (await owner.records()).find(candidate => candidate.id === view.id)
+        assert.equal(record?.gateReleaseWarning, GATE_WARNING)
+        const listed = await owner.call(actions => executeWork(actions, { action: 'list' }))
+        assert.match(JSON.stringify(listed), /Workspace gate release deferred: injected/)
       }
     )
 

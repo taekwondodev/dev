@@ -93,6 +93,10 @@ export interface AttemptLifecycle {
     ) => LifecycleTransition
     readonly deliveryError: (token: AttemptLifecycleToken, message: string) => LifecycleTransition
     readonly cleanupError: (token: AttemptLifecycleToken, message: string) => LifecycleTransition
+    readonly gateReleaseWarning: (
+      token: AttemptLifecycleToken,
+      message: string
+    ) => LifecycleTransition
   }
 }
 
@@ -398,6 +402,10 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
     cleanupError(eventToken: AttemptLifecycleToken, message: string): LifecycleTransition {
       if (!commandable(eventToken)) return rejected()
       return changed(() => put('cleanupError', message))
+    },
+    gateReleaseWarning(eventToken: AttemptLifecycleToken, message: string): LifecycleTransition {
+      if (!accepts(eventToken)) return rejected()
+      return changed(() => put('gateReleaseWarning', message))
     },
   }
 

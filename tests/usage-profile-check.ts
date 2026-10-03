@@ -159,13 +159,23 @@ const conversation = (start: string) => {
         summary: 'summary',
         ...extra,
       }),
-    usage: (id: string, parentId: string, second: number, usage: unknown) =>
+    usage: (
+      id: string,
+      parentId: string,
+      second: number,
+      usage: unknown,
+      kind = 'cache_warm',
+      note?: string
+    ) =>
       entry('usage', id, parentId, second, {
-        kind: 'cache_warm',
+        kind,
         provider: 'fixture',
         model: 'alpha',
         usage,
+        ...(note === undefined ? {} : { note }),
       }),
+    observation: (id: string, parentId: string | null, second: number, data: unknown) =>
+      entry('custom', id, parentId, second, { customType: 'dev:compaction-observation', data }),
     contextEdit: (id: string, parentId: string, second: number, targetId: string) =>
       entry('context_edit', id, parentId, second, { targetId, replacement: null }),
     custom: (id: string, parentId: string, second: number, customType: string, content: string) =>
@@ -436,6 +446,111 @@ const usageHome = join(root, 'usage')
     fork.user('u2', 'a2', 10),
     fork.assistant('a5', 'u2', 20, { usage: tokens(20, 2, 100, 0) }),
     '{"type":"message","id":"broken"',
+  ])
+}
+
+const compactionHome = join(root, 'compaction')
+{
+  const session = conversation('2026-09-29T10:00:00Z')
+  const runId = '11111111-1111-4111-8111-111111111111'
+  const preparation = '22222222-2222-4222-8222-222222222222'
+  const nativeSpan = '33333333-3333-4333-8333-333333333333'
+  const discarded = '44444444-4444-4444-8444-444444444444'
+  const event = (kind: string, id: string, extra: Json = {}) => ({
+    runId,
+    kind,
+    ...extra,
+    ...(id ? { id } : {}),
+  })
+  writeSession(compactionHome, 'sessions', 'observed', [
+    session.header(),
+    session.observation('attached', null, 0, { runId, kind: 'attached' }),
+    session.observation('started', 'attached', 0, event('background-started', preparation)),
+    session.observation('ready', 'started', 0.11, {
+      runId,
+      kind: 'background-ready',
+      id: preparation,
+      preparationMs: 100,
+      activeRunOverlapMs: 60,
+    }),
+    session.compaction('committed', 'ready', 0.14),
+    session.observation('ended', 'committed', 0.14, {
+      runId,
+      kind: 'background-ended',
+      id: preparation,
+      outcome: { kind: 'applied', entryId: 'committed', placement: 'idle' },
+      elapsedMs: 140,
+      activeRunOverlapMs: 60,
+    }),
+    session.usage(
+      'background-usage',
+      'ended',
+      0.16,
+      tokens(10, 2),
+      'background_compaction',
+      preparation
+    ),
+    session.observation(
+      'discard-start',
+      'background-usage',
+      0.2,
+      event('background-started', discarded)
+    ),
+    session.observation(
+      'discard-end',
+      'discard-start',
+      0.24,
+      event('background-ended', discarded, {
+        outcome: { kind: 'discarded', reason: 'abort' },
+        elapsedMs: 40,
+        activeRunOverlapMs: 10,
+      })
+    ),
+    session.usage(
+      'late-discard-usage',
+      'discard-end',
+      0.27,
+      tokens(3, 1),
+      'background_compaction',
+      discarded
+    ),
+    session.observation('native-start', 'late-discard-usage', 1, {
+      runId,
+      kind: 'native-started',
+      id: nativeSpan,
+      reason: 'overflow',
+    }),
+    session.observation('native-end', 'native-start', 1.2, {
+      runId,
+      kind: 'native-ended',
+      id: nativeSpan,
+      outcome: 'completed',
+      elapsedMs: 200,
+    }),
+    session.observation('bad', 'native-end', 2, {
+      runId,
+      kind: 'background-ended',
+      id: preparation,
+      outcome: { kind: 'applied', entryId: 'committed', placement: 'idle' },
+      elapsedMs: -1,
+      activeRunOverlapMs: 0,
+      leak: 'PRIVATE-RAW-ERROR',
+    }),
+  ])
+  const idle = conversation('2026-09-29T10:00:00Z')
+  writeSession(compactionHome, 'child-sessions', 'idle', [
+    idle.header(),
+    idle.observation('attached', null, 0, { runId, kind: 'attached' }),
+  ])
+  writeSession(compactionHome, 'child-sessions', 'fork', [
+    idle.header({ id: 'fork', parentSession: '/fixture/source.jsonl' }),
+    idle.observation('copied-attached', null, -1, { runId, kind: 'attached' }),
+    idle.observation(
+      'copied-start',
+      'copied-attached',
+      -0.9,
+      event('background-started', preparation)
+    ),
   ])
 }
 
@@ -1218,6 +1333,388 @@ try {
   )
 
   await claim(
+    'private compaction reporting uses monotonic 100 ms preparation, 40 ms ready wait and 60 ms overlap, counts applied and discarded usage as 16 tokens once, keeps diagnostic detail private and reports malformed metadata without its contents',
+    async () => {
+      assert.equal((await profile(compactionHome))._tag, 'Success')
+      const written = readFileSync(join(compactionHome, 'usage', 'all.json'), 'utf8')
+      const [summary] = JSON.parse(written).periods
+      assert.deepEqual(summary.compaction.preparationMs, [100])
+      assert.deepEqual(summary.compaction.readyWaitMs, [40])
+      assert.deepEqual(summary.compaction.overlapMs, [60, 10])
+      assert.deepEqual(
+        [summary.compaction.starts, summary.compaction.readiness, summary.compaction.appliedIdle],
+        [2, 1, 1]
+      )
+      assert.deepEqual(
+        [
+          summary.compaction.observedUsage.entries,
+          summary.compaction.observedUsage.tokens.input,
+          summary.compaction.observedUsage.tokens.output,
+        ],
+        [2, 13, 3]
+      )
+      assert.equal(summary.compaction.discards, 1)
+      assert.equal(summary.compaction.incomplete, 0)
+      assert.equal(summary.compaction.separatelyRecordedApplications, 1)
+      assert.equal(summary.compaction.native.overflow.completed, 1)
+      assert.deepEqual(summary.compaction.native.overflow.durations, [200])
+      assert.equal(summary.compaction.malformed, 1)
+      assert.equal(summary.compaction.sessionsWithoutStarts, 1)
+      assert.ok(!written.includes('PRIVATE-RAW-ERROR'))
+      assert.equal(statSync(join(compactionHome, 'usage', 'all.json')).mode & 0o777, 0o600)
+      assert.deepEqual(summary.usage.bySource.standalone.entries, 2)
+      const partial = await profile(compactionHome, [
+        {
+          label: 'partial-span',
+          start: epochMillis('2026-09-29T10:00:00.140Z'),
+          end: epochMillis('2026-09-29T10:00:00.170Z'),
+        },
+      ])
+      assert.equal(partial._tag, 'Success')
+      const [partialSummary] = report(compactionHome, 'partial-span').periods
+      assert.deepEqual(
+        [partialSummary.compaction.starts, partialSummary.compaction.readiness],
+        [0, 0]
+      )
+      assert.equal(partialSummary.compaction.observedUsage.entries, 1)
+      assert.equal(partialSummary.compaction.crossPeriod, 1)
+      assert.equal(partialSummary.compaction.appliedIdle, 1)
+      assert.deepEqual(partialSummary.compaction.readyWaitMs, [])
+      assert.deepEqual(partialSummary.compaction.preparationMs, [])
+      assert.equal(partialSummary.compaction.malformed, 0)
+      const late = await profile(compactionHome, [
+        {
+          label: 'late-only',
+          start: epochMillis('2026-09-29T10:00:00.270Z'),
+          end: epochMillis('2026-09-29T10:00:00.280Z'),
+        },
+      ])
+      assert.equal(late._tag, 'Success')
+      const lateSummary = report(compactionHome, 'late-only').periods[0].compaction
+      assert.equal(lateSummary.starts, 0)
+      assert.equal(lateSummary.discards, 0)
+      assert.equal(lateSummary.observedUsage.entries, 1)
+      assert.equal(lateSummary.unattributedUsage, 0)
+      assert.equal(lateSummary.drilldowns[0].reason, 'abort')
+      assert.equal(lateSummary.drilldowns[0].outcomeInPeriod, false)
+      assert.deepEqual(lateSummary.elapsedMs, [])
+      const directory = join(root, 'compaction-export')
+      const exported = maintain('--data-home', compactionHome, '--export', directory)
+      assert.equal(exported.status, 0, exported.stderr)
+      const aggregate = readFileSync(join(directory, 'usage-baseline.json'), 'utf8')
+      assert.ok(!aggregate.includes('preparationMs'))
+      assert.ok(!aggregate.includes('22222222-2222-4222-8222-222222222222'))
+    }
+  )
+
+  await claim(
+    'compaction coverage keeps absent, interrupted, rejected, malformed and failed observations distinct from zero or success',
+    async () => {
+      const runId = '11111111-1111-4111-8111-111111111111'
+      const id = '22222222-2222-4222-8222-222222222222'
+      const session = conversation('2026-09-29T10:00:00Z')
+      const attached = session.observation('attached', null, 0, { runId, kind: 'attached' })
+      const started = session.observation('start', 'attached', 0.01, {
+        runId,
+        id,
+        kind: 'background-started',
+      })
+      const ready = session.observation('ready', 'start', 0.11, {
+        runId,
+        id,
+        kind: 'background-ready',
+        preparationMs: 100,
+        activeRunOverlapMs: 60,
+      })
+      const cases = [
+        {
+          name: 'unobserved',
+          entries: [session.assistant('request', null, 1)],
+          expected: {
+            coverage: 'unavailable',
+            starts: null,
+            incomplete: 0,
+            unattributedApplications: 0,
+          },
+        },
+        {
+          name: 'no-starts',
+          entries: [attached],
+          expected: { coverage: 'available', starts: 0, incomplete: 0, sessionsWithoutStarts: 1 },
+        },
+        {
+          name: 'interrupted',
+          entries: [attached, started],
+          expected: {
+            coverage: 'available',
+            starts: 1,
+            incomplete: 1,
+            preparationsWithoutUsage: 1,
+          },
+        },
+        {
+          name: 'orphan-end',
+          entries: [
+            attached,
+            session.observation('end', 'attached', 0.14, {
+              runId,
+              id,
+              kind: 'background-ended',
+              outcome: { kind: 'applied', entryId: 'missing', placement: 'boundary' },
+              elapsedMs: 140,
+              activeRunOverlapMs: 60,
+            }),
+          ],
+          expected: {
+            coverage: 'available',
+            starts: 0,
+            incomplete: 1,
+            unattributedApplications: 1,
+          },
+        },
+        {
+          name: 'offered-not-committed',
+          entries: [
+            attached,
+            started,
+            ready,
+            session.observation('end', 'ready', 0.14, {
+              runId,
+              id,
+              kind: 'background-ended',
+              outcome: { kind: 'applied', entryId: 'missing', placement: 'boundary' },
+              elapsedMs: 140,
+              activeRunOverlapMs: 60,
+            }),
+          ],
+          expected: {
+            coverage: 'available',
+            starts: 1,
+            appliedBoundary: 0,
+            incomplete: 1,
+            unattributedApplications: 1,
+          },
+        },
+        {
+          name: 'missing-ready-but-committed',
+          entries: [
+            attached,
+            started,
+            session.compaction('known', 'start', 0.13),
+            session.observation('end', 'known', 0.14, {
+              runId,
+              id,
+              kind: 'background-ended',
+              outcome: { kind: 'applied', entryId: 'known', placement: 'idle' },
+              elapsedMs: 140,
+              activeRunOverlapMs: 60,
+            }),
+            session.usage('usage', 'end', 0.15, tokens(10, 2), 'background_compaction', id),
+          ],
+          expected: {
+            coverage: 'available',
+            starts: 1,
+            appliedIdle: 1,
+            incomplete: 1,
+            readyWaitMs: [],
+            unattributedApplications: 0,
+            unattributedUsage: 0,
+          },
+        },
+        {
+          name: 'invalid-overlap',
+          entries: [
+            attached,
+            started,
+            session.observation('ready', 'start', 0.11, {
+              runId,
+              id,
+              kind: 'background-ready',
+              preparationMs: 100,
+              activeRunOverlapMs: 200,
+            }),
+          ],
+          expected: {
+            coverage: 'available',
+            starts: 1,
+            incomplete: 1,
+            preparationMs: [],
+            overlapMs: [],
+          },
+        },
+        {
+          name: 'missing-data',
+          entries: [
+            attached,
+            {
+              type: 'custom',
+              id: 'broken',
+              parentId: 'attached',
+              timestamp: '2026-09-29T10:00:00.100Z',
+              customType: 'dev:compaction-observation',
+            },
+          ],
+          expected: { coverage: 'available', starts: 0, malformed: 1 },
+        },
+        {
+          name: 'native-interrupted',
+          entries: [
+            attached,
+            session.observation('native', 'attached', 1, {
+              runId,
+              id,
+              kind: 'native-started',
+              reason: 'threshold',
+            }),
+          ],
+          expected: { coverage: 'available', starts: 0, incomplete: 1 },
+        },
+      ]
+      for (const test of cases) {
+        const home = join(root, test.name)
+        writeSession(home, 'sessions', 'case', [session.header(), ...test.entries])
+        assert.equal((await profile(home))._tag, 'Success', test.name)
+        const actual = report(home).periods[0].compaction
+        for (const [key, value] of Object.entries(test.expected))
+          assert.deepEqual(actual[key], value, `${test.name}: ${key}`)
+      }
+      for (const [reason, outcome] of [
+        ['manual', 'aborted'],
+        ['threshold', 'failed'],
+      ] as const) {
+        const home = join(root, `native-${reason}`)
+        writeSession(home, 'sessions', 'native', [
+          session.header(),
+          attached,
+          session.observation('start', 'attached', 0.01, {
+            runId,
+            id,
+            kind: 'native-started',
+            reason,
+          }),
+          session.observation('end', 'start', 0.03, {
+            runId,
+            id,
+            kind: 'native-ended',
+            outcome,
+            elapsedMs: 20,
+          }),
+        ])
+        assert.equal((await profile(home))._tag, 'Success')
+        const native = report(home).periods[0].compaction.native[reason]
+        assert.equal(native[outcome], 1)
+        assert.equal(native.completed, 0)
+        assert.deepEqual(native.durations, [20])
+      }
+    }
+  )
+
+  await claim(
+    'late usage after detachment keeps its historical instrumentation without hiding later uninstrumented activity',
+    async () => {
+      const session = conversation('2026-09-29T10:00:00Z')
+      const runId = '11111111-1111-4111-8111-111111111111'
+      const id = '22222222-2222-4222-8222-222222222222'
+      for (const unknownActivity of [false, true]) {
+        const home = join(root, unknownActivity ? 'late-with-gap' : 'late-detached')
+        writeSession(home, 'sessions', 'late', [
+          session.header(),
+          session.observation('attached', null, 0, { runId, kind: 'attached' }),
+          session.observation('start', 'attached', 0.001, {
+            runId,
+            id,
+            kind: 'background-started',
+          }),
+          session.observation('end', 'start', 0.002, {
+            runId,
+            id,
+            kind: 'background-ended',
+            outcome: { kind: 'discarded', reason: 'shutdown' },
+            elapsedMs: 1,
+            activeRunOverlapMs: 0,
+          }),
+          session.observation('detached', 'end', 0.003, { runId, kind: 'detached' }),
+          session.usage('late-usage', 'detached', 0.004, tokens(3, 1), 'background_compaction', id),
+          ...(unknownActivity ? [session.assistant('unobserved', 'late-usage', 0.005)] : []),
+        ])
+        const result = await profile(home, [
+          {
+            label: 'late',
+            start: epochMillis('2026-09-29T10:00:00.004Z'),
+            end: epochMillis('2026-09-29T10:00:00.006Z'),
+          },
+        ])
+        assert.equal(result._tag, 'Success')
+        const actual = report(home, 'late').periods[0].compaction
+        assert.equal(actual.coverage, unknownActivity ? 'partial' : 'available')
+        assert.equal(actual.starts, 0)
+        assert.equal(actual.discards, 0)
+        assert.equal(actual.observedUsage.entries, 1)
+        assert.equal(actual.unattributedUsage, 0)
+        assert.equal(actual.crossPeriod, 1)
+        assert.deepEqual(actual.elapsedMs, [])
+        assert.equal(actual.drilldowns[0].reason, 'shutdown')
+        if (result._tag === 'Success') assert.ok(result.success.includes(id))
+      }
+    }
+  )
+
+  await claim(
+    'adding only diagnostic metadata leaves exported aggregates and charts byte-identical, including lead waiting and tool timing',
+    async () => {
+      const session = conversation('2026-09-29T10:00:00Z')
+      const runId = '11111111-1111-4111-8111-111111111111'
+      const id = '22222222-2222-4222-8222-222222222222'
+      const outputs: string[][] = []
+      for (const observed of [false, true]) {
+        const home = join(root, observed ? 'export-with-diagnostics' : 'export-without-diagnostics')
+        writeSession(home, 'sessions', 'session', [
+          session.header(),
+          session.user('user', null, 0),
+          ...(observed
+            ? [session.observation('attached', 'user', 0.5, { runId, kind: 'attached' })]
+            : []),
+          session.assistant('request', observed ? 'attached' : 'user', 1, {
+            calls: [{ id: 'read', name: 'read', arguments: { path: 'file.ts' } }],
+          }),
+          ...(observed
+            ? [
+                session.observation('start', 'request', 1.5, {
+                  runId,
+                  id,
+                  kind: 'background-started',
+                }),
+              ]
+            : []),
+          session.result('result', observed ? 'start' : 'request', 3, { id: 'read', name: 'read' }),
+          ...(observed
+            ? [
+                session.observation('ready', 'result', 3.5, {
+                  runId,
+                  id,
+                  kind: 'background-ready',
+                  preparationMs: 100,
+                  activeRunOverlapMs: 60,
+                }),
+              ]
+            : []),
+          session.user('next', observed ? 'ready' : 'result', 8),
+          session.assistant('answer', 'next', 9),
+        ])
+        const directory = join(home, 'export')
+        const result = maintain('--data-home', home, '--export', directory)
+        assert.equal(result.status, 0, result.stderr)
+        outputs.push(
+          ['usage-baseline.json', 'usage.svg', 'tools.svg'].map(file =>
+            readFileSync(join(directory, file), 'utf8')
+          )
+        )
+      }
+      assert.deepEqual(outputs[0], outputs[1])
+    }
+  )
+
+  await claim(
     'periods include their start and exclude their end; first and later requests, role, model, effort (from the response or the branch thinking level) and skill groups and missing attribution follow the recorded entries; a child-only selection is measurable; an empty period becomes a stated comparison limitation',
     async () => {
       const selection = await Promise.all(
@@ -1431,7 +1928,9 @@ try {
       ])
       for (const value of [
         '44.4%',
-        '>5<',
+        'Tool calls success',
+        '>80.0%<',
+        '20.0% with error',
         '0.00',
         '2.0 s',
         'mean per lead result',
@@ -1447,6 +1946,23 @@ try {
       ])
         assert.ok(files['tools.svg']?.includes(value), `tools.svg lacks ${value}`)
 
+      for (const [home, args, noError, withError] of [
+        [toolsHome, [], '29.4%', '70.6%'],
+        [periodsHome, ['--period', '2026-10-02..'], 'n/a', 'n/a'],
+      ] as const) {
+        const result = maintain('--data-home', home, ...args, '--export', exportDirectory)
+        assert.equal(result.status, 0, result.stderr)
+        const chart = readFileSync(join(exportDirectory, 'usage.svg'), 'utf8')
+        assert.match(
+          chart,
+          new RegExp(
+            String.raw`>Tool calls success</text>\s*<text[^>]*>${escapeRegExp(noError)}</text>`
+          )
+        )
+        assert.ok(chart.includes(`>${withError} with error<`))
+        assert.ok(!chart.includes('Tool calls: all sessions;'))
+        assert.ok(!chart.includes('median per lead session'))
+      }
       assert.deepEqual(digestTree(join(entryHome, 'sessions')), sessions)
       assert.deepEqual(digestTree(join(entryHome, 'child-sessions')), children)
       assert.deepEqual(repositoryState(), before)

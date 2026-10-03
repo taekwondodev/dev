@@ -182,6 +182,11 @@ export const WorkspaceExecutionFactSchema = Schema.Union([
 ])
 export type WorkspaceExecutionFact = typeof WorkspaceExecutionFactSchema.Type
 
+export const WorkspaceExecutionReportSchema = Schema.Struct({
+  warning: Schema.optional(Schema.String),
+})
+export type WorkspaceExecutionReport = typeof WorkspaceExecutionReportSchema.Type
+
 export const WorkspaceViewSchema = Schema.Struct({
   repositoryId: WorkspaceId,
   taskId: Schema.optional(WorkspaceId),
@@ -506,7 +511,7 @@ export interface WorkspaceAttachment {
   reportExecution(
     grant: WorkspaceGrant,
     fact: WorkspaceExecutionFact
-  ): Effect.Effect<void, WorkspaceError>
+  ): Effect.Effect<WorkspaceExecutionReport, WorkspaceError>
 
   handoff(transition: WorkspaceHandoff, replace: HostReplace): Effect.Effect<void, WorkspaceError>
   readonly sweeps: Stream.Stream<SweepReceipt>
