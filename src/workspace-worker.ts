@@ -35,7 +35,8 @@ import {
   checkTask,
   releaseWorkspace,
   sweepDeadline,
-  sweepRepository,
+  sweepRepositoryAtQuit,
+  sweepRepositoryForAllocation,
   type EvidenceReaders,
 } from './workspace-release.ts'
 import { getWorkspace } from './workspace-records.ts'
@@ -163,7 +164,7 @@ if (port !== null && engine !== undefined) {
           const deadline = sweepDeadline('allocation', sentAt)
           let receipt: SweepReceipt
           try {
-            receipt = sweepRepository(
+            receipt = sweepRepositoryForAllocation(
               authority,
               {
                 repositoryId,
@@ -250,7 +251,7 @@ if (port !== null && engine !== undefined) {
       case 'sweep': {
         const deadline = sweepDeadline('quit', sentAt)
         return await engine.run(authority =>
-          sweepRepository(
+          sweepRepositoryAtQuit(
             authority,
             {
               repositoryId: repositoryOf(authority, request.request.anchorWorkspaceId),

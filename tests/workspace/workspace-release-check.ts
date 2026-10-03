@@ -1573,8 +1573,8 @@ try {
     }
   )
   await claim(
-    'a squash-merged pull request proves integration only with the exact source-at-merge binding: wrong target, wrong source repository, a different merged head, an unreachable merge result or no merged pull request are invalid, and provider failures or too many commits are unknown',
-    () => {
+    'a squash-merged pull request proves integration only with the exact source-at-merge binding, including after a cached async prefetch; wrong bindings are rejected and unavailable or expired evidence remains unknown',
+    async () => {
       assert.equal(prove(reader()).outcome, 'branch-merged', prove(reader()).reason)
       assert.equal(
         prove(
@@ -1658,6 +1658,219 @@ try {
       assert.equal(explicitProof.pullRequests[0]?.containsHead.kind, 'yes')
       assert.equal(explicitProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
       assert.equal(discoveryCalls, 0, 'a sufficient recorded PR proof skips commit-to-PR discovery')
+      let graphqlCalls = 0
+      const batchedReader = makeGitHubReader(
+        () => {
+          throw new Error('the batched proof should not issue REST calls')
+        },
+        30_000,
+        () => 0,
+        () => {
+          graphqlCalls += 1
+          return {
+            status: 'ok',
+            text: JSON.stringify({
+              data: {
+                repository: {
+                  ref: { target: { oid: squash } },
+                  pullRequest: {
+                    mergedAt: MERGED_AT,
+                    baseRefName: 'main',
+                    baseRepository: { nameWithOwner: 'owner/repo' },
+                    headRefOid: feature,
+                    headRepository: { nameWithOwner: 'owner/repo' },
+                    mergeCommit: { oid: squash },
+                    commits: {
+                      totalCount: 1,
+                      nodes: [{ commit: { oid: feature } }],
+                      pageInfo: { hasNextPage: false },
+                    },
+                  },
+                },
+              },
+            }),
+          }
+        }
+      )
+      const batchedProof = integrationFacts(batchedReader, worktree, {
+        target: explicit,
+        completionRole: 'branch',
+        head: feature,
+        base: githubMain,
+        allocatedAt: Date.parse(MERGED_AT) - 60_000,
+        siblings: { heads: [], unknown: [] },
+      })
+      assert.equal(batchedProof.tip, squash)
+      assert.equal(batchedProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.equal(batchedProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
+      assert.equal(
+        graphqlCalls,
+        1,
+        'the target tip and sufficient PR evidence use one provider call'
+      )
+      let asyncGraphqlCalls = 0
+      let synchronousGraphqlCalls = 0
+      let resolveResponse:
+        | ((response: { readonly status: 'ok'; readonly text: string }) => void)
+        | undefined
+      const asyncResponse = new Promise<{ readonly status: 'ok'; readonly text: string }>(
+        resolve => {
+          resolveResponse = resolve
+        }
+      )
+      const asyncReader = makeGitHubReader(
+        () => {
+          throw new Error('the prefetched GraphQL result must supply integration evidence')
+        },
+        30_000,
+        () => 0,
+        () => {
+          synchronousGraphqlCalls += 1
+          throw new Error('the sync provider must not be called')
+        },
+        async (repository, ref, number, timeoutMs) => {
+          assert.deepEqual(
+            [repository, ref, number, timeoutMs],
+            ['owner/repo', 'refs/heads/main', 7, 30_000]
+          )
+          asyncGraphqlCalls += 1
+          return asyncResponse
+        }
+      )
+      if (asyncReader.prefetchPullRequestEvidence === undefined)
+        throw new Error('async evidence prefetch is missing')
+      const firstPrefetch = asyncReader.prefetchPullRequestEvidence(
+        'owner/repo',
+        'refs/heads/main',
+        7
+      )
+      const secondPrefetch = asyncReader.prefetchPullRequestEvidence(
+        'owner/repo',
+        'refs/heads/main',
+        7
+      )
+      assert.equal(asyncGraphqlCalls, 1, 'concurrent prefetches share one request')
+      if (resolveResponse === undefined) throw new Error('async GraphQL request did not start')
+      resolveResponse({
+        status: 'ok',
+        text: JSON.stringify({
+          data: {
+            repository: {
+              ref: { target: { oid: squash } },
+              pullRequest: {
+                mergedAt: MERGED_AT,
+                baseRefName: 'main',
+                baseRepository: { nameWithOwner: 'owner/repo' },
+                headRefOid: feature,
+                headRepository: { nameWithOwner: 'owner/repo' },
+                mergeCommit: { oid: squash },
+                commits: {
+                  totalCount: 1,
+                  nodes: [{ commit: { oid: feature } }],
+                  pageInfo: { hasNextPage: false },
+                },
+              },
+            },
+          },
+        }),
+      })
+      const prefetched = await Promise.all([firstPrefetch, secondPrefetch])
+      assert.deepEqual(prefetched[0], prefetched[1])
+      const asyncProof = integrationFacts(asyncReader, worktree, {
+        target: explicit,
+        completionRole: 'branch',
+        head: feature,
+        base: githubMain,
+        allocatedAt: Date.parse(MERGED_AT) - 60_000,
+        siblings: { heads: [], unknown: [] },
+      })
+      assert.equal(asyncProof.tip, squash)
+      assert.equal(asyncProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.equal(asyncGraphqlCalls, 1)
+      assert.equal(synchronousGraphqlCalls, 0, 'sync assessment consumes the prefetched cache')
+
+      let expiredAt = 0
+      const expiredReader = makeGitHubReader(
+        () => {
+          throw new Error('expired async evidence should not issue REST reads')
+        },
+        30_000,
+        () => expiredAt,
+        () => {
+          throw new Error('expired async evidence should not retry GraphQL synchronously')
+        },
+        async () => {
+          expiredAt = 30_001
+          return { status: 'ok', text: '{}' }
+        }
+      )
+      const expired = await expiredReader.prefetchPullRequestEvidence?.(
+        'owner/repo',
+        'refs/heads/main',
+        7
+      )
+      assert.ok(expired !== undefined && isUnavailable(expired), 'late evidence is unavailable')
+
+      let aborted = false
+      const hangingReader = makeGitHubReader(
+        () => {
+          throw new Error('a hanging prefetch must not fall back to REST')
+        },
+        5,
+        () => 0,
+        () => {
+          throw new Error('a hanging prefetch must not retry synchronously')
+        },
+        async (_repository, _ref, _number, _timeoutMs, signal) =>
+          new Promise<{ readonly status: 'ok'; readonly text: string }>(() => {
+            signal.addEventListener('abort', () => {
+              aborted = true
+            })
+          })
+      )
+      const timedOut = await hangingReader.prefetchPullRequestEvidence?.(
+        'owner/repo',
+        'refs/heads/main',
+        7
+      )
+      assert.ok(timedOut !== undefined && isUnavailable(timedOut))
+      assert.equal(aborted, true, 'the request is cancelled at its budget')
+
+      let unavailableRestCalls = 0
+      const unavailableReader = makeGitHubReader(
+        () => {
+          unavailableRestCalls += 1
+          throw new Error('offline')
+        },
+        30_000,
+        () => 0,
+        () => {
+          throw new Error('offline')
+        }
+      )
+      const unavailableIntegration = integrationFacts(unavailableReader, worktree, {
+        target: explicit,
+        completionRole: 'branch',
+        head: feature,
+        base: githubMain,
+        allocatedAt: Date.parse(MERGED_AT) - 60_000,
+        siblings: { heads: [], unknown: [] },
+      })
+      const unavailableVerdict = decideCompletion(
+        managedFacts({
+          allocation: 'checkout-contention',
+          branch: 'refs/heads/feature',
+          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          ownCommits: true,
+          integration: unavailableIntegration,
+        })
+      )
+      assert.equal(verdictName(unavailableVerdict), 'retained:integration-unknown')
+      assert.equal(
+        unavailableRestCalls,
+        1,
+        'failed GraphQL evidence falls back to REST within budget'
+      )
     }
   )
   await claim(

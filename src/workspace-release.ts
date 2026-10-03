@@ -48,9 +48,11 @@ import {
   stateDigestOf,
   verifyInventory,
   type GitHubReader,
+  type GitHubPullRequestEvidence,
   type Inventory,
   type InventoryVerdict,
   type Siblings,
+  type Unavailable,
 } from './workspace-evidence.ts'
 import {
   acquirePathGates,
@@ -527,7 +529,7 @@ const RETAINED: Record<
 const retainedActions = (verdict: CompletionVerdict): readonly string[] =>
   verdict.kind === 'finished' ? [] : RETAINED[verdict.retained].actions
 
-const assessWorkspace = (
+function assessWorkspace(
   authority: WorkspaceAuthority,
   db: DatabaseSync,
   repo: WorkspaceId,
@@ -536,8 +538,33 @@ const assessWorkspace = (
   readers: EvidenceReaders,
   context: AssessmentContext,
   siblings: Siblings,
-  removalClosed: boolean
-): Assessed => {
+  removalClosed: boolean,
+  overlapProvider?: false
+): Assessed
+function assessWorkspace(
+  authority: WorkspaceAuthority,
+  db: DatabaseSync,
+  repo: WorkspaceId,
+  reservation: ReservationRecord,
+  workspace: WorkspaceRecord,
+  readers: EvidenceReaders,
+  context: AssessmentContext,
+  siblings: Siblings,
+  removalClosed: boolean,
+  overlapProvider: true
+): Assessed | Promise<Assessed>
+function assessWorkspace(
+  authority: WorkspaceAuthority,
+  db: DatabaseSync,
+  repo: WorkspaceId,
+  reservation: ReservationRecord,
+  workspace: WorkspaceRecord,
+  readers: EvidenceReaders,
+  context: AssessmentContext,
+  siblings: Siblings,
+  removalClosed: boolean,
+  overlapProvider = false
+): Assessed | Promise<Assessed> {
   const identity = assessIdentity(authority, workspace)
   const head =
     identity.kind === 'verified' && identity.git.head.length > 0 ? identity.git.head : undefined
@@ -784,12 +811,31 @@ const assessWorkspace = (
   const publications = getPublications(db, reservation.taskId).filter(
     reference => reference.workspaceId === undefined || reference.workspaceId === workspace.id
   )
+  const override = getTask(db, reservation.taskId)?.target
+  let prefetched: Promise<GitHubPullRequestEvidence | Unavailable> | undefined
   try {
-    evidence = verifyInventory(workspace.path, publications, readInventory(workspace.path, head))
     branch = symbolicBranch(workspace.path)
     ownCommits = ownCommitsOf(workspace.path, head, allocation.base)
+    if (
+      overlapProvider &&
+      !uses.inUse &&
+      ownCommits === true &&
+      override?.kind === 'github' &&
+      override.pullRequest !== undefined &&
+      recordedTarget(workspace.path, override, branch)?.source === 'override' &&
+      readers.github.prefetchPullRequestEvidence !== undefined
+    ) {
+      try {
+        prefetched = readers.github
+          .prefetchPullRequestEvidence(override.repository, override.ref, override.pullRequest)
+          .catch(cause => ({ unavailable: errorText(cause) }))
+      } catch (cause) {
+        prefetched = Promise.resolve({ unavailable: errorText(cause) })
+      }
+    }
+    evidence = verifyInventory(workspace.path, publications, readInventory(workspace.path, head))
   } catch (cause) {
-    return shape(
+    const failed = shape(
       withInterruption({
         outcome: 'review-required',
         effect: 'none',
@@ -798,115 +844,118 @@ const assessWorkspace = (
         nextActions: ['Fix the reported read failure and check again.'],
       })
     )
+    return prefetched === undefined ? failed : prefetched.then(() => failed)
   }
   const residue = residueOf(evidence.inventory)
-  const override = getTask(db, reservation.taskId)?.target
-  let target: TargetView =
-    recordedTarget(workspace.path, override, branch) ??
-    (uses.inUse
-      ? {
-          source: 'not-assessed',
-          description: 'The target is derived once no use holds the workspace.',
+  const complete = (): Assessed => {
+    let target: TargetView =
+      recordedTarget(workspace.path, override, branch) ??
+      (uses.inUse
+        ? {
+            source: 'not-assessed',
+            description: 'The target is derived once no use holds the workspace.',
+          }
+        : {
+            source: 'not-needed',
+            description:
+              'No residue and no commits beyond its base, so no integration target is needed.',
+          })
+    let integration: IntegrationFacts = integrationUnknown('Integration is not needed here.')
+    let targetTip: string | undefined
+    if (!uses.inUse && needsIntegration(residue, ownCommits)) {
+      const derived = deriveTarget(readers.github, workspace.path, override, branch)
+      target = describeTarget(derived)
+      if (derived.source === 'none') integration = integrationUnknown(derived.reason)
+      else
+        try {
+          let completionRole: 'branch' | 'child' | 'detached'
+          if (branch !== undefined) completionRole = 'branch'
+          else if (allocation.reason === 'delegated-writer') completionRole = 'child'
+          else completionRole = 'detached'
+          const facts = integrationFacts(readers.github, workspace.path, {
+            target: derived.target,
+            completionRole,
+            head,
+            base: allocation.base,
+            allocatedAt: allocation.allocatedAt,
+            siblings,
+          })
+          integration = facts
+          targetTip = facts.tip
+        } catch (cause) {
+          integration = integrationUnknown(`Integration could not be read: ${errorText(cause)}`)
         }
-      : {
-          source: 'not-needed',
-          description:
-            'No residue and no commits beyond its base, so no integration target is needed.',
-        })
-  let integration: IntegrationFacts = integrationUnknown('Integration is not needed here.')
-  let targetTip: string | undefined
-  if (!uses.inUse && needsIntegration(residue, ownCommits)) {
-    const derived = deriveTarget(readers.github, workspace.path, override, branch)
-    target = describeTarget(derived)
-    if (derived.source === 'none') integration = integrationUnknown(derived.reason)
-    else
-      try {
-        let completionRole: 'branch' | 'child' | 'detached'
-        if (branch !== undefined) completionRole = 'branch'
-        else if (allocation.reason === 'delegated-writer') completionRole = 'child'
-        else completionRole = 'detached'
-        const facts = integrationFacts(readers.github, workspace.path, {
-          target: derived.target,
-          completionRole,
-          head,
-          base: allocation.base,
-          allocatedAt: allocation.allocatedAt,
-          siblings,
-        })
-        integration = facts
-        targetTip = facts.tip
-      } catch (cause) {
-        integration = integrationUnknown(`Integration could not be read: ${errorText(cause)}`)
-      }
-  }
-  const { reported, underlying } = decide({
-    ...factsBase,
-    branch,
-    residue,
-    ownCommits,
-    integration,
-  })
-  const common = {
-    stateDigest: stateDigestOf({
-      head,
-      inventory: evidence.inventory,
-      targetTip,
-      publications,
-    }),
-    evidence,
-    residual: residualOf(evidence.inventory, head),
-    completion: reported,
-    target,
-  }
-  if (uses.inUse)
-    return shape(
-      withInterruption({
-        ...common,
-        outcome: inUseOutcome(uses),
-        effect: 'none',
-        reasons: uses.reasons,
-        nextActions: uses.nextActions,
-      })
-    )
-  if (evidence.verdict !== 'valid')
-    return shape(
-      withInterruption({
-        ...common,
-        outcome: evidence.verdict === 'invalid' ? 'blocked' : 'review-required',
-        effect: 'none',
-        reasons: [...uses.reasons, ...evidence.reasons, underlying.reason],
-        nextActions: [
-          evidence.verdict === 'invalid'
-            ? 'Resolve each blocker (publish the selected artifact again, resolve the conflict or remove the nested repository), then check again.'
-            : 'Resolve each unsupported or unreadable entry, then check again; dev never deletes what it cannot inspect.',
-        ],
-      })
-    )
-  if (underlying.kind === 'finished')
-    return shape(
-      withInterruption({
-        ...common,
-        outcome: 'removable',
-        effect: 'remove-worktree',
-        reasons: [
-          ...uses.reasons,
-          underlying.reason,
-          `Eligible at this check; nothing removed; the sweep rechecks. ${evidence.counts.published} published file(s) are recorded for deletion; Git removes remaining disposable worktree contents.`,
-        ],
-        nextActions: [
-          'Quitting dev, or the next managed worktree allocation, removes it automatically.',
-        ],
-      })
-    )
-  return shape(
-    withInterruption({
-      ...common,
-      outcome: RETAINED[underlying.retained].eligibility,
-      effect: 'none',
-      reasons: [...uses.reasons, underlying.reason],
-      nextActions: retainedActions(underlying),
+    }
+    const { reported, underlying } = decide({
+      ...factsBase,
+      branch,
+      residue,
+      ownCommits,
+      integration,
     })
-  )
+    const common = {
+      stateDigest: stateDigestOf({
+        head,
+        inventory: evidence.inventory,
+        targetTip,
+        publications,
+      }),
+      evidence,
+      residual: residualOf(evidence.inventory, head),
+      completion: reported,
+      target,
+    }
+    if (uses.inUse)
+      return shape(
+        withInterruption({
+          ...common,
+          outcome: inUseOutcome(uses),
+          effect: 'none',
+          reasons: uses.reasons,
+          nextActions: uses.nextActions,
+        })
+      )
+    if (evidence.verdict !== 'valid')
+      return shape(
+        withInterruption({
+          ...common,
+          outcome: evidence.verdict === 'invalid' ? 'blocked' : 'review-required',
+          effect: 'none',
+          reasons: [...uses.reasons, ...evidence.reasons, underlying.reason],
+          nextActions: [
+            evidence.verdict === 'invalid'
+              ? 'Resolve each blocker (publish the selected artifact again, resolve the conflict or remove the nested repository), then check again.'
+              : 'Resolve each unsupported or unreadable entry, then check again; dev never deletes what it cannot inspect.',
+          ],
+        })
+      )
+    if (underlying.kind === 'finished')
+      return shape(
+        withInterruption({
+          ...common,
+          outcome: 'removable',
+          effect: 'remove-worktree',
+          reasons: [
+            ...uses.reasons,
+            underlying.reason,
+            `Eligible at this check; nothing removed; the sweep rechecks. ${evidence.counts.published} published file(s) are recorded for deletion; Git removes remaining disposable worktree contents.`,
+          ],
+          nextActions: [
+            'Quitting dev, or the next managed worktree allocation, removes it automatically.',
+          ],
+        })
+      )
+    return shape(
+      withInterruption({
+        ...common,
+        outcome: RETAINED[underlying.retained].eligibility,
+        effect: 'none',
+        reasons: [...uses.reasons, underlying.reason],
+        nextActions: retainedActions(underlying),
+      })
+    )
+  }
+  return prefetched === undefined ? complete() : prefetched.then(complete)
 }
 
 type Sibling =
@@ -996,6 +1045,34 @@ const assessTask = (
         context,
         siblingsFor(workspace.id),
         false
+      )
+    )
+  )
+}
+
+const assessTaskAtQuit = async (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId,
+  readers: EvidenceReaders,
+  context: AssessmentContext
+): Promise<readonly Assessed[]> => {
+  const entries = taskWorkspaces(authority, taskId)
+  const siblingsFor = taskSiblings(authority, taskId, entries)
+  return Promise.all(
+    entries.map(({ repo, reservation, workspace }) =>
+      inDb(authority, repo, db =>
+        assessWorkspace(
+          authority,
+          db,
+          repo,
+          reservation,
+          workspace,
+          readers,
+          context,
+          siblingsFor(workspace.id),
+          false,
+          true
+        )
       )
     )
   )
@@ -1901,9 +1978,82 @@ export const sweepDeadline = (moment: SweepMoment, requestedAt: number): number 
 const attemptOutcome = (outcome: WorkspaceReleaseResult['outcome']): SweepOutcome =>
   outcome === 'blocked' ? 'retained' : outcome
 
-export const sweepRepository = (
+const releaseAssessedTask = (
   authority: WorkspaceAuthority,
   input: SweepInput,
+  readers: EvidenceReaders,
+  context: AssessmentContext,
+  decider: ReleaseDecider,
+  commandId: WorkspaceId,
+  receipt: SweepRow[],
+  index: number,
+  taskId: WorkspaceId,
+  assessments: readonly WorkspaceAssessment[],
+  deferFrom: (index: number, started: boolean) => void
+): boolean => {
+  const decided = assessments.map(assessment => assessment.subject)
+  const decidedIds = new Set(decided.map(subject => subject.workspaceId))
+  for (const assessment of assessments.toSorted((left, right) =>
+    left.workspaceId.localeCompare(right.workspaceId)
+  )) {
+    const row = {
+      kind: 'workspace' as const,
+      taskId,
+      workspaceId: assessment.workspaceId,
+      path: assessment.path,
+      origin: assessment.origin,
+      verdict: assessment.completion,
+    }
+    if (assessment.completion.kind === 'retained') {
+      receipt.push({
+        ...row,
+        outcome: RETAINED[assessment.completion.retained].sweep,
+        reason: assessment.completion.reason,
+      })
+      continue
+    }
+    if (now() >= input.deadline) {
+      deferFrom(index, true)
+      return true
+    }
+    try {
+      const result = releaseDecidedWorkspace(
+        authority,
+        {
+          taskId,
+          commandId,
+          decided,
+          decider,
+          workspaceId: assessment.workspaceId,
+          occupiedPaths: input.occupiedPaths,
+        },
+        readers,
+        context,
+        decidedIds
+      )
+      receipt.push({
+        ...row,
+        outcome: attemptOutcome(result.outcome),
+        reason: result.reason,
+        ...(result.operationId === undefined ? {} : { operationId: result.operationId }),
+      })
+    } catch (cause) {
+      receipt.push({
+        ...row,
+        outcome:
+          cause instanceof WorkspaceError && cause.outcome === 'invalid'
+            ? 'retained'
+            : 'review-required',
+        reason: `The attempt was refused or its outcome is uncertain: ${errorText(cause)}`,
+      })
+    }
+  }
+  return false
+}
+
+export const sweepRepositoryForAllocation = (
+  authority: WorkspaceAuthority,
+  input: SweepInput & { readonly moment: 'allocation' },
   readers: EvidenceReaders
 ): SweepReceipt => {
   const commandId = newId()
@@ -1937,7 +2087,6 @@ export const sweepRepository = (
       }))
     )
   }
-  let exhausted = false
   for (const [index, taskId] of taskIds.entries()) {
     if (now() >= input.deadline) {
       deferFrom(index, false)
@@ -1956,65 +2105,96 @@ export const sweepRepository = (
       })
       continue
     }
-    const decided = assessments.map(assessment => assessment.subject)
-    const decidedIds = new Set(decided.map(subject => subject.workspaceId))
-    for (const assessment of assessments.toSorted((left, right) =>
-      left.workspaceId.localeCompare(right.workspaceId)
-    )) {
-      const row = {
-        kind: 'workspace' as const,
+    if (
+      releaseAssessedTask(
+        authority,
+        input,
+        readers,
+        context,
+        decider,
+        commandId,
+        receipt,
+        index,
         taskId,
-        workspaceId: assessment.workspaceId,
-        path: assessment.path,
-        origin: assessment.origin,
-        verdict: assessment.completion,
-      }
-      if (assessment.completion.kind === 'retained') {
-        receipt.push({
-          ...row,
-          outcome: RETAINED[assessment.completion.retained].sweep,
-          reason: assessment.completion.reason,
-        })
-        continue
-      }
-      if (now() >= input.deadline) {
-        deferFrom(index, true)
-        exhausted = true
-        break
-      }
-      try {
-        const result = releaseDecidedWorkspace(
-          authority,
-          {
-            taskId,
-            commandId,
-            decided,
-            decider,
-            workspaceId: assessment.workspaceId,
-            occupiedPaths: input.occupiedPaths,
-          },
-          readers,
-          context,
-          decidedIds
-        )
-        receipt.push({
-          ...row,
-          outcome: attemptOutcome(result.outcome),
-          reason: result.reason,
-          ...(result.operationId === undefined ? {} : { operationId: result.operationId }),
-        })
-      } catch (cause) {
-        receipt.push({
-          ...row,
-          outcome:
-            cause instanceof WorkspaceError && cause.outcome === 'invalid'
-              ? 'retained'
-              : 'review-required',
-          reason: `The attempt was refused or its outcome is uncertain: ${errorText(cause)}`,
-        })
-      }
+        assessments,
+        deferFrom
+      )
+    )
+      break
+  }
+  return { commandId, moment: input.moment, rows: receipt }
+}
+
+export const sweepRepositoryAtQuit = async (
+  authority: WorkspaceAuthority,
+  input: SweepInput & { readonly moment: 'quit' },
+  readers: EvidenceReaders
+): Promise<SweepReceipt> => {
+  const commandId = newId()
+  const receipt: SweepRow[] = []
+  if (authority.inspectExisting() === undefined)
+    return { commandId, moment: input.moment, rows: receipt }
+  const context: AssessmentContext = {
+    moment: input.moment,
+    ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
+  }
+  const decider: ReleaseDecider = {
+    kind: 'completion',
+    policyVersion: COMPLETION_POLICY_VERSION,
+    moment: input.moment,
+  }
+  const seconds = SWEEP_BUDGET_MS[input.moment] / 1000
+  const taskIds = inDb(authority, input.repositoryId, db =>
+    rows(db, 'SELECT DISTINCT task_id FROM reservations ORDER BY task_id').map(row =>
+      WorkspaceId.make(textField(row, 'task_id'))
+    )
+  )
+  const deferFrom = (index: number, started: boolean): void => {
+    receipt.push(
+      ...taskIds.slice(index).map((taskId, offset) => ({
+        kind: 'task-deferred' as const,
+        taskId,
+        reason:
+          started && offset === 0
+            ? `The sweep used its ${seconds}-second budget during this task, so its remaining workspaces were not attempted; the next sweep assesses them.`
+            : `The sweep used its ${seconds}-second budget before this task, so nothing of it was assessed or attempted; the next sweep assesses it.`,
+      }))
+    )
+  }
+  for (const [index, taskId] of taskIds.entries()) {
+    if (now() >= input.deadline) {
+      deferFrom(index, false)
+      break
     }
-    if (exhausted) break
+    let assessments: readonly WorkspaceAssessment[]
+    try {
+      assessments = (await assessTaskAtQuit(authority, taskId, readers, context)).map(
+        ({ assessment }) => assessment
+      )
+    } catch (cause) {
+      receipt.push({
+        kind: 'task-failure',
+        taskId,
+        reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
+      })
+      continue
+    }
+    if (
+      releaseAssessedTask(
+        authority,
+        input,
+        readers,
+        context,
+        decider,
+        commandId,
+        receipt,
+        index,
+        taskId,
+        assessments,
+        deferFrom
+      )
+    )
+      break
   }
   return { commandId, moment: input.moment, rows: receipt }
 }

@@ -30,6 +30,20 @@ const pull = await claim(
   }
 )
 await claim(
+  'one GraphQL evidence read matches the target tip, merged pull request and commit list observed through REST',
+  () => {
+    const evidence = reader.pullRequestEvidence?.(repository, 'refs/heads/trunk', number)
+    if (evidence === undefined || isUnavailable(evidence))
+      return fail('pull request evidence', evidence)
+    if (evidence.pullRequest === 'missing' || isUnavailable(evidence.pullRequest))
+      return fail('bundled pull request', evidence.pullRequest)
+    assert.equal(evidence.tip, reader.refTip(repository, 'refs/heads/trunk'))
+    assert.equal(evidence.pullRequest.headSha, pull.headSha)
+    assert.equal(evidence.pullRequest.mergeCommit, pull.mergeCommit)
+    assert.deepEqual(evidence.commits, { kind: 'complete', commits: [pull.headSha] })
+  }
+)
+await claim(
   'after the source branch was deleted, the pull request still lists its merged commits and their last entry is the head it carried at merge',
   () => {
     const tip = reader.refTip(repository, 'refs/heads/bagtoad/cli-security-reporting-guidance')
