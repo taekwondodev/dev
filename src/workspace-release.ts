@@ -34,6 +34,7 @@ import {
   type SweepReceipt,
   type SweepRow,
   type TargetView,
+  type TaskTarget,
   type WorkspaceAssessment,
   type WorkspaceReleaseResult,
   WORKER_REQUEST_TIMEOUT_MS,
@@ -49,11 +50,9 @@ import {
   stateDigestOf,
   verifyInventory,
   type GitHubReader,
-  type GitHubPullRequestEvidence,
   type Inventory,
   type InventoryVerdict,
   type Siblings,
-  type Unavailable,
 } from './workspace-evidence.ts'
 import {
   acquirePathGates,
@@ -530,7 +529,12 @@ const RETAINED: Record<
 const retainedActions = (verdict: CompletionVerdict): readonly string[] =>
   verdict.kind === 'finished' ? [] : RETAINED[verdict.retained].actions
 
-function assessWorkspace(
+interface Staged {
+  readonly integrate: () => Assessed
+}
+const isStaged = (value: Assessed | Staged): value is Staged => 'integrate' in value
+
+const stageWorkspace = (
   authority: WorkspaceAuthority,
   db: DatabaseSync,
   repo: WorkspaceId,
@@ -539,33 +543,8 @@ function assessWorkspace(
   readers: EvidenceReaders,
   context: AssessmentContext,
   siblings: Siblings,
-  removalClosed: boolean,
-  overlapProvider?: false
-): Assessed
-function assessWorkspace(
-  authority: WorkspaceAuthority,
-  db: DatabaseSync,
-  repo: WorkspaceId,
-  reservation: ReservationRecord,
-  workspace: WorkspaceRecord,
-  readers: EvidenceReaders,
-  context: AssessmentContext,
-  siblings: Siblings,
-  removalClosed: boolean,
-  overlapProvider: true
-): Assessed | Promise<Assessed>
-function assessWorkspace(
-  authority: WorkspaceAuthority,
-  db: DatabaseSync,
-  repo: WorkspaceId,
-  reservation: ReservationRecord,
-  workspace: WorkspaceRecord,
-  readers: EvidenceReaders,
-  context: AssessmentContext,
-  siblings: Siblings,
-  removalClosed: boolean,
-  overlapProvider = false
-): Assessed | Promise<Assessed> {
+  removalClosed: boolean
+): Assessed | Staged => {
   const identity = assessIdentity(authority, workspace)
   const head =
     identity.kind === 'verified' && identity.git.head.length > 0 ? identity.git.head : undefined
@@ -813,30 +792,12 @@ function assessWorkspace(
     reference => reference.workspaceId === undefined || reference.workspaceId === workspace.id
   )
   const override = getTask(db, reservation.taskId)?.target
-  let prefetched: Promise<GitHubPullRequestEvidence | Unavailable> | undefined
   try {
     branch = symbolicBranch(workspace.path)
     ownCommits = ownCommitsOf(workspace.path, head, allocation.base)
-    if (
-      overlapProvider &&
-      !uses.inUse &&
-      ownCommits === true &&
-      override?.kind === 'github' &&
-      override.pullRequest !== undefined &&
-      recordedTarget(workspace.path, override, branch)?.source === 'override' &&
-      readers.github.prefetchPullRequestEvidence !== undefined
-    ) {
-      try {
-        prefetched = readers.github
-          .prefetchPullRequestEvidence(override.repository, override.ref, override.pullRequest)
-          .catch(cause => ({ unavailable: errorText(cause) }))
-      } catch (cause) {
-        prefetched = Promise.resolve({ unavailable: errorText(cause) })
-      }
-    }
     evidence = verifyInventory(workspace.path, publications, readInventory(workspace.path, head))
   } catch (cause) {
-    const failed = shape(
+    return shape(
       withInterruption({
         outcome: 'review-required',
         effect: 'none',
@@ -845,7 +806,6 @@ function assessWorkspace(
         nextActions: ['Fix the reported read failure and check again.'],
       })
     )
-    return prefetched === undefined ? failed : prefetched.then(() => failed)
   }
   const residue = residueOf(evidence.inventory)
   const complete = (): Assessed => {
@@ -956,7 +916,12 @@ function assessWorkspace(
       })
     )
   }
-  return prefetched === undefined ? complete() : prefetched.then(complete)
+  return { integrate: complete }
+}
+
+const assessWorkspace = (...input: Parameters<typeof stageWorkspace>): Assessed => {
+  const staged = stageWorkspace(...input)
+  return isStaged(staged) ? staged.integrate() : staged
 }
 
 type Sibling =
@@ -1051,7 +1016,27 @@ const assessTask = (
   )
 }
 
-const assessTaskAtQuit = async (
+const prefetchEvidence = (
+  readers: EvidenceReaders,
+  target: TaskTarget | undefined
+): Promise<unknown> => {
+  const { github } = readers
+  if (
+    target?.kind !== 'github' ||
+    target.pullRequest === undefined ||
+    github.prefetchPullRequestEvidence === undefined
+  )
+    return Promise.resolve()
+  try {
+    return github
+      .prefetchPullRequestEvidence(target.repository, target.ref, target.pullRequest)
+      .catch(() => undefined)
+  } catch {
+    return Promise.resolve()
+  }
+}
+
+const assessTaskAtQuit = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId,
   readers: EvidenceReaders,
@@ -1061,8 +1046,9 @@ const assessTaskAtQuit = async (
   const siblingsFor = taskSiblings(authority, taskId, entries)
   return Promise.all(
     entries.map(({ repo, reservation, workspace }) =>
-      inDb(authority, repo, db =>
-        assessWorkspace(
+      inDb(authority, repo, async db => {
+        const evidence = prefetchEvidence(readers, getTask(db, reservation.taskId)?.target)
+        const staged = stageWorkspace(
           authority,
           db,
           repo,
@@ -1071,10 +1057,12 @@ const assessTaskAtQuit = async (
           readers,
           context,
           siblingsFor(workspace.id),
-          false,
-          true
+          false
         )
-      )
+        if (!isStaged(staged)) return staged
+        await evidence
+        return staged.integrate()
+      })
     )
   )
 }
