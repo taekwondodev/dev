@@ -568,8 +568,9 @@ try {
     }
   )
   await claim('dev stops with the reason when the installed Pi fails to load', async () => {
-    const brokenPi = join(sandbox, 'broken-pi')
-    mkdirSync(join(brokenPi, 'bin'), { recursive: true })
+    const brokenRelease = join(sandbox, 'broken-pi-release')
+    const brokenPi = join(brokenRelease, 'node_modules', '@earendil-works', 'pi-coding-agent')
+    mkdirSync(brokenPi, { recursive: true })
     writeFileSync(
       join(brokenPi, 'package.json'),
       JSON.stringify({
@@ -579,9 +580,8 @@ try {
       })
     )
     writeFileSync(join(brokenPi, 'index.js'), "throw new Error('broken fixture Pi')\n")
-    writeFileSync(join(brokenPi, 'bin', 'pi'), '#!/bin/sh\n', { mode: 0o755 })
     const outcome = await runLauncher(['--data-home', dataHome, '--profile', 'general'], {
-      DEV_PI_EXECUTABLE: join(brokenPi, 'bin', 'pi'),
+      DEV_PI_RELEASE: brokenRelease,
     })
     assert.equal(outcome.code, 1, outcome.stderr)
     assert.ok(

@@ -59,7 +59,8 @@ export const git = (args: readonly string[]) =>
 export const streamed = Effect.fnUntraced(function* (
   file: string,
   args: readonly string[],
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  cwd = checkout
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const started = yield* Clock.currentTimeMillis
@@ -67,7 +68,7 @@ export const streamed = Effect.fnUntraced(function* (
     process.stderr.write(`\n$ ${[file, ...args].join(' ')}\n`)
   })
   const [output, exitCode] = yield* spawner
-    .spawn(ChildProcess.make(file, args, { cwd: checkout, env, extendEnv: true, stdin: 'ignore' }))
+    .spawn(ChildProcess.make(file, args, { cwd, env, extendEnv: true, stdin: 'ignore' }))
     .pipe(
       Effect.flatMap(handle =>
         Effect.all([

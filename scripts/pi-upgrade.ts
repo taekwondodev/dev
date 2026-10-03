@@ -1,6 +1,16 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Array as Arr, ConfigProvider, DateTime, Effect, FileSystem, Option, Schema } from 'effect'
+import {
+  Array as Arr,
+  Config,
+  ConfigProvider,
+  DateTime,
+  Effect,
+  FileSystem,
+  Option,
+  Schema,
+} from 'effect'
+import { FetchHttpClient, HttpClient, HttpClientResponse } from 'effect/unstable/http'
 import { errorText } from '../src/error-text.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
@@ -12,10 +22,22 @@ export class PiUpgradeError extends Schema.TaggedError<PiUpgradeError>()('PiUpgr
 }) {}
 
 const manifestPath = join(checkout, 'package.json')
-const piPackage = '@earendil-works/pi-coding-agent'
-const candidatePrefix = join(checkout, '.dev', 'pi-candidate')
-const candidateExecutable = join(candidatePrefix, 'bin', 'pi')
-const reportPath = join(candidatePrefix, 'report.md')
+const latestVersionUrl = 'https://pi.dev/api/latest-version'
+const installerReleases = 'https://pi.dev/api/installer/releases'
+const candidateHome = join(checkout, '.dev', 'pi-candidate')
+const candidateRelease = join(candidateHome, 'release')
+const reportPath = join(candidateHome, 'report.md')
+const managedNpmCi = [
+  'ci',
+  '--ignore-scripts',
+  '--min-release-age=0',
+  '--omit=dev',
+  '--include=optional',
+  '--no-fund',
+  '--no-audit',
+  '--loglevel=error',
+  '--progress=false',
+] as const
 const suites = [
   'lint',
   'smoke',
@@ -84,6 +106,8 @@ type PiVersion = typeof PiVersion.Type
 const PackageManifest = Schema.fromJsonString(
   Schema.Struct({ config: Schema.Struct({ pi: PiVersion }) })
 )
+
+const LatestRelease = Schema.fromJsonString(Schema.Struct({ version: Schema.String }))
 
 const SurfaceProbe = Schema.fromJsonString(
   Schema.Struct({
@@ -425,7 +449,7 @@ const renderReport = (comparison: Comparison, suiteRun: SuiteRun, date: string):
     renderSuiteTimes(suiteRun),
     ...(suiteRun.failed === undefined && comparison.newRelease
       ? [
-          `After merging: \`npm run pi:install -- --version ${upgrade.candidate}\`, then \`npm run profile\` after one live session.`,
+          `After merging: \`npm run pi:update -- --version ${upgrade.candidate}\`, then \`npm run profile\` after one live session.`,
         ]
       : []),
     `Verified on ${date} with Node ${process.version}.`,
@@ -466,8 +490,18 @@ const decodeVersion = (version: string) =>
     )
   )
 
-const latestVersion = run('npm', ['view', piPackage, 'version']).pipe(
-  Effect.flatMap(({ stdout }) => decodeVersion(stdout.trim()))
+const download = (url: string) =>
+  HttpClient.get(url).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap(response => response.text),
+    Effect.provide(FetchHttpClient.layer),
+    Effect.mapError(failure(`Cannot download ${url}`))
+  )
+
+const latestVersion = download(latestVersionUrl).pipe(
+  Effect.flatMap(Schema.decodeEffect(LatestRelease)),
+  Effect.mapError(failure(`Cannot read the latest Pi release from ${latestVersionUrl}`)),
+  Effect.flatMap(({ version }) => decodeVersion(version))
 )
 
 const assertClean = Effect.gen(function* () {
@@ -620,7 +654,7 @@ const changelogSections = Effect.fnUntraced(function* (
 const oneLine = (text: string): string => withoutFinalPeriod(text.replace(/\s*\n\s*/g, ' '))
 
 const auditCandidate = (candidate: PiInstallation) =>
-  run('npm', ['audit', '--json'], { cwd: candidate.root, exitCodes: [0, 1] }).pipe(
+  run('npm', ['audit', '--json', '--omit=dev'], { cwd: candidate.release, exitCodes: [0, 1] }).pipe(
     Effect.flatMap(({ stdout }) =>
       Schema.decodeEffect(AuditReport)(stdout).pipe(
         Effect.map(
@@ -653,26 +687,33 @@ const auditCandidate = (candidate: PiInstallation) =>
 const resolveCandidate = resolvePiPackage.pipe(
   Effect.provideService(
     ConfigProvider.ConfigProvider,
-    ConfigProvider.fromEnv({ env: { DEV_PI_EXECUTABLE: candidateExecutable } })
+    ConfigProvider.fromEnv({ env: { DEV_PI_RELEASE: candidateRelease } })
   )
 )
 
 const installCandidate = Effect.fnUntraced(function* (version: PiVersion) {
   const fs = yield* FileSystem.FileSystem
-  yield* fs.remove(candidatePrefix, { recursive: true, force: true })
-  yield* fs.makeDirectory(candidatePrefix, { recursive: true, mode: 0o700 })
-  const install = yield* streamed('npm', [
-    'install',
-    '--global',
-    '--prefix',
-    candidatePrefix,
-    `${piPackage}@${version}`,
-  ])
+  yield* fs.remove(candidateHome, { recursive: true, force: true })
+  yield* fs.makeDirectory(candidateRelease, { recursive: true, mode: 0o700 })
+  yield* Effect.forEach(
+    ['package.json', 'package-lock.json'],
+    file =>
+      download(`${installerReleases}/${version}/${file}`).pipe(
+        Effect.flatMap(content => fs.writeFileString(join(candidateRelease, file), content))
+      ),
+    { concurrency: 'unbounded' }
+  )
+  const install = yield* streamed('npm', managedNpmCi, {}, candidateRelease)
   if (!install.passed)
     return yield* new PiUpgradeError({
-      message: `Cannot install Pi ${version} into ${candidatePrefix}:\n${lastLines(install.output, failureTailLines)}`,
+      message: `Cannot build the managed Pi ${version} release in ${candidateRelease}:\n${lastLines(install.output, failureTailLines)}`,
     })
-  return yield* resolveCandidate
+  const candidate = yield* resolveCandidate
+  if (candidate.version !== version)
+    return yield* new PiUpgradeError({
+      message: `The managed Pi ${version} release in ${candidateRelease} contains Pi ${candidate.version}.`,
+    })
+  return candidate
 })
 
 const pinCandidate = Effect.fnUntraced(function* (upgrade: Upgrade) {
@@ -698,9 +739,7 @@ const pinCandidate = Effect.fnUntraced(function* (upgrade: Upgrade) {
 const runSuites = Effect.gen(function* () {
   const results: SuiteResult[] = []
   for (const suite of suites) {
-    const result = yield* streamed('npm', ['run', suite], {
-      DEV_PI_EXECUTABLE: candidateExecutable,
-    })
+    const result = yield* streamed('npm', ['run', suite], { DEV_PI_RELEASE: candidateRelease })
     results.push({ suite, ...result })
     if (!result.passed) break
   }
@@ -839,7 +878,7 @@ export const verifyPi = Effect.fn('verifyPi')(
       ],
       { concurrency: 'unbounded' }
     )
-    const summary = `Candidate ${upgrade.candidate} from the npm registry; baseline ${baseline.version}, the Pi dev runs today.${drifted ? ` The checkout pins ${upgrade.pin}, not the baseline.` : ''}`
+    const summary = `Candidate ${upgrade.candidate} from the pi.dev installer lockfile; baseline ${baseline.version}, the Pi dev runs today.${drifted ? ` The checkout pins ${upgrade.pin}, not the baseline.` : ''}`
     const comparison: Comparison = {
       upgrade,
       newRelease,
@@ -868,7 +907,7 @@ export const verifyPi = Effect.fn('verifyPi')(
     yield* fs.writeFileString(reportPath, report)
     if (suiteRun.failed !== undefined)
       return yield* new PiUpgradeError({
-        message: `Pi ${upgrade.candidate} failed ${suiteRun.failed.suite}; nothing was bumped or published. The candidate stays in ${candidatePrefix}.`,
+        message: `Pi ${upgrade.candidate} failed ${suiteRun.failed.suite}; nothing was bumped or published. The candidate stays in ${candidateRelease}.`,
       })
     if (newRelease)
       return yield* publish(upgrade, summary, report).pipe(
@@ -893,77 +932,81 @@ export const verifyPi = Effect.fn('verifyPi')(
   )
 )
 
-const installUnderGate = Effect.fnUntraced(function* (version: PiVersion) {
+const lockfile = Effect.fnUntraced(function* (release: string) {
+  const fs = yield* FileSystem.FileSystem
+  return yield* fs.readFileString(join(release, 'package-lock.json'))
+})
+
+const updateUnderGate = Effect.fnUntraced(function* (version: PiVersion) {
   yield* acquireMaintenance()
   const pin = yield* readPiPin
   if (pin !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing install: the checkout pins Pi ${pin}, not ${version}. Merge its verification pull request and update the checkout first.`,
+      message: `Refusing update: the checkout pins Pi ${pin}, not ${version}. Merge its verification pull request and update the checkout first.`,
+    })
+  if (Option.isSome(yield* Config.option(Config.String('DEV_PI_RELEASE'))))
+    return yield* new PiUpgradeError({
+      message: 'Refusing update: DEV_PI_RELEASE selects another Pi release. Unset it first.',
     })
   const verified = yield* Effect.option(resolveCandidate)
   if (Option.isNone(verified) || verified.value.version !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing install: no verified candidate for Pi ${version} in ${candidatePrefix}. Run npm run pi:verify -- --version ${version} first.`,
+      message: `Refusing update: no verified candidate for Pi ${version} in ${candidateRelease}. Run npm run pi:verify -- --version ${version} first.`,
     })
-  const previous = yield* Effect.option(resolvePiPackage)
-  if (Option.isSome(previous) && previous.value.root === verified.value.root)
+  const latest = yield* latestVersion
+  if (latest !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing install: dev resolves Pi from the verified candidate itself, so the global install could not be compared with it. Unset DEV_PI_EXECUTABLE first.`,
+      message: `Refusing update: pi update would install Pi ${latest}, not the verified ${version}. Run npm run pi:verify -- --version ${latest} first.`,
     })
-  const restoreHint = Option.match(
-    Option.filter(
-      Option.map(previous, installation => installation.version),
-      release => release !== version
-    ),
-    {
-      onNone: () => '',
-      onSome: release =>
-        `\nReinstall ${release} with npm install --global ${piPackage}@${release}.`,
-    }
-  )
-  const install = yield* streamed('npm', ['install', '--global', `${piPackage}@${version}`])
-  if (!install.passed)
+  const previous = yield* resolvePiPackage
+  const update = yield* streamed('pi', ['update'])
+  if (!update.passed)
     return yield* new PiUpgradeError({
-      message: `Global install of Pi ${version} failed:\n${lastLines(install.output, failureTailLines)}`,
+      message: `pi update failed; Pi ${previous.version} stays active:\n${lastLines(update.output, failureTailLines)}`,
     })
   const installed = yield* resolvePiPackage
-  const differences = yield* changedPaths(verified.value.root, installed.root)
-  if (differences.length > 0)
-    return yield* new PiUpgradeError({
-      message: `Global Pi ${version} is installed, but the Pi dev resolves at ${installed.root} differs from the verified candidate in ${differences.length} paths:\n${differences
-        .slice(0, 20)
-        .map(change => `${change.status} ${change.path}`)
-        .join('\n')}${restoreHint}`,
+  const failed = (reason: string) =>
+    new PiUpgradeError({
+      message:
+        installed.install === undefined || previous.version === installed.version
+          ? reason
+          : `${reason}\nPi ${previous.version} is still installed; reactivate it with: echo ${previous.version} > ${join(installed.install, 'current-version')}`,
     })
+  if (installed.version !== version)
+    return yield* failed(
+      `pi update activated Pi ${installed.version}, not the verified ${version}.`
+    )
+  if ((yield* lockfile(installed.release)) !== (yield* lockfile(verified.value.release)))
+    return yield* failed(
+      `pi update activated Pi ${version} from a lockfile that differs from the verified candidate's.`
+    )
   const smoke = yield* streamed('npm', ['run', 'smoke'])
   if (!smoke.passed)
-    return yield* new PiUpgradeError({
-      message: `Global Pi ${version} matches the verified candidate, but smoke failed:\n${lastLines(smoke.output, failureTailLines)}${restoreHint}`,
-    })
+    return yield* failed(
+      `Pi ${version} is the verified candidate, but smoke failed:\n${lastLines(smoke.output, failureTailLines)}`
+    )
   const fs = yield* FileSystem.FileSystem
-  yield* fs.remove(candidatePrefix, { recursive: true })
+  yield* fs.remove(candidateRelease, { recursive: true })
 }, Effect.scoped)
 
-export const installPi = Effect.fn('installPi')(
+export const updatePi = Effect.fn('updatePi')(
   function* (requested: string) {
     const version = yield* decodeVersion(requested)
-    yield* installUnderGate(version)
+    yield* updateUnderGate(version)
     const diagnostics = yield* run('dev', ['--diagnostics']).pipe(
       Effect.mapError(
         error =>
           new PiUpgradeError({
-            message: `Installed Pi ${version} globally, byte for byte the verified candidate, but dev --diagnostics failed: ${error.message}`,
+            message: `Updated Pi to the verified ${version}, but dev --diagnostics failed: ${error.message}`,
             cause: error,
           })
       )
     )
     yield* Effect.sync(() => {
-      process.stdout.write(
-        `${diagnostics.stdout}\nInstalled Pi ${version} globally, byte for byte the verified candidate.\n`
-      )
+      process.stdout.write(`${diagnostics.stdout}\nUpdated Pi to the verified ${version}.\n`)
     })
   },
   Effect.mapError(error =>
-    error instanceof PiUpgradeError ? error : failure('Pi install failed')(error)
+    error instanceof PiUpgradeError ? error : failure('Pi update failed')(error)
   )
 )

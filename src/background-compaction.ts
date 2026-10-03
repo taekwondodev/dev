@@ -13,7 +13,7 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import type * as Native from '../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js'
 import type * as VirtualModels from '../node_modules/@earendil-works/pi-coding-agent/dist/core/virtual-models.js'
-import type * as Keys from '../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/keys.js'
+import type * as Keys from '../node_modules/@earendil-works/pi-tui/dist/keys.js'
 import { PiError, type PiApi } from './pi-runtime.ts'
 import {
   BACKGROUND_COMPACTION_USAGE,
@@ -107,10 +107,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
     catch: cause => new PiError({ message: 'Cannot load native Pi model routing', cause }),
   })
   const keys: typeof Keys = yield* Effect.tryPromise({
-    try: () =>
-      import(
-        pathToFileURL(join(packageRoot, 'node_modules/@earendil-works/pi-tui/dist/keys.js')).href
-      ),
+    try: () => import(pathToFileURL(join(packageRoot, '../pi-tui/dist/keys.js')).href),
     catch: cause => new PiError({ message: 'Cannot load Pi terminal key parsing', cause }),
   })
   const services = yield* Effect.context<never>()
