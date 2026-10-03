@@ -633,7 +633,7 @@ try {
   )
 
   await claim(
-    'quit prefetch overlaps local inventory, and gated release retains a workspace changed while the provider is pending',
+    "quit prefetch starts every task's recorded pull request read before any local inventory, and gated release retains a workspace changed while the provider is pending",
     async () => {
       const asyncRepo = join(sandbox, 'async-overlap-repo')
       mkdirSync(asyncRepo)
@@ -659,7 +659,18 @@ try {
         ref: 'refs/heads/main',
         pullRequest: 7,
       })
+      const otherCheckout = join(sandbox, 'async-overlap-other')
+      git(['worktree', 'add', '--quiet', '-b', 'async-other', otherCheckout, 'main'], asyncRepo)
+      const other = await reserve(otherCheckout)
+      await other.owner.close()
+      await lifecycle.recordTarget(other.taskId, {
+        kind: 'github',
+        repository: 'owner/async-overlap',
+        ref: 'refs/heads/main',
+        pullRequest: 8,
+      })
 
+      const started: number[] = []
       let graphqlCalls = 0
       let synchronousGraphqlCalls = 0
       let resolveResponse:
@@ -680,11 +691,10 @@ try {
             throw new Error('the async evidence must populate the shared reader cache')
           },
           async (repository, ref, number, timeoutMs) => {
-            assert.deepEqual(
-              [repository, ref, number],
-              ['owner/async-overlap', 'refs/heads/main', 7]
-            )
+            assert.deepEqual([repository, ref], ['owner/async-overlap', 'refs/heads/main'])
             assert.ok(timeoutMs > 0 && timeoutMs <= 30_000, `invalid timeout ${timeoutMs}`)
+            started.push(number)
+            if (number !== 7) return { status: 'not-found', text: '' }
             graphqlCalls += 1
             return response
           }
@@ -704,7 +714,11 @@ try {
           },
           readers
         )
-        assert.equal(graphqlCalls, 1, 'the explicit PR read starts before local inventory finishes')
+        assert.deepEqual(
+          started.toSorted(),
+          [7, 8],
+          'every task with a recorded pull request starts its read before the first task is assessed'
+        )
         if (resolveResponse === undefined) throw new Error('async GraphQL request did not start')
         writeFileSync(join(child.checkout, 'tracked.txt'), 'changed during provider wait\n')
         resolveResponse({
