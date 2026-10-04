@@ -24,7 +24,7 @@ Run `gh issue view <number> --comments`.
 
 ## Quick issue capture
 
-Used by `/capture-issue`. Create a new issue with exactly one fixed category label (`bug` or `enhancement`) and the configured `needs-grilling` state label. The issue is intentionally incomplete and must not receive `ready-for-agent` until a complete spec exists.
+Used by `/capture-issue`. Read `docs/agents/triage-labels.md` for the category and initial state labels. The issue is intentionally incomplete and must not receive `ready-for-agents` until a complete spec exists.
 
 When `/to-spec` completes an existing issue, update its body in place with `gh issue edit --body-file`, then apply and remove labels in the same transition. Do not create a replacement issue.
 

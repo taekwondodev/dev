@@ -1,18 +1,17 @@
 # Issue Labels
 
-The workflow speaks in terms of canonical category, state, and workflow-marker roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+Use the following label names.
 
-### Category labels
+Category: `bug` or `enhancement`.
 
-`bug` and `enhancement` are fixed category labels in this workflow. They are not part of the configurable triage-state mapping.
+## Readiness
 
-### Issue state labels
+- `needs-grilling`: initial readiness for quick captures awaiting assessment or clarification.
+- `ready-for-agents`: apply when a complete spec or implementation ticket is published.
 
-| Canonical role    | Label in this tracker |
-| ----------------- | --------------------- |
-| `needs-grilling`  | `needs-grilling`      |
-| `ready-for-agent` | `ready-for-agent`     |
+## Activity
 
-`needs-grilling` is the initial state for a quick issue that is intentionally waiting for a future grilling session. `ready-for-agent` replaces it when the complete spec is ready.
+- `parked`: default for new issues and tickets; also apply when the user explicitly parks work.
+- `in-flight`: apply when the user explicitly starts, resumes, or selects an issue as current work.
 
-When a skill mentions a role or marker, use the corresponding label string from this table. Don't create duplicate labels for the same role.
+Keep exactly one readiness label and one activity label per issue. When changing a dimension, replace its label in one update, preserve the other dimension and unrelated labels, then read back the result.
