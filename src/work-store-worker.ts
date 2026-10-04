@@ -13,7 +13,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 import { setTimeout as delay } from 'node:timers/promises'
-import { Option, Schema } from 'effect'
+import * as NodeWorkerRunner from '@effect/platform-node/NodeWorkerRunner'
+import { Effect, Option, Schema } from 'effect'
+import * as WorkerRunner from 'effect/workers/WorkerRunner'
 import {
   OwnerIdentitySchema,
   asAttemptId,
@@ -721,27 +723,27 @@ const execute = (request: RpcRequest): unknown => {
   return fail('invalid-request')
 }
 
-const port = parentPort
-
-const sendFailure = (id: number, code: string): void => {
-  port?.postMessage({ id, ok: false, code })
+const closeConnection = (): void => {
+  if (dbConnection?.isOpen === true) dbConnection.close()
 }
 
-try {
-  if (port === null) throw new Error('Store worker has no parent port')
+const open = async (): Promise<unknown> => {
   const data = decodeWorkerData(workerData)
   const initialized = await initializeDatabase(data)
   worker = { data, sqliteVersion: initialized.sqliteVersion }
-
   dbConnection = initialized.database
   preparedStatements = prepareStatements(initialized.database)
-  port.postMessage({
+  return {
     type: 'ready',
     sqliteVersion: initialized.sqliteVersion,
     journalMode: fieldText(connection().prepare('PRAGMA journal_mode').get(), 'journal_mode'),
     synchronous: numberField(connection().prepare('PRAGMA synchronous').get() ?? {}, 'synchronous'),
-  })
-  port.on('message', (raw: unknown) => {
+  }
+}
+
+const respond =
+  (runner: WorkerRunner.WorkerRunner) =>
+  (portId: number, raw: unknown): void => {
     let requestId = 0
     try {
       const envelope = decodeRpcEnvelope(raw)
@@ -754,18 +756,38 @@ try {
         cleanup:
           envelope.request.op === 'ack' || envelope.request.op === 'close' ? [] : cleanupIds(),
       }
-      port.postMessage(response)
-      if (envelope.request.op === 'close') port.close()
+      runner.sendUnsafe(portId, response)
+      if (envelope.request.op === 'close') parentPort?.close()
     } catch (cause) {
-      sendFailure(requestId, errorCode(cause))
+      runner.sendUnsafe(portId, { id: requestId, ok: false, code: errorCode(cause) })
     }
-  })
-} catch (cause) {
-  port?.postMessage({ type: 'startup-error', code: errorCode(cause) })
+  }
+
+const refuseStartup = (runner: WorkerRunner.WorkerRunner, code: string): void => {
+  runner.sendUnsafe(0, { type: 'startup-error', code })
   try {
-    dbConnection?.close()
+    closeConnection()
   } catch {
     process.exitCode = 1
   }
-  port?.close()
+  parentPort?.close()
 }
+
+const serve = Effect.gen(function* () {
+  const platform = yield* WorkerRunner.WorkerRunnerPlatform
+  const runner = yield* platform.start()
+  yield* Effect.tryPromise({ try: open, catch: errorCode }).pipe(
+    Effect.matchEffect({
+      onFailure: code => Effect.sync(() => refuseStartup(runner, code)),
+      onSuccess: ready =>
+        runner
+          .send(0, ready)
+          .pipe(
+            Effect.andThen(runner.run<void, never, never>(respond(runner))),
+            Effect.ensuring(Effect.sync(closeConnection))
+          ),
+    })
+  )
+})
+
+Effect.runFork(serve.pipe(Effect.provide(NodeWorkerRunner.layer)))

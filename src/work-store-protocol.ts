@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { Schema, type Option } from 'effect'
 import { AttemptId, AttemptRecordSchema, SessionId } from './work-domain.ts'
 
 const RpcId = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
@@ -119,7 +119,6 @@ export const WorkerMessageSchema = Schema.Union([
 ])
 
 export type WorkerMessage = typeof WorkerMessageSchema.Type
-export type ReadyMessage = Extract<WorkerMessage, { readonly type: 'ready' }>
 
 export const ListValueSchema = Schema.Struct({
   records: Schema.Array(AttemptRecordSchema),
@@ -136,8 +135,8 @@ export type ListValue = typeof ListValueSchema.Type
 export const decodeRpcEnvelope: (value: unknown) => RpcEnvelope =
   Schema.decodeUnknownSync(RpcEnvelopeSchema)
 
-export const decodeWorkerMessage: (value: unknown) => WorkerMessage =
-  Schema.decodeUnknownSync(WorkerMessageSchema)
+export const decodeWorkerMessage: (value: unknown) => Option.Option<WorkerMessage> =
+  Schema.decodeUnknownOption(WorkerMessageSchema)
 
 export const decodeWorkerData: (value: unknown) => WorkerData =
   Schema.decodeUnknownSync(WorkerDataSchema)
