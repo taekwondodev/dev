@@ -20,7 +20,7 @@ A lead or background shell is an opaque operation within its conversation's writ
 
 The lead records tool effects after review under the [extension policy](#executable-extensions), never by name alone. The `workspace` tool uses read admission: its writes are authority records, and resume goes through the host's rebind path. A `work` call acquires writer admission while it runs, after the host tool gate. A refusal returns an error result requesting termination rather than throwing, because a thrown error cannot request termination.
 
-Native Pi batching has one accepted limit: a refused unclassified tool earlier in a batch that later parks the host can cost another request in the old context; calls in that request are refused as parked. Changing this requires a handoff from an aborted run and real-TUI proof that an extension abort is not treated as user Escape. The adapter and event regressions are covered by the [Pi integration checks](../DEVELOPMENT.md#pi-upgrade).
+Native Pi batching has one accepted limit: a refused unclassified tool earlier in a batch that later parks the host can cost another request in the old context; calls in that request are refused as parked. Changing this requires a handoff from an aborted run and real-TUI proof that an extension abort is not treated as user Escape. The adapter and event regressions are covered by the [Pi integration checks](../DEVELOPMENT.md#upgrades).
 
 A read-only leaf is the only read admitted outside the conversation's binding. The attachment admits it on its coordinator's started process grant, issued to that same attachment. The leaf records a use settled with its own process family, but holds no separate gate because the coordinator already holds presence. This lets a writer's reviewers see uncommitted files without unrecorded participation. [Bounded nesting](https://github.com/taekwondodev/dev/issues/19) records the requirement.
 
@@ -38,7 +38,7 @@ Claim resume/replacement targets before Pi opens them where its lifecycle permit
 
 Resume and stored-session import attach before teardown. New, fork and copied import attach in the runtime factory after teardown, so authority refusal can end the session, an accepted lifecycle limit. Fork creates a new conversation without sharing the original task; first-write isolation is intentional. Quit cancels an authority-started switch that the host has not acted on and waits for settlement.
 
-Cross-repository conversation publication is recoverable, not atomic. Keep uncertain source and destination facts rather than rolling back a transition that may have reached the host. Reload invalidates Pi contexts, so delayed handoffs retain only session controls captured while live. Native discovery, path resolution and header dependencies are exercised by the [host-session checks](../DEVELOPMENT.md#pi-upgrade).
+Cross-repository conversation publication is recoverable, not atomic. Keep uncertain source and destination facts rather than rolling back a transition that may have reached the host. Reload invalidates Pi contexts, so delayed handoffs retain only session controls captured while live. Native discovery, path resolution and header dependencies are exercised by the [host-session checks](../DEVELOPMENT.md#upgrades).
 
 ### Native file destinations
 

@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Clock, Effect, Schema, Stream } from 'effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process'
@@ -9,6 +10,16 @@ export class CommandError extends Schema.TaggedError<CommandError>()('CommandErr
 }) {}
 
 export const checkout = fileURLToPath(new URL('..', import.meta.url))
+
+export const upgradeHome = join(checkout, '.dev', 'upgrade')
+
+export const npmInstallFlags = [
+  '--ignore-scripts',
+  '--no-audit',
+  '--no-fund',
+  '--loglevel=error',
+  '--progress=false',
+] as const
 
 const keptOutputLength = 64 * 1024
 

@@ -28,7 +28,7 @@
     "update": "node scripts/maintain.ts update",
     "rollback": "node scripts/maintain.ts rollback",
     "profile": "node scripts/maintain.ts profile",
-    "pi:verify": "node scripts/maintain.ts pi-verify",
+    "upgrade": "node scripts/maintain.ts upgrade",
     "pi:update": "node scripts/maintain.ts pi-update",
     "profile:check": "node tests/usage-profile-check.ts",
     "types:pi": "node scripts/resolve-pi.ts",

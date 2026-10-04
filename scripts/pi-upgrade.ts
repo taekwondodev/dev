@@ -1,20 +1,13 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import {
-  Array as Arr,
-  Config,
-  ConfigProvider,
-  DateTime,
-  Effect,
-  FileSystem,
-  Option,
-  Schema,
-} from 'effect'
+import { Array as Arr, Config, ConfigProvider, Effect, FileSystem, Option, Schema } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientResponse } from 'effect/unstable/http'
 import { errorText } from '../src/error-text.ts'
-import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
+import { resolvePiPackage } from '../src/pi-runtime.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
-import { checkout, checkoutIsClean, git, run, streamed } from './checkout.ts'
+import { checkout, run, streamed, upgradeHome } from './checkout.ts'
+import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
+import { cell, collapsed, counted, fence, lastLines, listed } from './report.ts'
 
 export class PiUpgradeError extends Schema.TaggedError<PiUpgradeError>()('PiUpgradeError', {
   message: Schema.String,
@@ -24,9 +17,7 @@ export class PiUpgradeError extends Schema.TaggedError<PiUpgradeError>()('PiUpgr
 const manifestPath = join(checkout, 'package.json')
 const latestVersionUrl = 'https://pi.dev/api/latest-version'
 const installerReleases = 'https://pi.dev/api/installer/releases'
-const candidateHome = join(checkout, '.dev', 'pi-candidate')
-const candidateRelease = join(candidateHome, 'release')
-const reportPath = join(candidateHome, 'report.md')
+export const candidateRelease = join(upgradeHome, 'pi')
 const managedNpmCi = [
   'ci',
   '--ignore-scripts',
@@ -38,17 +29,6 @@ const managedNpmCi = [
   '--loglevel=error',
   '--progress=false',
 ] as const
-const suites = [
-  'lint',
-  'smoke',
-  'workspace:check',
-  'workspace:tui',
-  'workspace:github',
-  'work:check',
-] as const
-type Suite = (typeof suites)[number]
-const pullRequestBodyLimit = 65_536
-const suiteTimesReserve = 64
 const piSources = 'https://github.com/earendil-works/pi/blob/main/packages/coding-agent/'
 const failureTailLines = 80
 
@@ -98,10 +78,10 @@ const unusedSurfaces = /\bMCP\b|codemode|\btool[ _]search\b/i
 
 const repeatedSection = /^### New Features\s*$/
 
-const PiVersion = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/)).pipe(
+export const PiVersion = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/)).pipe(
   Schema.brand('dev/PiVersion')
 )
-type PiVersion = typeof PiVersion.Type
+export type PiVersion = typeof PiVersion.Type
 
 const PackageManifest = Schema.fromJsonString(
   Schema.Struct({ config: Schema.Struct({ pi: PiVersion }) })
@@ -114,25 +94,6 @@ const SurfaceProbe = Schema.fromJsonString(
     exports: Schema.Array(Schema.String),
     tools: Schema.Record(Schema.String, Schema.String),
   })
-)
-
-const severities = ['critical', 'high', 'moderate', 'low', 'info'] as const
-type Severity = (typeof severities)[number]
-
-const AuditReport = Schema.fromJsonString(
-  Schema.Struct({
-    vulnerabilities: Schema.Record(
-      Schema.String,
-      Schema.Struct({ severity: Schema.Literals(severities) })
-    ),
-  })
-)
-
-const AuditFailure = Schema.fromJsonString(
-  Schema.Union([
-    Schema.Struct({ error: Schema.Struct({ summary: Schema.NonEmptyString }) }),
-    Schema.Struct({ message: Schema.String }),
-  ])
 )
 
 const surfaceProbe = `
@@ -148,7 +109,7 @@ process.stdout.write(JSON.stringify({ exports: Object.keys(api).sort(), tools })
 
 type PiInstallation = Effect.Success<typeof resolvePiPackage>
 
-interface Upgrade {
+interface PiPins {
   readonly pin: PiVersion
   readonly candidate: PiVersion
 }
@@ -167,16 +128,6 @@ type Changelog =
       readonly leftOut: readonly LineToRead[]
     }
 
-type AuditSummary =
-  | {
-      readonly kind: 'report'
-      readonly bySeverity: readonly {
-        readonly severity: Severity
-        readonly packages: readonly string[]
-      }[]
-    }
-  | { readonly kind: 'unavailable'; readonly reason: string }
-
 interface Delta {
   readonly added: readonly string[]
   readonly removed: readonly string[]
@@ -194,21 +145,8 @@ interface DocChange {
   readonly change: string
 }
 
-interface SuiteResult {
-  readonly suite: Suite
-  readonly passed: boolean
-  readonly ms: number
-  readonly output: string
-}
-
-interface SuiteRun {
-  readonly results: readonly SuiteResult[]
-  readonly failed: SuiteResult | undefined
-}
-
-interface Comparison {
-  readonly upgrade: Upgrade
-  readonly newRelease: boolean
+export interface PiComparison {
+  readonly pins: PiPins
   readonly drifted: boolean
   readonly summary: string
   readonly changelog: Changelog
@@ -217,21 +155,6 @@ interface Comparison {
   readonly docs: readonly DocChange[]
   readonly audit: AuditSummary
 }
-
-const lastLines = (output: string, count: number): string =>
-  output.trimEnd().split('\n').slice(-count).join('\n')
-
-const fence = (language: string, body: string): string => {
-  const longest = Math.max(0, ...Array.from(body.matchAll(/`+/g), match => match[0].length))
-  const marks = '`'.repeat(Math.max(3, longest + 1))
-  return `${marks}${language}\n${body.trimEnd()}\n${marks}`
-}
-
-const counted = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`
-
-const withoutFinalPeriod = (text: string): string => text.trim().replace(/\.+$/, '')
-
-const listed = (names: readonly string[]): string => names.map(name => `\`${name}\``).join(', ')
 
 const withoutReferences = (line: string): string =>
   line.replace(/\s*\((?:\[[^\]]+\]\([^)]+\)(?:,\s*|\s+by\s+)?)+\)(\.?)$/, '$1')
@@ -313,34 +236,28 @@ const leftOutNote = (count: number): string =>
 
 const changelogReading = ({
   changelog,
-  upgrade,
+  pins,
   drifted,
-}: Comparison): {
-  readonly headline: string
+}: PiComparison): {
   readonly row: string
   readonly lines: readonly LineToRead[]
   readonly leftOut: readonly LineToRead[]
 } => {
   switch (changelog.kind) {
     case 'same release':
-      return { headline: 'nothing to read', row: 'none, same release', lines: [], leftOut: [] }
+      return { row: 'none, same release', lines: [], leftOut: [] }
     case 'not compared':
       return {
-        headline: 'changelog not compared',
         row: "not compared: read Pi's changelog in full",
         lines: [],
         leftOut: [],
       }
     case 'range': {
       const { lines, leftOut } = changelog
-      const since = drifted ? ` since the pinned ${upgrade.pin}` : ''
+      const since = drifted ? ` since the pinned ${pins.pin}` : ''
       const leftOutSuffix =
         leftOut.length === 0 ? '' : `; ${leftOut.length} more ${leftOutNote(leftOut.length)}`
       return {
-        headline:
-          lines.length === 0
-            ? 'nothing to read'
-            : `${counted(lines.length, 'changelog line')} to read`,
         row: `${lines.length === 0 ? 'none' : counted(lines.length, 'line')}${since}${leftOutSuffix}`,
         lines,
         leftOut,
@@ -351,26 +268,6 @@ const changelogReading = ({
 
 const renderLines = (lines: readonly LineToRead[]): string =>
   lines.map(line => `- [${line.surfaces.join(', ')}] ${line.text}`).join('\n')
-
-const auditRow = (audit: AuditSummary): string => {
-  if (audit.kind === 'unavailable') return `unavailable: ${audit.reason}`
-  if (audit.bySeverity.length === 0) return 'no known vulnerabilities'
-  return audit.bySeverity
-    .map(({ severity, packages }) => `${packages.length} ${severity}: ${packages.join(', ')}`)
-    .join('; ')
-}
-
-const suitesRow = ({ results, failed }: SuiteRun): string => {
-  const passed = results.filter(result => result.passed).length
-  return failed === undefined
-    ? `${passed}/${suites.length} green`
-    : `red at \`${failed.suite}\` after ${passed}/${suites.length} passed`
-}
-
-const cell = (text: string): string => text.replaceAll('|', String.raw`\|`)
-
-const collapsed = (summary: string, body: string): string =>
-  `<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`
 
 const renderDocs = (pages: readonly string[], changes: readonly DocChange[]): string => {
   const unchanged = pages.filter(page => !changes.some(change => change.page === page))
@@ -398,44 +295,21 @@ const renderDeclarations = (declarations: Delta): string => {
   )
 }
 
-const renderSuiteTimes = ({ results }: SuiteRun): string =>
-  collapsed(
-    'Suites and times',
-    [
-      '| Suite | Result | Time |',
-      '| --- | --- | --- |',
-      ...suites.map(suite => {
-        const ran = results.find(result => result.suite === suite)
-        if (ran === undefined) return `| \`${suite}\` | not run | |`
-        return `| \`${suite}\` | ${ran.passed ? 'passed' : 'failed'} | ${Math.round(ran.ms / 1000)} s |`
-      }),
-    ].join('\n')
-  )
+export const piRows = (comparison: PiComparison): readonly string[] => [
+  `| Pi APIs dev uses | ${cell(apisDevUses(comparison.surfaces))} |`,
+  `| Pi changelog to read | ${cell(changelogReading(comparison).row)} |`,
+  `| Pi audit | ${cell(auditRow(comparison.audit))} |`,
+]
 
-const renderReport = (comparison: Comparison, suiteRun: SuiteRun, date: string): string => {
-  const { upgrade } = comparison
+export const piSections = (
+  comparison: PiComparison,
+  { docs }: { readonly docs: boolean }
+): readonly string[] => {
   const reading = changelogReading(comparison)
-  const headline =
-    suiteRun.failed === undefined
-      ? `suites green, ${reading.headline}`
-      : `suites red at ${suiteRun.failed.suite}`
-  return `${[
-    `## Pi ${upgrade.candidate}: ${headline}`,
-    comparison.summary,
-    [
-      '| Check | Result |',
-      '| --- | --- |',
-      `| Suites | ${cell(suitesRow(suiteRun))} |`,
-      `| APIs dev uses | ${cell(apisDevUses(comparison.surfaces))} |`,
-      `| Changelog to read | ${cell(reading.row)} |`,
-      `| Audit | ${cell(auditRow(comparison.audit))} |`,
-    ].join('\n'),
-    ...(suiteRun.failed === undefined
-      ? []
-      : [
-          `### \`${suiteRun.failed.suite}\` failed\n\n${fence('text', lastLines(suiteRun.failed.output, failureTailLines))}`,
-        ]),
-    ...(reading.lines.length > 0 ? [`### Changelog to read\n\n${renderLines(reading.lines)}`] : []),
+  return [
+    ...(reading.lines.length > 0
+      ? [`### Pi changelog to read\n\n${renderLines(reading.lines)}`]
+      : []),
     ...(reading.leftOut.length > 0
       ? [
           collapsed(
@@ -444,32 +318,15 @@ const renderReport = (comparison: Comparison, suiteRun: SuiteRun, date: string):
           ),
         ]
       : []),
-    renderDocs(comparison.pages, comparison.docs),
+    docs
+      ? renderDocs(comparison.pages, comparison.docs)
+      : `Changed Pi docs: ${comparison.docs.length === 0 ? 'none' : `${counted(comparison.docs.length, 'page')}, diffs in the saved report`}.`,
     renderDeclarations(comparison.surfaces.declarations),
-    renderSuiteTimes(suiteRun),
-    ...(suiteRun.failed === undefined && comparison.newRelease
-      ? [
-          `After merging: \`npm run pi:update -- --version ${upgrade.candidate}\`, then \`npm run profile\` after one live session.`,
-        ]
-      : []),
-    `Verified on ${date} with Node ${process.version}.`,
-  ].join('\n\n')}\n`
+  ]
 }
 
 const failure = (what: string) => (cause: unknown) =>
   new PiUpgradeError({ message: `${what}: ${errorText(cause)}`, cause })
-
-const warnOnFailure =
-  (hint: string) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<void, never, R> =>
-    effect.pipe(
-      Effect.asVoid,
-      Effect.catch(error =>
-        Effect.sync(() => {
-          process.stderr.write(`${hint}: ${errorText(error)}\n`)
-        })
-      )
-    )
 
 export const readPiPin = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -498,19 +355,11 @@ const download = (url: string) =>
     Effect.mapError(failure(`Cannot download ${url}`))
   )
 
-const latestVersion = download(latestVersionUrl).pipe(
+export const latestVersion = download(latestVersionUrl).pipe(
   Effect.flatMap(Schema.decodeEffect(LatestRelease)),
   Effect.mapError(failure(`Cannot read the latest Pi release from ${latestVersionUrl}`)),
   Effect.flatMap(({ version }) => decodeVersion(version))
 )
-
-const assertClean = Effect.gen(function* () {
-  if (!(yield* checkoutIsClean))
-    return yield* new PiUpgradeError({
-      message:
-        'Refusing Pi verification: dev checkout has local changes. Preserve them explicitly before verifying.',
-    })
-})
 
 const diffNoIndex = Effect.fnUntraced(function* (
   from: string,
@@ -635,7 +484,7 @@ const compareDocs = Effect.fnUntraced(function* (
 })
 
 const changelogSections = Effect.fnUntraced(function* (
-  upgrade: Upgrade,
+  pins: PiPins,
   newRelease: boolean,
   candidate: PiInstallation
 ) {
@@ -644,43 +493,12 @@ const changelogSections = Effect.fnUntraced(function* (
   const sections = (yield* fs.readFileString(join(candidate.root, 'CHANGELOG.md'))).split(
     /^(?=## )/m
   )
-  const start = sections.findIndex(section => section.startsWith(`## [${upgrade.candidate}]`))
-  const end = sections.findIndex(section => section.startsWith(`## [${upgrade.pin}]`))
+  const start = sections.findIndex(section => section.startsWith(`## [${pins.candidate}]`))
+  const end = sections.findIndex(section => section.startsWith(`## [${pins.pin}]`))
   return start === -1 || end === -1 || start > end
     ? ({ kind: 'not compared' } satisfies Changelog)
     : readChangelog(sections.slice(start, end))
 })
-
-const oneLine = (text: string): string => withoutFinalPeriod(text.replace(/\s*\n\s*/g, ' '))
-
-const auditCandidate = (candidate: PiInstallation) =>
-  run('npm', ['audit', '--json', '--omit=dev'], { cwd: candidate.release, exitCodes: [0, 1] }).pipe(
-    Effect.flatMap(({ stdout }) =>
-      Schema.decodeEffect(AuditReport)(stdout).pipe(
-        Effect.map((report): AuditSummary => ({
-          kind: 'report',
-          bySeverity: severities.flatMap(severity => {
-            const packages = Object.entries(report.vulnerabilities)
-              .filter(([, vulnerability]) => vulnerability.severity === severity)
-              .map(([name]) => name)
-            return packages.length > 0 ? [{ severity, packages }] : []
-          }),
-        })),
-        Effect.catch(decodeError =>
-          Schema.decodeEffect(AuditFailure)(stdout).pipe(
-            Effect.map(npmError =>
-              'error' in npmError ? npmError.error.summary : npmError.message
-            ),
-            Effect.orElseSucceed(() => errorText(decodeError)),
-            Effect.map((reason): AuditSummary => ({ kind: 'unavailable', reason: oneLine(reason) }))
-          )
-        )
-      )
-    ),
-    Effect.catch(error =>
-      Effect.succeed<AuditSummary>({ kind: 'unavailable', reason: oneLine(errorText(error)) })
-    )
-  )
 
 const resolveCandidate = resolvePiPackage.pipe(
   Effect.provideService(
@@ -691,8 +509,9 @@ const resolveCandidate = resolvePiPackage.pipe(
 
 const installCandidate = Effect.fnUntraced(function* (version: PiVersion) {
   const fs = yield* FileSystem.FileSystem
-  yield* fs.remove(candidateHome, { recursive: true, force: true })
-  yield* fs.makeDirectory(candidateRelease, { recursive: true, mode: 0o700 })
+  yield* fs.makeDirectory(upgradeHome, { recursive: true, mode: 0o700 })
+  yield* fs.remove(candidateRelease, { recursive: true, force: true })
+  yield* fs.makeDirectory(candidateRelease, { mode: 0o700 })
   yield* Effect.forEach(
     ['package.json', 'package-lock.json'],
     file =>
@@ -714,247 +533,59 @@ const installCandidate = Effect.fnUntraced(function* (version: PiVersion) {
   return candidate
 })
 
-const pinCandidate = Effect.fnUntraced(function* (upgrade: Upgrade) {
-  const fs = yield* FileSystem.FileSystem
-  const original = yield* fs.readFileString(manifestPath)
-  const entry = `"pi": "${upgrade.pin}"`
-  if (original.split(entry).length !== 2)
-    return yield* new PiUpgradeError({
-      message: `package.json must contain ${entry} exactly once to bump the Pi pin`,
-    })
-  const restore = Effect.gen(function* () {
-    const { exitCode } = yield* run('git', ['diff', '--quiet', '--', 'package.json'], {
-      exitCodes: [0, 1],
-    })
-    if (exitCode === 1) yield* fs.writeFileString(manifestPath, original)
-  })
-  yield* Effect.acquireRelease(
-    fs.writeFileString(manifestPath, original.replace(entry, `"pi": "${upgrade.candidate}"`)),
-    () => restore.pipe(warnOnFailure('Cannot restore the Pi pin; run git restore package.json'))
+export const comparePi = Effect.fnUntraced(function* (pin: PiVersion, version: PiVersion) {
+  const pins: PiPins = { pin, candidate: version }
+  const baseline = yield* resolvePiPackage
+  const newRelease = pins.pin !== pins.candidate
+  const drifted = baseline.version !== pins.pin
+  const candidate = yield* installCandidate(pins.candidate)
+  const pages = yield* contractPages
+  const [changelog, surfaces, docs, audit] = yield* Effect.all(
+    [
+      changelogSections(pins, newRelease, candidate),
+      compareSurfaces(baseline, candidate),
+      compareDocs(pages, baseline, candidate),
+      auditAt(candidate.release, 'production'),
+    ],
+    { concurrency: 'unbounded' }
   )
+  return {
+    pins,
+    drifted,
+    summary: `Pi ${pins.candidate} from the pi.dev installer lockfile; baseline ${baseline.version}, the Pi dev runs today.${drifted ? ` The base pins ${pins.pin}, not the baseline.` : ''}`,
+    changelog,
+    surfaces,
+    pages,
+    docs,
+    audit,
+  } satisfies PiComparison
 })
-
-const runSuites = Effect.gen(function* () {
-  const results: SuiteResult[] = []
-  for (const suite of suites) {
-    const result = yield* streamed('npm', ['run', suite], { DEV_PI_RELEASE: candidateRelease })
-    results.push({ suite, ...result })
-    if (!result.passed) break
-  }
-  return { results, failed: results.find(result => !result.passed) } satisfies SuiteRun
-}).pipe(
-  Effect.ensuring(
-    linkPiDeclarations.pipe(
-      warnOnFailure(
-        'Cannot link the Pi declarations back to the installed Pi; run npm run types:pi'
-      )
-    )
-  )
-)
-
-const publicationBranch = (upgrade: Upgrade): string => `chore/pi-${upgrade.candidate}`
-
-const pullRequestTitle = (upgrade: Upgrade): string => `chore(pi): pin Pi ${upgrade.candidate}`
-
-const pullRequestArguments = (upgrade: Upgrade): readonly string[] => [
-  'pr',
-  'create',
-  '--base',
-  'main',
-  '--head',
-  publicationBranch(upgrade),
-  '--title',
-  pullRequestTitle(upgrade),
-  '--body-file',
-  reportPath,
-]
-
-const shellWord = (argument: string): string =>
-  /^[\w./:@-]+$/.test(argument) ? argument : `"${argument}"`
-
-const openPullRequestCommand = (upgrade: Upgrade): string =>
-  ['gh', ...pullRequestArguments(upgrade)].map(shellWord).join(' ')
-
-const publicationRefusal = Effect.fnUntraced(function* (upgrade: Upgrade, reportLength: number) {
-  if (reportLength > pullRequestBodyLimit)
-    return Option.some(
-      `the report exceeds the ${pullRequestBodyLimit}-character pull request body; verify an intermediate release first`
-    )
-  const branch = yield* git(['branch', '--show-current'])
-  if (branch !== 'main')
-    return Option.some(`the checkout is on ${branch === '' ? 'a detached HEAD' : branch}, not main`)
-  yield* git(['fetch', '--quiet', 'origin', 'main'])
-  if ((yield* git(['rev-parse', 'HEAD'])) !== (yield* git(['rev-parse', 'origin/main'])))
-    return Option.some('main is not at origin/main; run npm run update first')
-  const head = publicationBranch(upgrade)
-  const local = (yield* git(['branch', '--list', head])) !== ''
-  if ((yield* git(['ls-remote', '--heads', 'origin', head])) !== '')
-    return Option.some(
-      `branch ${head} already exists on origin; open its pull request with ${openPullRequestCommand(upgrade)}, or delete it with git push origin --delete ${head}${local ? ` and git branch -D ${head}` : ''}`
-    )
-  if (local)
-    return Option.some(`branch ${head} already exists; delete it with git branch -D ${head}`)
-  return Option.none<string>()
-})
-
-const announcePublication = Effect.fnUntraced(function* (upgrade: Upgrade, reportLength: number) {
-  const notice = yield* publicationRefusal(upgrade, reportLength).pipe(
-    Effect.map(
-      Option.map(
-        reason => `This run verifies Pi ${upgrade.candidate} but will not publish it: ${reason}.`
-      )
-    ),
-    Effect.catch(error =>
-      Effect.succeedSome(
-        `This run verifies Pi ${upgrade.candidate}; publication could not be checked before the suites and is checked again after them: ${withoutFinalPeriod(error.message)}.`
-      )
-    )
-  )
-  if (Option.isSome(notice))
-    yield* Effect.sync(() => {
-      process.stderr.write(`${notice.value}\n`)
-    })
-})
-
-const publish = Effect.fnUntraced(function* (upgrade: Upgrade, summary: string, report: string) {
-  const version = upgrade.candidate
-  const refuse = (reason: string) =>
-    new PiUpgradeError({ message: `Not publishing Pi ${version}: ${reason}.` })
-  const refusal = yield* publicationRefusal(upgrade, report.length)
-  if (Option.isSome(refusal)) return yield* refuse(refusal.value)
-  if ((yield* git(['status', '--porcelain'])) !== ' M package.json')
-    return yield* refuse('the suites changed files other than the Pi pin')
-  const head = publicationBranch(upgrade)
-  const subject = pullRequestTitle(upgrade)
-  yield* git(['switch', '--create', head])
-  yield* Effect.gen(function* () {
-    yield* git(['commit', '--message', subject, '--message', summary, '--', 'package.json'])
-    yield* git(['push', '--set-upstream', 'origin', head])
-  }).pipe(
-    Effect.ensuring(
-      git(['switch', 'main']).pipe(warnOnFailure('Cannot switch the checkout back to main'))
-    ),
-    Effect.onError(() =>
-      git(['branch', '--delete', '--force', head]).pipe(
-        warnOnFailure(`Cannot delete the unpublished branch ${head}`)
-      )
-    )
-  )
-  const pullRequest = yield* run('gh', pullRequestArguments(upgrade)).pipe(
-    Effect.mapError(
-      error =>
-        new PiUpgradeError({
-          message: `Pushed ${head}, but no pull request was opened: ${withoutFinalPeriod(error.message)}. Open it with ${openPullRequestCommand(upgrade)}.`,
-          cause: error,
-        })
-    )
-  )
-  yield* Effect.sync(() => {
-    process.stdout.write(`Opened ${pullRequest.stdout.trim()} from ${head}.\n`)
-  })
-})
-
-export const verifyPi = Effect.fn('verifyPi')(
-  function* (requested: string | undefined) {
-    yield* acquireMaintenance()
-    yield* assertClean
-    const upgrade: Upgrade = {
-      pin: yield* readPiPin,
-      candidate: requested === undefined ? yield* latestVersion : yield* decodeVersion(requested),
-    }
-    const baseline = yield* resolvePiPackage
-    const newRelease = upgrade.pin !== upgrade.candidate
-    const drifted = baseline.version !== upgrade.pin
-    const candidate = yield* installCandidate(upgrade.candidate)
-    const pages = yield* contractPages
-    const [changelog, surfaces, docs, audit] = yield* Effect.all(
-      [
-        changelogSections(upgrade, newRelease, candidate),
-        compareSurfaces(baseline, candidate),
-        compareDocs(pages, baseline, candidate),
-        auditCandidate(candidate),
-      ],
-      { concurrency: 'unbounded' }
-    )
-    const summary = `Candidate ${upgrade.candidate} from the pi.dev installer lockfile; baseline ${baseline.version}, the Pi dev runs today.${drifted ? ` The checkout pins ${upgrade.pin}, not the baseline.` : ''}`
-    const comparison: Comparison = {
-      upgrade,
-      newRelease,
-      drifted,
-      summary,
-      changelog,
-      surfaces,
-      pages,
-      docs,
-      audit,
-    }
-    if (newRelease) {
-      const draft = renderReport(comparison, { results: [], failed: undefined }, 'YYYY-MM-DD')
-      yield* announcePublication(upgrade, draft.length + suiteTimesReserve)
-      yield* pinCandidate(upgrade)
-    }
-    const suiteRun = yield* runSuites
-    const date = DateTime.formatIsoDate(
-      DateTime.setZone(yield* DateTime.now, DateTime.zoneMakeLocal())
-    )
-    const report = renderReport(comparison, suiteRun, date)
-    yield* Effect.sync(() => {
-      process.stdout.write(report)
-    })
-    const fs = yield* FileSystem.FileSystem
-    yield* fs.writeFileString(reportPath, report)
-    if (suiteRun.failed !== undefined)
-      return yield* new PiUpgradeError({
-        message: `Pi ${upgrade.candidate} failed ${suiteRun.failed.suite}; nothing was bumped or published. The candidate stays in ${candidateRelease}.`,
-      })
-    if (newRelease)
-      return yield* publish(upgrade, summary, report).pipe(
-        Effect.mapError(error =>
-          error instanceof PiUpgradeError
-            ? error
-            : new PiUpgradeError({
-                message: `Pi ${upgrade.candidate} is green, but publishing failed: ${withoutFinalPeriod(error.message)}.`,
-                cause: error,
-              })
-        )
-      )
-    yield* Effect.sync(() => {
-      process.stdout.write(
-        `Nothing to publish: the checkout already pins Pi ${upgrade.candidate}.\n`
-      )
-    })
-  },
-  Effect.scoped,
-  Effect.mapError(error =>
-    error instanceof PiUpgradeError ? error : failure('Pi verification failed')(error)
-  )
-)
 
 const lockfile = Effect.fnUntraced(function* (release: string) {
   const fs = yield* FileSystem.FileSystem
   return yield* fs.readFileString(join(release, 'package-lock.json'))
 })
 
-const updateUnderGate = Effect.fnUntraced(function* (version: PiVersion) {
-  yield* acquireMaintenance()
-  const pin = yield* readPiPin
-  if (pin !== version)
-    return yield* new PiUpgradeError({
-      message: `Refusing update: the checkout pins Pi ${pin}, not ${version}. Merge its verification pull request and update the checkout first.`,
-    })
+export const refuseSelectedRelease = Effect.fnUntraced(function* (command: string) {
   if (Option.isSome(yield* Config.option(Config.String('DEV_PI_RELEASE'))))
     return yield* new PiUpgradeError({
-      message: 'Refusing update: DEV_PI_RELEASE selects another Pi release. Unset it first.',
+      message: `Refusing ${command}: DEV_PI_RELEASE selects another Pi release. Unset it first.`,
     })
+})
+
+const updateUnderGate = Effect.fnUntraced(function* () {
+  yield* acquireMaintenance()
+  const version = yield* readPiPin
+  yield* refuseSelectedRelease('update')
   const verified = yield* Effect.option(resolveCandidate)
   if (Option.isNone(verified) || verified.value.version !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing update: no verified candidate for Pi ${version} in ${candidateRelease}. Run npm run pi:verify -- --version ${version} first.`,
+      message: `Refusing update: no verified candidate for Pi ${version} in ${candidateRelease}. Merge an upgrade pull request that verified it, or run npm run upgrade.`,
     })
   const latest = yield* latestVersion
   if (latest !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing update: pi update would install Pi ${latest}, not the verified ${version}. Run npm run pi:verify -- --version ${latest} first.`,
+      message: `Refusing update: pi update would install Pi ${latest}, not the pinned ${version}. Run npm run upgrade and merge its pull request first.`,
     })
   const previous = yield* resolvePiPackage
   const update = yield* streamed('pi', ['update'])
@@ -985,12 +616,12 @@ const updateUnderGate = Effect.fnUntraced(function* (version: PiVersion) {
     )
   const fs = yield* FileSystem.FileSystem
   yield* fs.remove(candidateRelease, { recursive: true })
+  return version
 }, Effect.scoped)
 
 export const updatePi = Effect.fn('updatePi')(
-  function* (requested: string) {
-    const version = yield* decodeVersion(requested)
-    yield* updateUnderGate(version)
+  function* () {
+    const version = yield* updateUnderGate()
     const diagnostics = yield* run('dev', ['--diagnostics']).pipe(
       Effect.mapError(
         error =>

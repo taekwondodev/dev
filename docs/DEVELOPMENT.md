@@ -49,18 +49,11 @@ Use the actual TUI for interactive behavior. The Python pseudo-terminal driver e
 
 The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. `floatingEffect` is a terminal-check error, not merely an editor diagnostic.
 
-## Pi upgrade
+## Upgrades
 
-For the command procedure and its publication effects, use [Pi upgrade](pi-upgrade.md). This section is for investigating or changing the integration.
+For the command procedure and its publication effects, use [Upgrade](upgrade.md). This section is for investigating or changing the integration.
 
-A failed verification retains its candidate. Rerun an affected suite with:
-
-```bash
-DEV_PI_RELEASE="$PWD/.dev/pi-candidate/release" npm run <suite>
-npm run types:pi
-```
-
-Smoke requires the candidate pin, which a failed verification restores to the previous value; it is not a direct rerun in that state. The final command restores declaration links to the active Pi.
+`scripts/upgrade.ts` owns targets, the worktree, checks, the report and publication; `scripts/pi-upgrade.ts` owns the Pi candidate, its comparison and activation. The upgrade runs every non-mutating check in the [verification table](#verification) except `dev:probe`; keep that list in step with the table. A red run retains its worktree and candidate, and the report gives each check's rerun command for the worktree.
 
 Use the installed Pi contracts below and the integration tests when an API changes. Session replacement and tool termination are exercised in `tests/workspace/workspace-host-session-check.ts`; native skill invocation and coordinator delivery in `tests/work/`; compaction in `tests/compaction-check.ts`, child checks and TUI probes. Profiler decoding depends on recorded message shapes and error/continuation text, so type checking alone cannot verify it: run `profile:check` and retain the upgrade guide's live-session check.
 
