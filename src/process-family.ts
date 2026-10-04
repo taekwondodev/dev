@@ -1,12 +1,11 @@
-import { execFile, type ChildProcess } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { Writable } from 'node:stream'
-import { promisify } from 'node:util'
 import { Duration, Effect, Schedule, Schema } from 'effect'
+import type { ChildProcessSpawner } from 'effect/process'
+import { runCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { ownedProcesses, type ProcessObservation } from './work-lifecycle.ts'
 import { WorkspaceProcessSchema, type WorkspaceProcess } from './workspace-domain.ts'
-
-const execFilePromise = promisify(execFile)
 
 export const processGateScript = 'IFS= read -r _ <&3 || exit 125; exec 3<&-; exec /bin/bash -c "$1"'
 
@@ -19,13 +18,8 @@ export const processGate = (child: ChildProcess): Writable => {
 
 export type ObservedProcess = ProcessObservation & { readonly birth: string }
 
-const readProcessTable = async (): Promise<ObservedProcess[]> => {
-  const { stdout } = await execFilePromise('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
-    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
-    maxBuffer: 4 * 1024 * 1024,
-    timeout: 2000,
-  })
-  return stdout.split('\n').flatMap(line => {
+const parseProcessTable = (stdout: string): ObservedProcess[] =>
+  stdout.split('\n').flatMap(line => {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/)
     return !match || match[4].startsWith('Z')
       ? []
@@ -38,7 +32,6 @@ const readProcessTable = async (): Promise<ObservedProcess[]> => {
           },
         ]
   })
-}
 
 export const rootIdentityReused = (
   table: readonly ProcessObservation[],
@@ -57,14 +50,26 @@ export class ProcessObservationLost extends Schema.TaggedError<ProcessObservatio
 
 export const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 
-export const processTable: Effect.Effect<ObservedProcess[], ProcessObservationLost> =
-  Effect.tryPromise({
-    try: readProcessTable,
-    catch: cause =>
+export const processTable: Effect.Effect<
+  ObservedProcess[],
+  ProcessObservationLost,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Effect.suspend(() =>
+  runCommand('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
+    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
+    maxOutputLength: 4 * 1024 * 1024,
+    timeout: 2000,
+  })
+).pipe(
+  Effect.map(result => parseProcessTable(result.stdout)),
+  Effect.mapError(
+    cause =>
       new ProcessObservationLost({
         message: `The process table could not be read: ${errorText(cause)}`,
-      }),
-  }).pipe(Effect.retry(transientRetry))
+      })
+  ),
+  Effect.retry(transientRetry)
+)
 
 const decodeFamily = Schema.decodeUnknownEffect(Schema.Array(WorkspaceProcessSchema))
 
@@ -81,7 +86,11 @@ export const observeFamily = Effect.fnUntraced(function* <E>(
     readonly rootExited: boolean
     readonly report: (processes: readonly WorkspaceProcess[]) => Effect.Effect<void, E>
   }
-): Effect.fn.Return<TrackedFamily, ProcessObservationLost | E> {
+): Effect.fn.Return<
+  TrackedFamily,
+  ProcessObservationLost | E,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
   const table = yield* processTable
   if (rootIdentityReused(table, family.root, options.rootExited))
     return yield* new ProcessObservationLost({

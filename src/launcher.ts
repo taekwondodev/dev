@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
 import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
+import type { ChildProcessSpawner } from 'effect/process'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
   defaultDataHome,
@@ -226,10 +227,12 @@ export interface RuntimeParts {
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
 }
 
+type RuntimeFactoryServices = FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+
 const createRuntime = Effect.fnUntraced(function* (
   parts: RuntimeParts,
   runtimeOptions: RuntimeFactoryOptions
-): Effect.fn.Return<RuntimeFactoryResult, LauncherError, FileSystem.FileSystem> {
+): Effect.fn.Return<RuntimeFactoryResult, LauncherError, RuntimeFactoryServices> {
   const { api, packageRoot, dataHome, profile, guard, workspaceHost, lifecycle } = parts
   const { attachment, cwd, sessionManager } = yield* workspaceHost
     .prepareRuntime({ sessionManager: runtimeOptions.sessionManager, cwd: runtimeOptions.cwd })
@@ -340,9 +343,9 @@ const createRuntime = Effect.fnUntraced(function* (
 
 export const makeRuntimeFactory = (
   parts: RuntimeParts
-): Effect.Effect<RuntimeFactory, never, FileSystem.FileSystem> =>
+): Effect.Effect<RuntimeFactory, never, RuntimeFactoryServices> =>
   Effect.map(
-    Effect.context<FileSystem.FileSystem>(),
+    Effect.context<RuntimeFactoryServices>(),
     context => runtimeOptions =>
       Effect.runPromiseWith(context)(createRuntime(parts, runtimeOptions))
   )
@@ -619,7 +622,7 @@ const run = Effect.fnUntraced(function* (
     }
     if (command.kind !== 'release') {
       const result = yield* runReadOnlyWorkspaceCommand(openAuthority(dependencies), command, {
-        repositoryRoot: gitRoot(options.cwd),
+        repositoryRoot: (yield* RepositoryRoot).resolve(options.cwd),
       })
       yield* Effect.sync(() => {
         ;(result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.text}\n`)
@@ -886,10 +889,8 @@ const run = Effect.fnUntraced(function* (
   )
 }, Effect.scoped)
 
-const LauncherServices = Layer.mergeAll(
-  RepositoryRoot.layer,
-  PublicationDestinations.layer,
-  NodeServices.layer
+const LauncherServices = Layer.mergeAll(RepositoryRoot.layer, PublicationDestinations.layer).pipe(
+  Layer.provideMerge(NodeServices.layer)
 )
 
 export const launch = (

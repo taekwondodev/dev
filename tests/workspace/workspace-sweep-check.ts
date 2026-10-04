@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
+import { NodeServices } from '@effect/platform-node'
 import { Effect, Stream } from 'effect'
 import {
   WorkspaceError,
@@ -180,9 +181,9 @@ try {
           })
           const exited = once(child, 'exit')
           await once(child, 'spawn')
-          const identity = (await Effect.runPromise(processTable)).find(
-            entry => entry.pid === child.pid
-          )
+          const identity = (
+            await Effect.runPromise(processTable.pipe(Effect.provide(NodeServices.layer)))
+          ).find(entry => entry.pid === child.pid)
           try {
             assert.ok(identity !== undefined)
             await owner.owner.reportExecution(grant, { kind: 'spawned', process: identity })
@@ -199,7 +200,7 @@ try {
                 report: processes =>
                   owner.owner.effect.reportExecution(grant, { kind: 'observed', processes }),
               }
-            )
+            ).pipe(Effect.provide(NodeServices.layer))
           )
           assert.deepEqual(family.known, [])
           await owner.owner.reportExecution(grant, {

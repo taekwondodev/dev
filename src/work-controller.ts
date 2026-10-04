@@ -1,4 +1,4 @@
-import { NodeFileSystem } from '@effect/platform-node'
+import { NodeChildProcessSpawner, NodeFileSystem, NodePath } from '@effect/platform-node'
 import {
   Clock,
   Context,
@@ -12,13 +12,13 @@ import {
   Semaphore,
   Schema,
 } from 'effect'
+import { ChildProcessSpawner } from 'effect/process'
 import type * as Scope from 'effect/Scope'
 import { createHash, randomUUID } from 'node:crypto'
-import { execFile, fork, spawn, type ChildProcess } from 'node:child_process'
+import { fork, spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { Writable } from 'node:stream'
-import { promisify } from 'node:util'
 import {
   WorkDispatchError,
   WorkError,
@@ -91,9 +91,8 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
+import { runCommand } from './command.ts'
 import { errorText } from './error-text.ts'
-
-const execFilePromise = promisify(execFile)
 
 type ProcessEvent =
   | { readonly type: 'message'; readonly raw: unknown }
@@ -269,39 +268,38 @@ const signalOwnedGroup = (job: Job, signal: NodeJS.Signals): Effect.Effect<void,
     catch: cause => new WorkError({ message: errorText(cause), cause }),
   })
 
-const git = (cwd: string, args: readonly string[]): Effect.Effect<string, WorkError> =>
-  Effect.tryPromise({
-    try: () =>
-      execFilePromise(
-        'git',
-        [
-          '--no-pager',
-          '-c',
-          'core.fsmonitor=false',
-          '-c',
-          'core.untrackedCache=false',
-          '-c',
-          'core.hooksPath=/dev/null',
-          '-C',
-          cwd,
-          ...args,
-        ],
-        {
-          encoding: 'utf8',
-          maxBuffer: 8 * 1024 * 1024,
-          timeout: 15000,
-          env: {
-            ...process.env,
-            GIT_OPTIONAL_LOCKS: '0',
-            GIT_TERMINAL_PROMPT: '0',
-            GIT_NO_LAZY_FETCH: '1',
-          },
-        }
-      ).then(({ stdout }) => stdout.trim()),
-    catch: cause => new WorkError({ message: errorText(cause), cause }),
-  })
+const git = (cwd: string, args: readonly string[]) =>
+  Effect.suspend(() =>
+    runCommand(
+      'git',
+      [
+        '--no-pager',
+        '-c',
+        'core.fsmonitor=false',
+        '-c',
+        'core.untrackedCache=false',
+        '-c',
+        'core.hooksPath=/dev/null',
+        '-C',
+        cwd,
+        ...args,
+      ],
+      {
+        maxOutputLength: 8 * 1024 * 1024,
+        timeout: 15000,
+        env: {
+          ...process.env,
+          GIT_OPTIONAL_LOCKS: '0',
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_NO_LAZY_FETCH: '1',
+        },
+      }
+    )
+  ).pipe(Effect.map(result => result.stdout.trim()))
 
-const artifactState = (cwd: string): Effect.Effect<ArtifactState, never> =>
+const artifactState = (
+  cwd: string
+): Effect.Effect<ArtifactState, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.all(
     {
       head: git(cwd, ['rev-parse', 'HEAD']),
@@ -395,7 +393,11 @@ export class WorkOwner extends Context.Service<WorkOwner, WorkOwnerService>()(
           )
         )
       ),
-      Layer.provide(NodeFileSystem.layer)
+      Layer.provide(
+        NodeChildProcessSpawner.layer.pipe(
+          Layer.provideMerge(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer))
+        )
+      )
     )
 }
 
@@ -403,6 +405,11 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const fs = yield* FileSystem.FileSystem
   const scope = yield* Effect.scope
   const store = yield* WorkStore
+  const withSpawner = Effect.provideService(
+    ChildProcessSpawner.ChildProcessSpawner,
+    yield* ChildProcessSpawner.ChildProcessSpawner
+  )
+  const observedTable = processTable.pipe(withSpawner)
   const active = new Map<AttemptId, Job>()
   const latest = new Map<string, AttemptId>()
   const reservations = new Set<string>()
@@ -494,7 +501,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     id: AttemptId
   ): Effect.fn.Return<AttemptDescription, WorkFailure> {
     const record = yield* recordFor(id)
-    const current = yield* artifactState(record.cwd)
+    const current = yield* artifactState(record.cwd).pipe(withSpawner)
     const staleArtifact = changedArtifact(record.artifactAtCompletion, current)
     const streams: readonly LogRequest['stream'][] =
       record.kind === 'agent' ? ['result', 'stderr'] : ['stdout', 'stderr']
@@ -643,7 +650,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         const { grant: selected } = admission
         grant = selected
         const { cwd } = selected
-        const artifactAtStart = yield* artifactState(cwd)
+        const artifactAtStart = yield* artifactState(cwd).pipe(withSpawner)
         yield* assertPrepared(
           reservation.sessionId,
           reservation.generation,
@@ -1160,7 +1167,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               ),
             catch: cause => new WorkError({ message: errorText(cause), cause }),
           })
-          const initialTable = yield* processTable.pipe(Effect.mapError(toFailure))
+          const initialTable = yield* observedTable.pipe(Effect.mapError(toFailure))
           const root = initialTable.find(item => item.pid === childPid)
           const known = ownedProcesses(initialTable, childPid, [])
           if (
@@ -1435,7 +1442,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               rootExited: hasProcessExitEvidence(job),
               report: processes => reportWorkspace(job, { kind: 'observed', processes }),
             }
-          )
+          ).pipe(withSpawner)
           job.observedProcesses = family.reported
           const { known } = family
           const observed = yield* commitBestEffort(job, () =>
@@ -1530,7 +1537,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     if (observation._tag === 'Failure') cleanupError = errorText(observation.failure)
 
     const completedAt = yield* Clock.currentTimeMillis
-    const artifactAtCompletion = yield* artifactState(record.cwd)
+    const artifactAtCompletion = yield* artifactState(record.cwd).pipe(withSpawner)
     const changedDuringRun = changedArtifact(record.artifactAtStart, artifactAtCompletion)
     const saved = yield* Effect.result(
       commit(job, () =>
@@ -1599,7 +1606,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     let known: readonly ProcessObservation[] = []
     let identityReused = false
     let observationError: string | undefined
-    const initialTable = yield* Effect.result(processTable)
+    const initialTable = yield* Effect.result(observedTable)
     if (initialTable._tag === 'Success') {
       const root = job.lifecycle.rootProcess()
       identityReused = rootIdentityReused(initialTable.success, root, hasProcessExitEvidence(job))
@@ -1636,7 +1643,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       yield* Deferred.await(job.settled).pipe(Effect.timeoutOption('2 seconds'))
 
     if (job.lifecycle.isActive()) {
-      const remainingTable = yield* Effect.result(processTable)
+      const remainingTable = yield* Effect.result(observedTable)
       if (remainingTable._tag === 'Success') {
         const root = job.lifecycle.rootProcess()
         if (rootIdentityReused(remainingTable.success, root, hasProcessExitEvidence(job))) {
@@ -1676,7 +1683,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     }
 
     if (job.lifecycle.isActive()) {
-      const finalTable = yield* Effect.result(processTable)
+      const finalTable = yield* Effect.result(observedTable)
       if (finalTable._tag === 'Success') {
         const root = job.lifecycle.rootProcess()
         if (rootIdentityReused(finalTable.success, root, hasProcessExitEvidence(job))) {

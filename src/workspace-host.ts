@@ -10,6 +10,7 @@ import {
   type Scope,
   Stream,
 } from 'effect'
+import type { ChildProcessSpawner } from 'effect/process'
 import { closeSync, lstatSync, existsSync, openSync, readSync } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import { basename, resolve } from 'node:path'
@@ -358,7 +359,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
 ): Effect.fn.Return<
   WorkspaceHost,
   never,
-  Scope.Scope | WorkspaceAuthorityClient | RepositoryRoot | PublicationDestinations
+  | Scope.Scope
+  | WorkspaceAuthorityClient
+  | RepositoryRoot
+  | PublicationDestinations
+  | ChildProcessSpawner.ChildProcessSpawner
 > {
   const authority = yield* WorkspaceAuthorityClient
   const repositoryRoot = yield* RepositoryRoot

@@ -1,10 +1,10 @@
-import { execFile } from 'node:child_process'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Config, Effect, FileSystem, Option, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import type * as PiSessions from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
 import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
+import { runCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 
 export type PiApi = typeof Pi
@@ -38,20 +38,12 @@ const ReleaseVersion = Schema.String.check(
   Schema.isPattern(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/)
 )
 
-const whichPi = Effect.callback<string, PiError>(resume => {
-  const child = execFile('which', ['pi'], { encoding: 'utf8' }, (cause, stdout) => {
-    resume(
-      cause
-        ? Effect.fail(
-            new PiError({ message: `No pi on PATH. Install Pi with: ${piInstaller}`, cause })
-          )
-        : Effect.succeed(stdout.trim())
-    )
-  })
-  return Effect.sync(() => {
-    child.kill()
-  })
-})
+const whichPi = runCommand('which', ['pi']).pipe(
+  Effect.map(result => result.stdout.trim()),
+  Effect.mapError(
+    cause => new PiError({ message: `No pi on PATH. Install Pi with: ${piInstaller}`, cause })
+  )
+)
 
 const activeRelease = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem

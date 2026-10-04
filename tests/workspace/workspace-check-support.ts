@@ -289,7 +289,7 @@ export const openHostRuntime = async (input: {
               Layer.succeed(WorkspaceAuthorityClient, input.lifecycle),
               Layer.succeed(RepositoryRoot, { resolve: input.repositoryRoot }),
               PublicationDestinations.layer
-            )
+            ).pipe(Layer.provideMerge(NodeServices.layer))
           )
         )
       )

@@ -4,6 +4,7 @@ import { constants as osConstants } from 'node:os'
 import type { Writable } from 'node:stream'
 import type { BashOperations } from '@earendil-works/pi-coding-agent'
 import { Deferred, Duration, Effect, Exit, FiberSet, Option, Schema, type Scope } from 'effect'
+import { ChildProcessSpawner } from 'effect/process'
 import { errorText } from './error-text.ts'
 import {
   observeFamily,
@@ -107,7 +108,11 @@ const exitOf = (child: ChildProcess): Deferred.Deferred<ShellExit, ShellCommandE
 
 export const makeWorkspaceShell = Effect.fnUntraced(function* (
   admit: (cwd: string) => Effect.Effect<WorkspaceAdmission, WorkspaceError>
-): Effect.fn.Return<WorkspaceShell, never, Scope.Scope> {
+): Effect.fn.Return<WorkspaceShell, never, Scope.Scope | ChildProcessSpawner.ChildProcessSpawner> {
+  const withSpawner = Effect.provideService(
+    ChildProcessSpawner.ChildProcessSpawner,
+    yield* ChildProcessSpawner.ChildProcessSpawner
+  )
   const observers = yield* FiberSet.make<void>()
   const runInBackground = yield* FiberSet.runtime(observers)()
   const live = new Map<number, LiveShell>()
@@ -126,7 +131,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         family = yield* observeFamily(family, {
           rootExited: child.exitCode !== null || child.signalCode !== null,
           report: processes => report({ kind: 'observed', processes }),
-        })
+        }).pipe(withSpawner)
         shell.known = family.known
         if (family.known.length === 0) {
           yield* report({
@@ -234,7 +239,10 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         try: () => processGate(child),
         catch: cause => failure(errorText(cause)),
       })
-      const table = yield* processTable.pipe(Effect.mapError(cause => failure(cause.message)))
+      const table = yield* processTable.pipe(
+        withSpawner,
+        Effect.mapError(cause => failure(cause.message))
+      )
       const root = table.find(item => item.pid === pid)
       if (root === undefined) return yield* failure('the shell identity could not be captured')
       return { gate, root }
@@ -262,7 +270,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     const onAbort = () => {
       aborted = true
       if (shell === undefined) killGated()
-      else runInBackground(terminate(shell))
+      else runInBackground(terminate(shell).pipe(withSpawner))
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     const detach = () => signal?.removeEventListener('abort', onAbort)
@@ -317,7 +325,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         ? undefined
         : setTimeout(() => {
             timedOut = true
-            runInBackground(terminate(shell))
+            runInBackground(terminate(shell).pipe(withSpawner))
           }, timeoutMs)
     return yield* Deferred.await(exited).pipe(
       Effect.flatMap(outcome => {
@@ -350,7 +358,10 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void })
       )
       const shells = [...live.values()]
-      yield* Effect.forEach(shells, terminate, { concurrency: 'unbounded', discard: true })
+      yield* Effect.forEach(shells, shell => terminate(shell).pipe(withSpawner), {
+        concurrency: 'unbounded',
+        discard: true,
+      })
       yield* Effect.forEach(shells, shell => Deferred.await(shell.settled), {
         discard: true,
       }).pipe(Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void }))

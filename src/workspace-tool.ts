@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Cause, Clock, Context, Effect, Exit, Layer, Option, Result, Schema } from 'effect'
+import { ChildProcessSpawner } from 'effect/process'
+import { runCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
 import {
@@ -66,63 +68,50 @@ export interface PublicationDestinationReader {
   attachment(url: string): Effect.Effect<Uint8Array, WorkspaceToolError>
 }
 
-const ghDestinationReader: PublicationDestinationReader = {
-  body: (repository, number, commentId) =>
-    Effect.callback<{ readonly body: string; readonly url: string }, WorkspaceToolError>(
-      (resume, signal) => {
-        const endpoint =
-          commentId === undefined
-            ? `repos/${repository}/issues/${number}`
-            : `repos/${repository}/issues/comments/${commentId}`
-        execFile(
-          'gh',
-          ['api', endpoint],
-          {
-            encoding: 'utf8',
-            timeout: 30_000,
-            maxBuffer: 16 * 1024 * 1024,
-            env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
-            signal,
-          },
-          (error, stdout) => {
-            if (error !== null) {
-              resume(
-                Effect.fail(
-                  refuse(`Publication destination could not be read back: ${errorText(error)}`)
-                )
-              )
-              return
-            }
-            const payload = decodeBody(stdout)
-            resume(
-              Result.isSuccess(payload)
-                ? Effect.succeed({
-                    body: payload.success.body ?? '',
-                    url: payload.success.html_url,
-                  })
-                : Effect.fail(
-                    refuse(
-                      `Publication destination answered an unexpected shape: ${errorText(payload.failure)}`
-                    )
-                  )
-            )
-          }
-        )
+const readDestinationBody = (repository: string, number: number, commentId: number | undefined) =>
+  Effect.suspend(() =>
+    runCommand(
+      'gh',
+      [
+        'api',
+        commentId === undefined
+          ? `repos/${repository}/issues/${number}`
+          : `repos/${repository}/issues/comments/${commentId}`,
+      ],
+      {
+        timeout: 30_000,
+        maxOutputLength: 16 * 1024 * 1024,
+        env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
       }
+    )
+  ).pipe(
+    Effect.mapError(error =>
+      refuse(`Publication destination could not be read back: ${errorText(error)}`)
     ),
-  attachment: url =>
-    Effect.tryPromise({
-      try: async signal => {
-        const response = await fetch(url, {
-          redirect: 'follow',
-          signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-        })
-        if (!response.ok) throw new Error(`attachment ${url} answered ${response.status}`)
-        return new Uint8Array(await response.arrayBuffer())
-      },
-      catch: cause => refuse(`Attachment ${url} could not be read back: ${errorText(cause)}`),
-    }),
-}
+    Effect.flatMap(({ stdout }) => {
+      const payload = decodeBody(stdout)
+      return Result.isSuccess(payload)
+        ? Effect.succeed({ body: payload.success.body ?? '', url: payload.success.html_url })
+        : Effect.fail(
+            refuse(
+              `Publication destination answered an unexpected shape: ${errorText(payload.failure)}`
+            )
+          )
+    })
+  )
+
+const readAttachment = (url: string) =>
+  Effect.tryPromise({
+    try: async signal => {
+      const response = await fetch(url, {
+        redirect: 'follow',
+        signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      })
+      if (!response.ok) throw new Error(`attachment ${url} answered ${response.status}`)
+      return new Uint8Array(await response.arrayBuffer())
+    },
+    catch: cause => refuse(`Attachment ${url} could not be read back: ${errorText(cause)}`),
+  })
 
 const readHead = (cwd: string): Effect.Effect<string, WorkspaceToolError> =>
   Effect.callback<string, WorkspaceToolError>((resume, signal) => {
@@ -170,9 +159,18 @@ export class PublicationDestinations extends Context.Service<
   PublicationDestinations,
   PublicationDestinationReader
 >()('dev/workspace-tool/PublicationDestinations') {
-  static readonly layer = Layer.succeed(
+  static readonly layer = Layer.effect(
     PublicationDestinations,
-    PublicationDestinations.of(ghDestinationReader)
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      return PublicationDestinations.of({
+        body: (repository, number, commentId) =>
+          readDestinationBody(repository, number, commentId).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
+          ),
+        attachment: readAttachment,
+      })
+    })
   )
 }
 
