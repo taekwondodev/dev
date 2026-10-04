@@ -1,10 +1,9 @@
+import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
-import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 
 export class PreferencesError extends Schema.TaggedError<PreferencesError>()('PreferencesError', {
@@ -47,8 +46,16 @@ const toPreferencesError = (error: unknown, operation: string): PreferencesError
     ? error
     : new PreferencesError({ message: `${operation}: ${errorText(error)}`, cause: error })
 
-const runGit = (run: RunCommand, cwd: string, args: readonly string[]) =>
-  run('git', ['-C', cwd, ...args]).pipe(Effect.map(result => result.stdout.trim()))
+const runGit = (cwd: string, args: readonly string[]): Effect.Effect<string, unknown> =>
+  Effect.callback(resume => {
+    const child = execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (error, stdout) => {
+      if (error) resume(Effect.fail(error))
+      else resume(Effect.succeed(stdout.toString().trim()))
+    })
+    return Effect.sync(() => {
+      child.kill()
+    })
+  })
 
 export const defaultDataHome: Effect.Effect<string, PreferencesError> = Effect.gen(function* () {
   const configured = yield* Config.String('DEV_DATA_HOME').pipe(
@@ -62,32 +69,20 @@ export const globalPiAgentDir = (): string => join(homedir(), '.pi', 'agent')
 
 export const globalPiAuthPath = (): string => join(globalPiAgentDir(), 'auth.json')
 
-const gitRootWith = (run: RunCommand, cwd: string): Effect.Effect<string | undefined> =>
-  runGit(run, cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
-
-export const gitRoot = (
-  cwd: string
-): Effect.Effect<string | undefined, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  Effect.flatMap(commandRunner, run => gitRootWith(run, cwd))
+export const gitRoot = (cwd: string): Effect.Effect<string | undefined> =>
+  runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
 
 export class RepositoryRoot extends Context.Service<
   RepositoryRoot,
   { readonly resolve: (cwd: string) => Effect.Effect<string | undefined> }
 >()('dev/preferences/RepositoryRoot') {
-  static readonly layer = Layer.effect(
-    RepositoryRoot,
-    Effect.map(commandRunner, run => RepositoryRoot.of({ resolve: cwd => gitRootWith(run, cwd) }))
-  )
+  static readonly layer = Layer.succeed(RepositoryRoot, RepositoryRoot.of({ resolve: gitRoot }))
 }
 
-const projectIdentity = (
-  cwd: string
-): Effect.Effect<string, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  Effect.flatMap(commandRunner, run =>
-    runGit(run, cwd, ['rev-parse', '--git-common-dir']).pipe(
-      Effect.map(commonDir => resolve(cwd, commonDir)),
-      Effect.orElseSucceed(() => resolve(cwd))
-    )
+const projectIdentity = (cwd: string): Effect.Effect<string> =>
+  runGit(cwd, ['rev-parse', '--git-common-dir']).pipe(
+    Effect.map(commonDir => resolve(cwd, commonDir)),
+    Effect.orElseSucceed(() => resolve(cwd))
   )
 
 const preferencePath = (dataHome: string, identity: string): string => {
@@ -109,11 +104,7 @@ const readPreference = Effect.fnUntraced(
 
 export const resolveSelection: (
   options: ResolveSelectionOptions
-) => Effect.Effect<
-  Selection,
-  PreferencesError,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
-> = Effect.fnUntraced(
+) => Effect.Effect<Selection, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
   function* (options) {
     const identity = yield* projectIdentity(options.cwd)
     const path = preferencePath(options.dataHome, identity)
@@ -133,11 +124,7 @@ export const resolveSelection: (
 
 export const saveSelection: (
   options: SaveSelectionOptions
-) => Effect.Effect<
-  string,
-  PreferencesError,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
-> = Effect.fnUntraced(
+) => Effect.Effect<string, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
   function* (options) {
     const fs = yield* FileSystem.FileSystem
     const identity = yield* projectIdentity(options.cwd)
@@ -157,11 +144,7 @@ export const saveSelection: (
 
 export const sessionDir: (
   dataHome: string
-) => Effect.Effect<
-  string,
-  PreferencesError,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
-> = Effect.fnUntraced(
+) => Effect.Effect<string, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
   function* (dataHome) {
     const path = join(dataHome, 'sessions')
     const fs = yield* FileSystem.FileSystem

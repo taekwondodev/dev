@@ -5,7 +5,6 @@ import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
 import { Cause, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
-import type { ChildProcessSpawner } from 'effect/process'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
   defaultDataHome,
@@ -227,7 +226,7 @@ export interface RuntimeParts {
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
 }
 
-type RuntimeFactoryServices = FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+type RuntimeFactoryServices = FileSystem.FileSystem
 
 const createRuntime = Effect.fnUntraced(function* (
   parts: RuntimeParts,
