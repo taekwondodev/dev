@@ -198,10 +198,11 @@ export const retryDeferredGateReleases = (
 const dropPrunedLeases = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  workspaceId: WorkspaceId
+  workspaceId: WorkspaceId,
+  excludeUseId?: WorkspaceId
 ): void => {
   for (const lease of state.leases.values()) {
-    if (lease.grant.workspaceId !== workspaceId) continue
+    if (lease.grant.workspaceId !== workspaceId || lease.useId === excludeUseId) continue
     if (inDb(authority, lease.repositoryId, db => getUse(db, lease.useId)) !== undefined) continue
     assertPrunedLeaseSettled(lease)
     if (lease.gates !== undefined) {
@@ -218,7 +219,7 @@ export const outgoingUses = (
   sourceWorkspaceId: WorkspaceId,
   excludeUseId?: WorkspaceId
 ): { readonly lease: GrantLease; readonly use: UseRecord }[] => {
-  dropPrunedLeases(authority, state, sourceWorkspaceId)
+  dropPrunedLeases(authority, state, sourceWorkspaceId, excludeUseId)
   return [...state.leases.values()]
     .filter(lease => lease.grant.workspaceId === sourceWorkspaceId && lease.useId !== excludeUseId)
     .flatMap(lease => {

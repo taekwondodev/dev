@@ -1646,6 +1646,52 @@ try {
   )
 
   await claim(
+    'a live process whose use record vanished from the database requires review before a switch, and the conversation can still close',
+    async () => {
+      const vanishedRoot = join(sandbox, 'vanished-use-authority')
+      const vanishedLifecycle = await openLifecycle({ root: vanishedRoot })
+      const vanishedAttachment = await vanishedLifecycle.attach({
+        conversation: conversation('vanished-use'),
+        cwd: fenceRepo,
+      })
+      const vanishedAllocator = await vanishedLifecycle.attach({
+        conversation: conversation('vanished-use-allocator'),
+        cwd: fenceRepo,
+      })
+      const vanishedTarget = ready(await vanishedAllocator.authorize({ kind: 'delegated-write' }))
+      await vanishedAllocator.close()
+      const vanishedExecution = processExecution('vanished-use-process')
+      const vanishedProcess = ready(
+        await vanishedAttachment.authorize({ kind: 'write', execution: vanishedExecution })
+      )
+      await startProcessUse(vanishedAttachment, vanishedProcess, vanishedExecution)
+      const shard = new DatabaseSync(
+        join(vanishedRoot, 'repos', vanishedProcess.repositoryId, 'records.sqlite')
+      )
+      try {
+        assert.equal(
+          shard.prepare('DELETE FROM uses WHERE id=?').run(vanishedProcess.useId).changes,
+          1
+        )
+      } finally {
+        shard.close()
+      }
+      await assert.rejects(
+        vanishedAttachment.select({
+          taskId: vanishedTarget.taskId!,
+          workspaceId: vanishedTarget.workspaceId,
+        }),
+        error =>
+          error instanceof WorkspaceError &&
+          error.outcome === 'review-required' &&
+          error.message.includes(vanishedProcess.useId)
+      )
+      await vanishedAttachment.close()
+      await vanishedLifecycle.close()
+    }
+  )
+
+  await claim(
     'a contended write is refused, not isolated, while the same conversation still runs a process in the checkout it would leave, and the conversation stays admitted',
     async () => {
       const readerAgentRoot = join(sandbox, 'reader-agent-authority')
