@@ -14,7 +14,7 @@
       {
         "name": "@effect/language-service",
         "diagnosticSeverity": { "floatingEffect": "error" },
-        "allowedUnstableApis": ["effect/http", "effect/process"]
+        "allowedUnstableApis": ["effect/cli", "effect/http", "effect/process"]
       }
     ]
   },

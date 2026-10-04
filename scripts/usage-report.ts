@@ -1,6 +1,6 @@
 import { Array as Arr, DateTime, Number as Num, Order } from 'effect'
 import {
-  attributeRoles,
+  attributed,
   type CallFact,
   effortOf,
   type Facts,
@@ -8,6 +8,7 @@ import {
   modelOf,
   type Range,
   type ReadFact,
+  recordedRoles,
   type RequestedRange,
   sessionFacts,
   type UsageFact,
@@ -50,9 +51,30 @@ export interface Analysis {
   readonly copiedEntries: number
 }
 
-export const analyze = (sessions: readonly SessionRecord[]): Analysis => {
-  const roles = attributeRoles(sessions)
-  const all = sessions.map(session => sessionFacts(session, roles.get(session) ?? 'unattributed'))
+export interface SessionAnalysis {
+  readonly name: string
+  readonly scope: SessionRecord['scope']
+  readonly facts: Facts
+  readonly recordedRoles: readonly (readonly [string, Role])[]
+  readonly undecodable: number
+  readonly copied: number
+}
+
+export const analyzeSession = (session: SessionRecord): SessionAnalysis => ({
+  name: session.name,
+  scope: session.scope,
+  facts: sessionFacts(session, session.scope === 'lead' ? 'lead' : 'unattributed'),
+  recordedRoles: recordedRoles(session),
+  undecodable: session.undecodable,
+  copied: Arr.countBy(session.entries, entry => entry.copied),
+})
+
+export const analyze = (sessions: readonly SessionAnalysis[]): Analysis => {
+  const recorded = new Map(sessions.flatMap(session => session.recordedRoles))
+  const all = sessions.map(session => {
+    const role = session.scope === 'lead' ? undefined : recorded.get(session.name)
+    return role === undefined ? session.facts : attributed(session.facts, role)
+  })
   return {
     facts: {
       usage: all.flatMap(facts => facts.usage),
@@ -65,38 +87,32 @@ export const analyze = (sessions: readonly SessionRecord[]): Analysis => {
       time: all.flatMap(facts => facts.time),
       attempts: all.flatMap(facts => facts.attempts),
     },
-    leadFiles: sessions.filter(session => session.scope === 'lead').length,
-    childFiles: sessions.filter(session => session.scope === 'child').length,
+    leadFiles: Arr.countBy(sessions, session => session.scope === 'lead'),
+    childFiles: Arr.countBy(sessions, session => session.scope === 'child'),
     undecodableLines: Num.sumAll(sessions.map(session => session.undecodable)),
-    copiedEntries: Num.sumAll(
-      sessions.map(session => session.entries.filter(entry => entry.copied).length)
-    ),
+    copiedEntries: Num.sumAll(sessions.map(session => session.copied)),
   }
 }
 
 const isoDate = (epochMillis: number): string =>
   DateTime.formatIsoDateUtc(DateTime.makeUnsafe(epochMillis))
 
-const within =
+export const within =
   (period: Period) =>
   <A extends { readonly at: number }>(fact: A): boolean =>
     (period.start === undefined || fact.at >= period.start) &&
     (period.end === undefined || fact.at < period.end)
 
-const nearestRank = (values: Arr.NonEmptyReadonlyArray<number>, percentile: number): number =>
-  Arr.sort(values, Order.Number)[Math.ceil((percentile * values.length) / 100) - 1]
+export const nearestRanks = (values: Arr.NonEmptyReadonlyArray<number>) => {
+  const sorted = Arr.sort(values, Order.Number)
+  return (percentile: number): number => sorted[Math.ceil((percentile * sorted.length) / 100) - 1]
+}
 
-const distribution = (values: readonly number[]): Distribution =>
-  Arr.isReadonlyArrayNonEmpty(values)
-    ? {
-        median: nearestRank(values, 50),
-        p90: nearestRank(values, 90),
-        max: Arr.max(values, Order.Number),
-      }
-    : null
-
-const count = <A>(values: readonly A[], predicate: (value: A) => boolean): number =>
-  values.filter(predicate).length
+const distribution = (values: readonly number[]): Distribution => {
+  if (!Arr.isReadonlyArrayNonEmpty(values)) return null
+  const rank = nearestRanks(values)
+  return { median: rank(50), p90: rank(90), max: Arr.max(values, Order.Number) }
+}
 
 const isKnown = (usage: Usage): usage is Tokens => usage !== 'unknown'
 
@@ -113,7 +129,7 @@ const tokenTotals = (usages: readonly Usage[]): TokenTotals => {
     input,
     output: sum(tokens => tokens.output),
     reasoning: sum(tokens => tokens.reasoning ?? 0),
-    reasoningEntries: count(known, tokens => tokens.reasoning !== undefined),
+    reasoningEntries: Arr.countBy(known, tokens => tokens.reasoning !== undefined),
     cacheRead,
     cacheWrite,
     uncached: input + cacheWrite,
@@ -130,7 +146,7 @@ const recordOf = <K extends string, V>(
 ): Readonly<Record<K, V>> => Object.fromEntries(keys.map(key => [key, value(key)])) as Record<K, V>
 
 const outcomeCounts = (outcomes: readonly Outcome[]): OutcomeCounts =>
-  recordOf(OUTCOMES, outcome => count(outcomes, value => value === outcome))
+  recordOf(OUTCOMES, outcome => Arr.countBy(outcomes, value => value === outcome))
 
 interface Names {
   readonly tool: (name: string) => string
@@ -181,6 +197,7 @@ const toolsSummary = (
     ([tool, group]) => {
       const sizes = returnedBytes(group)
       const bytes = Num.sumAll(sizes)
+      const rank = Arr.isReadonlyArrayNonEmpty(sizes) ? nearestRanks(sizes) : () => null
       return {
         tool,
         invocations: group.length,
@@ -188,22 +205,25 @@ const toolsSummary = (
         results: sizes.length,
         bytes,
         meanBytes: sizes.length === 0 ? null : bytes / sizes.length,
-        medianBytes: Arr.isReadonlyArrayNonEmpty(sizes) ? nearestRank(sizes, 50) : null,
-        p90Bytes: Arr.isReadonlyArrayNonEmpty(sizes) ? nearestRank(sizes, 90) : null,
+        medianBytes: rank(50),
+        p90Bytes: rank(90),
         share: total === 0 ? 0 : bytes / total,
       }
     }
   )
   return {
     invocations: calls.length,
-    matched: count(calls, call => call.outcome !== 'unmatched'),
-    unmatchedCalls: count(calls, call => call.outcome === 'unmatched'),
-    interruptedUnmatched: count(calls, call => call.outcome === 'unmatched' && call.interrupted),
-    unmatchedResults: count(results, result => !result.matched),
+    matched: Arr.countBy(calls, call => call.outcome !== 'unmatched'),
+    unmatchedCalls: Arr.countBy(calls, call => call.outcome === 'unmatched'),
+    interruptedUnmatched: Arr.countBy(
+      calls,
+      call => call.outcome === 'unmatched' && call.interrupted
+    ),
+    unmatchedResults: Arr.countBy(results, result => !result.matched),
     outcomes: outcomeCounts(calls.map(call => call.outcome)),
     candidateSequences: {
-      repeatedErrors: count(sequences, sequence => sequence.kind === 'repeated-error'),
-      recoveries: count(sequences, sequence => sequence.kind === 'recovery'),
+      repeatedErrors: Arr.countBy(sequences, sequence => sequence.kind === 'repeated-error'),
+      recoveries: Arr.countBy(sequences, sequence => sequence.kind === 'recovery'),
     },
     byTool: rows.toSorted((a, b) => b.bytes - a.bytes || a.tool.localeCompare(b.tool)),
   }
@@ -218,7 +238,7 @@ const readsSummary = (reads: readonly ReadFact[]): Reads => {
   const returned = reads.filter(read => read.coverage !== 'failed')
   const texts = returned.filter(isTextRead)
   const overlaps = texts.flatMap(read => (read.relation.kind === 'overlap' ? [read.relation] : []))
-  const relation = (kind: RelationKind) => count(texts, read => read.relation.kind === kind)
+  const relation = (kind: RelationKind) => Arr.countBy(texts, read => read.relation.kind === kind)
   const absolute = returned.flatMap(read =>
     read.file?.identity.kind === 'absolute'
       ? [{ path: read.file.identity.path, session: read.session }]
@@ -230,30 +250,30 @@ const readsSummary = (reads: readonly ReadFact[]): Reads => {
   return {
     calls: reads.length,
     failed: reads.length - returned.length,
-    unknownCoverage: count(returned, read => read.coverage === 'unknown'),
+    unknownCoverage: Arr.countBy(returned, read => read.coverage === 'unknown'),
     bytes: Num.sumAll(returned.map(read => read.bytes)),
     relations: {
       first: relation('first'),
       pagination: relation('pagination'),
       disjoint: relation('disjoint'),
       overlap: relation('overlap'),
-      unknown: relation('unknown') + count(returned, read => read.coverage === 'unknown'),
+      unknown: relation('unknown') + Arr.countBy(returned, read => read.coverage === 'unknown'),
     },
     overlap: {
-      identical: count(overlaps, overlap => overlap.identical),
-      changed: count(overlaps, overlap => !overlap.identical),
-      afterCompaction: count(overlaps, overlap => overlap.afterCompaction),
-      afterContextEdit: count(overlaps, overlap => overlap.afterContextEdit),
-      afterOwnWrite: count(overlaps, overlap => overlap.afterOwnWrite),
+      identical: Arr.countBy(overlaps, overlap => overlap.identical),
+      changed: Arr.countBy(overlaps, overlap => !overlap.identical),
+      afterCompaction: Arr.countBy(overlaps, overlap => overlap.afterCompaction),
+      afterContextEdit: Arr.countBy(overlaps, overlap => overlap.afterContextEdit),
+      afterOwnWrite: Arr.countBy(overlaps, overlap => overlap.afterOwnWrite),
       lines: Num.sumAll(overlaps.map(overlap => overlap.lines)),
       bytes: Num.sumAll(overlaps.map(overlap => overlap.bytes)),
     },
     truncation: {
-      lines: count(texts, read => read.stop === 'lines'),
-      bytes: count(texts, read => read.stop === 'bytes'),
-      firstLine: count(texts, read => read.stop === 'first-line'),
+      lines: Arr.countBy(texts, read => read.stop === 'lines'),
+      bytes: Arr.countBy(texts, read => read.stop === 'bytes'),
+      firstLine: Arr.countBy(texts, read => read.stop === 'first-line'),
     },
-    limited: count(texts, read => read.stop === 'limit'),
+    limited: Arr.countBy(texts, read => read.stop === 'limit'),
     crossAgent: {
       paths: shared.length,
       reads: Num.sumAll(shared.map(group => group.length)),
@@ -269,22 +289,22 @@ const gitSummary = (git: readonly GitFact[]): Git => {
         tool,
         operation,
         requests: group.length,
-        repeats: count(group, fact => fact.repeat !== undefined),
-        identicalResults: count(group, fact => fact.repeat === 'identical'),
-        truncated: count(group, fact => fact.truncated),
+        repeats: Arr.countBy(group, fact => fact.repeat !== undefined),
+        identicalResults: Arr.countBy(group, fact => fact.repeat === 'identical'),
+        truncated: Arr.countBy(group, fact => fact.truncated),
       }
     }
   )
   return {
     requests: git.length,
-    whole: count(git, fact => fact.whole),
-    inCompound: count(git, fact => !fact.whole),
-    truncated: count(git, fact => fact.truncated),
+    whole: Arr.countBy(git, fact => fact.whole),
+    inCompound: Arr.countBy(git, fact => !fact.whole),
+    truncated: Arr.countBy(git, fact => fact.truncated),
     repeats: {
-      requests: count(git, fact => fact.repeat !== undefined),
-      identicalResults: count(git, fact => fact.repeat === 'identical'),
-      changedResults: count(git, fact => fact.repeat === 'changed'),
-      unknownResults: count(git, fact => fact.repeat === 'unknown'),
+      requests: Arr.countBy(git, fact => fact.repeat !== undefined),
+      identicalResults: Arr.countBy(git, fact => fact.repeat === 'identical'),
+      changedResults: Arr.countBy(git, fact => fact.repeat === 'changed'),
+      unknownResults: Arr.countBy(git, fact => fact.repeat === 'unknown'),
     },
     byOperation: rows.toSorted(
       (a, b) =>
@@ -335,7 +355,7 @@ const contextSummary = (
     tokensBefore: {
       recorded: recorded.length,
       total: Num.sumAll(recorded),
-      median: Arr.isReadonlyArrayNonEmpty(recorded) ? nearestRank(recorded, 50) : null,
+      median: Arr.isReadonlyArrayNonEmpty(recorded) ? nearestRanks(recorded)(50) : null,
     },
     synthesis: totalsOf(
       usage,
@@ -343,7 +363,10 @@ const contextSummary = (
     ),
     afterCompaction: {
       requests: after.length,
-      withoutCacheRead: count(after, fact => isKnown(fact.usage) && fact.usage.cacheRead === 0),
+      withoutCacheRead: Arr.countBy(
+        after,
+        fact => isKnown(fact.usage) && fact.usage.cacheRead === 0
+      ),
     },
   }
 }
@@ -360,17 +383,17 @@ const leadSummary = (facts: Facts, period: Period, names: Names): Lead => {
     values: readonly A[]
   ) => values.filter(value => measured.has(value.session) && inPeriod(value))
   const calls = inSessions(facts.calls)
-  const attempts = inSessions(facts.attempts)
-  const toolCalls = Arr.map(sessions, session => count(calls, call => call.session === session))
+  const callsIn = Arr.groupBy(calls, call => call.session)
+  const toolCalls = Arr.map(sessions, session => callsIn[session]?.length ?? 0)
+  const attemptsIn = Arr.groupBy(
+    inSessions(facts.attempts),
+    fact => `${fact.kind}\u0000${fact.session}`
+  )
   const distinct = (session: string, kind: 'agent' | 'process') =>
-    new Set(
-      attempts.flatMap(fact =>
-        fact.session === session && fact.kind === kind ? [fact.attempt] : []
-      )
-    ).size
+    new Set(attemptsIn[`${kind}\u0000${session}`]?.map(fact => fact.attempt)).size
   const children = sessions.map(session => distinct(session, 'agent'))
   const agentAttempts = Num.sumAll(children)
-  const latencies = Arr.map(requests, fact => fact.latencyMs)
+  const latency = nearestRanks(Arr.map(requests, fact => fact.latencyMs))
   const time = inSessions(facts.time)
   const spent = (category: 'model' | 'tool' | 'user') =>
     Num.sumAll(time.filter(fact => fact.category === category).map(fact => fact.ms))
@@ -395,7 +418,7 @@ const leadSummary = (facts: Facts, period: Period, names: Names): Lead => {
   return {
     sessions: sessions.length,
     toolCallsPerSession: {
-      median: nearestRank(toolCalls, 50),
+      median: nearestRanks(toolCalls)(50),
       minimum: Arr.min(toolCalls, Order.Number),
       maximum: Arr.max(toolCalls, Order.Number),
     },
@@ -409,12 +432,12 @@ const leadSummary = (facts: Facts, period: Period, names: Names): Lead => {
       agentAttempts,
       processAttempts: Num.sumAll(sessions.map(session => distinct(session, 'process'))),
       meanPerSession: agentAttempts / sessions.length,
-      sessionShare: count(children, value => value > 0) / sessions.length,
+      sessionShare: Arr.countBy(children, value => value > 0) / sessions.length,
     },
     latency: {
-      requests: latencies.length,
-      p50Ms: nearestRank(latencies, 50),
-      p90Ms: nearestRank(latencies, 90),
+      requests: requests.length,
+      p50Ms: latency(50),
+      p90Ms: latency(90),
     },
     timeSplit: { modelMs: spent('model'), toolMs: spent('tool'), userMs: spent('user') },
   }
@@ -492,8 +515,8 @@ export const summarize = (facts: Facts, period: Period, names: Names): PeriodSum
     },
     attribution: {
       entries: usage.length,
-      modelUnrecorded: count(usage, fact => modelOf(fact) === undefined),
-      effortUnrecorded: count(usage, fact => effortOf(fact) === undefined),
+      modelUnrecorded: Arr.countBy(usage, fact => modelOf(fact) === undefined),
+      effortUnrecorded: Arr.countBy(usage, fact => effortOf(fact) === undefined),
       childSessions: childSessions.size,
       unattributedChildSessions: sessionsOf(role => role === 'unattributed').size,
     },
@@ -597,11 +620,11 @@ export const drilldowns = (facts: Facts, period: Period): Drilldowns => {
         path: file.path,
         reads: members.length,
         overlaps: overlaps.length,
-        identical: count(overlaps, overlap => overlap.identical),
-        changed: count(overlaps, overlap => !overlap.identical),
+        identical: Arr.countBy(overlaps, overlap => overlap.identical),
+        changed: Arr.countBy(overlaps, overlap => !overlap.identical),
         bytes: Num.sumAll(members.map(read => read.bytes)),
         overlapBytes: Num.sumAll(overlaps.map(overlap => overlap.bytes)),
-        truncated: count(
+        truncated: Arr.countBy(
           members,
           read => isTextRead(read) && read.stop !== 'complete' && read.stop !== 'limit'
         ),
@@ -629,8 +652,8 @@ export const drilldowns = (facts: Facts, period: Period): Drilldowns => {
         operation,
         key,
         requests: group.length,
-        identicalResults: count(group, fact => fact.repeat === 'identical'),
-        truncated: count(group, fact => fact.truncated),
+        identicalResults: Arr.countBy(group, fact => fact.repeat === 'identical'),
+        truncated: Arr.countBy(group, fact => fact.truncated),
         refs: group.map(fact => fact.ref).slice(0, DRILLDOWN_ROWS),
       }
     })
@@ -746,7 +769,7 @@ export const compare = (summaries: readonly PeriodSummary[]): Comparison | null 
     }),
   }))
   const rows = [...usage, ...tools]
-  const partial = count(rows, row => row.periods.includes(null))
+  const partial = Arr.countBy(rows, row => row.periods.includes(null))
   return {
     baseline: baseline.period.label,
     usage,

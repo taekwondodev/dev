@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
+import { HashMap, HashSet, Option } from 'effect'
 import {
   GIT_INSPECT_OPERATIONS,
   GIT_COMMANDS,
@@ -8,7 +9,6 @@ import {
   type Role,
 } from './usage-export.ts'
 import {
-  ancestors,
   type AttemptRecord,
   type Block,
   type Entry,
@@ -16,6 +16,7 @@ import {
   type ToolCall,
   type TruncationDetails,
   type Usage,
+  walkBranches,
 } from './usage-sessions.ts'
 
 type ResultOutcome = Exclude<Outcome, 'unmatched'>
@@ -135,22 +136,14 @@ const roleOf = (attempt: AttemptRecord): Role => {
   return attempt.owner.parent === undefined ? 'child' : 'leaf'
 }
 
-export const attributeRoles = (
-  sessions: readonly SessionRecord[]
-): ReadonlyMap<SessionRecord, Role> => {
-  const recorded = new Map<string, Role>()
-  for (const session of sessions)
-    for (const entry of session.entries)
-      for (const attempt of recordedAttempts(entry))
-        if (attempt.kind === 'agent' && attempt.sessionFile !== undefined)
-          recorded.set(posix.basename(attempt.sessionFile), roleOf(attempt))
-  return new Map(
-    sessions.map(session => [
-      session,
-      session.scope === 'lead' ? 'lead' : (recorded.get(session.name) ?? 'unattributed'),
-    ])
+export const recordedRoles = (session: SessionRecord): (readonly [string, Role])[] =>
+  session.entries.flatMap(entry =>
+    recordedAttempts(entry).flatMap((attempt): (readonly [string, Role])[] =>
+      attempt.kind === 'agent' && attempt.sessionFile !== undefined
+        ? [[posix.basename(attempt.sessionFile), roleOf(attempt)]]
+        : []
+    )
   )
-}
 
 export interface Range {
   readonly start: number
@@ -321,7 +314,28 @@ const nextWorkspace = (entry: Entry, parent: Workspace): Workspace => {
   return parent
 }
 
+const pairResults = (session: SessionRecord): ReadonlyMap<Entry, Paired> => {
+  const pairs = new Map<Entry, Paired>()
+  walkBranches(
+    session,
+    HashMap.empty<string, Paired>(),
+    (calls, ancestor) =>
+      ancestor.kind === 'request'
+        ? ancestor.calls.reduceRight(
+            (known, call) => HashMap.set(known, call.id, { request: ancestor, call }),
+            calls
+          )
+        : calls,
+    (calls, entry) => {
+      const paired = entry.kind === 'result' ? HashMap.get(calls, entry.callId) : Option.none()
+      if (Option.isSome(paired)) pairs.set(entry, paired.value)
+    }
+  )
+  return pairs
+}
+
 const indexSession = (session: SessionRecord, role: Role): SessionIndex => {
+  const pairs = pairResults(session)
   const resultOfCall = new Map<string, ResultEntry>()
   const callOfResult = new Map<string, Paired>()
   const outcomes = new Map<string, ResultOutcome>()
@@ -344,15 +358,11 @@ const indexSession = (session: SessionRecord, role: Role): SessionIndex => {
     )
     if (entry.kind !== 'result') continue
     outcomes.set(entry.id, classify(entry))
-    for (const ancestor of ancestors(session, entry)) {
-      if (ancestor.kind !== 'request') continue
-      const call = ancestor.calls.find(candidate => candidate.id === entry.callId)
-      if (call === undefined) continue
-      const key = callKey(ancestor, call.id)
-      if (!resultOfCall.has(key)) resultOfCall.set(key, entry)
-      callOfResult.set(entry.id, { request: ancestor, call })
-      break
-    }
+    const paired = pairs.get(entry)
+    if (paired === undefined) continue
+    const key = callKey(paired.request, paired.call.id)
+    if (!resultOfCall.has(key)) resultOfCall.set(key, entry)
+    callOfResult.set(entry.id, paired)
   }
   const ref = (entry: Entry) => `${session.ref}#${entry.id}`
   return {
@@ -439,21 +449,65 @@ const resultFacts = (index: SessionIndex): ResultFact[] =>
       : []
   )
 
-const nearestResult = (index: SessionIndex, request: RequestEntry, tool: string) => {
-  for (const ancestor of ancestors(index.session, request))
-    if (ancestor.kind === 'result' && ancestor.tool === tool) return ancestor
-  return undefined
+interface EarlierRead {
+  readonly ref: string
+  readonly id: string
+  readonly depth: number
+  readonly coverage: TextCoverage
 }
 
-const sequenceFacts = (index: SessionIndex): SequenceFact[] =>
-  index.measured.flatMap(entry => {
-    if (entry.kind !== 'request') return []
-    const firstCalls = entry.calls.filter(
+interface Segment extends Range {
+  readonly read: EarlierRead
+}
+
+interface FileReads {
+  readonly nearest: readonly Segment[]
+  readonly ends: HashSet.HashSet<number>
+  readonly unknown: boolean
+}
+
+interface IssuedGit {
+  readonly owner: RequestEntry
+  readonly call: ToolCall
+  readonly request: GitRequest
+}
+
+interface Branch {
+  readonly depth: number
+  readonly compaction: number
+  readonly edits: HashMap.HashMap<string, number>
+  readonly writes: HashMap.HashMap<string, number>
+  readonly reads: HashMap.HashMap<string, FileReads>
+  readonly results: HashMap.HashMap<string, ResultEntry>
+  readonly git: HashMap.HashMap<string, IssuedGit>
+}
+
+const TRUNK: Branch = {
+  depth: 0,
+  compaction: 0,
+  edits: HashMap.empty(),
+  writes: HashMap.empty(),
+  reads: HashMap.empty(),
+  results: HashMap.empty(),
+  git: HashMap.empty(),
+}
+
+const NO_READS: FileReads = { nearest: [], ends: HashSet.empty(), unknown: false }
+
+const happenedAfter = (
+  depths: HashMap.HashMap<string, number>,
+  key: string,
+  depth: number
+): boolean => Option.exists(HashMap.get(depths, key), latest => latest > depth)
+
+const sequencesOf = (index: SessionIndex, branch: Branch, entry: RequestEntry): SequenceFact[] =>
+  entry.calls
+    .filter(
       (call, position) => entry.calls.findIndex(other => other.name === call.name) === position
     )
-    return firstCalls.flatMap((call): SequenceFact[] => {
+    .flatMap((call): SequenceFact[] => {
       const result = index.resultOf(entry, call)
-      const earlier = nearestResult(index, entry, call.name)
+      const earlier = Option.getOrUndefined(HashMap.get(branch.results, call.name))
       if (result === undefined || earlier === undefined) return []
       const outcome = index.outcomeOf(result)
       if (outcome === 'cancelled' || !isFailure(index.outcomeOf(earlier))) return []
@@ -466,7 +520,6 @@ const sequenceFacts = (index: SessionIndex): SequenceFact[] =>
         },
       ]
     })
-  })
 
 const READ_TRUNCATED =
   /\n\n\[Showing lines (\d+)-(\d+) of \d+(?: \([^)]*\))?\. Use offset=\d+ to continue\.\]$/
@@ -581,14 +634,6 @@ interface ReadInfo {
   readonly coverage: Coverage
 }
 
-interface Earlier {
-  readonly ref: string
-  readonly coverage: Coverage
-  readonly afterCompaction: boolean
-  readonly afterContextEdit: boolean
-  readonly afterOwnWrite: boolean
-}
-
 const indexReads = (index: SessionIndex): ReadonlyMap<string, ReadInfo> =>
   new Map(
     index.session.entries.flatMap((entry): [string, ReadInfo][] => {
@@ -616,100 +661,94 @@ const writtenKey = (index: SessionIndex, entry: ResultEntry): string | undefined
     : undefined
 }
 
-const earlierReads = (
-  index: SessionIndex,
-  reads: ReadonlyMap<string, ReadInfo>,
-  result: ResultEntry,
-  key: string
-): Earlier[] => {
-  const earlier: Earlier[] = []
-  let afterCompaction = false
-  let afterOwnWrite = false
-  const edited = new Set<string>()
-  for (const ancestor of ancestors(index.session, result)) {
-    if (ancestor.kind === 'compaction') afterCompaction = true
-    if (ancestor.kind === 'context-edit') edited.add(ancestor.target)
-    if (ancestor.kind !== 'result') continue
-    if (writtenKey(index, ancestor) === key) afterOwnWrite = true
-    const read = reads.get(ancestor.id)
-    if (read?.file?.key === key)
-      earlier.push({
-        ref: index.ref(ancestor),
-        coverage: read.coverage,
-        afterCompaction,
-        afterContextEdit: edited.has(ancestor.id),
-        afterOwnWrite,
-      })
+const withRead = (
+  reads: FileReads,
+  read: Omit<EarlierRead, 'coverage'>,
+  coverage: Coverage
+): FileReads => {
+  if (coverage.coverage !== 'text')
+    return coverage.coverage === 'unknown' ? { ...reads, unknown: true } : reads
+  if (isEmpty(coverage.returned)) return reads
+  const { start, end } = coverage.returned
+  return {
+    nearest: [
+      ...reads.nearest.flatMap((segment): Segment[] => [
+        ...(segment.start < start ? [{ ...segment, end: Math.min(segment.end, start - 1) }] : []),
+        ...(segment.end > end ? [{ ...segment, start: Math.max(segment.start, end + 1) }] : []),
+      ]),
+      { start, end, read: { ...read, coverage } },
+    ],
+    ends: HashSet.add(reads.ends, end),
+    unknown: reads.unknown,
   }
-  return earlier
 }
 
-const relationOf = (own: TextCoverage, earlier: readonly Earlier[]): ReadRelation => {
+const relationOf = (own: TextCoverage, key: string, branch: Branch): ReadRelation => {
   if (isEmpty(own.returned)) return { kind: 'unknown' }
-  const covered = new Map<number, string>()
-  let nearest: Earlier | undefined
-  for (const candidate of earlier) {
-    const { coverage } = candidate
-    const shared =
-      coverage.coverage === 'text' ? overlapOf(coverage.returned, own.returned) : undefined
-    if (coverage.coverage !== 'text' || shared === undefined) continue
-    nearest ??= candidate
-    for (let line = shared.start; line <= shared.end; line += 1)
-      if (!covered.has(line))
-        covered.set(line, coverage.lines[line - coverage.returned.start] ?? '')
+  const earlier = Option.getOrElse(HashMap.get(branch.reads, key), () => NO_READS)
+  let nearest: EarlierRead | undefined
+  let lines = 0
+  let bytes = 0
+  let identical = true
+  for (const segment of earlier.nearest) {
+    const shared = overlapOf(segment, own.returned)
+    if (shared === undefined) continue
+    const { read } = segment
+    if (nearest === undefined || read.depth > nearest.depth) nearest = read
+    for (let line = shared.start; line <= shared.end; line += 1) {
+      const text = own.lines[line - own.returned.start] ?? ''
+      lines += 1
+      bytes += Buffer.byteLength(text, 'utf8')
+      if (text !== (read.coverage.lines[line - read.coverage.returned.start] ?? ''))
+        identical = false
+    }
   }
-  if (nearest !== undefined) {
-    const lines = [...covered.keys()]
-    const text = lines.map(line => own.lines[line - own.returned.start] ?? '')
+  if (nearest !== undefined)
     return {
       kind: 'overlap',
       earlier: nearest.ref,
-      afterCompaction: nearest.afterCompaction,
-      afterContextEdit: nearest.afterContextEdit,
-      afterOwnWrite: nearest.afterOwnWrite,
-      lines: lines.length,
-      bytes:
-        text.reduce((total, line) => total + Buffer.byteLength(line, 'utf8'), 0) + lines.length - 1,
-      identical: lines.every((line, position) => text[position] === covered.get(line)),
+      afterCompaction: branch.compaction > nearest.depth,
+      afterContextEdit: happenedAfter(branch.edits, nearest.id, nearest.depth),
+      afterOwnWrite: happenedAfter(branch.writes, key, nearest.depth),
+      lines,
+      bytes: bytes + lines - 1,
+      identical,
     }
-  }
-  if (earlier.some(candidate => candidate.coverage.coverage === 'unknown'))
-    return { kind: 'unknown' }
-  const ranges = earlier.flatMap(({ coverage }) =>
-    coverage.coverage === 'text' && !isEmpty(coverage.returned) ? [coverage.returned] : []
-  )
-  if (ranges.some(range => range.end + 1 === own.returned.start)) return { kind: 'pagination' }
-  return { kind: ranges.length > 0 ? 'disjoint' : 'first' }
+  if (earlier.unknown) return { kind: 'unknown' }
+  if (HashSet.has(earlier.ends, own.returned.start - 1)) return { kind: 'pagination' }
+  return { kind: HashSet.isEmpty(earlier.ends) ? 'first' : 'disjoint' }
 }
 
-const readFacts = (index: SessionIndex): ReadFact[] => {
-  const reads = indexReads(index)
-  return index.measured.flatMap((entry): ReadFact[] => {
-    const read = entry.kind === 'result' ? reads.get(entry.id) : undefined
-    if (entry.kind !== 'result' || read === undefined) return []
-    const base = { ...index.located(entry), bytes: textBytes(entry.blocks) }
-    const { coverage, file, requested } = read
-    if (coverage.coverage !== 'text' || file === undefined || requested === undefined)
-      return [
-        {
-          ...base,
-          coverage: coverage.coverage === 'failed' ? 'failed' : 'unknown',
-          file,
-          requested,
-        },
-      ]
+const readsOf = (
+  index: SessionIndex,
+  reads: ReadonlyMap<string, ReadInfo>,
+  branch: Branch,
+  entry: ResultEntry
+): ReadFact[] => {
+  const read = reads.get(entry.id)
+  if (read === undefined) return []
+  const base = { ...index.located(entry), bytes: textBytes(entry.blocks) }
+  const { coverage, file, requested } = read
+  if (coverage.coverage !== 'text' || file === undefined || requested === undefined)
     return [
       {
         ...base,
-        coverage: 'text',
+        coverage: coverage.coverage === 'failed' ? 'failed' : 'unknown',
         file,
         requested,
-        returned: coverage.returned,
-        stop: coverage.stop,
-        relation: relationOf(coverage, earlierReads(index, reads, entry, file.key)),
       },
     ]
-  })
+  return [
+    {
+      ...base,
+      coverage: 'text',
+      file,
+      requested,
+      returned: coverage.returned,
+      stop: coverage.stop,
+      relation: relationOf(coverage, file.key, branch),
+    },
+  ]
 }
 
 const GIT_SEGMENT =
@@ -935,48 +974,116 @@ const comparison = (later: GitCall, earlier: GitCall): NonNullable<GitFact['repe
   return texts[0] === texts[1] ? 'identical' : 'changed'
 }
 
-const gitFacts = (index: SessionIndex): GitFact[] => {
+const issuedGit = (index: SessionIndex) => {
   const cache = new Map<string, readonly GitRequest[]>()
-  const requestsOf = (owner: RequestEntry) =>
+  return (owner: RequestEntry): IssuedGit[] =>
     owner.calls.flatMap(call => {
       const key = callKey(owner, call.id)
       const requests = cache.get(key) ?? gitRequests(call, index.workspaceAt(owner))
       cache.set(key, requests)
       return requests.map(request => ({ owner, call, request }))
     })
-  return index.measured.flatMap(entry => {
-    if (entry.kind !== 'request') return []
-    const own = requestsOf(entry)
-    function* before(position: number) {
-      yield* own.slice(0, position).toReversed()
-      for (const ancestor of ancestors(index.session, entry))
-        if (ancestor.kind === 'request') yield* requestsOf(ancestor).toReversed()
+}
+
+const gitOf = (
+  index: SessionIndex,
+  branch: Branch,
+  entry: RequestEntry,
+  own: readonly IssuedGit[]
+): GitFact[] => {
+  let issued = branch.git
+  return own.map((current): GitFact => {
+    const { call, request } = current
+    const result = index.resultOf(entry, call)
+    const earlier = Option.getOrUndefined(HashMap.get(issued, request.key))
+    issued = HashMap.set(issued, request.key, current)
+    return {
+      at: entry.at,
+      session: index.session.ref,
+      role: index.role,
+      ref: index.ref(result ?? entry),
+      tool: request.tool,
+      operation: request.operation,
+      whole: request.whole,
+      key: request.key,
+      truncated: gitTruncated(request.tool, result),
+      repeat:
+        earlier === undefined
+          ? undefined
+          : comparison(
+              { request, result },
+              { request: earlier.request, result: index.resultOf(earlier.owner, earlier.call) }
+            ),
     }
-    return own.map(({ call, request }, position): GitFact => {
-      const result = index.resultOf(entry, call)
-      let repeat: GitFact['repeat']
-      for (const earlier of before(position)) {
-        if (earlier.request.key !== request.key) continue
-        repeat = comparison(
-          { request, result },
-          { request: earlier.request, result: index.resultOf(earlier.owner, earlier.call) }
-        )
-        break
-      }
-      return {
-        at: entry.at,
-        session: index.session.ref,
-        role: index.role,
-        ref: index.ref(result ?? entry),
-        tool: request.tool,
-        operation: request.operation,
-        whole: request.whole,
-        key: request.key,
-        truncated: gitTruncated(request.tool, result),
-        repeat,
-      }
-    })
   })
+}
+
+const branchFacts = (index: SessionIndex): Pick<Facts, 'sequences' | 'reads' | 'git'> => {
+  const reads = indexReads(index)
+  const issuedBy = issuedGit(index)
+  for (const entry of index.measured) if (entry.kind === 'request') issuedBy(entry)
+  const sequences = new Map<Entry, SequenceFact[]>()
+  const read = new Map<Entry, ReadFact[]>()
+  const git = new Map<Entry, GitFact[]>()
+  walkBranches(
+    index.session,
+    TRUNK,
+    (branch, ancestor): Branch => {
+      const depth = branch.depth + 1
+      switch (ancestor.kind) {
+        case 'compaction':
+          return { ...branch, depth, compaction: depth }
+        case 'context-edit':
+          return { ...branch, depth, edits: HashMap.set(branch.edits, ancestor.target, depth) }
+        case 'request':
+          return {
+            ...branch,
+            depth,
+            git: issuedBy(ancestor).reduce(
+              (issued, current) => HashMap.set(issued, current.request.key, current),
+              branch.git
+            ),
+          }
+        case 'result': {
+          const written = writtenKey(index, ancestor)
+          const info = reads.get(ancestor.id)
+          const file = info?.file
+          return {
+            ...branch,
+            depth,
+            results: HashMap.set(branch.results, ancestor.tool, ancestor),
+            writes:
+              written === undefined ? branch.writes : HashMap.set(branch.writes, written, depth),
+            reads:
+              info === undefined || file === undefined
+                ? branch.reads
+                : HashMap.set(
+                    branch.reads,
+                    file.key,
+                    withRead(
+                      Option.getOrElse(HashMap.get(branch.reads, file.key), () => NO_READS),
+                      { ref: index.ref(ancestor), id: ancestor.id, depth },
+                      info.coverage
+                    )
+                  ),
+          }
+        }
+        default:
+          return { ...branch, depth }
+      }
+    },
+    (branch, entry) => {
+      if (entry.copied) return
+      if (entry.kind === 'request') {
+        sequences.set(entry, sequencesOf(index, branch, entry))
+        git.set(entry, gitOf(index, branch, entry, issuedBy(entry)))
+      }
+      if (entry.kind === 'result') read.set(entry, readsOf(index, reads, branch, entry))
+    }
+  )
+  const inOrder = <A>(found: ReadonlyMap<Entry, readonly A[]>): A[] =>
+    index.measured.flatMap(entry => found.get(entry) ?? [])
+  return { sequences: inOrder(sequences), reads: inOrder(read), git: inOrder(git) }
 }
 
 const compactionFacts = (index: SessionIndex): CompactionFact[] =>
@@ -1017,15 +1124,29 @@ const attemptFacts = (index: SessionIndex): AttemptFact[] =>
       )
     : []
 
+const withRole =
+  (role: Role) =>
+  <A extends Located>(fact: A): A => ({ ...fact, role })
+
+export const attributed = (facts: Facts, role: Role): Facts => ({
+  usage: facts.usage.map(withRole(role)),
+  calls: facts.calls.map(withRole(role)),
+  results: facts.results.map(withRole(role)),
+  sequences: facts.sequences.map(withRole(role)),
+  reads: facts.reads.map(withRole(role)),
+  git: facts.git.map(withRole(role)),
+  compactions: facts.compactions.map(withRole(role)),
+  time: facts.time.map(withRole(role)),
+  attempts: facts.attempts.map(withRole(role)),
+})
+
 export const sessionFacts = (session: SessionRecord, role: Role): Facts => {
   const index = indexSession(session, role)
   return {
     usage: usageFacts(index),
     calls: callFacts(index),
     results: resultFacts(index),
-    sequences: sequenceFacts(index),
-    reads: readFacts(index),
-    git: gitFacts(index),
+    ...branchFacts(index),
     compactions: compactionFacts(index),
     time: timeFacts(index),
     attempts: attemptFacts(index),

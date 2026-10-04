@@ -6,7 +6,7 @@ import {
   decodePreparationId,
   type CompactionObservation,
 } from '../src/compaction-observation.ts'
-import { DateTime, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
+import { DateTime, Effect, FileSystem, Option, Predicate, Schema, Stream } from 'effect'
 
 const TokenCount = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 
@@ -509,47 +509,48 @@ const payloadOf = (type: string, value: unknown, at: number): Payload | undefine
   }
 }
 
-const decodeSession = (
-  ref: string,
-  name: string,
-  scope: SessionRecord['scope'],
-  content: string
-): SessionRecord => {
-  const [first, ...rest] = content.split('\n').filter(line => line.trim() !== '')
-  const header = Option.getOrUndefined(Option.flatMap(decodeJson(first ?? ''), decodeHeader))
-  const forkedAt =
-    header?.parentSession === undefined ? undefined : DateTime.toEpochMillis(header.timestamp)
-  let undecodable = first === undefined || header !== undefined ? 0 : 1
-  const entries: Entry[] = []
-  for (const line of rest) {
-    const value = decodeJson(line)
-    const envelope = Option.getOrUndefined(Option.flatMap(value, decodeEnvelope))
-    if (envelope === undefined) {
-      undecodable += 1
-      continue
-    }
-    const at = DateTime.toEpochMillis(envelope.timestamp)
-    const payload = payloadOf(envelope.type, Option.getOrUndefined(value), at)
-    if (payload === undefined) undecodable += 1
-    entries.push({
-      ...(payload ?? { kind: 'other' }),
-      id: envelope.id,
-      parentId: envelope.parentId,
-      at,
-      copied: forkedAt !== undefined && at < forkedAt,
-    })
-  }
-  return {
-    ref,
-    name,
-    scope,
-    entries,
-    byId: new Map(entries.map(entry => [entry.id, entry])),
-    undecodable,
-  }
+interface DecodedLines {
+  readonly header: boolean
+  readonly forkedAt: number | undefined
+  readonly undecodable: number
+  readonly entries: Entry[]
 }
 
-export function* ancestors(session: SessionRecord, entry: Entry): Generator<Entry> {
+const noLines = (): DecodedLines => ({
+  header: false,
+  forkedAt: undefined,
+  undecodable: 0,
+  entries: [],
+})
+
+const decodeLine = (session: DecodedLines, line: string): DecodedLines => {
+  if (line.trim() === '') return session
+  if (!session.header) {
+    const header = Option.getOrUndefined(Option.flatMap(decodeJson(line), decodeHeader))
+    return {
+      header: true,
+      forkedAt:
+        header?.parentSession === undefined ? undefined : DateTime.toEpochMillis(header.timestamp),
+      undecodable: header === undefined ? 1 : 0,
+      entries: session.entries,
+    }
+  }
+  const value = decodeJson(line)
+  const envelope = Option.getOrUndefined(Option.flatMap(value, decodeEnvelope))
+  if (envelope === undefined) return { ...session, undecodable: session.undecodable + 1 }
+  const at = DateTime.toEpochMillis(envelope.timestamp)
+  const payload = payloadOf(envelope.type, Option.getOrUndefined(value), at)
+  session.entries.push({
+    ...(payload ?? { kind: 'other' }),
+    id: envelope.id,
+    parentId: envelope.parentId,
+    at,
+    copied: session.forkedAt !== undefined && at < session.forkedAt,
+  })
+  return payload === undefined ? { ...session, undecodable: session.undecodable + 1 } : session
+}
+
+function* ancestors(session: SessionRecord, entry: Entry): Generator<Entry> {
   const visited = new Set([entry.id])
   let parent = entry.parentId === null ? undefined : session.byId.get(entry.parentId)
   while (parent !== undefined && !visited.has(parent.id)) {
@@ -559,18 +560,68 @@ export function* ancestors(session: SessionRecord, entry: Entry): Generator<Entr
   }
 }
 
-export const readSessions = Effect.fn('readSessions')(function* (
+export const walkBranches = <S>(
+  session: SessionRecord,
+  initial: S,
+  enter: (inherited: S, ancestor: Entry) => S,
+  observe: (inherited: S, entry: Entry) => void
+): void => {
+  const children = new Map<Entry, Entry[]>()
+  const pending: [Entry, S][] = []
+  for (const entry of session.entries) {
+    if (session.byId.get(entry.id) !== entry) continue
+    const parent = entry.parentId === null ? undefined : session.byId.get(entry.parentId)
+    if (parent === undefined) pending.push([entry, initial])
+    else {
+      const siblings = children.get(parent)
+      if (siblings === undefined) children.set(parent, [entry])
+      else siblings.push(entry)
+    }
+  }
+  const observed = new Set<Entry>()
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [entry, inherited] = next
+    observe(inherited, entry)
+    observed.add(entry)
+    const own = enter(inherited, entry)
+    for (const child of children.get(entry) ?? []) pending.push([child, own])
+  }
+  for (const entry of session.entries)
+    if (!observed.has(entry))
+      observe(
+        [...ancestors(session, entry)].reduceRight(
+          (inherited, ancestor) => enter(inherited, ancestor),
+          initial
+        ),
+        entry
+      )
+}
+
+export const readSessions = Effect.fn('readSessions')(function* <A>(
   dataHome: string,
   directory: string,
-  scope: SessionRecord['scope']
+  scope: SessionRecord['scope'],
+  project: (session: SessionRecord) => A
 ) {
   const fs = yield* FileSystem.FileSystem
   const path = join(dataHome, directory)
   if (!(yield* fs.exists(path))) return []
   const names = (yield* fs.readDirectory(path)).filter(name => name.endsWith('.jsonl')).toSorted()
   return yield* Effect.forEach(names, name =>
-    fs
-      .readFileString(join(path, name))
-      .pipe(Effect.map(content => decodeSession(`${directory}/${name}`, name, scope, content)))
+    fs.stream(join(path, name)).pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.runFold(noLines, decodeLine),
+      Effect.map(({ entries, undecodable }) =>
+        project({
+          ref: `${directory}/${name}`,
+          name,
+          scope,
+          entries,
+          byId: new Map(entries.map(entry => [entry.id, entry])),
+          undecodable,
+        })
+      )
+    )
   )
 })

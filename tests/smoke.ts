@@ -3,15 +3,13 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, FileSystem, Schema } from 'effect'
-import { readPiPin } from '../scripts/pi-upgrade.ts'
+import { readPiPin } from '../scripts/pi-pin.ts'
+import { errorText } from '../src/error-text.ts'
 
 export class SmokeError extends Schema.TaggedError<SmokeError>()('SmokeError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
-
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)
 
 const run = (
   command: string,
@@ -75,7 +73,7 @@ const program = Effect.scoped(
 ).pipe(
   Effect.catch(error =>
     Effect.sync(() => {
-      process.stderr.write(`${messageOf(error)}\n`)
+      process.stderr.write(`${errorText(error)}\n`)
       process.exitCode = 1
     })
   ),

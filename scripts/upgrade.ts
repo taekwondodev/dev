@@ -5,6 +5,7 @@ import { resolvePiPackage } from '../src/pi-runtime.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { git, npmInstallFlags, run, streamed, upgradeHome } from './checkout.ts'
 import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
+import { PiVersion } from './pi-pin.ts'
 import {
   candidateRelease,
   comparePi,
@@ -13,8 +14,6 @@ import {
   type PiComparison,
   piRows,
   piSections,
-  PiUpgradeError,
-  PiVersion,
 } from './pi-upgrade.ts'
 import { cell, collapsed, counted, fence, lastLines, listed, withoutFinalPeriod } from './report.ts'
 
@@ -798,24 +797,28 @@ const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
   yield* say(`Re-verified ${pullRequest.url}: ${outcome(upgrade)}.\n`)
 })
 
-export const runUpgrade = Effect.fn('runUpgrade')(
-  function* () {
-    yield* refuseSelectedRelease('upgrade')
-    yield* acquireMaintenance()
-    yield* git(['fetch', '--quiet', 'origin', 'main'])
-    const open = yield* openUpgrades
-    if (open.length > 1)
-      return yield* new UpgradeError({
-        message: `Refusing upgrade: ${counted(open.length, 'upgrade pull request')} are open (${open.map(pr => pr.url).join(', ')}). Close all but one.`,
-      })
-    const [pullRequest] = open
-    return yield* pullRequest === undefined ? fresh : reverify(pullRequest)
-  },
+export const runUpgrade = Effect.gen(function* () {
+  yield* refuseSelectedRelease('upgrade')
+  yield* acquireMaintenance()
+  yield* git(['fetch', '--quiet', 'origin', 'main'])
+  const open = yield* openUpgrades
+  if (open.length > 1)
+    return yield* new UpgradeError({
+      message: `Refusing upgrade: ${counted(open.length, 'upgrade pull request')} are open (${open.map(pr => pr.url).join(', ')}). Close all but one.`,
+    })
+  const [pullRequest] = open
+  return yield* pullRequest === undefined ? fresh : reverify(pullRequest)
+}).pipe(
   Effect.scoped,
   Effect.mapError(error => {
-    if (error instanceof UpgradeError) return error
-    if (error instanceof PiUpgradeError)
-      return new UpgradeError({ message: error.message, cause: error })
-    return failure('Upgrade failed')(error)
-  })
+    switch (error._tag) {
+      case 'UpgradeError':
+        return error
+      case 'PiUpgradeError':
+        return new UpgradeError({ message: error.message, cause: error })
+      default:
+        return failure('Upgrade failed')(error)
+    }
+  }),
+  Effect.withSpan('runUpgrade')
 )

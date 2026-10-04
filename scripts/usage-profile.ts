@@ -1,23 +1,25 @@
 import { join } from 'node:path'
-import { DateTime, Effect, FileSystem, Option, Schema } from 'effect'
+import { Array as Arr, DateTime, Effect, FileSystem, Option, Schema } from 'effect'
 import { orUnavailable, percent, renderCharts, seconds, size } from './usage-charts.ts'
 import { ROLES, type TokenTotals, USAGE_SOURCES } from './usage-export.ts'
 import {
   type Analysis,
   analyze,
+  analyzeSession,
   type Comparison,
   compare,
   type Drilldowns,
   drilldowns,
   exportNames,
   type GroupRow,
+  nearestRanks,
   type Period,
   type PeriodSummary,
   privateNames,
   summarize,
 } from './usage-report.ts'
-import { readSessions } from './usage-sessions.ts'
-import { compactionReport, type CompactionReport } from './usage-compaction.ts'
+import { readSessions, type SessionRecord } from './usage-sessions.ts'
+import { compactionReport, type CompactionReport, compactionSession } from './usage-compaction.ts'
 
 export class UsageProfileError extends Schema.TaggedError<UsageProfileError>()(
   'UsageProfileError',
@@ -120,6 +122,11 @@ const exportFiles = Effect.fn('exportFiles')(function* (
   ] as const
 })
 
+const measured = (session: SessionRecord) => ({
+  analysis: analyzeSession(session),
+  compaction: compactionSession(session),
+})
+
 export const profileUsage = Effect.fn('profileUsage')(function* ({
   dataHome,
   selection,
@@ -127,13 +134,14 @@ export const profileUsage = Effect.fn('profileUsage')(function* ({
   const periods: readonly [Period, ...Period[]] =
     selection.kind === 'report' ? selection.periods : [selection.period]
   const sessions = [
-    ...(yield* readSessions(dataHome, 'sessions', 'lead')),
-    ...(yield* readSessions(dataHome, 'child-sessions', 'child')),
+    ...(yield* readSessions(dataHome, 'sessions', 'lead', measured)),
+    ...(yield* readSessions(dataHome, 'child-sessions', 'child', measured)),
   ]
-  const analysis = analyze(sessions)
+  const analysis = analyze(sessions.map(session => session.analysis))
+  const compactions = sessions.map(session => session.compaction)
   const reported = periods.map(period => ({
     ...summarize(analysis.facts, period, privateNames),
-    compaction: compactionReport(sessions, period.start, period.end),
+    compaction: compactionReport(compactions, period),
     drilldowns: drilldowns(analysis.facts, period),
   }))
   const labels = periods.map(period => period.label)
@@ -375,11 +383,9 @@ const leadLines = ({ lead }: PeriodSummary): string[] => {
 }
 
 const timings = (values: readonly number[]): string => {
-  if (values.length === 0) return 'n/a'
-  const sorted = values.toSorted((a, b) => a - b)
-  const median = sorted[Math.floor((sorted.length - 1) / 2)]
-  const maximum = sorted.at(-1)
-  return `${values.length} samples, median ${orUnavailable(median ?? null, value => `${value.toFixed(1)} ms`)}, max ${orUnavailable(maximum ?? null, value => `${value.toFixed(1)} ms`)}`
+  if (!Arr.isReadonlyArrayNonEmpty(values)) return 'n/a'
+  const rank = nearestRanks(values)
+  return `${values.length} samples, median ${rank(50).toFixed(1)} ms, max ${rank(100).toFixed(1)} ms`
 }
 
 const compactionLines = ({ compaction }: PrivatePeriod): string[] => {
