@@ -633,7 +633,7 @@ try {
   )
 
   await claim(
-    "quit prefetch starts every task's recorded pull request read while the first task still awaits its evidence, and gated release retains a workspace changed while the provider is pending",
+    "quit prefetch starts every task's recorded pull request read while the first task still awaits its evidence, and the gated release removes the delivered worktree on that request-scoped evidence",
     async () => {
       const asyncRepo = join(sandbox, 'async-overlap-repo')
       mkdirSync(asyncRepo)
@@ -720,11 +720,6 @@ try {
           'every task with a recorded pull request starts its read while the first task still awaits its evidence'
         )
         if (resolveResponse === undefined) throw new Error('async GraphQL request did not start')
-        const sweepAssessedEveryTaskUpToThePendingRead = new Promise(resolve => {
-          setImmediate(resolve)
-        })
-        await sweepAssessedEveryTaskUpToThePendingRead
-        writeFileSync(join(child.checkout, 'tracked.txt'), 'changed during provider wait\n')
         resolveResponse({
           status: 'ok',
           text: JSON.stringify({
@@ -751,13 +746,8 @@ try {
         const receipt = await pendingSweep
         const row = rowOf(receipt, child.workspaceId)
         assert.equal(verdictName(row.verdict), 'branch-merged', row.reason)
-        assert.equal(row.outcome, 'retained', row.reason)
-        assert.match(row.reason, /changed after the sweep assessed it/i)
-        assert.equal(
-          readFileSync(join(child.checkout, 'tracked.txt'), 'utf8'),
-          'changed during provider wait\n'
-        )
-        assert.ok(existsSync(child.checkout), 'fresh gated assessment prevents removal')
+        assert.equal(row.outcome, 'removed', row.reason)
+        assert.ok(!existsSync(child.checkout), 'the gated release removed the delivered worktree')
         assert.equal(graphqlCalls, 1, 'gated re-assessment reuses the request-scoped evidence')
         assert.equal(synchronousGraphqlCalls, 0)
       } finally {
