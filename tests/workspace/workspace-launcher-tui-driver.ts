@@ -1,10 +1,10 @@
 import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { NodeRuntime } from '@effect/platform-node'
-import { Effect } from 'effect'
+import { Effect, Layer } from 'effect'
 import { launch } from '../../src/launcher.ts'
 import type { WorkspaceLifecycle } from '../../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
+import { WorkspaceAuthorityClient } from '../../src/workspace-lifecycle.ts'
 import { loadInstalledPi } from './workspace-check-support.ts'
 
 const root = process.env.LAUNCHER_TUI_ROOT
@@ -18,8 +18,15 @@ const deliverSigint = Effect.callback<void>(resume => {
   return Effect.sync(() => process.removeListener('SIGINT', delivered))
 })
 
+const decorated = (
+  decorate: Effect.Effect<WorkspaceLifecycle, never, WorkspaceAuthorityClient>
+): Layer.Layer<WorkspaceAuthorityClient> =>
+  Layer.effect(WorkspaceAuthorityClient, decorate).pipe(
+    Layer.provide(WorkspaceAuthorityClient.layer({ root }))
+  )
+
 const interruptedAfterQuit = Effect.gen(function* () {
-  const real = yield* makeWorkspaceLifecycle({ root })
+  const real = yield* WorkspaceAuthorityClient
   let signalled = false
   const signalOnce = Effect.suspend(() => {
     if (signalled) return Effect.void
@@ -45,7 +52,7 @@ const interruptedAfterQuit = Effect.gen(function* () {
 })
 
 const interruptedDuringSweep = Effect.gen(function* () {
-  const real = yield* makeWorkspaceLifecycle({ root })
+  const real = yield* WorkspaceAuthorityClient
   const lifecycle: WorkspaceLifecycle = {
     ...real,
     sweep: input => deliverSigint.pipe(Effect.andThen(real.sweep(input))),
@@ -56,11 +63,11 @@ const interruptedDuringSweep = Effect.gen(function* () {
 const lifecycleFor = (fault: string | undefined) => {
   switch (fault) {
     case 'sigint-after-quit':
-      return interruptedAfterQuit
+      return decorated(interruptedAfterQuit)
     case 'sigint-during-sweep':
-      return interruptedDuringSweep
+      return decorated(interruptedDuringSweep)
     default:
-      return makeWorkspaceLifecycle({ root })
+      return WorkspaceAuthorityClient.layer({ root })
   }
 }
 

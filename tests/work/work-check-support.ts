@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type Effect, ManagedRuntime } from 'effect'
-import { makeWorkOwnerLayer } from '../../src/work-controller.ts'
+import { WorkOwner } from '../../src/work-controller.ts'
 import type {
   AgentStartRequest,
   AttemptView,
@@ -121,7 +121,7 @@ export const openWorkFixture = async (name: string) => {
     const outcomes = new Map<string, AttemptView>()
     const awaited = new Map<string, ((attempt: AttemptView) => void)[]>()
     const runtime = ManagedRuntime.make(
-      makeWorkOwnerLayer({
+      WorkOwner.layer({
         dataHome,
         cwd: repository,
         sessionId,

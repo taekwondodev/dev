@@ -3,7 +3,7 @@ import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
-import { Cause, Deferred, Effect, Exit, Option, Schema, Scope } from 'effect'
+import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
@@ -11,6 +11,7 @@ import {
   globalPiAgentDir,
   globalPiAuthPath,
   gitRoot,
+  RepositoryRoot,
   resolveSelection,
   saveSelection,
   sessionDir,
@@ -26,11 +27,12 @@ import {
 import { errorText } from './error-text.ts'
 import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
+import { PublicationDestinations } from './workspace-tool.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
 import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
-import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
+import { WorkspaceAuthorityClient } from './workspace-lifecycle.ts'
 import type { WorkspaceAssessment, WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
 import {
   keptConversationGuidance,
@@ -485,9 +487,16 @@ const installSignalHandlers = (
 }
 
 interface LauncherDependencies {
-  readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
+  readonly workspaceLifecycle: Layer.Layer<WorkspaceAuthorityClient>
   readonly coordination?: CoordinationOptions
 }
+
+const openAuthority = (
+  dependencies: LauncherDependencies
+): Effect.Effect<WorkspaceLifecycle, never, Scope.Scope> =>
+  Layer.build(dependencies.workspaceLifecycle).pipe(
+    Effect.map(Context.get(WorkspaceAuthorityClient))
+  )
 
 const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
   Effect.callback<boolean>(resume => {
@@ -544,7 +553,7 @@ const terminalRelease = Effect.fnUntraced(function* (
   taskId: WorkspaceId,
   launchCwd: string
 ): Effect.fn.Return<ReleaseExitCode, never, Scope.Scope> {
-  const lifecycle = yield* dependencies.workspaceLifecycle
+  const lifecycle = yield* openAuthority(dependencies)
   const assessed = yield* Effect.exit(lifecycle.check({ taskId }))
   if (Exit.isFailure(assessed)) {
     yield* write(
@@ -609,7 +618,7 @@ const run = Effect.fnUntraced(function* (
       return
     }
     if (command.kind !== 'release') {
-      const result = yield* runReadOnlyWorkspaceCommand(dependencies.workspaceLifecycle, command, {
+      const result = yield* runReadOnlyWorkspaceCommand(openAuthority(dependencies), command, {
         repositoryRoot: gitRoot(options.cwd),
       })
       yield* Effect.sync(() => {
@@ -712,7 +721,7 @@ const run = Effect.fnUntraced(function* (
     })
     return
   }
-  const workspaceLifecycle = yield* dependencies.workspaceLifecycle
+  const workspaceLifecycle = yield* openAuthority(dependencies)
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
     return yield* new LauncherError({
@@ -750,14 +759,12 @@ const run = Effect.fnUntraced(function* (
   }
   const resolveImportPath = yield* loadPiPathResolver(packageInfo.root)
   const workspaceHost = yield* makeWorkspaceHost({
-    lifecycle: workspaceLifecycle,
     attachment,
     dataHome,
     openSessionManager: (file, cwdOverride) =>
       api.SessionManager.open(file, sessionsPath, cwdOverride),
-    repositoryRoot: gitRoot,
     resolveImportPath,
-  })
+  }).pipe(Effect.provideService(WorkspaceAuthorityClient, workspaceLifecycle))
   const effectiveSelection =
     resolve(effectiveCwd) === resolve(launchCwd)
       ? selection
@@ -879,9 +886,15 @@ const run = Effect.fnUntraced(function* (
   )
 }, Effect.scoped)
 
+const LauncherServices = Layer.mergeAll(
+  RepositoryRoot.layer,
+  PublicationDestinations.layer,
+  NodeServices.layer
+)
+
 export const launch = (
   argv: readonly string[],
-  dependencies: LauncherDependencies = { workspaceLifecycle: makeWorkspaceLifecycle() }
+  dependencies: LauncherDependencies = { workspaceLifecycle: WorkspaceAuthorityClient.layer() }
 ) =>
   run(argv, dependencies).pipe(
     Effect.catch(error =>
@@ -896,7 +909,7 @@ export const launch = (
       quit === true ? Effect.sync(() => process.exit(process.exitCode ?? 0)) : Effect.void
     ),
     Effect.asVoid,
-    Effect.provide(NodeServices.layer)
+    Effect.provide(LauncherServices)
   )
 
 if (import.meta.main)

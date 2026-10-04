@@ -3,7 +3,7 @@ import { lstatSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Cause, Clock, Effect, Exit, Option, Result, Schema } from 'effect'
+import { Cause, Clock, Context, Effect, Exit, Layer, Option, Result, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
 import {
@@ -66,7 +66,7 @@ export interface PublicationDestinationReader {
   attachment(url: string): Effect.Effect<Uint8Array, WorkspaceToolError>
 }
 
-export const ghDestinationReader: PublicationDestinationReader = {
+const ghDestinationReader: PublicationDestinationReader = {
   body: (repository, number, commentId) =>
     Effect.callback<{ readonly body: string; readonly url: string }, WorkspaceToolError>(
       (resume, signal) => {
@@ -166,11 +166,20 @@ const utf8Text = (bytes: Uint8Array): string | undefined => {
   }
 }
 
+export class PublicationDestinations extends Context.Service<
+  PublicationDestinations,
+  PublicationDestinationReader
+>()('dev/workspace-tool/PublicationDestinations') {
+  static readonly layer = Layer.succeed(
+    PublicationDestinations,
+    PublicationDestinations.of(ghDestinationReader)
+  )
+}
+
 export interface WorkspaceToolOptions {
   readonly lifecycle: WorkspaceLifecycle
   readonly attachment: () => WorkspaceAttachment
-  readonly destinations: PublicationDestinationReader
-  readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>
+  readonly runPromise: <A>(effect: Effect.Effect<A, never, PublicationDestinations>) => Promise<A>
   readonly requestResume: (handoff: WorkspaceHandoff, context: ExtensionContext) => void
 }
 
@@ -270,7 +279,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       catch: cause => refuse(`Selected artifact could not be read: ${errorText(cause)}`),
     })
     const digest = sha256Hex(bytes)
-    const destination = yield* options.destinations.body(
+    const destinations = yield* PublicationDestinations
+    const destination = yield* destinations.body(
       input.destination.repository,
       input.destination.number,
       input.destination.commentId
@@ -281,7 +291,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     else {
       const urls = [...new Set(destination.body.match(ATTACHMENT_URL) ?? [])]
       for (const url of urls) {
-        const fetched = yield* Effect.option(options.destinations.attachment(url))
+        const fetched = yield* Effect.option(destinations.attachment(url))
         if (Option.isSome(fetched) && sha256Hex(fetched.value) === digest) {
           readBack = 'attachment-sha256'
           break
@@ -325,21 +335,24 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       "Operate this conversation's workspace task in the workspace authority. resume switches the conversation onto a workspace retained for a task (exact taskId, and workspaceId when the task retains several); the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree.",
     parameters,
     async execute(_toolCallId, input, _signal, _onUpdate, context) {
-      const run: Effect.Effect<ToolReply, WorkspaceToolError> = decodeInput(input, {
-        onExcessProperty: 'error',
-      }).pipe(
-        Effect.mapError(cause => refuse(cause.message)),
-        Effect.flatMap((decoded): Effect.Effect<ToolReply, WorkspaceToolError> => {
-          switch (decoded.action) {
-            case 'resume':
-              return resume(decoded, context)
-            case 'set-target':
-              return setTarget(decoded)
-            case 'record-publication':
-              return recordPublication(decoded)
-          }
-        })
-      )
+      const run: Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> =
+        decodeInput(input, {
+          onExcessProperty: 'error',
+        }).pipe(
+          Effect.mapError(cause => refuse(cause.message)),
+          Effect.flatMap(
+            (decoded): Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> => {
+              switch (decoded.action) {
+                case 'resume':
+                  return resume(decoded, context)
+                case 'set-target':
+                  return setTarget(decoded)
+                case 'record-publication':
+                  return recordPublication(decoded)
+              }
+            }
+          )
+        )
       const outcome = await options.runPromise(Effect.exit(run))
       if (Exit.isSuccess(outcome))
         return {

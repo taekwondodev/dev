@@ -48,9 +48,10 @@ import {
   type WorkspaceConversation,
   type WorkspaceGrant,
   type WorkspaceHandoff,
-  type WorkspaceLifecycle,
 } from './workspace-domain.ts'
-import { ghDestinationReader, makeWorkspaceTool } from './workspace-tool.ts'
+import { makeWorkspaceTool, type PublicationDestinations } from './workspace-tool.ts'
+import { WorkspaceAuthorityClient } from './workspace-lifecycle.ts'
+import { RepositoryRoot } from './preferences.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
 import {
   canonicalConversationFile,
@@ -67,11 +68,9 @@ export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()
 ) {}
 
 export interface WorkspaceHostOptions {
-  readonly lifecycle: WorkspaceLifecycle
   readonly attachment: WorkspaceAttachment
   readonly dataHome: string
   readonly openSessionManager: (sessionFile: string, cwdOverride?: string) => SessionManager
-  readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
   readonly resolveImportPath: (input: string) => string
 }
 
@@ -356,7 +355,13 @@ const withdraw = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
     .pipe(Effect.catchIf(isWithdrawn, () => Effect.void))
 export const makeWorkspaceHost = Effect.fnUntraced(function* (
   options: WorkspaceHostOptions
-): Effect.fn.Return<WorkspaceHost, never, Scope.Scope> {
+): Effect.fn.Return<
+  WorkspaceHost,
+  never,
+  Scope.Scope | WorkspaceAuthorityClient | RepositoryRoot | PublicationDestinations
+> {
+  const authority = yield* WorkspaceAuthorityClient
+  const repositoryRoot = yield* RepositoryRoot
   let activeAttachment = options.attachment
   let activeConversation = activeAttachment.binding.conversation
   let activeManager: SessionManager | undefined
@@ -389,7 +394,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const readerWarnings = new Map<string, string>()
   let writerWarned = false
 
-  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>())
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<PublicationDestinations>())
   const nativeWrites = makeNativeWrites({
     runPromise,
     onError: message => notify(currentContext, message, 'error'),
@@ -431,7 +436,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (cwd === undefined) return undefined
     const resolved = options.resolveImportPath(cwd)
     if (!(yield* Effect.sync(() => existsSync(resolved)))) return undefined
-    if ((yield* options.repositoryRoot(resolved)) !== undefined) return undefined
+    if ((yield* repositoryRoot.resolve(resolved)) !== undefined) return undefined
     return `The session was not imported: its working directory is not inside a Git checkout: ${resolved}\n${keptConversationGuidance(source, 'import')}`
   })
 
@@ -827,9 +832,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     function* (event: HostToolCallEvent, context: ExtensionContext) {
       const attachment = activeAttachment
       const { binding } = attachment
-      const checkout = yield* options.repositoryRoot(binding.cwd)
+      const checkout = yield* repositoryRoot.resolve(binding.cwd)
       if (checkout === undefined) return yield* hostFailure('Cannot identify the current checkout')
-      const scope = { checkout, authorityRoot: options.lifecycle.root }
+      const scope = { checkout, authorityRoot: authority.root }
       const path = yield* Effect.try({
         try: () => decodeWriteOperand(event.input),
         catch: cause => hostFailure(errorText(cause)),
@@ -952,7 +957,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     existing?: WorkspaceAttachment
   ) {
     const conversation = yield* workspaceConversation(manager, options.dataHome)
-    const attachment = existing ?? (yield* options.lifecycle.attach({ conversation, cwd }))
+    const attachment = existing ?? (yield* authority.attach({ conversation, cwd }))
     if (attachment !== activeAttachment) preparedAttachments.add(attachment)
     followSweeps(attachment)
     const effectiveCwd = attachment.binding.cwd
@@ -1138,7 +1143,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const attached = yield* Effect.exit(
         workspaceConversation(targetManager, options.dataHome).pipe(
           Effect.flatMap(conversation =>
-            options.lifecycle.attach({ conversation, cwd: targetManager.getCwd() })
+            authority.attach({ conversation, cwd: targetManager.getCwd() })
           )
         )
       )
@@ -1277,7 +1282,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       return
     }
     const checked = yield* Effect.exit(
-      options.lifecycle.check({
+      authority.check({
         taskId: command.taskId,
         ownConversation: binding.conversation,
       })
@@ -1319,7 +1324,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       notify(context, 'Release cancelled before confirmation; nothing was changed.', 'info')
       return
     }
-    const run = yield* runRelease(options.lifecycle, {
+    const run = yield* runRelease(authority, {
       taskId: command.taskId,
       confirmed: assessments,
       occupiedPaths: [resolve(process.cwd()), resolve(context.cwd)],
@@ -1332,18 +1337,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
       if (command.kind === 'release') return yield* releaseInTui(api, command, context)
-      const result = yield* runReadOnlyWorkspaceCommand(
-        Effect.succeed(options.lifecycle),
-        command,
-        {
-          repositoryRoot: options.repositoryRoot(context.cwd),
-          current: {
-            workspaceId: activeAttachment.binding.workspaceId,
-            effectiveCwd: context.cwd,
-            conversation: activeAttachment.binding.conversation,
-          },
-        }
-      )
+      const result = yield* runReadOnlyWorkspaceCommand(Effect.succeed(authority), command, {
+        repositoryRoot: repositoryRoot.resolve(context.cwd),
+        current: {
+          workspaceId: activeAttachment.binding.workspaceId,
+          effectiveCwd: context.cwd,
+          conversation: activeAttachment.binding.conversation,
+        },
+      })
       display(api, context, result.text)
     },
     (effect, api, _args, context) =>
@@ -1488,9 +1489,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       })
       api.registerTool(
         makeWorkspaceTool({
-          lifecycle: options.lifecycle,
+          lifecycle: authority,
           attachment: () => activeAttachment,
-          destinations: ghDestinationReader,
           runPromise,
           requestResume: (handoff, context) =>
             requestHandoff(handoff, 'tool-resume', context, false),

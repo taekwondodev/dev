@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { Config, Effect, FileSystem, Schema } from 'effect'
+import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 
 export class PreferencesError extends Schema.TaggedError<PreferencesError>()('PreferencesError', {
@@ -71,6 +71,13 @@ export const globalPiAuthPath = (): string => join(globalPiAgentDir(), 'auth.jso
 
 export const gitRoot = (cwd: string): Effect.Effect<string | undefined> =>
   runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
+
+export class RepositoryRoot extends Context.Service<
+  RepositoryRoot,
+  { readonly resolve: (cwd: string) => Effect.Effect<string | undefined> }
+>()('dev/preferences/RepositoryRoot') {
+  static readonly layer = Layer.succeed(RepositoryRoot, RepositoryRoot.of({ resolve: gitRoot }))
+}
 
 const projectIdentity = (cwd: string): Effect.Effect<string> =>
   runGit(cwd, ['rev-parse', '--git-common-dir']).pipe(

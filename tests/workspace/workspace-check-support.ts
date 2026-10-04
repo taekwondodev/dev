@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import { NodeServices } from '@effect/platform-node'
-import { Effect, Exit, Scope } from 'effect'
+import { Effect, Exit, Layer, Scope } from 'effect'
 import type * as Pi from '../../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
 import type * as PiEventStream from '../../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 import type {
@@ -19,6 +19,9 @@ import { acquireRuntime, type CoordinationOptions } from '../../src/runtime-coor
 import { createSessionGuard } from '../../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../../src/workspace-host.ts'
+import { WorkspaceAuthorityClient } from '../../src/workspace-lifecycle.ts'
+import { PublicationDestinations } from '../../src/workspace-tool.ts'
+import { RepositoryRoot } from '../../src/preferences.ts'
 
 class TimedOut extends Error {}
 
@@ -275,14 +278,20 @@ export const openHostRuntime = async (input: {
     const host = await Effect.runPromise(
       Scope.provide(scope)(
         makeWorkspaceHost({
-          lifecycle: input.lifecycle,
           attachment: input.attachment,
           dataHome: input.dataHome,
           openSessionManager: (file, cwd) =>
             input.pi.SessionManager.open(file, input.sessionDir, cwd),
-          repositoryRoot: input.repositoryRoot,
           resolveImportPath,
-        })
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(WorkspaceAuthorityClient, input.lifecycle),
+              Layer.succeed(RepositoryRoot, { resolve: input.repositoryRoot }),
+              PublicationDestinations.layer
+            )
+          )
+        )
       )
     )
     const guard = createSessionGuard(

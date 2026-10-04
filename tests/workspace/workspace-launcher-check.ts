@@ -156,10 +156,10 @@ try {
 
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
-    import { Effect } from 'effect'
+    import { Effect, Layer } from 'effect'
     import { launch } from ${JSON.stringify(new URL('../../src/launcher.ts', import.meta.url).href)}
     import { WorkspaceError } from ${JSON.stringify(new URL('../../src/workspace-domain.ts', import.meta.url).href)}
-    import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
+    import { WorkspaceAuthorityClient } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
     const root = process.env.LAUNCHER_CHECK_ROOT
     const stopAfterAttach = lifecycle => ({
       ...lifecycle,
@@ -178,19 +178,20 @@ try {
           )
         ),
     })
-    const workspaceLifecycle = Effect.suspend(() =>
-      root === undefined || root.length === 0
-        ? Effect.die(new Error('the launcher check requires a temporary authority root'))
-        : makeWorkspaceLifecycle({ root }).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                if (process.env.REPORT_OPEN === '1') process.stderr.write('authority opened\\n')
-              })
-            ),
-            Effect.map(lifecycle =>
-              process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
+    const workspaceLifecycle = Layer.unwrap(
+      Effect.suspend(() =>
+        root === undefined || root.length === 0
+          ? Effect.die(new Error('the launcher check requires a temporary authority root'))
+          : Effect.succeed(
+              Layer.effect(
+                WorkspaceAuthorityClient,
+                WorkspaceAuthorityClient.useSync(lifecycle => {
+                  if (process.env.REPORT_OPEN === '1') process.stderr.write('authority opened\\n')
+                  return process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
+                })
+              ).pipe(Layer.provide(WorkspaceAuthorityClient.layer({ root })))
             )
-          )
+      )
     )
     NodeRuntime.runMain(launch(process.argv.slice(1), {
       workspaceLifecycle,

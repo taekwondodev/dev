@@ -1,7 +1,7 @@
 import { Cause, Effect, FiberSet, Latch, Layer, ManagedRuntime, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { executeWork } from './work-actions.ts'
-import { WorkOwner, makeWorkOwnerLayer } from './work-controller.ts'
+import { WorkOwner } from './work-controller.ts'
 import {
   asSessionId,
   WorkError,
@@ -166,7 +166,7 @@ export const createWorkExtension = ({
           const runtime = ManagedRuntime.make(
             Layer.effectDiscard(deliverOutcomes(wake)).pipe(
               Layer.provideMerge(
-                makeWorkOwnerLayer({
+                WorkOwner.layer({
                   dataHome,
                   profile,
                   cwd: ctx.cwd,

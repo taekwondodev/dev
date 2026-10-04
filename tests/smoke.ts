@@ -53,10 +53,10 @@ const program = Effect.scoped(
         `
         import { NodeRuntime } from '@effect/platform-node'
         import { launch } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/launcher.ts')).href)}
-        import { makeWorkspaceLifecycle } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/workspace-lifecycle.ts')).href)}
+        import { WorkspaceAuthorityClient } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/workspace-lifecycle.ts')).href)}
         const root = ${JSON.stringify(join(dataHome, 'authority'))}
         NodeRuntime.runMain(launch(['--diagnostics', '--data-home', ${JSON.stringify(dataHome)}], {
-          workspaceLifecycle: makeWorkspaceLifecycle({ root }),
+          workspaceLifecycle: WorkspaceAuthorityClient.layer({ root }),
           coordination: { installationPath: ${JSON.stringify(dataHome)}, namespacePath: root },
         }), { disableErrorReporting: true })
       `,

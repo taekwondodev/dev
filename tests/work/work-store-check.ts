@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Clock, Effect } from 'effect'
+import { Clock, Effect, Layer } from 'effect'
 import { asAttemptId, asGenerationId, asSessionId, asTaskId } from '../../src/work-domain.ts'
-import { makeWorkStore } from '../../src/work-store.ts'
+import { WorkStore } from '../../src/work-store.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'dev-work-store-'))
@@ -18,7 +18,7 @@ try {
       Effect.runPromise(
         Effect.gen(function* () {
           const sessionId = asSessionId('schema-check')
-          const store = yield* makeWorkStore(root, sessionId)
+          const store = yield* WorkStore
           const record = yield* store.create(asAttemptId('00000000-0000-0000-0000-000000000001'), {
             kind: 'process',
             cwd: root,
@@ -63,7 +63,14 @@ try {
             db.prepare('SELECT payload FROM attempts WHERE id=?').get(record.id)?.payload,
             payload
           )
-        }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer))
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            WorkStore.layer(root, asSessionId('schema-check')).pipe(
+              Layer.provide(NodeFileSystem.layer)
+            )
+          )
+        )
       )
   )
   await claim(
@@ -73,7 +80,7 @@ try {
         Effect.gen(function* () {
           const home = join(root, 'retention')
           const sessionId = asSessionId('retention-check')
-          const store = yield* makeWorkStore(home, sessionId)
+          const store = yield* WorkStore
           const now = yield* Clock.currentTimeMillis
           const minute = 60 * 1000
           const day = 24 * 60 * minute
@@ -123,7 +130,14 @@ try {
           assert.equal((yield* Effect.result(store.read(sixDaysOld)))._tag, 'Failure')
           assert.equal(existsSync(logDirectory(sixDaysOld)), false)
           assert.equal(existsSync(logDirectory(active)), true)
-        }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer))
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            WorkStore.layer(join(root, 'retention'), asSessionId('retention-check')).pipe(
+              Layer.provide(NodeFileSystem.layer)
+            )
+          )
+        )
       )
   )
   await claim('a corrupt database is refused and left as found, not rebuilt', () =>
@@ -134,7 +148,9 @@ try {
         const garbage = Buffer.from('not a database '.repeat(512))
         mkdirSync(dirname(databasePath), { recursive: true })
         writeFileSync(databasePath, garbage)
-        const refusal = yield* Effect.flip(makeWorkStore(home, asSessionId('corrupt-check')))
+        const refusal = yield* Effect.flip(
+          Layer.build(WorkStore.layer(home, asSessionId('corrupt-check')))
+        )
         assert.equal(refusal.message, 'Work store database is corrupt')
         assert.deepEqual(readFileSync(databasePath), garbage)
       }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer))

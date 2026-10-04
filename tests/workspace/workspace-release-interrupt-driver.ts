@@ -1,8 +1,8 @@
 import { NodeRuntime } from '@effect/platform-node'
-import { Effect } from 'effect'
+import { Effect, Layer } from 'effect'
 import { launch } from '../../src/launcher.ts'
 import type { WorkspaceLifecycle } from '../../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
+import { WorkspaceAuthorityClient } from '../../src/workspace-lifecycle.ts'
 
 const root = process.env.RELEASE_INTERRUPT_ROOT
 if (root === undefined || root.length === 0)
@@ -16,7 +16,7 @@ const deliverSigint = Effect.callback<void>(resume => {
 })
 
 const interrupting = Effect.gen(function* () {
-  const real = yield* makeWorkspaceLifecycle({ root })
+  const real = yield* WorkspaceAuthorityClient
   let signalled = false
   const lifecycle: WorkspaceLifecycle = {
     ...real,
@@ -29,6 +29,11 @@ const interrupting = Effect.gen(function* () {
   return lifecycle
 })
 
-NodeRuntime.runMain(launch(process.argv.slice(2), { workspaceLifecycle: interrupting }), {
-  disableErrorReporting: true,
-})
+NodeRuntime.runMain(
+  launch(process.argv.slice(2), {
+    workspaceLifecycle: Layer.effect(WorkspaceAuthorityClient, interrupting).pipe(
+      Layer.provide(WorkspaceAuthorityClient.layer({ root }))
+    ),
+  }),
+  { disableErrorReporting: true }
+)

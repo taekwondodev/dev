@@ -37,6 +37,7 @@ import {
   type GitHubReader,
 } from '../../src/workspace-evidence.ts'
 import {
+  PublicationDestinations,
   WorkspaceToolError,
   makeWorkspaceTool,
   type PublicationDestinationReader,
@@ -2324,8 +2325,13 @@ try {
       const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
         attachment: () => bound.effect,
-        destinations,
-        runPromise: effect => Effect.runPromise(Effect.provideService(effect, Clock.Clock, clock)),
+        runPromise: effect =>
+          Effect.runPromise(
+            effect.pipe(
+              Effect.provideService(PublicationDestinations, destinations),
+              Effect.provideService(Clock.Clock, clock)
+            )
+          ),
         requestResume: () => {
           throw new Error('this claim resumes nothing')
         },
@@ -2407,8 +2413,8 @@ try {
       const resumeTool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
         attachment: () => elsewhere.effect,
-        destinations,
-        runPromise: effect => Effect.runPromise(effect),
+        runPromise: effect =>
+          Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
         requestResume: handoff => {
           requested.push(handoff)
         },

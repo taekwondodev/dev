@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads'
-import { Effect, Exit, Schema, Scope } from 'effect'
+import { Context, Effect, Exit, Layer, Schema, Scope } from 'effect'
 import { errorText } from '../../src/error-text.ts'
 import {
   WorkspaceError,
@@ -24,7 +24,11 @@ import {
   type WorkspaceSelection,
   type WorkspaceView,
 } from '../../src/workspace-domain.ts'
-import { makeWorkspaceLifecycle, type StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
+import {
+  WorkspaceAuthorityClient,
+  WorkspaceWorkerSpawner,
+  type StartWorkspaceWorker,
+} from '../../src/workspace-lifecycle.ts'
 import { makeWorkspaceShell, type WorkspaceAdmission } from '../../src/workspace-shell.ts'
 import {
   WorkspaceWorkerMessageSchema,
@@ -136,7 +140,20 @@ export const openLifecycle = async (options: {
   readonly startWorker?: StartWorkspaceWorker
 }): Promise<TestLifecycle> => {
   const scope = await Effect.runPromise(Scope.make())
-  const lifecycle = await Effect.runPromise(Scope.provide(scope)(makeWorkspaceLifecycle(options)))
+  const { root, startWorker } = options
+  const lifecycle = Context.get(
+    await Effect.runPromise(
+      Layer.buildWithScope(
+        startWorker === undefined
+          ? WorkspaceAuthorityClient.layer({ root })
+          : WorkspaceAuthorityClient.layerNoDeps({ root }).pipe(
+              Layer.provide(Layer.succeed(WorkspaceWorkerSpawner, { start: startWorker }))
+            ),
+        scope
+      )
+    ),
+    WorkspaceAuthorityClient
+  )
   return {
     effect: lifecycle,
     attach: input => Effect.runPromise(lifecycle.attach(input)).then(promisedAttachment),
