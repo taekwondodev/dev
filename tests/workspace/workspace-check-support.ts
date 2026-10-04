@@ -10,7 +10,7 @@ import type {
   AssistantMessage,
   Model,
 } from '../../node_modules/@earendil-works/pi-ai/dist/index.js'
-import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher.ts'
+import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher-runtime.ts'
 import { WorkOwner } from '../../src/work-controller.ts'
 import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'

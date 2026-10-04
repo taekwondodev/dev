@@ -157,7 +157,7 @@ try {
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
     import { Effect } from 'effect'
-    import { launch } from ${JSON.stringify(new URL('../../src/launcher.ts', import.meta.url).href)}
+    import { launch } from ${JSON.stringify(new URL('../../src/launcher-runtime.ts', import.meta.url).href)}
     import { WorkspaceError } from ${JSON.stringify(new URL('../../src/workspace-domain.ts', import.meta.url).href)}
     import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
     const root = process.env.LAUNCHER_CHECK_ROOT

@@ -52,7 +52,7 @@ const program = Effect.scoped(
         '--eval',
         `
         import { NodeRuntime } from '@effect/platform-node'
-        import { launch } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/launcher.ts')).href)}
+        import { launch } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/launcher-runtime.ts')).href)}
         import { makeWorkspaceLifecycle } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/workspace-lifecycle.ts')).href)}
         const root = ${JSON.stringify(join(dataHome, 'authority'))}
         NodeRuntime.runMain(launch(['--diagnostics', '--data-home', ${JSON.stringify(dataHome)}], {

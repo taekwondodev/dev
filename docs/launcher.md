@@ -49,6 +49,12 @@ Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage 
 
 ## Behavior
 
+### Startup cache
+
+The launcher enables Node's best-effort module compile cache before loading its runtime and shares the cache location with the workspace worker. Subsequent launches can reuse compiled code; the first launch populates the cache. Profiles, resources and workspace state are still read and validated on every launch.
+
+Node stores the cache under the operating system's temporary directory (`node-compile-cache`), or the location selected by `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup. Node owns cache invalidation when source or runtime changes; no rebuild or cache reset is needed after editing dev.
+
 ### Profiles and resources
 
 For a new conversation, `--profile` wins over the repository preference, which wins over `general`. A resumed conversation uses its recorded profile; if none was recorded, `--profile` is required.
