@@ -30,7 +30,16 @@ import {
   type FileIdentity,
 } from './workspace-identity.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
-import { encode, parseRecord, rows, first, textField, numberField } from './workspace-sqlite.ts'
+import {
+  encode,
+  parseRecord,
+  rows,
+  first,
+  statement,
+  textField,
+  numberField,
+  type SqlRow,
+} from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
@@ -235,14 +244,14 @@ export const getTask = (db: DatabaseSync, id: string): TaskRecord | undefined =>
   return value
 }
 export const putTask = (db: DatabaseSync, value: TaskRecord): void => {
-  db.prepare('INSERT INTO tasks(id, revision, payload) VALUES(?,?,?)').run(
+  statement(db, 'INSERT INTO tasks(id, revision, payload) VALUES(?,?,?)').run(
     value.id,
     value.revision,
     encode(value)
   )
 }
 export const saveTask = (db: DatabaseSync, value: TaskRecord): void => {
-  db.prepare('UPDATE tasks SET revision=?, payload=? WHERE id=? AND revision=?').run(
+  statement(db, 'UPDATE tasks SET revision=?, payload=? WHERE id=? AND revision=?').run(
     value.revision,
     encode(value),
     value.id,
@@ -275,7 +284,8 @@ export const getWorkspaceByPath = (db: DatabaseSync, path: string): WorkspaceRec
   return row === undefined ? undefined : getWorkspace(db, textField(row, 'id'))
 }
 export const putWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
-  db.prepare(
+  statement(
+    db,
     'INSERT INTO workspaces(id,path_key,path,origin,status,revision,payload) VALUES(?,?,?,?,?,?,?)'
   ).run(
     value.id,
@@ -313,7 +323,8 @@ export const getReservationById = (db: DatabaseSync, id: string): ReservationRec
   return row === undefined ? undefined : getReservation(db, textField(row, 'workspace_id'))
 }
 export const putReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  db.prepare(
+  statement(
+    db,
     'INSERT INTO reservations(id,workspace_id,task_id,acquisition_id,revision,payload) VALUES(?,?,?,?,?,?)'
   ).run(
     value.id,
@@ -326,16 +337,18 @@ export const putReservation = (db: DatabaseSync, value: ReservationRecord): void
 }
 
 export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  db.prepare('DELETE FROM reservations WHERE id=? AND workspace_id=? AND revision=?').run(
+  statement(db, 'DELETE FROM reservations WHERE id=? AND workspace_id=? AND revision=?').run(
     value.id,
     value.workspaceId,
     value.revision
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Reservation changed before its release was recorded: ${value.id}`)
+  statement(db, "DELETE FROM uses WHERE reservation_id=? AND stage='quiescent'").run(value.id)
 }
 export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
-  db.prepare(
+  statement(
+    db,
     'UPDATE workspaces SET path_key=?,path=?,origin=?,status=?,revision=?,payload=? WHERE id=? AND revision=?'
   ).run(
     value.pathKey,
@@ -351,7 +364,8 @@ export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void =>
     requireReview(`Workspace record changed concurrently: ${value.id}`)
 }
 export const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
-  db.prepare(
+  statement(
+    db,
     'UPDATE reservations SET task_id=?,acquisition_id=?,revision=?,payload=? WHERE id=? AND workspace_id=?'
   ).run(
     value.taskId,
@@ -364,16 +378,12 @@ export const updateReservation = (db: DatabaseSync, value: ReservationRecord): v
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Reservation disappeared: ${value.id}`)
 }
-export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undefined => {
-  const row = first(
-    db,
-    'SELECT conversation_key,workspace_id,task_id,revision,payload FROM bindings WHERE conversation_key=?',
-    key
-  )
-  if (row === undefined) return undefined
+const BINDING_ROW = 'SELECT conversation_key,workspace_id,task_id,revision,payload FROM bindings'
+const recordedBinding = (row: SqlRow): BindingRecord => {
+  const key = textField(row, 'conversation_key')
   const value = parseRecord(BindingSchema, row.payload, `binding ${key}`)
   if (
-    value.key !== textField(row, 'conversation_key') ||
+    value.key !== key ||
     value.workspaceId !== textField(row, 'workspace_id') ||
     (value.taskId ?? null) !== (row.task_id ?? null) ||
     value.revision !== numberField(row, 'revision')
@@ -381,44 +391,48 @@ export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undef
     requireReview(`Binding columns disagree with payload: ${key}`)
   return value
 }
+export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undefined => {
+  const row = first(db, `${BINDING_ROW} WHERE conversation_key=?`, key)
+  return row === undefined ? undefined : recordedBinding(row)
+}
 export const getBindingRows = (db: DatabaseSync, workspaceIdValue: string): BindingRecord[] =>
-  rows(
-    db,
-    'SELECT conversation_key FROM bindings WHERE workspace_id=? ORDER BY conversation_key',
-    workspaceIdValue
+  rows(db, `${BINDING_ROW} WHERE workspace_id=? ORDER BY conversation_key`, workspaceIdValue).map(
+    recordedBinding
   )
-    .map(row => getBinding(db, textField(row, 'conversation_key')))
-    .filter((value): value is BindingRecord => value !== undefined)
 export const putBinding = (db: DatabaseSync, value: BindingRecord): void => {
-  db.prepare(
+  statement(
+    db,
     `INSERT INTO bindings(conversation_key,workspace_id,task_id,revision,payload) VALUES(?,?,?,?,?)
     ON CONFLICT(conversation_key) DO UPDATE SET workspace_id=excluded.workspace_id,task_id=excluded.task_id,revision=excluded.revision,payload=excluded.payload`
   ).run(value.key, value.workspaceId, value.taskId ?? null, value.revision, encode(value))
 }
-export const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
-  const row = first(
-    db,
-    'SELECT id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,revision,payload FROM uses WHERE id=?',
-    id
-  )
-  if (row === undefined) return undefined
+const USE_ROW =
+  'SELECT id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,within_use_id,revision,payload FROM uses'
+const recordedUse = (row: SqlRow): UseRecord => {
+  const id = textField(row, 'id')
   const value = parseRecord(UseSchema, row.payload, `workspace use ${id}`)
   if (
-    value.id !== textField(row, 'id') ||
+    value.id !== id ||
     value.workspaceId !== textField(row, 'workspace_id') ||
     (value.taskId ?? null) !== (row.task_id ?? null) ||
     (value.reservationId ?? null) !== (row.reservation_id ?? null) ||
     (value.acquisitionId ?? null) !== (row.acquisition_id ?? null) ||
     value.access !== textField(row, 'access') ||
     value.stage !== textField(row, 'stage') ||
+    (value.withinUseId ?? null) !== (row.within_use_id ?? null) ||
     value.revision !== numberField(row, 'revision')
   )
     requireReview(`Workspace use columns disagree with payload: ${id}`)
   return value
 }
+export const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
+  const row = first(db, `${USE_ROW} WHERE id=?`, id)
+  return row === undefined ? undefined : recordedUse(row)
+}
 export const putUse = (db: DatabaseSync, value: UseRecord): void => {
-  db.prepare(
-    'INSERT INTO uses(id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,revision,payload) VALUES(?,?,?,?,?,?,?,?,?)'
+  statement(
+    db,
+    'INSERT INTO uses(id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,within_use_id,revision,payload) VALUES(?,?,?,?,?,?,?,?,?,?)'
   ).run(
     value.id,
     value.workspaceId,
@@ -427,6 +441,7 @@ export const putUse = (db: DatabaseSync, value: UseRecord): void => {
     value.acquisitionId ?? null,
     value.access,
     value.stage,
+    value.withinUseId ?? null,
     value.revision,
     encode(value)
   )
@@ -437,8 +452,9 @@ export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
     requireReview(`Workspace use ${value.id} is unknown; only explicit recovery can resolve it`)
   if (value.stage === 'quiescent')
     assertNoActiveDependentUseInDb(db, value.id, `Cannot settle workspace use ${value.id}`)
-  db.prepare(
-    'UPDATE uses SET workspace_id=?,task_id=?,reservation_id=?,acquisition_id=?,access=?,stage=?,revision=?,payload=? WHERE id=?'
+  statement(
+    db,
+    'UPDATE uses SET workspace_id=?,task_id=?,reservation_id=?,acquisition_id=?,access=?,stage=?,within_use_id=?,revision=?,payload=? WHERE id=?'
   ).run(
     value.workspaceId,
     value.taskId ?? null,
@@ -446,6 +462,7 @@ export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
     value.acquisitionId ?? null,
     value.access,
     value.stage,
+    value.withinUseId ?? null,
     value.revision,
     encode(value),
     value.id
@@ -453,16 +470,12 @@ export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Workspace use disappeared: ${value.id}`)
 }
-export const getOperation = (db: DatabaseSync, id: string): OperationRecord | undefined => {
-  const row = first(
-    db,
-    'SELECT id,kind,phase,workspace_id,task_id,revision,payload FROM operations WHERE id=?',
-    id
-  )
-  if (row === undefined) return undefined
+const OPERATION_ROW = 'SELECT id,kind,phase,workspace_id,task_id,revision,payload FROM operations'
+const recordedOperation = (row: SqlRow): OperationRecord => {
+  const id = textField(row, 'id')
   const value = parseRecord(OperationSchema, row.payload, `operation ${id}`)
   if (
-    value.id !== textField(row, 'id') ||
+    value.id !== id ||
     value.kind !== textField(row, 'kind') ||
     value.phase !== textField(row, 'phase') ||
     value.workspaceId !== textField(row, 'workspace_id') ||
@@ -472,8 +485,13 @@ export const getOperation = (db: DatabaseSync, id: string): OperationRecord | un
     requireReview(`Operation columns disagree with payload: ${id}`)
   return value
 }
+export const getOperation = (db: DatabaseSync, id: string): OperationRecord | undefined => {
+  const row = first(db, `${OPERATION_ROW} WHERE id=?`, id)
+  return row === undefined ? undefined : recordedOperation(row)
+}
 export const putOperation = (db: DatabaseSync, value: OperationRecord): void => {
-  db.prepare(
+  statement(
+    db,
     'INSERT INTO operations(id,kind,phase,workspace_id,task_id,revision,created_at,payload) VALUES(?,?,?,?,?,?,?,?)'
   ).run(
     value.id,
@@ -487,7 +505,8 @@ export const putOperation = (db: DatabaseSync, value: OperationRecord): void => 
   )
 }
 export const saveOperation = (db: DatabaseSync, value: OperationRecord): void => {
-  db.prepare(
+  statement(
+    db,
     'UPDATE operations SET kind=?,phase=?,workspace_id=?,task_id=?,revision=?,created_at=?,payload=? WHERE id=?'
   ).run(
     value.kind,
@@ -507,9 +526,9 @@ const operationsWhere = (
   condition: string,
   ...params: string[]
 ): OperationRecord[] =>
-  rows(db, `SELECT id FROM operations WHERE ${condition} ORDER BY created_at,id`, ...params)
-    .map(row => getOperation(db, textField(row, 'id')))
-    .filter((value): value is OperationRecord => value !== undefined)
+  rows(db, `${OPERATION_ROW} WHERE ${condition} ORDER BY created_at,id`, ...params).map(
+    recordedOperation
+  )
 const isRelease = (operation: OperationRecord): operation is ReleaseOperationRecord =>
   operation.kind === 'release'
 
@@ -577,22 +596,24 @@ export const getPublications = (db: DatabaseSync, taskId: string): PublicationRe
     return value
   })
 export const putPublication = (db: DatabaseSync, value: PublicationReference): void => {
-  db.prepare(
+  statement(
+    db,
     `INSERT INTO publications(id,task_id,relative_path,sha256,payload) VALUES(?,?,?,?,?)
     ON CONFLICT(task_id,relative_path,sha256) DO UPDATE SET id=excluded.id, payload=excluded.payload`
   ).run(value.id, value.taskId, value.relativePath, value.sha256, encode(value))
 }
 export const getUseRows = (db: DatabaseSync, workspaceIdValue: string): UseRecord[] =>
-  rows(db, 'SELECT id FROM uses WHERE workspace_id=? ORDER BY id', workspaceIdValue)
-    .map(row => getUse(db, textField(row, 'id')))
-    .filter((value): value is UseRecord => value !== undefined)
-const getAllUseRows = (db: DatabaseSync): UseRecord[] =>
-  rows(db, 'SELECT id FROM uses ORDER BY id')
-    .map(row => getUse(db, textField(row, 'id')))
-    .filter((value): value is UseRecord => value !== undefined)
-
+  rows(db, `${USE_ROW} WHERE workspace_id=? ORDER BY id`, workspaceIdValue).map(recordedUse)
+export const getActiveUseRows = (db: DatabaseSync, workspaceIdValue: string): UseRecord[] =>
+  rows(
+    db,
+    `${USE_ROW} WHERE workspace_id=? AND stage<>'quiescent' ORDER BY id`,
+    workspaceIdValue
+  ).map(recordedUse)
 export const activeDependentUses = (db: DatabaseSync, useIdValue: string): UseRecord[] =>
-  getAllUseRows(db).filter(row => row.withinUseId === useIdValue && isActiveUse(row))
+  rows(db, `${USE_ROW} WHERE within_use_id=? AND stage<>'quiescent' ORDER BY id`, useIdValue).map(
+    recordedUse
+  )
 const assertNoActiveDependentUseInDb = (
   db: DatabaseSync,
   useIdValue: string,

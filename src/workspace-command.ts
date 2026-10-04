@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Schema } from 'effect'
+import { Cause, Effect, Exit, Option, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
   WorkspaceId,
@@ -57,7 +57,7 @@ const exactId = Effect.fnUntraced(function* (
   name: string
 ): Effect.fn.Return<WorkspaceId, WorkspaceCommandError> {
   const decoded = decodeId(value)
-  if (decoded._tag === 'None')
+  if (Option.isNone(decoded))
     return yield* usage(
       `${name} must be an exact ID as listed by dev workspace, got ${JSON.stringify(value ?? '')}`
     )
@@ -431,7 +431,7 @@ const sweepRowText = (row: SweepRow): string[] => {
   }
 }
 
-export const attemptedRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
+const attemptedRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
   receipt.rows.filter(
     (row): row is WorkspaceRow => row.kind === 'workspace' && row.verdict.kind === 'finished'
   )

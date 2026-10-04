@@ -16,8 +16,10 @@ const inTaskShard = <A>(
 ): A => {
   authority.initialize()
   for (const repository of authority.listRepositories()) {
-    const found = inDb(authority, repository.id, db => getTask(db, taskId) !== undefined)
-    if (found) return inDb(authority, repository.id, db => work(db, repository.id))
+    const found = inDb(authority, repository.id, db =>
+      getTask(db, taskId) === undefined ? undefined : { value: work(db, repository.id) }
+    )
+    if (found !== undefined) return found.value
   }
   return invalid(
     `Task ${taskId} is unknown to the workspace authority; a task exists once a write was admitted for it`

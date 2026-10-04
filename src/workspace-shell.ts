@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
 import type { Writable } from 'node:stream'
 import type { BashOperations } from '@earendil-works/pi-coding-agent'
-import { Deferred, Duration, Effect, Exit, FiberSet, Schema, type Scope } from 'effect'
+import { Deferred, Duration, Effect, Exit, FiberSet, Option, Schema, type Scope } from 'effect'
 import { errorText } from './error-text.ts'
 import {
   observeFamily,
@@ -70,7 +70,7 @@ const terminate = Effect.fnUntraced(
   function* (shell: LiveShell) {
     for (;;) {
       const table = yield* Effect.option(processTable)
-      if (table._tag === 'None') return
+      if (Option.isNone(table)) return
       const grouped = table.value.some(item => item.group === shell.root.pid)
       const tracked = table.value.filter(item =>
         shell.known.some(known => known.pid === item.pid && known.birth === item.birth)

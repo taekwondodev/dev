@@ -1,6 +1,6 @@
 import { lstatSync, realpathSync, type Stats, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { Schema } from 'effect'
+import { Option, Schema } from 'effect'
 import { blocked, invalid, requireReview } from './workspace-domain.ts'
 import { lstatIfExists } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
@@ -146,6 +146,6 @@ const WriteOperand = Schema.Struct({ path: Schema.NonEmptyString })
 const decodeOperand = Schema.decodeUnknownOption(WriteOperand)
 export const decodeWriteOperand = (input: unknown): string => {
   const decoded = decodeOperand(input)
-  if (decoded._tag === 'None') return invalid('A file write needs a non-empty path')
+  if (Option.isNone(decoded)) return invalid('A file write needs a non-empty path')
   return decoded.value.path
 }

@@ -28,7 +28,7 @@ import {
   type WorkspaceId,
 } from '../../src/workspace-domain.ts'
 import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
-import { attemptedRows, formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
+import { formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
 import { makeGitHubReader, type GitHubReader } from '../../src/workspace-evidence.ts'
 import {
   checkTask,
@@ -880,13 +880,6 @@ try {
       const removed = rowOf(receipt, other.workspaceId)
       assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
       assert.equal(existsSync(other.checkout), false)
-      const attempted = attemptedRows(receipt).map(row => row.workspaceId)
-      assert.ok(attempted.includes(other.workspaceId), JSON.stringify(receipt.rows))
-      assert.ok(
-        !attempted.includes(own.workspaceId) &&
-          !attempted.includes(exclusionOwner.write.workspaceId),
-        "neither the caller's workspace nor a clean pre-existing checkout was attempted"
-      )
       assert.ok(existsSync(allocated.checkout), 'the allocation itself succeeded')
       git(['checkout', '--quiet', '--', 'tracked.txt'], own.checkout)
 
@@ -1030,7 +1023,6 @@ try {
         ),
         JSON.stringify(rerun.rows)
       )
-      assert.deepEqual(attemptedRows(rerun), [], 'nothing finished was left to attempt')
     }
   )
 

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { lstatSync, realpathSync, type BigIntStats } from 'node:fs'
-import { Schema } from 'effect'
+import { Result, Schema } from 'effect'
 import { unavailable, requireReview, WorkspaceError } from './workspace-domain.ts'
 import { errorText } from './error-text.ts'
 
@@ -17,7 +17,9 @@ export interface PhysicalObservation {
   readonly device: string
 }
 
-const VolumeUuidsSchema = Schema.Array(VolumeUuidSchema)
+const decodeVolumeUuids = Schema.decodeUnknownResult(
+  Schema.fromJsonString(Schema.Array(VolumeUuidSchema))
+)
 const VOLUME_UUID_SCRIPT =
   'ObjC.import("Foundation"); function run(paths) { return JSON.stringify(paths.map(function(path) { var value = Ref(); var error = Ref(); if (!$.NSURL.fileURLWithPath(path).getResourceValueForKeyError(value, $.NSURLVolumeUUIDStringKey, error)) throw Error(ObjC.unwrap(error[0].localizedDescription)); return ObjC.unwrap(value[0]); })); }'
 
@@ -64,15 +66,11 @@ const volumeUuids = (paths: readonly string[]): readonly string[] => {
   } catch (cause) {
     throw physicalError(paths.join(', '), cause)
   }
-  try {
-    const decoded = Schema.decodeUnknownSync(VolumeUuidsSchema)(JSON.parse(output))
-    if (decoded.length !== paths.length)
-      unavailable(`macOS returned an incomplete volume identity for ${paths.join(', ')}`)
-    return decoded.map(value => value.toUpperCase())
-  } catch (cause) {
-    if (cause instanceof WorkspaceError) throw cause
-    throw physicalError(paths.join(', '), cause)
-  }
+  const decoded = decodeVolumeUuids(output)
+  if (Result.isFailure(decoded)) throw physicalError(paths.join(', '), decoded.failure)
+  if (decoded.success.length !== paths.length)
+    unavailable(`macOS returned an incomplete volume identity for ${paths.join(', ')}`)
+  return decoded.success.map(value => value.toUpperCase())
 }
 
 export const observePhysicalIdentities = (

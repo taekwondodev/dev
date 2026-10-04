@@ -38,9 +38,8 @@ import {
   saveUse,
   getOperation,
   saveOperation,
-  getUseRows,
+  getActiveUseRows,
   makeWorkspaceRecord,
-  isActiveUse,
   type WorkspaceRecord,
   type BindingRecord,
 } from './workspace-records.ts'
@@ -255,7 +254,7 @@ const retireUnstartedTransition = (
         if (operation === undefined || operation.phase !== 'intent' || operation.kind === 'release')
           return
         withdrawn = true
-        for (const use of getUseRows(db, operation.workspaceId))
+        for (const use of getActiveUseRows(db, operation.workspaceId))
           if (
             use.acquisitionId === operation.acquisitionId &&
             use.execution === undefined &&
@@ -312,7 +311,7 @@ const ensureNoUnresolvedUse = (
   repo: WorkspaceId,
   workspaceIdValue: WorkspaceId
 ): void => {
-  const active = inDb(authority, repo, db => getUseRows(db, workspaceIdValue).filter(isActiveUse))
+  const active = inDb(authority, repo, db => getActiveUseRows(db, workspaceIdValue))
   if (active.length > 0)
     blocked(`Workspace has unresolved live-use facts and cannot be resumed: ${workspaceIdValue}`)
   inDb(authority, repo, db => assertNoUnresolvedRelease(db, workspaceIdValue))

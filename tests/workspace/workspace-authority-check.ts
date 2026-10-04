@@ -26,7 +26,7 @@ import {
   type WorkspaceOperation,
 } from '../../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../../src/workspace-authority.ts'
-import { deferred, makeClaims } from './workspace-check-support.ts'
+import { deferred, equalWith, makeClaims } from './workspace-check-support.ts'
 import {
   faultInjector,
   openLifecycle,
@@ -373,11 +373,7 @@ try {
         checkoutPath,
         checkoutConversation
       )
-      assert.equal(
-        checkoutResult.outcome,
-        'review-required',
-        checkoutResult.message ?? checkoutResult.outcome
-      )
+      equalWith(checkoutResult.outcome, 'review-required', checkoutResult.message)
 
       const commonPath = join(sandbox, 'replaced-common-checkout')
       const commonGitDir = join(sandbox, 'replaced-common-git')
@@ -389,11 +385,7 @@ try {
       })
       replaceDirectoryAtSamePath(commonGitDir)
       const commonResult = await authorizeRead(commonAuthority, commonPath, commonConversation)
-      assert.equal(
-        commonResult.outcome,
-        'review-required',
-        commonResult.message ?? commonResult.outcome
-      )
+      equalWith(commonResult.outcome, 'review-required', commonResult.message)
 
       const sourcePath = join(sandbox, 'replaced-admin-source')
       const adminPath = join(sandbox, 'replaced-admin-worktree')
@@ -407,11 +399,7 @@ try {
       })
       replaceDirectoryAtSamePath(adminDirectory)
       const adminResult = await authorizeRead(adminAuthority, adminPath, adminConversation)
-      assert.equal(
-        adminResult.outcome,
-        'review-required',
-        adminResult.message ?? adminResult.outcome
-      )
+      equalWith(adminResult.outcome, 'review-required', adminResult.message)
     }
   )
 
@@ -1938,7 +1926,7 @@ try {
   )
 
   await claim(
-    'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME, and is never opened by the check',
+    'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME',
     () => {
       const devRoot = new URL('../..', import.meta.url)
       const secondInstallation = join(sandbox, 'second-installation')

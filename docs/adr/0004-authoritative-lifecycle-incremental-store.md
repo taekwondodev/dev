@@ -28,7 +28,7 @@ The [durability acceptance](https://github.com/taekwondodev/dev/issues/31#issuec
 
 ## Release records
 
-Reservation-only release of a pre-existing checkout is one transaction recording the operation and deleting the reservation. Managed-worktree removal records intent and effect start before external deletion, then records only observed outcomes: directory, admin directory and worktree-list entry gone. A removed workspace row remains an identity fence; confirmed release rows are compact receipts for inspection.
+Reservation-only release of a pre-existing checkout is one transaction recording the operation and deleting the reservation. Managed-worktree removal records intent and effect start before external deletion, then records only observed outcomes: directory, admin directory and worktree-list entry gone. A removed workspace row remains an identity fence; confirmed release rows are compact receipts for inspection. The transaction that deletes a reservation also deletes that reservation's `quiescent` use rows: they carry no ownership once settled, and live or `unknown` uses block the release instead of being pruned.
 
 The [disposable-worktree decision](https://github.com/taekwondodev/dev/issues/42) means a published-file manifest is not an exhaustive list of disposable contents. Its inode, size, modification time and digest facts recheck selected publications; changed selected bytes stop matching. Runtime storage adds no separate delivery receipt or pending-report ledger: the workflow owns delivery and failed-publication checkpoints.
 

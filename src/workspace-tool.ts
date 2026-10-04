@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Cause, Clock, Effect, Exit, Schema } from 'effect'
+import { Cause, Clock, Effect, Exit, Option, Result, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
 import {
@@ -16,7 +17,7 @@ import {
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
-import { canonicalGitWorkspace } from './workspace-git.ts'
+import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
 
 const WorkspaceToolInputSchema = Schema.Union([
@@ -54,7 +55,7 @@ export class WorkspaceToolError extends Schema.TaggedError<WorkspaceToolError>()
 const refuse = (message: string) => new WorkspaceToolError({ message })
 
 const BodyPayload = Schema.Struct({ body: Schema.NullOr(Schema.String), html_url: Schema.String })
-const decodeBody = Schema.decodeUnknownSync(BodyPayload)
+const decodeBody = Schema.decodeUnknownResult(Schema.fromJsonString(BodyPayload))
 
 export interface PublicationDestinationReader {
   body(
@@ -67,48 +68,54 @@ export interface PublicationDestinationReader {
 
 export const ghDestinationReader: PublicationDestinationReader = {
   body: (repository, number, commentId) =>
-    Effect.callback<{ readonly body: string; readonly url: string }, WorkspaceToolError>(resume => {
-      const endpoint =
-        commentId === undefined
-          ? `repos/${repository}/issues/${number}`
-          : `repos/${repository}/issues/comments/${commentId}`
-      execFile(
-        'gh',
-        ['api', endpoint],
-        {
-          encoding: 'utf8',
-          timeout: 30_000,
-          maxBuffer: 16 * 1024 * 1024,
-          env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
-        },
-        (error, stdout) => {
-          if (error !== null) {
-            resume(
-              Effect.fail(
-                refuse(`Publication destination could not be read back: ${errorText(error)}`)
+    Effect.callback<{ readonly body: string; readonly url: string }, WorkspaceToolError>(
+      (resume, signal) => {
+        const endpoint =
+          commentId === undefined
+            ? `repos/${repository}/issues/${number}`
+            : `repos/${repository}/issues/comments/${commentId}`
+        execFile(
+          'gh',
+          ['api', endpoint],
+          {
+            encoding: 'utf8',
+            timeout: 30_000,
+            maxBuffer: 16 * 1024 * 1024,
+            env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
+            signal,
+          },
+          (error, stdout) => {
+            if (error !== null) {
+              resume(
+                Effect.fail(
+                  refuse(`Publication destination could not be read back: ${errorText(error)}`)
+                )
               )
-            )
-            return
-          }
-          try {
-            const payload = decodeBody(JSON.parse(stdout))
-            resume(Effect.succeed({ body: payload.body ?? '', url: payload.html_url }))
-          } catch (cause) {
+              return
+            }
+            const payload = decodeBody(stdout)
             resume(
-              Effect.fail(
-                refuse(`Publication destination answered an unexpected shape: ${errorText(cause)}`)
-              )
+              Result.isSuccess(payload)
+                ? Effect.succeed({
+                    body: payload.success.body ?? '',
+                    url: payload.success.html_url,
+                  })
+                : Effect.fail(
+                    refuse(
+                      `Publication destination answered an unexpected shape: ${errorText(payload.failure)}`
+                    )
+                  )
             )
           }
-        }
-      )
-    }),
+        )
+      }
+    ),
   attachment: url =>
     Effect.tryPromise({
-      try: async () => {
+      try: async signal => {
         const response = await fetch(url, {
           redirect: 'follow',
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
         })
         if (!response.ok) throw new Error(`attachment ${url} answered ${response.status}`)
         return new Uint8Array(await response.arrayBuffer())
@@ -116,6 +123,21 @@ export const ghDestinationReader: PublicationDestinationReader = {
       catch: cause => refuse(`Attachment ${url} could not be read back: ${errorText(cause)}`),
     }),
 }
+
+const readHead = (cwd: string): Effect.Effect<string, WorkspaceToolError> =>
+  Effect.callback<string, WorkspaceToolError>((resume, signal) => {
+    execFile(
+      'git',
+      gitArguments(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']),
+      { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, env: gitEnvironment(), signal },
+      (error, stdout) => {
+        if (error === null) resume(Effect.succeed(stdout.trim()))
+        else if (error.code === 1) resume(Effect.succeed(''))
+        else
+          resume(Effect.fail(refuse(`Workspace revision could not be read: ${errorText(error)}`)))
+      }
+    )
+  })
 
 const ATTACHMENT_URL =
   /https:\/\/(?:github\.com\/(?:user-attachments\/assets|[^\s/]+\/[^\s/]+\/assets)\/[^\s)"'<>]+|user-images\.githubusercontent\.com\/[^\s)"'<>]+|private-user-images\.githubusercontent\.com\/[^\s)"'<>]+)/g
@@ -243,8 +265,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       return yield* refuse(
         `Selected artifact has a sensitive name and is never certified for disposal: ${input.path}`
       )
-    const bytes = yield* Effect.try({
-      try: () => readFileSync(absolute),
+    const bytes = yield* Effect.tryPromise({
+      try: signal => readFile(absolute, { signal }),
       catch: cause => refuse(`Selected artifact could not be read: ${errorText(cause)}`),
     })
     const digest = sha256Hex(bytes)
@@ -260,7 +282,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       const urls = [...new Set(destination.body.match(ATTACHMENT_URL) ?? [])]
       for (const url of urls) {
         const fetched = yield* Effect.option(options.destinations.attachment(url))
-        if (fetched._tag === 'Some' && sha256Hex(fetched.value) === digest) {
+        if (Option.isSome(fetched) && sha256Hex(fetched.value) === digest) {
           readBack = 'attachment-sha256'
           break
         }
@@ -270,10 +292,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       return yield* refuse(
         `Publication of ${input.path} was not verified: ${destination.url} neither contains the file's complete text nor an attachment with its exact bytes (${bytes.byteLength} bytes, sha256 ${digest.slice(0, 12)}). Publish the actual artifact there first; dev uploads nothing.`
       )
-    const head = yield* Effect.try({
-      try: () => canonicalGitWorkspace(view.path).head,
-      catch: cause => refuse(`Workspace revision could not be read: ${errorText(cause)}`),
-    })
+    const head = yield* readHead(view.path)
     const reference: PublicationReference = {
       id: newId(),
       taskId,

@@ -10,7 +10,8 @@ import {
   type Scope,
   Stream,
 } from 'effect'
-import { lstatSync, existsSync, readFileSync } from 'node:fs'
+import { closeSync, lstatSync, existsSync, openSync, readSync } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 import { basename, resolve } from 'node:path'
 import type {
   AgentSessionRuntime,
@@ -153,20 +154,38 @@ const decodeSessionHeader = Schema.decodeUnknownOption(
   Schema.Struct({
     type: Schema.Literal('session'),
     id: Schema.String,
-    cwd: Schema.optional(Schema.Unknown),
+    cwd: Schema.optional(Schema.String),
   })
 )
 
+const SESSION_HEADER_CHUNK_BYTES = 64 * 1024
+const headerCwd = (line: string): string | undefined => {
+  const entry = decodeSessionLine(line)
+  if (Option.isNone(entry) || !entry.value) return undefined
+  const header = decodeSessionHeader(entry.value)
+  return Option.isSome(header) ? (header.value.cwd ?? process.cwd()) : process.cwd()
+}
 const sessionFileCwd = (file: string): string => {
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    const entry = decodeSessionLine(line)
-    if (Option.isNone(entry) || !entry.value) continue
-    const header = decodeSessionHeader(entry.value)
-    return Option.isSome(header) && typeof header.value.cwd === 'string'
-      ? header.value.cwd
-      : process.cwd()
+  const fd = openSync(file, 'r')
+  try {
+    const chunk = Buffer.allocUnsafe(SESSION_HEADER_CHUNK_BYTES)
+    const decoder = new StringDecoder('utf8')
+    let buffered = ''
+    for (;;) {
+      const count = readSync(fd, chunk, 0, chunk.length, null)
+      const ended = count === 0
+      buffered += ended ? decoder.end() : decoder.write(chunk.subarray(0, count))
+      const lines = buffered.split('\n')
+      buffered = ended ? '' : (lines.pop() ?? '')
+      for (const line of lines) {
+        const cwd = headerCwd(line)
+        if (cwd !== undefined) return cwd
+      }
+      if (ended) return process.cwd()
+    }
+  } finally {
+    closeSync(fd)
   }
-  return process.cwd()
 }
 
 const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(call)
@@ -804,13 +823,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       }
     )
 
-  const admitNativeWrite = Effect.fnUntraced(function* (
-    event: HostToolCallEvent,
-    context: ExtensionContext
-  ): Effect.fn.Return<ToolCallEventResult | undefined> {
-    const attachment = activeAttachment
-    const { binding } = attachment
-    return yield* Effect.gen(function* () {
+  const admitNativeWrite = Effect.fnUntraced(
+    function* (event: HostToolCallEvent, context: ExtensionContext) {
+      const attachment = activeAttachment
+      const { binding } = attachment
       const checkout = yield* options.repositoryRoot(binding.cwd)
       if (checkout === undefined) return yield* hostFailure('Cannot identify the current checkout')
       const scope = { checkout, authorityRoot: options.lifecycle.root }
@@ -884,15 +900,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           )
         )
       return undefined
-    }).pipe(
-      Effect.catchCause(cause =>
-        Effect.succeed<ToolCallEventResult>({
+    },
+    (effect, event) =>
+      Effect.catchCause(effect, cause =>
+        Effect.succeed<ToolCallEventResult | undefined>({
           block: true,
           reason: `Native ${event.toolName} was not executed: ${errorText(Cause.squash(cause))}`,
         })
       )
-    )
-  })
+  )
 
   const safeToolCall = (
     api: ExtensionAPI,
@@ -1038,21 +1054,19 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     return yield* Effect.never
   })
 
-  const guardedReplacement = <A, E>(
+  const guardedReplacement = Effect.fnUntraced(function* <A, E>(
     cancelled: A,
     replace: Effect.Effect<A, E>
-  ): Effect.Effect<A, E> =>
-    Effect.gen(function* () {
-      if (yield* refusedWhileSwitching) return cancelled
-      replacing = true
-      return yield* replace.pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            replacing = false
-          })
-        )
-      )
-    })
+  ): Effect.fn.Return<A, E> {
+    if (yield* refusedWhileSwitching) return cancelled
+    replacing = true
+    return yield* Effect.ensuring(
+      replace,
+      Effect.sync(() => {
+        replacing = false
+      })
+    )
+  })
   const importConversation = Effect.fnUntraced(function* (
     rawSwitch: AgentSessionRuntime['switchSession'],
     rawImport: AgentSessionRuntime['importFromJsonl'],

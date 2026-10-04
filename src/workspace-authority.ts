@@ -201,9 +201,19 @@ const validateRepositoryRecord = (
   return value
 }
 
+interface HeldShard {
+  readonly db: DatabaseSync
+  readonly record: RepositoryCatalogRecord
+}
+interface HeldHandles {
+  catalog: DatabaseSync | undefined
+  readonly shards: Map<WorkspaceId, HeldShard>
+}
+
 export class WorkspaceAuthority {
   readonly paths: AuthorityPaths
   readonly root: string
+  private held: HeldHandles | undefined
   private namespaceId: WorkspaceId | undefined
   private protocolRelease: GateRelease | undefined
   private initialized = false
@@ -298,6 +308,62 @@ export class WorkspaceAuthority {
     return id
   }
 
+  withHandles<A>(work: () => A): A {
+    return this.holding(work)
+  }
+
+  private holding<A>(work: (held: HeldHandles) => A): A {
+    if (this.held !== undefined) return work(this.held)
+    const held: HeldHandles = { catalog: undefined, shards: new Map() }
+    this.held = held
+    try {
+      return work(held)
+    } finally {
+      this.held = undefined
+      for (const shard of held.shards.values()) shard.db.close()
+      held.catalog?.close()
+    }
+  }
+
+  private inCatalog<A>(work: (db: DatabaseSync) => A): A {
+    return this.holding(held => {
+      held.catalog ??= this.openCatalog()
+      if (!held.catalog.isTransaction) return work(held.catalog)
+      const db = this.openCatalog()
+      try {
+        return work(db)
+      } finally {
+        db.close()
+      }
+    })
+  }
+
+  inShard<A>(
+    repositoryId: WorkspaceId,
+    work: (db: DatabaseSync) => A,
+    create = false,
+    repository?: GitWorkspace
+  ): A {
+    return this.holding(held => {
+      const shared = held.shards.get(repositoryId)
+      if (shared !== undefined && !shared.db.isTransaction) {
+        if (repository !== undefined && !matchesRepository(shared.record, repository))
+          requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
+        return work(shared.db)
+      }
+      const opened = this.openShardRecord(repositoryId, create, repository)
+      if (shared === undefined) {
+        held.shards.set(repositoryId, opened)
+        return work(opened.db)
+      }
+      try {
+        return work(opened.db)
+      } finally {
+        opened.db.close()
+      }
+    })
+  }
+
   private openCatalog(): DatabaseSync {
     const namespaceId = this.namespaceId ?? validateProtocol(this.paths.protocol)
     const db = openRecordDb(this.paths.catalog, 'catalog')
@@ -312,13 +378,10 @@ export class WorkspaceAuthority {
   }
 
   private readRepository(repositoryId: WorkspaceId): RepositoryCatalogRecord | undefined {
-    const catalog = this.openCatalog()
-    try {
+    return this.inCatalog(catalog => {
       const row = repositoryRow(catalog, 'id=?', repositoryId)
       return row === undefined ? undefined : parseRepositoryCatalogRow(row)
-    } finally {
-      catalog.close()
-    }
+    })
   }
 
   shardPath(repositoryId: WorkspaceId): string {
@@ -326,6 +389,14 @@ export class WorkspaceAuthority {
   }
 
   openShard(repositoryId: WorkspaceId, create = false, repository?: GitWorkspace): DatabaseSync {
+    return this.openShardRecord(repositoryId, create, repository).db
+  }
+
+  private openShardRecord(
+    repositoryId: WorkspaceId,
+    create: boolean,
+    repository: GitWorkspace | undefined
+  ): HeldShard {
     if (!this.initialized && create) this.initialize()
     const path = this.shardPath(repositoryId)
     const record = this.readRepository(repositoryId)
@@ -364,7 +435,7 @@ export class WorkspaceAuthority {
     try {
       this.validateShardMeta(db, record)
       if (record.state === 'provisioning') this.markRepositoryReady(repositoryId)
-      return db
+      return { db, record }
     } catch (cause) {
       db.close()
       throw cause
@@ -390,8 +461,7 @@ export class WorkspaceAuthority {
   }
 
   private markRepositoryReady(repositoryId: WorkspaceId): void {
-    const db = this.openCatalog()
-    try {
+    this.inCatalog(db => {
       transaction(db, () => {
         const row = repositoryRow(db, 'id=?', repositoryId)
         if (row === undefined)
@@ -414,9 +484,7 @@ export class WorkspaceAuthority {
         if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
           requireReview(`Cannot publish ready repository shard: ${repositoryId}`)
       })
-    } finally {
-      db.close()
-    }
+    })
   }
 
   registerRepository(repository: GitWorkspace): WorkspaceId {
@@ -513,13 +581,10 @@ export class WorkspaceAuthority {
   }
 
   findRepository(repository: GitWorkspace): WorkspaceId | undefined {
-    const catalog = this.openCatalog()
-    try {
+    return this.inCatalog(catalog => {
       const row = repositoryRow(catalog, 'common_path=?', repository.commonPath)
       return row === undefined ? undefined : validateRepositoryRecord(repository, row).id
-    } finally {
-      catalog.close()
-    }
+    })
   }
 
   listRepositories(): readonly {
@@ -527,17 +592,14 @@ export class WorkspaceAuthority {
     readonly state: string
     readonly commonPath: string
   }[] {
-    const db = this.openCatalog()
-    try {
-      return rows(db, `${REPOSITORY_ROW} ORDER BY id`).map(row => {
+    return this.inCatalog(db =>
+      rows(db, `${REPOSITORY_ROW} ORDER BY id`).map(row => {
         const record = parseRepositoryCatalogRow(row)
         if (record.state !== 'ready')
           requireReview(`Repository shard provisioning is unresolved: ${record.id}`)
         return { id: record.id, state: record.state, commonPath: record.commonPath }
       })
-    } finally {
-      db.close()
-    }
+    )
   }
 
   close(): void {
@@ -586,14 +648,7 @@ export const inDb = <A>(
   callback: (db: DatabaseSync) => A,
   create = false,
   git?: GitWorkspace
-): A => {
-  const db = authority.openShard(repo, create, git)
-  try {
-    return callback(db)
-  } finally {
-    db.close()
-  }
-}
+): A => authority.inShard(repo, callback, create, git)
 export const taskWorkspaces = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId

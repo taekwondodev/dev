@@ -32,40 +32,41 @@ export interface GitResult {
   readonly stderr: string
 }
 
+const GIT_ISOLATION_ARGUMENTS = [
+  '--no-pager',
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'submodule.recurse=false',
+  '-c',
+  'core.untrackedCache=false',
+] as const
+export const gitArguments = (args: readonly string[]): string[] => [
+  ...GIT_ISOLATION_ARGUMENTS,
+  ...args,
+]
+export const gitEnvironment = (): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_OPTIONAL_LOCKS: '0',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_NO_LAZY_FETCH: '1',
+  GIT_NO_REPLACE_OBJECTS: '1',
+  GIT_GRAFT_FILE: '/dev/null',
+})
+export const GIT_TIMEOUT_MS = 30_000
+
 export const gitResult = (cwd: string, args: readonly string[], input?: string): GitResult => {
-  const result = spawnSync(
-    'git',
-    [
-      '--no-pager',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'core.fsmonitor=false',
-      '-c',
-      'submodule.recurse=false',
-      '-c',
-      'core.untrackedCache=false',
-      ...args,
-    ],
-    {
-      cwd,
-      encoding: 'utf8',
-      input,
-      windowsHide: true,
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 30_000,
-      env: {
-        ...Object.fromEntries(
-          Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
-        ),
-        GIT_OPTIONAL_LOCKS: '0',
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_NO_LAZY_FETCH: '1',
-        GIT_NO_REPLACE_OBJECTS: '1',
-        GIT_GRAFT_FILE: '/dev/null',
-      },
-    }
-  )
+  const result = spawnSync('git', gitArguments(args), {
+    cwd,
+    encoding: 'utf8',
+    input,
+    windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS,
+    env: gitEnvironment(),
+  })
   if (result.error !== undefined) throw gitBlocked(`Cannot run Git: ${result.error.message}`)
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
@@ -81,19 +82,31 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
 
 export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   if (!isAbsolute(cwd)) throw gitBlocked(`Workspace cwd must be absolute: ${cwd}`)
+  const described = git(cwd, [
+    'rev-parse',
+    '--show-toplevel',
+    '--path-format=absolute',
+    '--git-common-dir',
+    '--git-dir',
+    '--show-object-format',
+  ]).split('\n')
+  const [toplevel, commonValue, adminValue, objectFormat] = described
+  if (
+    described.length !== 4 ||
+    toplevel === undefined ||
+    commonValue === undefined ||
+    adminValue === undefined ||
+    objectFormat === undefined
+  )
+    throw gitBlocked(`Git checkout paths containing a newline are not supported: ${cwd}`)
   let checkout: string
   try {
-    checkout = realpathSync(git(cwd, ['rev-parse', '--show-toplevel']))
-  } catch (cause) {
-    if (cause instanceof WorkspaceError) throw cause
+    checkout = realpathSync(toplevel)
+  } catch {
     throw gitBlocked(`Cannot resolve Git checkout at ${cwd}`)
   }
-  const common = realpathSync(
-    git(checkout, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
-  )
-  const adminValue = git(checkout, ['rev-parse', '--path-format=absolute', '--git-dir'])
+  const common = realpathSync(commonValue)
   const admin = realpathSync(isAbsolute(adminValue) ? adminValue : resolve(checkout, adminValue))
-  const objectFormat = git(checkout, ['rev-parse', '--show-object-format'])
   let head: string
   try {
     head = git(checkout, ['rev-parse', '--verify', 'HEAD^{commit}'])

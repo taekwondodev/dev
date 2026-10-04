@@ -439,8 +439,11 @@ try {
   await claim(
     'dev workspace inspect with a malformed task ID is a usage error: exit 2 naming the bad argument, before the authority is asked',
     async () => {
-      const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'])
+      const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'], {
+        REPORT_OPEN: '1',
+      })
       assert.equal(malformed.code, 2, malformed.stderr)
+      assert.ok(!malformed.stderr.includes('authority opened'), malformed.stderr)
       assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace/)
       assert.ok(malformed.stderr.includes('not-a-task-id'), malformed.stderr)
     }
@@ -552,7 +555,7 @@ try {
     }
   )
   await claim(
-    'no read-only workspace command creates an authority root, a data home, Pi state or a session file',
+    'no read-only workspace command resolves a data home or creates Pi state or a session file',
     () => {
       assert.ok(!existsSync(unusedDataHome), 'no read-only command resolved a data home')
       assert.deepEqual(

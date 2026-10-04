@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
@@ -33,6 +34,14 @@ export const within = <A>(promise: Promise<A>, ms: number, what: string): Promis
     }),
   ])
 
+export const equalWith = <A>(actual: A, expected: A, detail: string | undefined): void => {
+  assert.equal(
+    actual,
+    expected,
+    `expected ${String(expected)}, got ${String(actual)}${detail === undefined ? '' : `: ${detail}`}`
+  )
+}
+
 export interface Claims {
   claim<A>(text: string, assertions: () => A | Promise<A>, limitMs?: number): Promise<A>
   readonly passed: readonly string[]
@@ -42,10 +51,13 @@ const CLAIM_LIMIT_MS = 120_000
 
 export const makeClaims = (defaultLimitMs = CLAIM_LIMIT_MS): Claims => {
   const passed: string[] = []
+  const recorded = new Set<string>()
   return {
     passed,
     async claim(text, assertions, limitMs = defaultLimitMs) {
-      if (passed.includes(text)) throw new Error(`Claim recorded twice: ${text}`)
+      if (recorded.has(text)) throw new Error(`Claim recorded twice: ${text}`)
+      recorded.add(text)
+      const startedAt = performance.now()
 
       const value = await within(
         Promise.resolve().then(assertions),
@@ -55,7 +67,7 @@ export const makeClaims = (defaultLimitMs = CLAIM_LIMIT_MS): Claims => {
         if (cause instanceof TimedOut) process.stderr.write(`${cause.message}\n`)
         throw cause
       })
-      passed.push(text)
+      passed.push(`${text} [${Math.round(performance.now() - startedAt)} ms]`)
       return value
     },
   }
@@ -85,6 +97,8 @@ export interface WaitTiming {
   readonly attempts?: number
   readonly intervalMs?: number
 }
+
+export const IN_MEMORY_POLL: WaitTiming = { attempts: 400, intervalMs: 50 }
 
 export async function waitUntil<A, B extends A>(
   what: string,

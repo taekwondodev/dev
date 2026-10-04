@@ -322,7 +322,7 @@ try {
         let output = ''
         const lateMarker = join(root, 'shell-late')
         const result = await shell.operations.exec(
-          `printf visible; (sleep 3; printf late > ${JSON.stringify(lateMarker)}) & exit 3`,
+          `printf visible; (sleep 1; printf late > ${JSON.stringify(lateMarker)}) & exit 3`,
           grant.cwd,
           { onData: data => (output += data.toString()) }
         )

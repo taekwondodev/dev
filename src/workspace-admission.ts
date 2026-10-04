@@ -51,9 +51,8 @@ import {
   getUse,
   putUse,
   saveUse,
-  getUseRows,
+  getActiveUseRows,
   assertWithinLiveInDb,
-  isActiveUse,
   type WorkspaceRecord,
   type BindingRecord,
   type UseRecord,
@@ -108,7 +107,6 @@ const validateWithinGrant = (
       blocked(`Scoped operation grant is unresolved: ${use.id} (${use.stage})`)
     return { workspace, use }
   })
-  validateWorkspace(authority, result.workspace)
   return { lease, ...result }
 }
 
@@ -148,7 +146,12 @@ const admit = (
     if (operation.execution === undefined) return ready
     const base = state.leases.get(ready.grant.useId)
     if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
-    return executionUse(authority, state, base, operation.execution)
+    return executionUse(
+      authority,
+      state,
+      validateGrant(authority, state, base.grant),
+      operation.execution
+    )
   }
   if (operation.kind === 'delegated-write')
     return allocateDelegatedWorkspace(
@@ -174,7 +177,7 @@ const admit = (
   if (reservation !== undefined && reservation.taskId !== source.binding.taskId)
     return isolateContendedWriter(authority, state, source, source.binding.taskId ?? newId(), sweep)
   const activeWrites = inDb(authority, source.repo, db =>
-    getUseRows(db, source.workspace.id).filter(use => use.access === 'write' && isActiveUse(use))
+    getActiveUseRows(db, source.workspace.id).filter(use => use.access === 'write')
   )
   const foreignActive = activeWrites.some(use => !state.leases.has(use.id))
   if (foreignActive) {
@@ -272,7 +275,12 @@ const admit = (
     state.writeGrant = grant
     state.binding = updatedBinding
     if (operation.execution !== undefined)
-      return executionUse(authority, state, lease, operation.execution)
+      return executionUse(
+        authority,
+        state,
+        validateGrant(authority, state, grant),
+        operation.execution
+      )
     return { kind: 'ready', grant }
   } catch (cause) {
     releaseGates(gates)
@@ -422,8 +430,8 @@ const writerWarning = (
 ): string | undefined => {
   if (
     inDb(authority, repo, db =>
-      getUseRows(db, workspaceIdValue).some(
-        use => use.access === 'write' && isActiveUse(use) && !state.leases.has(use.id)
+      getActiveUseRows(db, workspaceIdValue).some(
+        use => use.access === 'write' && !state.leases.has(use.id)
       )
     )
   )
@@ -437,7 +445,6 @@ const executionUse = (
   parent: GrantLease,
   execution: WorkspaceExecution
 ): WorkspaceAuthorization => {
-  validateGrant(authority, state, parent.grant)
   const base = inDb(authority, parent.repositoryId, db => getUse(db, parent.useId))
   if (base === undefined) requireReview('Workspace grant has no base use record')
   const use = {

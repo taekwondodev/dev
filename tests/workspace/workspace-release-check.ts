@@ -249,7 +249,7 @@ try {
   )
   await holder.close()
   await claim(
-    'once its use ended, the pre-existing checkout is releasable with its residual changes reported, and release ends only the reservation: files, commits and the ignored residual are untouched',
+    'once its use ended, the pre-existing checkout is releasable with its residual changes reported, and release ends only the reservation and deletes its settled use records: files, commits and the ignored residual are untouched',
     async () => {
       const [assessment] = await lifecycle.check(taskA)
       assert.equal(assessment?.outcome, 'releasable')
@@ -263,6 +263,9 @@ try {
         undefined,
         'no integration or publication proof is required'
       )
+      const settledBefore = (await lifecycle.inspect({ cwd: repo })).flatMap(view => view.uses)
+      assert.ok(settledBefore.length > 0, 'the ended holder left settled use records')
+      assert.deepEqual([...new Set(settledBefore.map(use => use.stage))], ['quiescent'])
       const result = await releaseOne(lifecycle, [assessment!], held.workspaceId)
       assert.equal(result.outcome, 'released', result.reason)
       assert.ok(result.operationId !== undefined)
@@ -272,6 +275,7 @@ try {
       const views = await lifecycle.inspect({ cwd: repo })
       assert.equal(views.length, 1)
       assert.equal(views[0]?.taskId, undefined, 'the checkout holds no reservation any more')
+      assert.deepEqual(views[0]?.uses, [], "the released reservation's settled uses are deleted")
       const receipts = await lifecycle.inspect({ taskId: taskA })
       assert.deepEqual(
         receipts.map(view => view.outcome),

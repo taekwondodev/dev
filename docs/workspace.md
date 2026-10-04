@@ -97,7 +97,7 @@ The budget is 40 seconds at quit and 20 before allocation, measured from the req
 
 Explicit release proceeds only when a task has a `review-required` workspace; otherwise it explains and exits 1. It shows the assessment and consequences, requires an interactive terminal confirmation and makes one attempt per confirmed workspace. There is no `--yes` or `--force` bypass.
 
-Every release rechecks evidence under structure, presence and writer gates. A pre-existing checkout loses only its reservation. A managed worktree is removed only when completion and recorded publications still match and no live or uncertain use holds it. **Everything left in a released managed worktree is discarded, including dirty edits, caches and forgotten files.**
+Every release rechecks evidence under structure, presence and writer gates. A pre-existing checkout loses only its reservation and that reservation's settled (`quiescent`) use records. A managed worktree is removed only when completion and recorded publications still match and no live or uncertain use holds it. **Everything left in a released managed worktree is discarded, including dirty edits, caches and forgotten files.**
 
 Changed identities, nested repositories, mount crossings and failed Git commands, including held locks, block removal. Running release inside a removable worktree retains it. An interrupted release is retained for review and refuses resume until the next sweep or explicit release observes and closes the attempt before reassessment. Files already recorded as deleted remain listed. Repeating release is a fresh request with fresh checks.
 
@@ -126,6 +126,6 @@ A successful `check` can list blockers. Exit 0 is not permission to remove anyth
 
 The authority lives at `~/Library/Application Support/dev/workspace-authority/`, resolved from the OS account rather than `HOME`, the installation or data home. All installations use the same reservations and gates. Managed worktrees live inside it.
 
-First use creates an absent authority. Missing parts of a known authority, invalid layout or damaged storage are refused; startup does not reset them. Leave installation/conversation lock databases in `<installation>/.dev/coordination/` during normal operation. Obsolete-state removal is a contributor operation covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
+First use creates an absent authority. Missing parts of a known authority, invalid layout or damaged storage are refused; startup does not reset them. Each dev process checks a database file's schema and integrity the first time it opens that file; a file replaced at the same path is checked again, while damage to an already-checked file is found by the next dev process. Leave installation/conversation lock databases in `<installation>/.dev/coordination/` during normal operation. Obsolete-state removal is a contributor operation covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 
 Admission checks physical identity, not just path names. Replacing a checkout or its Git metadata at the same path does not preserve its identity and can make resume fail. Inspect the reported reason rather than deleting coordination files to bypass it.
