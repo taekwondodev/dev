@@ -31,17 +31,17 @@ Tests follow the integration boundary: launcher smoke, usage-profile fixtures, w
 
 Choose checks for the affected boundary. The commands and their full composition are in `package.json`; these are their purposes and non-obvious limits.
 
-| Check                      | Evidence                                                                                                |
-| -------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                             |
-| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                               |
-| `npm run smoke`            | Launcher diagnostics on temporary private storage, without a model response                             |
-| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                       |
-| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows   |
-| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes           |
-| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                        |
-| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence and real children on an offline scripted model |
-| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                      |
+| Check                      | Evidence                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                                                         |
+| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                           |
+| `npm run smoke`            | Launcher diagnostics on temporary private storage, without a model response                                                         |
+| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                   |
+| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                               |
+| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                       |
+| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                    |
+| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery |
+| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                  |
 
 Only `workspace:github` touches the network; the checks use disposable storage rather than real authority state or credentials. That reader check is deliberately outside the recurring workspace suite. Run it when the GitHub reader or its adapter facts change; fakes cannot establish that integration.
 

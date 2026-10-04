@@ -1,4 +1,4 @@
-import { Cause, Effect, ManagedRuntime, Schema } from 'effect'
+import { Cause, Effect, FiberSet, Latch, Layer, ManagedRuntime, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { executeWork } from './work-actions.ts'
 import { WorkOwner, makeWorkOwnerLayer } from './work-controller.ts'
@@ -49,6 +49,7 @@ interface SessionOwner {
   readonly _tag: 'active'
   readonly sessionId: SessionId
   readonly runtime: ManagedRuntime.ManagedRuntime<WorkOwner, WorkSetupError>
+  readonly wake: Latch.Latch
 }
 
 type OwnerState = SessionOwner | { readonly _tag: 'closed'; readonly shutdown: Promise<void> }
@@ -84,6 +85,23 @@ interface DeliveryScope {
 const withOwner = <A>(
   f: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>
 ): Effect.Effect<A, WorkFailure, WorkOwner> => Effect.flatMap(WorkOwner, f)
+
+const ownedBy = <A>(
+  owner: SessionOwner,
+  f: (work: WorkOwnerService) => Effect.Effect<A, WorkFailure>
+): Effect.Effect<A, WorkFailure> =>
+  owner.runtime.contextEffect.pipe(
+    Effect.flatMap(services => Effect.provideContext(withOwner(f), services))
+  )
+
+const nextMacrotask = Effect.callback<void>(resume => {
+  const scheduled = setImmediate(() => resume(Effect.void))
+  return Effect.sync(() => clearImmediate(scheduled))
+})
+
+const UNACKNOWLEDGED = 'Outcome not acknowledged by the owning conversation'
+
+const isFailure = (cause: Cause.Cause<unknown>): boolean => !Cause.hasInterruptsOnly(cause)
 
 const LEAD_OUTCOME_GUIDANCE =
   'Background work outcomes. These are producer observations, not verification; reconcile artifacts and honor dev-cycle checkpoints before proceeding. Report any recorded worktree and follow its cleanup guidance.'
@@ -123,7 +141,6 @@ export const createWorkExtension = ({
   let removeSessionListener: (() => void) | undefined
   let idleDeliveryReady = false
   let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
-  let deliveryScheduled = false
   let statusScheduled:
     | { readonly context: Pi.ExtensionContext; readonly owner: OwnerState | undefined }
     | undefined
@@ -145,32 +162,37 @@ export const createWorkExtension = ({
           throw new WorkError({ message: 'This work owner has shut down' })
         const sessionId = asSessionId(ctx.sessionManager.getSessionId())
         if (sessionOwner === undefined) {
+          const wake = Latch.makeUnsafe()
           const runtime = ManagedRuntime.make(
-            makeWorkOwnerLayer({
-              dataHome,
-              profile,
-              cwd: ctx.cwd,
-              sessionId,
-              workspace: {
-                lifecycle: workspace.lifecycle,
-                attachment: workspace.attachment,
-                requestRebind: handoff =>
-                  workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
-              },
-              onChange: () => scheduleStatus(),
-              onOutcome: attempt => {
-                if (
-                  context?.sessionManager.getSessionId() !== sessionId ||
-                  sessionOwner?._tag !== 'active' ||
-                  sessionOwner.runtime !== runtime
-                )
-                  return
-                pending.set(attempt.id, { attempt, publication: { state: 'ready' } })
-                scheduleDelivery()
-              },
-            })
+            Layer.effectDiscard(deliverOutcomes(wake)).pipe(
+              Layer.provideMerge(
+                makeWorkOwnerLayer({
+                  dataHome,
+                  profile,
+                  cwd: ctx.cwd,
+                  sessionId,
+                  workspace: {
+                    lifecycle: workspace.lifecycle,
+                    attachment: workspace.attachment,
+                    requestRebind: handoff =>
+                      workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
+                  },
+                  onChange: () => scheduleStatus(),
+                  onOutcome: attempt => {
+                    if (
+                      context?.sessionManager.getSessionId() !== sessionId ||
+                      sessionOwner?._tag !== 'active' ||
+                      sessionOwner.runtime !== runtime
+                    )
+                      return
+                    pending.set(attempt.id, { attempt, publication: { state: 'ready' } })
+                    scheduleDelivery()
+                  },
+                })
+              )
+            )
           )
-          sessionOwner = { _tag: 'active', sessionId, runtime }
+          sessionOwner = { _tag: 'active', sessionId, runtime, wake }
         }
         if (sessionOwner.sessionId !== sessionId)
           throw new WorkError({
@@ -277,6 +299,8 @@ export const createWorkExtension = ({
     const message = errorText(cause)
     if (context?.hasUI) context.ui.notify(`Background work: ${message}`, 'error')
   }
+  const reportFailure = (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
+    Effect.sync(() => notifyError(Cause.squash(cause)))
 
   const interruptOwned = (ctx: Pi.ExtensionContext, reason: string) =>
     Effect.sync(() => pending.clear()).pipe(
@@ -319,60 +343,73 @@ export const createWorkExtension = ({
   const publications = (): PublicationReservation[] =>
     [...pending.values()].map(item => ({ item, publication: item.publication }))
 
-  const deliveryFailure = async (
+  const deliveryFailure = Effect.fnUntraced(function* (
     scope: DeliveryScope,
     reservations: readonly PublicationReservation[],
     cause: unknown
-  ): Promise<void> => {
+  ): Effect.fn.Return<void, WorkFailure> {
     acknowledge(scope)
     const message = errorText(cause)
-
     const failed = reserve(
       reservations.filter(item => isReserved(scope, item)),
       'recording-failure'
     )
-    await Promise.all(
-      failed.map(async reservation => {
-        try {
-          if (!isReserved(scope, reservation)) return
-          await scope.owner.runtime.runPromise(
-            withOwner(owner => owner.recordDeliveryFailure(reservation.item.attempt.id, message))
-          )
-        } finally {
-          if (isReserved(scope, reservation)) reserve([reservation], 'failed')
-        }
-      })
+    yield* Effect.forEach(
+      failed,
+      reservation =>
+        Effect.suspend(() =>
+          isReserved(scope, reservation)
+            ? ownedBy(scope.owner, owner =>
+                owner.recordDeliveryFailure(reservation.item.attempt.id, message)
+              )
+            : Effect.void
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (isReserved(scope, reservation)) reserve([reservation], 'failed')
+            })
+          ),
+          Effect.uninterruptible
+        ),
+      { concurrency: 'unbounded', discard: true }
     )
-  }
+  })
 
-  const reconcileSubmitted = async (scope: DeliveryScope): Promise<void> => {
+  const reconcileSubmitted = Effect.fnUntraced(function* (
+    scope: DeliveryScope
+  ): Effect.fn.Return<void, WorkFailure> {
     acknowledge(scope)
     const submitted = publications().filter(item => item.publication.state === 'submitted')
-    if (submitted.length > 0)
-      await deliveryFailure(scope, submitted, 'Outcome not acknowledged by the owning conversation')
-  }
+    if (submitted.length > 0) yield* deliveryFailure(scope, submitted, UNACKNOWLEDGED)
+  })
 
-  const inspectPending = async (scope: DeliveryScope): Promise<PublicationReservation[]> => {
+  const inspectPending = Effect.fnUntraced(function* (
+    scope: DeliveryScope
+  ): Effect.fn.Return<PublicationReservation[], WorkFailure> {
     acknowledge(scope)
     const candidates = publications().filter(
       item => item.publication.state === 'ready' || item.publication.state === 'failed'
     )
-    try {
-      await Promise.all(
-        candidates.map(async reservation => {
-          const { item } = reservation
-          const attempt = await scope.owner.runtime.runPromise(
-            withOwner(owner => owner.inspect(item.attempt.id))
+    yield* Effect.forEach(
+      candidates,
+      reservation =>
+        ownedBy(scope.owner, owner => owner.inspect(reservation.item.attempt.id)).pipe(
+          Effect.flatMap(attempt =>
+            Effect.sync(() => {
+              if (isReserved(scope, reservation)) reservation.item.attempt = attempt
+            })
           )
-          if (isReserved(scope, reservation)) item.attempt = attempt
-        })
+        ),
+      { concurrency: 'unbounded', discard: true }
+    ).pipe(
+      Effect.tapCause(cause =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : deliveryFailure(scope, candidates, Cause.squash(cause))
       )
-      return candidates
-    } catch (cause) {
-      await deliveryFailure(scope, candidates, cause)
-      throw cause
-    }
-  }
+    )
+    return candidates
+  })
 
   const selectBatch = (
     scope: DeliveryScope,
@@ -407,51 +444,101 @@ export const createWorkExtension = ({
     }
   }
 
-  const confirmSend = async (
+  const confirmSend = Effect.fnUntraced(function* (
     scope: DeliveryScope,
     items: readonly PublicationReservation[],
-    cause?: unknown
-  ): Promise<void> => {
-    await deliveryFailure(
-      scope,
-      items,
-      cause ?? 'Outcome not acknowledged by the owning conversation'
-    )
+    cause: unknown
+  ): Effect.fn.Return<void, WorkFailure> {
+    yield* deliveryFailure(scope, items, cause ?? UNACKNOWLEDGED)
     if (cause !== undefined) notifyError(cause)
+  })
+
+  const sendWhileIdle = (scope: DeliveryScope, candidates: readonly PublicationReservation[]) => {
+    if (!idleDeliveryReady || !isCurrent(scope) || !scope.context.isIdle()) return undefined
+    const { items, canReactivate } = selectBatch(scope, candidates)
+    if (items.length === 0) return undefined
+    const sending = reserve(items, 'sending')
+    return {
+      sending,
+      refusal: scope.session
+        .sendCustomMessage(leadOutcomeMessage(items.map(({ item }) => item.attempt)), {
+          triggerTurn: canReactivate,
+          deliverAs: 'followUp',
+        })
+        .then(
+          () => undefined,
+          (cause: unknown) => cause
+        ),
+    }
   }
 
-  const flush = async (): Promise<void> => {
+  const flush = Effect.fnUntraced(function* (
+    confirmations: FiberSet.FiberSet<void>
+  ): Effect.fn.Return<void, WorkFailure> {
     const scope = deliveryScope()
     if (!idleDeliveryReady || scope === undefined || !scope.context.isIdle() || pending.size === 0)
       return
-    const candidates = await inspectPending(scope)
-    if (!idleDeliveryReady || !isCurrent(scope) || !scope.context.isIdle()) return
-    const { items, canReactivate } = selectBatch(scope, candidates)
-    if (items.length === 0) return
-    const sending = reserve(items, 'sending')
-
-    void scope.session
-      .sendCustomMessage(leadOutcomeMessage(items.map(({ item }) => item.attempt)), {
-        triggerTurn: canReactivate,
-        deliverAs: 'followUp',
-      })
-      .then(
-        () => confirmSend(scope, sending),
-        cause => confirmSend(scope, sending, cause)
+    const candidates = yield* inspectPending(scope)
+    const sent = sendWhileIdle(scope, candidates)
+    if (sent === undefined) return
+    yield* FiberSet.run(
+      confirmations,
+      Effect.promise(() => sent.refusal).pipe(
+        Effect.flatMap(cause => confirmSend(scope, sent.sending, cause)),
+        Effect.catchCauseIf(isFailure, reportFailure)
       )
-      .catch(notifyError)
-  }
+    )
+  })
+
+  const deliverOutcomes = Effect.fnUntraced(function* (wake: Latch.Latch) {
+    const confirmations = yield* FiberSet.make<void>()
+    yield* Latch.await(wake).pipe(
+      Effect.andThen(nextMacrotask),
+      Effect.andThen(Effect.sync(() => Latch.closeUnsafe(wake))),
+      Effect.andThen(flush(confirmations)),
+      Effect.catchCauseIf(isFailure, reportFailure),
+      Effect.forever,
+      Effect.forkScoped
+    )
+  })
 
   const scheduleDelivery = (): void => {
-    if (deliveryScheduled) return
-    deliveryScheduled = true
-    setImmediate(() => {
-      deliveryScheduled = false
-      void flush().catch(notifyError)
-    })
+    if (sessionOwner?._tag === 'active') Latch.openUnsafe(sessionOwner.wake)
   }
 
-  const close = async (reason = 'session ended'): Promise<void> => {
+  const settleBoundary = Effect.fnUntraced(function* (
+    event: Pi.AgentBeforeSettleEvent,
+    ctx: Pi.ExtensionContext
+  ): Effect.fn.Return<Pi.AgentBeforeSettleEventResult | undefined, WorkFailure> {
+    yield* ownerRuntime(ctx)
+    const scope = deliveryScope()
+    if (scope === undefined) return undefined
+    yield* reconcileSubmitted(scope)
+    const candidates = yield* inspectPending(scope)
+    const { items, canReactivate } = selectBatch(scope, candidates, event.entries)
+    if (items.length === 0) return undefined
+    reserve(items, 'submitted')
+    return {
+      entries: [
+        ...event.entries,
+        {
+          type: 'custom_message' as const,
+          ...leadOutcomeMessage(items.map(({ item }) => item.attempt)),
+        },
+      ],
+      continue: event.continue || (event.outcome === 'completed' && canReactivate),
+    }
+  })
+
+  const reconcileSettled = Effect.fnUntraced(function* (
+    ctx: Pi.ExtensionContext
+  ): Effect.fn.Return<void, WorkFailure> {
+    yield* ownerRuntime(ctx)
+    const scope = deliveryScope()
+    if (scope !== undefined) yield* reconcileSubmitted(scope)
+  })
+
+  const close = (reason = 'session ended'): Promise<void> => {
     if (sessionOwner?._tag === 'closed') return sessionOwner.shutdown
     pending.clear()
     removeInputListener?.()
@@ -461,15 +548,14 @@ export const createWorkExtension = ({
     idleDeliveryReady = false
     const current = sessionOwner
     context = undefined
-    const shutdown = (async () => {
-      if (current !== undefined) {
-        try {
-          await current.runtime.runPromise(withOwner(work => work.close(reason)))
-        } finally {
-          await current.runtime.dispose()
-        }
-      }
-    })()
+    const shutdown =
+      current === undefined
+        ? Promise.resolve()
+        : Effect.runPromise(
+            ownedBy(current, work => work.close(reason)).pipe(
+              Effect.ensuring(current.runtime.disposeEffect)
+            )
+          )
     sessionOwner = { _tag: 'closed', shutdown }
     return shutdown
   }
@@ -516,7 +602,9 @@ export const createWorkExtension = ({
       if (ctx.hasUI) {
         removeInputListener = ctx.ui.onTerminalInput(data => {
           if ((data === '\u001b' || data === '\u001b[27u') && session?.isStreaming)
-            void interrupt(ctx, 'voluntary interruption').catch(notifyError)
+            Effect.runFork(
+              interruptOwned(ctx, 'voluntary interruption').pipe(Effect.catchCause(reportFailure))
+            )
         })
       }
       if (
@@ -546,32 +634,13 @@ export const createWorkExtension = ({
       else if (reactivation !== 'suspended')
         reactivation = event.outcome === 'completed' ? 'ready' : 'awaiting-success'
       scheduleStatus()
-      if (sessionOwner?._tag !== 'active') return
-      await Effect.runPromise(ownerRuntime(ctx))
-      const scope = deliveryScope()
-      if (scope === undefined) return
-      await reconcileSubmitted(scope)
-      const candidates = await inspectPending(scope)
-      const { items, canReactivate } = selectBatch(scope, candidates, event.entries)
-      if (items.length === 0) return
-      reserve(items, 'submitted')
-      return {
-        entries: [
-          ...event.entries,
-          {
-            type: 'custom_message' as const,
-            ...leadOutcomeMessage(items.map(({ item }) => item.attempt)),
-          },
-        ],
-        continue: event.continue || (event.outcome === 'completed' && canReactivate),
-      }
+      if (sessionOwner?._tag !== 'active') return undefined
+      return Effect.runPromise(settleBoundary(event, ctx))
     })
     pi.on('agent_settled', async (_event, ctx) => {
       idleDeliveryReady = false
       if (sessionOwner?._tag !== 'active') return
-      await Effect.runPromise(ownerRuntime(ctx))
-      const scope = deliveryScope()
-      if (scope !== undefined) await reconcileSubmitted(scope)
+      await Effect.runPromise(reconcileSettled(ctx))
     })
     pi.on('input', event => {
       if (event.source !== 'extension') reactivation = 'awaiting-success'
