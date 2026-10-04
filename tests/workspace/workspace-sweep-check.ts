@@ -720,6 +720,10 @@ try {
           'every task with a recorded pull request starts its read while the first task still awaits its evidence'
         )
         if (resolveResponse === undefined) throw new Error('async GraphQL request did not start')
+        const sweepAssessedEveryTaskUpToThePendingRead = new Promise(resolve => {
+          setImmediate(resolve)
+        })
+        await sweepAssessedEveryTaskUpToThePendingRead
         writeFileSync(join(child.checkout, 'tracked.txt'), 'changed during provider wait\n')
         resolveResponse({
           status: 'ok',
