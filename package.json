@@ -40,25 +40,25 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0-rc.115",
-    "@effect/platform-node-shared": "4.0.0-rc.115",
-    "effect": "4.0.0-rc.115"
+    "@effect/platform-node": "4.0.0",
+    "@effect/platform-node-shared": "4.0.0",
+    "effect": "4.0.0"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.45.0",
-    "@types/node": "22.20.4",
-    "oxc-standard": "^1.4.0",
-    "oxfmt": "^0.48.0",
-    "oxlint": "^1.83.0",
+    "@effect/tsgo": "0.48.0",
+    "@types/node": "26.6.4",
+    "oxc-standard": "^1.4.2",
+    "oxfmt": "^0.71.0",
+    "oxlint": "^1.86.0",
     "typescript": "7.0.2"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.115"
+    "@effect/platform-node-shared": "4.0.0"
   },
   "config": {
     "pi": "1.0.2"
   },
   "engines": {
-    "node": ">=22.23.2"
+    "node": ">=26.0.0"
   }
 }
