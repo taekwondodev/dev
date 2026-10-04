@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path'
 import { Schema } from 'effect'
 import type { Effect as EffectType } from 'effect/Effect'
 
@@ -17,12 +18,11 @@ export const AttemptId = Schema.String.pipe(
 )
 export type AttemptId = typeof AttemptId.Type
 
-export const isAttemptId = (value: string): value is AttemptId => Schema.is(AttemptId)(value)
-export const asAttemptId = (value: string): AttemptId => Schema.decodeSync(AttemptId)(value)
-export const asSessionId = (value: string): SessionId => Schema.decodeSync(SessionId)(value)
-export const asTaskId = (value: string): TaskId => Schema.decodeSync(TaskId)(value)
-export const asGenerationId = (value: string): GenerationId =>
-  Schema.decodeSync(GenerationId)(value)
+export const isAttemptId: (value: string) => value is AttemptId = Schema.is(AttemptId)
+export const asAttemptId: (value: string) => AttemptId = Schema.decodeSync(AttemptId)
+export const asSessionId: (value: string) => SessionId = Schema.decodeSync(SessionId)
+export const asTaskId: (value: string) => TaskId = Schema.decodeSync(TaskId)
+export const asGenerationId: (value: string) => GenerationId = Schema.decodeSync(GenerationId)
 
 export const WorkKindSchema = Schema.Literals(['process', 'agent'] as const)
 export type WorkKind = typeof WorkKindSchema.Type
@@ -211,6 +211,24 @@ const AttemptRecordFactFields = {
   usage: Schema.optional(UsageSchema),
 } as const
 
+const attemptRecordInvariants = Schema.makeFilter(
+  (record: {
+    readonly id: AttemptId
+    readonly owner: OwnerIdentity
+    readonly worktreePath?: string | undefined
+    readonly workspaceId?: string | undefined
+    readonly workspaceUseId?: string | undefined
+  }) => {
+    if (record.id !== record.owner.attemptId)
+      return 'Attempt record identity disagrees with its owner'
+    if (record.worktreePath === undefined) return undefined
+    if (!isAbsolute(record.worktreePath)) return 'Attempt worktree path must be absolute'
+    return record.workspaceId === undefined || record.workspaceUseId === undefined
+      ? 'Attempt worktree requires its workspace and workspace use'
+      : undefined
+  }
+)
+
 const attemptRecord = <
   const Status extends Schema.Schema<string>,
   const Completion extends Schema.Schema<number | undefined>,
@@ -226,10 +244,17 @@ export const AttemptRecordSchema = Schema.Union([
   attemptRecord(Schema.Literal('failed'), Schema.Finite),
   attemptRecord(Schema.Literal('cancelled'), Schema.Finite),
   attemptRecord(Schema.Literal('unknown'), NoCompletionTime),
-]).pipe(Schema.toTaggedUnion('status'))
+])
+  .check(attemptRecordInvariants)
+  .pipe(Schema.toTaggedUnion('status'))
 
 type Mutable<T> = T extends object ? { -readonly [K in keyof T]: T[K] } : T
 export type AttemptRecord = Mutable<typeof AttemptRecordSchema.Type>
+
+export const decodeAttemptRecord: (value: unknown) => AttemptRecord = Schema.decodeUnknownSync(
+  AttemptRecordSchema,
+  { onExcessProperty: 'error' }
+)
 
 export interface ActiveAttemptState {
   readonly _tag: 'active'
@@ -337,6 +362,7 @@ export class WorkSetupError extends Schema.TaggedError<WorkSetupError>()('WorkSe
 export class WorkPersistenceError extends Schema.TaggedError<WorkPersistenceError>()(
   'WorkPersistenceError',
   {
+    code: Schema.String,
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   }

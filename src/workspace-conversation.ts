@@ -99,6 +99,17 @@ export const conversationWorkspaces = (state: ConversationState): ReadonlySet<Wo
     ...state.extraGates.map(held => held.workspaceId),
   ])
 
+const assertPrunedLeaseSettled = (lease: GrantLease): void => {
+  if (!lease.released && (lease.kind === 'execution' || lease.kind === 'opaque'))
+    requireReview(`Workspace use disappeared while its execution was live: ${lease.useId}`)
+}
+
+const forgetPrunedLease = (state: ConversationState, lease: GrantLease): void => {
+  lease.released = true
+  state.leases.delete(lease.useId)
+  state.leaseAttachments.delete(lease.useId)
+}
+
 const releaseQuiescentWorkspaceGates = (
   authority: WorkspaceAuthority,
   state: ConversationState,
@@ -117,14 +128,16 @@ const releaseQuiescentWorkspaceGates = (
   const leases = [...state.leases.values()].filter(lease =>
     matches(lease.repositoryId, lease.grant.workspaceId)
   )
+  const pruned: GrantLease[] = []
   const quiescent = inDb(authority, workspace.repositoryId, db =>
     leases.every(lease => {
       const use = getUse(db, lease.useId)
-      if (
-        use === undefined ||
-        use.workspaceId !== workspace.workspaceId ||
-        use.incarnation !== state.incarnation
-      )
+      if (use === undefined) {
+        assertPrunedLeaseSettled(lease)
+        pruned.push(lease)
+        return true
+      }
+      if (use.workspaceId !== workspace.workspaceId || use.incarnation !== state.incarnation)
         requireReview(`Workspace gate lost its owning use: ${lease.useId}`)
       return !isActiveUse(use)
     })
@@ -142,6 +155,9 @@ const releaseQuiescentWorkspaceGates = (
   }
   for (const lease of leases) {
     if (lease.gates !== undefined && released(lease.gates)) lease.gates = undefined
+  }
+  for (const lease of pruned) {
+    if (lease.gates === undefined) forgetPrunedLease(state, lease)
   }
   for (let index = state.extraGates.length - 1; index >= 0; index--) {
     const held = state.extraGates[index]
@@ -179,19 +195,36 @@ export const retryDeferredGateReleases = (
     return warning === undefined ? [] : [warning]
   })
 
+const dropPrunedLeases = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  workspaceId: WorkspaceId,
+  excludeUseId?: WorkspaceId
+): void => {
+  for (const lease of state.leases.values()) {
+    if (lease.grant.workspaceId !== workspaceId || lease.useId === excludeUseId) continue
+    if (inDb(authority, lease.repositoryId, db => getUse(db, lease.useId)) !== undefined) continue
+    assertPrunedLeaseSettled(lease)
+    if (lease.gates !== undefined) {
+      releaseGates(lease.gates)
+      lease.gates = undefined
+    }
+    forgetPrunedLease(state, lease)
+  }
+}
+
 export const outgoingUses = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   sourceWorkspaceId: WorkspaceId,
   excludeUseId?: WorkspaceId
 ): { readonly lease: GrantLease; readonly use: UseRecord }[] => {
+  dropPrunedLeases(authority, state, sourceWorkspaceId, excludeUseId)
   return [...state.leases.values()]
     .filter(lease => lease.grant.workspaceId === sourceWorkspaceId && lease.useId !== excludeUseId)
-    .map(lease => {
+    .flatMap(lease => {
       const use = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
-      if (use === undefined)
-        requireReview(`Old workspace use disappeared during handoff: ${lease.useId}`)
-      return { lease, use }
+      return use === undefined ? [] : [{ lease, use }]
     })
 }
 

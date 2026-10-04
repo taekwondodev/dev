@@ -1,6 +1,6 @@
 import type { RuleTester } from 'oxlint/plugins-dev'
 
-export default {
+const plugin = {
   meta: { name: 'dev' },
   rules: {
     'no-source-comments': {
@@ -25,3 +25,5 @@ export default {
     } satisfies Parameters<RuleTester['run']>[1],
   },
 }
+
+export default plugin

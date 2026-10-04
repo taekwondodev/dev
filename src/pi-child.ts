@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { NodeServices } from '@effect/platform-node'
-import { Clock, Effect, FileSystem, Predicate, Schema } from 'effect'
+import { Clock, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 
 import { GenerationId, SKILL_COMMAND, SessionId, TaskId, skillInvocation } from './work-domain.ts'
@@ -330,12 +330,12 @@ function capturedGitText(capture: GitCapture): string {
   return Buffer.concat(capture.chunks).toString('utf8')
 }
 
-const runGit = Effect.fnUntraced(function* (
+const runGit = (
   cwd: string,
   args: readonly string[],
   signal?: AbortSignal
-) {
-  return yield* Effect.callback<GitResult>(resume => {
+): Effect.Effect<GitResult> =>
+  Effect.callback<GitResult>(resume => {
     const stdoutCapture: GitCapture = { chunks: [], bytes: 0, truncated: false }
     const stderrCapture: GitCapture = { chunks: [], bytes: 0, truncated: false }
     let spawnError: unknown
@@ -396,7 +396,6 @@ const runGit = Effect.fnUntraced(function* (
       if (!settled) child?.kill()
     })
   })
-})
 
 function validateRelativePath(path: unknown): string | undefined {
   if (path === undefined) return undefined
@@ -631,25 +630,23 @@ function abortSession(state: ChildState): Effect.Effect<void, ChildError> {
   }).pipe(Effect.asVoid)
 }
 
-function releaseSession(
+const releaseSession = Effect.fnUntraced(function* (
   state: ChildState,
   resource: { readonly runtime: Pi.AgentSessionRuntime },
   signal: AbortSignal | undefined
-): Effect.Effect<void, never> {
-  return Effect.gen(function* () {
-    if (signal?.aborted) yield* abortSession(state).pipe(Effect.ignore)
-    yield* Effect.tryPromise({
-      try: () => resource.runtime.dispose(),
-      catch: toChildError,
-    }).pipe(
-      Effect.catch(error =>
-        Effect.sync(() => {
-          state.shutdownError ??= error
-        })
-      )
+) {
+  if (signal?.aborted) yield* abortSession(state).pipe(Effect.ignore)
+  yield* Effect.tryPromise({
+    try: () => resource.runtime.dispose(),
+    catch: toChildError,
+  }).pipe(
+    Effect.catch(error =>
+      Effect.sync(() => {
+        state.shutdownError ??= error
+      })
     )
-  })
-}
+  )
+})
 
 function disposeUnmanaged(state: ChildState): Effect.Effect<void, never> {
   if (state.managed) return Effect.void
@@ -681,13 +678,13 @@ function registerAbortSignal(
   signal: AbortSignal | undefined
 ): Effect.Effect<void | (() => void), never> {
   if (!signal) return Effect.void
+  const onAbort = () => {
+    try {
+      state.abortPromise ??= session.abort()
+      void state.abortPromise.catch(() => {})
+    } catch {}
+  }
   return Effect.sync(() => {
-    const onAbort = () => {
-      try {
-        state.abortPromise ??= session.abort()
-        void state.abortPromise.catch(() => {})
-      } catch {}
-    }
     signal.addEventListener('abort', onAbort, { once: true })
     if (signal.aborted) onAbort()
     return () => signal.removeEventListener('abort', onAbort)
@@ -885,14 +882,14 @@ function skillExpanded(session: Pi.AgentSession, skill: Pi.Skill): boolean {
   return text.startsWith(`<skill name="${skill.name}"`)
 }
 
-function runSession(
-  state: ChildState,
-  request: ChildRequest,
-  send: (message: ChildMessage) => Effect.Effect<void, ChildError>,
-  options: ChildRunOptions
-) {
-  const { signal } = options
-  return Effect.gen(function* () {
+const runSession = Effect.fnUntraced(
+  function* (
+    state: ChildState,
+    request: ChildRequest,
+    send: (message: ChildMessage) => Effect.Effect<void, ChildError>,
+    options: ChildRunOptions
+  ) {
+    const { signal } = options
     const context = yield* Effect.context()
     const link = request.coordinate === true ? yield* acquireCoordinatorLink(signal) : undefined
     const resource = yield* Effect.acquireRelease(
@@ -958,16 +955,16 @@ function runSession(
     state.telemetry = current
     yield* send({ type: 'progress', usage: current.usage, context: current.context })
     return outcome
-  }).pipe(
-    Effect.tapError(() =>
+  },
+  (effect, state) =>
+    Effect.tapError(effect, () =>
       Effect.sync(() => {
         if (state.session) state.telemetry = telemetry(state.session)
       })
     ),
-    Effect.scoped,
-    Effect.ensuring(disposeUnmanaged(state))
-  )
-}
+  Effect.scoped,
+  (effect, state) => Effect.ensuring(effect, disposeUnmanaged(state))
+)
 
 function childResult(state: ChildState, text: string, error?: string): ChildResultMessage {
   return {
@@ -981,7 +978,7 @@ function childResult(state: ChildState, text: string, error?: string): ChildResu
   }
 }
 
-export const runPiChild = Effect.fn('runPiChild')(function* (
+const runPiChild = Effect.fn('runPiChild')(function* (
   rawRequest: unknown,
   emit: ChildEmitter,
   options: ChildRunOptions = {}
@@ -1050,15 +1047,7 @@ const IpcMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal('cancel') }),
   Schema.Struct({ type: Schema.Literal('start'), request: Schema.optional(Schema.Unknown) }),
 ])
-type IpcMessage = typeof IpcMessage.Type
-
-function decodeIpcMessage(message: unknown): IpcMessage | undefined {
-  try {
-    return Schema.decodeUnknownSync(IpcMessage)(message)
-  } catch {
-    return undefined
-  }
-}
+const decodeIpcMessage = Schema.decodeUnknownOption(IpcMessage)
 
 export function serveChild(options: ChildServeOptions = {}): void {
   if (typeof process.send !== 'function') {
@@ -1078,8 +1067,9 @@ export function serveChild(options: ChildServeOptions = {}): void {
   process.on('SIGINT', abort)
   process.on('disconnect', abort)
   process.on('message', (rawMessage: unknown) => {
-    const message = decodeIpcMessage(rawMessage)
-    if (!message) return
+    const decoded = decodeIpcMessage(rawMessage)
+    if (Option.isNone(decoded)) return
+    const message = decoded.value
     if (message.type === 'cancel') {
       abort()
       return
@@ -1099,7 +1089,7 @@ export function serveChild(options: ChildServeOptions = {}): void {
       })
       .then(exitCode => {
         closing = true
-        if (process.connected) process.disconnect()
+        if (process.connected) process.disconnect?.()
         process.exitCode = exitCode ?? 1
       })
   })

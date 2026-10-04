@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads'
+import { NodeServices } from '@effect/platform-node'
 import { Effect, Exit, Schema, Scope } from 'effect'
 import { errorText } from '../../src/error-text.ts'
 import {
@@ -174,7 +175,7 @@ export const openShell = async (
                   message: errorText(cause),
                 }),
         })
-      )
+      ).pipe(Effect.provide(NodeServices.layer))
     )
   )
   return {

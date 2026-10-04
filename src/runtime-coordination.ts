@@ -21,6 +21,7 @@ import { acquirePathGates, type GateRelease } from './workspace-gates.ts'
 import { WorkspaceId } from './workspace-domain.ts'
 import { getWorkspace } from './workspace-records.ts'
 import { observePhysicalIdentity } from './workspace-identity.ts'
+import { errorText } from './error-text.ts'
 
 export class CoordinationError extends Schema.TaggedError<CoordinationError>()(
   'CoordinationError',
@@ -112,7 +113,7 @@ const native = <A>(operation: () => A): Effect.Effect<A, CoordinationError> =>
       cause instanceof CoordinationError
         ? cause
         : new CoordinationError({
-            message: cause instanceof Error ? cause.message : String(cause),
+            message: errorText(cause),
             cause,
           }),
   })

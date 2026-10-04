@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { Effect, ManagedRuntime } from 'effect'
-import { makeWorkOwnerLayer } from '../../src/work-controller.ts'
+import { WorkOwner } from '../../src/work-controller.ts'
 import { checkChildWorkspace } from '../../src/work-child-workspace.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { deferred, makeClaims, ownerEffect, waitUntil, within } from './workspace-check-support.ts'
@@ -212,7 +212,7 @@ try {
 
     const outcome = deferred<AttemptView>()
     const runtime = ManagedRuntime.make(
-      makeWorkOwnerLayer({
+      WorkOwner.layer({
         dataHome,
         cwd: grant.cwd,
         sessionId,
@@ -322,7 +322,7 @@ try {
         let output = ''
         const lateMarker = join(root, 'shell-late')
         const result = await shell.operations.exec(
-          `printf visible; (sleep 3; printf late > ${JSON.stringify(lateMarker)}) & exit 3`,
+          `printf visible; (sleep 1; printf late > ${JSON.stringify(lateMarker)}) & exit 3`,
           grant.cwd,
           { onData: data => (output += data.toString()) }
         )
@@ -707,7 +707,7 @@ try {
           })
         )
         const lossyRuntime = ManagedRuntime.make(
-          makeWorkOwnerLayer({
+          WorkOwner.layer({
             dataHome,
             cwd: grant.cwd,
             sessionId,
@@ -757,7 +757,7 @@ try {
           })
         )
         const flakyRuntime = ManagedRuntime.make(
-          makeWorkOwnerLayer({
+          WorkOwner.layer({
             dataHome,
             cwd: grant.cwd,
             sessionId,
@@ -798,7 +798,7 @@ try {
           )
         )
         const lockedRuntime = ManagedRuntime.make(
-          makeWorkOwnerLayer({
+          WorkOwner.layer({
             dataHome,
             cwd: grant.cwd,
             sessionId,

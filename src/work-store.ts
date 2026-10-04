@@ -1,12 +1,26 @@
-import { ByteSize, Clock, Effect, FileSystem, Schema } from 'effect'
+import { NodeWorker } from '@effect/platform-node'
+import {
+  ByteSize,
+  Clock,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  Schema,
+} from 'effect'
 import type * as Scope from 'effect/Scope'
+import { Worker as EffectWorker } from 'effect/workers'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open as openNative, readdir, rm } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import {
   WorkPersistenceError,
-  AttemptRecordSchema,
+  decodeAttemptRecord,
   isAttemptId,
   type AttemptId,
   type AttemptRecord,
@@ -16,7 +30,7 @@ import {
 import {
   decodeListValue,
   decodeWorkerMessage,
-  type ReadyMessage,
+  type RpcEnvelope,
   type RpcInput,
   type RpcSuccess,
 } from './work-store-protocol.ts'
@@ -25,6 +39,7 @@ const LOG_FILES = { stdout: 'stdout.log', stderr: 'stderr.log', result: 'result.
 const LOG_FILE_NAMES = new Set<string>(Object.values(LOG_FILES))
 const RPC_TIMEOUT_MS = 12000
 const STARTUP_TIMEOUT_MS = 12000
+const EXIT_TIMEOUT_MS = 1000
 
 type LogStream = keyof typeof LOG_FILES
 type AttemptRecordCreateFields = Pick<AttemptRecord, 'kind' | 'cwd' | 'controllerPid'> &
@@ -69,31 +84,25 @@ type AttemptRecordCreateFields = Pick<AttemptRecord, 'kind' | 'cwd' | 'controlle
 export const compactText = (text: string, limit = 6000): string =>
   text.length <= limit ? text : `${text.slice(0, limit)}\n[truncated; full output is retained]`
 
-class StorePreparationError extends Error {
-  readonly code: string
+class StorePreparationError extends Schema.TaggedError<StorePreparationError>()(
+  'StorePreparationError',
+  { code: Schema.String }
+) {}
 
-  constructor(code: string) {
-    super()
-    this.name = 'StorePreparationError'
-    this.code = code
-  }
-}
+class WorkerRpcError extends Schema.TaggedError<WorkerRpcError>()('WorkerRpcError', {
+  code: Schema.String,
+}) {}
 
-class WorkerRpcError extends Error {
-  readonly code: string
-
-  constructor(code: string) {
-    super()
-    this.name = 'WorkerRpcError'
-    this.code = code
-  }
-}
+const rpcError = (code: string): WorkerRpcError => new WorkerRpcError({ code })
 
 const codeOf = (cause: unknown): string | undefined => {
   if (!(cause instanceof Error) || !('code' in cause)) return undefined
   const { code } = cause
   return typeof code === 'string' ? code : undefined
 }
+
+export const isRecordUnavailable = (error: WorkPersistenceError): boolean =>
+  error.code === 'record-unavailable'
 
 const persistenceMessage = (code: string): string => {
   if (code === 'unsupported-format') return 'Work store format is unsupported'
@@ -115,31 +124,15 @@ const persistenceError = (cause: unknown): WorkPersistenceError => {
     cause instanceof StorePreparationError || cause instanceof WorkerRpcError
       ? cause.code
       : (codeOf(cause) ?? 'persistence-failed')
-  return new WorkPersistenceError({ message: persistenceMessage(code) })
+  return new WorkPersistenceError({ code, message: persistenceMessage(code) })
 }
 
 const safeRecord = (value: unknown): AttemptRecord => {
-  let record: AttemptRecord
   try {
-    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value, { onExcessProperty: 'error' })
+    return decodeAttemptRecord(value)
   } catch {
-    throw new StorePreparationError('invalid-record')
+    throw new StorePreparationError({ code: 'invalid-record' })
   }
-  if (
-    record.id !== record.owner.attemptId ||
-    (record.worktreePath !== undefined &&
-      (!isAbsolute(record.worktreePath) ||
-        record.workspaceId === undefined ||
-        record.workspaceUseId === undefined)) ||
-    !Number.isSafeInteger(record.revision) ||
-    record.revision < 0 ||
-    !Number.isFinite(record.startedAt) ||
-    (record.completedAt !== undefined && !Number.isFinite(record.completedAt)) ||
-    ['completed', 'failed', 'cancelled'].includes(record.status) !==
-      (record.completedAt !== undefined)
-  )
-    throw new StorePreparationError('invalid-record')
-  return record
 }
 
 const optionalLstat = async (
@@ -149,7 +142,7 @@ const optionalLstat = async (
     return await lstat(path)
   } catch (cause) {
     if (codeOf(cause) === 'ENOENT') return undefined
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
   }
 }
 
@@ -159,12 +152,12 @@ const ensureDirectory = async (path: string): Promise<void> => {
     try {
       await mkdir(path, { recursive: true, mode: 0o700 })
     } catch {
-      throw new StorePreparationError('unsafe-path')
+      throw new StorePreparationError({ code: 'unsafe-path' })
     }
     info = await optionalLstat(path)
   }
   if (info === undefined || info.isSymbolicLink() || !info.isDirectory())
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
 }
 
 const openManagedPath = async (
@@ -181,45 +174,45 @@ const openManagedPath = async (
     handle = await openNative(path, flags)
     const info = await handle.stat()
     if ((directory && !info.isDirectory()) || (!directory && !info.isFile()))
-      throw new StorePreparationError('unsafe-path')
+      throw new StorePreparationError({ code: 'unsafe-path' })
     return { handle, mode: directory ? 0o700 : 0o600 }
   } catch (cause) {
     try {
       await handle?.close()
     } catch {
-      throw new StorePreparationError('unsafe-path')
+      throw new StorePreparationError({ code: 'unsafe-path' })
     }
     if (cause instanceof StorePreparationError) throw cause
     if (optional && codeOf(cause) === 'ENOENT') return undefined
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
   }
 }
 
 const inspectLayout = async (root: string, databasePath: string): Promise<void> => {
   const rootInfo = await optionalLstat(root)
   if (rootInfo === undefined || rootInfo.isSymbolicLink() || !rootInfo.isDirectory())
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
   let entries
   try {
     entries = await readdir(root, { withFileTypes: true })
   } catch {
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
   }
   for (const entry of entries) {
-    if (entry.isSymbolicLink()) throw new StorePreparationError('unsafe-path')
+    if (entry.isSymbolicLink()) throw new StorePreparationError({ code: 'unsafe-path' })
     if (!entry.isDirectory() || !isAttemptId(entry.name))
-      throw new StorePreparationError('unsupported-format')
+      throw new StorePreparationError({ code: 'unsupported-format' })
     const directory = join(root, entry.name)
     let children
     try {
       children = await readdir(directory, { withFileTypes: true })
     } catch {
-      throw new StorePreparationError('unsafe-path')
+      throw new StorePreparationError({ code: 'unsafe-path' })
     }
     for (const child of children) {
-      if (child.isSymbolicLink()) throw new StorePreparationError('unsafe-path')
+      if (child.isSymbolicLink()) throw new StorePreparationError({ code: 'unsafe-path' })
       if (!child.isFile() || !LOG_FILE_NAMES.has(child.name))
-        throw new StorePreparationError('unsupported-format')
+        throw new StorePreparationError({ code: 'unsupported-format' })
     }
   }
   for (const path of [
@@ -230,7 +223,7 @@ const inspectLayout = async (root: string, databasePath: string): Promise<void> 
   ]) {
     const info = await optionalLstat(path)
     if (info !== undefined && (info.isSymbolicLink() || !info.isFile()))
-      throw new StorePreparationError('unsafe-path')
+      throw new StorePreparationError({ code: 'unsafe-path' })
   }
 }
 
@@ -302,18 +295,18 @@ const repairPersistenceModes = async (paths: {
 const makeRecordDirectory = async (root: string, id: AttemptId): Promise<void> => {
   const path = join(root, id)
   const existing = await optionalLstat(path)
-  if (existing !== undefined) throw new StorePreparationError('owner-conflict')
+  if (existing !== undefined) throw new StorePreparationError({ code: 'owner-conflict' })
   try {
     await mkdir(path, { mode: 0o700 })
     const managed = await openManagedPath(path, true)
-    if (managed === undefined) throw new StorePreparationError('unsafe-path')
+    if (managed === undefined) throw new StorePreparationError({ code: 'unsafe-path' })
     try {
       await managed.handle.chmod(managed.mode)
     } finally {
       await managed.handle.close()
     }
   } catch {
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
   }
 }
 
@@ -321,540 +314,436 @@ const removeDirectory = async (root: string, id: AttemptId): Promise<void> => {
   const path = join(root, id)
   const info = await optionalLstat(path)
   if (info === undefined) return
-  if (info.isSymbolicLink() || !info.isDirectory()) throw new StorePreparationError('unsafe-path')
+  if (info.isSymbolicLink() || !info.isDirectory())
+    throw new StorePreparationError({ code: 'unsafe-path' })
   try {
     await rm(path, { recursive: true, force: true })
   } catch {
-    throw new StorePreparationError('unsafe-path')
+    throw new StorePreparationError({ code: 'unsafe-path' })
   }
-  if ((await optionalLstat(path)) !== undefined) throw new StorePreparationError('unsafe-path')
+  if ((await optionalLstat(path)) !== undefined)
+    throw new StorePreparationError({ code: 'unsafe-path' })
 }
 
-interface PendingRequest {
-  readonly resolve: (response: RpcSuccess) => void
-  readonly reject: (cause: unknown) => void
-  readonly timer: ReturnType<typeof setTimeout>
-  readonly signal?: AbortSignal
-  readonly abort?: () => void
+type WorkerPhase = 'starting' | 'ready' | 'closing' | 'closed' | 'failed'
+
+interface StoreWorker {
+  readonly request: (input: RpcInput) => Effect.Effect<RpcSuccess, WorkerRpcError>
 }
 
-class WorkerClient {
-  private readonly worker: Worker
-  private readonly sessionId: SessionId
-  private readonly pending = new Map<number, PendingRequest>()
-  private readonly exitPromise: Promise<void>
-  private resolveExit: (() => void) | undefined
-  private readonly readyPromise: Promise<WorkerClient>
-  private resolveReady: ((client: WorkerClient) => void) | undefined
-  private rejectReady: ((cause: unknown) => void) | undefined
-  private phase: 'starting' | 'ready' | 'closing' | 'closed' | 'failed' = 'starting'
-  private nextId = 0
-  private readyTimer: ReturnType<typeof setTimeout>
+const openStoreWorker = Effect.fnUntraced(function* (
+  root: string,
+  databasePath: string,
+  sessionId: SessionId
+): Effect.fn.Return<StoreWorker, WorkerRpcError, Scope.Scope> {
+  const pending = new Map<number, Deferred.Deferred<RpcSuccess, WorkerRpcError>>()
+  const ready = yield* Deferred.make<void, WorkerRpcError>()
+  let phase: WorkerPhase = 'starting'
+  let nextId = 0
+  let thread: Worker | undefined
 
-  private constructor(worker: Worker, sessionId: SessionId) {
-    this.worker = worker
-    this.sessionId = sessionId
-    this.exitPromise = new Promise(resolveExitPromise => {
-      this.resolveExit = resolveExitPromise
-    })
-    this.readyPromise = new Promise((resolveReadyPromise, rejectReadyPromise) => {
-      this.resolveReady = resolveReadyPromise
-      this.rejectReady = rejectReadyPromise
-    })
-    this.readyTimer = setTimeout(
-      () => this.fail(new WorkerRpcError('worker-unavailable')),
-      STARTUP_TIMEOUT_MS
-    )
-    worker.on('message', (raw: unknown) => this.message(raw))
-    worker.on('error', () => this.fail(new WorkerRpcError('worker-unavailable')))
-    worker.on('exit', () => this.exited())
+  const currentPhase = (): WorkerPhase => phase
+
+  const fail = (cause: WorkerRpcError): void => {
+    if (phase === 'closed' || phase === 'failed') return
+    const wasStarting = phase === 'starting'
+    phase = 'failed'
+    if (wasStarting) Deferred.doneUnsafe(ready, Exit.fail(cause))
+    for (const result of pending.values()) Deferred.doneUnsafe(result, Exit.fail(cause))
+    pending.clear()
+    void thread?.terminate()
   }
 
-  static open(root: string, databasePath: string, sessionId: SessionId): Promise<WorkerClient> {
-    const client = new WorkerClient(
-      new Worker(new URL('./work-store-worker.ts', import.meta.url), {
-        workerData: { root, databasePath, sessionId },
-      }),
-      sessionId
-    )
-    return client.readyPromise.catch(async cause => {
-      await client.exitPromise
-      throw cause
-    })
-  }
-
-  request(input: RpcInput, signal: AbortSignal): Promise<RpcSuccess> {
-    if (this.phase !== 'ready') return Promise.reject(new WorkerRpcError('worker-closed'))
-    const id = ++this.nextId
-    const request = { ...input, id }
-    return new Promise((resolvePromise, rejectPromise) => {
-      if (signal.aborted) {
-        rejectPromise(new WorkerRpcError('worker-interrupted'))
+  const receive = (raw: unknown): Effect.Effect<void> =>
+    Effect.sync(() => {
+      const decoded = decodeWorkerMessage(raw)
+      if (Option.isNone(decoded)) return fail(rpcError('worker-protocol'))
+      const message = decoded.value
+      if ('type' in message) {
+        if (message.type === 'startup-error') return fail(rpcError(message.code))
+        if (phase !== 'starting') return
+        phase = 'ready'
+        Deferred.doneUnsafe(ready, Exit.void)
         return
       }
-      const timer = setTimeout(() => {
-        signal.removeEventListener('abort', abort)
-        this.pending.delete(id)
-        rejectPromise(new WorkerRpcError('worker-unavailable'))
-      }, RPC_TIMEOUT_MS)
-      const abort = () => {
-        clearTimeout(timer)
-        signal.removeEventListener('abort', abort)
-        this.pending.delete(id)
-        rejectPromise(new WorkerRpcError('worker-interrupted'))
-      }
-      this.pending.set(id, {
-        resolve: resolvePromise,
-        reject: rejectPromise,
-        timer,
-        signal,
-        abort,
-      })
-      signal.addEventListener('abort', abort, { once: true })
-      try {
-        this.worker.postMessage({ id, request }, [])
-      } catch {
-        clearTimeout(timer)
-        signal.removeEventListener('abort', abort)
-        this.pending.delete(id)
-        rejectPromise(new WorkerRpcError('worker-unavailable'))
-      }
+      const result = pending.get(message.id)
+      if (result === undefined) return
+      pending.delete(message.id)
+      Deferred.doneUnsafe(
+        result,
+        message.ok ? Exit.succeed(message) : Exit.fail(rpcError(message.code))
+      )
     })
-  }
 
-  async close(): Promise<void> {
-    if (this.phase === 'closed') return
-    if (this.phase === 'failed') {
-      await this.exitPromise
-      return
-    }
-    if (this.phase === 'starting') {
-      await this.readyPromise.catch(() => undefined)
-    }
-    if (this.phase === 'ready') {
-      try {
-        await this.request({ op: 'close', sessionId: this.sessionId }, new AbortController().signal)
-      } catch {
-        this.phase = 'closing'
-      }
-    }
-    this.phase = 'closing'
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-      await Promise.race([
-        this.exitPromise,
-        new Promise<void>(resolvePromise => {
-          timer = setTimeout(resolvePromise, 1000)
+  const worker = yield* Effect.gen(function* () {
+    const platform = yield* EffectWorker.WorkerPlatform
+    return yield* platform.spawn<unknown, RpcEnvelope>(0)
+  }).pipe(
+    Effect.provide(
+      NodeWorker.layer(() => {
+        thread = new Worker(new URL('./work-store-worker.ts', import.meta.url), {
+          workerData: { root, databasePath, sessionId },
+        })
+        return thread
+      })
+    ),
+    Effect.mapError(() => rpcError('worker-unavailable'))
+  )
+
+  const running = yield* worker.run(receive).pipe(
+    Effect.onExit(() =>
+      Effect.sync(() => {
+        if (phase !== 'closing' && phase !== 'closed') fail(rpcError('worker-unavailable'))
+        phase = 'closed'
+      })
+    ),
+    Effect.forkScoped
+  )
+
+  yield* Deferred.await(ready).pipe(
+    Effect.timeoutOrElse({
+      duration: STARTUP_TIMEOUT_MS,
+      orElse: () => {
+        const cause = rpcError('worker-unavailable')
+        fail(cause)
+        return Effect.fail(cause)
+      },
+    }),
+    Effect.tapError(() => Fiber.await(running))
+  )
+
+  const request = (input: RpcInput): Effect.Effect<RpcSuccess, WorkerRpcError> =>
+    Effect.suspend(() => {
+      if (phase !== 'ready') return Effect.fail(rpcError('worker-closed'))
+      nextId += 1
+      const id = nextId
+      const result = Deferred.makeUnsafe<RpcSuccess, WorkerRpcError>()
+      pending.set(id, result)
+      return worker.send({ id, request: { ...input, id } }).pipe(
+        Effect.mapError(() => rpcError('worker-unavailable')),
+        Effect.andThen(Deferred.await(result)),
+        Effect.timeoutOrElse({
+          duration: RPC_TIMEOUT_MS,
+          orElse: () => Effect.fail(rpcError('worker-unavailable')),
         }),
-      ])
-    } finally {
-      if (timer !== undefined) clearTimeout(timer)
-    }
-    if (this.phase === 'closing') {
-      await this.worker.terminate()
-      this.phase = 'closed'
-    }
-  }
-
-  private message(raw: unknown): void {
-    let message: ReturnType<typeof decodeWorkerMessage>
-    try {
-      message = decodeWorkerMessage(raw)
-    } catch {
-      this.fail(new WorkerRpcError('worker-protocol'))
-      return
-    }
-    if ('type' in message) {
-      if (message.type === 'ready') this.ready(message)
-      else this.fail(new WorkerRpcError(message.code))
-      return
-    }
-    const pending = this.pending.get(message.id)
-    if (pending === undefined) return
-    this.pending.delete(message.id)
-    clearTimeout(pending.timer)
-    if (pending.signal !== undefined && pending.abort !== undefined)
-      pending.signal.removeEventListener('abort', pending.abort)
-    if (message.ok) pending.resolve(message)
-    else pending.reject(new WorkerRpcError(message.code))
-  }
-
-  private ready(_message: ReadyMessage): void {
-    if (this.phase !== 'starting') return
-    clearTimeout(this.readyTimer)
-    this.phase = 'ready'
-    this.resolveReady?.(this)
-    this.resolveReady = undefined
-    this.rejectReady = undefined
-  }
-
-  private fail(cause: unknown): void {
-    if (this.phase === 'closed' || this.phase === 'failed') return
-    const wasStarting = this.phase === 'starting'
-    this.phase = 'failed'
-    clearTimeout(this.readyTimer)
-    if (wasStarting) this.rejectReady?.(cause)
-    this.rejectReady = undefined
-    this.resolveReady = undefined
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer)
-      if (pending.signal !== undefined && pending.abort !== undefined)
-        pending.signal.removeEventListener('abort', pending.abort)
-      pending.reject(cause)
-    }
-    this.pending.clear()
-    void this.worker.terminate()
-  }
-
-  private exited(): void {
-    if (this.phase !== 'closing' && this.phase !== 'closed')
-      this.fail(new WorkerRpcError('worker-unavailable'))
-    this.phase = 'closed'
-    clearTimeout(this.readyTimer)
-    this.resolveExit?.()
-    this.resolveExit = undefined
-  }
-}
-
-export interface WorkStore {
-  readonly create: (
-    id: AttemptId,
-    fields: AttemptRecordCreateFields & {
-      readonly owner: Omit<OwnerIdentity, 'attemptId'> & { readonly attemptId?: never }
-    }
-  ) => Effect.Effect<AttemptRecord, WorkPersistenceError>
-  readonly save: (record: AttemptRecord) => Effect.Effect<void, WorkPersistenceError>
-  readonly read: (id: AttemptId) => Effect.Effect<AttemptRecord, WorkPersistenceError>
-  readonly list: Effect.Effect<
-    {
-      readonly records: readonly AttemptRecord[]
-      readonly unavailable: readonly { readonly id: string; readonly error: string }[]
-    },
-    WorkPersistenceError
-  >
-  readonly plannedLogPath: (id: AttemptId, stream: LogStream) => string
-  readonly logPath: (id: AttemptId, stream: LogStream) => string
-  readonly saveResult: (id: AttemptId, text: string) => Effect.Effect<void, WorkPersistenceError>
-  readonly readLog: (
-    id: AttemptId,
-    stream: LogStream,
-    offset?: number,
-    limit?: number
-  ) => Effect.Effect<
-    {
-      readonly available: boolean
-      readonly path: string
-      readonly reason?: string
-      readonly offset?: number
-      readonly nextOffset?: number
-      readonly size?: number
-      readonly truncated?: boolean
-      readonly text?: string
-    },
-    WorkPersistenceError
-  >
-}
-
-class WorkStoreImpl implements WorkStore {
-  private readonly root: string
-  private readonly sessionId: SessionId
-  private readonly authorized = new Set<AttemptId>()
-  private readonly fs: FileSystem.FileSystem
-  private readonly worker: WorkerClient
-
-  constructor(fs: FileSystem.FileSystem, root: string, sessionId: SessionId, worker: WorkerClient) {
-    this.fs = fs
-    this.root = root
-    this.sessionId = sessionId
-    this.worker = worker
-  }
-
-  create(
-    id: AttemptId,
-    fields: AttemptRecordCreateFields & {
-      readonly owner: Omit<OwnerIdentity, 'attemptId'> & { readonly attemptId?: never }
-    }
-  ): Effect.Effect<AttemptRecord, WorkPersistenceError> {
-    let snapshot: typeof fields
-    try {
-      snapshot = structuredClone(fields)
-    } catch {
-      return Effect.fail(persistenceError(new StorePreparationError('invalid-record')))
-    }
-    return Effect.gen({ self: this }, function* () {
-      if (snapshot.owner.sessionId !== this.sessionId)
-        return yield* persistenceError(new WorkerRpcError('session-mismatch'))
-      const startedAt = yield* Clock.currentTimeMillis
-      const record = yield* Effect.try({
-        try: () =>
-          safeRecord({
-            ...snapshot,
-            owner: { ...snapshot.owner, attemptId: id },
-            revision: 0,
-            id,
-            startedAt,
-            status: 'waiting',
-          }),
-        catch: cause => persistenceError(cause),
-      })
-      yield* Effect.tryPromise({
-        try: () => makeRecordDirectory(this.root, id),
-        catch: cause => persistenceError(cause),
-      })
-      const result = yield* Effect.exit(
-        this.call({ op: 'create', sessionId: this.sessionId, now: startedAt, record })
+        Effect.ensuring(Effect.sync(() => pending.delete(id)))
       )
-      if (result._tag === 'Failure') return yield* Effect.failCause(result.cause)
-      this.authorized.add(id)
-      return record
     })
-  }
 
-  save(record: AttemptRecord): Effect.Effect<void, WorkPersistenceError> {
-    let snapshot: AttemptRecord
-    try {
-      snapshot = safeRecord(structuredClone(record))
-    } catch (cause) {
-      return Effect.fail(persistenceError(cause))
-    }
-    return Clock.currentTimeMillis.pipe(
-      Effect.flatMap(now =>
-        this.call({ op: 'save', sessionId: this.sessionId, now, record: snapshot }).pipe(
-          Effect.asVoid
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      if (phase === 'closed') return
+      if (phase === 'failed') {
+        yield* Fiber.await(running)
+        return
+      }
+      yield* Effect.ignore(request({ op: 'close', sessionId }))
+      phase = 'closing'
+      yield* Fiber.await(running).pipe(Effect.timeoutOption(EXIT_TIMEOUT_MS))
+      if (currentPhase() !== 'closing') return
+      yield* Effect.promise(async () => thread?.terminate())
+      phase = 'closed'
+    })
+  )
+
+  return { request }
+})
+
+type AttemptRecordCreate = AttemptRecordCreateFields & {
+  readonly owner: Omit<OwnerIdentity, 'attemptId'> & { readonly attemptId?: never }
+}
+
+interface LogRead {
+  readonly available: boolean
+  readonly path: string
+  readonly reason?: string
+  readonly offset?: number
+  readonly nextOffset?: number
+  readonly size?: number
+  readonly truncated?: boolean
+  readonly text?: string
+}
+
+export class WorkStore extends Context.Service<
+  WorkStore,
+  {
+    readonly create: (
+      id: AttemptId,
+      fields: AttemptRecordCreate
+    ) => Effect.Effect<AttemptRecord, WorkPersistenceError>
+    readonly save: (record: AttemptRecord) => Effect.Effect<void, WorkPersistenceError>
+    readonly read: (id: AttemptId) => Effect.Effect<AttemptRecord, WorkPersistenceError>
+    readonly list: Effect.Effect<
+      {
+        readonly records: readonly AttemptRecord[]
+        readonly unavailable: readonly { readonly id: string; readonly error: string }[]
+      },
+      WorkPersistenceError
+    >
+    readonly plannedLogPath: (id: AttemptId, stream: LogStream) => string
+    readonly logPath: (id: AttemptId, stream: LogStream) => string
+    readonly saveResult: (id: AttemptId, text: string) => Effect.Effect<void, WorkPersistenceError>
+    readonly readLog: (
+      id: AttemptId,
+      stream: LogStream,
+      offset?: number,
+      limit?: number
+    ) => Effect.Effect<LogRead, WorkPersistenceError>
+  }
+>()('dev/work/WorkStore') {
+  static readonly layer = (
+    dataHome: string,
+    sessionId: SessionId
+  ): Layer.Layer<WorkStore, WorkPersistenceError, FileSystem.FileSystem> =>
+    Layer.effect(
+      WorkStore,
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const paths = yield* Effect.tryPromise({
+          try: () => preparePersistence(dataHome),
+          catch: cause => persistenceError(cause),
+        })
+        const worker = yield* openStoreWorker(paths.root, paths.databasePath, sessionId).pipe(
+          Effect.mapError(persistenceError)
         )
-      )
-    )
-  }
+        yield* Effect.tryPromise({
+          try: () => repairPersistenceModes(paths),
+          catch: cause => persistenceError(cause),
+        })
+        const { root } = paths
+        const authorized = new Set<AttemptId>()
 
-  read(id: AttemptId): Effect.Effect<AttemptRecord, WorkPersistenceError> {
-    if (!isAttemptId(id))
-      return Effect.fail(persistenceError(new WorkerRpcError('record-unavailable')))
-    return Clock.currentTimeMillis.pipe(
-      Effect.flatMap(now =>
-        this.call({ op: 'read', sessionId: this.sessionId, now, attemptId: id }).pipe(
-          Effect.flatMap(value =>
-            Effect.try({
-              try: () => {
-                const record = safeRecord(value)
-                this.authorized.add(record.id)
-                return record
-              },
-              catch: cause => persistenceError(cause),
-            })
+        const removeRecordDirectory = (id: AttemptId): Effect.Effect<void, WorkPersistenceError> =>
+          Effect.tryPromise({
+            try: () => removeDirectory(root, id),
+            catch: cause => persistenceError(cause),
+          })
+
+        const postCommitCleanup = Effect.fnUntraced(function* (
+          response: RpcSuccess
+        ): Effect.fn.Return<void, WorkPersistenceError> {
+          if (response.cleanup.length === 0) return
+          const acknowledged: AttemptId[] = []
+          for (const id of response.cleanup) {
+            yield* removeRecordDirectory(id)
+            authorized.delete(id)
+            acknowledged.push(id)
+          }
+          yield* worker
+            .request({ op: 'ack', sessionId, attemptIds: acknowledged })
+            .pipe(Effect.mapError(persistenceError))
+        })
+
+        const call = (input: RpcInput): Effect.Effect<unknown, WorkPersistenceError> =>
+          worker.request(input).pipe(
+            Effect.mapError(persistenceError),
+            Effect.flatMap(response => postCommitCleanup(response).pipe(Effect.as(response.value)))
+          )
+
+        const lstatPath = (
+          path: string
+        ): Effect.Effect<Awaited<ReturnType<typeof lstat>> | undefined, WorkPersistenceError> =>
+          Effect.tryPromise({
+            try: () => optionalLstat(path),
+            catch: cause => persistenceError(cause),
+          })
+
+        const writeLog = Effect.fnUntraced(
+          function* (id: AttemptId, path: string, text: string) {
+            const directory = yield* lstatPath(join(root, id))
+            if (directory === undefined || directory.isSymbolicLink() || !directory.isDirectory())
+              return yield* persistenceError(new WorkerRpcError({ code: 'unsafe-path' }))
+            const existing = yield* lstatPath(path)
+            if (existing !== undefined && (existing.isSymbolicLink() || !existing.isFile()))
+              return yield* persistenceError(new WorkerRpcError({ code: 'unsafe-path' }))
+            yield* fs.writeFileString(path, text, { flag: 'w', mode: 0o600 })
+            yield* fs.chmod(path, 0o600)
+          },
+          Effect.mapError(cause =>
+            cause instanceof WorkPersistenceError
+              ? cause
+              : persistenceError(new WorkerRpcError({ code: 'persistence-failed' }))
           )
         )
-      )
-    )
-  }
 
-  get list(): WorkStore['list'] {
-    return Clock.currentTimeMillis.pipe(
-      Effect.flatMap(now =>
-        this.call({ op: 'list', sessionId: this.sessionId, now }).pipe(
-          Effect.flatMap(value =>
-            Effect.try({
-              try: () => {
-                const listed = decodeListValue(value)
-                for (const record of listed.records) this.authorized.add(record.id)
-                return listed
-              },
+        const removeLog = (path: string): Effect.Effect<void, WorkPersistenceError> =>
+          fs.remove(path, { force: true }).pipe(
+            Effect.asVoid,
+            Effect.mapError(() => persistenceError(new WorkerRpcError({ code: 'unsafe-path' })))
+          )
+
+        const create = (
+          id: AttemptId,
+          fields: AttemptRecordCreate
+        ): Effect.Effect<AttemptRecord, WorkPersistenceError> => {
+          let snapshot: typeof fields
+          try {
+            snapshot = structuredClone(fields)
+          } catch {
+            return Effect.fail(
+              persistenceError(new StorePreparationError({ code: 'invalid-record' }))
+            )
+          }
+          return Effect.gen(function* () {
+            if (snapshot.owner.sessionId !== sessionId)
+              return yield* persistenceError(new WorkerRpcError({ code: 'session-mismatch' }))
+            const startedAt = yield* Clock.currentTimeMillis
+            const record = yield* Effect.try({
+              try: () =>
+                safeRecord({
+                  ...snapshot,
+                  owner: { ...snapshot.owner, attemptId: id },
+                  revision: 0,
+                  id,
+                  startedAt,
+                  status: 'waiting',
+                }),
               catch: cause => persistenceError(cause),
             })
+            yield* Effect.tryPromise({
+              try: () => makeRecordDirectory(root, id),
+              catch: cause => persistenceError(cause),
+            })
+            yield* call({ op: 'create', sessionId, now: startedAt, record })
+            authorized.add(id)
+            return record
+          })
+        }
+
+        const save = (record: AttemptRecord): Effect.Effect<void, WorkPersistenceError> => {
+          let snapshot: AttemptRecord
+          try {
+            snapshot = safeRecord(record)
+          } catch (cause) {
+            return Effect.fail(persistenceError(cause))
+          }
+          return Clock.currentTimeMillis.pipe(
+            Effect.flatMap(now =>
+              call({ op: 'save', sessionId, now, record: snapshot }).pipe(Effect.asVoid)
+            )
+          )
+        }
+
+        const read = (id: AttemptId): Effect.Effect<AttemptRecord, WorkPersistenceError> => {
+          if (!isAttemptId(id))
+            return Effect.fail(persistenceError(new WorkerRpcError({ code: 'record-unavailable' })))
+          return Clock.currentTimeMillis.pipe(
+            Effect.flatMap(now =>
+              call({ op: 'read', sessionId, now, attemptId: id }).pipe(
+                Effect.flatMap(value =>
+                  Effect.try({
+                    try: () => {
+                      const record = safeRecord(value)
+                      authorized.add(record.id)
+                      return record
+                    },
+                    catch: cause => persistenceError(cause),
+                  })
+                )
+              )
+            )
+          )
+        }
+
+        const list = Clock.currentTimeMillis.pipe(
+          Effect.flatMap(now =>
+            call({ op: 'list', sessionId, now }).pipe(
+              Effect.flatMap(value =>
+                Effect.try({
+                  try: () => {
+                    const listed = decodeListValue(value)
+                    for (const record of listed.records) authorized.add(record.id)
+                    return listed
+                  },
+                  catch: cause => persistenceError(cause),
+                })
+              )
+            )
           )
         )
-      )
+
+        const plannedLogPath = (id: AttemptId, stream: LogStream): string => {
+          if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
+            throw new Error('Choose a valid attempt and log stream')
+          return join(root, id, LOG_FILES[stream])
+        }
+
+        const logPath = (id: AttemptId, stream: LogStream): string => {
+          if (!authorized.has(id)) throw new Error('Choose a valid attempt and log stream')
+          return plannedLogPath(id, stream)
+        }
+
+        const saveResult = Effect.fnUntraced(function* (
+          id: AttemptId,
+          text: string
+        ): Effect.fn.Return<void, WorkPersistenceError> {
+          yield* read(id)
+          const path = logPath(id, 'result')
+          yield* writeLog(id, path, text)
+          const checked = yield* Effect.exit(read(id))
+          if (Exit.isFailure(checked)) {
+            yield* removeLog(path).pipe(Effect.ignore)
+            return yield* Effect.failCause(checked.cause)
+          }
+        })
+
+        const readLog = Effect.fnUntraced(
+          function* (id: AttemptId, stream: LogStream = 'stdout', offset?: number, limit = 12000) {
+            if (
+              (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) ||
+              !Number.isSafeInteger(limit) ||
+              limit < 1 ||
+              limit > 64000
+            )
+              return yield* persistenceError(new WorkerRpcError({ code: 'invalid-record' }))
+            yield* read(id)
+            const path = logPath(id, stream)
+            const directory = yield* lstatPath(join(root, id))
+            if (directory === undefined || directory.isSymbolicLink() || !directory.isDirectory())
+              return yield* persistenceError(new WorkerRpcError({ code: 'unsafe-path' }))
+            const info = yield* lstatPath(path)
+            if (info === undefined)
+              return { available: false, path, reason: 'Log unavailable or expired' }
+            if (info.isSymbolicLink() || !info.isFile())
+              return yield* persistenceError(new WorkerRpcError({ code: 'unsafe-path' }))
+            yield* fs.chmod(path, 0o600)
+            const file = yield* fs.open(path, { flag: 'r' })
+            const size = Number(ByteSize.toBigInt((yield* file.stat).size))
+            if (!Number.isSafeInteger(size))
+              return yield* persistenceError(new WorkerRpcError({ code: 'invalid-record' }))
+            const start = offset ?? Math.max(0, size - limit)
+            yield* file.seek(BigInt(start), 'start')
+            const buffer = new Uint8Array(Math.min(limit, Math.max(0, size - start)))
+            const bytes = yield* file.read(buffer)
+            const chunk = buffer.subarray(0, bytes)
+            return {
+              available: true,
+              path,
+              offset: start,
+              nextOffset: start + chunk.byteLength,
+              size,
+              truncated: start > 0 || start + chunk.byteLength < size,
+              text: Buffer.from(chunk).toString('utf8'),
+            }
+          },
+          Effect.scoped,
+          Effect.mapError(cause =>
+            cause instanceof WorkPersistenceError
+              ? cause
+              : persistenceError(new WorkerRpcError({ code: 'persistence-failed' }))
+          )
+        )
+
+        return WorkStore.of({
+          create,
+          save,
+          read,
+          list,
+          plannedLogPath,
+          logPath,
+          saveResult,
+          readLog,
+        })
+      }).pipe(Effect.uninterruptible)
     )
-  }
-
-  plannedLogPath(id: AttemptId, stream: LogStream): string {
-    if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
-      throw new Error('Choose a valid attempt and log stream')
-    return join(this.root, id, LOG_FILES[stream])
-  }
-
-  logPath(id: AttemptId, stream: LogStream): string {
-    if (!this.authorized.has(id)) throw new Error('Choose a valid attempt and log stream')
-    return this.plannedLogPath(id, stream)
-  }
-
-  saveResult(id: AttemptId, text: string): Effect.Effect<void, WorkPersistenceError> {
-    return Effect.gen({ self: this }, function* () {
-      yield* this.read(id)
-      const path = this.logPath(id, 'result')
-      yield* this.writeLog(id, path, text)
-      const checked = yield* Effect.exit(this.read(id))
-      if (checked._tag === 'Failure') {
-        yield* this.removeLog(path).pipe(Effect.ignore)
-        return yield* Effect.failCause(checked.cause)
-      }
-    })
-  }
-
-  readLog(
-    id: AttemptId,
-    stream: LogStream = 'stdout',
-    offset?: number,
-    limit = 12000
-  ): Effect.Effect<
-    {
-      readonly available: boolean
-      readonly path: string
-      readonly reason?: string
-      readonly offset?: number
-      readonly nextOffset?: number
-      readonly size?: number
-      readonly truncated?: boolean
-      readonly text?: string
-    },
-    WorkPersistenceError
-  > {
-    return Effect.gen({ self: this }, function* () {
-      if (
-        (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) ||
-        !Number.isSafeInteger(limit) ||
-        limit < 1 ||
-        limit > 64000
-      )
-        return yield* persistenceError(new WorkerRpcError('invalid-record'))
-      yield* this.read(id)
-      const path = this.logPath(id, stream)
-      const directory = yield* this.lstat(join(this.root, id))
-      if (directory === undefined || directory.isSymbolicLink() || !directory.isDirectory())
-        return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      const info = yield* this.lstat(path)
-      if (info === undefined)
-        return { available: false, path, reason: 'Log unavailable or expired' }
-      if (info.isSymbolicLink() || !info.isFile())
-        return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      yield* this.fs.chmod(path, 0o600)
-      const file = yield* this.fs.open(path, { flag: 'r' })
-      const size = Number(ByteSize.toBigInt((yield* file.stat).size))
-      if (!Number.isSafeInteger(size))
-        return yield* persistenceError(new WorkerRpcError('invalid-record'))
-      const start = offset ?? Math.max(0, size - limit)
-      yield* file.seek(BigInt(start), 'start')
-      const buffer = new Uint8Array(Math.min(limit, Math.max(0, size - start)))
-      const bytes = yield* file.read(buffer)
-      const chunk = buffer.subarray(0, bytes)
-      return {
-        available: true,
-        path,
-        offset: start,
-        nextOffset: start + chunk.byteLength,
-        size,
-        truncated: start > 0 || start + chunk.byteLength < size,
-        text: Buffer.from(chunk).toString('utf8'),
-      }
-    }).pipe(
-      Effect.scoped,
-      Effect.mapError(cause =>
-        cause instanceof WorkPersistenceError
-          ? cause
-          : persistenceError(new WorkerRpcError('persistence-failed'))
-      )
-    )
-  }
-
-  private call(input: RpcInput): Effect.Effect<unknown, WorkPersistenceError> {
-    return Effect.tryPromise({
-      try: signal => this.worker.request(input, signal),
-      catch: cause => persistenceError(cause),
-    }).pipe(
-      Effect.flatMap(response => this.postCommitCleanup(response).pipe(Effect.as(response.value)))
-    )
-  }
-
-  private postCommitCleanup(response: RpcSuccess): Effect.Effect<void, WorkPersistenceError> {
-    if (response.cleanup.length === 0) return Effect.void
-    return Effect.gen({ self: this }, function* () {
-      const acknowledged: AttemptId[] = []
-      for (const id of response.cleanup) {
-        yield* this.removeRecordDirectory(id)
-        this.authorized.delete(id)
-        acknowledged.push(id)
-      }
-      yield* Effect.tryPromise({
-        try: signal =>
-          this.worker.request(
-            {
-              op: 'ack',
-              sessionId: this.sessionId,
-              attemptIds: acknowledged,
-            },
-            signal
-          ),
-        catch: cause => persistenceError(cause),
-      })
-    })
-  }
-
-  private removeRecordDirectory(id: AttemptId): Effect.Effect<void, WorkPersistenceError> {
-    return Effect.tryPromise({
-      try: () => removeDirectory(this.root, id),
-      catch: cause => persistenceError(cause),
-    })
-  }
-
-  private lstat(
-    path: string
-  ): Effect.Effect<Awaited<ReturnType<typeof lstat>> | undefined, WorkPersistenceError> {
-    return Effect.tryPromise({
-      try: () => optionalLstat(path),
-      catch: cause => persistenceError(cause),
-    })
-  }
-
-  private writeLog(
-    id: AttemptId,
-    path: string,
-    text: string
-  ): Effect.Effect<void, WorkPersistenceError> {
-    return Effect.gen({ self: this }, function* () {
-      const directory = yield* this.lstat(join(this.root, id))
-      if (directory === undefined || directory.isSymbolicLink() || !directory.isDirectory())
-        return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      const existing = yield* this.lstat(path)
-      if (existing !== undefined && (existing.isSymbolicLink() || !existing.isFile()))
-        return yield* persistenceError(new WorkerRpcError('unsafe-path'))
-      yield* this.fs.writeFileString(path, text, { flag: 'w', mode: 0o600 })
-      yield* this.fs.chmod(path, 0o600)
-    }).pipe(
-      Effect.mapError(cause =>
-        cause instanceof WorkPersistenceError
-          ? cause
-          : persistenceError(new WorkerRpcError('persistence-failed'))
-      )
-    )
-  }
-
-  private removeLog(path: string): Effect.Effect<void, WorkPersistenceError> {
-    return this.fs.remove(path, { force: true }).pipe(
-      Effect.asVoid,
-      Effect.mapError(() => persistenceError(new WorkerRpcError('unsafe-path')))
-    )
-  }
 }
-
-export const makeWorkStore = (
-  dataHome: string,
-  sessionId: SessionId
-): Effect.Effect<WorkStore, WorkPersistenceError, FileSystem.FileSystem | Scope.Scope> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
-    const paths = yield* Effect.tryPromise({
-      try: () => preparePersistence(dataHome),
-      catch: cause => persistenceError(cause),
-    })
-    const worker = yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () => WorkerClient.open(paths.root, paths.databasePath, sessionId),
-        catch: cause => persistenceError(cause),
-      }),
-      client => Effect.promise(() => client.close())
-    )
-    yield* Effect.tryPromise({
-      try: () => repairPersistenceModes(paths),
-      catch: cause => persistenceError(cause),
-    })
-    return new WorkStoreImpl(fs, paths.root, sessionId, worker)
-  })

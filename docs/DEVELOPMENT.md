@@ -25,23 +25,23 @@ Checks and setup regenerate an ignored `node_modules/@earendil-works` link to th
 
 [ARCHITECTURE](ARCHITECTURE.md#components) maps source areas to their behavior docs. [CONTEXT](../CONTEXT.md) owns vocabulary; [AGENTS.md](../AGENTS.md#conditional-references) owns mandatory reading triggers. Portable guidance belongs in profiles or the external shared library, not in this repository's entry point.
 
-Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; production loads no test entry or test-selection environment variable.
+Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; the optional `startWorker` argument of `makeWorkspaceLifecycle`, which production never passes, lets checks start the authority worker themselves to exercise its crash, lost-acknowledgment and device-identity contracts and to inject faults into release and sweep. Production loads no test entry or test-selection environment variable.
 
 ## Verification
 
 Choose checks for the affected boundary. The commands and their full composition are in `package.json`; these are their purposes and non-obvious limits.
 
-| Check                      | Evidence                                                                                                |
-| -------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                             |
-| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                               |
-| `npm run smoke`            | Launcher diagnostics on temporary private storage, without a model response                             |
-| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                       |
-| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows   |
-| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes           |
-| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                        |
-| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence and real children on an offline scripted model |
-| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                      |
+| Check                      | Evidence                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                                                         |
+| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                           |
+| `npm run smoke`            | Launcher diagnostics on temporary private storage, without a model response                                                         |
+| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                   |
+| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                               |
+| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                       |
+| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                    |
+| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery |
+| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                  |
 
 Only `workspace:github` touches the network; the checks use disposable storage rather than real authority state or credentials. That reader check is deliberately outside the recurring workspace suite. Run it when the GitHub reader or its adapter facts change; fakes cannot establish that integration.
 

@@ -9,6 +9,7 @@ import {
   type DispatchInput,
   type DispatchProfile,
 } from './work-domain.ts'
+import { errorText } from './error-text.ts'
 
 const DISPATCH_PATH = fileURLToPath(new URL('../config/crew-dispatch.json', import.meta.url))
 
@@ -17,9 +18,6 @@ const ConfigSchema = Schema.fromJsonString(
 )
 const decodeConfig = Schema.decodeUnknownEffect(ConfigSchema)
 const decodeProfile = Schema.decodeUnknownEffect(DispatchProfileSchema)
-
-const messageOf = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause)
 
 const failure = (message: string, cause?: unknown): WorkDispatchError =>
   new WorkDispatchError({ message, ...(cause === undefined ? {} : { cause }) })
@@ -37,7 +35,7 @@ export const readDispatch: Effect.Effect<DispatchConfig, WorkDispatchError, File
     }
   }).pipe(
     Effect.mapError(cause =>
-      failure(`Cannot read dispatch configuration at ${DISPATCH_PATH}: ${messageOf(cause)}`, cause)
+      failure(`Cannot read dispatch configuration at ${DISPATCH_PATH}: ${errorText(cause)}`, cause)
     )
   )
 

@@ -23,7 +23,7 @@
     "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",
-    "work:check": "npm run types:pi && node tests/compaction-check.ts && node tests/work/work-dispatch-check.ts && node tests/work/work-store-check.ts && node tests/work/work-skill-check.ts && node tests/work/work-nested-check.ts && node tests/work/work-cancel-check.ts && node tests/work/work-compaction-check.ts",
+    "work:check": "npm run types:pi && node tests/compaction-check.ts && node tests/work/work-dispatch-check.ts && node tests/work/work-store-check.ts && node tests/work/work-skill-check.ts && node tests/work/work-nested-check.ts && node tests/work/work-cancel-check.ts && node tests/work/work-compaction-check.ts && node tests/work/work-extension-check.ts",
     "setup": "node scripts/maintain.ts setup",
     "update": "node scripts/maintain.ts update",
     "rollback": "node scripts/maintain.ts rollback",
@@ -40,25 +40,25 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0-rc.115",
-    "@effect/platform-node-shared": "4.0.0-rc.115",
-    "effect": "4.0.0-rc.115"
+    "@effect/platform-node": "4.0.0",
+    "@effect/platform-node-shared": "4.0.0",
+    "effect": "4.0.0"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.45.0",
-    "@types/node": "22.20.4",
-    "oxc-standard": "^1.4.0",
-    "oxfmt": "^0.48.0",
-    "oxlint": "^1.83.0",
+    "@effect/tsgo": "0.48.0",
+    "@types/node": "26.6.4",
+    "oxc-standard": "^1.4.2",
+    "oxfmt": "^0.71.0",
+    "oxlint": "^1.86.0",
     "typescript": "7.0.2"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.115"
+    "@effect/platform-node-shared": "4.0.0"
   },
   "config": {
     "pi": "1.0.2"
   },
   "engines": {
-    "node": ">=22.23.2"
+    "node": ">=26.0.0"
   }
 }

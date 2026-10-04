@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Effect, Option, Schema } from 'effect'
@@ -63,10 +63,22 @@ type State =
   | { readonly phase: 'preparing'; readonly job: Preparation }
   | { readonly phase: 'ready'; readonly job: Preparation; readonly result: Native.CompactionResult }
 
-const fingerprint = (entries: readonly ProjectedSessionEntry[]): string[] =>
-  entries
-    .filter(entry => entry.messages.length > 0)
-    .map(entry => JSON.stringify([entry.sourceEntry.id, entry.messages]))
+const fingerprint = (
+  entries: readonly ProjectedSessionEntry[],
+  limit = Number.POSITIVE_INFINITY
+): string[] => {
+  const digests: string[] = []
+  for (const entry of entries) {
+    if (digests.length >= limit) break
+    if (entry.messages.length > 0)
+      digests.push(
+        createHash('sha256')
+          .update(JSON.stringify([entry.sourceEntry.id, entry.messages]))
+          .digest('hex')
+      )
+  }
+  return digests
+}
 
 const inheritFiles = (
   preparation: Native.CompactionPreparation,
@@ -195,7 +207,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
     const branch = job.session.sessionManager.getBranch()
     if (!job.branchIds.every((id, index) => branch[index]?.id === id)) return false
     if (branch.slice(job.branchIds.length).some(entry => entry.type === 'compaction')) return false
-    const current = fingerprint(entries)
+    const current = fingerprint(entries, job.projection.length)
     return job.projection.every((value, index) => current[index] === value)
   }
 

@@ -37,6 +37,7 @@ import {
   type GitHubReader,
 } from '../../src/workspace-evidence.ts'
 import {
+  PublicationDestinations,
   WorkspaceToolError,
   makeWorkspaceTool,
   type PublicationDestinationReader,
@@ -249,7 +250,7 @@ try {
   )
   await holder.close()
   await claim(
-    'once its use ended, the pre-existing checkout is releasable with its residual changes reported, and release ends only the reservation: files, commits and the ignored residual are untouched',
+    'once its use ended, the pre-existing checkout is releasable with its residual changes reported, and release ends only the reservation and deletes its settled use records: files, commits and the ignored residual are untouched',
     async () => {
       const [assessment] = await lifecycle.check(taskA)
       assert.equal(assessment?.outcome, 'releasable')
@@ -263,6 +264,9 @@ try {
         undefined,
         'no integration or publication proof is required'
       )
+      const settledBefore = (await lifecycle.inspect({ cwd: repo })).flatMap(view => view.uses)
+      assert.ok(settledBefore.length > 0, 'the ended holder left settled use records')
+      assert.deepEqual([...new Set(settledBefore.map(use => use.stage))], ['quiescent'])
       const result = await releaseOne(lifecycle, [assessment!], held.workspaceId)
       assert.equal(result.outcome, 'released', result.reason)
       assert.ok(result.operationId !== undefined)
@@ -272,6 +276,7 @@ try {
       const views = await lifecycle.inspect({ cwd: repo })
       assert.equal(views.length, 1)
       assert.equal(views[0]?.taskId, undefined, 'the checkout holds no reservation any more')
+      assert.deepEqual(views[0]?.uses, [], "the released reservation's settled uses are deleted")
       const receipts = await lifecycle.inspect({ taskId: taskA })
       assert.deepEqual(
         receipts.map(view => view.outcome),
@@ -2320,8 +2325,13 @@ try {
       const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
         attachment: () => bound.effect,
-        destinations,
-        runPromise: effect => Effect.runPromise(Effect.provideService(effect, Clock.Clock, clock)),
+        runPromise: effect =>
+          Effect.runPromise(
+            effect.pipe(
+              Effect.provideService(PublicationDestinations, destinations),
+              Effect.provideService(Clock.Clock, clock)
+            )
+          ),
         requestResume: () => {
           throw new Error('this claim resumes nothing')
         },
@@ -2403,8 +2413,8 @@ try {
       const resumeTool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
         attachment: () => elsewhere.effect,
-        destinations,
-        runPromise: effect => Effect.runPromise(effect),
+        runPromise: effect =>
+          Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
         requestResume: handoff => {
           requested.push(handoff)
         },
@@ -2424,6 +2434,57 @@ try {
       )
       await elsewhere.handoff(requested[0]!, async () => 'cancelled')
       await elsewhere.close()
+    }
+  )
+
+  await claim(
+    'a running conversation that left a pre-existing checkout whose reservation was then released can return to that checkout and leave it again: its pruned settled use is not a lost use',
+    async () => {
+      const roundTripRepo = join(sandbox, 'round-trip-repo')
+      initRepository(roundTripRepo)
+      const traveller = await lifecycle.attach({ conversation: conversation(), cwd: roundTripRepo })
+      const origin = ready(await traveller.authorize({ kind: 'write' }))
+      const originTask = requireTask(origin.taskId)
+      const allocator = await lifecycle.attach({ conversation: conversation(), cwd: roundTripRepo })
+      const managed = ready(await allocator.authorize({ kind: 'delegated-write' }))
+      await allocator.close()
+      const managedSelection = {
+        taskId: requireTask(managed.taskId),
+        workspaceId: managed.workspaceId,
+      }
+      await traveller.handoff(await traveller.select(managedSelection), async () => 'confirmed')
+      assert.equal(traveller.binding.workspaceId, managed.workspaceId)
+
+      const assessments = await lifecycle.check(originTask)
+      const assessment = only(assessments, origin.workspaceId)
+      assert.equal(assessment.outcome, 'releasable', assessment.reasons.join(' | '))
+      assert.equal(assessment.subject.effect, 'release-reservation')
+      const released = await releaseOne(lifecycle, assessments, origin.workspaceId)
+      assert.equal(released.outcome, 'released', released.reason)
+      assert.ok(
+        (await lifecycle.inspect({ cwd: roundTripRepo }))
+          .flatMap(view => view.uses)
+          .every(use => use.id !== origin.useId),
+        'the release pruned the settled use the conversation still remembers'
+      )
+
+      const reserver = await lifecycle.attach({ conversation: conversation(), cwd: roundTripRepo })
+      const reserved = ready(await reserver.authorize({ kind: 'write' }))
+      assert.equal(reserved.workspaceId, origin.workspaceId)
+      await reserver.close()
+      await traveller.handoff(
+        await traveller.select({
+          taskId: requireTask(reserved.taskId),
+          workspaceId: reserved.workspaceId,
+        }),
+        async () => 'confirmed'
+      )
+      assert.equal(traveller.binding.workspaceId, origin.workspaceId)
+
+      await traveller.handoff(await traveller.select(managedSelection), async () => 'confirmed')
+      assert.equal(traveller.binding.workspaceId, managed.workspaceId)
+      ready(await traveller.authorize({ kind: 'write' }))
+      await traveller.close()
     }
   )
 

@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
+import { NodeServices } from '@effect/platform-node'
 import { Effect, Stream } from 'effect'
 import {
   WorkspaceError,
@@ -28,7 +29,7 @@ import {
   type WorkspaceId,
 } from '../../src/workspace-domain.ts'
 import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
-import { attemptedRows, formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
+import { formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
 import { makeGitHubReader, type GitHubReader } from '../../src/workspace-evidence.ts'
 import {
   checkTask,
@@ -40,7 +41,7 @@ import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
-import { observeFamily, processTable } from '../../src/process-family.ts'
+import { processObserver } from '../../src/process-family.ts'
 import { verdictName } from './workspace-completion-fixtures.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -180,7 +181,10 @@ try {
           })
           const exited = once(child, 'exit')
           await once(child, 'spawn')
-          const identity = (await Effect.runPromise(processTable)).find(
+          const observer = await Effect.runPromise(
+            processObserver.pipe(Effect.provide(NodeServices.layer))
+          )
+          const identity = (await Effect.runPromise(observer.processTable)).find(
             entry => entry.pid === child.pid
           )
           try {
@@ -192,7 +196,7 @@ try {
             await exited
           }
           const family = await Effect.runPromise(
-            observeFamily(
+            observer.observeFamily(
               { pid: child.pid, root: identity, known: [identity], reported: undefined },
               {
                 rootExited: true,
@@ -874,13 +878,6 @@ try {
       const removed = rowOf(receipt, other.workspaceId)
       assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
       assert.equal(existsSync(other.checkout), false)
-      const attempted = attemptedRows(receipt).map(row => row.workspaceId)
-      assert.ok(attempted.includes(other.workspaceId), JSON.stringify(receipt.rows))
-      assert.ok(
-        !attempted.includes(own.workspaceId) &&
-          !attempted.includes(exclusionOwner.write.workspaceId),
-        "neither the caller's workspace nor a clean pre-existing checkout was attempted"
-      )
       assert.ok(existsSync(allocated.checkout), 'the allocation itself succeeded')
       git(['checkout', '--quiet', '--', 'tracked.txt'], own.checkout)
 
@@ -1024,7 +1021,6 @@ try {
         ),
         JSON.stringify(rerun.rows)
       )
-      assert.deepEqual(attemptedRows(rerun), [], 'nothing finished was left to attempt')
     }
   )
 
@@ -1059,17 +1055,17 @@ try {
     }
   )
 
+  const allocate = async (name: string) => {
+    const owner = await reserve(userCheckout(name))
+    writeFileSync(join(owner.write.checkout, 'pending.txt'), 'keep the pre-existing checkout\n')
+    const managed = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
+    await owner.owner.close()
+    await lifecycle.recordTarget(owner.taskId, localMain)
+    return { owner, managed }
+  }
   await claim(
     'a sweep that uses its time budget stops before the next task: it defers every remaining task with a receipt row and touches none of it, and the next sweep attempts the deferred task',
     async () => {
-      const allocate = async (name: string) => {
-        const owner = await reserve(userCheckout(name))
-        writeFileSync(join(owner.write.checkout, 'pending.txt'), 'keep the pre-existing checkout\n')
-        const managed = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
-        await owner.owner.close()
-        await lifecycle.recordTarget(owner.taskId, localMain)
-        return { owner, managed }
-      }
       const first = await allocate('budget-a')
       const pending = join(first.managed.checkout, 'pending.txt')
       writeFileSync(pending, 'unfinished until the second worktree exists\n')

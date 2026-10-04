@@ -26,7 +26,7 @@ import {
   type WorkspaceOperation,
 } from '../../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../../src/workspace-authority.ts'
-import { deferred, makeClaims } from './workspace-check-support.ts'
+import { deferred, equalWith, makeClaims } from './workspace-check-support.ts'
 import {
   faultInjector,
   openLifecycle,
@@ -373,7 +373,7 @@ try {
         checkoutPath,
         checkoutConversation
       )
-      assert.equal(checkoutResult.outcome, 'review-required', checkoutResult.message)
+      equalWith(checkoutResult.outcome, 'review-required', checkoutResult.message)
 
       const commonPath = join(sandbox, 'replaced-common-checkout')
       const commonGitDir = join(sandbox, 'replaced-common-git')
@@ -385,7 +385,7 @@ try {
       })
       replaceDirectoryAtSamePath(commonGitDir)
       const commonResult = await authorizeRead(commonAuthority, commonPath, commonConversation)
-      assert.equal(commonResult.outcome, 'review-required', commonResult.message)
+      equalWith(commonResult.outcome, 'review-required', commonResult.message)
 
       const sourcePath = join(sandbox, 'replaced-admin-source')
       const adminPath = join(sandbox, 'replaced-admin-worktree')
@@ -399,7 +399,7 @@ try {
       })
       replaceDirectoryAtSamePath(adminDirectory)
       const adminResult = await authorizeRead(adminAuthority, adminPath, adminConversation)
-      assert.equal(adminResult.outcome, 'review-required', adminResult.message)
+      equalWith(adminResult.outcome, 'review-required', adminResult.message)
     }
   )
 
@@ -488,12 +488,9 @@ try {
 
   const concurrentRepo = join(sandbox, 'concurrent-repo')
   const pausedCommit = initRepository(concurrentRepo, 'file.txt', 'fixture\n')
-  await claim(
-    'simultaneous cross-process repository provisioning converges on one identity',
-    async () => {
-      const provisionProbe = (name: string) => {
-        const conversationValue = conversation(name)
-        return runChild(`
+  const provisionProbe = (name: string) => {
+    const conversationValue = conversation(name)
+    return runChild(`
         import { openLifecycle } from ${JSON.stringify(moduleUrl)}
         const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
         try {
@@ -508,14 +505,17 @@ try {
           console.log(JSON.stringify({ outcome: 'blocked' }))
         }
       `).then(
-          value =>
-            JSON.parse(value) as {
-              outcome: 'ready' | 'blocked'
-              repositoryId?: string
-              workspaceId?: string
-            }
-        )
-      }
+      value =>
+        JSON.parse(value) as {
+          outcome: 'ready' | 'blocked'
+          repositoryId?: string
+          workspaceId?: string
+        }
+    )
+  }
+  await claim(
+    'simultaneous cross-process repository provisioning converges on one identity',
+    async () => {
       const provisioned = await Promise.all([
         provisionProbe('provision-one'),
         provisionProbe('provision-two'),
@@ -594,6 +594,13 @@ try {
   )
 
   const isolatedAuthorityPath = join(sandbox, 'isolated-authority')
+  const isolatedExecution = (attemptId: string) => ({
+    sessionId: 'isolated-session',
+    taskKey: 'isolated-task',
+    attemptId,
+    generation: attemptId,
+    logs: join(sandbox, `${attemptId}.log`),
+  })
   await claim(
     'a process use settles only when never released or after an observed empty family; a started use closed by its host is recorded unknown',
     async () => {
@@ -606,13 +613,6 @@ try {
       const isolatedRead = ready(await isolatedAttachment.authorize({ kind: 'read' }))
       assert.notEqual(isolatedRead.repositoryId, firstGrant.repositoryId)
       const isolatedWrite = ready(await isolatedAttachment.authorize({ kind: 'write' }))
-      const isolatedExecution = (attemptId: string) => ({
-        sessionId: 'isolated-session',
-        taskKey: 'isolated-task',
-        attemptId,
-        generation: attemptId,
-        logs: join(sandbox, `${attemptId}.log`),
-      })
       const failedSpawn = ready(
         await isolatedAttachment.authorize({
           kind: 'write',
@@ -693,6 +693,23 @@ try {
       await isolatedRoot.close()
     }
   )
+
+  await claim('a checkout whose path contains a newline is refused', async () => {
+    const newlineRepo = join(sandbox, 'line\nbreak')
+    initRepository(newlineRepo, 'tracked.txt', 'tracked\n')
+    const newlineLifecycle = await openLifecycle({ root: join(sandbox, 'newline-authority') })
+    try {
+      await assert.rejects(
+        newlineLifecycle.attach({ conversation: conversation('newline'), cwd: newlineRepo }),
+        error =>
+          error instanceof WorkspaceError &&
+          error.outcome === 'blocked' &&
+          error.message.includes('Git checkout paths containing a newline are not supported')
+      )
+    } finally {
+      await newlineLifecycle.close()
+    }
+  })
 
   await claim('non-private and symlinked authority roots are rejected', async () => {
     chmodSync(isolatedAuthorityPath, 0o755)
@@ -1629,6 +1646,52 @@ try {
   )
 
   await claim(
+    'a live process whose use record vanished from the database requires review before a switch, and the conversation can still close',
+    async () => {
+      const vanishedRoot = join(sandbox, 'vanished-use-authority')
+      const vanishedLifecycle = await openLifecycle({ root: vanishedRoot })
+      const vanishedAttachment = await vanishedLifecycle.attach({
+        conversation: conversation('vanished-use'),
+        cwd: fenceRepo,
+      })
+      const vanishedAllocator = await vanishedLifecycle.attach({
+        conversation: conversation('vanished-use-allocator'),
+        cwd: fenceRepo,
+      })
+      const vanishedTarget = ready(await vanishedAllocator.authorize({ kind: 'delegated-write' }))
+      await vanishedAllocator.close()
+      const vanishedExecution = processExecution('vanished-use-process')
+      const vanishedProcess = ready(
+        await vanishedAttachment.authorize({ kind: 'write', execution: vanishedExecution })
+      )
+      await startProcessUse(vanishedAttachment, vanishedProcess, vanishedExecution)
+      const shard = new DatabaseSync(
+        join(vanishedRoot, 'repos', vanishedProcess.repositoryId, 'records.sqlite')
+      )
+      try {
+        assert.equal(
+          shard.prepare('DELETE FROM uses WHERE id=?').run(vanishedProcess.useId).changes,
+          1
+        )
+      } finally {
+        shard.close()
+      }
+      await assert.rejects(
+        vanishedAttachment.select({
+          taskId: vanishedTarget.taskId!,
+          workspaceId: vanishedTarget.workspaceId,
+        }),
+        error =>
+          error instanceof WorkspaceError &&
+          error.outcome === 'review-required' &&
+          error.message.includes(vanishedProcess.useId)
+      )
+      await vanishedAttachment.close()
+      await vanishedLifecycle.close()
+    }
+  )
+
+  await claim(
     'a contended write is refused, not isolated, while the same conversation still runs a process in the checkout it would leave, and the conversation stays admitted',
     async () => {
       const readerAgentRoot = join(sandbox, 'reader-agent-authority')
@@ -1926,7 +1989,7 @@ try {
   )
 
   await claim(
-    'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME, and is never opened by the check',
+    'the default authority root, resolved from this checkout and from a copied second installation, is the same account-derived path regardless of launch directory, DEV_DATA_HOME or HOME',
     () => {
       const devRoot = new URL('../..', import.meta.url)
       const secondInstallation = join(sandbox, 'second-installation')

@@ -1,12 +1,13 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Array as Arr, Config, ConfigProvider, Effect, FileSystem, Option, Schema } from 'effect'
-import { FetchHttpClient, HttpClient, HttpClientResponse } from 'effect/unstable/http'
+import { HttpClient, HttpClientResponse } from 'effect/http'
 import { errorText } from '../src/error-text.ts'
 import { resolvePiPackage } from '../src/pi-runtime.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { checkout, run, streamed, upgradeHome } from './checkout.ts'
 import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
+import { PiVersion, readPiPin } from './pi-pin.ts'
 import { cell, collapsed, counted, fence, lastLines, listed } from './report.ts'
 
 export class PiUpgradeError extends Schema.TaggedError<PiUpgradeError>()('PiUpgradeError', {
@@ -14,7 +15,6 @@ export class PiUpgradeError extends Schema.TaggedError<PiUpgradeError>()('PiUpgr
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-const manifestPath = join(checkout, 'package.json')
 const latestVersionUrl = 'https://pi.dev/api/latest-version'
 const installerReleases = 'https://pi.dev/api/installer/releases'
 export const candidateRelease = join(upgradeHome, 'pi')
@@ -78,16 +78,7 @@ const unusedSurfaces = /\bMCP\b|codemode|\btool[ _]search\b/i
 
 const repeatedSection = /^### New Features\s*$/
 
-export const PiVersion = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/)).pipe(
-  Schema.brand('dev/PiVersion')
-)
-export type PiVersion = typeof PiVersion.Type
-
-const PackageManifest = Schema.fromJsonString(
-  Schema.Struct({ config: Schema.Struct({ pi: PiVersion }) })
-)
-
-const LatestRelease = Schema.fromJsonString(Schema.Struct({ version: Schema.String }))
+const LatestRelease = Schema.Struct({ version: Schema.String })
 
 const SurfaceProbe = Schema.fromJsonString(
   Schema.Struct({
@@ -328,13 +319,9 @@ export const piSections = (
 const failure = (what: string) => (cause: unknown) =>
   new PiUpgradeError({ message: `${what}: ${errorText(cause)}`, cause })
 
-export const readPiPin = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const manifest = yield* Schema.decodeEffect(PackageManifest)(
-    yield* fs.readFileString(manifestPath)
-  )
-  return manifest.config.pi
-}).pipe(Effect.mapError(failure('Cannot read the Pi pin at config.pi in package.json')))
+const pinnedPi = readPiPin.pipe(
+  Effect.mapError(error => new PiUpgradeError({ message: error.message, cause: error.cause }))
+)
 
 const decodeVersion = (version: string) =>
   Schema.decodeEffect(PiVersion)(version).pipe(
@@ -351,12 +338,13 @@ const download = (url: string) =>
   HttpClient.get(url).pipe(
     Effect.flatMap(HttpClientResponse.filterStatusOk),
     Effect.flatMap(response => response.text),
-    Effect.provide(FetchHttpClient.layer),
     Effect.mapError(failure(`Cannot download ${url}`))
   )
 
-export const latestVersion = download(latestVersionUrl).pipe(
-  Effect.flatMap(Schema.decodeEffect(LatestRelease)),
+export const latestVersion = HttpClient.get(latestVersionUrl).pipe(
+  Effect.flatMap(HttpClientResponse.filterStatusOk),
+  Effect.mapError(failure(`Cannot download ${latestVersionUrl}`)),
+  Effect.flatMap(HttpClientResponse.schemaBodyJson(LatestRelease)),
   Effect.mapError(failure(`Cannot read the latest Pi release from ${latestVersionUrl}`)),
   Effect.flatMap(({ version }) => decodeVersion(version))
 )
@@ -573,9 +561,9 @@ export const refuseSelectedRelease = Effect.fnUntraced(function* (command: strin
     })
 })
 
-const updateUnderGate = Effect.fnUntraced(function* () {
+const updateUnderGate = Effect.gen(function* () {
   yield* acquireMaintenance()
-  const version = yield* readPiPin
+  const version = yield* pinnedPi
   yield* refuseSelectedRelease('update')
   const verified = yield* Effect.option(resolveCandidate)
   if (Option.isNone(verified) || verified.value.version !== version)
@@ -617,25 +605,25 @@ const updateUnderGate = Effect.fnUntraced(function* () {
   const fs = yield* FileSystem.FileSystem
   yield* fs.remove(candidateRelease, { recursive: true })
   return version
-}, Effect.scoped)
+}).pipe(Effect.scoped)
 
-export const updatePi = Effect.fn('updatePi')(
-  function* () {
-    const version = yield* updateUnderGate()
-    const diagnostics = yield* run('dev', ['--diagnostics']).pipe(
-      Effect.mapError(
-        error =>
-          new PiUpgradeError({
-            message: `Updated Pi to the verified ${version}, but dev --diagnostics failed: ${error.message}`,
-            cause: error,
-          })
-      )
+export const updatePi = Effect.gen(function* () {
+  const version = yield* updateUnderGate
+  const diagnostics = yield* run('dev', ['--diagnostics']).pipe(
+    Effect.mapError(
+      error =>
+        new PiUpgradeError({
+          message: `Updated Pi to the verified ${version}, but dev --diagnostics failed: ${error.message}`,
+          cause: error,
+        })
     )
-    yield* Effect.sync(() => {
-      process.stdout.write(`${diagnostics.stdout}\nUpdated Pi to the verified ${version}.\n`)
-    })
-  },
-  Effect.mapError(error =>
-    error instanceof PiUpgradeError ? error : failure('Pi update failed')(error)
   )
+  yield* Effect.sync(() => {
+    process.stdout.write(`${diagnostics.stdout}\nUpdated Pi to the verified ${version}.\n`)
+  })
+}).pipe(
+  Effect.mapError(error =>
+    error._tag === 'PiUpgradeError' ? error : failure('Pi update failed')(error)
+  ),
+  Effect.withSpan('updatePi')
 )

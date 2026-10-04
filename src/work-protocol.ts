@@ -12,6 +12,7 @@ import {
   WorkError,
   WorkProtocolError,
 } from './work-domain.ts'
+import { errorText } from './error-text.ts'
 
 const NonEmptyText = Schema.NonEmptyString
 
@@ -270,7 +271,7 @@ const toProtocolError = (cause: unknown): WorkProtocolError =>
   cause instanceof WorkProtocolError
     ? cause
     : new WorkProtocolError({
-        message: cause instanceof Error ? cause.message : String(cause),
+        message: errorText(cause),
         cause,
       })
 

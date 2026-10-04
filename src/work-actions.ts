@@ -1,6 +1,7 @@
 import { Effect } from 'effect'
 import {
   asAttemptId,
+  isAttemptId,
   WorkError,
   type AgentStartRequest,
   type AttemptView,
@@ -106,29 +107,18 @@ const cancel = (actions: WorkActions, input: WorkInput): Effect.Effect<unknown, 
       }).pipe(Effect.flatMap(attemptId => actions.cancel(attemptId)))
 }
 
-const inspect = (actions: WorkActions, input: WorkInput): Effect.Effect<unknown, WorkFailure> =>
-  actions.snapshot.pipe(
-    Effect.flatMap(snapshot => {
-      const record = snapshot.records.find(item => item.id === input.id)
-      if (record === undefined)
-        return Effect.fail(
-          new WorkError({
-            message: 'Result is unavailable in this session (unknown or expired attempt)',
-          })
-        )
-      const { stream } = input
-      return stream === undefined
-        ? Effect.map(actions.inspect(record.id), (value): unknown => value)
-        : Effect.map(
-            actions.readLog({
-              id: record.id,
-              stream,
-              ...(input.offset === undefined ? {} : { offset: input.offset }),
-            }),
-            (value): unknown => value
-          )
-    })
-  )
+export const unavailableAttempt = (): WorkError =>
+  new WorkError({
+    message: 'Result is unavailable in this session (unknown or expired attempt)',
+  })
+
+const inspect = (actions: WorkActions, input: WorkInput): Effect.Effect<unknown, WorkFailure> => {
+  const { id, stream, offset } = input
+  if (id === undefined || !isAttemptId(id)) return Effect.fail(unavailableAttempt())
+  return stream === undefined
+    ? actions.inspect(id)
+    : actions.readLog({ id, stream, ...(offset === undefined ? {} : { offset }) })
+}
 
 export const executeWork = (
   actions: WorkActions,

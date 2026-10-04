@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { Effect } from 'effect'
 import { makeClaims, waitFor } from '../workspace/workspace-check-support.ts'
-import { openWorkFixture, script, settled } from './work-check-support.ts'
+import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
 import { cancelLog, HOLD_CANCEL } from './work-child-model.ts'
 
 const { claim, passed } = makeClaims()
@@ -11,7 +11,7 @@ try {
   const owner = fixture.openOwner('general')
   try {
     await claim(
-      'concurrent cancellations of one attempt signal its child once and settle it as cancelled',
+      'concurrent cancellations of one attempt send its child one cancel message and settle it as cancelled',
       async () => {
         const started = await owner.delegate({
           taskId: 'repeated-cancel',
@@ -34,7 +34,7 @@ try {
           candidate => candidate.id === started.id,
           settled
         )
-        assert.equal(record.status, 'cancelled', record.protocolError)
+        assertStatus(record, 'cancelled')
         assert.equal(record.protocolError, undefined)
         const file = cancelLog(fixture.dataHome, started.id)
         const signals = existsSync(file)

@@ -24,6 +24,7 @@ import {
 } from '../../src/workspace-domain.ts'
 import {
   loadInstalledPi,
+  IN_MEMORY_POLL,
   makeClaims,
   makeOfflineModel,
   openHostRuntime,
@@ -252,7 +253,7 @@ try {
   const { host, runtime } = opened
   const result = toolResults(runtime)
   await runtime.session.prompt('Run the tests in the background.')
-  await waitFor('the scripted turns', () => (lead1.calls() >= 3 ? true : undefined))
+  await waitFor('the scripted turns', () => (lead1.calls() >= 3 ? true : undefined), IN_MEMORY_POLL)
   await runtime.session.waitForIdle()
 
   await claim(
@@ -514,8 +515,10 @@ try {
         runtimeRef = race.runtime
         try {
           await race.runtime.session.prompt('Run the tests in the background.')
-          await waitFor('the replacement to start', () =>
-            started === undefined ? undefined : true
+          await waitFor(
+            'the replacement to start',
+            () => (started === undefined ? undefined : true),
+            IN_MEMORY_POLL
           )
           const replacing = started
           assert.ok(replacing)
@@ -571,7 +574,11 @@ try {
     })
     runtimeRef = quitting.runtime
     await quitting.runtime.session.prompt('Run the tests in the background.')
-    await waitFor('the quit to start', () => (disposing === undefined ? undefined : true))
+    await waitFor(
+      'the quit to start',
+      () => (disposing === undefined ? undefined : true),
+      IN_MEMORY_POLL
+    )
     const disposed = disposing
     assert.ok(disposed)
     await within(disposed, 20000, 'the quit')
@@ -633,7 +640,7 @@ try {
       runtimeRef = reload.runtime
       try {
         await reload.runtime.session.prompt('Run the tests in the background.')
-        await waitFor('the reload', () => (reloaded ? true : undefined))
+        await waitFor('the reload', () => (reloaded ? true : undefined), IN_MEMORY_POLL)
         await unparked(reload.host, 'the switch to finish', { attempts: 80, intervalMs: 100 })
         assert.notEqual(resolve(reload.runtime.cwd), resolve(lead), 'the switch completed')
         assert.deepEqual(await pendingAtLead(), [], 'the switch is not left unknown')

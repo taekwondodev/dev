@@ -7,6 +7,7 @@ import {
   Effect,
   Exit,
   FiberSet,
+  Option,
   Queue,
   type Scope,
   Stream,
@@ -22,6 +23,7 @@ import {
   WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
 import {
+  decodeWorkspaceRpcReply,
   decodeWorkspaceWorkerMessage,
   type WorkspaceRpcInput,
   type WorkspaceRpcOperation,
@@ -76,12 +78,15 @@ export interface WorkspaceWorkerPort {
 }
 export type StartWorkspaceWorker = (url: URL, options: WorkerOptions) => WorkspaceWorkerPort
 
+const replyDecoder = <K extends WorkspaceRpcOperation>(op: K) => decodeWorkspaceRpcReply[op]
+
 const startWorkerThread: StartWorkspaceWorker = (url, options) => new Worker(url, options)
 
 export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   readonly root?: string
   readonly startWorker?: StartWorkspaceWorker
 }): Effect.fn.Return<WorkspaceLifecycle, never, Scope.Scope> {
+  const startWorker = options?.startWorker ?? startWorkerThread
   const pending = new Map<number, PendingRequest>()
   const attachments = new Map<number, RemoteAttachment>()
   const callbacks = new Map<number, HostCallback>()
@@ -93,12 +98,14 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   let nextRequestId = 0
   let nextCallbackId = 0
 
-  const worker = (options?.startWorker ?? startWorkerThread)(
-    new URL('./workspace-worker.ts', import.meta.url),
-    {
-      workerData: options?.root === undefined ? {} : { root: options.root },
-      execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
-    }
+  const worker = yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      startWorker(new URL('./workspace-worker.ts', import.meta.url), {
+        workerData: options?.root === undefined ? {} : { root: options.root },
+        execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
+      })
+    ),
+    started => Effect.promise(() => started.terminate().catch(() => undefined))
   )
 
   const fail = (cause: WorkspaceError): void => {
@@ -261,7 +268,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     })
 
   const send = Effect.fnUntraced(function* <K extends WorkspaceRpcOperation>(
-    input: Extract<WorkspaceRpcInput, { readonly op: K }>,
+    input: WorkspaceRpcInput & { readonly op: K },
     hostReplace: HostReplace | undefined,
     duringClose: boolean
   ): Effect.fn.Return<WorkspaceRpcResults[K], WorkspaceError> {
@@ -304,14 +311,18 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
         })
       )
     )
-    return value as WorkspaceRpcResults[K]
+    const reply = replyDecoder<K>(input.op)(value)
+    if (Option.isSome(reply)) return reply.value
+    const cause = unavailableError('Workspace authority worker protocol failed')
+    fail(cause)
+    return yield* cause
   })
 
   const request = <K extends WorkspaceRpcOperation>(
-    input: Extract<WorkspaceRpcInput, { readonly op: K }>,
+    input: WorkspaceRpcInput & { readonly op: K },
     hostReplace?: HostReplace
   ): Effect.Effect<WorkspaceRpcResults[K], WorkspaceError> =>
-    Deferred.await(ready).pipe(Effect.andThen(send(input, hostReplace, false)))
+    Deferred.await(ready).pipe(Effect.andThen(send<K>(input, hostReplace, false)))
 
   const makeAttachment = (
     attachmentId: number,
@@ -389,24 +400,18 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   return {
     root: options?.root ?? defaultAuthorityRoot(),
-    attach: input =>
-      request({ op: 'attach', ...input }).pipe(
-        Effect.flatMap(opened =>
-          Effect.gen(function* () {
-            if (attachments.size >= MAX_ATTACHMENTS || attachments.has(opened.attachmentId)) {
-              const cause = unavailableError(
-                'Workspace worker returned an invalid attachment identity'
-              )
-              fail(cause)
-              return yield* cause
-            }
-            const receipts = yield* Queue.make<SweepReceipt, Cause.Done>()
-            const attachment = makeAttachment(opened.attachmentId, opened.binding, receipts)
-            attachments.set(opened.attachmentId, attachment)
-            return attachment satisfies WorkspaceAttachment
-          })
-        )
-      ),
+    attach: Effect.fnUntraced(function* (input) {
+      const opened = yield* request({ op: 'attach', ...input })
+      if (attachments.size >= MAX_ATTACHMENTS || attachments.has(opened.attachmentId)) {
+        const cause = unavailableError('Workspace worker returned an invalid attachment identity')
+        fail(cause)
+        return yield* cause
+      }
+      const receipts = yield* Queue.make<SweepReceipt, Cause.Done>()
+      const attachment = makeAttachment(opened.attachmentId, opened.binding, receipts)
+      attachments.set(opened.attachmentId, attachment)
+      return attachment satisfies WorkspaceAttachment
+    }),
     inspect: input => request({ op: 'inspect', ...input }),
     validate: grant => request({ op: 'validate', grant }).pipe(Effect.asVoid),
     check: input =>

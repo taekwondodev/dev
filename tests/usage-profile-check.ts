@@ -984,11 +984,12 @@ const digestTree = (directory: string): Record<string, string> =>
       .toSorted(([a], [b]) => (a ?? '').localeCompare(b ?? ''))
   )
 
-const maintain = (...args: string[]) =>
-  spawnSync(process.execPath, ['scripts/maintain.ts', 'profile', ...args], {
+const maintenance = (...args: string[]) =>
+  spawnSync(process.execPath, ['scripts/maintain.ts', ...args], {
     cwd: checkout,
     encoding: 'utf8',
   })
+const maintain = (...args: string[]) => maintenance('profile', ...args)
 
 const repositoryState = () => ({
   status: execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
@@ -1833,6 +1834,25 @@ try {
   )
 
   await claim(
+    'maintenance commands refuse an unknown option, a stray argument and a flag without its value before the command acts',
+    () => {
+      const before = repositoryState()
+      for (const [args, reason] of [
+        [['update', '--bogus', 'x'], /^Unknown update option "--bogus"/],
+        [['update', 'stray'], /^Unknown update option "stray"/],
+        [['setup', '--data-home'], /^--data-home requires a value\n$/],
+        [['upgrade', 'x'], /^upgrade takes no arguments, got: x\n$/],
+      ] as const) {
+        const refused = maintenance(...args)
+        assert.equal(refused.status, 1, args.join(' '))
+        assert.match(refused.stderr, reason)
+        assert.equal(refused.stdout, '', args.join(' '))
+      }
+      assert.deepEqual(repositoryState(), before)
+    }
+  )
+
+  await claim(
     'the maintenance entrypoint writes only a stable private report under the data home, keeps it on an empty selection, never touches transcripts or the repository, and exports only allowlisted aggregates that the chart renderer accepts',
     async () => {
       const before = repositoryState()
@@ -2124,6 +2144,7 @@ try {
     }
   )
 
+  const expected = (outcome: string) => DEV_TEXTS.filter(text => text[3] === outcome).length
   await claim(
     "dev's refusal, validation and notice texts still read as the profiler expects in their src/ owners, and each refusal classifies as its outcome",
     async () => {
@@ -2131,7 +2152,6 @@ try {
         assert.match(readFileSync(join(checkout, file), 'utf8'), templateOf(fragments), file)
       assert.equal((await profile(devHome))._tag, 'Success')
       const [summary] = report(devHome).periods
-      const expected = (outcome: string) => DEV_TEXTS.filter(text => text[3] === outcome).length
       assert.deepEqual(summary.tools.outcomes, {
         returned: 0,
         invocation: expected('invocation'),

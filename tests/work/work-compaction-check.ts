@@ -6,7 +6,7 @@ import { NodeFileSystem } from '@effect/platform-node'
 import { ALL_TIME, profileUsage } from '../../scripts/usage-profile.ts'
 import { COMPACTION_OBSERVATION, CompactionObservation } from '../../src/compaction-observation.ts'
 import { loadInstalledPi, makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
-import { openWorkFixture, script, settled } from './work-check-support.ts'
+import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
 import { CHILD_MODEL, USAGE_MARKER } from './work-child-model.ts'
 
 const { pi } = await loadInstalledPi()
@@ -93,7 +93,7 @@ try {
         taskId: 'readonly-compaction',
         prompt: review('Read-only long review'),
       })
-      assert.equal(readonly.view.status, 'completed', readonly.view.error)
+      assertStatus(readonly.view, 'completed')
       assert.equal(readonly.text, 'REVIEW-COMPLETE')
       assert.ok(entries(readonly.view.sessionFile).some(entry => entry.type === 'compaction'))
       assert.equal(existsSync(marker), false)
@@ -108,7 +108,7 @@ try {
         access: 'write',
         prompt: review('Writable long review'),
       })
-      assert.equal(writer.view.status, 'completed', writer.view.error)
+      assertStatus(writer.view, 'completed')
       assert.equal(writer.text, 'REVIEW-COMPLETE')
       assert.ok(entries(writer.view.sessionFile).some(entry => entry.type === 'compaction'))
       assert.ok(
@@ -143,9 +143,9 @@ try {
         ]),
       ].join('\n')
       const result = await owner.run({ taskId: 'compacting-coordinator', coordinate: true, prompt })
-      assert.equal(result.view.status, 'completed', result.view.error)
+      assertStatus(result.view, 'completed')
       const leaf = await owner.leaf(result.view.id, 'compacting-leaf', settled)
-      assert.equal(leaf.status, 'completed', leaf.error)
+      assertStatus(leaf, 'completed')
       assert.ok(entries(result.view.sessionFile).some(entry => entry.type === 'compaction'))
       assert.ok(entries(leaf.sessionFile).some(entry => entry.type === 'compaction'))
       assert.notEqual(observedRun(result.view.sessionFile), observedRun(leaf.sessionFile))

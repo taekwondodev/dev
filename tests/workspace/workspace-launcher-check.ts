@@ -11,6 +11,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -181,14 +182,10 @@ try {
       root === undefined || root.length === 0
         ? Effect.die(new Error('the launcher check requires a temporary authority root'))
         : makeWorkspaceLifecycle({ root }).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                if (process.env.REPORT_OPEN === '1') process.stderr.write('authority opened\\n')
-              })
-            ),
-            Effect.map(lifecycle =>
-              process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
-            )
+            Effect.map(lifecycle => {
+              if (process.env.REPORT_OPEN === '1') process.stderr.write('authority opened\\n')
+              return process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
+            })
           )
     )
     NodeRuntime.runMain(launch(process.argv.slice(1), {
@@ -439,8 +436,11 @@ try {
   await claim(
     'dev workspace inspect with a malformed task ID is a usage error: exit 2 naming the bad argument, before the authority is asked',
     async () => {
-      const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'])
+      const malformed = await readOnly(inspectRoot, ['workspace', 'inspect', 'not-a-task-id'], {
+        REPORT_OPEN: '1',
+      })
       assert.equal(malformed.code, 2, malformed.stderr)
+      assert.ok(!malformed.stderr.includes('authority opened'), malformed.stderr)
       assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace/)
       assert.ok(malformed.stderr.includes('not-a-task-id'), malformed.stderr)
     }
@@ -552,7 +552,7 @@ try {
     }
   )
   await claim(
-    'no read-only workspace command creates an authority root, a data home, Pi state or a session file',
+    'no read-only workspace command resolves a data home or creates Pi state or a session file',
     () => {
       assert.ok(!existsSync(unusedDataHome), 'no read-only command resolved a data home')
       assert.deepEqual(
@@ -603,6 +603,125 @@ try {
       assert.match(outcome.stderr, /session path is not a regular conversation file/)
       assert.ok(!outcome.stderr.includes('dev --cwd PATH'), outcome.stderr)
       assert.ok(!existsSync(target), 'the link target was not created')
+    }
+  )
+
+  const optionHome = join(sandbox, 'option-home')
+  const optionData = join(sandbox, 'option-data')
+  const neverData = join(sandbox, 'never-data')
+  mkdirSync(join(optionHome, '.agents', 'skills'), { recursive: true })
+  const withOptions = (args: readonly string[], home = optionData) =>
+    runLauncher(args, {
+      HOME: optionHome,
+      DEV_DATA_HOME: home,
+      LAUNCHER_CHECK_ROOT: join(sandbox, 'option-authority'),
+    })
+  const selected = async (args: readonly string[]) => {
+    const outcome = await withOptions(['--diagnostics', ...args])
+    assert.equal(outcome.code, 0, outcome.stderr)
+    return /^selection: (\S+)/m.exec(outcome.stdout)?.[1]
+  }
+  const savedPreference = await claim(
+    'dev --save-profile saves the profile preference of that repository only and opens no session; a new conversation then selects it, --profile wins over it, and an unknown profile name is refused by both options',
+    async () => {
+      assert.equal(await selected(['--cwd', repo]), 'general')
+      const saved = await withOptions(['--save-profile', 'apple', '--cwd', repo])
+      assert.equal(saved.code, 0, saved.stderr)
+      const path = /^saved profile apple at (.+)$/m.exec(saved.stdout)?.[1]
+      if (path === undefined || !existsSync(path))
+        throw new Error(`The saved preference was not reported: ${saved.stdout}`)
+      assert.deepEqual(
+        pathsUnder(optionData).filter(entry => entry.endsWith('.jsonl')),
+        [],
+        'saving a preference opened no session'
+      )
+      assert.equal(await selected(['--cwd', repo]), 'apple')
+      assert.equal(await selected(['--cwd', repo, '--profile', 'general']), 'general')
+      assert.equal(await selected(['--cwd', secondRepo]), 'general')
+      const stored = readFileSync(path, 'utf8')
+      for (const option of ['--save-profile', '--profile']) {
+        const refused = await withOptions(['--diagnostics', '--cwd', repo, option, 'swift'])
+        assert.equal(refused.code, 1, `${option}: ${refused.stderr}`)
+        assert.ok(refused.stderr.includes('"swift"'), refused.stderr)
+      }
+      assert.equal(
+        readFileSync(path, 'utf8'),
+        stored,
+        'a refused name left the preference as saved'
+      )
+      return path
+    }
+  )
+  await claim(
+    'dev refuses a stored profile preference that is not a preference record, names the file, and leaves it as found instead of resetting it',
+    async () => {
+      writeFileSync(savedPreference, '"apple"\n')
+      const refused = await withOptions(['--diagnostics', '--cwd', repo])
+      assert.equal(refused.code, 1, refused.stdout)
+      assert.ok(refused.stderr.includes(savedPreference), refused.stderr)
+      assert.equal(readFileSync(savedPreference, 'utf8'), '"apple"\n')
+    }
+  )
+  await claim(
+    'dev --continue resumes the newest session whose header names the launch directory, passing over newer sessions of another directory and child sessions; the resumed conversation keeps its recorded profile, and one that recorded none requires --profile',
+    async () => {
+      const continueData = join(sandbox, 'continue-data')
+      mkdirSync(continueData, { mode: 0o700 })
+      const record = (cwd: string, directory: string, modifiedAt: number, profile?: string) => {
+        const manager = pi.SessionManager.create(cwd, join(continueData, directory))
+        manager.appendMessage(user)
+        manager.appendMessage(assistant)
+        if (profile !== undefined) manager.appendCustomEntry('dev/profile', { profile })
+        const file = manager.getSessionFile()
+        if (file === undefined || !existsSync(file))
+          throw new Error('Pi did not persist a --continue fixture conversation')
+        utimesSync(file, modifiedAt, modifiedAt)
+      }
+      const now = Date.now() / 1000
+      record(repo, 'sessions', now - 400)
+      record(repo, 'sessions', now - 300, 'apple')
+      record(secondRepo, 'sessions', now - 200)
+      record(repo, 'child-sessions', now - 100)
+      const resume = (cwd: string, extra: readonly string[] = []) =>
+        withOptions(['--continue', '--diagnostics', '--cwd', cwd, ...extra], continueData)
+      for (const extra of [[], ['--profile', 'general']]) {
+        const resumed = await resume(repo, extra)
+        assert.equal(resumed.code, 0, resumed.stderr)
+        assert.match(resumed.stdout, /^selection: apple /m)
+      }
+      const unrecorded = await resume(secondRepo)
+      assert.equal(unrecorded.code, 1, unrecorded.stdout)
+      assert.ok(unrecorded.stderr.includes('--profile'), unrecorded.stderr)
+      const chosen = await resume(secondRepo, ['--profile', 'general'])
+      assert.equal(chosen.code, 0, chosen.stderr)
+      assert.match(chosen.stdout, /^selection: general /m)
+    }
+  )
+  await claim(
+    'dev --help exits 0 with a usage that names every option and command of the launcher guide; an undefined option, a stray argument and a value option without its value are refused naming the argument; none of them resolves a data home',
+    async () => {
+      const guide = readFileSync(join(devRoot, 'docs', 'launcher.md'), 'utf8')
+      const documented = [...guide.matchAll(/^dev (--[a-z-]+|workspace)\b/gm)].map(
+        ([, name]) => name
+      )
+      assert.ok(documented.length >= 10, `the launcher guide lists its options: ${documented}`)
+      const help = await withOptions(['--help'], neverData)
+      assert.equal(help.code, 0, help.stderr)
+      assert.deepEqual(
+        documented.filter(name => name !== undefined && !help.stdout.includes(name)),
+        [],
+        help.stdout
+      )
+      for (const [args, named] of [
+        [['--unattended'], '--unattended'],
+        [['stray'], 'stray'],
+        [['--cwd', repo, '--profile'], '--profile'],
+      ] as const) {
+        const refused = await withOptions(args, neverData)
+        assert.equal(refused.code, 1, `${named}: ${refused.stdout}`)
+        assert.ok(refused.stderr.includes(named), refused.stderr)
+      }
+      assert.ok(!existsSync(neverData), 'no refused or help invocation resolved a data home')
     }
   )
 

@@ -41,9 +41,8 @@ import {
   getOperation,
   putOperation,
   saveOperation,
-  getUseRows,
+  getActiveUseRows,
   toBinding,
-  isActiveUse,
   type WorkspaceRecord,
   type ReservationRecord,
   type BindingRecord,
@@ -102,10 +101,8 @@ export const selectWorkspace = (
         reason: 'The selected task is already bound to this workspace.',
       }
   }
-  const targetUses = inDb(authority, target.repo, db => getUseRows(db, target.workspace.id))
-  if (
-    targetUses.some(use => use.access === 'write' && isActiveUse(use) && !state.leases.has(use.id))
-  )
+  const targetUses = inDb(authority, target.repo, db => getActiveUseRows(db, target.workspace.id))
+  if (targetUses.some(use => use.access === 'write' && !state.leases.has(use.id)))
     blocked(`Selected workspace has an active or unresolved writer: ${target.workspace.path}`)
   inDb(authority, target.repo, db => assertNoUnresolvedRelease(db, target.workspace.id))
   const gates = acquirePathGates(authority.paths, target.workspace.path, 'writer')

@@ -87,7 +87,7 @@ export class WorkspaceEngine {
   run<A>(work: (authority: WorkspaceAuthority) => A | Promise<A>): Promise<A> {
     return attempt(() => {
       if (this.closed) blocked('Workspace lifecycle is closed')
-      return work(this.authority)
+      return this.authority.withHandles(() => work(this.authority))
     })
   }
 
@@ -109,7 +109,7 @@ export class WorkspaceEngine {
       const { state } = attachment
       state.refs = Math.max(0, state.refs - 1)
       if (state.refs > 0) return
-      settleClosingState(this.authority, state)
+      this.authority.withHandles(() => settleClosingState(this.authority, state))
       if (state.pending !== undefined) return
       this.states.delete(state.key)
       state.releaseConversation()
@@ -120,7 +120,7 @@ export class WorkspaceEngine {
     return attempt(() => {
       if (this.closed) return
       for (const state of this.states.values()) {
-        settleClosingState(this.authority, state)
+        this.authority.withHandles(() => settleClosingState(this.authority, state))
         state.releaseConversation()
       }
       this.closed = true

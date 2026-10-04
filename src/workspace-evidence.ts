@@ -1,8 +1,8 @@
 import { execFile as execFileCallback, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstatSync, readFileSync, readlinkSync, realpathSync, type BigIntStats } from 'node:fs'
+import { lstatSync, readlinkSync, realpathSync, type BigIntStats } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { Option, Schema } from 'effect'
+import { DateTime, Option, Predicate, Result, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
   branchName,
@@ -64,7 +64,7 @@ export interface Unavailable {
   readonly unavailable: string
 }
 export const isUnavailable = (value: unknown): value is Unavailable =>
-  typeof value === 'object' && value !== null && 'unavailable' in value
+  Predicate.hasProperty(value, 'unavailable') && Predicate.isString(value.unavailable)
 
 export type GitHubCommitListEvidence =
   | { readonly kind: 'complete'; readonly commits: readonly string[] }
@@ -143,16 +143,25 @@ const GraphqlPullRequestEvidencePayload = Schema.Struct({
 })
 
 export const PROVIDER_BUDGET_MS = WORKER_REQUEST_TIMEOUT_MS / 2
-const decode = <S extends Schema.ConstraintDecoder<unknown>>(
-  schema: S,
-  text: string
-): S['Type'] | Unavailable => {
-  try {
-    return Schema.decodeUnknownSync(schema)(JSON.parse(text))
-  } catch (cause) {
-    return { unavailable: `GitHub returned an unexpected shape: ${errorText(cause)}` }
+type PayloadDecoder<A> = (text: string) => A | Unavailable
+const payloadDecoder = <S extends Schema.Constraint & Schema.ConstraintDecoder<unknown>>(
+  schema: S
+): PayloadDecoder<S['Type']> => {
+  const decode = Schema.decodeUnknownResult(Schema.fromJsonString(schema))
+  return text => {
+    const decoded = decode(text)
+    return Result.isSuccess(decoded)
+      ? decoded.success
+      : { unavailable: `GitHub returned an unexpected shape: ${errorText(decoded.failure)}` }
   }
 }
+const decodePullRequest = payloadDecoder(PullRequestPayload)
+const decodeRepository = payloadDecoder(RepositoryPayload)
+const decodeRef = payloadDecoder(RefPayload)
+const decodeCommitList = payloadDecoder(CommitListPayload)
+const decodePullList = payloadDecoder(PullListPayload)
+const decodeCompare = payloadDecoder(ComparePayload)
+const decodeGraphqlPullRequestEvidence = payloadDecoder(GraphqlPullRequestEvidencePayload)
 interface GhResponse {
   readonly status: 'ok' | 'not-found'
   readonly text: string
@@ -221,9 +230,7 @@ const ghFailure = (what: string, stderr: unknown, cause: unknown): GhResponse =>
   throw new Error(`${what} failed: ${message || errorText(cause)}`, { cause })
 }
 const stderrOf = (cause: unknown): unknown =>
-  typeof cause === 'object' && cause !== null && 'stderr' in cause
-    ? (cause as { stderr: unknown }).stderr
-    : undefined
+  Predicate.hasProperty(cause, 'stderr') ? cause.stderr : undefined
 const ghSync = (args: readonly string[], timeoutMs: number, what: string): GhResponse => {
   try {
     const text = execFileSync('gh', args, {
@@ -302,14 +309,11 @@ export const makeGitHubReader = (
     answered.set(endpoint, response)
     return response
   }
-  const read = <S extends Schema.ConstraintDecoder<unknown>>(
-    endpoint: string,
-    schema: S
-  ): S['Type'] | 'missing' | Unavailable => {
+  const read = <A>(endpoint: string, decode: PayloadDecoder<A>): A | 'missing' | Unavailable => {
     const response = ask(endpoint)
     if (isUnavailable(response)) return response
     if (response.status === 'not-found') return 'missing'
-    return decode(schema, response.text)
+    return decode(response.text)
   }
   const decodeGraphqlEvidence = (
     response: GhResponse | Unavailable
@@ -317,7 +321,7 @@ export const makeGitHubReader = (
     if (isUnavailable(response)) return response
     if (response.status === 'not-found')
       return { tip: 'missing', pullRequest: 'missing', commits: undefined }
-    const payload = decode(GraphqlPullRequestEvidencePayload, response.text)
+    const payload = decodeGraphqlPullRequestEvidence(response.text)
     if (isUnavailable(payload)) return payload
     if (payload.errors !== undefined && payload.errors.length > 0)
       return {
@@ -419,15 +423,15 @@ export const makeGitHubReader = (
     pullRequestEvidence,
     prefetchPullRequestEvidence,
     defaultBranch(repository) {
-      const value = read(`repos/${repository}`, RepositoryPayload)
+      const value = read(`repos/${repository}`, decodeRepository)
       return value === 'missing' || isUnavailable(value) ? value : value.default_branch
     },
     refTip(repository, ref) {
-      const value = read(`repos/${repository}/git/ref/${refPath(ref)}`, RefPayload)
+      const value = read(`repos/${repository}/git/ref/${refPath(ref)}`, decodeRef)
       return value === 'missing' || isUnavailable(value) ? value : value.object.sha
     },
     pullRequest(repository, number) {
-      const value = read(`repos/${repository}/pulls/${number}`, PullRequestPayload)
+      const value = read(`repos/${repository}/pulls/${number}`, decodePullRequest)
       if (value === 'missing' || isUnavailable(value)) return value
       return {
         merged: value.merged,
@@ -442,14 +446,14 @@ export const makeGitHubReader = (
     },
     pullRequestCommits(repository, number) {
       const value = orUnavailable(
-        read(`repos/${repository}/pulls/${number}/commits?per_page=250`, CommitListPayload),
+        read(`repos/${repository}/pulls/${number}/commits?per_page=250`, decodeCommitList),
         `pull request ${number} commits`
       )
       return isUnavailable(value) ? value : value.map(commit => commit.sha)
     },
     mergedPullRequestsForCommit(repository, sha) {
       const value = orUnavailable(
-        read(`repos/${repository}/commits/${sha}/pulls?per_page=100`, PullListPayload),
+        read(`repos/${repository}/commits/${sha}/pulls?per_page=100`, decodePullList),
         `pull requests for ${sha}`
       )
       return isUnavailable(value)
@@ -458,7 +462,7 @@ export const makeGitHubReader = (
     },
     compare(repository, base, head) {
       const value = orUnavailable(
-        read(`repos/${repository}/compare/${base}...${head}`, ComparePayload),
+        read(`repos/${repository}/compare/${base}...${head}`, decodeCompare),
         `comparison ${base}...${head}`
       )
       return isUnavailable(value) ? value : value.status
@@ -562,14 +566,19 @@ const inventoryFileOf = (
   checkout: string,
   volumeUuid: string,
   device: string,
-  entry: string
+  entry: string,
+  canonicalParents: Map<string, boolean>
 ): InventoryFile => {
   if (entry.endsWith('/')) return { path: entry.slice(0, -1), kind: 'nested-repository' }
   let stat
   try {
     const parent = dirname(join(checkout, entry))
-    if (realpathSync(parent) !== parent)
-      return { path: entry, kind: 'other', detail: 'has a symbolic-link ancestor' }
+    let canonical = canonicalParents.get(parent)
+    if (canonical === undefined) {
+      canonical = realpathSync(parent) === parent
+      canonicalParents.set(parent, canonical)
+    }
+    if (!canonical) return { path: entry, kind: 'other', detail: 'has a symbolic-link ancestor' }
     stat = lstatSync(join(checkout, entry), { bigint: true })
   } catch (cause) {
     return {
@@ -592,8 +601,15 @@ const inventoryFileOf = (
 export const readInventory = (checkout: string, head: string | undefined): Inventory => {
   const root = observePhysicalIdentity(checkout)
   const index = indexSnapshot(checkout)
+  const canonicalParents = new Map<string, boolean>()
   const trackedFiles = index.paths.flatMap(entry => {
-    const file = inventoryFileOf(checkout, root.identity.volumeUuid, root.device, entry)
+    const file = inventoryFileOf(
+      checkout,
+      root.identity.volumeUuid,
+      root.device,
+      entry,
+      canonicalParents
+    )
     if (file.kind === 'absent') return []
     if (file.kind !== 'file' && file.kind !== 'symlink')
       return blocked(`Cannot inspect tracked entry ${file.path}: ${file.kind}`)
@@ -601,7 +617,7 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
   })
   const others = untrackedPaths(checkout)
   const files = [...others.untracked, ...others.ignored].map(entry =>
-    inventoryFileOf(checkout, root.identity.volumeUuid, root.device, entry)
+    inventoryFileOf(checkout, root.identity.volumeUuid, root.device, entry, canonicalParents)
   )
   assertUnfilteredIndex(checkout, index.paths)
   const trackedDigest = sha256Hex(
@@ -661,7 +677,7 @@ export const entryUnchanged = (
   )
     return { state: 'changed', detail: 'identity or content changed since the check' }
   if (!stat.isFile()) return { state: 'changed', detail: 'no longer a regular file' }
-  if (sha256Hex(readFileSync(join(checkout, entry.path))) !== entry.sha256)
+  if (regularFileDigest(join(checkout, entry.path)) !== entry.sha256)
     return { state: 'changed', detail: 'content digest changed' }
   return { state: 'same' }
 }
@@ -1038,9 +1054,9 @@ const baseDescent = (
     )
   if (allocatedAt === undefined)
     return unknownProof('the allocation time of this worktree is not recorded')
-  const merged = mergedAt === undefined ? Number.NaN : Date.parse(mergedAt)
-  if (Number.isNaN(merged)) return unknownProof(`${label} reports no readable merge time`)
-  if (merged <= allocatedAt)
+  const merged = mergedAt === undefined ? Option.none() : DateTime.make(mergedAt)
+  if (Option.isNone(merged)) return unknownProof(`${label} reports no readable merge time`)
+  if (DateTime.toEpochMillis(merged.value) <= allocatedAt)
     return no(`${label} was merged at ${mergedAt}, before this worktree was allocated`)
   return sourceAncestry(checkout, target, bound, tip, base, 'base', commitPresent)
 }
@@ -1346,7 +1362,7 @@ export const verifyInventory = (
       continue
     }
     if (references !== undefined && file.kind === 'file') {
-      const digest = sha256Hex(readFileSync(join(checkout, file.path)))
+      const digest = regularFileDigest(join(checkout, file.path))
       const match = references.find(
         reference => reference.sha256 === digest && reference.byteLength === file.size
       )

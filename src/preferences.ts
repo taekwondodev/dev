@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { Config, Effect, FileSystem, Predicate, Schema } from 'effect'
+import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
+import { errorText } from './error-text.ts'
 
 export class PreferencesError extends Schema.TaggedError<PreferencesError>()('PreferencesError', {
   message: Schema.String,
@@ -15,7 +16,7 @@ const PreferenceSchema = Schema.Struct({
   project: Schema.optional(Schema.String),
 })
 
-type Preference = typeof PreferenceSchema.Type
+const decodePreference = Schema.decodeEffect(Schema.fromJsonString(PreferenceSchema))
 
 type SelectionSource = 'general default' | 'saved preference' | 'temporary override'
 
@@ -40,13 +41,10 @@ export interface SaveSelectionOptions {
 
 const defaultPath = resolve(fileURLToPath(new URL('../.dev/', import.meta.url)))
 
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)
-
 const toPreferencesError = (error: unknown, operation: string): PreferencesError =>
   error instanceof PreferencesError
     ? error
-    : new PreferencesError({ message: `${operation}: ${messageOf(error)}`, cause: error })
+    : new PreferencesError({ message: `${operation}: ${errorText(error)}`, cause: error })
 
 const runGit = (cwd: string, args: readonly string[]): Effect.Effect<string, unknown> =>
   Effect.callback(resume => {
@@ -74,6 +72,13 @@ export const globalPiAuthPath = (): string => join(globalPiAgentDir(), 'auth.jso
 export const gitRoot = (cwd: string): Effect.Effect<string | undefined> =>
   runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
 
+export class RepositoryRoot extends Context.Service<
+  RepositoryRoot,
+  { readonly resolve: (cwd: string) => Effect.Effect<string | undefined> }
+>()('dev/preferences/RepositoryRoot') {
+  static readonly layer = Layer.succeed(RepositoryRoot, RepositoryRoot.of({ resolve: gitRoot }))
+}
+
 const projectIdentity = (cwd: string): Effect.Effect<string> =>
   runGit(cwd, ['rev-parse', '--git-common-dir']).pipe(
     Effect.map(commonDir => resolve(cwd, commonDir)),
@@ -85,22 +90,22 @@ const preferencePath = (dataHome: string, identity: string): string => {
   return join(dataHome, 'preferences', `${key}.json`)
 }
 
-const readPreference = (
-  path: string
-): Effect.Effect<Preference, PreferencesError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+const readPreference = Effect.fnUntraced(
+  function* (path: string) {
     const fs = yield* FileSystem.FileSystem
     if (!(yield* fs.exists(path))) return {}
-    const content = yield* fs.readFileString(path)
-    const value = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(content)
-    if (!Predicate.isObject(value)) return {}
-    return yield* Schema.decodeEffect(PreferenceSchema)(value)
-  }).pipe(Effect.mapError(error => toPreferencesError(error, `Cannot read dev preference ${path}`)))
+    return yield* decodePreference(yield* fs.readFileString(path))
+  },
+  (effect, path) =>
+    Effect.mapError(effect, error =>
+      toPreferencesError(error, `Cannot read dev preference ${path}`)
+    )
+)
 
-export const resolveSelection = (
+export const resolveSelection: (
   options: ResolveSelectionOptions
-): Effect.Effect<Selection, PreferencesError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+) => Effect.Effect<Selection, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
+  function* (options) {
     const identity = yield* projectIdentity(options.cwd)
     const path = preferencePath(options.dataHome, identity)
     const saved = (yield* readPreference(path)).profile
@@ -113,12 +118,14 @@ export const resolveSelection = (
       profile: options.explicit ?? saved ?? 'general',
       source,
     }
-  }).pipe(Effect.mapError(error => toPreferencesError(error, 'Cannot resolve profile selection')))
+  },
+  Effect.mapError(error => toPreferencesError(error, 'Cannot resolve profile selection'))
+)
 
-export const saveSelection = (
+export const saveSelection: (
   options: SaveSelectionOptions
-): Effect.Effect<string, PreferencesError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+) => Effect.Effect<string, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
+  function* (options) {
     const fs = yield* FileSystem.FileSystem
     const identity = yield* projectIdentity(options.cwd)
     const path = preferencePath(options.dataHome, identity)
@@ -131,15 +138,18 @@ export const saveSelection = (
     )
     yield* fs.rename(temporary, path)
     return path
-  }).pipe(Effect.mapError(error => toPreferencesError(error, 'Cannot save profile selection')))
+  },
+  Effect.mapError(error => toPreferencesError(error, 'Cannot save profile selection'))
+)
 
-export const sessionDir = (
+export const sessionDir: (
   dataHome: string
-): Effect.Effect<string, PreferencesError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+) => Effect.Effect<string, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
+  function* (dataHome) {
     const path = join(dataHome, 'sessions')
-    yield* FileSystem.FileSystem.pipe(
-      Effect.flatMap(fs => fs.makeDirectory(path, { recursive: true, mode: 0o700 }))
-    )
+    const fs = yield* FileSystem.FileSystem
+    yield* fs.makeDirectory(path, { recursive: true, mode: 0o700 })
     return path
-  }).pipe(Effect.mapError(error => toPreferencesError(error, 'Cannot prepare session directory')))
+  },
+  Effect.mapError(error => toPreferencesError(error, 'Cannot prepare session directory'))
+)

@@ -37,6 +37,8 @@ npm run pi:update                                       # activate the verified,
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
+Maintenance commands take options as `--flag value`. An unknown option or a stray argument is refused before the command acts.
+
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
 Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update reinstalls dependencies when the merged `package-lock.json` changed. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
@@ -80,4 +82,4 @@ Independent repositories can share a data home. [Workspace](workspace.md) govern
 
 `--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, authentication, installation coordination and workspace authority keep their own locations. `/login` writes Pi's global auth file; dev never copies credentials. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
 
-A conversation retains its selected profile. If stored dev metadata is invalid, startup refuses it rather than resetting it. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
+A conversation retains its selected profile. If stored dev metadata is invalid, startup refuses it rather than resetting it. A stored profile preference that is not a valid preference record stops launch with exit 1 and an error naming the file; delete that file under `<data-home>/preferences/` ([discard obsolete state](DEVELOPMENT.md#discard-obsolete-state)) and save the preference again. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).

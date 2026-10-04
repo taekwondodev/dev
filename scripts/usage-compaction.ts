@@ -4,23 +4,50 @@ import {
   type CompactionObservation,
   type DiscardReason,
 } from '../src/compaction-observation.ts'
+import { type Period, within } from './usage-report.ts'
 import type { Entry, SessionRecord, Tokens, Usage } from './usage-sessions.ts'
+
+type Recorded = Extract<Entry, { kind: 'observation' | 'standalone' | 'compaction' }>
+type CompactionEntry =
+  | Recorded
+  | (Pick<Entry, 'id' | 'at' | 'copied'> & {
+      readonly kind: Exclude<Entry['kind'], Recorded['kind']>
+    })
+
+interface CompactionSession {
+  readonly ref: string
+  readonly scope: SessionRecord['scope']
+  readonly entries: readonly CompactionEntry[]
+}
+
+export const compactionSession = (session: SessionRecord): CompactionSession => ({
+  ref: session.ref,
+  scope: session.scope,
+  entries: session.entries.map((entry): CompactionEntry => {
+    switch (entry.kind) {
+      case 'observation':
+      case 'standalone':
+      case 'compaction':
+        return entry
+      default:
+        return { kind: entry.kind, id: entry.id, at: entry.at, copied: entry.copied }
+    }
+  }),
+})
 
 type Observation = Extract<Entry, { kind: 'observation' }> & { readonly position: number }
 type BackgroundUsage = Extract<Entry, { kind: 'standalone' }>
-const isActivity = (entry: Entry) =>
-  [
-    'user',
-    'request',
-    'result',
-    'standalone',
-    'compaction',
-    'branch-summary',
-    'observation',
-    'observation-invalid',
-  ].includes(entry.kind)
-const within = (at: number, start: number | undefined, end: number | undefined) =>
-  (start === undefined || at >= start) && (end === undefined || at < end)
+const ACTIVITY: ReadonlySet<Entry['kind']> = new Set([
+  'user',
+  'request',
+  'result',
+  'standalone',
+  'compaction',
+  'branch-summary',
+  'observation',
+  'observation-invalid',
+])
+const isActivity = (entry: CompactionEntry) => ACTIVITY.has(entry.kind)
 const totals = (entries: readonly BackgroundUsage[]) => ({
   entries: entries.length,
   unknown: entries.filter(entry => entry.usage === 'unknown').length,
@@ -57,12 +84,8 @@ const nativeCounts = (): NativeCounts => ({
 })
 type NativeReason = Extract<CompactionObservation, { kind: 'native-started' }>['reason']
 
-export const compactionReport = (
-  sessions: readonly SessionRecord[],
-  start: number | undefined,
-  end: number | undefined
-) => {
-  const inPeriod = (item: { readonly at: number }) => within(item.at, start, end)
+export const compactionReport = (sessions: readonly CompactionSession[], period: Period) => {
+  const inPeriod = within(period)
   const fullPeriod = (items: readonly { readonly at: number }[]) => items.every(inPeriod)
   let selectedSessions = 0
   let instrumentedSessions = 0
@@ -215,8 +238,9 @@ export const compactionReport = (
       const crosses = !fullPeriod(chain)
       if (crosses) crossPeriod++
       const claimed = ended?.value.outcome
-      const commit = claimed?.kind === 'applied' ? session.byId.get(claimed.entryId) : undefined
-      const commitPosition = commit === undefined ? undefined : positions.get(commit.id)
+      const commitPosition =
+        claimed?.kind === 'applied' ? positions.get(claimed.entryId) : undefined
+      const commit = commitPosition === undefined ? undefined : session.entries[commitPosition]
       const validCommit =
         knownEnd &&
         commit?.kind === 'compaction' &&

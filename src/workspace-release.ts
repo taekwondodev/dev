@@ -82,6 +82,7 @@ import {
   getPublications,
   getReservation,
   getTask,
+  getActiveUseRows,
   getUseRows,
   getWorkspace,
   isEngineRecordedRelease,
@@ -422,6 +423,7 @@ export interface AssessmentContext {
   readonly moment: SweepMoment
   readonly own?: OwnConversation
   readonly excluded?: ReadonlySet<WorkspaceId>
+  readonly sweptSiblings?: Map<WorkspaceId, SiblingsOf>
 }
 const AT_QUIT: AssessmentContext = { moment: 'quit' }
 
@@ -967,11 +969,24 @@ const removedSiblings = (authority: WorkspaceAuthority, taskId: WorkspaceId): re
       })
     )
   )
+type SiblingsOf = (workspaceId: WorkspaceId) => Siblings
 const taskSiblings = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId,
+  entries: () => ReturnType<typeof taskWorkspaces>,
+  context: AssessmentContext
+): SiblingsOf => {
+  const swept = context.sweptSiblings?.get(taskId)
+  if (swept !== undefined) return swept
+  const siblingsOf = readTaskSiblings(authority, taskId, entries())
+  context.sweptSiblings?.set(taskId, siblingsOf)
+  return siblingsOf
+}
+const readTaskSiblings = (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId,
   entries: ReturnType<typeof taskWorkspaces>
-): ((workspaceId: WorkspaceId) => Siblings) => {
+): SiblingsOf => {
   const live = entries.map(({ repo, workspace }) => ({
     id: workspace.id,
     sibling: inDb(authority, repo, db => liveSibling(authority, db, workspace)),
@@ -998,7 +1013,7 @@ const assessTask = (
   context: AssessmentContext
 ): readonly Assessed[] => {
   const entries = taskWorkspaces(authority, taskId)
-  const siblingsFor = taskSiblings(authority, taskId, entries)
+  const siblingsFor = taskSiblings(authority, taskId, () => entries, context)
   return entries.map(({ repo, reservation, workspace }) =>
     inDb(authority, repo, db =>
       assessWorkspace(
@@ -1043,7 +1058,7 @@ const assessTaskAtQuit = (
   context: AssessmentContext
 ): Promise<readonly Assessed[]> => {
   const entries = taskWorkspaces(authority, taskId)
-  const siblingsFor = taskSiblings(authority, taskId, entries)
+  const siblingsFor = taskSiblings(authority, taskId, () => entries, context)
   return Promise.all(
     entries.map(async ({ repo, reservation, workspace }) => {
       const { evidence, staged } = inDb(authority, repo, db => ({
@@ -1741,7 +1756,7 @@ const attemptUnderGates = (
         `Run dev workspace release ${request.taskId} to observe it; nothing is replayed.`
       )
   }
-  const gatedUses = inDb(authority, repo, db => getUseRows(db, gated.workspace.id))
+  const gatedUses = inDb(authority, repo, db => getActiveUseRows(db, gated.workspace.id))
   const mayReconcile =
     subject.effect === 'remove-worktree' &&
     gatedUses.every(use => use.stage !== 'unknown') &&
@@ -1772,7 +1787,8 @@ const attemptUnderGates = (
   const siblings = taskSiblings(
     authority,
     request.taskId,
-    taskWorkspaces(authority, request.taskId)
+    () => taskWorkspaces(authority, request.taskId),
+    context
   )(gated.workspace.id)
   const assessed = inDb(authority, repo, db =>
     assessWorkspace(
@@ -1818,9 +1834,7 @@ const attemptUnderGates = (
       fresh.reasons.join(' ') || 'The workspace is not eligible for any release effect.',
       fresh.nextActions.join(' ') || 'Resolve the blockers and release again.'
     )
-  const liveUses = inDb(authority, repo, db =>
-    getUseRows(db, gated.workspace.id).filter(isActiveUse)
-  )
+  const liveUses = inDb(authority, repo, db => getActiveUseRows(db, gated.workspace.id))
   if (liveUses.length > 0)
     return releaseResult(
       fresh,
@@ -1986,6 +2000,7 @@ const startSweep = (
   const context: AssessmentContext = {
     moment: input.moment,
     ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
+    sweptSiblings: new Map(),
   }
   const decider: ReleaseDecider = {
     kind: 'completion',

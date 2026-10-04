@@ -51,6 +51,7 @@ export interface AttemptLifecycle {
   readonly isTerminal: () => boolean
   readonly hasExited: () => boolean
   readonly hasResult: () => boolean
+  readonly cancelRequested: () => boolean
   readonly pid: () => number | undefined
   readonly knownProcesses: () => readonly ProcessObservation[]
   readonly rootProcess: () => ProcessObservation | undefined
@@ -418,6 +419,7 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
     isTerminal: () => state.phase._tag === 'terminal',
     hasExited: () => state.exited,
     hasResult: () => state.resultReceived,
+    cancelRequested: () => state.record.cancelRequestedAt !== undefined,
     pid: () => state.record.pid,
     knownProcesses: () =>
       state.known.map(({ pid, parent, group, birth }) => ({ pid, parent, group, birth })),
@@ -436,14 +438,22 @@ export const ownedProcesses = (
   rootIdentity?: ProcessObservation
 ): readonly ProcessObservation[] => {
   if (pid === undefined) return []
+  const live = new Map<number, ProcessObservation>()
+  const children = new Map<number, ProcessObservation[]>()
+  for (const item of table) {
+    if (!live.has(item.pid)) live.set(item.pid, item)
+    const siblings = children.get(item.parent)
+    if (siblings === undefined) children.set(item.parent, [item])
+    else siblings.push(item)
+  }
   const rememberedRoot = rootIdentity ?? known.find(item => item.pid === pid)
-  const currentRoot = table.find(item => item.pid === pid)
+  const currentRoot = live.get(pid)
   const selected = new Map<number, ProcessObservation>()
   const blocked = new Set<number>()
   for (const item of known) {
-    const live = table.find(candidate => candidate.pid === item.pid)
-    if (live === undefined) continue
-    if (sameIdentity(live, item)) selected.set(item.pid, item)
+    const current = live.get(item.pid)
+    if (current === undefined) continue
+    if (sameIdentity(current, item)) selected.set(item.pid, item)
     else blocked.add(item.pid)
   }
   const rootMatches =
@@ -452,30 +462,27 @@ export const ownedProcesses = (
       ? currentRoot.birth !== undefined
       : sameIdentity(rememberedRoot, currentRoot) ||
         (rememberedRoot.birth === undefined && currentRoot.birth !== undefined))
+  let group: number | undefined
   if (rootMatches) {
     if (!blocked.has(currentRoot.pid)) selected.set(currentRoot.pid, currentRoot)
-    for (const item of table) {
-      if (item.group === currentRoot.group && !blocked.has(item.pid) && !selected.has(item.pid))
-        selected.set(item.pid, item)
-    }
+    ;({ group } = currentRoot)
   } else if (
     currentRoot === undefined &&
     rememberedRoot !== undefined &&
     rememberedRoot.birth !== undefined
-  ) {
+  )
+    ({ group } = rememberedRoot)
+  if (group !== undefined)
     for (const item of table) {
-      if (item.group === rememberedRoot.group && !blocked.has(item.pid) && !selected.has(item.pid))
+      if (item.group === group && !blocked.has(item.pid) && !selected.has(item.pid))
         selected.set(item.pid, item)
     }
-  }
-  let added = true
-  while (added) {
-    added = false
-    for (const item of table) {
-      if (!blocked.has(item.pid) && !selected.has(item.pid) && selected.has(item.parent)) {
-        selected.set(item.pid, item)
-        added = true
-      }
+  const frontier = [...selected.keys()]
+  for (const parent of frontier) {
+    for (const item of children.get(parent) ?? []) {
+      if (blocked.has(item.pid) || selected.has(item.pid)) continue
+      selected.set(item.pid, item)
+      frontier.push(item.pid)
     }
   }
   return table.filter(item => selected.get(item.pid)?.birth === item.birth)

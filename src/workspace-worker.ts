@@ -89,6 +89,15 @@ const startEngine = (): WorkspaceEngine | undefined => {
   }
 }
 
+interface RpcReply {
+  readonly op: WorkspaceRpcOperation
+  readonly value: unknown
+}
+const replyTo = <K extends WorkspaceRpcOperation>(
+  op: K,
+  value: WorkspaceRpcResults[K]
+): RpcReply => ({ op, value })
+
 const engine = startEngine()
 
 const readersUntil = (deadline: number): EvidenceReaders => ({
@@ -142,10 +151,7 @@ if (port !== null && engine !== undefined) {
     send({ type: 'bindings', updates })
   }
 
-  const execute = async (
-    request: WorkspaceRpcInput,
-    sentAt: number
-  ): Promise<WorkspaceRpcResults[WorkspaceRpcOperation]> => {
+  const execute = async (request: WorkspaceRpcInput, sentAt: number): Promise<RpcReply> => {
     switch (request.op) {
       case 'attach': {
         if (attachments.size >= MAX_ATTACHMENTS)
@@ -156,7 +162,7 @@ if (port !== null && engine !== undefined) {
         const attachment = await engine.attach(request)
         const attachmentId = ++nextAttachmentId
         attachments.set(attachmentId, attachment)
-        return { attachmentId, binding: attachment.binding }
+        return replyTo('attach', { attachmentId, binding: attachment.binding })
       }
       case 'authorize': {
         const attachment = requireAttachment(request.attachmentId)
@@ -190,20 +196,27 @@ if (port !== null && engine !== undefined) {
           if (receipt.rows.length > 0)
             send({ type: 'sweep-receipt', attachmentId: request.attachmentId, receipt })
         }
-        return await engine.run(authority =>
-          authorizeOperation(authority, attachment, request.operation, sweep)
+        return replyTo(
+          'authorize',
+          await engine.run(authority =>
+            authorizeOperation(authority, attachment, request.operation, sweep)
+          )
         )
       }
       case 'select': {
         const attachment = requireAttachment(request.attachmentId)
-        return await engine.run(authority =>
-          selectWorkspace(authority, attachment, request.selection)
+        return replyTo(
+          'select',
+          await engine.run(authority => selectWorkspace(authority, attachment, request.selection))
         )
       }
       case 'report-execution': {
         const attachment = requireAttachment(request.attachmentId)
-        return await engine.run(authority =>
-          reportExecutionFact(authority, attachment, request.grant, request.fact)
+        return replyTo(
+          'report-execution',
+          await engine.run(authority =>
+            reportExecutionFact(authority, attachment, request.grant, request.fact)
+          )
         )
       }
       case 'handoff': {
@@ -216,27 +229,33 @@ if (port !== null && engine !== undefined) {
             })
           )
         )
-        return null
+        return replyTo('handoff', null)
       }
       case 'close-attachment': {
         const attachment = attachments.get(request.attachmentId)
-        if (attachment === undefined) return null
+        if (attachment === undefined) return replyTo('close-attachment', null)
         attachments.delete(request.attachmentId)
         await engine.closeAttachment(attachment)
-        return null
+        return replyTo('close-attachment', null)
       }
       case 'inspect':
-        return await engine.run(authority => inspectWorkspaces(authority, request))
+        return replyTo(
+          'inspect',
+          await engine.run(authority => inspectWorkspaces(authority, request))
+        )
       case 'validate':
         await engine.run(authority => validateDurableGrant(authority, request.grant))
-        return null
+        return replyTo('validate', null)
       case 'check':
-        return await engine.run(authority =>
-          checkTask(
-            authority,
-            request.taskId,
-            readersUntil(sentAt + PROVIDER_BUDGET_MS),
-            engine.ownConversation(request.ownConversation)
+        return replyTo(
+          'check',
+          await engine.run(authority =>
+            checkTask(
+              authority,
+              request.taskId,
+              readersUntil(sentAt + PROVIDER_BUDGET_MS),
+              engine.ownConversation(request.ownConversation)
+            )
           )
         )
       case 'release':
@@ -245,32 +264,38 @@ if (port !== null && engine !== undefined) {
             outcome: 'invalid',
             message: 'Only the sweep makes automatic release attempts',
           })
-        return await engine.run(authority =>
-          releaseWorkspace(authority, request.request, readersUntil(sentAt + PROVIDER_BUDGET_MS))
+        return replyTo(
+          'release',
+          await engine.run(authority =>
+            releaseWorkspace(authority, request.request, readersUntil(sentAt + PROVIDER_BUDGET_MS))
+          )
         )
       case 'sweep': {
         const deadline = sweepDeadline('quit', sentAt)
-        return await engine.run(authority =>
-          sweepRepositoryAtQuit(
-            authority,
-            {
-              repositoryId: repositoryOf(authority, request.request.anchorWorkspaceId),
-              moment: 'quit',
-              deadline,
-              occupiedPaths: request.request.occupiedPaths,
-            },
-            readersUntil(deadline)
+        return replyTo(
+          'sweep',
+          await engine.run(authority =>
+            sweepRepositoryAtQuit(
+              authority,
+              {
+                repositoryId: repositoryOf(authority, request.request.anchorWorkspaceId),
+                moment: 'quit',
+                deadline,
+                occupiedPaths: request.request.occupiedPaths,
+              },
+              readersUntil(deadline)
+            )
           )
         )
       }
       case 'record-target':
         await engine.run(authority => recordTarget(authority, request.taskId, request.target))
-        return null
+        return replyTo('record-target', null)
       case 'record-publication':
         await engine.run(authority => recordPublication(authority, request.reference))
-        return null
+        return replyTo('record-publication', null)
       case 'close': {
-        if (closing) return null
+        if (closing) return replyTo('close', null)
         closing = true
         for (const waiter of callbacks.values())
           waiter.reject(
@@ -286,7 +311,7 @@ if (port !== null && engine !== undefined) {
         await Promise.allSettled(inFlight)
         await engine.close()
         attachments.clear()
-        return null
+        return replyTo('close', null)
       }
       default: {
         const exhaustive: never = request
@@ -309,10 +334,10 @@ if (port !== null && engine !== undefined) {
       if (closing && request.op !== 'close')
         throw new WorkspaceError({ outcome: 'unavailable', message: 'Workspace worker is closing' })
       if (request.op === 'close') currentCloseId = id
-      const value = await execute(request, sentAt)
+      const reply = await execute(request, sentAt)
       executionSucceeded = true
       if (request.op !== 'close') refreshBindings()
-      send({ id, ok: true, op: request.op, value } as WorkspaceWorkerMessage)
+      send({ id, ok: true, ...reply })
       if (request.op === 'close') port.close()
     } catch (cause) {
       if (executionSucceeded) {

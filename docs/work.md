@@ -78,7 +78,7 @@ The status line shows states, active models and context pressure, with leaves as
 
 Retention keeps seven days from completion and the newest 64 completed results within that window. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries.
 
-Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks Node 22.23.2 or newer and an embedded SQLite with the WAL-reset fix; a newer Node number from another release line alone does not establish safety.
+Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the supported Node minimum (26.0.0) and an embedded SQLite with the WAL-reset fix; the Node number alone does not establish safety.
 
 Invalid or corrupt storage is refused, not rebuilt from logs. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 

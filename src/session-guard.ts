@@ -5,6 +5,7 @@ import {
   type ConversationClaim,
   type RuntimeLease,
 } from './runtime-coordination.ts'
+import { errorText } from './error-text.ts'
 
 type SessionManager = Pick<Pi.SessionManager, 'getSessionFile' | 'getSessionId'>
 
@@ -26,7 +27,7 @@ export const createSessionGuard = (lease: RuntimeLease) => {
       try {
         await Effect.runPromise(lease.protect({ path: event.targetSessionFile }))
       } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause)
+        const message = errorText(cause)
         if (ctx.hasUI) ctx.ui.notify(message, 'error')
         else process.stderr.write(`${message}\n`)
         return { cancel: true }

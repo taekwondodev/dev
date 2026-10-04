@@ -1,16 +1,24 @@
 import assert from 'node:assert/strict'
 import { NodeFileSystem } from '@effect/platform-node'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Effect } from 'effect'
-import { asAttemptId, asGenerationId, asSessionId, asTaskId } from '../../src/work-domain.ts'
-import { makeWorkStore } from '../../src/work-store.ts'
+import { Clock, Effect, Layer, Result } from 'effect'
+import {
+  asAttemptId,
+  asGenerationId,
+  asSessionId,
+  asTaskId,
+  type WorkPersistenceError,
+} from '../../src/work-domain.ts'
+import { isRecordUnavailable, WorkStore } from '../../src/work-store.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'dev-work-store-'))
 const { claim, passed } = makeClaims()
+const unavailable = (result: Result.Result<unknown, WorkPersistenceError>): boolean =>
+  Result.isFailure(result) && isRecordUnavailable(result.failure)
 try {
   await claim(
     'current attempt records round-trip; unknown fields are refused on write and read without rewriting stored payloads',
@@ -18,7 +26,7 @@ try {
       Effect.runPromise(
         Effect.gen(function* () {
           const sessionId = asSessionId('schema-check')
-          const store = yield* makeWorkStore(root, sessionId)
+          const store = yield* WorkStore
           const record = yield* store.create(asAttemptId('00000000-0000-0000-0000-000000000001'), {
             kind: 'process',
             cwd: root,
@@ -63,8 +71,98 @@ try {
             db.prepare('SELECT payload FROM attempts WHERE id=?').get(record.id)?.payload,
             payload
           )
-        }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer))
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            WorkStore.layer(root, asSessionId('schema-check')).pipe(
+              Layer.provide(NodeFileSystem.layer)
+            )
+          )
+        )
       )
+  )
+  await claim(
+    'completed attempts expire seven days after completion and beyond the newest 64; active and unresolved attempts remain and expired logs are removed',
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const home = join(root, 'retention')
+          const sessionId = asSessionId('retention-check')
+          const store = yield* WorkStore
+          const now = yield* Clock.currentTimeMillis
+          const minute = 60 * 1000
+          const day = 24 * 60 * minute
+          const start = (serial: number) =>
+            store.create(
+              asAttemptId(`00000000-0000-0000-0000-${String(serial).padStart(12, '0')}`),
+              {
+                kind: 'process',
+                cwd: home,
+                controllerPid: process.pid,
+                owner: {
+                  sessionId,
+                  taskId: asTaskId(`retention-${serial}`),
+                  generation: asGenerationId('retention-check'),
+                },
+              }
+            )
+          const completeAt = Effect.fnUntraced(function* (serial: number, completedAt: number) {
+            const record = yield* start(serial)
+            yield* store.save({ ...record, revision: 1, status: 'completed', completedAt })
+            return record.id
+          })
+          const logDirectory = (id: string) => join(home, 'work', 'attempts', id)
+          const listedIds = Effect.map(store.list, listed =>
+            listed.records.map(record => record.id).toSorted()
+          )
+
+          const active = (yield* start(1)).id
+          const unresolved = yield* start(2)
+          yield* store.save({
+            ...unresolved,
+            revision: 1,
+            status: 'unknown',
+            completedAt: undefined,
+          })
+          const expired = yield* completeAt(3, now - 8 * day)
+          const sixDaysOld = yield* completeAt(4, now - 6 * day)
+          assert.deepEqual(yield* listedIds, [active, unresolved.id, sixDaysOld])
+          assert.ok(unavailable(yield* Effect.result(store.read(expired))))
+          assert.equal(existsSync(logDirectory(expired)), false)
+          assert.equal(existsSync(logDirectory(sixDaysOld)), true)
+
+          const newest: string[] = []
+          for (let index = 0; index < 64; index += 1)
+            newest.push(yield* completeAt(100 + index, now - (index + 1) * minute))
+          assert.deepEqual(yield* listedIds, [active, unresolved.id, ...newest].toSorted())
+          assert.ok(unavailable(yield* Effect.result(store.read(sixDaysOld))))
+          assert.equal(existsSync(logDirectory(sixDaysOld)), false)
+          assert.equal(existsSync(logDirectory(active)), true)
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            WorkStore.layer(join(root, 'retention'), asSessionId('retention-check')).pipe(
+              Layer.provide(NodeFileSystem.layer)
+            )
+          )
+        )
+      )
+  )
+  await claim('a corrupt database is refused and left as found, not rebuilt', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const home = join(root, 'corrupt')
+        const databasePath = join(home, 'work', 'attempts.sqlite')
+        const garbage = Buffer.from('not a database '.repeat(512))
+        mkdirSync(dirname(databasePath), { recursive: true })
+        writeFileSync(databasePath, garbage)
+        const refusal = yield* Effect.flip(
+          Layer.build(WorkStore.layer(home, asSessionId('corrupt-check')))
+        )
+        assert.equal(refusal.message, 'Work store database is corrupt')
+        assert.deepEqual(readFileSync(databasePath), garbage)
+      }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer))
+    )
   )
   console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))
 } finally {

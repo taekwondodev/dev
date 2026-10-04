@@ -6,6 +6,7 @@ import { classifyWriteDestination, decodeWriteOperand } from './workspace-paths.
 import type { NativeWrites } from './workspace-native-write.ts'
 import { newId } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
+import { awaitReply, type ReplyChannel } from './work-child-ipc.ts'
 
 const Reply = Schema.Struct({
   type: Schema.Literal('workspace-checked'),
@@ -19,13 +20,9 @@ const readTools = new Set(['read', 'grep', 'find', 'ls'])
 
 type WorkspaceCheck = Extract<ChildMessage, { readonly type: 'workspace-check' }>
 
-export interface ControllerChannel {
+export interface ControllerChannel extends ReplyChannel {
   readonly connected: boolean
   send?(message: WorkspaceCheck, callback: (error: Error | null) => void): boolean
-  on(event: 'message', listener: (message: unknown) => void): unknown
-  once(event: 'disconnect', listener: () => void): unknown
-  removeListener(event: 'message', listener: (message: unknown) => void): unknown
-  removeListener(event: 'disconnect', listener: () => void): unknown
 }
 
 const unavailableError = (message: string) =>
@@ -42,37 +39,33 @@ export const checkChildWorkspace = (
       return
     }
     const requestId = newId()
-    const cleanup = (): void => {
-      channel.removeListener('message', onMessage)
-      channel.removeListener('disconnect', onDisconnect)
-    }
     const settle = (result: Effect.Effect<void, WorkspaceError>): void => {
       cleanup()
       resume(result)
     }
-    const onDisconnect = (): void =>
-      settle(Effect.fail(unavailableError('Workspace controller disconnected')))
-    const onMessage = (raw: unknown): void => {
-      const reply = decodeReply(raw)
-      if (
-        Option.isNone(reply) ||
-        reply.value.requestId !== requestId ||
-        reply.value.useId !== grant.useId
-      )
-        return
-      settle(
-        reply.value.allowed
-          ? Effect.void
-          : Effect.fail(
-              new WorkspaceError({
-                outcome: 'blocked',
-                message: reply.value.reason ?? 'Workspace authorization rejected',
-              })
-            )
-      )
-    }
-    channel.on('message', onMessage)
-    channel.once('disconnect', onDisconnect)
+    const cleanup = awaitReply(channel, requestId, {
+      disconnected: () =>
+        settle(Effect.fail(unavailableError('Workspace controller disconnected'))),
+      reply: raw => {
+        const reply = decodeReply(raw)
+        if (
+          Option.isNone(reply) ||
+          reply.value.requestId !== requestId ||
+          reply.value.useId !== grant.useId
+        )
+          return
+        settle(
+          reply.value.allowed
+            ? Effect.void
+            : Effect.fail(
+                new WorkspaceError({
+                  outcome: 'blocked',
+                  message: reply.value.reason ?? 'Workspace authorization rejected',
+                })
+              )
+        )
+      },
+    })
     try {
       channel.send({ type: 'workspace-check', requestId, useId: grant.useId, operation }, cause => {
         if (cause !== null) settle(Effect.fail(unavailableError(errorText(cause))))

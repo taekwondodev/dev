@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Cause, Clock, Effect, Exit, Schema } from 'effect'
+import { Cause, Clock, Context, Effect, Exit, Layer, Option, Result, Schema } from 'effect'
+import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
 import {
@@ -16,7 +18,7 @@ import {
   type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
-import { canonicalGitWorkspace } from './workspace-git.ts'
+import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
 
 const WorkspaceToolInputSchema = Schema.Union([
@@ -54,7 +56,7 @@ export class WorkspaceToolError extends Schema.TaggedError<WorkspaceToolError>()
 const refuse = (message: string) => new WorkspaceToolError({ message })
 
 const BodyPayload = Schema.Struct({ body: Schema.NullOr(Schema.String), html_url: Schema.String })
-const decodeBody = Schema.decodeUnknownSync(BodyPayload)
+const decodeBody = Schema.decodeUnknownResult(Schema.fromJsonString(BodyPayload))
 
 export interface PublicationDestinationReader {
   body(
@@ -65,57 +67,70 @@ export interface PublicationDestinationReader {
   attachment(url: string): Effect.Effect<Uint8Array, WorkspaceToolError>
 }
 
-export const ghDestinationReader: PublicationDestinationReader = {
-  body: (repository, number, commentId) =>
-    Effect.callback<{ readonly body: string; readonly url: string }, WorkspaceToolError>(resume => {
-      const endpoint =
+const readDestinationBody = (
+  run: RunCommand,
+  repository: string,
+  number: number,
+  commentId: number | undefined
+) =>
+  Effect.suspend(() =>
+    run(
+      'gh',
+      [
+        'api',
         commentId === undefined
           ? `repos/${repository}/issues/${number}`
-          : `repos/${repository}/issues/comments/${commentId}`
-      execFile(
-        'gh',
-        ['api', endpoint],
-        {
-          encoding: 'utf8',
-          timeout: 30_000,
-          maxBuffer: 16 * 1024 * 1024,
-          env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
-        },
-        (error, stdout) => {
-          if (error !== null) {
-            resume(
-              Effect.fail(
-                refuse(`Publication destination could not be read back: ${errorText(error)}`)
-              )
+          : `repos/${repository}/issues/comments/${commentId}`,
+      ],
+      {
+        timeout: 30_000,
+        maxOutputLength: 16 * 1024 * 1024,
+        env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' },
+      }
+    )
+  ).pipe(
+    Effect.mapError(error =>
+      refuse(`Publication destination could not be read back: ${errorText(error)}`)
+    ),
+    Effect.flatMap(({ stdout }) => {
+      const payload = decodeBody(stdout)
+      return Result.isSuccess(payload)
+        ? Effect.succeed({ body: payload.success.body ?? '', url: payload.success.html_url })
+        : Effect.fail(
+            refuse(
+              `Publication destination answered an unexpected shape: ${errorText(payload.failure)}`
             )
-            return
-          }
-          try {
-            const payload = decodeBody(JSON.parse(stdout))
-            resume(Effect.succeed({ body: payload.body ?? '', url: payload.html_url }))
-          } catch (cause) {
-            resume(
-              Effect.fail(
-                refuse(`Publication destination answered an unexpected shape: ${errorText(cause)}`)
-              )
-            )
-          }
-        }
-      )
-    }),
-  attachment: url =>
-    Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(url, {
-          redirect: 'follow',
-          signal: AbortSignal.timeout(30_000),
-        })
-        if (!response.ok) throw new Error(`attachment ${url} answered ${response.status}`)
-        return new Uint8Array(await response.arrayBuffer())
-      },
-      catch: cause => refuse(`Attachment ${url} could not be read back: ${errorText(cause)}`),
-    }),
-}
+          )
+    })
+  )
+
+const readAttachment = (url: string) =>
+  Effect.tryPromise({
+    try: async signal => {
+      const response = await fetch(url, {
+        redirect: 'follow',
+        signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      })
+      if (!response.ok) throw new Error(`attachment ${url} answered ${response.status}`)
+      return new Uint8Array(await response.arrayBuffer())
+    },
+    catch: cause => refuse(`Attachment ${url} could not be read back: ${errorText(cause)}`),
+  })
+
+const readHead = (cwd: string): Effect.Effect<string, WorkspaceToolError> =>
+  Effect.callback<string, WorkspaceToolError>((resume, signal) => {
+    execFile(
+      'git',
+      gitArguments(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']),
+      { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, env: gitEnvironment(), signal },
+      (error, stdout) => {
+        if (error === null) resume(Effect.succeed(stdout.trim()))
+        else if (error.code === 1) resume(Effect.succeed(''))
+        else
+          resume(Effect.fail(refuse(`Workspace revision could not be read: ${errorText(error)}`)))
+      }
+    )
+  })
 
 const ATTACHMENT_URL =
   /https:\/\/(?:github\.com\/(?:user-attachments\/assets|[^\s/]+\/[^\s/]+\/assets)\/[^\s)"'<>]+|user-images\.githubusercontent\.com\/[^\s)"'<>]+|private-user-images\.githubusercontent\.com\/[^\s)"'<>]+)/g
@@ -144,11 +159,26 @@ const utf8Text = (bytes: Uint8Array): string | undefined => {
   }
 }
 
+export class PublicationDestinations extends Context.Service<
+  PublicationDestinations,
+  PublicationDestinationReader
+>()('dev/workspace-tool/PublicationDestinations') {
+  static readonly layer = Layer.effect(
+    PublicationDestinations,
+    Effect.map(commandRunner, run =>
+      PublicationDestinations.of({
+        body: (repository, number, commentId) =>
+          readDestinationBody(run, repository, number, commentId),
+        attachment: readAttachment,
+      })
+    )
+  )
+}
+
 export interface WorkspaceToolOptions {
   readonly lifecycle: WorkspaceLifecycle
   readonly attachment: () => WorkspaceAttachment
-  readonly destinations: PublicationDestinationReader
-  readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>
+  readonly runPromise: <A>(effect: Effect.Effect<A, never, PublicationDestinations>) => Promise<A>
   readonly requestResume: (handoff: WorkspaceHandoff, context: ExtensionContext) => void
 }
 
@@ -243,12 +273,13 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       return yield* refuse(
         `Selected artifact has a sensitive name and is never certified for disposal: ${input.path}`
       )
-    const bytes = yield* Effect.try({
-      try: () => readFileSync(absolute),
+    const bytes = yield* Effect.tryPromise({
+      try: signal => readFile(absolute, { signal }),
       catch: cause => refuse(`Selected artifact could not be read: ${errorText(cause)}`),
     })
     const digest = sha256Hex(bytes)
-    const destination = yield* options.destinations.body(
+    const destinations = yield* PublicationDestinations
+    const destination = yield* destinations.body(
       input.destination.repository,
       input.destination.number,
       input.destination.commentId
@@ -259,8 +290,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     else {
       const urls = [...new Set(destination.body.match(ATTACHMENT_URL) ?? [])]
       for (const url of urls) {
-        const fetched = yield* Effect.option(options.destinations.attachment(url))
-        if (fetched._tag === 'Some' && sha256Hex(fetched.value) === digest) {
+        const fetched = yield* Effect.option(destinations.attachment(url))
+        if (Option.isSome(fetched) && sha256Hex(fetched.value) === digest) {
           readBack = 'attachment-sha256'
           break
         }
@@ -270,10 +301,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       return yield* refuse(
         `Publication of ${input.path} was not verified: ${destination.url} neither contains the file's complete text nor an attachment with its exact bytes (${bytes.byteLength} bytes, sha256 ${digest.slice(0, 12)}). Publish the actual artifact there first; dev uploads nothing.`
       )
-    const head = yield* Effect.try({
-      try: () => canonicalGitWorkspace(view.path).head,
-      catch: cause => refuse(`Workspace revision could not be read: ${errorText(cause)}`),
-    })
+    const head = yield* readHead(view.path)
     const reference: PublicationReference = {
       id: newId(),
       taskId,
@@ -306,21 +334,24 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       "Operate this conversation's workspace task in the workspace authority. resume switches the conversation onto a workspace retained for a task (exact taskId, and workspaceId when the task retains several); the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree.",
     parameters,
     async execute(_toolCallId, input, _signal, _onUpdate, context) {
-      const run: Effect.Effect<ToolReply, WorkspaceToolError> = decodeInput(input, {
-        onExcessProperty: 'error',
-      }).pipe(
-        Effect.mapError(cause => refuse(cause.message)),
-        Effect.flatMap((decoded): Effect.Effect<ToolReply, WorkspaceToolError> => {
-          switch (decoded.action) {
-            case 'resume':
-              return resume(decoded, context)
-            case 'set-target':
-              return setTarget(decoded)
-            case 'record-publication':
-              return recordPublication(decoded)
-          }
-        })
-      )
+      const run: Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> =
+        decodeInput(input, {
+          onExcessProperty: 'error',
+        }).pipe(
+          Effect.mapError(cause => refuse(cause.message)),
+          Effect.flatMap(
+            (decoded): Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> => {
+              switch (decoded.action) {
+                case 'resume':
+                  return resume(decoded, context)
+                case 'set-target':
+                  return setTarget(decoded)
+                case 'record-publication':
+                  return recordPublication(decoded)
+              }
+            }
+          )
+        )
       const outcome = await options.runPromise(Effect.exit(run))
       if (Exit.isSuccess(outcome))
         return {

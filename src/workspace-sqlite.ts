@@ -9,9 +9,9 @@ import {
   openSync,
   unlinkSync,
 } from 'node:fs'
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { basename, dirname, join } from 'node:path'
-import { Predicate, Schema } from 'effect'
+import { Option, Predicate, Schema } from 'effect'
 import { blocked, invalid, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
 import {
   effectiveUid,
@@ -85,6 +85,7 @@ const SHARD_SQL = `
     revision INTEGER NOT NULL,
     payload TEXT NOT NULL
   ) STRICT;
+  CREATE INDEX bindings_by_workspace ON bindings(workspace_id, conversation_key);
   CREATE TABLE uses(
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -93,10 +94,13 @@ const SHARD_SQL = `
     acquisition_id TEXT,
     access TEXT NOT NULL CHECK(access IN ('read', 'write')),
     stage TEXT NOT NULL,
+    within_use_id TEXT,
     revision INTEGER NOT NULL,
     payload TEXT NOT NULL
   ) STRICT;
   CREATE INDEX uses_by_workspace ON uses(workspace_id, stage, id);
+  CREATE INDEX uses_by_within ON uses(within_use_id, stage);
+  CREATE INDEX uses_by_reservation ON uses(reservation_id, stage);
   CREATE TABLE operations(
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -108,6 +112,8 @@ const SHARD_SQL = `
     payload TEXT NOT NULL
   ) STRICT;
   CREATE INDEX operations_open ON operations(phase, created_at) WHERE phase IN ('intent', 'started', 'unknown', 'review-required');
+  CREATE INDEX operations_by_workspace ON operations(workspace_id, created_at, id);
+  CREATE INDEX operations_by_task ON operations(task_id, kind, phase);
   CREATE TABLE publications(
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -131,25 +137,29 @@ export const encode = (value: unknown): string => {
   if (typeof result !== 'string') return invalid('Workspace record cannot be encoded')
   return result
 }
-const decodeJson = (value: unknown, label: string): unknown => {
-  if (typeof value !== 'string') return requireReview(`Corrupt ${label}: payload is not text`)
-  try {
-    return JSON.parse(value)
-  } catch {
-    return requireReview(`Corrupt ${label}: payload is not valid JSON`)
-  }
+const decodeJsonText = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+type RecordDecoder = (input: unknown) => Option.Option<unknown>
+const recordDecoders = new WeakMap<object, RecordDecoder>()
+const recordDecoder = (
+  schema: Schema.Constraint & Schema.ConstraintDecoder<unknown>
+): RecordDecoder => {
+  const known = recordDecoders.get(schema)
+  if (known !== undefined) return known
+  const decoder = Schema.decodeUnknownOption(Schema.fromJsonString(schema))
+  recordDecoders.set(schema, decoder)
+  return decoder
 }
-export const parseRecord = <S extends Schema.ConstraintDecoder<unknown>>(
+export const parseRecord = <S extends Schema.Constraint & Schema.ConstraintDecoder<unknown>>(
   schema: S,
   raw: unknown,
   label: string
 ): S['Type'] => {
-  try {
-    return Schema.decodeUnknownSync(schema)(decodeJson(raw, label))
-  } catch (cause) {
-    if (cause instanceof WorkspaceError) throw cause
-    return requireReview(`Corrupt ${label}: persisted record failed schema validation`)
-  }
+  if (typeof raw !== 'string') return requireReview(`Corrupt ${label}: payload is not text`)
+  const decoded = recordDecoder(schema)(raw)
+  if (Option.isSome(decoded)) return decoded.value
+  return Option.isNone(decodeJsonText(raw))
+    ? requireReview(`Corrupt ${label}: payload is not valid JSON`)
+    : requireReview(`Corrupt ${label}: persisted record failed schema validation`)
 }
 
 const syncNewFile = (path: string): void => {
@@ -193,7 +203,7 @@ export const assertSqliteSafety = (): void => {
   const { sqlite } = process.versions
   if (
     node === undefined ||
-    compareVersion(node, [22, 23, 2]) < 0 ||
+    compareVersion(node, [26, 0, 0]) < 0 ||
     sqlite === undefined ||
     !walResetSafe(sqlite)
   )
@@ -202,16 +212,28 @@ export const assertSqliteSafety = (): void => {
     )
 }
 
-export const rows = (
-  db: DatabaseSync,
-  sql: string,
-  ...params: (string | number | null)[]
-): SqlRow[] => db.prepare(sql).all(...params) as SqlRow[]
+type SqlParameter = string | number | null
+const statements = new WeakMap<DatabaseSync, Map<string, StatementSync>>()
+export const statement = (db: DatabaseSync, sql: string): StatementSync => {
+  let prepared = statements.get(db)
+  if (prepared === undefined) {
+    prepared = new Map()
+    statements.set(db, prepared)
+  }
+  let known = prepared.get(sql)
+  if (known === undefined) {
+    known = db.prepare(sql)
+    prepared.set(sql, known)
+  }
+  return known
+}
+export const rows = (db: DatabaseSync, sql: string, ...params: SqlParameter[]): SqlRow[] =>
+  statement(db, sql).all(...params) as SqlRow[]
 export const first = (
   db: DatabaseSync,
   sql: string,
-  ...params: (string | number | null)[]
-): SqlRow | undefined => db.prepare(sql).get(...params) as SqlRow | undefined
+  ...params: SqlParameter[]
+): SqlRow | undefined => statement(db, sql).get(...params) as SqlRow | undefined
 export const textField = (row: SqlRow | undefined, key: string): string => {
   const value = row?.[key]
   if (typeof value !== 'string') return requireReview(`Corrupt workspace authority column: ${key}`)
@@ -247,11 +269,16 @@ export const schemaCatalog = (db: DatabaseSync): string =>
       }))
       .toSorted((left, right) => String(left.name).localeCompare(String(right.name))),
   })
+const expectedCatalogs = new Map<string, string>()
 export const expectedCatalog = (ddl: string): string => {
+  const known = expectedCatalogs.get(ddl)
+  if (known !== undefined) return known
   const db = new DatabaseSync(':memory:')
   try {
     db.exec(ddl)
-    return schemaCatalog(db)
+    const catalog = schemaCatalog(db)
+    expectedCatalogs.set(ddl, catalog)
+    return catalog
   } finally {
     db.close()
   }
@@ -332,6 +359,11 @@ export const databaseFile = (path: string): void => {
       unavailable(`Unsafe SQLite sidecar: ${path}${suffix}`)
   }
 }
+const validatedFiles = new Set<string>()
+const validatedIdentity = (path: string): string => {
+  const info = lstatSync(path, { bigint: true })
+  return `${path}\0${info.dev}:${info.ino}`
+}
 const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'shard'): void => {
   db.exec(
     `PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA wal_autocheckpoint = 1000;`
@@ -343,13 +375,17 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   const fullfsync = numberField(first(db, 'PRAGMA fullfsync'), 'fullfsync')
   if (synchronous !== 2 || fullfsync !== 1)
     unavailable(`Workspace ${kind} database has unsafe durability settings: ${path}`)
-  if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
-    unavailable(
-      `Workspace ${kind} database has an unsupported schema: ${path}. dev never migrates it; quit every dev session and follow Discard the workspace authority in dev's docs/DEVELOPMENT.md.`
-    )
-  if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
-    requireReview(`Workspace ${kind} database is corrupt: ${path}`)
+  const identity = validatedIdentity(path)
+  if (!validatedFiles.has(identity)) {
+    if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
+      unavailable(
+        `Workspace ${kind} database has an unsupported schema: ${path}. dev never migrates it; quit every dev session and follow Discard the workspace authority in dev's docs/DEVELOPMENT.md.`
+      )
+    if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
+      requireReview(`Workspace ${kind} database is corrupt: ${path}`)
+  }
   databaseFile(path)
+  validatedFiles.add(identity)
 }
 export const openRecordDb = (
   path: string,

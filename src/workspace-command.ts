@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Schema } from 'effect'
+import { Cause, Effect, Exit, Option, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import {
   WorkspaceId,
@@ -29,8 +29,8 @@ export interface WorkspaceCommandResult {
   readonly text: string
 }
 
-interface WorkspaceListScope {
-  readonly repositoryRoot: Effect.Effect<string | undefined>
+interface WorkspaceListScope<R = never> {
+  readonly repositoryRoot: Effect.Effect<string | undefined, never, R>
   readonly current?: {
     readonly workspaceId: WorkspaceId
     readonly effectiveCwd: string
@@ -57,7 +57,7 @@ const exactId = Effect.fnUntraced(function* (
   name: string
 ): Effect.fn.Return<WorkspaceId, WorkspaceCommandError> {
   const decoded = decodeId(value)
-  if (decoded._tag === 'None')
+  if (Option.isNone(decoded))
     return yield* usage(
       `${name} must be an exact ID as listed by dev workspace, got ${JSON.stringify(value ?? '')}`
     )
@@ -431,7 +431,7 @@ const sweepRowText = (row: SweepRow): string[] => {
   }
 }
 
-export const attemptedRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
+const attemptedRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
   receipt.rows.filter(
     (row): row is WorkspaceRow => row.kind === 'workspace' && row.verdict.kind === 'finished'
   )
@@ -459,11 +459,11 @@ export const formatSweepReceipt = (receipt: SweepReceipt): string => {
 }
 
 export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
-  function* <R>(
+  function* <R, RootR>(
     openLifecycle: Effect.Effect<WorkspaceLifecycle, never, R>,
     command: ReadOnlyWorkspaceCommand,
-    scope: WorkspaceListScope
-  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError, R> {
+    scope: WorkspaceListScope<RootR>
+  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError, R | RootR> {
     if (command.kind === 'check') {
       const lifecycle = yield* openLifecycle
       const assessments = yield* lifecycle.check({

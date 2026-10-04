@@ -22,7 +22,7 @@ The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECT
 
 ## Use dev
 
-Dev is built for me: it assumes `pi` installed with the [pi.dev installer](https://pi.dev) (`curl -fsSL https://pi.dev/install.sh | sh`), the skill library at `~/.agents/skills`, and Node 22.23.2 or newer with a SQLite that carries the WAL-reset fix. Read [SECURITY](SECURITY.md) before installing.
+Dev is built for me: it assumes `pi` installed with the [pi.dev installer](https://pi.dev) (`curl -fsSL https://pi.dev/install.sh | sh`), the skill library at `~/.agents/skills`, and Node 26 or newer with a SQLite that carries the WAL-reset fix. Read [SECURITY](SECURITY.md) before installing.
 
 ```bash
 cd ~/Developer/dev

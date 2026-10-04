@@ -37,7 +37,7 @@ export const regularFileDigest = (path: string): string => {
     if (!info.isFile()) return unavailable(`Not a regular file: ${path}`)
     const digest = createHash('sha256')
     const bytes = Buffer.allocUnsafe(64 * 1024)
-    for (let position = 0; position < info.size; ) {
+    for (let position = 0; position < info.size;) {
       const count = readSync(fd, bytes, 0, Math.min(bytes.length, info.size - position), position)
       if (count === 0) return unavailable(`File was truncated while reading: ${path}`)
       digest.update(bytes.subarray(0, count))

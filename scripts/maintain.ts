@@ -1,7 +1,8 @@
 import { join, resolve } from 'node:path'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
-import { Array as Arr, Effect, FileSystem, Schema } from 'effect'
-import type { ChildProcessSpawner } from 'effect/unstable/process'
+import { Array as Arr, Cause, Config, Effect, FileSystem, Layer, Option, Schema } from 'effect'
+import { FetchHttpClient } from 'effect/http'
+import { errorText } from '../src/error-text.ts'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
@@ -16,30 +17,19 @@ export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('Ma
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-type MaintenanceCommand = Effect.Effect<
-  void,
-  MaintenanceError,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
->
+const failed = (operation: string, cause: unknown): MaintenanceError =>
+  new MaintenanceError({ message: `${operation}: ${errorText(cause)}`, cause })
 
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)
+const reported = (error: { readonly message: string }): MaintenanceError =>
+  new MaintenanceError({ message: error.message, cause: error })
 
-const toMaintenanceError = (error: unknown, operation: string): MaintenanceError =>
-  error instanceof MaintenanceError
-    ? error
-    : new MaintenanceError({ message: `${operation}: ${messageOf(error)}`, cause: error })
+const say = (text: string) =>
+  Effect.sync(() => {
+    process.stdout.write(text)
+  })
 
-const argument = (name: string): Effect.Effect<string | undefined, MaintenanceError> => {
-  const index = process.argv.indexOf(name)
-  const value = index === -1 ? undefined : process.argv[index + 1]
-  return index !== -1 && value === undefined
-    ? Effect.fail(new MaintenanceError({ message: `${name} requires a value` }))
-    : Effect.succeed(value)
-}
-
-const assertPrivateDataProtected = (ref: string): MaintenanceCommand =>
-  Effect.gen(function* () {
+const assertPrivateDataProtected = Effect.fnUntraced(
+  function* (ref: string) {
     const fs = yield* FileSystem.FileSystem
     if (!(yield* fs.exists(join(checkout, '.dev')))) return
     const ignore = (yield* git(['show', `${ref}:.gitignore`])).split(/\r?\n/)
@@ -49,23 +39,33 @@ const assertPrivateDataProtected = (ref: string): MaintenanceCommand =>
         message:
           'Refusing checkout: private .dev data requires an explicit /.dev/ ignore rule, no negation rules, and no tracked contents. Relocate that data explicitly before using this revision.',
       })
-  }).pipe(
-    Effect.mapError(error => toMaintenanceError(error, 'Cannot verify private data protection'))
+  },
+  Effect.mapError(error =>
+    error._tag === 'MaintenanceError'
+      ? error
+      : failed('Cannot verify private data protection', error)
   )
+)
 
-const setup = (): MaintenanceCommand =>
-  Effect.gen(function* () {
+const setup = Effect.fnUntraced(
+  function* (requestedDataHome: Option.Option<string>) {
     const fs = yield* FileSystem.FileSystem
-    const dataHome = (yield* argument('--data-home')) ?? (yield* defaultDataHome)
+    const dataHome = Option.isSome(requestedDataHome)
+      ? requestedDataHome.value
+      : yield* defaultDataHome
     yield* acquireMaintenance()
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
-    const home = process.env.HOME ?? process.env.USERPROFILE
-    if (home === undefined)
+    const home = yield* Config.option(
+      Config.String('HOME').pipe(Config.orElse(() => Config.String('USERPROFILE')))
+    )
+    if (Option.isNone(home))
       return yield* new MaintenanceError({
         message: 'HOME is required to inspect shared workflow skills',
       })
-    const shared = process.env.DEV_SHARED_SKILLS ?? `${home}/Developer/skills`
+    const shared = yield* Config.String('DEV_SHARED_SKILLS').pipe(
+      Config.withDefault(`${home.value}/Developer/skills`)
+    )
     yield* fs.makeDirectory(dataHome, { recursive: true, mode: 0o700 })
     yield* sessionDir(dataHome)
     const observation = {
@@ -82,32 +82,31 @@ const setup = (): MaintenanceCommand =>
       `${JSON.stringify(observation, null, 2)}\n`,
       { mode: 0o600 }
     )
-    yield* Effect.sync(() => {
-      process.stdout.write(`setup recorded dependencies in ${dataHome}\n`)
-    })
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError(error => toMaintenanceError(error, 'Setup failed'))
+    yield* say(`setup recorded dependencies in ${dataHome}\n`)
+  },
+  Effect.scoped,
+  Effect.mapError(error =>
+    error._tag === 'MaintenanceError' ? error : failed('Setup failed', error)
   )
+)
 
-const update = (): MaintenanceCommand =>
-  Effect.gen(function* () {
-    const remote = (yield* argument('--remote')) ?? 'origin'
-    const requestedBranch = yield* argument('--branch')
+const update = Effect.fnUntraced(
+  function* (options: { readonly remote: string; readonly branch: Option.Option<string> }) {
+    const { remote } = options
     yield* acquireMaintenance()
     if (!(yield* checkoutIsClean))
       return yield* new MaintenanceError({
         message:
           'Refusing update: dev checkout has local changes. Preserve them explicitly before updating.',
       })
-    const branch = requestedBranch ?? (yield* git(['branch', '--show-current']))
+    const branch = Option.isSome(options.branch)
+      ? options.branch.value
+      : yield* git(['branch', '--show-current'])
     yield* git(['fetch', remote, branch])
     yield* assertPrivateDataProtected(`${remote}/${branch}`)
     const previous = yield* git(['rev-parse', 'HEAD'])
     yield* git(['merge', '--ff-only', `${remote}/${branch}`])
-    yield* Effect.sync(() => {
-      process.stdout.write(`updated dev checkout from ${remote}/${branch}\n`)
-    })
+    yield* say(`updated dev checkout from ${remote}/${branch}\n`)
     const lockfile = yield* run(
       'git',
       ['diff', '--quiet', previous, 'HEAD', '--', 'package-lock.json'],
@@ -122,23 +121,27 @@ const update = (): MaintenanceCommand =>
         message: `Updated the checkout, but npm ci failed; rerun npm ci --ignore-scripts && npm run types:pi:\n${lastLines(install.output, 40)}`,
       })
     yield* linkPiDeclarations
-    yield* Effect.sync(() => {
-      process.stdout.write('reinstalled dependencies from the updated package-lock.json\n')
-    })
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError(error => toMaintenanceError(error, 'Update failed'))
+    yield* say('reinstalled dependencies from the updated package-lock.json\n')
+  },
+  Effect.scoped,
+  Effect.mapError(error =>
+    error._tag === 'MaintenanceError' ? error : failed('Update failed', error)
   )
+)
 
-const rollback = (): MaintenanceCommand =>
-  Effect.gen(function* () {
-    const ref = yield* argument('--ref')
+const rollback = Effect.fnUntraced(
+  function* (ref: Option.Option<string>) {
     yield* acquireMaintenance()
-    if (ref === undefined)
+    if (Option.isNone(ref))
       return yield* new MaintenanceError({
         message: 'Rollback requires an explicit --ref and changes only the dev checkout.',
       })
-    const revision = yield* git(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])
+    const revision = yield* git([
+      'rev-parse',
+      '--verify',
+      '--end-of-options',
+      `${ref.value}^{commit}`,
+    ])
     yield* assertPrivateDataProtected(revision)
     if (!(yield* checkoutIsClean))
       return yield* new MaintenanceError({
@@ -146,98 +149,131 @@ const rollback = (): MaintenanceCommand =>
           'Refusing rollback: dev checkout has local changes. Preserve them explicitly before rolling back.',
       })
     yield* git(['checkout', '--detach', revision])
-    yield* Effect.sync(() => {
-      process.stdout.write(
-        `rolled dev checkout back to ${ref}; external Pi, workflow, credentials and sessions were not changed\n`
-      )
-    })
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError(error => toMaintenanceError(error, 'Rollback failed'))
+    yield* say(
+      `rolled dev checkout back to ${ref.value}; external Pi, workflow, credentials and sessions were not changed\n`
+    )
+  },
+  Effect.scoped,
+  Effect.mapError(error =>
+    error._tag === 'MaintenanceError' ? error : failed('Rollback failed', error)
   )
+)
 
-const profileOptions = Effect.gen(function* () {
-  const args = process.argv.slice(3)
-  const single = new Map<string, string>()
-  const periods: string[] = []
+const commandOptions = {
+  setup: { flags: ['--data-home'], usage: '--data-home PATH' },
+  update: { flags: ['--remote', '--branch'], usage: '--remote NAME or --branch NAME' },
+  rollback: { flags: ['--ref'], usage: '--ref REF' },
+  profile: {
+    flags: ['--data-home', '--period', '--export'],
+    usage: '--data-home PATH, --period START..END (repeatable) or --export DIR',
+  },
+} as const
+
+type OptionCommand = keyof typeof commandOptions
+
+const parseOptions = Effect.fnUntraced(function* (command: OptionCommand, args: readonly string[]) {
+  const { flags, usage } = commandOptions[command]
+  const values = new Map<string, string[]>()
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index] ?? ''
+    if (!flags.some(known => known === flag))
+      return yield* new MaintenanceError({
+        message: `Unknown ${command} option "${flag}". Use ${usage}.`,
+      })
     const value = args[index + 1]
     if (value === undefined)
       return yield* new MaintenanceError({ message: `${flag} requires a value` })
-    if (flag === '--period') periods.push(value)
-    else if (flag !== '--data-home' && flag !== '--export')
-      return yield* new MaintenanceError({
-        message: `Unknown profile option "${flag}". Use --data-home PATH, --period START..END (repeatable) or --export DIR.`,
-      })
-    else if (single.has(flag))
-      return yield* new MaintenanceError({ message: `${flag} may be given only once` })
-    else single.set(flag, value)
+    values.set(flag, [...(values.get(flag) ?? []), value])
   }
-  return { dataHome: single.get('--data-home'), exportTo: single.get('--export'), periods }
+  return (flag: string): readonly string[] => values.get(flag) ?? []
 })
 
-const profile = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
-    const options = yield* profileOptions
-    const dataHome =
-      options.dataHome === undefined ? yield* defaultDataHome : resolve(options.dataHome)
-    const parsed = yield* Effect.forEach(options.periods, parsePeriod)
+const single = Effect.fnUntraced(function* (flag: string, values: readonly string[]) {
+  if (values.length > 1)
+    return yield* new MaintenanceError({ message: `${flag} may be given only once` })
+  return Arr.head(values)
+})
+
+const profile = Effect.fnUntraced(
+  function* (args: readonly string[]) {
+    const options = yield* parseOptions('profile', args)
+    const requestedDataHome = yield* single('--data-home', options('--data-home'))
+    const exportTo = yield* single('--export', options('--export'))
+    const dataHome = Option.isSome(requestedDataHome)
+      ? resolve(requestedDataHome.value)
+      : yield* defaultDataHome
+    const parsed = yield* Effect.forEach(options('--period'), parsePeriod)
     const periods = Arr.isReadonlyArrayNonEmpty(parsed) ? parsed : Arr.of(ALL_TIME)
     const [period, ...more] = periods
-    if (options.exportTo !== undefined && more.length > 0)
+    if (Option.isSome(exportTo) && more.length > 0)
       return yield* new MaintenanceError({
         message: 'An export takes exactly one period; nothing was written',
       })
     const report = yield* profileUsage({
       dataHome,
-      selection:
-        options.exportTo === undefined
-          ? { kind: 'report', periods }
-          : { kind: 'export', period, directory: resolve(options.exportTo) },
+      selection: Option.isSome(exportTo)
+        ? { kind: 'export', period, directory: resolve(exportTo.value) }
+        : { kind: 'report', periods },
     })
-    yield* Effect.sync(() => {
-      process.stdout.write(report)
-    })
-  }).pipe(Effect.mapError(error => toMaintenanceError(error, 'Profile failed')))
-
-const withoutArguments = (
-  name: string,
-  operation: Effect.Effect<
-    void,
-    { readonly message: string },
-    FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
-  >
-): MaintenanceCommand =>
-  Effect.gen(function* () {
-    if (process.argv.length > 3)
-      return yield* new MaintenanceError({
-        message: `${name} takes no arguments, got: ${process.argv.slice(3).join(' ')}`,
-      })
-    yield* operation.pipe(
-      Effect.mapError(error => new MaintenanceError({ message: error.message, cause: error }))
-    )
-  })
-
-const program = Effect.gen(function* () {
-  const command = process.argv[2] ?? 'setup'
-  if (command === 'setup') return yield* setup()
-  if (command === 'update') return yield* update()
-  if (command === 'rollback') return yield* rollback()
-  if (command === 'profile') return yield* profile()
-  if (command === 'upgrade') return yield* withoutArguments('upgrade', runUpgrade())
-  if (command === 'pi-update') return yield* withoutArguments('pi:update', updatePi())
-  return yield* new MaintenanceError({
-    message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, upgrade, or pi-update.`,
-  })
-}).pipe(
-  Effect.catch(error =>
-    Effect.sync(() => {
-      process.stderr.write(`${error.message}\n`)
-      process.exitCode = 1
-    })
-  ),
-  Effect.provide(NodeServices.layer)
+    yield* say(report)
+  },
+  Effect.mapError(error =>
+    error._tag === 'MaintenanceError' ? error : failed('Profile failed', error)
+  )
 )
 
-NodeRuntime.runMain(program, { disableErrorReporting: true })
+const withoutArguments = Effect.fnUntraced(function* (name: string, args: readonly string[]) {
+  if (args.length > 0)
+    return yield* new MaintenanceError({
+      message: `${name} takes no arguments, got: ${args.join(' ')}`,
+    })
+})
+
+const dispatch = Effect.fnUntraced(function* (command: string, args: readonly string[]) {
+  switch (command) {
+    case 'setup': {
+      const options = yield* parseOptions('setup', args)
+      return yield* setup(yield* single('--data-home', options('--data-home')))
+    }
+    case 'update': {
+      const options = yield* parseOptions('update', args)
+      const remote = yield* single('--remote', options('--remote'))
+      return yield* update({
+        remote: Option.getOrElse(remote, () => 'origin'),
+        branch: yield* single('--branch', options('--branch')),
+      })
+    }
+    case 'rollback': {
+      const options = yield* parseOptions('rollback', args)
+      return yield* rollback(yield* single('--ref', options('--ref')))
+    }
+    case 'profile':
+      return yield* profile(args)
+    case 'upgrade':
+      yield* withoutArguments('upgrade', args)
+      return yield* Effect.mapError(runUpgrade, reported)
+    case 'pi-update':
+      yield* withoutArguments('pi:update', args)
+      return yield* Effect.mapError(updatePi, reported)
+    default:
+      return yield* new MaintenanceError({
+        message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, upgrade, or pi-update.`,
+      })
+  }
+})
+
+const fail = (message: string) =>
+  Effect.sync(() => {
+    process.stderr.write(`${message}\n`)
+    process.exitCode = 1
+  })
+
+const [command = 'setup', ...commandArguments] = process.argv.slice(2)
+
+const program = dispatch(command, commandArguments).pipe(
+  Effect.catch(error => fail(error.message)),
+  Effect.catchDefect(defect => fail(Cause.pretty(Cause.die(defect)))),
+  Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))
+)
+
+NodeRuntime.runMain(program)

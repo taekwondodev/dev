@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { type Option, Schema } from 'effect'
 import {
   AbsolutePath,
   PublicationReferenceSchema,
@@ -20,14 +20,6 @@ import {
   WorkspaceReleaseResultSchema,
   WorkspaceSelectionSchema,
   WorkspaceViewSchema,
-  type WorkspaceAssessment,
-  type WorkspaceAuthorization,
-  type WorkspaceBinding,
-  type WorkspaceExecutionReport,
-  type WorkspaceHandoff,
-  type SweepReceipt,
-  type WorkspaceReleaseResult,
-  type WorkspaceView,
 } from './workspace-domain.ts'
 
 const RpcId = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
@@ -120,91 +112,67 @@ const WorkspaceRpcInputSchema = Schema.Union([
 export type WorkspaceRpcInput = typeof WorkspaceRpcInputSchema.Type
 export type WorkspaceRpcOperation = WorkspaceRpcInput['op']
 
-export interface WorkspaceRpcResults {
-  readonly attach: { readonly attachmentId: number; readonly binding: WorkspaceBinding }
-  readonly authorize: WorkspaceAuthorization
-  readonly select: WorkspaceHandoff
-  readonly 'report-execution': WorkspaceExecutionReport
-  readonly handoff: null
-  readonly 'close-attachment': null
-  readonly inspect: readonly WorkspaceView[]
-  readonly validate: null
-  readonly close: null
-  readonly check: readonly WorkspaceAssessment[]
-  readonly release: WorkspaceReleaseResult
-  readonly sweep: SweepReceipt
-  readonly 'record-target': null
-  readonly 'record-publication': null
+const RpcReplySchemas = {
+  attach: Schema.Struct({ attachmentId: AttachmentId, binding: WorkspaceBindingSchema }),
+  authorize: WorkspaceAuthorizationSchema,
+  select: WorkspaceHandoffSchema,
+  'report-execution': WorkspaceExecutionReportSchema,
+  handoff: Schema.Null,
+  'close-attachment': Schema.Null,
+  inspect: Schema.Array(WorkspaceViewSchema),
+  validate: Schema.Null,
+  close: Schema.Null,
+  check: Schema.Array(WorkspaceAssessmentSchema),
+  release: WorkspaceReleaseResultSchema,
+  sweep: SweepReceiptSchema,
+  'record-target': Schema.Null,
+  'record-publication': Schema.Null,
+} as const satisfies Record<WorkspaceRpcOperation, Schema.Top>
+
+export type WorkspaceRpcResults = {
+  readonly [K in WorkspaceRpcOperation]: (typeof RpcReplySchemas)[K]['Type']
+}
+export const decodeWorkspaceRpcReply: {
+  readonly [K in WorkspaceRpcOperation]: (value: unknown) => Option.Option<WorkspaceRpcResults[K]>
+} = {
+  attach: Schema.decodeUnknownOption(RpcReplySchemas.attach),
+  authorize: Schema.decodeUnknownOption(RpcReplySchemas.authorize),
+  select: Schema.decodeUnknownOption(RpcReplySchemas.select),
+  'report-execution': Schema.decodeUnknownOption(RpcReplySchemas['report-execution']),
+  handoff: Schema.decodeUnknownOption(RpcReplySchemas.handoff),
+  'close-attachment': Schema.decodeUnknownOption(RpcReplySchemas['close-attachment']),
+  inspect: Schema.decodeUnknownOption(RpcReplySchemas.inspect),
+  validate: Schema.decodeUnknownOption(RpcReplySchemas.validate),
+  close: Schema.decodeUnknownOption(RpcReplySchemas.close),
+  check: Schema.decodeUnknownOption(RpcReplySchemas.check),
+  release: Schema.decodeUnknownOption(RpcReplySchemas.release),
+  sweep: Schema.decodeUnknownOption(RpcReplySchemas.sweep),
+  'record-target': Schema.decodeUnknownOption(RpcReplySchemas['record-target']),
+  'record-publication': Schema.decodeUnknownOption(RpcReplySchemas['record-publication']),
 }
 
 const EnvelopeSchema = Schema.Struct({ id: RpcId, sentAt: Schema.Finite, request: Schema.Unknown })
-const SuccessSchema = Schema.Union([
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('attach'),
-    value: Schema.Struct({ attachmentId: AttachmentId, binding: WorkspaceBindingSchema }),
-  }),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('authorize'),
-    value: WorkspaceAuthorizationSchema,
-  }),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('select'),
-    value: WorkspaceHandoffSchema,
-  }),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('report-execution'),
-    value: WorkspaceExecutionReportSchema,
-  }),
-  ...(
-    [
-      'handoff',
-      'close-attachment',
-      'validate',
-      'close',
-      'record-target',
-      'record-publication',
-    ] as const
-  ).map(op =>
-    Schema.Struct({
-      id: RpcId,
-      ok: Schema.Literal(true),
-      op: Schema.Literal(op),
-      value: Schema.Null,
-    })
-  ),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('inspect'),
-    value: Schema.Array(WorkspaceViewSchema),
-  }),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('check'),
-    value: Schema.Array(WorkspaceAssessmentSchema),
-  }),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('release'),
-    value: WorkspaceReleaseResultSchema,
-  }),
-  Schema.Struct({
-    id: RpcId,
-    ok: Schema.Literal(true),
-    op: Schema.Literal('sweep'),
-    value: SweepReceiptSchema,
-  }),
-])
+const SuccessSchema = Schema.Struct({
+  id: RpcId,
+  ok: Schema.Literal(true),
+  op: Schema.Literals([
+    'attach',
+    'authorize',
+    'select',
+    'report-execution',
+    'handoff',
+    'close-attachment',
+    'inspect',
+    'validate',
+    'close',
+    'check',
+    'release',
+    'sweep',
+    'record-target',
+    'record-publication',
+  ]),
+  value: Schema.Unknown,
+})
 const FailureSchema = Schema.Struct({
   id: RpcId,
   ok: Schema.Literal(false),
