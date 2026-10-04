@@ -1,12 +1,12 @@
-import { ByteSize, Clock, Effect, FileSystem, Schema } from 'effect'
+import { ByteSize, Clock, Effect, FileSystem } from 'effect'
 import type * as Scope from 'effect/Scope'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open as openNative, readdir, rm } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import {
   WorkPersistenceError,
-  AttemptRecordSchema,
+  decodeAttemptRecord,
   isAttemptId,
   type AttemptId,
   type AttemptRecord,
@@ -95,6 +95,11 @@ const codeOf = (cause: unknown): string | undefined => {
   return typeof code === 'string' ? code : undefined
 }
 
+const RECORD_UNAVAILABLE = 'Work record is unavailable'
+
+export const isRecordUnavailable = (error: WorkPersistenceError): boolean =>
+  error.message === RECORD_UNAVAILABLE
+
 const persistenceMessage = (code: string): string => {
   if (code === 'unsupported-format') return 'Work store format is unsupported'
   if (code === 'corrupt-database') return 'Work store database is corrupt'
@@ -102,7 +107,7 @@ const persistenceMessage = (code: string): string => {
   if (code === 'unsafe-sqlite') return 'Installed SQLite runtime is unsafe for WAL storage'
   if (code === 'revision-conflict') return 'Work record revision conflict'
   if (code === 'owner-conflict') return 'Work record ownership conflict'
-  if (code === 'record-unavailable') return 'Work record is unavailable'
+  if (code === 'record-unavailable') return RECORD_UNAVAILABLE
   if (code === 'invalid-record') return 'Work record is invalid'
   if (code === 'session-mismatch') return 'Work store session mismatch'
   if (code === 'worker-closed') return 'Work store worker is closed'
@@ -119,27 +124,11 @@ const persistenceError = (cause: unknown): WorkPersistenceError => {
 }
 
 const safeRecord = (value: unknown): AttemptRecord => {
-  let record: AttemptRecord
   try {
-    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value, { onExcessProperty: 'error' })
+    return decodeAttemptRecord(value)
   } catch {
     throw new StorePreparationError('invalid-record')
   }
-  if (
-    record.id !== record.owner.attemptId ||
-    (record.worktreePath !== undefined &&
-      (!isAbsolute(record.worktreePath) ||
-        record.workspaceId === undefined ||
-        record.workspaceUseId === undefined)) ||
-    !Number.isSafeInteger(record.revision) ||
-    record.revision < 0 ||
-    !Number.isFinite(record.startedAt) ||
-    (record.completedAt !== undefined && !Number.isFinite(record.completedAt)) ||
-    ['completed', 'failed', 'cancelled'].includes(record.status) !==
-      (record.completedAt !== undefined)
-  )
-    throw new StorePreparationError('invalid-record')
-  return record
 }
 
 const optionalLstat = async (
@@ -613,7 +602,7 @@ class WorkStoreImpl implements WorkStore {
   save(record: AttemptRecord): Effect.Effect<void, WorkPersistenceError> {
     let snapshot: AttemptRecord
     try {
-      snapshot = safeRecord(structuredClone(record))
+      snapshot = safeRecord(record)
     } catch (cause) {
       return Effect.fail(persistenceError(cause))
     }

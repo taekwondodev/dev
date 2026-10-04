@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
@@ -20,7 +21,7 @@ import type {
   WorkOwnerService,
 } from '../../src/work-domain.ts'
 import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
-import { ownerEffect, waitFor } from '../workspace/workspace-check-support.ts'
+import { ownerEffect, waitFor, within } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
 
@@ -30,10 +31,36 @@ export const script = (steps: readonly unknown[]): string =>
 const runGit = (cwd: string, args: readonly string[]): string =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim()
 
-const TIMING = { attempts: 240, intervalMs: 250 }
+const WAIT_LIMIT_MS = 60_000
+const POLL_INTERVAL_MS = 50
+const TIMING = { attempts: WAIT_LIMIT_MS / POLL_INTERVAL_MS, intervalMs: POLL_INTERVAL_MS }
 
 export const settled = (record: AttemptView): boolean =>
   record.status !== 'running' && record.status !== 'waiting'
+
+const FAILURE_FACTS = [
+  'error',
+  'protocolError',
+  'cleanupError',
+  'observationError',
+  'persistenceError',
+] as const
+
+export function assertStatus<Expected extends AttemptView['status']>(
+  record: AttemptView,
+  expected: Expected
+): asserts record is Extract<AttemptView, { readonly status: Expected }> {
+  if (record.status === expected) return
+  const facts = FAILURE_FACTS.flatMap(fact =>
+    record[fact] === undefined ? [] : [`${fact}: ${record[fact]}`]
+  )
+  assert.fail(
+    [
+      `attempt ${record.id} of task ${record.owner.taskId} is ${record.status}, expected ${expected}`,
+      ...facts,
+    ].join('; ')
+  )
+}
 
 type Assignment = Pick<AgentStartRequest, 'taskId' | 'prompt'> & Partial<AgentStartRequest>
 
@@ -92,6 +119,7 @@ export const openWorkFixture = async (name: string) => {
     wrap: (base: WorkspaceAttachment) => WorkspaceAttachment = base => base
   ) => {
     const outcomes = new Map<string, AttemptView>()
+    const awaited = new Map<string, ((attempt: AttemptView) => void)[]>()
     const runtime = ManagedRuntime.make(
       makeWorkOwnerLayer({
         dataHome,
@@ -106,7 +134,11 @@ export const openWorkFixture = async (name: string) => {
           },
         },
         childEntry: new URL('./work-child-entry.ts', import.meta.url),
-        onOutcome: attempt => outcomes.set(attempt.id, attempt),
+        onOutcome: attempt => {
+          outcomes.set(attempt.id, attempt)
+          for (const deliver of awaited.get(attempt.id) ?? []) deliver(attempt)
+          awaited.delete(attempt.id)
+        },
       })
     )
     const call = <A>(use: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>) =>
@@ -131,12 +163,19 @@ export const openWorkFixture = async (name: string) => {
         record => record.owner.parent === parent && record.owner.taskId === taskId,
         done
       )
-    const outcome = (id: string) =>
-      waitFor(`the outcome of attempt ${id}`, () => outcomes.get(id), TIMING)
-    const delegate = (request: Assignment) =>
-      call(owner =>
-        owner.startAgent({ access: 'read-only', rule: 'default', model: CHILD_MODEL, ...request })
+    const outcome = (id: string): Promise<AttemptView> => {
+      const delivered = outcomes.get(id)
+      if (delivered !== undefined) return Promise.resolve(delivered)
+      return within(
+        new Promise<AttemptView>(deliver => {
+          awaited.set(id, [...(awaited.get(id) ?? []), deliver])
+        }),
+        WAIT_LIMIT_MS,
+        `the outcome of attempt ${id}`
       )
+    }
+    const delegate = (request: Assignment) =>
+      call(owner => owner.startAgent({ access: 'read-only', model: CHILD_MODEL, ...request }))
     const result = async (id: AttemptView['id']) =>
       (await call(owner => owner.readLog({ id, stream: 'result' }))).text ?? ''
     const run = async (request: Assignment) => {

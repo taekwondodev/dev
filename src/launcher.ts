@@ -254,10 +254,7 @@ const createRuntime = Effect.fnUntraced(function* (
   )
   const trustResolver: typeof PiProjectTrust = yield* fromPromise(
     'Cannot load Pi project-trust resolver',
-    async () =>
-      import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href) as Promise<
-        typeof PiProjectTrust
-      >
+    () => import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href)
   )
   const settingsManager = yield* fromSync('Cannot create trust-gated Pi settings', () =>
     api.SettingsManager.create(cwd, runtimeOptions.agentDir, { projectTrusted: false })
@@ -351,28 +348,27 @@ export const makeRuntimeFactory = (
 const disposeRuntime = (runtime: AgentRuntime): Effect.Effect<void, never> =>
   fromPromise('Cannot dispose Pi runtime', () => runtime.dispose()).pipe(Effect.orDie)
 
-const runInteractive = (
+const runInteractive = Effect.fnUntraced(function* (
   api: PiApi,
   runtime: AgentRuntime,
   host: WorkspaceHost
-): Effect.Effect<boolean, LauncherError> =>
-  Effect.gen(function* () {
-    const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
-    const quit = yield* Effect.acquireUseRelease(
-      Effect.sync(() => host.interceptQuit(true)),
-      () =>
-        Effect.raceFirst(
-          fromPromise('Pi interactive mode failed', () => mode.run()).pipe(Effect.as(false)),
-          Deferred.await(host.quitRequested).pipe(Effect.as(true))
-        ),
-      () => Effect.sync(() => host.interceptQuit(false))
-    )
-    if (quit)
-      yield* Effect.sync(() => {
-        mode.stop()
-      })
-    return quit
-  })
+): Effect.fn.Return<boolean, LauncherError> {
+  const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
+  const quit = yield* Effect.acquireUseRelease(
+    Effect.sync(() => host.interceptQuit(true)),
+    () =>
+      Effect.raceFirst(
+        fromPromise('Pi interactive mode failed', () => mode.run()).pipe(Effect.as(false)),
+        Deferred.await(host.quitRequested).pipe(Effect.as(true))
+      ),
+    () => Effect.sync(() => host.interceptQuit(false))
+  )
+  if (quit)
+    yield* Effect.sync(() => {
+      mode.stop()
+    })
+  return quit
+})
 
 type ReleaseExitCode = ReturnType<typeof releaseExitCode> | 130
 
@@ -488,7 +484,7 @@ const installSignalHandlers = (
   })
 }
 
-export interface LauncherDependencies {
+interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
   readonly coordination?: CoordinationOptions
 }
@@ -638,7 +634,6 @@ const run = Effect.fnUntraced(function* (
   const launchCwd = options.cwd
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const lease = yield* acquireRuntime(dataHome, dependencies.coordination)
-  const root = yield* gitRoot(launchCwd)
   const selection = yield* resolveSelection({
     cwd: launchCwd,
     dataHome,
@@ -701,7 +696,7 @@ const run = Effect.fnUntraced(function* (
     )
     const diagnosticResources = yield* composeResources({
       cwd: launchCwd,
-      gitRoot: root,
+      gitRoot: yield* gitRoot(launchCwd),
       profile: diagnosticProfile,
     }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
     const dispatch = yield* readDispatch.pipe(

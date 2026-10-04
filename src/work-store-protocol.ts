@@ -133,14 +133,14 @@ export const ListValueSchema = Schema.Struct({
 
 export type ListValue = typeof ListValueSchema.Type
 
-export const decodeRpcEnvelope = (value: unknown): RpcEnvelope =>
-  Schema.decodeUnknownSync(RpcEnvelopeSchema)(value)
+export const decodeRpcEnvelope: (value: unknown) => RpcEnvelope =
+  Schema.decodeUnknownSync(RpcEnvelopeSchema)
 
-export const decodeWorkerMessage = (value: unknown): WorkerMessage =>
-  Schema.decodeUnknownSync(WorkerMessageSchema)(value)
+export const decodeWorkerMessage: (value: unknown) => WorkerMessage =
+  Schema.decodeUnknownSync(WorkerMessageSchema)
 
-export const decodeWorkerData = (value: unknown): WorkerData =>
-  Schema.decodeUnknownSync(WorkerDataSchema)(value)
+export const decodeWorkerData: (value: unknown) => WorkerData =
+  Schema.decodeUnknownSync(WorkerDataSchema)
 
-export const decodeListValue = (value: unknown): ListValue =>
-  Schema.decodeUnknownSync(ListValueSchema)(value)
+export const decodeListValue: (value: unknown) => ListValue =
+  Schema.decodeUnknownSync(ListValueSchema)

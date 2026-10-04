@@ -1,6 +1,7 @@
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Effect, FileSystem, Schema } from 'effect'
+import { errorText } from './error-text.ts'
 
 export class ProfileError extends Schema.TaggedError<ProfileError>()('ProfileError', {
   message: Schema.String,
@@ -57,13 +58,10 @@ const appleSkillNames: readonly string[] = [
   'swiftdata-pro',
 ]
 
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)
-
 const toProfileError = (error: unknown, operation: string): ProfileError =>
   error instanceof ProfileError
     ? error
-    : new ProfileError({ message: `${operation}: ${messageOf(error)}`, cause: error })
+    : new ProfileError({ message: `${operation}: ${errorText(error)}`, cause: error })
 
 const definitions = homeDirectory.pipe(
   Effect.map(home => {
@@ -100,10 +98,10 @@ export function profileNames(): readonly string[] {
   return ['general', 'apple']
 }
 
-export const getProfile = (
+export const getProfile: (
   name: string
-): Effect.Effect<Profile, ProfileError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+) => Effect.Effect<Profile, ProfileError, FileSystem.FileSystem> = Effect.fnUntraced(
+  function* (name) {
     const fs = yield* FileSystem.FileSystem
     const values = yield* definitions
     let profile: (typeof values)[keyof typeof values] | undefined
@@ -126,7 +124,10 @@ export const getProfile = (
       })
     const guidance = yield* fs.readFileString(profile.soulPath)
     return { ...profile, guidance }
-  }).pipe(Effect.mapError(error => toProfileError(error, `Cannot load profile "${name}"`)))
+  },
+  (effect, name) =>
+    Effect.mapError(effect, error => toProfileError(error, `Cannot load profile "${name}"`))
+)
 
 const projectSkillPathCandidates = (
   cwd: string,
@@ -153,10 +154,10 @@ const existingPaths = (
     fs.exists(path).pipe(Effect.map(exists => (exists ? path : undefined)))
   ).pipe(Effect.map(values => values.filter((path): path is string => path !== undefined)))
 
-export const composeResources = (
+export const composeResources: (
   options: ComposeResourcesOptions
-): Effect.Effect<ComposedResources, ProfileError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+) => Effect.Effect<ComposedResources, ProfileError, FileSystem.FileSystem> = Effect.fnUntraced(
+  function* (options) {
     const fs = yield* FileSystem.FileSystem
     const projectCandidates = projectSkillPathCandidates(options.cwd, options.gitRoot)
     const projectPaths = yield* existingPaths(fs, projectCandidates)
@@ -181,7 +182,9 @@ export const composeResources = (
       guidance: options.profile.guidance,
       soulPath: options.profile.soulPath,
     }
-  }).pipe(Effect.mapError(error => toProfileError(error, 'Cannot compose profile resources')))
+  },
+  Effect.mapError(error => toProfileError(error, 'Cannot compose profile resources'))
+)
 
 export function resourceSummary(resources: ComposedResources): string {
   return resources.provenance.map(({ source, path }) => `${source}: ${path}`).join('\n')

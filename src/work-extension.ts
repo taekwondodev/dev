@@ -19,6 +19,7 @@ import {
   LeadWorkInputSchema,
   outcomeAttempts,
   outcomeMessage,
+  trackOutcomeAttempts,
   type WorkInput,
 } from './work-protocol.ts'
 import type {
@@ -123,6 +124,15 @@ export const createWorkExtension = ({
   let idleDeliveryReady = false
   let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
   let deliveryScheduled = false
+  let statusScheduled:
+    | { readonly context: Pi.ExtensionContext; readonly owner: OwnerState | undefined }
+    | undefined
+  let receipts:
+    | {
+        readonly sessions: WorkSession['sessionManager']
+        readonly received: () => ReadonlySet<AttemptId>
+      }
+    | undefined
   const pending = new Map<AttemptId, PendingOutcome>()
   const rebindRefusals = new Set<string>()
 
@@ -245,19 +255,26 @@ export const createWorkExtension = ({
   const scheduleStatus = (): void => {
     const current = context
     const currentOwner = sessionOwner
-    if (current !== undefined)
-      setImmediate(() => {
-        if (context === current && sessionOwner === currentOwner)
-          Effect.runFork(
-            updateStatus(current).pipe(
-              Effect.catchCause(cause => Effect.sync(() => notifyError(Cause.squash(cause))))
-            )
+    if (
+      current === undefined ||
+      (statusScheduled?.context === current && statusScheduled.owner === currentOwner)
+    )
+      return
+    const scheduled = { context: current, owner: currentOwner }
+    statusScheduled = scheduled
+    setImmediate(() => {
+      if (statusScheduled === scheduled) statusScheduled = undefined
+      if (context === current && sessionOwner === currentOwner)
+        Effect.runFork(
+          updateStatus(current).pipe(
+            Effect.catchCause(cause => Effect.sync(() => notifyError(Cause.squash(cause))))
           )
-      })
+        )
+    })
   }
 
   const notifyError = (cause: unknown): void => {
-    const message = cause instanceof Error ? cause.message : String(cause)
+    const message = errorText(cause)
     if (context?.hasUI) context.ui.notify(`Background work: ${message}`, 'error')
   }
 
@@ -287,8 +304,11 @@ export const createWorkExtension = ({
 
   const acknowledge = (scope: DeliveryScope): void => {
     if (!isCurrent(scope) || pending.size === 0) return
-    const receipts = outcomeAttempts(scope.session.sessionManager.getBranch())
-    for (const id of receipts) pending.delete(id)
+    const sessions = scope.session.sessionManager
+    if (receipts?.sessions !== sessions)
+      receipts = { sessions, received: trackOutcomeAttempts(sessions) }
+    const received = receipts.received()
+    for (const id of pending.keys()) if (received.has(id)) pending.delete(id)
   }
 
   const isReserved = (scope: DeliveryScope, reservation: PublicationReservation): boolean =>
@@ -305,7 +325,7 @@ export const createWorkExtension = ({
     cause: unknown
   ): Promise<void> => {
     acknowledge(scope)
-    const message = cause instanceof Error ? cause.message : String(cause)
+    const message = errorText(cause)
 
     const failed = reserve(
       reservations.filter(item => isReserved(scope, item)),

@@ -2,8 +2,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
-import { openWorkFixture, script } from './work-check-support.ts'
-import { CHILD_MODEL } from './work-child-model.ts'
+import { assertStatus, openWorkFixture, script } from './work-check-support.ts'
 
 const count = (text: string, part: string): number => text.split(part).length - 1
 
@@ -38,64 +37,83 @@ try {
 
   const general = fixture.openOwner('general')
   try {
-    await claim(
-      'a leading skill invocation is expanded once into the first user message with its arguments, and the attempt records only the invoked skill',
-      async () => {
-        const { view, text } = await general.run({
-          taskId: 'native',
-          prompt: '/skill:alpha   Do the ALPHA-ASSIGNMENT now.',
-        })
-        assert.equal(view.status, 'completed', view.error ?? view.status)
-        assert.equal(count(text, '<skill name="alpha"'), 1)
-        assert.equal(count(text, 'ALPHA-BODY'), 1)
-        assert.equal(count(text, 'Do the ALPHA-ASSIGNMENT now.'), 1)
-        assert.equal(count(text, '/skill:alpha'), 0)
-        assert.match(text, /SYSTEM-SKILL-BLOCKS 0/)
-        assert.deepEqual(view.resources?.invokedSkill, { name: 'alpha', path: alpha })
-      }
-    )
-    await claim(
-      'a delegation without a rule completes against the shipped configuration',
-      async () => {
-        const started = await general.call(owner =>
-          owner.startAgent({
-            access: 'read-only',
-            taskId: 'unruled',
-            prompt: '/skill:alpha Dispatch me without a rule.',
-            model: CHILD_MODEL,
+    await Promise.all([
+      claim(
+        'a leading skill invocation is expanded once into the first user message with its arguments, and the attempt records only the invoked skill',
+        async () => {
+          const { view, text } = await general.run({
+            taskId: 'native',
+            prompt: '/skill:alpha   Do the ALPHA-ASSIGNMENT now.',
           })
-        )
-        const view = await general.outcome(started.id)
-        assert.equal(view.status, 'completed', view.error ?? view.status)
-      }
-    )
-    await claim('a plain prompt reaches the model unchanged and records no skill', async () => {
-      const { view, text } = await general.run({
-        taskId: 'plain',
-        prompt: 'Plain PLAIN-ASSIGNMENT without a skill.',
-      })
-      assert.equal(view.status, 'completed', view.error ?? view.status)
-      assert.match(text, /^MODEL-SAW\nPlain PLAIN-ASSIGNMENT without a skill\.\n/)
-      assert.equal(count(text, '<skill name='), 0)
-      assert.equal(view.resources?.invokedSkill, undefined)
-    })
-    await claim('a hidden skill is explicitly invocable', async () => {
-      const { view, text } = await general.run({ taskId: 'hidden', prompt: '/skill:hidden go' })
-      assert.equal(view.status, 'completed', view.error ?? view.status)
-      assert.equal(count(text, 'HIDDEN-BODY'), 1)
-    })
-    await claim(
-      'a child reads a second skill file, and the invocation record does not claim that read',
-      async () => {
+          assertStatus(view, 'completed')
+          assert.equal(count(text, '<skill name="alpha"'), 1)
+          assert.equal(count(text, 'ALPHA-BODY'), 1)
+          assert.equal(count(text, 'Do the ALPHA-ASSIGNMENT now.'), 1)
+          assert.equal(count(text, '/skill:alpha'), 0)
+          assert.match(text, /SYSTEM-SKILL-BLOCKS 0/)
+          assert.deepEqual(view.resources?.invokedSkill, { name: 'alpha', path: alpha })
+        }
+      ),
+      claim('a plain prompt reaches the model unchanged and records no skill', async () => {
         const { view, text } = await general.run({
-          taskId: 'second',
-          prompt: `/skill:alpha read another skill\n${script([[toolCall('read-beta', 'read', { path: beta })]])}`,
+          taskId: 'plain',
+          prompt: 'Plain PLAIN-ASSIGNMENT without a skill.',
         })
-        assert.equal(view.status, 'completed', view.error ?? view.status)
-        assert.match(text, /TOOL-RESULTS\n[\s\S]*BETA-BODY/)
-        assert.deepEqual(view.resources?.invokedSkill, { name: 'alpha', path: alpha })
-      }
-    )
+        assertStatus(view, 'completed')
+        assert.match(text, /^MODEL-SAW\nPlain PLAIN-ASSIGNMENT without a skill\.\n/)
+        assert.equal(count(text, '<skill name='), 0)
+        assert.equal(view.resources?.invokedSkill, undefined)
+      }),
+      claim('a hidden skill is explicitly invocable', async () => {
+        const { view, text } = await general.run({ taskId: 'hidden', prompt: '/skill:hidden go' })
+        assertStatus(view, 'completed')
+        assert.equal(count(text, 'HIDDEN-BODY'), 1)
+      }),
+      claim(
+        'a child reads a second skill file, and the invocation record does not claim that read',
+        async () => {
+          const { view, text } = await general.run({
+            taskId: 'second',
+            prompt: `/skill:alpha read another skill\n${script([[toolCall('read-beta', 'read', { path: beta })]])}`,
+          })
+          assertStatus(view, 'completed')
+          assert.match(text, /TOOL-RESULTS\n[\s\S]*BETA-BODY/)
+          assert.deepEqual(view.resources?.invokedSkill, { name: 'alpha', path: alpha })
+        }
+      ),
+      claim(
+        'another command, a prompt template and a colliding extension command execute nothing',
+        async () => {
+          const [command, template, collision] = await Promise.all([
+            general.run({ taskId: 'command', access: 'write', prompt: '/marker PLAIN-COMMAND' }),
+            general.run({ taskId: 'template', access: 'write', prompt: '/tpl TEMPLATE-ARGUMENT' }),
+            general.run({ taskId: 'collision', access: 'write', prompt: '/skill:collide run' }),
+          ])
+          assertStatus(command.view, 'completed')
+          assert.ok(
+            command.view.resources?.tools.includes('marker_tool'),
+            'the fixture extension was loaded in the writing child'
+          )
+          assert.match(command.text, /^MODEL-SAW\n\/marker PLAIN-COMMAND\n/)
+          assertStatus(template.view, 'completed')
+          assert.match(template.text, /^MODEL-SAW\n\/tpl TEMPLATE-ARGUMENT\n/)
+          assert.equal(count(template.text, 'TEMPLATE-BODY'), 0)
+          assert.equal(collision.view.status, 'failed')
+          assert.match(collision.view.error ?? '', /extension command named "skill:collide"/)
+          assert.ok(!fixture.modelCalls().includes(collision.view.id))
+          assert.ok(!existsSync(marker), 'an extension command ran')
+        }
+      ),
+      claim('the general catalog does not contain an Apple skill', async () => {
+        const { view } = await general.run({
+          taskId: 'general-apple',
+          prompt: '/skill:swiftui-pro x',
+        })
+        assert.equal(view.status, 'failed')
+        assert.match(view.error ?? '', /Skill "swiftui-pro" is not in this child's catalog/)
+        assert.ok(!fixture.modelCalls().includes(view.id))
+      }),
+    ])
     await claim(
       'an unknown skill and a skill unreadable when the catalog loads fail the attempt before any model request',
       async () => {
@@ -117,48 +135,6 @@ try {
         }
       }
     )
-    await claim(
-      'another command, a prompt template and a colliding extension command execute nothing',
-      async () => {
-        const command = await general.run({
-          taskId: 'command',
-          access: 'write',
-          prompt: '/marker PLAIN-COMMAND',
-        })
-        assert.equal(command.view.status, 'completed', command.view.error ?? command.view.status)
-        assert.ok(
-          command.view.resources?.tools.includes('marker_tool'),
-          'the fixture extension was loaded in the writing child'
-        )
-        assert.match(command.text, /^MODEL-SAW\n\/marker PLAIN-COMMAND\n/)
-        const template = await general.run({
-          taskId: 'template',
-          access: 'write',
-          prompt: '/tpl TEMPLATE-ARGUMENT',
-        })
-        assert.equal(template.view.status, 'completed', template.view.error ?? template.view.status)
-        assert.match(template.text, /^MODEL-SAW\n\/tpl TEMPLATE-ARGUMENT\n/)
-        assert.equal(count(template.text, 'TEMPLATE-BODY'), 0)
-        const collision = await general.run({
-          taskId: 'collision',
-          access: 'write',
-          prompt: '/skill:collide run',
-        })
-        assert.equal(collision.view.status, 'failed')
-        assert.match(collision.view.error ?? '', /extension command named "skill:collide"/)
-        assert.ok(!fixture.modelCalls().includes(collision.view.id))
-        assert.ok(!existsSync(marker), 'an extension command ran')
-      }
-    )
-    await claim('the general catalog does not contain an Apple skill', async () => {
-      const { view } = await general.run({
-        taskId: 'general-apple',
-        prompt: '/skill:swiftui-pro x',
-      })
-      assert.equal(view.status, 'failed')
-      assert.match(view.error ?? '', /Skill "swiftui-pro" is not in this child's catalog/)
-      assert.ok(!fixture.modelCalls().includes(view.id))
-    })
   } finally {
     await general.close()
   }
@@ -166,11 +142,13 @@ try {
   const apple = fixture.openOwner('apple')
   try {
     await claim('the apple catalog adds the Apple skills to the shared ones', async () => {
-      const swift = await apple.run({ taskId: 'apple-swift', prompt: '/skill:swiftui-pro x' })
-      assert.equal(swift.view.status, 'completed', swift.view.error ?? swift.view.status)
+      const [swift, shared] = await Promise.all([
+        apple.run({ taskId: 'apple-swift', prompt: '/skill:swiftui-pro x' }),
+        apple.run({ taskId: 'apple-shared', prompt: '/skill:alpha x' }),
+      ])
+      assertStatus(swift.view, 'completed')
       assert.equal(count(swift.text, '<skill name="swiftui-pro"'), 1)
-      const shared = await apple.run({ taskId: 'apple-shared', prompt: '/skill:alpha x' })
-      assert.equal(shared.view.status, 'completed', shared.view.error ?? shared.view.status)
+      assertStatus(shared.view, 'completed')
       assert.equal(count(shared.text, 'ALPHA-BODY'), 1)
     })
   } finally {

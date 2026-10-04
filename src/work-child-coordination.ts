@@ -11,6 +11,7 @@ import {
   type CoordinationMessage,
 } from './work-protocol.ts'
 import { errorText } from './error-text.ts'
+import { awaitReply } from './work-child-ipc.ts'
 
 type Reply = Extract<ControllerWorkMessage, { readonly requestId: string }>
 type Pending = Extract<ControllerWorkMessage, { readonly type: 'work-pending' }>
@@ -50,27 +51,22 @@ const exchange = (
 ): Effect.Effect<Reply, WorkError> =>
   Effect.callback<Reply, WorkError>(resume => {
     const requestId = randomUUID()
-    const cleanup = (): void => {
-      process.removeListener('message', onMessage)
-      process.removeListener('disconnect', onDisconnect)
-    }
     const settle = (result: Effect.Effect<Reply, WorkError>): void => {
       cleanup()
       resume(result)
     }
-    const onDisconnect = (): void =>
-      settle(Effect.fail(unavailable('Work controller disconnected')))
-    const onMessage = (raw: unknown): void => {
-      const reply = decodeControllerMessage(raw)
-      if (
-        Option.isSome(reply) &&
-        reply.value.type !== 'work-wake' &&
-        reply.value.requestId === requestId
-      )
-        settle(Effect.succeed(reply.value))
-    }
-    process.on('message', onMessage)
-    process.on('disconnect', onDisconnect)
+    const cleanup = awaitReply(process, requestId, {
+      disconnected: () => settle(Effect.fail(unavailable('Work controller disconnected'))),
+      reply: raw => {
+        const reply = decodeControllerMessage(raw)
+        if (
+          Option.isSome(reply) &&
+          reply.value.type !== 'work-wake' &&
+          reply.value.requestId === requestId
+        )
+          settle(Effect.succeed(reply.value))
+      },
+    })
     post({ ...request, requestId }, failure => {
       if (failure !== undefined) settle(Effect.fail(failure))
     })

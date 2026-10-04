@@ -10,14 +10,14 @@ import {
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 import { setTimeout as delay } from 'node:timers/promises'
-import { Schema } from 'effect'
+import { Option, Schema } from 'effect'
 import {
-  AttemptRecordSchema,
   OwnerIdentitySchema,
   asAttemptId,
+  decodeAttemptRecord,
   isAttemptId,
   type AttemptId,
   type AttemptRecord,
@@ -131,7 +131,7 @@ const walResetSafe = (value: string): boolean => {
 
 const nodeVersionIsSupported = (): boolean => {
   const version = parseVersion(process.versions.node)
-  return version !== undefined && compareVersion(version, [22, 23, 2]) >= 0
+  return version !== undefined && compareVersion(version, [26, 0, 0]) >= 0
 }
 
 const stringField = (row: SqlRow, key: string): string => {
@@ -144,84 +144,52 @@ const numberField = (row: SqlRow, key: string): number => {
   return typeof value === 'number' && Number.isFinite(value) ? value : fail('corrupt-database')
 }
 
-const nullableNumberField = (row: SqlRow, key: string): number | null => {
-  const value = row[key]
-  if (value === null) return null
-  return typeof value === 'number' && Number.isFinite(value) ? value : fail('corrupt-database')
-}
+const isOwnerIdentity = Schema.is(OwnerIdentitySchema)
 
-const attemptRow = (row: SqlRow): AttemptRow => {
-  const id = stringField(row, 'id')
-  const sessionId = stringField(row, 'session_id')
-  const taskId = stringField(row, 'task_id')
-  const generation = stringField(row, 'generation')
-  const ownerAttemptId = stringField(row, 'owner_attempt_id')
-  const kind = stringField(row, 'kind')
-  const controllerPid = numberField(row, 'controller_pid')
-  const startedAt = numberField(row, 'started_at')
-  const completedAt = nullableNumberField(row, 'completed_at')
-  const revision = numberField(row, 'revision')
-  const payload = stringField(row, 'payload')
-  if (
-    !Number.isSafeInteger(controllerPid) ||
-    !Number.isSafeInteger(revision) ||
-    revision < 0 ||
-    !Number.isFinite(startedAt) ||
-    (completedAt !== null && !Number.isFinite(completedAt))
+const AttemptRowSchema = Schema.Struct({
+  id: Schema.String,
+  session_id: Schema.String,
+  task_id: Schema.String,
+  generation: Schema.String,
+  owner_attempt_id: Schema.String,
+  kind: Schema.String,
+  controller_pid: Schema.Int,
+  started_at: Schema.Finite,
+  completed_at: Schema.NullOr(Schema.Finite),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  payload: Schema.String,
+}).check(
+  Schema.makeFilter(row =>
+    isOwnerIdentity({
+      sessionId: row.session_id,
+      taskId: row.task_id,
+      attemptId: row.owner_attempt_id,
+      generation: row.generation,
+    })
   )
-    fail('corrupt-database')
-  if (
-    !Schema.is(OwnerIdentitySchema)(
-      independentOwnerOf({
-        id,
-        sessionId,
-        taskId,
-        generation,
-        ownerAttemptId,
-        kind,
-        controllerPid,
-        startedAt,
-        completedAt,
-        revision,
-        payload,
-      })
-    )
-  )
-    fail('corrupt-database')
+)
+const decodeAttemptRow = Schema.decodeUnknownOption(AttemptRowSchema)
+
+const attemptRow = (value: SqlRow): AttemptRow => {
+  const decoded = decodeAttemptRow(value)
+  if (Option.isNone(decoded)) return fail('corrupt-database')
+  const row = decoded.value
   return {
-    id,
-    sessionId,
-    taskId,
-    generation,
-    ownerAttemptId,
-    kind,
-    controllerPid,
-    startedAt,
-    completedAt,
-    revision,
-    payload,
+    id: row.id,
+    sessionId: row.session_id,
+    taskId: row.task_id,
+    generation: row.generation,
+    ownerAttemptId: row.owner_attempt_id,
+    kind: row.kind,
+    controllerPid: row.controller_pid,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    revision: row.revision,
+    payload: row.payload,
   }
 }
 
 const attemptRows = (rows: readonly SqlRow[]): AttemptRow[] => rows.map(attemptRow)
-
-const validRecord = (record: AttemptRecord): AttemptRecord => {
-  if (
-    record.id !== record.owner.attemptId ||
-    (record.worktreePath !== undefined &&
-      (!isAbsolute(record.worktreePath) ||
-        record.workspaceId === undefined ||
-        record.workspaceUseId === undefined)) ||
-    !Number.isSafeInteger(record.revision) ||
-    record.revision < 0 ||
-    !Number.isFinite(record.startedAt) ||
-    (record.completedAt !== undefined && !Number.isFinite(record.completedAt)) ||
-    ['completed', 'failed', 'cancelled'].includes(record.status) !==
-      (record.completedAt !== undefined)
-  )
-    fail('invalid-record')
-  return record
-}
 
 const payloadOf = (record: AttemptRecord): string => {
   try {
@@ -232,18 +200,8 @@ const payloadOf = (record: AttemptRecord): string => {
   }
 }
 
-const independentOwnerOf = (row: AttemptRow): unknown => ({
-  sessionId: row.sessionId,
-  taskId: row.taskId,
-  attemptId: row.ownerAttemptId,
-  generation: row.generation,
-})
-
 const safelyAttributable = (row: AttemptRow, sessionId: WorkerData['sessionId']): boolean =>
-  row.sessionId === sessionId &&
-  isAttemptId(row.id) &&
-  row.ownerAttemptId === row.id &&
-  Schema.is(OwnerIdentitySchema)(independentOwnerOf(row))
+  row.sessionId === sessionId && isAttemptId(row.id) && row.ownerAttemptId === row.id
 
 const sameNullable = (left: number | undefined, right: number | null): boolean =>
   (left ?? null) === right
@@ -269,12 +227,7 @@ const decodePayload = (row: AttemptRow): AttemptRecord => {
   }
   let record: AttemptRecord
   try {
-    record = Schema.decodeUnknownSync(AttemptRecordSchema)(value, { onExcessProperty: 'error' })
-  } catch {
-    return fail('corrupt-record')
-  }
-  try {
-    validRecord(record)
+    record = decodeAttemptRecord(value)
   } catch {
     return fail('corrupt-record')
   }
@@ -282,7 +235,7 @@ const decodePayload = (row: AttemptRow): AttemptRecord => {
   return record
 }
 
-const metadataOf = (record: AttemptRecord) => ({
+const metadataOf = (record: AttemptRecord, payload: string) => ({
   id: record.id,
   sessionId: record.owner.sessionId,
   taskId: record.owner.taskId,
@@ -293,7 +246,7 @@ const metadataOf = (record: AttemptRecord) => ({
   startedAt: record.startedAt,
   completedAt: record.completedAt ?? null,
   revision: record.revision,
-  payload: payloadOf(record),
+  payload,
 })
 
 const changed = (value: number | bigint): boolean => Number(value) === 1
@@ -306,7 +259,6 @@ const requireOwnedRecord = (
   record: AttemptRecord,
   sessionId: WorkerData['sessionId']
 ): AttemptRecord => {
-  validRecord(record)
   if (record.owner.sessionId !== sessionId) fail('record-unavailable')
   return record
 }
@@ -538,12 +490,48 @@ const initializeDatabase = async (
   }
 }
 
+const prepareStatements = (db: DatabaseSync) => ({
+  selectById: db.prepare('SELECT * FROM attempts WHERE id = ?'),
+  retentionStats: db.prepare(
+    'SELECT COUNT(*) AS count, MIN(completed_at) AS oldest FROM attempts WHERE completed_at IS NOT NULL AND retention_blocked = 0'
+  ),
+  retentionCandidates: db.prepare(
+    'SELECT * FROM attempts WHERE completed_at IS NOT NULL AND retention_blocked = 0 ORDER BY completed_at DESC, id ASC'
+  ),
+  blockRetention: db.prepare('UPDATE attempts SET retention_blocked = 1 WHERE id = ?'),
+  deleteCompleted: db.prepare('DELETE FROM attempts WHERE id = ? AND completed_at = ?'),
+  queueCleanup: db.prepare('INSERT OR IGNORE INTO cleanup(id) VALUES (?)'),
+  cleanupIds: db.prepare('SELECT id FROM cleanup ORDER BY id ASC'),
+  listBySession: db.prepare(
+    'SELECT * FROM attempts WHERE session_id = ? ORDER BY started_at DESC, id ASC'
+  ),
+  insert: db.prepare(
+    `INSERT INTO attempts(
+      id, session_id, task_id, generation, owner_attempt_id, kind,
+      controller_pid, started_at, completed_at, revision, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ),
+  update: db.prepare(
+    `UPDATE attempts SET
+      session_id = ?, task_id = ?, generation = ?, owner_attempt_id = ?, kind = ?,
+      controller_pid = ?, started_at = ?, completed_at = ?, revision = ?, payload = ?
+    WHERE id = ? AND session_id = ? AND revision = ?`
+  ),
+  acknowledge: db.prepare(
+    'DELETE FROM cleanup WHERE id = ? AND NOT EXISTS (SELECT 1 FROM attempts WHERE id = ?)'
+  ),
+})
+
 let dbConnection: DatabaseSync | undefined
+let preparedStatements: ReturnType<typeof prepareStatements> | undefined
+let cleanupMayRemain = true
 
 const connection = (): DatabaseSync => dbConnection ?? fail('worker-closed')
+const statements = (): ReturnType<typeof prepareStatements> =>
+  preparedStatements ?? fail('worker-closed')
 
 const selectById = (id: AttemptId): AttemptRow | undefined => {
-  const row = connection().prepare('SELECT * FROM attempts WHERE id = ?').get(id)
+  const row = statements().selectById.get(id)
   return row === undefined ? undefined : attemptRow(row)
 }
 
@@ -564,29 +552,20 @@ const transaction = <A>(body: () => A): A => {
 }
 
 const prune = (now: number): void => {
-  const stats = connection()
-    .prepare(
-      'SELECT COUNT(*) AS count, MIN(completed_at) AS oldest FROM attempts WHERE completed_at IS NOT NULL AND retention_blocked = 0'
-    )
-    .get()
+  const prepared = statements()
+  const stats = prepared.retentionStats.get()
   const count = numberField(stats ?? {}, 'count')
   const oldestValue = stats?.oldest
   const oldest = oldestValue === null ? null : numberField(stats ?? {}, 'oldest')
   const cutoff = now - RETENTION_MS
   if (count <= RETENTION_COUNT && (oldest === null || oldest >= cutoff)) return
-  const candidates = attemptRows(
-    connection()
-      .prepare(
-        'SELECT * FROM attempts WHERE completed_at IS NOT NULL AND retention_blocked = 0 ORDER BY completed_at DESC, id ASC'
-      )
-      .all()
-  )
+  const candidates = attemptRows(prepared.retentionCandidates.all())
   const valid: { readonly row: AttemptRow; readonly record: AttemptRecord }[] = []
   for (const row of candidates) {
     try {
       valid.push({ row, record: decodePayload(row) })
     } catch {
-      connection().prepare('UPDATE attempts SET retention_blocked = 1 WHERE id = ?').run(row.id)
+      prepared.blockRetention.run(row.id)
       continue
     }
   }
@@ -595,36 +574,35 @@ const prune = (now: number): void => {
     const { completedAt, id } = row
     if (completedAt === null) continue
     if (index >= RETENTION_COUNT || completedAt < cutoff) {
-      const deleted = connection()
-        .prepare('DELETE FROM attempts WHERE id = ? AND completed_at = ?')
-        .run(id, completedAt)
-      if (changed(deleted.changes))
-        connection().prepare('INSERT OR IGNORE INTO cleanup(id) VALUES (?)').run(id)
+      const deleted = prepared.deleteCompleted.run(id, completedAt)
+      if (changed(deleted.changes)) {
+        prepared.queueCleanup.run(id)
+        cleanupMayRemain = true
+      }
     }
   }
 }
 
-const cleanupIds = (): AttemptId[] =>
-  connection()
-    .prepare('SELECT id FROM cleanup ORDER BY id ASC')
-    .all()
+const cleanupIds = (): AttemptId[] => {
+  if (!cleanupMayRemain) return []
+  const ids = statements()
+    .cleanupIds.all()
     .flatMap(row => {
       const { id } = row
       return typeof id === 'string' && isAttemptId(id)
         ? [asAttemptId(id)]
         : fail('corrupt-database')
     })
+  cleanupMayRemain = ids.length > 0
+  return ids
+}
 
 const list = (request: Extract<RpcRequest, { readonly op: 'list' }>): ListValue =>
   transaction(() => {
     prune(request.now)
     const records: AttemptRecord[] = []
     const unavailable: { id: AttemptId; error: string }[] = []
-    const rows = attemptRows(
-      connection()
-        .prepare('SELECT * FROM attempts WHERE session_id = ? ORDER BY started_at DESC, id ASC')
-        .all(request.sessionId)
-    )
+    const rows = attemptRows(statements().listBySession.all(request.sessionId))
     for (const row of rows) {
       try {
         records.push(decodePayload(row))
@@ -654,27 +632,20 @@ const create = (request: Extract<RpcRequest, { readonly op: 'create' }>): null =
   transaction(() => {
     const record = requireOwnedRecord(request.record, request.sessionId)
     if (record.revision !== 0) fail('revision-conflict')
-    const metadata = metadataOf(record)
-    const inserted = connection()
-      .prepare(
-        `INSERT INTO attempts(
-          id, session_id, task_id, generation, owner_attempt_id, kind,
-          controller_pid, started_at, completed_at, revision, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        metadata.id,
-        metadata.sessionId,
-        metadata.taskId,
-        metadata.generation,
-        metadata.ownerAttemptId,
-        metadata.kind,
-        metadata.controllerPid,
-        metadata.startedAt,
-        metadata.completedAt,
-        metadata.revision,
-        metadata.payload
-      )
+    const metadata = metadataOf(record, payloadOf(record))
+    const inserted = statements().insert.run(
+      metadata.id,
+      metadata.sessionId,
+      metadata.taskId,
+      metadata.generation,
+      metadata.ownerAttemptId,
+      metadata.kind,
+      metadata.controllerPid,
+      metadata.startedAt,
+      metadata.completedAt,
+      metadata.revision,
+      metadata.payload
+    )
     if (!changed(inserted.changes)) fail('owner-conflict')
     prune(request.now)
     return null
@@ -704,29 +675,22 @@ const save = (request: Extract<RpcRequest, { readonly op: 'save' }>): null =>
     }
 
     if (record.revision < existingRow.revision) fail('revision-conflict')
-    const metadata = metadataOf(record)
-    const updated = connection()
-      .prepare(
-        `UPDATE attempts SET
-          session_id = ?, task_id = ?, generation = ?, owner_attempt_id = ?, kind = ?,
-          controller_pid = ?, started_at = ?, completed_at = ?, revision = ?, payload = ?
-        WHERE id = ? AND session_id = ? AND revision = ?`
-      )
-      .run(
-        metadata.sessionId,
-        metadata.taskId,
-        metadata.generation,
-        metadata.ownerAttemptId,
-        metadata.kind,
-        metadata.controllerPid,
-        metadata.startedAt,
-        metadata.completedAt,
-        metadata.revision,
-        metadata.payload,
-        metadata.id,
-        existingRow.sessionId,
-        existingRow.revision
-      )
+    const metadata = metadataOf(record, payload)
+    const updated = statements().update.run(
+      metadata.sessionId,
+      metadata.taskId,
+      metadata.generation,
+      metadata.ownerAttemptId,
+      metadata.kind,
+      metadata.controllerPid,
+      metadata.startedAt,
+      metadata.completedAt,
+      metadata.revision,
+      metadata.payload,
+      metadata.id,
+      existingRow.sessionId,
+      existingRow.revision
+    )
     if (!changed(updated.changes)) fail('revision-conflict')
     prune(request.now)
     return null
@@ -734,9 +698,7 @@ const save = (request: Extract<RpcRequest, { readonly op: 'save' }>): null =>
 
 const acknowledge = (request: Extract<RpcRequest, { readonly op: 'ack' }>): null =>
   transaction(() => {
-    const statement = connection().prepare(
-      'DELETE FROM cleanup WHERE id = ? AND NOT EXISTS (SELECT 1 FROM attempts WHERE id = ?)'
-    )
+    const statement = statements().acknowledge
     for (const id of request.attemptIds) statement.run(id, id)
     return null
   })
@@ -772,6 +734,7 @@ try {
   worker = { data, sqliteVersion: initialized.sqliteVersion }
 
   dbConnection = initialized.database
+  preparedStatements = prepareStatements(initialized.database)
   port.postMessage({
     type: 'ready',
     sqliteVersion: initialized.sqliteVersion,
