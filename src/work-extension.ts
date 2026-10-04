@@ -460,15 +460,17 @@ export const createWorkExtension = ({
     const sending = reserve(items, 'sending')
     return {
       sending,
-      refusal: scope.session
-        .sendCustomMessage(leadOutcomeMessage(items.map(({ item }) => item.attempt)), {
-          triggerTurn: canReactivate,
-          deliverAs: 'followUp',
-        })
-        .then(
-          () => undefined,
-          (cause: unknown) => cause
-        ),
+      refusal: new Promise<void>(resolve => {
+        resolve(
+          scope.session.sendCustomMessage(
+            leadOutcomeMessage(items.map(({ item }) => item.attempt)),
+            { triggerTurn: canReactivate, deliverAs: 'followUp' }
+          )
+        )
+      }).then(
+        () => undefined,
+        (cause: unknown) => cause
+      ),
     }
   }
 

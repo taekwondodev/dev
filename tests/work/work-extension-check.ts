@@ -232,7 +232,7 @@ try {
   )
 
   await claim(
-    'a notification that throws while a delivery failure is reported does not stop idle delivery: a later outcome still arrives at idle',
+    'a send that throws is recorded as a failed delivery, and a notification that throws while reporting it does not stop idle delivery: a later outcome still arrives at idle',
     async () => {
       let sendFailures = 1
       let notifyFailures = 1
@@ -255,7 +255,8 @@ try {
           const first = gate()
           const second = gate()
           const { run, next, started } = await launch(lead, 0, [first.command, second.command])
-          const [, later] = started
+          const [failed, later] = started
+          assert.ok(failed)
           assert.ok(later)
           next.reply(text('launched'))
           await run
@@ -264,13 +265,15 @@ try {
           await lead.wait('the delivery failure report to be attempted', () =>
             notifyAttempts > 0 ? true : undefined
           )
-          assert.deepEqual(lead.notices, [])
+          const shown = await lead.wait('the failure to be recorded on the attempt', async () =>
+            (await listing(lead)).records.find(record => record.deliveryError !== undefined)
+          )
+          assert.equal(shown.id, failed.id)
+          assert.equal(shown.deliveryError, 'conversation transport down')
           second.open()
-          const continued = await lead.request(2)
-          assert.ok(seen(continued).includes(later.id), seen(continued))
-          continued.reply(text('outcome read'))
-          await lead.idle()
-          assert.ok(delivered(lead).includes(later.id))
+          await lead.wait('the later outcome to arrive at idle', () =>
+            delivered(lead).includes(later.id) ? true : undefined
+          )
         }
       )
     }
