@@ -373,7 +373,11 @@ try {
         checkoutPath,
         checkoutConversation
       )
-      assert.equal(checkoutResult.outcome, 'review-required', checkoutResult.message)
+      assert.equal(
+        checkoutResult.outcome,
+        'review-required',
+        checkoutResult.message ?? checkoutResult.outcome
+      )
 
       const commonPath = join(sandbox, 'replaced-common-checkout')
       const commonGitDir = join(sandbox, 'replaced-common-git')
@@ -385,7 +389,11 @@ try {
       })
       replaceDirectoryAtSamePath(commonGitDir)
       const commonResult = await authorizeRead(commonAuthority, commonPath, commonConversation)
-      assert.equal(commonResult.outcome, 'review-required', commonResult.message)
+      assert.equal(
+        commonResult.outcome,
+        'review-required',
+        commonResult.message ?? commonResult.outcome
+      )
 
       const sourcePath = join(sandbox, 'replaced-admin-source')
       const adminPath = join(sandbox, 'replaced-admin-worktree')
@@ -399,7 +407,11 @@ try {
       })
       replaceDirectoryAtSamePath(adminDirectory)
       const adminResult = await authorizeRead(adminAuthority, adminPath, adminConversation)
-      assert.equal(adminResult.outcome, 'review-required', adminResult.message)
+      assert.equal(
+        adminResult.outcome,
+        'review-required',
+        adminResult.message ?? adminResult.outcome
+      )
     }
   )
 
@@ -488,12 +500,9 @@ try {
 
   const concurrentRepo = join(sandbox, 'concurrent-repo')
   const pausedCommit = initRepository(concurrentRepo, 'file.txt', 'fixture\n')
-  await claim(
-    'simultaneous cross-process repository provisioning converges on one identity',
-    async () => {
-      const provisionProbe = (name: string) => {
-        const conversationValue = conversation(name)
-        return runChild(`
+  const provisionProbe = (name: string) => {
+    const conversationValue = conversation(name)
+    return runChild(`
         import { openLifecycle } from ${JSON.stringify(moduleUrl)}
         const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
         try {
@@ -508,14 +517,17 @@ try {
           console.log(JSON.stringify({ outcome: 'blocked' }))
         }
       `).then(
-          value =>
-            JSON.parse(value) as {
-              outcome: 'ready' | 'blocked'
-              repositoryId?: string
-              workspaceId?: string
-            }
-        )
-      }
+      value =>
+        JSON.parse(value) as {
+          outcome: 'ready' | 'blocked'
+          repositoryId?: string
+          workspaceId?: string
+        }
+    )
+  }
+  await claim(
+    'simultaneous cross-process repository provisioning converges on one identity',
+    async () => {
       const provisioned = await Promise.all([
         provisionProbe('provision-one'),
         provisionProbe('provision-two'),
@@ -594,6 +606,13 @@ try {
   )
 
   const isolatedAuthorityPath = join(sandbox, 'isolated-authority')
+  const isolatedExecution = (attemptId: string) => ({
+    sessionId: 'isolated-session',
+    taskKey: 'isolated-task',
+    attemptId,
+    generation: attemptId,
+    logs: join(sandbox, `${attemptId}.log`),
+  })
   await claim(
     'a process use settles only when never released or after an observed empty family; a started use closed by its host is recorded unknown',
     async () => {
@@ -606,13 +625,6 @@ try {
       const isolatedRead = ready(await isolatedAttachment.authorize({ kind: 'read' }))
       assert.notEqual(isolatedRead.repositoryId, firstGrant.repositoryId)
       const isolatedWrite = ready(await isolatedAttachment.authorize({ kind: 'write' }))
-      const isolatedExecution = (attemptId: string) => ({
-        sessionId: 'isolated-session',
-        taskKey: 'isolated-task',
-        attemptId,
-        generation: attemptId,
-        logs: join(sandbox, `${attemptId}.log`),
-      })
       const failedSpawn = ready(
         await isolatedAttachment.authorize({
           kind: 'write',

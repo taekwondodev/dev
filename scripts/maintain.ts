@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Array as Arr, Effect, FileSystem, Schema } from 'effect'
-import type { ChildProcessSpawner } from 'effect/unstable/process'
+import type { ChildProcessSpawner } from 'effect/process'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'

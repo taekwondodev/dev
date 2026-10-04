@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Array as Arr, Config, ConfigProvider, Effect, FileSystem, Option, Schema } from 'effect'
-import { FetchHttpClient, HttpClient, HttpClientResponse } from 'effect/unstable/http'
+import { FetchHttpClient, HttpClient, HttpClientResponse } from 'effect/http'
 import { errorText } from '../src/error-text.ts'
 import { resolvePiPackage } from '../src/pi-runtime.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'

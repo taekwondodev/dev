@@ -93,16 +93,16 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
   signal: AbortSignal | undefined
 ) {
   const wakes = yield* Queue.sliding<void, WorkError>(1)
+  const end = (message: string) => (): void => {
+    Queue.failCauseUnsafe(wakes, Cause.fail(unavailable(message)))
+  }
+  const onMessage = (raw: unknown): void => {
+    const message = decodeControllerMessage(raw)
+    if (Option.isSome(message) && message.value.type === 'work-wake')
+      Queue.offerUnsafe(wakes, undefined)
+  }
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      const end = (message: string) => (): void => {
-        Queue.failCauseUnsafe(wakes, Cause.fail(unavailable(message)))
-      }
-      const onMessage = (raw: unknown): void => {
-        const message = decodeControllerMessage(raw)
-        if (Option.isSome(message) && message.value.type === 'work-wake')
-          Queue.offerUnsafe(wakes, undefined)
-      }
       const onDisconnect = end('Work controller disconnected')
       const onAbort = end('Child run cancelled')
       process.on('message', onMessage)

@@ -13,7 +13,8 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "diagnosticSeverity": { "floatingEffect": "error" }
+        "diagnosticSeverity": { "floatingEffect": "error" },
+        "allowedUnstableApis": ["effect/http", "effect/process"]
       }
     ]
   },

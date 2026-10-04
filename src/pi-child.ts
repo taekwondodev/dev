@@ -681,13 +681,13 @@ function registerAbortSignal(
   signal: AbortSignal | undefined
 ): Effect.Effect<void | (() => void), never> {
   if (!signal) return Effect.void
+  const onAbort = () => {
+    try {
+      state.abortPromise ??= session.abort()
+      void state.abortPromise.catch(() => {})
+    } catch {}
+  }
   return Effect.sync(() => {
-    const onAbort = () => {
-      try {
-        state.abortPromise ??= session.abort()
-        void state.abortPromise.catch(() => {})
-      } catch {}
-    }
     signal.addEventListener('abort', onAbort, { once: true })
     if (signal.aborted) onAbort()
     return () => signal.removeEventListener('abort', onAbort)
@@ -1099,7 +1099,7 @@ export function serveChild(options: ChildServeOptions = {}): void {
       })
       .then(exitCode => {
         closing = true
-        if (process.connected) process.disconnect()
+        if (process.connected) process.disconnect?.()
         process.exitCode = exitCode ?? 1
       })
   })

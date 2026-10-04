@@ -1065,17 +1065,17 @@ try {
     }
   )
 
+  const allocate = async (name: string) => {
+    const owner = await reserve(userCheckout(name))
+    writeFileSync(join(owner.write.checkout, 'pending.txt'), 'keep the pre-existing checkout\n')
+    const managed = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
+    await owner.owner.close()
+    await lifecycle.recordTarget(owner.taskId, localMain)
+    return { owner, managed }
+  }
   await claim(
     'a sweep that uses its time budget stops before the next task: it defers every remaining task with a receipt row and touches none of it, and the next sweep attempts the deferred task',
     async () => {
-      const allocate = async (name: string) => {
-        const owner = await reserve(userCheckout(name))
-        writeFileSync(join(owner.write.checkout, 'pending.txt'), 'keep the pre-existing checkout\n')
-        const managed = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
-        await owner.owner.close()
-        await lifecycle.recordTarget(owner.taskId, localMain)
-        return { owner, managed }
-      }
       const first = await allocate('budget-a')
       const pending = join(first.managed.checkout, 'pending.txt')
       writeFileSync(pending, 'unfinished until the second worktree exists\n')

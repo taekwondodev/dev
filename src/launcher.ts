@@ -457,24 +457,24 @@ const installSignalHandlers = (
   runtime: AgentRuntime,
   release: Effect.Effect<void, never>,
   host: WorkspaceHost
-): Effect.Effect<SignalHandlers> =>
-  Effect.sync(() => {
-    const terminate = (exitCode: number): void => {
-      host.interceptQuit(false)
-      Effect.runFork(
-        reported(disposeRuntime(runtime)).pipe(
-          Effect.andThen(reported(release)),
-          Effect.andThen(
-            Effect.sync(() => {
-              process.exitCode = exitCode
-              process.exit(exitCode)
-            })
-          )
+): Effect.Effect<SignalHandlers> => {
+  const terminate = (exitCode: number): void => {
+    host.interceptQuit(false)
+    Effect.runFork(
+      reported(disposeRuntime(runtime)).pipe(
+        Effect.andThen(reported(release)),
+        Effect.andThen(
+          Effect.sync(() => {
+            process.exitCode = exitCode
+            process.exit(exitCode)
+          })
         )
       )
-    }
-    const onInterrupt = (): void => terminate(130)
-    const onTerminate = (): void => terminate(1)
+    )
+  }
+  const onInterrupt = (): void => terminate(130)
+  const onTerminate = (): void => terminate(1)
+  return Effect.sync(() => {
     process.once('SIGTERM', onTerminate)
     process.once('SIGINT', onInterrupt)
     process.once('SIGHUP', onTerminate)
@@ -486,6 +486,7 @@ const installSignalHandlers = (
       },
     }
   })
+}
 
 export interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>

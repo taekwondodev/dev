@@ -147,7 +147,7 @@ try {
             ]
           ),
         })
-        assert.equal(writer.view.status, 'completed', writer.view.error)
+        assert.equal(writer.view.status, 'completed', writer.view.error ?? writer.view.status)
         for (const path of paths) {
           assert.ok(existsSync(path), writer.text)
           assert.equal(readFileSync(path, 'utf8'), 'two')
@@ -168,7 +168,7 @@ try {
             ]
           ),
         })
-        assert.equal(reader.view.status, 'completed', reader.view.error)
+        assert.equal(reader.view.status, 'completed', reader.view.error ?? reader.view.status)
         assert.equal(reader.view.resources?.tools.includes('write'), false)
         assert.equal(reader.view.resources?.tools.includes('edit'), false)
         for (const path of paths) assert.equal(readFileSync(path, 'utf8'), 'two')
@@ -227,7 +227,7 @@ try {
           work('d', delegation('once', 'Leaf once')),
         ]),
       })
-      assert.equal(view.status, 'completed', view.error)
+      assert.equal(view.status, 'completed', view.error ?? view.status)
       assert.equal(count(text, 'Leaf outcomes.'), 1)
       const offered = replies(fixture.dataHome, view.id).filter(
         reply => reply.type === 'work-pending' && reply.outcomes.length > 0
@@ -246,7 +246,7 @@ try {
           taskId: 'unauthorized',
           prompt: `Unauthorized child\n${smuggle('plain', 'smuggled-by-child')}\n${script([slow(1500)])}`,
         })
-        assert.equal(plain.view.status, 'completed', plain.view.error)
+        assert.equal(plain.view.status, 'completed', plain.view.error ?? plain.view.status)
         assert.ok(!plain.view.resources?.tools.includes('work'))
         const coordinator = await owner.run({
           taskId: 'with-leaf',
@@ -261,10 +261,14 @@ try {
             ),
           ]),
         })
-        assert.equal(coordinator.view.status, 'completed', coordinator.view.error)
+        assert.equal(
+          coordinator.view.status,
+          'completed',
+          coordinator.view.error ?? coordinator.view.status
+        )
         assert.ok(coordinator.view.resources?.tools.includes('work'))
         const inner = await owner.leaf(coordinator.view.id, 'inner', settled)
-        assert.equal(inner.status, 'completed', inner.error)
+        assert.equal(inner.status, 'completed', inner.error ?? inner.status)
         assert.ok(!inner.resources?.tools.includes('work'))
         assert.match(refusal(fixture.dataHome, plain.view.id, 'plain'), /not a running coordinator/)
         assert.match(refusal(fixture.dataHome, inner.id, 'leaf'), /not a running coordinator/)
@@ -301,7 +305,7 @@ try {
             ],
           ])}`,
         })
-        assert.equal(view.status, 'completed', view.error)
+        assert.equal(view.status, 'completed', view.error ?? view.status)
         assert.equal(count(text, 'A read-only coordinator can start only read-only leaves'), 1)
         assert.equal(count(text, 'Attempt is not a leaf of this coordinator'), 1)
         assert.equal(
@@ -441,7 +445,7 @@ try {
           coordinate: true,
           prompt: `Silent phase\n${script([[work('d', delegation('heard', 'Heard leaf'))], []])}`,
         })
-        assert.equal(view.status, 'completed', view.error)
+        assert.equal(view.status, 'completed', view.error ?? view.status)
         assert.equal(count(text, 'Leaf outcomes.'), 1)
         assert.equal((await owner.leaf(view.id, 'heard', settled)).status, 'completed')
       }
@@ -506,7 +510,7 @@ try {
         )
         assert.equal(stopped.status, 'cancelled')
         const sparedView = await owner.outcome(spared.id)
-        assert.equal(sparedView.status, 'completed', sparedView.error)
+        assert.equal(sparedView.status, 'completed', sparedView.error ?? sparedView.status)
         assert.equal((await owner.leaf(spared.id, 'spared-leaf', settled)).status, 'completed')
         const after = (await owner.records()).find(record => record.id === doomed.id)
         assert.deepEqual(
@@ -558,14 +562,14 @@ try {
             say('waiting for the leaves'),
           ])}`,
         })
-        assert.equal(view.status, 'completed', view.error)
+        assert.equal(view.status, 'completed', view.error ?? view.status)
         assert.equal(count(text, 'Leaf outcomes.') >= 1, true)
         const worktree = view.worktree?.path
         assert.ok(worktree !== undefined && worktree !== fixture.repository)
         const reviewer = await owner.leaf(view.id, 'reviewer', settled)
         const rewriter = await owner.leaf(view.id, 'rewriter', settled)
-        assert.equal(reviewer.status, 'completed', reviewer.error)
-        assert.equal(rewriter.status, 'completed', rewriter.error)
+        assert.equal(reviewer.status, 'completed', reviewer.error ?? reviewer.status)
+        assert.equal(rewriter.status, 'completed', rewriter.error ?? rewriter.status)
         assert.equal(reviewer.cwd, worktree)
         const review = await owner.result(reviewer.id)
         assert.equal(count(review, 'MODIFIED-BY-COORDINATOR'), 1)
@@ -761,7 +765,7 @@ try {
         )
         await sleep(1000)
         const cancelled = await owner.call(actions => actions.cancel(started.id))
-        assert.equal(cancelled.status, 'cancelled', cancelled.cleanupError)
+        assert.equal(cancelled.status, 'cancelled', cancelled.cleanupError ?? cancelled.status)
         const use = (await uncertain.lifecycle.inspect({ cwd: uncertain.repository }))
           .flatMap(workspace => workspace.uses)
           .find(candidate => candidate.execution?.attemptId === started.id)
@@ -780,7 +784,7 @@ try {
       'a gate release deferred after settlement is recorded on the attempt and leaves its status unchanged',
       async () => {
         const { view } = await owner.run({ taskId: 'gate-warning', prompt: 'Gate warning child' })
-        assert.equal(view.status, 'completed', view.error)
+        assert.equal(view.status, 'completed', view.error ?? view.status)
         const record = (await owner.records()).find(candidate => candidate.id === view.id)
         assert.equal(record?.gateReleaseWarning, GATE_WARNING)
         const listed = await owner.call(actions => executeWork(actions, { action: 'list' }))
@@ -798,7 +802,7 @@ try {
         })
         const leaf = await owner.leaf(view.id, 'lost-leaf', settled)
         assert.equal(leaf.status, 'unknown')
-        assert.equal(view.status, 'completed', view.error)
+        assert.equal(view.status, 'completed', view.error ?? view.status)
         assert.equal(count(text, '"status":"unknown"'), 1)
       }
     )

@@ -34,7 +34,7 @@ try {
           candidate => candidate.id === started.id,
           settled
         )
-        assert.equal(record.status, 'cancelled', record.protocolError)
+        assert.equal(record.status, 'cancelled', record.protocolError ?? record.status)
         assert.equal(record.protocolError, undefined)
         const file = cancelLog(fixture.dataHome, started.id)
         const signals = existsSync(file)

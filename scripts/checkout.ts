@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Clock, Effect, Schema, Stream } from 'effect'
-import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process'
+import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import { errorText } from '../src/error-text.ts'
 
 export class CommandError extends Schema.TaggedError<CommandError>()('CommandError', {

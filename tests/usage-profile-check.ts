@@ -2124,6 +2124,7 @@ try {
     }
   )
 
+  const expected = (outcome: string) => DEV_TEXTS.filter(text => text[3] === outcome).length
   await claim(
     "dev's refusal, validation and notice texts still read as the profiler expects in their src/ owners, and each refusal classifies as its outcome",
     async () => {
@@ -2131,7 +2132,6 @@ try {
         assert.match(readFileSync(join(checkout, file), 'utf8'), templateOf(fragments), file)
       assert.equal((await profile(devHome))._tag, 'Success')
       const [summary] = report(devHome).periods
-      const expected = (outcome: string) => DEV_TEXTS.filter(text => text[3] === outcome).length
       assert.deepEqual(summary.tools.outcomes, {
         returned: 0,
         invocation: expected('invocation'),

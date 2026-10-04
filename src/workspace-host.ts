@@ -331,6 +331,10 @@ const workspaceConversation = (
     return Effect.succeed({ sessionId: manager.getSessionId(), sessionFile, dataHome })
   })
 
+const withdraw = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
+  source
+    .handoff(handoff, () => Effect.succeed('cancelled' as const))
+    .pipe(Effect.catchIf(isWithdrawn, () => Effect.void))
 export const makeWorkspaceHost = Effect.fnUntraced(function* (
   options: WorkspaceHostOptions
 ): Effect.fn.Return<WorkspaceHost, never, Scope.Scope> {
@@ -577,10 +581,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
   }
 
-  const withdraw = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
-    source
-      .handoff(handoff, () => Effect.succeed('cancelled' as const))
-      .pipe(Effect.catchIf(isWithdrawn, () => Effect.void))
   const withdrawOrReport = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
     withdraw(source, handoff).pipe(
       Effect.catch(error =>
