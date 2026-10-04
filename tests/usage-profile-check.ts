@@ -1836,6 +1836,7 @@ try {
   await claim(
     'maintenance commands refuse an unknown option, a stray argument and a flag without its value before the command acts',
     () => {
+      const before = repositoryState()
       for (const [args, reason] of [
         [['update', '--bogus', 'x'], /^Unknown update option "--bogus"/],
         [['update', 'stray'], /^Unknown update option "stray"/],
@@ -1847,6 +1848,7 @@ try {
         assert.match(refused.stderr, reason)
         assert.equal(refused.stdout, '', args.join(' '))
       }
+      assert.deepEqual(repositoryState(), before)
     }
   )
 
