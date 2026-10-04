@@ -1,17 +1,6 @@
 import { join, resolve } from 'node:path'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
-import {
-  Array as Arr,
-  Cause,
-  Config,
-  Effect,
-  FileSystem,
-  Layer,
-  Option,
-  Schema,
-  Stdio,
-} from 'effect'
-import { CliConfig, type CliError, Command, Flag, GlobalFlag } from 'effect/cli'
+import { Array as Arr, Cause, Config, Effect, FileSystem, Layer, Option, Schema } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { errorText } from '../src/error-text.ts'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
@@ -170,24 +159,50 @@ const rollback = Effect.fnUntraced(
   )
 )
 
-const onlyOnce = Effect.fnUntraced(function* (flag: string, values: readonly string[]) {
+const commandOptions = {
+  setup: { flags: ['--data-home'], usage: '--data-home PATH' },
+  update: { flags: ['--remote', '--branch'], usage: '--remote NAME or --branch NAME' },
+  rollback: { flags: ['--ref'], usage: '--ref REF' },
+  profile: {
+    flags: ['--data-home', '--period', '--export'],
+    usage: '--data-home PATH, --period START..END (repeatable) or --export DIR',
+  },
+} as const
+
+type OptionCommand = keyof typeof commandOptions
+
+const parseOptions = Effect.fnUntraced(function* (command: OptionCommand, args: readonly string[]) {
+  const { flags, usage } = commandOptions[command]
+  const values = new Map<string, string[]>()
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index] ?? ''
+    if (!flags.some(known => known === flag))
+      return yield* new MaintenanceError({
+        message: `Unknown ${command} option "${flag}". Use ${usage}.`,
+      })
+    const value = args[index + 1]
+    if (value === undefined)
+      return yield* new MaintenanceError({ message: `${flag} requires a value` })
+    values.set(flag, [...(values.get(flag) ?? []), value])
+  }
+  return (flag: string): readonly string[] => values.get(flag) ?? []
+})
+
+const single = Effect.fnUntraced(function* (flag: string, values: readonly string[]) {
   if (values.length > 1)
-    return yield* new MaintenanceError({ message: `--${flag} may be given only once` })
+    return yield* new MaintenanceError({ message: `${flag} may be given only once` })
   return Arr.head(values)
 })
 
 const profile = Effect.fnUntraced(
-  function* (options: {
-    readonly dataHome: readonly string[]
-    readonly exportTo: readonly string[]
-    readonly periods: readonly string[]
-  }) {
-    const requestedDataHome = yield* onlyOnce('data-home', options.dataHome)
-    const exportTo = yield* onlyOnce('export', options.exportTo)
+  function* (args: readonly string[]) {
+    const options = yield* parseOptions('profile', args)
+    const requestedDataHome = yield* single('--data-home', options('--data-home'))
+    const exportTo = yield* single('--export', options('--export'))
     const dataHome = Option.isSome(requestedDataHome)
       ? resolve(requestedDataHome.value)
       : yield* defaultDataHome
-    const parsed = yield* Effect.forEach(options.periods, parsePeriod)
+    const parsed = yield* Effect.forEach(options('--period'), parsePeriod)
     const periods = Arr.isReadonlyArrayNonEmpty(parsed) ? parsed : Arr.of(ALL_TIME)
     const [period, ...more] = periods
     if (Option.isSome(exportTo) && more.length > 0)
@@ -207,100 +222,45 @@ const profile = Effect.fnUntraced(
   )
 )
 
-const dataHomeFlag = Flag.String('data-home').pipe(
-  Flag.withMetavar('PATH'),
-  Flag.withDescription('Private data home; defaults to DEV_DATA_HOME or the checkout .dev')
-)
+const withoutArguments = Effect.fnUntraced(function* (name: string, args: readonly string[]) {
+  if (args.length > 0)
+    return yield* new MaintenanceError({
+      message: `${name} takes no arguments, got: ${args.join(' ')}`,
+    })
+})
 
-const noDataHome = Option.none<string>()
-
-const commandOptions = {
-  setup: '--data-home PATH',
-  update: '--remote NAME or --branch NAME',
-  rollback: '--ref REF',
-  profile: '--data-home PATH, --period START..END (repeatable) or --export DIR',
-} as const
-
-const takesNoArguments = { upgrade: 'upgrade', 'pi-update': 'pi:update' } as const
-
-const maintain = Command.make('maintain', {}, () => setup(noDataHome)).pipe(
-  Command.withDescription('Maintain the dev installation; without a command, runs setup'),
-  Command.withSubcommands([
-    Command.make('setup', { dataHome: Flag.optional(dataHomeFlag) }, ({ dataHome }) =>
-      setup(dataHome)
-    ).pipe(Command.withDescription('Record the dependencies dev runs on')),
-    Command.make(
-      'update',
-      {
-        remote: Flag.String('remote').pipe(Flag.withMetavar('NAME'), Flag.withDefault('origin')),
-        branch: Flag.String('branch').pipe(Flag.withMetavar('NAME'), Flag.optional),
-      },
-      update
-    ).pipe(Command.withDescription('Fast-forward the dev checkout')),
-    Command.make(
-      'rollback',
-      { ref: Flag.String('ref').pipe(Flag.withMetavar('REF'), Flag.optional) },
-      ({ ref }) => rollback(ref)
-    ).pipe(Command.withDescription('Detach the dev checkout at an explicit revision')),
-    Command.make(
-      'profile',
-      {
-        dataHome: dataHomeFlag.pipe(Flag.atLeast(0)),
-        periods: Flag.String('period').pipe(
-          Flag.withMetavar('START..END'),
-          Flag.withDescription('UTC dates, START inclusive and END exclusive; repeatable'),
-          Flag.atLeast(0)
-        ),
-        exportTo: Flag.String('export').pipe(
-          Flag.withMetavar('DIR'),
-          Flag.withDescription('Write publishable aggregates for one period'),
-          Flag.atLeast(0)
-        ),
-      },
-      profile
-    ).pipe(Command.withDescription('Report recorded usage')),
-    Command.make('upgrade', {}, () => Effect.mapError(runUpgrade, reported)).pipe(
-      Command.withDescription('Upgrade Pi and dependencies in a verified pull request')
-    ),
-    Command.make('pi-update', {}, () => Effect.mapError(updatePi, reported)).pipe(
-      Command.withDescription('Activate the verified Pi pinned in package.json')
-    ),
-  ])
-)
-
-const unknownCommand = (command: string): string =>
-  `Unknown maintenance command "${command}". Use setup, update, rollback, profile, upgrade, or pi-update.`
-
-const unknownOption = (command: string | undefined, option: string): string => {
-  if (command === undefined || !(command in commandOptions)) return unknownCommand(option)
-  return `Unknown ${command} option "${option}". Use ${commandOptions[command as keyof typeof commandOptions]}.`
-}
-
-const usageError = (
-  path: readonly string[],
-  args: readonly string[],
-  error: CliError.NonShowHelpErrors
-): string => {
-  const [, command] = path
-  if (command !== undefined && command in takesNoArguments)
-    return `${takesNoArguments[command as keyof typeof takesNoArguments]} takes no arguments, got: ${args.slice(1).join(' ')}`
-  switch (error._tag) {
-    case 'UnknownSubcommand':
-      return unknownCommand(error.subcommand)
-    case 'UnrecognizedOption':
-      return unknownOption((error.command ?? path)[1], error.option)
-    case 'UnexpectedArgument':
-      return unknownOption(command, error.arguments[0] ?? '')
-    case 'InvalidValue':
-      return error.kind === 'flag' && error.value === ''
-        ? `--${error.option} requires a value`
-        : error.message
+const dispatch = Effect.fnUntraced(function* (command: string, args: readonly string[]) {
+  switch (command) {
+    case 'setup': {
+      const options = yield* parseOptions('setup', args)
+      return yield* setup(yield* single('--data-home', options('--data-home')))
+    }
+    case 'update': {
+      const options = yield* parseOptions('update', args)
+      const remote = yield* single('--remote', options('--remote'))
+      return yield* update({
+        remote: Option.getOrElse(remote, () => 'origin'),
+        branch: yield* single('--branch', options('--branch')),
+      })
+    }
+    case 'rollback': {
+      const options = yield* parseOptions('rollback', args)
+      return yield* rollback(yield* single('--ref', options('--ref')))
+    }
+    case 'profile':
+      return yield* profile(args)
+    case 'upgrade':
+      yield* withoutArguments('upgrade', args)
+      return yield* Effect.mapError(runUpgrade, reported)
+    case 'pi-update':
+      yield* withoutArguments('pi:update', args)
+      return yield* Effect.mapError(updatePi, reported)
     default:
-      return error.message
+      return yield* new MaintenanceError({
+        message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, upgrade, or pi-update.`,
+      })
   }
-}
-
-const runMaintain = Command.runWith(maintain, { version: '', renderErrors: false })
+})
 
 const fail = (message: string) =>
   Effect.sync(() => {
@@ -308,28 +268,12 @@ const fail = (message: string) =>
     process.exitCode = 1
   })
 
-const program = Effect.gen(function* () {
-  const stdio = yield* Stdio.Stdio
-  const args = yield* stdio.args
-  yield* runMaintain(args).pipe(
-    Effect.catchTag('ShowHelp', help =>
-      Arr.match(help.errors, {
-        onEmpty: () => Effect.void,
-        onNonEmpty: ([first]) =>
-          Effect.fail(new MaintenanceError({ message: usageError(help.commandPath, args, first) })),
-      })
-    )
-  )
-}).pipe(
+const [command = 'setup', ...commandArguments] = process.argv.slice(2)
+
+const program = dispatch(command, commandArguments).pipe(
   Effect.catch(error => fail(error.message)),
   Effect.catchDefect(defect => fail(Cause.pretty(Cause.die(defect)))),
-  Effect.provide(
-    Layer.mergeAll(
-      NodeServices.layer,
-      FetchHttpClient.layer,
-      CliConfig.layer({ builtIns: [GlobalFlag.Help] })
-    )
-  )
+  Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))
 )
 
 NodeRuntime.runMain(program)
