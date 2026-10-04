@@ -657,17 +657,15 @@ const auditCandidate = (candidate: PiInstallation) =>
   run('npm', ['audit', '--json', '--omit=dev'], { cwd: candidate.release, exitCodes: [0, 1] }).pipe(
     Effect.flatMap(({ stdout }) =>
       Schema.decodeEffect(AuditReport)(stdout).pipe(
-        Effect.map(
-          (report): AuditSummary => ({
-            kind: 'report',
-            bySeverity: severities.flatMap(severity => {
-              const packages = Object.entries(report.vulnerabilities)
-                .filter(([, vulnerability]) => vulnerability.severity === severity)
-                .map(([name]) => name)
-              return packages.length > 0 ? [{ severity, packages }] : []
-            }),
-          })
-        ),
+        Effect.map((report): AuditSummary => ({
+          kind: 'report',
+          bySeverity: severities.flatMap(severity => {
+            const packages = Object.entries(report.vulnerabilities)
+              .filter(([, vulnerability]) => vulnerability.severity === severity)
+              .map(([name]) => name)
+            return packages.length > 0 ? [{ severity, packages }] : []
+          }),
+        })),
         Effect.catch(decodeError =>
           Schema.decodeEffect(AuditFailure)(stdout).pipe(
             Effect.map(npmError =>

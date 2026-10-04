@@ -396,44 +396,38 @@ const messagePayload = (value: unknown, at: number): Payload | undefined => {
   switch (role) {
     case 'assistant':
       return Option.getOrUndefined(
-        Option.map(
-          decodeAssistant(value),
-          ({ message }): Payload => ({
-            kind: 'request',
-            usage: usageOf(message.usage),
-            model: modelName(message.provider, message.model),
-            effort: message.thinkingLevel,
-            stopReason: message.stopReason,
-            latencyMs: at - message.timestamp,
-            calls: message.content.flatMap(block =>
-              Option.match(decodeToolCall(block), {
-                onNone: () => [],
-                onSome: call => [
-                  { id: call.id, name: call.name, input: inputOf(call.name, call.arguments) },
-                ],
-              })
-            ),
-          })
-        )
+        Option.map(decodeAssistant(value), ({ message }): Payload => ({
+          kind: 'request',
+          usage: usageOf(message.usage),
+          model: modelName(message.provider, message.model),
+          effort: message.thinkingLevel,
+          stopReason: message.stopReason,
+          latencyMs: at - message.timestamp,
+          calls: message.content.flatMap(block =>
+            Option.match(decodeToolCall(block), {
+              onNone: () => [],
+              onSome: call => [
+                { id: call.id, name: call.name, input: inputOf(call.name, call.arguments) },
+              ],
+            })
+          ),
+        }))
       )
     case 'toolResult':
       return resultPayload(value)
     case 'user':
       return Option.getOrUndefined(
-        Option.map(
-          decodeUser(value),
-          ({ message }): Payload => ({
-            kind: 'user',
-            skill: SKILL_BLOCK.exec(firstText(message.content) ?? '')?.[1],
-          })
-        )
+        Option.map(decodeUser(value), ({ message }): Payload => ({
+          kind: 'user',
+          skill: SKILL_BLOCK.exec(firstText(message.content) ?? '')?.[1],
+        }))
       )
     case 'system':
       return Option.getOrUndefined(
-        Option.map(
-          decodeSystem(value),
-          ({ message }): Payload => ({ kind: 'system', cwd: patchCwd(message) })
-        )
+        Option.map(decodeSystem(value), ({ message }): Payload => ({
+          kind: 'system',
+          cwd: patchCwd(message),
+        }))
       )
     case undefined:
       return undefined
