@@ -27,7 +27,7 @@ Treat dev as unreleased: dev-owned state has exactly one schema, the final one. 
 - Read `docs/ARCHITECTURE.md` for component responsibilities and before changing an ownership, storage, admission or release boundary. Its decision-record index points to the rationale; read the relevant record before changing that boundary.
 - Read `SECURITY.md` before adding or updating an extension, changing resource loading, or routing project effects through tools, event handlers or child processes.
 - Read the owning guide before changing behavior, and update it in the same change: `docs/launcher.md`, `docs/work.md`, `docs/workspace.md`, `docs/compaction.md` or `docs/usage-profile.md`.
-- Read `docs/DEVELOPMENT.md` for verification, documentation ownership, adding a tool, recording a decision or relocating private state. Before upgrading Pi, also read `docs/pi-upgrade.md`.
+- Read `docs/DEVELOPMENT.md` for verification, documentation ownership, adding a tool, recording a decision or relocating private state. Before upgrading Pi or dependencies, also read `docs/upgrade.md`.
 
 ## Evidence labels
 

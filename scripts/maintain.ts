@@ -5,8 +5,10 @@ import type { ChildProcessSpawner } from 'effect/unstable/process'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
-import { checkout, checkoutIsClean, git } from './checkout.ts'
-import { type PiUpgradeError, updatePi, verifyPi } from './pi-upgrade.ts'
+import { checkout, checkoutIsClean, git, npmInstallFlags, run, streamed } from './checkout.ts'
+import { updatePi } from './pi-upgrade.ts'
+import { lastLines } from './report.ts'
+import { runUpgrade } from './upgrade.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from './usage-profile.ts'
 
 export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('MaintenanceError', {
@@ -101,9 +103,27 @@ const update = (): MaintenanceCommand =>
     const branch = requestedBranch ?? (yield* git(['branch', '--show-current']))
     yield* git(['fetch', remote, branch])
     yield* assertPrivateDataProtected(`${remote}/${branch}`)
+    const previous = yield* git(['rev-parse', 'HEAD'])
     yield* git(['merge', '--ff-only', `${remote}/${branch}`])
     yield* Effect.sync(() => {
       process.stdout.write(`updated dev checkout from ${remote}/${branch}\n`)
+    })
+    const lockfile = yield* run(
+      'git',
+      ['diff', '--quiet', previous, 'HEAD', '--', 'package-lock.json'],
+      {
+        exitCodes: [0, 1],
+      }
+    )
+    if (lockfile.exitCode === 0) return
+    const install = yield* streamed('npm', ['ci', ...npmInstallFlags])
+    if (!install.passed)
+      return yield* new MaintenanceError({
+        message: `Updated the checkout, but npm ci failed; rerun npm ci --ignore-scripts && npm run types:pi:\n${lastLines(install.output, 40)}`,
+      })
+    yield* linkPiDeclarations
+    yield* Effect.sync(() => {
+      process.stdout.write('reinstalled dependencies from the updated package-lock.json\n')
     })
   }).pipe(
     Effect.scoped,
@@ -181,32 +201,22 @@ const profile = (): Effect.Effect<void, MaintenanceError, FileSystem.FileSystem>
     })
   }).pipe(Effect.mapError(error => toMaintenanceError(error, 'Profile failed')))
 
-const fromPiUpgrade = (error: PiUpgradeError): MaintenanceError =>
-  new MaintenanceError({ message: error.message, cause: error })
-
-const versionArgument = Effect.gen(function* () {
-  const [flag, version, ...rest] = process.argv.slice(3)
-  if (flag === undefined) return undefined
-  if (flag === '--version' && version !== undefined && rest.length === 0) return version
-  return yield* new MaintenanceError({
-    message: `Expected only --version X.Y.Z, got: ${process.argv.slice(3).join(' ')}`,
-  })
-})
-
-const piVerify = (): MaintenanceCommand =>
+const withoutArguments = (
+  name: string,
+  operation: Effect.Effect<
+    void,
+    { readonly message: string },
+    FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+  >
+): MaintenanceCommand =>
   Effect.gen(function* () {
-    const version = yield* versionArgument
-    yield* verifyPi(version).pipe(Effect.mapError(fromPiUpgrade))
-  })
-
-const piUpdate = (): MaintenanceCommand =>
-  Effect.gen(function* () {
-    const version = yield* versionArgument
-    if (version === undefined)
+    if (process.argv.length > 3)
       return yield* new MaintenanceError({
-        message: 'Pi update requires an explicit --version and changes only the managed Pi.',
+        message: `${name} takes no arguments, got: ${process.argv.slice(3).join(' ')}`,
       })
-    yield* updatePi(version).pipe(Effect.mapError(fromPiUpgrade))
+    yield* operation.pipe(
+      Effect.mapError(error => new MaintenanceError({ message: error.message, cause: error }))
+    )
   })
 
 const program = Effect.gen(function* () {
@@ -215,10 +225,10 @@ const program = Effect.gen(function* () {
   if (command === 'update') return yield* update()
   if (command === 'rollback') return yield* rollback()
   if (command === 'profile') return yield* profile()
-  if (command === 'pi-verify') return yield* piVerify()
-  if (command === 'pi-update') return yield* piUpdate()
+  if (command === 'upgrade') return yield* withoutArguments('upgrade', runUpgrade())
+  if (command === 'pi-update') return yield* withoutArguments('pi:update', updatePi())
   return yield* new MaintenanceError({
-    message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, pi-verify, or pi-update.`,
+    message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, upgrade, or pi-update.`,
   })
 }).pipe(
   Effect.catch(error =>
