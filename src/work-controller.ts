@@ -9,10 +9,10 @@ import {
   Layer,
   Option,
   Queue,
+  Result,
   Semaphore,
   Schema,
 } from 'effect'
-import { ChildProcessSpawner } from 'effect/process'
 import type * as Scope from 'effect/Scope'
 import { createHash, randomUUID } from 'node:crypto'
 import { fork, spawn, type ChildProcess } from 'node:child_process'
@@ -73,10 +73,9 @@ import {
 } from './work-protocol.ts'
 import { globalPiAgentDir } from './preferences.ts'
 import {
-  observeFamily,
   processGate,
   processGateScript,
-  processTable,
+  processObserver,
   rootIdentityReused,
   transientRetry,
 } from './process-family.ts'
@@ -91,7 +90,7 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
-import { runCommand } from './command.ts'
+import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 
 type ProcessEvent =
@@ -268,9 +267,9 @@ const signalOwnedGroup = (job: Job, signal: NodeJS.Signals): Effect.Effect<void,
     catch: cause => new WorkError({ message: errorText(cause), cause }),
   })
 
-const git = (cwd: string, args: readonly string[]) =>
+const git = (run: RunCommand, cwd: string, args: readonly string[]) =>
   Effect.suspend(() =>
-    runCommand(
+    run(
       'git',
       [
         '--no-pager',
@@ -297,14 +296,12 @@ const git = (cwd: string, args: readonly string[]) =>
     )
   ).pipe(Effect.map(result => result.stdout.trim()))
 
-const artifactState = (
-  cwd: string
-): Effect.Effect<ArtifactState, never, ChildProcessSpawner.ChildProcessSpawner> =>
+const readArtifactState = (run: RunCommand, cwd: string): Effect.Effect<ArtifactState> =>
   Effect.all(
     {
-      head: git(cwd, ['rev-parse', 'HEAD']),
-      diff: git(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--']),
-      status: git(cwd, ['status', '--porcelain=v1', '--untracked-files=normal']),
+      head: git(run, cwd, ['rev-parse', 'HEAD']),
+      diff: git(run, cwd, ['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--']),
+      status: git(run, cwd, ['status', '--porcelain=v1', '--untracked-files=normal']),
     },
     { concurrency: 'unbounded' }
   ).pipe(
@@ -405,11 +402,9 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const fs = yield* FileSystem.FileSystem
   const scope = yield* Effect.scope
   const store = yield* WorkStore
-  const withSpawner = Effect.provideService(
-    ChildProcessSpawner.ChildProcessSpawner,
-    yield* ChildProcessSpawner.ChildProcessSpawner
-  )
-  const observedTable = processTable.pipe(withSpawner)
+  const run = yield* commandRunner
+  const artifactState = (cwd: string) => readArtifactState(run, cwd)
+  const { processTable: observedTable, observeFamily } = yield* processObserver
   const active = new Map<AttemptId, Job>()
   const latest = new Map<string, AttemptId>()
   const reservations = new Set<string>()
@@ -501,7 +496,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     id: AttemptId
   ): Effect.fn.Return<AttemptDescription, WorkFailure> {
     const record = yield* recordFor(id)
-    const current = yield* artifactState(record.cwd).pipe(withSpawner)
+    const current = yield* artifactState(record.cwd)
     const staleArtifact = changedArtifact(record.artifactAtCompletion, current)
     const streams: readonly LogRequest['stream'][] =
       record.kind === 'agent' ? ['result', 'stderr'] : ['stdout', 'stderr']
@@ -608,8 +603,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     const outcomes = yield* Effect.forEach(ids, id => Effect.result(cancel(id, reason)), {
       concurrency: 'unbounded',
     })
-    const failure = outcomes.find(outcome => outcome._tag === 'Failure')
-    if (failure?._tag === 'Failure') return yield* failure.failure
+    const failure = outcomes.find(Result.isFailure)
+    if (failure !== undefined) return yield* failure.failure
   })
 
   const start = Effect.fnUntraced(
@@ -650,7 +645,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         const { grant: selected } = admission
         grant = selected
         const { cwd } = selected
-        const artifactAtStart = yield* artifactState(cwd).pipe(withSpawner)
+        const artifactAtStart = yield* artifactState(cwd)
         yield* assertPrepared(
           reservation.sessionId,
           reservation.generation,
@@ -916,7 +911,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       })
     )
     yield* reply(
-      result._tag === 'Success'
+      Result.isSuccess(result)
         ? { type: 'work-reply', requestId, ok: true, result: result.success ?? {} }
         : { type: 'work-reply', requestId, ok: false, error: errorText(result.failure) }
     )
@@ -1016,7 +1011,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     transition: () => LifecycleTransition
   ): Effect.fn.Return<LifecycleTransition, WorkFailure> {
     const result = yield* Effect.result(commit(job, transition))
-    if (result._tag === 'Success') return result.success
+    if (Result.isSuccess(result)) return result.success
     if (!(result.failure instanceof WorkPersistenceError)) return yield* result.failure
     yield* notePersistenceFailure(job, result.failure)
     return {
@@ -1042,7 +1037,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     transition: () => LifecycleTransition
   ): Effect.fn.Return<LifecycleTransition | undefined, WorkFailure> {
     const result = yield* Effect.result(commitCurrent(job, token, transition))
-    if (result._tag === 'Success') return result.success
+    if (Result.isSuccess(result)) return result.success
     if (!(result.failure instanceof WorkPersistenceError)) return yield* result.failure
     yield* notePersistenceFailure(job, result.failure)
     return {
@@ -1322,8 +1317,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           type: 'workspace-checked',
           requestId: message.requestId,
           useId: job.workspace.useId,
-          allowed: checked._tag === 'Success',
-          ...(checked._tag === 'Failure' ? { reason: errorText(checked.failure) } : {}),
+          allowed: Result.isSuccess(checked),
+          ...(Result.isFailure(checked) ? { reason: errorText(checked.failure) } : {}),
         })
         return
       }
@@ -1418,7 +1413,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             return
           }
           const pending = yield* Queue.poll(job.events)
-          if (pending._tag === 'Some') {
+          if (Option.isSome(pending)) {
             const event = pending.value
             if (event.type === 'message') yield* childMessage(job, event.raw)
             else if (event.type === 'error')
@@ -1442,7 +1437,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               rootExited: hasProcessExitEvidence(job),
               report: processes => reportWorkspace(job, { kind: 'observed', processes }),
             }
-          ).pipe(withSpawner)
+          )
           job.observedProcesses = family.reported
           const { known } = family
           const observed = yield* commitBestEffort(job, () =>
@@ -1513,7 +1508,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         )
       )
     )
-    if (outcome._tag === 'Failure') yield* notePersistenceFailure(job, outcome.failure)
+    if (Result.isFailure(outcome)) yield* notePersistenceFailure(job, outcome.failure)
     yield* settle(job)
     onChange()
   })
@@ -1534,10 +1529,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
       ).pipe(Effect.retry(transientRetry))
     )
-    if (observation._tag === 'Failure') cleanupError = errorText(observation.failure)
+    if (Result.isFailure(observation)) cleanupError = errorText(observation.failure)
 
     const completedAt = yield* Clock.currentTimeMillis
-    const artifactAtCompletion = yield* artifactState(record.cwd).pipe(withSpawner)
+    const artifactAtCompletion = yield* artifactState(record.cwd)
     const changedDuringRun = changedArtifact(record.artifactAtStart, artifactAtCompletion)
     const saved = yield* Effect.result(
       commit(job, () =>
@@ -1549,7 +1544,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         })
       )
     )
-    if (saved._tag === 'Failure') {
+    if (Result.isFailure(saved)) {
       yield* failObservation(job, saved.failure)
       return
     }
@@ -1594,7 +1589,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     }
     if (job.child.connected) {
       const ipc = yield* Effect.result(sendIpc(job.child, { type: 'cancel' }))
-      if (ipc._tag === 'Failure')
+      if (Result.isFailure(ipc))
         yield* commitBestEffort(job, () =>
           job.lifecycle.transition.protocolError(
             token,
@@ -1607,7 +1602,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     let identityReused = false
     let observationError: string | undefined
     const initialTable = yield* Effect.result(observedTable)
-    if (initialTable._tag === 'Success') {
+    if (Result.isSuccess(initialTable)) {
       const root = job.lifecycle.rootProcess()
       identityReused = rootIdentityReused(initialTable.success, root, hasProcessExitEvidence(job))
       if (identityReused) {
@@ -1626,12 +1621,12 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       known = []
       observationError = `Cancellation process table unavailable: ${errorText(initialTable.failure)}`
       const group = yield* Effect.result(signalOwnedGroup(job, 'SIGTERM'))
-      if (group._tag === 'Failure')
+      if (Result.isFailure(group))
         observationError = `${observationError}; process-group signal failed: ${errorText(group.failure)}`
     }
 
     const term = yield* Effect.result(signalOwnedProcesses(known, 'SIGTERM'))
-    if (term._tag === 'Failure')
+    if (Result.isFailure(term))
       observationError = `${observationError ?? 'Cancellation'} signal failed: ${errorText(term.failure)}`
     else if (term.success !== undefined) {
       const message = term.success
@@ -1644,7 +1639,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
 
     if (job.lifecycle.isActive()) {
       const remainingTable = yield* Effect.result(observedTable)
-      if (remainingTable._tag === 'Success') {
+      if (Result.isSuccess(remainingTable)) {
         const root = job.lifecycle.rootProcess()
         if (rootIdentityReused(remainingTable.success, root, hasProcessExitEvidence(job))) {
           identityReused = true
@@ -1663,14 +1658,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         known = []
         observationError = `${observationError ?? 'Cancellation'} process table unavailable after SIGTERM: ${errorText(remainingTable.failure)}`
       }
-      if (remainingTable._tag === 'Failure') {
+      if (Result.isFailure(remainingTable)) {
         const group = yield* Effect.result(signalOwnedGroup(job, 'SIGKILL'))
-        if (group._tag === 'Failure')
+        if (Result.isFailure(group))
           observationError = `${observationError ?? 'Cancellation'} process-group SIGKILL failed: ${errorText(group.failure)}`
       }
-      if (known.length > 0 || remainingTable._tag === 'Failure') {
+      if (known.length > 0 || Result.isFailure(remainingTable)) {
         const kill = yield* Effect.result(signalOwnedProcesses(known, 'SIGKILL'))
-        if (kill._tag === 'Failure')
+        if (Result.isFailure(kill))
           observationError = `${observationError ?? 'Cancellation'} SIGKILL failed: ${errorText(kill.failure)}`
         else if (kill.success !== undefined) {
           const message = kill.success
@@ -1684,7 +1679,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
 
     if (job.lifecycle.isActive()) {
       const finalTable = yield* Effect.result(observedTable)
-      if (finalTable._tag === 'Success') {
+      if (Result.isSuccess(finalTable)) {
         const root = job.lifecycle.rootProcess()
         if (rootIdentityReused(finalTable.success, root, hasProcessExitEvidence(job))) {
           identityReused = true
@@ -1711,7 +1706,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           observationError = `${observationError ?? 'Cancellation'} process identity unavailable; termination is not confirmed`
         } else {
           const finished = yield* Effect.result(finish(job))
-          if (finished._tag === 'Failure') yield* failObservation(job, finished.failure)
+          if (Result.isFailure(finished)) yield* failObservation(job, finished.failure)
         }
       } else {
         known = []

@@ -29,8 +29,8 @@ export interface WorkspaceCommandResult {
   readonly text: string
 }
 
-interface WorkspaceListScope {
-  readonly repositoryRoot: Effect.Effect<string | undefined>
+interface WorkspaceListScope<R = never> {
+  readonly repositoryRoot: Effect.Effect<string | undefined, never, R>
   readonly current?: {
     readonly workspaceId: WorkspaceId
     readonly effectiveCwd: string
@@ -459,11 +459,11 @@ export const formatSweepReceipt = (receipt: SweepReceipt): string => {
 }
 
 export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
-  function* <R>(
+  function* <R, RootR>(
     openLifecycle: Effect.Effect<WorkspaceLifecycle, never, R>,
     command: ReadOnlyWorkspaceCommand,
-    scope: WorkspaceListScope
-  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError, R> {
+    scope: WorkspaceListScope<RootR>
+  ): Effect.fn.Return<WorkspaceCommandResult, WorkspaceError, R | RootR> {
     if (command.kind === 'check') {
       const lifecycle = yield* openLifecycle
       const assessments = yield* lifecycle.check({

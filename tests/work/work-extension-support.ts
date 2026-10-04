@@ -22,7 +22,7 @@ export interface LeadRequest {
   fail(errorMessage: string): void
 }
 
-export interface Notice {
+interface Notice {
   readonly message: string
   readonly level: string | undefined
 }
@@ -34,7 +34,7 @@ export const openLead = async (
   fixture: WorkFixture,
   options: {
     readonly send?: (deliver: SendCustomMessage) => SendCustomMessage
-    readonly parked?: () => boolean
+    readonly notify?: (notice: Notice) => void
   } = {}
 ) => {
   const { pi, importFromPi } = installed
@@ -91,7 +91,7 @@ export const openLead = async (
         throw new Error('no work extension check expects a workspace rebind')
       },
     },
-    isWorkspaceParked: options.parked ?? (() => false),
+    isWorkspaceParked: () => false,
   })
   const services = await pi.createAgentSessionServices({
     cwd: fixture.repository,
@@ -138,6 +138,7 @@ export const openLead = async (
         if (key === 'dev/work') statuses.push(text)
       },
       notify: (message, level) => {
+        options.notify?.({ message, level })
         notices.push({ message, level })
       },
       onTerminalInput: handler => {

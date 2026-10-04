@@ -984,11 +984,12 @@ const digestTree = (directory: string): Record<string, string> =>
       .toSorted(([a], [b]) => (a ?? '').localeCompare(b ?? ''))
   )
 
-const maintain = (...args: string[]) =>
-  spawnSync(process.execPath, ['scripts/maintain.ts', 'profile', ...args], {
+const maintenance = (...args: string[]) =>
+  spawnSync(process.execPath, ['scripts/maintain.ts', ...args], {
     cwd: checkout,
     encoding: 'utf8',
   })
+const maintain = (...args: string[]) => maintenance('profile', ...args)
 
 const repositoryState = () => ({
   status: execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
@@ -1828,6 +1829,23 @@ try {
           tool === 'unmatched' ? ['child-sessions/child.jsonl#result'] : []
         )
         assert.equal(resultOnly.reads.calls, tool === 'read' ? 1 : 0)
+      }
+    }
+  )
+
+  await claim(
+    'maintenance commands refuse an unknown option, a stray argument and a flag without its value before the command acts',
+    () => {
+      for (const [args, reason] of [
+        [['update', '--bogus', 'x'], /^Unknown update option "--bogus"/],
+        [['update', 'stray'], /^Unknown update option "stray"/],
+        [['setup', '--data-home'], /^--data-home requires a value\n$/],
+        [['upgrade', 'x'], /^upgrade takes no arguments, got: x\n$/],
+      ] as const) {
+        const refused = maintenance(...args)
+        assert.equal(refused.status, 1, args.join(' '))
+        assert.match(refused.stderr, reason)
+        assert.equal(refused.stdout, '', args.join(' '))
       }
     }
   )

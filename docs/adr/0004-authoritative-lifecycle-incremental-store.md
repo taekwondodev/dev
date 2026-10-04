@@ -28,7 +28,7 @@ The [durability acceptance](https://github.com/taekwondodev/dev/issues/31#issuec
 
 ## Release records
 
-Reservation-only release of a pre-existing checkout is one transaction recording the operation and deleting the reservation. Managed-worktree removal records intent and effect start before external deletion, then records only observed outcomes: directory, admin directory and worktree-list entry gone. A removed workspace row remains an identity fence; confirmed release rows are compact receipts for inspection. The transaction that deletes a reservation also deletes that reservation's `quiescent` use rows: they carry no ownership once settled, and live or `unknown` uses block the release instead of being pruned.
+Reservation-only release of a pre-existing checkout is one transaction recording the operation and deleting the reservation. Managed-worktree removal records intent and effect start before external deletion, then records only observed outcomes: directory, admin directory and worktree-list entry gone. A removed workspace row remains an identity fence; confirmed release rows are compact receipts for inspection. The transaction that deletes a reservation also deletes that reservation's `quiescent` use rows: they carry no ownership once settled, and live or `unknown` uses block the release instead of being pruned. Nothing else deletes a use row, so a running session that finds the row of a use it was granted missing treats that use as settled and forgets its lease; a row that exists with another workspace or incarnation still requires review.
 
 The [disposable-worktree decision](https://github.com/taekwondodev/dev/issues/42) means a published-file manifest is not an exhaustive list of disposable contents. Its inode, size, modification time and digest facts recheck selected publications; changed selected bytes stop matching. Runtime storage adds no separate delivery receipt or pending-report ledger: the workflow owns delivery and failed-publication checkpoints.
 
@@ -36,4 +36,4 @@ A crash leaves a started release that refuses resume. The next attempt observes 
 
 ## Current state only
 
-Dev-owned stores keep one current shape. [AGENTS.md](../../AGENTS.md#boundaries) owns replacement and discard policy, including the distinction between obsolete format support and live ownership/decision fences. Validate current layout and identities even though obsolete data is disposable. Storage never resets itself at startup.
+Dev-owned stores keep one current shape. [AGENTS.md](../../AGENTS.md#boundaries) owns replacement and discard policy, including the distinction between obsolete format support and live ownership/decision fences. Validate current layout and identities even though obsolete data is disposable. A process validates a workspace database's schema and integrity the first time it opens a given file identity, not on every open. Storage never resets itself at startup.

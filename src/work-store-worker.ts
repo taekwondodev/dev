@@ -705,7 +705,7 @@ const acknowledge = (request: Extract<RpcRequest, { readonly op: 'ack' }>): null
     return null
   })
 
-let worker: { readonly data: WorkerData; readonly sqliteVersion: string } | undefined
+let worker: { readonly data: WorkerData } | undefined
 
 const execute = (request: RpcRequest): unknown => {
   const state = worker
@@ -730,7 +730,7 @@ const closeConnection = (): void => {
 const open = async (): Promise<unknown> => {
   const data = decodeWorkerData(workerData)
   const initialized = await initializeDatabase(data)
-  worker = { data, sqliteVersion: initialized.sqliteVersion }
+  worker = { data }
   dbConnection = initialized.database
   preparedStatements = prepareStatements(initialized.database)
   return {

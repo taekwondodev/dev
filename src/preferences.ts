@@ -3,8 +3,8 @@ import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
-import { ChildProcessSpawner } from 'effect/process'
-import { runCommand } from './command.ts'
+import type { ChildProcessSpawner } from 'effect/process'
+import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 
 export class PreferencesError extends Schema.TaggedError<PreferencesError>()('PreferencesError', {
@@ -47,8 +47,8 @@ const toPreferencesError = (error: unknown, operation: string): PreferencesError
     ? error
     : new PreferencesError({ message: `${operation}: ${errorText(error)}`, cause: error })
 
-const runGit = (cwd: string, args: readonly string[]) =>
-  runCommand('git', ['-C', cwd, ...args]).pipe(Effect.map(result => result.stdout.trim()))
+const runGit = (run: RunCommand, cwd: string, args: readonly string[]) =>
+  run('git', ['-C', cwd, ...args]).pipe(Effect.map(result => result.stdout.trim()))
 
 export const defaultDataHome: Effect.Effect<string, PreferencesError> = Effect.gen(function* () {
   const configured = yield* Config.String('DEV_DATA_HOME').pipe(
@@ -62,10 +62,13 @@ export const globalPiAgentDir = (): string => join(homedir(), '.pi', 'agent')
 
 export const globalPiAuthPath = (): string => join(globalPiAgentDir(), 'auth.json')
 
+const gitRootWith = (run: RunCommand, cwd: string): Effect.Effect<string | undefined> =>
+  runGit(run, cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
+
 export const gitRoot = (
   cwd: string
 ): Effect.Effect<string | undefined, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
+  Effect.flatMap(commandRunner, run => gitRootWith(run, cwd))
 
 export class RepositoryRoot extends Context.Service<
   RepositoryRoot,
@@ -73,24 +76,18 @@ export class RepositoryRoot extends Context.Service<
 >()('dev/preferences/RepositoryRoot') {
   static readonly layer = Layer.effect(
     RepositoryRoot,
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-      return RepositoryRoot.of({
-        resolve: cwd =>
-          gitRoot(cwd).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
-          ),
-      })
-    })
+    Effect.map(commandRunner, run => RepositoryRoot.of({ resolve: cwd => gitRootWith(run, cwd) }))
   )
 }
 
 const projectIdentity = (
   cwd: string
 ): Effect.Effect<string, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  runGit(cwd, ['rev-parse', '--git-common-dir']).pipe(
-    Effect.map(commonDir => resolve(cwd, commonDir)),
-    Effect.orElseSucceed(() => resolve(cwd))
+  Effect.flatMap(commandRunner, run =>
+    runGit(run, cwd, ['rev-parse', '--git-common-dir']).pipe(
+      Effect.map(commonDir => resolve(cwd, commonDir)),
+      Effect.orElseSucceed(() => resolve(cwd))
+    )
   )
 
 const preferencePath = (dataHome: string, identity: string): string => {

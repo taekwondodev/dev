@@ -362,6 +362,7 @@ export class WorkSetupError extends Schema.TaggedError<WorkSetupError>()('WorkSe
 export class WorkPersistenceError extends Schema.TaggedError<WorkPersistenceError>()(
   'WorkPersistenceError',
   {
+    code: Schema.String,
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   }

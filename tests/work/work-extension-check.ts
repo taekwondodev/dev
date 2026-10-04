@@ -232,6 +232,51 @@ try {
   )
 
   await claim(
+    'a notification that throws while a delivery failure is reported does not stop idle delivery: a later outcome still arrives at idle',
+    async () => {
+      let sendFailures = 1
+      let notifyFailures = 1
+      let notifyAttempts = 0
+      await withLead(
+        {
+          send: deliver => (message, options) => {
+            if (sendFailures === 0) return deliver(message, options)
+            sendFailures -= 1
+            throw new Error('conversation transport down')
+          },
+          notify: () => {
+            notifyAttempts += 1
+            if (notifyFailures === 0) return
+            notifyFailures -= 1
+            throw new Error('stale extension context')
+          },
+        },
+        async lead => {
+          const first = gate()
+          const second = gate()
+          const { run, next, started } = await launch(lead, 0, [first.command, second.command])
+          const [, later] = started
+          assert.ok(later)
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          first.open()
+          await lead.wait('the delivery failure report to be attempted', () =>
+            notifyAttempts > 0 ? true : undefined
+          )
+          assert.deepEqual(lead.notices, [])
+          second.open()
+          const continued = await lead.request(2)
+          assert.ok(seen(continued).includes(later.id), seen(continued))
+          continued.reply(text('outcome read'))
+          await lead.idle()
+          assert.ok(delivered(lead).includes(later.id))
+        }
+      )
+    }
+  )
+
+  await claim(
     'subscription exhaustion blocks new agents and automatic continuation, and another user message does not clear it',
     () =>
       withLead({}, async lead => {

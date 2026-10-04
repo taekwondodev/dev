@@ -4,13 +4,21 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Clock, Effect, Layer } from 'effect'
-import { asAttemptId, asGenerationId, asSessionId, asTaskId } from '../../src/work-domain.ts'
-import { WorkStore } from '../../src/work-store.ts'
+import { Clock, Effect, Layer, Result } from 'effect'
+import {
+  asAttemptId,
+  asGenerationId,
+  asSessionId,
+  asTaskId,
+  type WorkPersistenceError,
+} from '../../src/work-domain.ts'
+import { isRecordUnavailable, WorkStore } from '../../src/work-store.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'dev-work-store-'))
 const { claim, passed } = makeClaims()
+const unavailable = (result: Result.Result<unknown, WorkPersistenceError>): boolean =>
+  Result.isFailure(result) && isRecordUnavailable(result.failure)
 try {
   await claim(
     'current attempt records round-trip; unknown fields are refused on write and read without rewriting stored payloads',
@@ -119,7 +127,7 @@ try {
           const expired = yield* completeAt(3, now - 8 * day)
           const sixDaysOld = yield* completeAt(4, now - 6 * day)
           assert.deepEqual(yield* listedIds, [active, unresolved.id, sixDaysOld])
-          assert.equal((yield* Effect.result(store.read(expired)))._tag, 'Failure')
+          assert.ok(unavailable(yield* Effect.result(store.read(expired))))
           assert.equal(existsSync(logDirectory(expired)), false)
           assert.equal(existsSync(logDirectory(sixDaysOld)), true)
 
@@ -127,7 +135,7 @@ try {
           for (let index = 0; index < 64; index += 1)
             newest.push(yield* completeAt(100 + index, now - (index + 1) * minute))
           assert.deepEqual(yield* listedIds, [active, unresolved.id, ...newest].toSorted())
-          assert.equal((yield* Effect.result(store.read(sixDaysOld)))._tag, 'Failure')
+          assert.ok(unavailable(yield* Effect.result(store.read(sixDaysOld))))
           assert.equal(existsSync(logDirectory(sixDaysOld)), false)
           assert.equal(existsSync(logDirectory(active)), true)
         }).pipe(

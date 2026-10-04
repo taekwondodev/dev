@@ -51,7 +51,7 @@ export interface Analysis {
   readonly copiedEntries: number
 }
 
-export interface SessionAnalysis {
+interface SessionAnalysis {
   readonly name: string
   readonly scope: SessionRecord['scope']
   readonly facts: Facts

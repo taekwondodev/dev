@@ -14,7 +14,7 @@ type CompactionEntry =
       readonly kind: Exclude<Entry['kind'], Recorded['kind']>
     })
 
-export interface CompactionSession {
+interface CompactionSession {
   readonly ref: string
   readonly scope: SessionRecord['scope']
   readonly entries: readonly CompactionEntry[]

@@ -102,6 +102,8 @@ Dev's coordination, including the launcher, Pi host, authority client, shells, n
 
 One style was chosen over a separate Promise layer despite the rewrite cost. Pi session/native-file errors cross back unchanged because Pi recognizes some by class and owns their recovery; workspace refusals remain typed domain failures.
 
+Four departures from the Effect guide are deliberate. The launcher and `scripts/maintain.ts` parse arguments by hand because `effect/cli` would change argument pass-through, error output and startup cost. `runGit` in `src/pi-child.ts` and `readHead` in `src/workspace-tool.ts` stay on `node:child_process`: the Effect spawner hides the terminating signal and would change a model-visible message. The type checker's `allowedUnstableApis` list admits `effect/http`, `effect/process` and `effect/workers` because the pinned release has no stable alternative. The authority client is a lazily opened scoped Effect passed by argument rather than a layer-provided service, because a layer would start the worker for modes that must not open the authority, such as `--help` and `--diagnostics`.
+
 ## Executable extensions
 
 The [accepted policy](https://github.com/taekwondodev/dev/issues/36#issuecomment-5815706403) trusts Pi and installed extensions rather than sandboxing arbitrary plugins. Non-project presentation, status and notification effects need no admission; trust does not exempt project writes. This accepts targeted integration maintenance instead of universal containment.

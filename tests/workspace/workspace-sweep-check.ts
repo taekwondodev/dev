@@ -41,7 +41,7 @@ import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
-import { observeFamily, processTable } from '../../src/process-family.ts'
+import { processObserver } from '../../src/process-family.ts'
 import { verdictName } from './workspace-completion-fixtures.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -181,9 +181,12 @@ try {
           })
           const exited = once(child, 'exit')
           await once(child, 'spawn')
-          const identity = (
-            await Effect.runPromise(processTable.pipe(Effect.provide(NodeServices.layer)))
-          ).find(entry => entry.pid === child.pid)
+          const observer = await Effect.runPromise(
+            processObserver.pipe(Effect.provide(NodeServices.layer))
+          )
+          const identity = (await Effect.runPromise(observer.processTable)).find(
+            entry => entry.pid === child.pid
+          )
           try {
             assert.ok(identity !== undefined)
             await owner.owner.reportExecution(grant, { kind: 'spawned', process: identity })
@@ -193,14 +196,14 @@ try {
             await exited
           }
           const family = await Effect.runPromise(
-            observeFamily(
+            observer.observeFamily(
               { pid: child.pid, root: identity, known: [identity], reported: undefined },
               {
                 rootExited: true,
                 report: processes =>
                   owner.owner.effect.reportExecution(grant, { kind: 'observed', processes }),
               }
-            ).pipe(Effect.provide(NodeServices.layer))
+            )
           )
           assert.deepEqual(family.known, [])
           await owner.owner.reportExecution(grant, {

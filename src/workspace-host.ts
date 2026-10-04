@@ -49,9 +49,9 @@ import {
   type WorkspaceConversation,
   type WorkspaceGrant,
   type WorkspaceHandoff,
+  type WorkspaceLifecycle,
 } from './workspace-domain.ts'
 import { makeWorkspaceTool, type PublicationDestinations } from './workspace-tool.ts'
-import { WorkspaceAuthorityClient } from './workspace-lifecycle.ts'
 import { RepositoryRoot } from './preferences.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
 import {
@@ -69,6 +69,7 @@ export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()
 ) {}
 
 export interface WorkspaceHostOptions {
+  readonly lifecycle: WorkspaceLifecycle
   readonly attachment: WorkspaceAttachment
   readonly dataHome: string
   readonly openSessionManager: (sessionFile: string, cwdOverride?: string) => SessionManager
@@ -359,13 +360,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
 ): Effect.fn.Return<
   WorkspaceHost,
   never,
-  | Scope.Scope
-  | WorkspaceAuthorityClient
-  | RepositoryRoot
-  | PublicationDestinations
-  | ChildProcessSpawner.ChildProcessSpawner
+  Scope.Scope | RepositoryRoot | PublicationDestinations | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const authority = yield* WorkspaceAuthorityClient
+  const authority = options.lifecycle
   const repositoryRoot = yield* RepositoryRoot
   let activeAttachment = options.attachment
   let activeConversation = activeAttachment.binding.conversation

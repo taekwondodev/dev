@@ -4,8 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Cause, Clock, Context, Effect, Exit, Layer, Option, Result, Schema } from 'effect'
-import { ChildProcessSpawner } from 'effect/process'
-import { runCommand } from './command.ts'
+import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
 import {
@@ -68,9 +67,14 @@ export interface PublicationDestinationReader {
   attachment(url: string): Effect.Effect<Uint8Array, WorkspaceToolError>
 }
 
-const readDestinationBody = (repository: string, number: number, commentId: number | undefined) =>
+const readDestinationBody = (
+  run: RunCommand,
+  repository: string,
+  number: number,
+  commentId: number | undefined
+) =>
   Effect.suspend(() =>
-    runCommand(
+    run(
       'gh',
       [
         'api',
@@ -161,16 +165,13 @@ export class PublicationDestinations extends Context.Service<
 >()('dev/workspace-tool/PublicationDestinations') {
   static readonly layer = Layer.effect(
     PublicationDestinations,
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-      return PublicationDestinations.of({
+    Effect.map(commandRunner, run =>
+      PublicationDestinations.of({
         body: (repository, number, commentId) =>
-          readDestinationBody(repository, number, commentId).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
-          ),
+          readDestinationBody(run, repository, number, commentId),
         attachment: readAttachment,
       })
-    })
+    )
   )
 }
 

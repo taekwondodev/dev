@@ -1,4 +1,4 @@
-import { Duration, Effect, Schema, Stream } from 'effect'
+import { Duration, Effect, Result, Schema, Stream } from 'effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 
 export class CommandFailure extends Schema.TaggedError<CommandFailure>()('CommandFailure', {
@@ -27,12 +27,18 @@ export interface CommandResult {
 const causeText = (cause: { readonly message: string; readonly cause?: unknown }): string =>
   cause.cause instanceof Error ? cause.cause.message : cause.message
 
-export const runCommand = Effect.fnUntraced(function* (
+export type RunCommand = (
+  file: string,
+  args: readonly string[],
+  options?: CommandOptions
+) => Effect.Effect<CommandResult, CommandFailure>
+
+const runWith = Effect.fnUntraced(function* (
+  spawner: ChildProcessSpawner.ChildProcessSpawner['Service'],
   file: string,
   args: readonly string[],
   options: CommandOptions = {}
-): Effect.fn.Return<CommandResult, CommandFailure, ChildProcessSpawner.ChildProcessSpawner> {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+): Effect.fn.Return<CommandResult, CommandFailure> {
   const output = { stdout: '', stderr: '' }
   const failed = (
     reason: CommandFailure['reason'],
@@ -79,10 +85,26 @@ export const runCommand = Effect.fnUntraced(function* (
         duration: options.timeout,
         orElse: () => Effect.fail(failed('timeout', commandFailed())),
       })
-  if (exit._tag === 'Failure')
+  if (Result.isFailure(exit))
     return yield* failed('signal', commandFailed(), { cause: exit.failure })
   const exitCode: number = exit.success
   if (!(options.exitCodes ?? [0]).includes(exitCode))
     return yield* failed('exit', commandFailed(), { exitCode })
   return { ...output, exitCode }
 })
+
+export const commandRunner: Effect.Effect<
+  RunCommand,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  return (file, args, options) => runWith(spawner, file, args, options)
+})
+
+export const runCommand = (
+  file: string,
+  args: readonly string[],
+  options?: CommandOptions
+): Effect.Effect<CommandResult, CommandFailure, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.flatMap(commandRunner, run => run(file, args, options))

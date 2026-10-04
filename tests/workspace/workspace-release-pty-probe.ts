@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { Effect } from 'effect'
 import { launch } from '../../src/launcher.ts'
 import type { WorkspaceAuthorization, WorkspaceGrant } from '../../src/workspace-domain.ts'
-import { WorkspaceAuthorityClient } from '../../src/workspace-lifecycle.ts'
+import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
@@ -69,9 +69,7 @@ try {
 
   const run = async (args: readonly string[]): Promise<number> => {
     process.exitCode = 0
-    await Effect.runPromise(
-      launch(args, { workspaceLifecycle: WorkspaceAuthorityClient.layer({ root }) })
-    )
+    await Effect.runPromise(launch(args, { workspaceLifecycle: makeWorkspaceLifecycle({ root }) }))
     const code = typeof process.exitCode === 'number' ? process.exitCode : 0
     process.exitCode = 0
     return code

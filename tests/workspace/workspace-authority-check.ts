@@ -694,6 +694,20 @@ try {
     }
   )
 
+  await claim('a checkout whose path contains a newline is refused', async () => {
+    const newlineRepo = join(sandbox, 'line\nbreak')
+    initRepository(newlineRepo, 'tracked.txt', 'tracked\n')
+    const newlineLifecycle = await openLifecycle({ root: join(sandbox, 'newline-authority') })
+    await assert.rejects(
+      newlineLifecycle.attach({ conversation: conversation('newline'), cwd: newlineRepo }),
+      error =>
+        error instanceof WorkspaceError &&
+        error.outcome === 'blocked' &&
+        error.message.includes('Git checkout paths containing a newline are not supported')
+    )
+    await newlineLifecycle.close()
+  })
+
   await claim('non-private and symlinked authority roots are rejected', async () => {
     chmodSync(isolatedAuthorityPath, 0o755)
     const unsafeAuthority = await openLifecycle({ root: isolatedAuthorityPath })

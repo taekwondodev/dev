@@ -300,7 +300,7 @@ export const createWorkExtension = ({
     if (context?.hasUI) context.ui.notify(`Background work: ${message}`, 'error')
   }
   const reportFailure = (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
-    Effect.sync(() => notifyError(Cause.squash(cause)))
+    Effect.sync(() => notifyError(Cause.squash(cause))).pipe(Effect.ignoreCause)
 
   const interruptOwned = (ctx: Pi.ExtensionContext, reason: string) =>
     Effect.sync(() => pending.clear()).pipe(

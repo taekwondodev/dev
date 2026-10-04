@@ -2,13 +2,11 @@ import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threa
 import {
   type Cause,
   Clock,
-  Context,
   Deferred,
   Duration,
   Effect,
   Exit,
   FiberSet,
-  Layer,
   Option,
   Queue,
   type Scope,
@@ -82,39 +80,13 @@ export type StartWorkspaceWorker = (url: URL, options: WorkerOptions) => Workspa
 
 const replyDecoder = <K extends WorkspaceRpcOperation>(op: K) => decodeWorkspaceRpcReply[op]
 
-export class WorkspaceWorkerSpawner extends Context.Service<
-  WorkspaceWorkerSpawner,
-  { readonly start: StartWorkspaceWorker }
->()('dev/workspace-lifecycle/WorkspaceWorkerSpawner') {
-  static readonly layer = Layer.succeed(
-    WorkspaceWorkerSpawner,
-    WorkspaceWorkerSpawner.of({ start: (url, options) => new Worker(url, options) })
-  )
-}
+const startWorkerThread: StartWorkspaceWorker = (url, options) => new Worker(url, options)
 
-interface AuthorityClientOptions {
+export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   readonly root?: string
-}
-
-export class WorkspaceAuthorityClient extends Context.Service<
-  WorkspaceAuthorityClient,
-  WorkspaceLifecycle
->()('dev/workspace-lifecycle/WorkspaceAuthorityClient') {
-  static readonly layerNoDeps = (
-    options?: AuthorityClientOptions
-  ): Layer.Layer<WorkspaceAuthorityClient, never, WorkspaceWorkerSpawner> =>
-    Layer.effect(WorkspaceAuthorityClient, makeAuthorityClient(options))
-
-  static readonly layer = (
-    options?: AuthorityClientOptions
-  ): Layer.Layer<WorkspaceAuthorityClient> =>
-    WorkspaceAuthorityClient.layerNoDeps(options).pipe(Layer.provide(WorkspaceWorkerSpawner.layer))
-}
-
-const makeAuthorityClient = Effect.fnUntraced(function* (
-  options?: AuthorityClientOptions
-): Effect.fn.Return<WorkspaceLifecycle, never, Scope.Scope | WorkspaceWorkerSpawner> {
-  const spawner = yield* WorkspaceWorkerSpawner
+  readonly startWorker?: StartWorkspaceWorker
+}): Effect.fn.Return<WorkspaceLifecycle, never, Scope.Scope> {
+  const startWorker = options?.startWorker ?? startWorkerThread
   const pending = new Map<number, PendingRequest>()
   const attachments = new Map<number, RemoteAttachment>()
   const callbacks = new Map<number, HostCallback>()
@@ -128,7 +100,7 @@ const makeAuthorityClient = Effect.fnUntraced(function* (
 
   const worker = yield* Effect.acquireRelease(
     Effect.sync(() =>
-      spawner.start(new URL('./workspace-worker.ts', import.meta.url), {
+      startWorker(new URL('./workspace-worker.ts', import.meta.url), {
         workerData: options?.root === undefined ? {} : { root: options.root },
         execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
       })
@@ -426,7 +398,7 @@ const makeAuthorityClient = Effect.fnUntraced(function* (
     })
   )
 
-  return WorkspaceAuthorityClient.of({
+  return {
     root: options?.root ?? defaultAuthorityRoot(),
     attach: Effect.fnUntraced(function* (input) {
       const opened = yield* request({ op: 'attach', ...input })
@@ -456,5 +428,5 @@ const makeAuthorityClient = Effect.fnUntraced(function* (
       ),
     recordPublication: input =>
       request({ op: 'record-publication', reference: input.reference }).pipe(Effect.asVoid),
-  })
+  }
 })

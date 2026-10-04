@@ -19,7 +19,6 @@ import { acquireRuntime, type CoordinationOptions } from '../../src/runtime-coor
 import { createSessionGuard } from '../../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../../src/workspace-host.ts'
-import { WorkspaceAuthorityClient } from '../../src/workspace-lifecycle.ts'
 import { PublicationDestinations } from '../../src/workspace-tool.ts'
 import { RepositoryRoot } from '../../src/preferences.ts'
 
@@ -278,6 +277,7 @@ export const openHostRuntime = async (input: {
     const host = await Effect.runPromise(
       Scope.provide(scope)(
         makeWorkspaceHost({
+          lifecycle: input.lifecycle,
           attachment: input.attachment,
           dataHome: input.dataHome,
           openSessionManager: (file, cwd) =>
@@ -286,7 +286,6 @@ export const openHostRuntime = async (input: {
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              Layer.succeed(WorkspaceAuthorityClient, input.lifecycle),
               Layer.succeed(RepositoryRoot, { resolve: input.repositoryRoot }),
               PublicationDestinations.layer
             ).pipe(Layer.provideMerge(NodeServices.layer))

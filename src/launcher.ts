@@ -3,7 +3,7 @@ import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
-import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
+import { Cause, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { ChildProcessSpawner } from 'effect/process'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
@@ -33,7 +33,7 @@ import { createBackgroundCompaction } from './background-compaction.ts'
 import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
-import { WorkspaceAuthorityClient } from './workspace-lifecycle.ts'
+import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
 import type { WorkspaceAssessment, WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
 import {
   keptConversationGuidance,
@@ -490,16 +490,9 @@ const installSignalHandlers = (
 }
 
 interface LauncherDependencies {
-  readonly workspaceLifecycle: Layer.Layer<WorkspaceAuthorityClient>
+  readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
   readonly coordination?: CoordinationOptions
 }
-
-const openAuthority = (
-  dependencies: LauncherDependencies
-): Effect.Effect<WorkspaceLifecycle, never, Scope.Scope> =>
-  Layer.build(dependencies.workspaceLifecycle).pipe(
-    Effect.map(Context.get(WorkspaceAuthorityClient))
-  )
 
 const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
   Effect.callback<boolean>(resume => {
@@ -556,7 +549,7 @@ const terminalRelease = Effect.fnUntraced(function* (
   taskId: WorkspaceId,
   launchCwd: string
 ): Effect.fn.Return<ReleaseExitCode, never, Scope.Scope> {
-  const lifecycle = yield* openAuthority(dependencies)
+  const lifecycle = yield* dependencies.workspaceLifecycle
   const assessed = yield* Effect.exit(lifecycle.check({ taskId }))
   if (Exit.isFailure(assessed)) {
     yield* write(
@@ -621,8 +614,8 @@ const run = Effect.fnUntraced(function* (
       return
     }
     if (command.kind !== 'release') {
-      const result = yield* runReadOnlyWorkspaceCommand(openAuthority(dependencies), command, {
-        repositoryRoot: (yield* RepositoryRoot).resolve(options.cwd),
+      const result = yield* runReadOnlyWorkspaceCommand(dependencies.workspaceLifecycle, command, {
+        repositoryRoot: gitRoot(options.cwd),
       })
       yield* Effect.sync(() => {
         ;(result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.text}\n`)
@@ -724,7 +717,7 @@ const run = Effect.fnUntraced(function* (
     })
     return
   }
-  const workspaceLifecycle = yield* openAuthority(dependencies)
+  const workspaceLifecycle = yield* dependencies.workspaceLifecycle
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
     return yield* new LauncherError({
@@ -762,12 +755,13 @@ const run = Effect.fnUntraced(function* (
   }
   const resolveImportPath = yield* loadPiPathResolver(packageInfo.root)
   const workspaceHost = yield* makeWorkspaceHost({
+    lifecycle: workspaceLifecycle,
     attachment,
     dataHome,
     openSessionManager: (file, cwdOverride) =>
       api.SessionManager.open(file, sessionsPath, cwdOverride),
     resolveImportPath,
-  }).pipe(Effect.provideService(WorkspaceAuthorityClient, workspaceLifecycle))
+  })
   const effectiveSelection =
     resolve(effectiveCwd) === resolve(launchCwd)
       ? selection
@@ -895,7 +889,7 @@ const LauncherServices = Layer.mergeAll(RepositoryRoot.layer, PublicationDestina
 
 export const launch = (
   argv: readonly string[],
-  dependencies: LauncherDependencies = { workspaceLifecycle: WorkspaceAuthorityClient.layer() }
+  dependencies: LauncherDependencies = { workspaceLifecycle: makeWorkspaceLifecycle() }
 ) =>
   run(argv, dependencies).pipe(
     Effect.catch(error =>

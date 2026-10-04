@@ -2437,6 +2437,57 @@ try {
     }
   )
 
+  await claim(
+    'a running conversation that left a pre-existing checkout whose reservation was then released can return to that checkout and leave it again: its pruned settled use is not a lost use',
+    async () => {
+      const roundTripRepo = join(sandbox, 'round-trip-repo')
+      initRepository(roundTripRepo)
+      const traveller = await lifecycle.attach({ conversation: conversation(), cwd: roundTripRepo })
+      const origin = ready(await traveller.authorize({ kind: 'write' }))
+      const originTask = requireTask(origin.taskId)
+      const allocator = await lifecycle.attach({ conversation: conversation(), cwd: roundTripRepo })
+      const managed = ready(await allocator.authorize({ kind: 'delegated-write' }))
+      await allocator.close()
+      const managedSelection = {
+        taskId: requireTask(managed.taskId),
+        workspaceId: managed.workspaceId,
+      }
+      await traveller.handoff(await traveller.select(managedSelection), async () => 'confirmed')
+      assert.equal(traveller.binding.workspaceId, managed.workspaceId)
+
+      const assessments = await lifecycle.check(originTask)
+      const assessment = only(assessments, origin.workspaceId)
+      assert.equal(assessment.outcome, 'releasable', assessment.reasons.join(' | '))
+      assert.equal(assessment.subject.effect, 'release-reservation')
+      const released = await releaseOne(lifecycle, assessments, origin.workspaceId)
+      assert.equal(released.outcome, 'released', released.reason)
+      assert.ok(
+        (await lifecycle.inspect({ cwd: roundTripRepo }))
+          .flatMap(view => view.uses)
+          .every(use => use.id !== origin.useId),
+        'the release pruned the settled use the conversation still remembers'
+      )
+
+      const reserver = await lifecycle.attach({ conversation: conversation(), cwd: roundTripRepo })
+      const reserved = ready(await reserver.authorize({ kind: 'write' }))
+      assert.equal(reserved.workspaceId, origin.workspaceId)
+      await reserver.close()
+      await traveller.handoff(
+        await traveller.select({
+          taskId: requireTask(reserved.taskId),
+          workspaceId: reserved.workspaceId,
+        }),
+        async () => 'confirmed'
+      )
+      assert.equal(traveller.binding.workspaceId, origin.workspaceId)
+
+      await traveller.handoff(await traveller.select(managedSelection), async () => 'confirmed')
+      assert.equal(traveller.binding.workspaceId, managed.workspaceId)
+      ready(await traveller.authorize({ kind: 'write' }))
+      await traveller.close()
+    }
+  )
+
   await lifecycle.close()
   process.stdout.write(
     `${JSON.stringify(

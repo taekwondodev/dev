@@ -101,10 +101,8 @@ const codeOf = (cause: unknown): string | undefined => {
   return typeof code === 'string' ? code : undefined
 }
 
-const RECORD_UNAVAILABLE = 'Work record is unavailable'
-
 export const isRecordUnavailable = (error: WorkPersistenceError): boolean =>
-  error.message === RECORD_UNAVAILABLE
+  error.code === 'record-unavailable'
 
 const persistenceMessage = (code: string): string => {
   if (code === 'unsupported-format') return 'Work store format is unsupported'
@@ -113,7 +111,7 @@ const persistenceMessage = (code: string): string => {
   if (code === 'unsafe-sqlite') return 'Installed SQLite runtime is unsafe for WAL storage'
   if (code === 'revision-conflict') return 'Work record revision conflict'
   if (code === 'owner-conflict') return 'Work record ownership conflict'
-  if (code === 'record-unavailable') return RECORD_UNAVAILABLE
+  if (code === 'record-unavailable') return 'Work record is unavailable'
   if (code === 'invalid-record') return 'Work record is invalid'
   if (code === 'session-mismatch') return 'Work store session mismatch'
   if (code === 'worker-closed') return 'Work store worker is closed'
@@ -126,7 +124,7 @@ const persistenceError = (cause: unknown): WorkPersistenceError => {
     cause instanceof StorePreparationError || cause instanceof WorkerRpcError
       ? cause.code
       : (codeOf(cause) ?? 'persistence-failed')
-  return new WorkPersistenceError({ message: persistenceMessage(code) })
+  return new WorkPersistenceError({ code, message: persistenceMessage(code) })
 }
 
 const safeRecord = (value: unknown): AttemptRecord => {
@@ -606,10 +604,7 @@ export class WorkStore extends Context.Service<
               try: () => makeRecordDirectory(root, id),
               catch: cause => persistenceError(cause),
             })
-            const result = yield* Effect.exit(
-              call({ op: 'create', sessionId, now: startedAt, record })
-            )
-            if (result._tag === 'Failure') return yield* Effect.failCause(result.cause)
+            yield* call({ op: 'create', sessionId, now: startedAt, record })
             authorized.add(id)
             return record
           })
@@ -686,7 +681,7 @@ export class WorkStore extends Context.Service<
           const path = logPath(id, 'result')
           yield* writeLog(id, path, text)
           const checked = yield* Effect.exit(read(id))
-          if (checked._tag === 'Failure') {
+          if (Exit.isFailure(checked)) {
             yield* removeLog(path).pipe(Effect.ignore)
             return yield* Effect.failCause(checked.cause)
           }

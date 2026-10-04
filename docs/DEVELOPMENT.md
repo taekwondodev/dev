@@ -25,7 +25,7 @@ Checks and setup regenerate an ignored `node_modules/@earendil-works` link to th
 
 [ARCHITECTURE](ARCHITECTURE.md#components) maps source areas to their behavior docs. [CONTEXT](../CONTEXT.md) owns vocabulary; [AGENTS.md](../AGENTS.md#conditional-references) owns mandatory reading triggers. Portable guidance belongs in profiles or the external shared library, not in this repository's entry point.
 
-Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; production loads no test entry or test-selection environment variable.
+Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; the optional `startWorker` argument of `makeWorkspaceLifecycle`, which production never passes, lets checks start the authority worker themselves to exercise its crash, lost-acknowledgment and device-identity contracts. Production loads no test entry or test-selection environment variable.
 
 ## Verification
 

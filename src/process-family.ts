@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 import { Writable } from 'node:stream'
 import { Duration, Effect, Schedule, Schema } from 'effect'
 import type { ChildProcessSpawner } from 'effect/process'
-import { runCommand } from './command.ts'
+import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { ownedProcesses, type ProcessObservation } from './work-lifecycle.ts'
 import { WorkspaceProcessSchema, type WorkspaceProcess } from './workspace-domain.ts'
@@ -50,26 +50,25 @@ export class ProcessObservationLost extends Schema.TaggedError<ProcessObservatio
 
 export const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 
-export const processTable: Effect.Effect<
-  ObservedProcess[],
-  ProcessObservationLost,
-  ChildProcessSpawner.ChildProcessSpawner
-> = Effect.suspend(() =>
-  runCommand('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
-    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
-    maxOutputLength: 4 * 1024 * 1024,
-    timeout: 2000,
-  })
-).pipe(
-  Effect.map(result => parseProcessTable(result.stdout)),
-  Effect.mapError(
-    cause =>
-      new ProcessObservationLost({
-        message: `The process table could not be read: ${errorText(cause)}`,
-      })
-  ),
-  Effect.retry(transientRetry)
-)
+type ProcessTable = Effect.Effect<ObservedProcess[], ProcessObservationLost>
+
+const readProcessTable = (run: RunCommand): ProcessTable =>
+  Effect.suspend(() =>
+    run('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
+      env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
+      maxOutputLength: 4 * 1024 * 1024,
+      timeout: 2000,
+    })
+  ).pipe(
+    Effect.map(result => parseProcessTable(result.stdout)),
+    Effect.mapError(
+      cause =>
+        new ProcessObservationLost({
+          message: `The process table could not be read: ${errorText(cause)}`,
+        })
+    ),
+    Effect.retry(transientRetry)
+  )
 
 const decodeFamily = Schema.decodeUnknownEffect(Schema.Array(WorkspaceProcessSchema))
 
@@ -80,17 +79,14 @@ export interface TrackedFamily {
   readonly reported: string | undefined
 }
 
-export const observeFamily = Effect.fnUntraced(function* <E>(
+const observeFamilyIn = Effect.fnUntraced(function* <E>(
+  processTable: ProcessTable,
   family: TrackedFamily,
   options: {
     readonly rootExited: boolean
     readonly report: (processes: readonly WorkspaceProcess[]) => Effect.Effect<void, E>
   }
-): Effect.fn.Return<
-  TrackedFamily,
-  ProcessObservationLost | E,
-  ChildProcessSpawner.ChildProcessSpawner
-> {
+): Effect.fn.Return<TrackedFamily, ProcessObservationLost | E> {
   const table = yield* processTable
   if (rootIdentityReused(table, family.root, options.rootExited))
     return yield* new ProcessObservationLost({
@@ -106,4 +102,27 @@ export const observeFamily = Effect.fnUntraced(function* <E>(
   if (signature !== family.reported)
     yield* options.report(processes).pipe(Effect.retry(transientRetry))
   return { ...family, known, reported: signature }
+})
+
+export interface ProcessObserver {
+  readonly processTable: ProcessTable
+  readonly observeFamily: <E>(
+    family: TrackedFamily,
+    options: {
+      readonly rootExited: boolean
+      readonly report: (processes: readonly WorkspaceProcess[]) => Effect.Effect<void, E>
+    }
+  ) => Effect.Effect<TrackedFamily, ProcessObservationLost | E>
+}
+
+export const processObserver: Effect.Effect<
+  ProcessObserver,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Effect.map(commandRunner, run => {
+  const processTable = readProcessTable(run)
+  return {
+    processTable,
+    observeFamily: (family, options) => observeFamilyIn(processTable, family, options),
+  }
 })
