@@ -27,7 +27,7 @@ A workflow verifies the artifact. The work controller observes execution; the wo
 | `src/work-*.ts`, `src/pi-child.ts`                                              | Background execution and child coordination | [Work](work.md)                                                                 |
 | `src/workspace-*.ts`                                                            | Authority and host adapters                 | [Workspace](workspace.md)                                                       |
 | `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts`  | Process observation and runtime claims      | [Workspace](workspace.md)                                                       |
-| `scripts/maintain.ts`, `scripts/pi-upgrade.ts`                                  | Installation maintenance                    | [Launcher](launcher.md#maintenance), [Pi upgrade](pi-upgrade.md)                |
+| `scripts/maintain.ts`, `scripts/upgrade.ts`, `scripts/pi-upgrade.ts`            | Installation maintenance and upgrades       | [Launcher](launcher.md#maintenance), [Upgrade](upgrade.md)                      |
 | `scripts/usage-*.ts`                                                            | Offline reports and exports                 | [Usage profile](usage-profile.md)                                               |
 | `profiles/`, `config/crew-dispatch.json`                                        | Guidance selection and dispatch policy      | [Launcher](launcher.md#profiles-and-resources), [dispatch](../config/README.md) |
 

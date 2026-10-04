@@ -47,7 +47,7 @@ dev
 | Inspect retained work and release worktrees | [Workspace](docs/workspace.md)         |
 | Understand long-session context handling    | [Compaction](docs/compaction.md)       |
 | Interpret private metrics or export charts  | [Usage profile](docs/usage-profile.md) |
-| Upgrade the installed Pi                    | [Pi upgrade](docs/pi-upgrade.md)       |
+| Upgrade Pi and dev's dependencies           | [Upgrade](docs/upgrade.md)             |
 | Change dev's code                           | [Development](docs/DEVELOPMENT.md)     |
 | Find components and decision records        | [Architecture](docs/ARCHITECTURE.md)   |
 | Look up domain terms                        | [CONTEXT](CONTEXT.md)                  |

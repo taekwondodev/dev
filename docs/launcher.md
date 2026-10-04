@@ -32,18 +32,18 @@ npm run setup -- --data-home PATH                       # initialize an explicit
 npm run update -- --remote origin --branch main         # fast-forward the checkout
 npm run rollback -- --ref REVISION                      # detach at a revision
 npm run profile [-- --data-home PATH]                   # private usage report
-npm run pi:verify [-- --version X.Y.Z]                   # verify a candidate; publish its pin PR on green
-npm run pi:update -- --version X.Y.Z                    # activate the verified, pinned Pi release
+npm run upgrade                                         # upgrade Pi and dependencies; publish one PR, red or green
+npm run pi:update                                       # activate the verified, pinned Pi release
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
-Close every dev TUI before setup, update, rollback or either Pi upgrade command: these take exclusive installation admission. Update, rollback and `pi:verify` require a clean checkout. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
+Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update reinstalls dependencies when the merged `package-lock.json` changed. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 
-Read [Pi upgrade](pi-upgrade.md) before verifying or activating a release, and [usage profile](usage-profile.md) for periods, metrics and public exports.
+Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage profile](usage-profile.md) for periods, metrics and public exports.
 
 ## Behavior
 
@@ -74,7 +74,7 @@ Independent repositories can share a data home. [Workspace](workspace.md) govern
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
-| `<installation>/.dev/pi-candidate/`                      | Last candidate `release/` and upgrade `report.md`                                                                             |
+| `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
 | `~/.pi/agent/auth.json`                                  | Pi authentication shared by the lead and children                                                                             |
 | `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates and managed worktrees                                                                   |
 
