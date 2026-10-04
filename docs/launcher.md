@@ -37,6 +37,8 @@ npm run pi:update                                       # activate the verified,
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
+Every maintenance command accepts `--help` and options written as `--flag value` or `--flag=value`. An unknown option or a stray argument is refused before the command acts.
+
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
 Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update reinstalls dependencies when the merged `package-lock.json` changed. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
