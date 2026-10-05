@@ -10,7 +10,13 @@ try {
   writeFileSync(blocked, '')
   for (const mode of ['enabled', 'disabled', 'unavailable'] as const) {
     const preload = `import assert from 'node:assert/strict';
-      import { getCompileCacheDir } from 'node:module';
+      import { getCompileCacheDir, registerHooks } from 'node:module';
+      registerHooks({
+        resolve(specifier, context, nextResolve) {
+          assert.notEqual(specifier, '@effect/platform-node', 'launcher startup must use specific platform modules');
+          return nextResolve(specifier, context);
+        },
+      });
       process.on('exit', () => assert.equal(getCompileCacheDir() !== undefined, ${mode === 'enabled'}));`
     const result = spawnSync(
       process.execPath,
@@ -37,7 +43,7 @@ try {
   assert.ok(
     readdirSync(join(sandbox, 'enabled', 'node-compile-cache'), { recursive: true }).length > 1
   )
-  console.log('launcher compile cache: enabled, disabled and unavailable startup passed')
+  console.log('launcher startup: specific platform imports and compile cache modes passed')
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }

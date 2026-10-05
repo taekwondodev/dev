@@ -51,7 +51,7 @@ Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage 
 
 ### Startup cache
 
-The launcher enables Node's best-effort module compile cache before loading its runtime and shares the cache location with the workspace worker. Subsequent launches can reuse compiled code; the first launch populates the cache. Profiles, resources and workspace state are still read and validated on every launch.
+The launcher enables Node's best-effort module compile cache before loading its runtime and shares the cache location with the workspace worker. Subsequent launches can reuse compiled code; the first launch populates the cache. Specific platform imports avoid loading unrelated dependencies during startup. Profiles, resources and workspace state are still read and validated on every launch.
 
 For runtime launches, the scoped workspace worker starts while Pi loads. Workspace attachment still waits for conversation checks; help, diagnostics and save-only commands do not start this worker. If startup fails, the worker is closed with the launcher's scope.
 

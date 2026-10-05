@@ -1,4 +1,4 @@
-import { NodeWorker } from '@effect/platform-node'
+import * as NodeWorker from '@effect/platform-node/NodeWorker'
 import {
   ByteSize,
   Clock,

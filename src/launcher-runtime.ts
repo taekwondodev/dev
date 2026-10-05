@@ -1,4 +1,5 @@
-import { NodeRuntime, NodeServices } from '@effect/platform-node'
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'

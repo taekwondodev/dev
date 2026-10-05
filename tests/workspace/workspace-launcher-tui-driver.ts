@@ -1,6 +1,6 @@
 import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { NodeRuntime } from '@effect/platform-node'
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import { Effect } from 'effect'
 import { launch } from '../../src/launcher-runtime.ts'
 import type { WorkspaceLifecycle } from '../../src/workspace-domain.ts'
