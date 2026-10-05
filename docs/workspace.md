@@ -61,7 +61,7 @@ External permits provide no cross-session file locking or cleanup ownership. Wor
 
 ### Process uses and gates
 
-A shell occupies only its checkout until its process group and every tracked descendant are observed gone. While a conversation has a live process, workspace switching or isolation is refused with guidance to wait or stop work. A process that detaches into its own session escapes observation. Lost observation records an `unknown` use, which blocks writers; no explicit recovery command exists yet.
+A shell occupies only its checkout until its process group and every tracked descendant are observed gone. While a conversation has a live process, workspace switching or isolation is refused with guidance to wait or stop the process. For work attempts, use `/work stop`; for lead shells, stop the process started through bash. `/work stop` does not stop lead shells. A process that detaches into its own session escapes observation. Lost observation records an `unknown` use, which blocks writers; no explicit recovery command exists yet.
 
 A child's use becomes `quiescent` when its process family is observed gone, or launch fails before a process starts. Once no other use, binding or pending switch needs access, that child no longer blocks the workspace. Its reservation and files remain retained until release.
 

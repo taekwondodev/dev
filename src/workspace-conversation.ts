@@ -271,8 +271,14 @@ export const assertNoLiveExecution = (
   const live = outgoingUses(authority, state, source.workspaceId).find(
     ({ use }) => use.execution !== undefined && use.stage !== 'quiescent' && use.stage !== 'unknown'
   )
-  if (live !== undefined)
+  if (live !== undefined) {
+    const { execution } = live.use
+    const guidance =
+      execution?.taskKey === 'lead-shell' && execution.generation === 'lead'
+        ? 'Wait for it to finish or stop the process started through bash; /work stop does not stop lead shells.'
+        : 'Wait for it to finish or stop it with /work stop.'
     blocked(
-      `This conversation still runs ${live.use.execution?.taskKey ?? 'a process'} (${live.use.stage}) in its workspace, so it cannot be ${action} yet. Wait for it to finish or stop it with /work stop.`
+      `This conversation still runs ${execution?.taskKey ?? 'a process'} (${live.use.stage}) in its workspace, so it cannot be ${action} yet. ${guidance}`
     )
+  }
 }
