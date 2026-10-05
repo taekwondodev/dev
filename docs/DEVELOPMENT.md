@@ -21,6 +21,10 @@ Install Pi with the [pi.dev installer](https://pi.dev). Dev follows `pi` on `PAT
 
 Checks and setup regenerate an ignored `node_modules/@earendil-works` link to that release's packages. Runtime and types therefore use the same Pi. Run `npm run types:pi` if an editor retains stale declarations after a Pi change. Missing declarations fail checks; do not compensate with ambient types or a private Pi copy. `DEV_PI_RELEASE` selects another managed release directory for both runtime and checking, including a verification candidate.
 
+### Pi integration limits
+
+Forking before the first user message can fail after a workspace rebind (#98); we leave this unfixed because dev-cycle does not use `/fork`.
+
 ## Find the owner
 
 [ARCHITECTURE](ARCHITECTURE.md#components) maps source areas to their behavior docs. [CONTEXT](../CONTEXT.md) owns vocabulary; [AGENTS.md](../AGENTS.md#conditional-references) owns mandatory reading triggers. Portable guidance belongs in profiles or the external shared library, not in this repository's entry point.
