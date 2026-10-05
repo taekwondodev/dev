@@ -367,9 +367,10 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
         state.record.cleanupError !== undefined || facts.cleanupError !== undefined
       let terminalStatus: 'completed' | 'failed' | 'cancelled' = 'failed'
       if (
-        exitCode === 0 &&
+        typeof exitCode === 'number' &&
+        state.record.signal === null &&
         state.record.error === undefined &&
-        (state.record.kind === 'process' || state.resultReceived)
+        (state.record.kind === 'process' || (exitCode === 0 && state.resultReceived))
       )
         terminalStatus = 'completed'
       if (state.record.cancelRequestedAt !== undefined && state.record.protocolError === undefined)

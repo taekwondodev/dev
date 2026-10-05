@@ -11,6 +11,32 @@ try {
   const owner = fixture.openOwner('general')
   try {
     await claim(
+      'normally exited commands complete regardless of exit code and retain their code in inspection and delivery',
+      async () => {
+        for (const exitCode of [0, 1, 7]) {
+          const started = await owner.call(actions =>
+            actions.startProcess({ taskId: `exit-${exitCode}`, command: `exit ${exitCode}` })
+          )
+          const outcome = await owner.outcome(started.id)
+          assertStatus(outcome, 'completed')
+          assert.equal(outcome.exitCode, exitCode)
+          const inspected = await owner.call(actions => actions.inspect(started.id))
+          assertStatus(inspected, 'completed')
+          assert.equal(inspected.exitCode, exitCode)
+          assert.equal(inspected.signal, null)
+        }
+      }
+    )
+    await claim('an unexpected signal termination remains failed', async () => {
+      const started = await owner.call(actions =>
+        actions.startProcess({ taskId: 'unexpected-signal', command: 'kill -TERM $$' })
+      )
+      const outcome = await owner.outcome(started.id)
+      assertStatus(outcome, 'failed')
+      assert.equal(outcome.exitCode, null)
+      assert.equal(outcome.signal, 'SIGTERM')
+    })
+    await claim(
       'concurrent cancellations of one attempt send its child one cancel message and settle it as cancelled',
       async () => {
         const started = await owner.delegate({

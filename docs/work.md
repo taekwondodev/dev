@@ -64,6 +64,8 @@ A coordinator's cancellation, failure or exit stops its leaves, including leaves
 
 ### Failures and visibility
 
+A local command that exits normally is `completed`, even with a nonzero exit code. Inspection and outcome delivery retain `exitCode`; completion does not mean a test passed or the command achieved its goal. `failed` indicates an execution failure, such as a process error or unexpected signal termination, or a child that could not return normally because of a provider, launch or protocol failure. Requested interruption remains `cancelled`; unobserved termination remains `unknown`.
+
 Subscription exhaustion from any attempt, including a leaf, blocks new agents and automatic continuation for the rest of the session; another user message does not clear it. Existing commands finish and their outcomes are recorded. A final lead provider or transport failure after Pi retries suspends automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
 
 The status line shows states, active models and context pressure, with leaves as `coordinator>leaf`. Inspection includes parent, invoked skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator, with unavailable values distinct from zero. A deferred workspace gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains its retry boundary.
