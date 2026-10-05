@@ -593,6 +593,51 @@ try {
     }
   )
 
+  await claim(
+    'workspace switch refusals distinguish lead-shell recovery from work cancellation, even when a work task is named lead-shell',
+    async () => {
+      const guidanceRoot = await openLifecycle({ root: join(sandbox, 'guidance-authority') })
+      const attachment = await guidanceRoot.attach({
+        conversation: conversation('guidance'),
+        cwd: repo,
+      })
+      try {
+        const writer = ready(await attachment.authorize({ kind: 'write' }))
+        const { taskId } = writer
+        assert.ok(taskId, 'the writer has a task to select')
+        for (const [taskKey, generation, guidance] of [
+          [
+            'lead-shell',
+            'lead',
+            'Wait for it to finish or stop the process started through bash; /work stop does not stop lead shells.',
+          ],
+          ['work-task', 'work-generation', 'Wait for it to finish or stop it with /work stop.'],
+          ['lead-shell', 'work-generation', 'Wait for it to finish or stop it with /work stop.'],
+        ]) {
+          const execution = { ...processExecution(taskKey), taskKey, generation }
+          const use = ready(
+            await attachment.authorize({ kind: 'opaque', within: writer, execution })
+          )
+          await startProcessUse(attachment, use, execution)
+          await attachment.reportExecution(use, { kind: 'observed', processes: [liveProcess] })
+          await assert.rejects(
+            attachment.select({ taskId }),
+            error =>
+              error instanceof WorkspaceError &&
+              error.outcome === 'blocked' &&
+              error.message ===
+                `This conversation still runs ${taskKey} (observed) in its workspace, so it cannot be switched yet. ${guidance}`
+          )
+          await endProcessUse(attachment, use)
+        }
+        assert.equal((await attachment.select({ taskId })).target.workspaceId, writer.workspaceId)
+      } finally {
+        await attachment.close()
+        await guidanceRoot.close()
+      }
+    }
+  )
+
   const isolatedAuthorityPath = join(sandbox, 'isolated-authority')
   const isolatedExecution = (attemptId: string) => ({
     sessionId: 'isolated-session',
