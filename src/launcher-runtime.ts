@@ -662,6 +662,8 @@ const run = Effect.fnUntraced(function* (
     )
       return
   }
+  const prepareLifecycle = yield* Effect.cached(dependencies.workspaceLifecycle)
+  if (!options.diagnostics) yield* prepareLifecycle
   const guard = createSessionGuard(lease)
   const { api, packageInfo } = yield* loadPi
   const sessionsPath = yield* sessionDir(dataHome).pipe(
@@ -715,7 +717,7 @@ const run = Effect.fnUntraced(function* (
     })
     return
   }
-  const workspaceLifecycle = yield* dependencies.workspaceLifecycle
+  const workspaceLifecycle = yield* prepareLifecycle
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
     return yield* new LauncherError({

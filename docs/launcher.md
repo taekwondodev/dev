@@ -53,6 +53,8 @@ Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage 
 
 The launcher enables Node's best-effort module compile cache before loading its runtime and shares the cache location with the workspace worker. Subsequent launches can reuse compiled code; the first launch populates the cache. Profiles, resources and workspace state are still read and validated on every launch.
 
+For runtime launches, the scoped workspace worker starts while Pi loads. Workspace attachment still waits for conversation checks; help, diagnostics and save-only commands do not start this worker. If startup fails, the worker is closed with the launcher's scope.
+
 Node stores the cache under the operating system's temporary directory (`node-compile-cache`), or the location selected by `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup. Node owns cache invalidation when source or runtime changes; no rebuild or cache reset is needed after editing dev.
 
 ### Profiles and resources
