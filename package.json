@@ -40,9 +40,9 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0",
-    "@effect/platform-node-shared": "4.0.0",
-    "effect": "4.0.0"
+    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node-shared": "4.0.1",
+    "effect": "4.0.1"
   },
   "devDependencies": {
     "@effect/tsgo": "0.48.0",
@@ -53,10 +53,10 @@
     "typescript": "7.0.2"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0"
+    "@effect/platform-node-shared": "4.0.1"
   },
   "config": {
-    "pi": "1.0.2"
+    "pi": "1.0.3"
   },
   "engines": {
     "node": ">=26.0.0"
