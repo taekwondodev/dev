@@ -156,8 +156,9 @@ try {
 
   const driver = `
     import { NodeRuntime } from '@effect/platform-node'
+    import { Worker } from 'node:worker_threads'
     import { Effect } from 'effect'
-    import { launch } from ${JSON.stringify(new URL('../../src/launcher.ts', import.meta.url).href)}
+    import { launch } from ${JSON.stringify(new URL('../../src/launcher-runtime.ts', import.meta.url).href)}
     import { WorkspaceError } from ${JSON.stringify(new URL('../../src/workspace-domain.ts', import.meta.url).href)}
     import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
     const root = process.env.LAUNCHER_CHECK_ROOT
@@ -181,7 +182,15 @@ try {
     const workspaceLifecycle = Effect.suspend(() =>
       root === undefined || root.length === 0
         ? Effect.die(new Error('the launcher check requires a temporary authority root'))
-        : makeWorkspaceLifecycle({ root }).pipe(
+        : makeWorkspaceLifecycle({
+            root,
+            startWorker: (url, options) => {
+              const worker = new Worker(url, options)
+              if (process.env.REPORT_OPEN === '1')
+                worker.on('exit', () => process.stderr.write('authority worker exited\\n'))
+              return worker
+            },
+          }).pipe(
             Effect.map(lifecycle => {
               if (process.env.REPORT_OPEN === '1') process.stderr.write('authority opened\\n')
               return process.env.STOP_AFTER_ATTACH === '1' ? stopAfterAttach(lifecycle) : lifecycle
@@ -219,6 +228,30 @@ try {
       )
       launches.add(launch)
     })
+  await claim(
+    'runtime startup acquires one worker before loading Pi and closes it on load failure without provisioning authority storage; non-runtime modes acquire none',
+    async () => {
+      const unopenedRoot = join(sandbox, 'prestarted-authority')
+      const home = join(sandbox, 'prestarted-home')
+      mkdirSync(join(home, '.agents', 'skills'), { recursive: true })
+      const env = { HOME: home, LAUNCHER_CHECK_ROOT: unopenedRoot, REPORT_OPEN: '1' }
+      const failed = await runLauncher(['--cwd', repo, '--data-home', dataHome], {
+        ...env,
+        DEV_PI_RELEASE: join(sandbox, 'missing-pi'),
+      })
+      assert.equal(failed.code, 1, failed.stderr)
+      assert.match(failed.stderr, /Cannot read the Pi release/)
+      assert.equal(failed.stderr.split('authority opened').length - 1, 1, failed.stderr)
+      assert.match(failed.stderr, /authority worker exited/)
+      assert.ok(!existsSync(unopenedRoot))
+      for (const mode of [['--help'], ['--diagnostics'], ['--save-profile', 'general']]) {
+        const result = await runLauncher([...mode, '--cwd', repo, '--data-home', dataHome], env)
+        assert.equal(result.code, 0, result.stderr)
+        assert.ok(!result.stderr.includes('authority opened'), result.stderr)
+        assert.ok(!existsSync(unopenedRoot))
+      }
+    }
+  )
   const resumeArgs = (resumed: string) => [
     '--resume',
     resumed,
@@ -304,9 +337,11 @@ try {
       mkdirSync(join(probeHome, '.agents', 'skills'), { recursive: true })
       const probed = await runLauncher(
         ['--probe-runtime', '--cwd', repo, '--data-home', dataHome, '--profile', 'general'],
-        { HOME: probeHome, LAUNCHER_CHECK_ROOT: join(sandbox, 'probe-authority') }
+        { HOME: probeHome, LAUNCHER_CHECK_ROOT: join(sandbox, 'probe-authority'), REPORT_OPEN: '1' }
       )
       assert.equal(probed.code, 0, probed.stderr)
+      assert.equal(probed.stderr.split('authority opened').length - 1, 1, probed.stderr)
+      assert.match(probed.stderr, /authority worker exited/)
       assert.match(probed.stdout, /^runtime probe: ok$/m)
       assert.ok(existsSync(join(probeHome, '.pi', 'agent')), 'Pi kept its state in the probe HOME')
     }

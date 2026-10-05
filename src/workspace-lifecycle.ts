@@ -1,3 +1,4 @@
+import { getCompileCacheDir } from 'node:module'
 import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threads'
 import {
   type Cause,
@@ -98,10 +99,14 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   let nextRequestId = 0
   let nextCallbackId = 0
 
+  const compileCacheDir = getCompileCacheDir()
   const worker = yield* Effect.acquireRelease(
     Effect.sync(() =>
       startWorker(new URL('./workspace-worker.ts', import.meta.url), {
         workerData: options?.root === undefined ? {} : { root: options.root },
+        ...(compileCacheDir === undefined
+          ? {}
+          : { env: { ...process.env, NODE_COMPILE_CACHE: compileCacheDir } }),
         execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
       })
     ),

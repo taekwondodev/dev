@@ -17,7 +17,7 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
-import { sweepAtQuit } from '../../src/launcher.ts'
+import { sweepAtQuit } from '../../src/launcher-runtime.ts'
 import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../../src/workspace-command.ts'
 import { WorkspaceError, type WorkspaceView } from '../../src/workspace-domain.ts'
 import {

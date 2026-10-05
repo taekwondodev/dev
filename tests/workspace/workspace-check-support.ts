@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
-import { NodeServices } from '@effect/platform-node'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Exit, Layer, Scope } from 'effect'
 import type * as Pi from '../../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
 import type * as PiEventStream from '../../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
@@ -10,7 +10,7 @@ import type {
   AssistantMessage,
   Model,
 } from '../../node_modules/@earendil-works/pi-ai/dist/index.js'
-import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher.ts'
+import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher-runtime.ts'
 import { WorkOwner } from '../../src/work-controller.ts'
 import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'
