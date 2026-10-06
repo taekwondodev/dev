@@ -14,6 +14,8 @@ try {
       registerHooks({
         resolve(specifier, context, nextResolve) {
           assert.notEqual(specifier, '@effect/platform-node', 'launcher startup must use specific platform modules');
+          if (specifier === './launcher-runtime.ts')
+            assert.equal(process.env.DEV_CODING_AGENT, 'true', 'launcher sets its identity before loading the runtime');
           return nextResolve(specifier, context);
         },
       });
