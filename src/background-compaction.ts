@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Fiber, Option, Schema } from 'effect'
 import type {
   AgentSession,
   BoundaryState,
   BoundaryResult,
+  CompactionEntry,
   CompactionEntryDraft,
   ExtensionFactory,
   ProjectedSessionEntry,
@@ -36,6 +37,10 @@ const FileLists = Schema.Struct({
 const decodeFileLists = Schema.decodeUnknownOption(FileLists)
 type Stream = AgentSession['agent']['streamFunction']
 type Model = NonNullable<AgentSession['model']>
+type RequestUpdate = Exclude<
+  Awaited<ReturnType<NonNullable<AgentSession['agent']['prepareRequest']>>>,
+  void
+>
 
 interface Preparation {
   readonly id: typeof PreparationId.Type
@@ -99,7 +104,10 @@ const updateActivity = (job: Preparation, active: boolean, now: number) => {
   timing.activeSince = active ? now : undefined
 }
 
-const matchesCommit = (entry: SessionEntry, proposed: CompactionEntryDraft) =>
+const matchesCommit = (
+  entry: SessionEntry,
+  proposed: CompactionEntryDraft
+): entry is CompactionEntry =>
   entry.type === 'compaction' &&
   entry.fromHook === true &&
   entry.summary === proposed.summary &&
@@ -150,11 +158,26 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
   let removeInput: (() => void) | undefined
   let unsubscribe: (() => void) | undefined
   let publication: { readonly entry: CompactionEntryDraft; readonly job: Preparation } | undefined
+  let announcement: Fiber.Fiber<void> | undefined
   const fencedRunners = new WeakSet<AgentSession['extensionRunner']>()
   const takePublication = () => {
     const proposed = publication
     publication = undefined
     return proposed
+  }
+
+  const announce = (active: AgentSession, compactionEntry: CompactionEntry) => {
+    announcement = runFork(
+      Effect.promise(() =>
+        active.extensionRunner.emit({
+          type: 'session_compact',
+          compactionEntry,
+          fromExtension: true,
+          reason: 'threshold',
+          willRetry: false,
+        })
+      ).pipe(Effect.ignoreCause)
+    )
   }
 
   const endPreparation = (
@@ -259,6 +282,8 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
     )
     endPreparation(ready.job, { kind: 'applied', placement: 'idle', entryId })
     active.refreshContext()
+    const entry = active.sessionManager.getEntry(entryId)
+    if (entry?.type === 'compaction') announce(active, entry)
   }
 
   const generate = Effect.fnUntraced(function* (job: Preparation) {
@@ -544,6 +569,12 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
       invalidate('suspended', 'reload')
       return reload(options)
     }
+    const { prepareRequest } = active.agent
+    active.agent.prepareRequest = async (request, signal): Promise<RequestUpdate | undefined> => {
+      const pending = announcement
+      if (pending) await Effect.runPromiseWith(services)(Fiber.await(pending))
+      return (await prepareRequest?.(request, signal)) || undefined
+    }
     const navigate = active.navigateTree.bind(active)
     active.navigateTree = (target, options) => {
       invalidate('suspended', 'navigation')
@@ -574,12 +605,14 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
         const proposed = pendingCommit
         if (proposed.remaining-- === 0) {
           pendingCommit = undefined
-          if (matchesCommit(event.entry, proposed.entry))
+          if (matchesCommit(event.entry, proposed.entry)) {
             endPreparation(proposed.job, {
               kind: 'applied',
               placement: 'boundary',
               entryId: event.entry.id,
             })
+            announce(active, event.entry)
+          }
         }
       } else if (event.type === 'agent_start' || event.type === 'agent_end') {
         if (state.phase === 'preparing')
