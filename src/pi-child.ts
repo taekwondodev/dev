@@ -753,7 +753,6 @@ const acquireSession = Effect.fn('acquireSession')(function* (
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
           appendSystemPrompt: [resources.guidance, childBrief(request, resources)].filter(Boolean),
-          noExtensions: request.access === 'read-only',
           extensionFactories: [
             { name: 'dev:background-compaction', factory: compaction.factory },
             {

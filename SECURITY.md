@@ -7,7 +7,7 @@ Dev is a personal agent distro built on top of Pi, for one person. Its trust mod
 Dev runs the following as trusted code, with the permissions of the account that launches it:
 
 - The Pi release the pi.dev installer manages in `~/.pi/agent/install/` (`@earendil-works/pi-coding-agent` with its locked dependencies) and its native tools.
-- Every extension, package, prompt and theme Pi loads from its global agent directory. Dev does not review, filter or sandbox them: whatever is installed there is trusted as your own. Their presentation, status, notification and preference effects need no workspace admission.
+- Every extension, package, prompt and theme Pi loads from its global agent directory. Dev does not review, filter or sandbox them: whatever is installed there is trusted as your own. They load in the lead and in every child, read-only children included. Their presentation, status, notification and preference effects need no workspace admission.
 - Dev's own extensions: the `work` tool, the `workspace` tool and the workspace host. A child the lead authorized to coordinate gets a scoped `work` tool: every request it makes is admitted by the lead's controller, which takes the requester's identity from its IPC channel and never grants more than the coordinator's own access.
 - Project resources under `.pi/` of a folder you trusted through Pi's folder trust. They load as Pi loads them, before workspace admission. A folder you have not trusted loads no project resources.
 - The workflow skill library the launcher requires at `~/.agents/skills` and the profile skills under `profiles/`.
@@ -35,6 +35,7 @@ Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's 
 ## Outside the protection
 
 - No OS sandbox: read-only tools, workspace admission and process observation constrain cooperating dev participants, not arbitrary programs, Xcode, external terminals or code that a trusted extension runs.
+- A read-only child is read-only only through its tool allowlist. Global extensions still initialize and run their event handlers in it, including while it reads the lead's or a coordinator's admitted workspace. A provider that runs its own agent, such as `pi-claude-bridge`, also brings that agent's configuration, including project configuration that Pi folder trust does not gate, and can reach tools outside the allowlist.
 - A child runs with the lead's environment: `NODE_OPTIONS` and every other variable of the shell that launched dev reach it unchanged; the controller sets only the data home and the Pi agent directory.
 - A process that detaches into its own session escapes observation; what a lost observation does to its checkout is in [workspace](docs/workspace.md#behavior).
 - During a release, a process outside dev can move a selected file's parent and redirect the deletion; dev does not guarantee atomic filesystem containment against concurrent external changes. Stop independently started tools and avoid external edits while a release runs.
