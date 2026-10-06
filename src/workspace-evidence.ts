@@ -1171,9 +1171,8 @@ export const integrationFacts = (
         commitPresent
       )
       if (
-        containsHead.kind === 'yes' &&
-        (input.completionRole === 'branch' ||
-          (input.completionRole === 'child' && descendsFromBase.kind === 'yes'))
+        (input.completionRole === 'branch' && containsHead.kind === 'yes') ||
+        (input.completionRole === 'child' && descendsFromBase.kind === 'yes')
       )
         return {
           tip: tip.sha,
