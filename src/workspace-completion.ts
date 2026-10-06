@@ -8,7 +8,7 @@ import type {
   WorkspaceRole,
 } from './workspace-domain.ts'
 
-export const COMPLETION_POLICY_VERSION = 2
+export const COMPLETION_POLICY_VERSION = 3
 
 export type Proof =
   | { readonly kind: 'yes'; readonly reason: string }
@@ -235,33 +235,11 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
 
   if (role === 'child') {
     const delivered = delivery(integration, pullRequest => pullRequest.descendsFromBase)
-    if (delivered.proven !== undefined) {
-      const kept = delivery(integration, pullRequest => pullRequest.containsHead)
-      const commitsKept =
-        facts.ownCommits === false ||
-        integration.headInTip.kind === 'yes' ||
-        kept.proven !== undefined
-      if (commitsKept)
-        return finish(
-          'child-delivered',
-          `${delivered.proven.label}, found through ${seedText(delivered.proven.seeds)}: ${delivered.proven.descendsFromBase.reason}`
-        )
-      if (facts.ownCommits === undefined)
-        return retain(
-          'integration-unknown',
-          "Commits on this child's HEAD beyond its base cannot be determined, so its removal could orphan them."
-        )
-      const unproven = [...unknownReason(integration.headInTip), ...kept.unknown]
-      return unproven.length > 0
-        ? retain(
-            'integration-unknown',
-            `Whether this child's own commits are kept cannot be proven: ${unproven.join('; ')}`
-          )
-        : retain(
-            'not-integrated',
-            "This child's own commits are in no merged pull request or target, so no ref would keep them after removal."
-          )
-    }
+    if (delivered.proven !== undefined)
+      return finish(
+        'child-delivered',
+        `${delivered.proven.label}, found through ${seedText(delivered.proven.seeds)}: ${delivered.proven.descendsFromBase.reason}`
+      )
     return undecided(
       delivered.unknown,
       refutations(integration, pullRequest => pullRequest.descendsFromBase),

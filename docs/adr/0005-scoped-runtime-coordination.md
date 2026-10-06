@@ -63,7 +63,7 @@ The [automatic-release decision](https://github.com/taekwondodev/dev/issues/44) 
 Preserve these non-obvious evidence constraints when changing predicates:
 
 - Missing identity, unresolved transitions or live/unknown/abandoned uses retain. A missing directory without dev's own interrupted removal is not proof of completion.
-- A paused branch at its allocation base is trivially in the target, so delivery requires its own commits. A detached child's delivery PR must strictly descend from its base, postdate allocation and have its merge result reachable from the target; its own commits must also be kept.
+- A paused branch at its allocation base is trivially in the target, so delivery requires its own commits. A detached child's delivery PR must strictly descend from its base, postdate allocation and have its merge result reachable from the target; [its own commits may be discarded](https://github.com/taekwondodev/dev/issues/123) because the task PR is the delivery evidence even when the lead integrated the child's work by patch.
 - Sibling evidence comes from the task's managed workspaces with own commits, reserved or removed by a confirmed release. A PR found only through a sibling must contain that sibling's HEAD. Unreadable evidence stays unknown, not refuted.
 - A target override naming the workspace's own branch, remote alias or push destination proves nothing. A differently named configured upstream can be valid. Derive a target only when integration proof is needed.
 - Merged-PR evidence binds independent provider facts to the exact merged source revision. Today's branch tip alone cannot prove what merged. An identical provider read is shared within the request, and late evidence is unavailable.

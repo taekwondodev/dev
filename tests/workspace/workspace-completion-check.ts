@@ -133,7 +133,7 @@ const rows: readonly Row[] = [
     mentions: ['#41', 'base seed'],
   },
   {
-    name: 'a dirty child with own commits whose descending PR is proven while keeping its commits is not',
+    name: 'a dirty child with a proven descending PR finishes despite unknown HEAD proofs and an unpushed commit lookup',
     facts: managed({
       residue: { tracked: 1, untracked: 0, ignored: 0 },
       ownCommits: true,
@@ -141,6 +141,7 @@ const rows: readonly Row[] = [
         headInTip: unknown(
           'the target tip is not local and the provider comparison is unavailable'
         ),
+        unknown: ['GitHub pull requests for the unpushed child HEAD: HTTP 422'],
         pullRequests: [
           pullRequest(41, ['base'], {
             containsHead: unknown('taekwondodev/dev#41 source history is shallow'),
@@ -149,10 +150,27 @@ const rows: readonly Row[] = [
         ],
       }),
     }),
-    expected: 'retained:integration-unknown',
+    expected: 'child-delivered',
     role: 'child',
-    mentions: ['shallow', 'not local'],
+    mentions: ['#41', 'base seed'],
   },
+  ...[true, undefined].map((ownCommits): Row => ({
+    name: `a clean child with ${ownCommits === true ? 'own' : 'undetermined own'} commits finishes through a descending PR that does not keep its HEAD`,
+    facts: managed({
+      ownCommits,
+      integration: integration({
+        pullRequests: [
+          pullRequest(41, ['sibling'], {
+            containsHead: no('the merged source does not contain the child HEAD'),
+            descendsFromBase: yes('taekwondodev/dev#41 merged source descends from base a6013cb'),
+          }),
+        ],
+      }),
+    }),
+    expected: 'child-delivered',
+    role: 'child',
+    mentions: ['#41', 'sibling seed'],
+  })),
   {
     name: 'the clean detached worktrees at their bases, 983f8a4 and the contention worktree 64e0b23b of task d9fdcf2d at a6013cb',
     facts: managed({ allocation: 'checkout-contention' }),

@@ -85,7 +85,7 @@ At quit and before managed allocation, dev assesses every task of the repository
 | `no-residue`       | A managed workspace has no remaining work under the completion rules                                         |
 | `branch-merged`    | A bound merged PR's source includes the workspace HEAD                                                       |
 | `branch-in-target` | The workspace HEAD is included in its target                                                                 |
-| `child-delivered`  | Task PR evidence establishes delivery of a delegated child's committed work                                  |
+| `child-delivered`  | Task PR evidence establishes delivery of a delegated child; its own commits need not survive                 |
 
 These are verdict labels, not manual deletion predicates: use `check` to see the assessment. Ignored files alone do not block completion, but unsafe filesystem structure can still block removal.
 

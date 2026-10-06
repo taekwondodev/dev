@@ -1666,6 +1666,26 @@ try {
       assert.equal(explicitProof.pullRequests[0]?.containsHead.kind, 'yes')
       assert.equal(explicitProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
       assert.equal(discoveryCalls, 0, 'a sufficient recorded PR proof skips commit-to-PR discovery')
+      const childProof = integrationFacts(
+        reader({
+          mergedPullRequestsForCommit: () => {
+            discoveryCalls += 1
+            return { unavailable: 'HTTP 422: child commit never pushed' }
+          },
+        }),
+        worktree,
+        {
+          target: explicit,
+          completionRole: 'child',
+          head: extendedSource,
+          base: githubMain,
+          allocatedAt: Date.parse(MERGED_AT) - 60_000,
+          siblings: { heads: [], unknown: [] },
+        }
+      )
+      assert.equal(childProof.pullRequests[0]?.containsHead.kind, 'no')
+      assert.equal(childProof.pullRequests[0]?.descendsFromBase.kind, 'yes')
+      assert.equal(discoveryCalls, 0, 'a recorded child delivery PR skips unpushed HEAD discovery')
       let graphqlCalls = 0
       const batchedReader = makeGitHubReader(
         () => {
@@ -2040,7 +2060,7 @@ try {
     }
   )
   await claim(
-    'a delegated child is delivered by a pull request merged after its allocation whose source strictly descends from its base, found through a task-owned sibling HEAD it contains, its base or the recorded pull request; any refuted condition, or own commits no merged source or target keeps, leaves it not integrated, while unreadable sibling history leaves it unknown',
+    'a delegated child is delivered by a pull request merged after its allocation whose source strictly descends from its base, found through a task-owned sibling HEAD it contains, its base or the recorded pull request, even if no merged source or target keeps its own commits; any refuted delivery condition leaves it not integrated, while unreadable sibling history leaves it unknown',
     () => {
       const allocatedAt = Date.parse(MERGED_AT) - 60_000
       const childVerdict = (
@@ -2088,6 +2108,12 @@ try {
         { ...target, pullRequest: 7 }
       )
       assert.equal(verdictName(recorded), 'child-delivered', recorded.reason)
+      const patched = childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
+        base: githubMain,
+        head: extendedSource,
+        siblings: [],
+      })
+      assert.equal(verdictName(patched), 'child-delivered', patched.reason)
       const cases = [
         [
           'no seed finds a merged pull request',
@@ -2123,14 +2149,6 @@ try {
           childVerdict(reader({ mergedPullRequestsForCommit: seeded(extendedSource) }), {
             base: githubMain,
             siblings: [extendedSource],
-          }),
-        ],
-        [
-          "the child's own commits are in no merged pull request or target",
-          childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
-            base: githubMain,
-            head: extendedSource,
-            siblings: [],
           }),
         ],
       ] as const

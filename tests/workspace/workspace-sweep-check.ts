@@ -637,7 +637,7 @@ try {
   )
 
   await claim(
-    "quit prefetch starts every task's recorded pull request read while the first task still awaits its evidence, and the gated release removes the delivered worktree on that request-scoped evidence",
+    "quit prefetch starts every task's recorded pull request read while the first task still awaits its evidence, and gated release removes both the delivered branch and a patch-integrated child on that request-scoped evidence",
     async () => {
       const asyncRepo = join(sandbox, 'async-overlap-repo')
       mkdirSync(asyncRepo)
@@ -655,6 +655,13 @@ try {
       git(['add', 'feature.txt'], child.checkout)
       git(['commit', '--quiet', '-m', 'delivered'], child.checkout)
       const head = git(['rev-parse', 'HEAD'], child.checkout)
+      const patched = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
+      writeFileSync(join(patched.checkout, 'feature.txt'), 'delivered\n')
+      git(['add', 'feature.txt'], patched.checkout)
+      git(['commit', '--quiet', '-m', 'child delivered by patch'], patched.checkout)
+      const patchedHead = git(['rev-parse', 'HEAD'], patched.checkout)
+      assert.notEqual(patchedHead, head)
+      assert.ok(!git(['rev-list', head], asyncRepo).split('\n').includes(patchedHead))
       await owner.owner.close()
       git(['merge', '--quiet', '--ff-only', deliveryBranch], asyncRepo)
       await lifecycle.recordTarget(owner.taskId, {
@@ -752,6 +759,11 @@ try {
         assert.equal(verdictName(row.verdict), 'branch-merged', row.reason)
         assert.equal(row.outcome, 'removed', row.reason)
         assert.ok(!existsSync(child.checkout), 'the gated release removed the delivered worktree')
+        const patchedRow = rowOf(receipt, patched.workspaceId)
+        assert.equal(verdictName(patchedRow.verdict), 'child-delivered', patchedRow.reason)
+        assert.equal(patchedRow.outcome, 'removed', patchedRow.reason)
+        assert.ok(!existsSync(patched.checkout), 'gated release discarded the original child work')
+        assert.ok(!git(['worktree', 'list', '--porcelain'], asyncRepo).includes(patched.checkout))
         assert.equal(graphqlCalls, 1, 'gated re-assessment reuses the request-scoped evidence')
         assert.equal(synchronousGraphqlCalls, 0)
       } finally {
