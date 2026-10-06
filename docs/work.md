@@ -32,11 +32,11 @@ Writer attempts show their managed-worktree path as `blocked` while use is unres
 
 A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions in the requested directory, under the lead checkout's writer admission. A delegated writer receives a distinct worktree from the lead's exact current commit: modified, untracked and ignored files are not copied. Its reservation outlives the attempt.
 
-A read-only child has inspection tools, no shell or edit tools. Every child receives project instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Writing children use the same [native destination policy](workspace.md#native-writes) as the lead, with controller checks through the file-operation boundary.
+A read-only child loads the same global extensions as a writing child, so it can use every model their providers register. Its tools are an allowlist: inspection tools, plus `work` for a coordinator, with no shell, edit or extension tool. An extension tool that reuses an inspection tool's name is blocked, so the child loses that tool. Every child receives project instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Writing children use the same [native destination policy](workspace.md#native-writes) as the lead, with controller checks through the file-operation boundary.
 
 Pi expands a verified leading skill invocation once in the first user message, including hidden skills. Unknown or unreadable skills and extension-command collisions fail before a model request. Other commands and prompt templates are not expanded. The attempt records the invoked skill, not every skill the child later reads.
 
-Every child has independent [background compaction](compaction.md), including read-only children without enabling ordinary extensions.
+Every child has independent [background compaction](compaction.md).
 
 Command text must follow the [credential rule](../SECURITY.md#credentials). Process separation and read-only tools are not an OS sandbox.
 

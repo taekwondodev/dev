@@ -87,7 +87,7 @@ const observedRun = (file: string | undefined) => {
 const owner = fixture.openOwner()
 try {
   await claim(
-    'read-only and writable children independently compact through actual composition without enabling ordinary extensions for read-only children',
+    'read-only and writable children independently compact through actual composition and both load ordinary global extensions',
     async () => {
       const readonly = await owner.run({
         taskId: 'readonly-compaction',
@@ -96,7 +96,7 @@ try {
       assertStatus(readonly.view, 'completed')
       assert.equal(readonly.text, 'REVIEW-COMPLETE')
       assert.ok(entries(readonly.view.sessionFile).some(entry => entry.type === 'compaction'))
-      assert.equal(existsSync(marker), false)
+      assert.equal(readFileSync(marker, 'utf8'), 'loaded\n')
       assert.equal(existsSync(projectMarker), false)
       assert.deepEqual(
         readonly.view.resources?.tools.filter(name => ['write', 'edit', 'bash'].includes(name)),
@@ -111,10 +111,7 @@ try {
       assertStatus(writer.view, 'completed')
       assert.equal(writer.text, 'REVIEW-COMPLETE')
       assert.ok(entries(writer.view.sessionFile).some(entry => entry.type === 'compaction'))
-      assert.ok(
-        existsSync(marker),
-        'the control writer actually loaded the ordinary global extension'
-      )
+      assert.equal(readFileSync(marker, 'utf8'), 'loaded\nloaded\n')
       assert.ok(writer.view.resources?.tools.includes('write'))
       assert.notEqual(writer.view.sessionFile, readonly.view.sessionFile)
       assert.notEqual(observedRun(writer.view.sessionFile), observedRun(readonly.view.sessionFile))
