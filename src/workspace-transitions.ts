@@ -30,7 +30,6 @@ import {
 import { acquirePathGates, releaseGates } from './workspace-gates.ts'
 import {
   assertNoUnresolvedRelease,
-  cancelUnstartedReleases,
   getReservation,
   updateReservation,
   getBinding,
@@ -187,7 +186,6 @@ export const selectWorkspace = (
           acquisitionId,
           revision: reservation.revision + 1,
         })
-        cancelUnstartedReleases(db, target.workspace.id, 'Superseded by an explicit resume')
         putUse(db, use)
         putOperation(db, operation)
         if (source.repo === target.repo) {

@@ -456,7 +456,7 @@ try {
       })
       const receiptView = receipts.find(view => view.workspaceId === finished.workspaceId)
       assert.equal(receiptView?.outcome, 'removed')
-      assert.ok(receiptView?.reason.startsWith('Automatic at quit'), receiptView?.reason)
+      assert.ok(receiptView?.reason.startsWith('By the sweep at quit'), receiptView?.reason)
     }
   )
   await liveOwner.owner.close()
@@ -625,7 +625,6 @@ try {
         assert.equal(before.retained, 'not-integrated')
         rmSync(sibling.checkout, { recursive: true, force: true })
         const view = assessment()
-        assert.equal(view.outcome, 'review-required')
         assert.ok(view.completion.kind === 'retained')
         assert.equal(view.completion.retained, 'integration-unknown')
         assert.ok(view.completion.reason.includes(sibling.workspaceId), view.completion.reason)
@@ -769,29 +768,6 @@ try {
       } finally {
         authority.close()
       }
-    }
-  )
-
-  await claim(
-    'an explicit release through the authority refuses an automatic decider; only the sweep attempts automatically',
-    async () => {
-      const [assessment] = await lifecycle.check(dirtyOwner.taskId)
-      assert.ok(assessment !== undefined)
-      await assert.rejects(
-        lifecycle.release({
-          taskId: dirtyOwner.taskId,
-          commandId: newId(),
-          decided: [assessment.subject],
-          decider: { kind: 'completion', policyVersion: 2, moment: 'quit' },
-          workspaceId: assessment.workspaceId,
-          occupiedPaths: [],
-        }),
-        (cause: unknown) => cause instanceof WorkspaceError && cause.outcome === 'invalid'
-      )
-      assert.equal(
-        readFileSync(join(dirtyCheckout, 'tracked.txt'), 'utf8'),
-        'uncommitted user edit\n'
-      )
     }
   )
 
@@ -949,53 +925,35 @@ try {
   }
 
   await claim(
-    'a sweep interrupted after its release intent, or between two selected-file deletions, is observed and closed by the next sweep, which attempts the worktree afresh and removes it',
+    'a sweep interrupted after recording its removal, or right after Git removed the worktree, leaves the release unfinished: later sweeps retain it as release-review and dev workspace release finishes it',
     async () => {
-      const intent = await finishedWithReports('intent', ['report.txt'])
-      await crashSweep(
-        'after-release-intent',
-        intent.managed.checkout,
-        intent.owner.write.workspaceId
-      )
-      const view = (await lifecycle.inspect({ taskId: intent.owner.taskId })).find(
-        item => item.workspaceId === intent.managed.workspaceId
-      )
-      assert.deepEqual(
-        view?.pending.map(item => [item.kind, item.stage]),
-        [['release', 'intent']]
-      )
-      const afterIntent = await sweepAtQuit(intent.owner.write.workspaceId)
-      assert.equal(rowOf(afterIntent, intent.managed.workspaceId).outcome, 'removed')
-      assert.equal(existsSync(intent.managed.checkout), false)
-
-      const during = await finishedWithReports('during', ['first.txt', 'second.txt'])
-      await crashSweep(
-        'during-selected-files',
-        during.managed.checkout,
-        during.owner.write.workspaceId
-      )
-      assert.deepEqual(
-        ['first.txt', 'second.txt'].map(name => existsSync(join(during.managed.checkout, name))),
-        [false, true],
-        'the crash came after the first deletion'
-      )
-      const afterDeletion = await sweepAtQuit(during.owner.write.workspaceId)
-      const row = rowOf(afterDeletion, during.managed.workspaceId)
-      assert.equal(row.outcome, 'removed', row.reason)
-      assert.ok(
-        row.reason.includes('observed absent') && row.reason.includes('first.txt'),
-        row.reason
-      )
-      assert.equal(existsSync(during.managed.checkout), false)
-      const history = (await lifecycle.inspect({ taskId: during.owner.taskId })).find(
-        item => item.workspaceId === during.managed.workspaceId
-      )
-      assert.deepEqual(history?.pending ?? [], [], 'the interrupted release is closed')
+      for (const fault of ['before-git-remove', 'after-git-remove'] as const) {
+        const interrupted = await finishedWithReports(fault, ['report.txt'])
+        await crashSweep(fault, interrupted.managed.checkout, interrupted.owner.write.workspaceId)
+        const view = (await lifecycle.inspect({ taskId: interrupted.owner.taskId })).find(
+          item => item.workspaceId === interrupted.managed.workspaceId
+        )
+        assert.deepEqual(
+          view?.pending.map(item => [item.kind, item.stage]),
+          [['release', 'started']]
+        )
+        const later = await sweepAtQuit(interrupted.owner.write.workspaceId)
+        const row = rowOf(later, interrupted.managed.workspaceId)
+        assert.deepEqual(
+          [row.outcome, verdictName(row.verdict)],
+          ['review-required', 'retained:release-review'],
+          row.reason
+        )
+        const released = await lifecycle.release(interrupted.owner.taskId)
+        const removal = released.find(item => item.workspaceId === interrupted.managed.workspaceId)
+        assert.equal(removal?.outcome, 'removed', JSON.stringify(removal))
+        assert.equal(existsSync(interrupted.managed.checkout), false)
+      }
     }
   )
 
   await claim(
-    'a worktree directory deleted outside dev is retained as directory-missing, while a crash right after the removal by dev is observed by the next sweep as already-absent, and a rerun finds nothing more to attempt',
+    'a worktree directory deleted outside dev is retained as directory-missing until dev workspace release resolves it, after which the sweep has nothing left to attempt',
     async () => {
       const goneCheckout = userCheckout('gone')
       const goneOwner = await reserve(goneCheckout)
@@ -1008,61 +966,14 @@ try {
         [missing.outcome, verdictName(missing.verdict)],
         ['retained', 'retained:directory-missing']
       )
-      const crashed = await finishedWithReports('crashed', [])
-      await crashSweep(
-        'after-git-remove',
-        crashed.managed.checkout,
-        crashed.owner.write.workspaceId
-      )
-      assert.equal(existsSync(crashed.managed.checkout), false, 'dev removed it before crashing')
-      const observed = await sweepAtQuit(crashed.owner.write.workspaceId)
-      const row = rowOf(observed, crashed.managed.workspaceId)
-      assert.deepEqual(
-        [row.outcome, verdictName(row.verdict)],
-        ['already-absent', 'no-residue'],
-        row.reason
-      )
-      const rerun = await sweepAtQuit(crashed.owner.write.workspaceId)
+      const released = await lifecycle.release(goneOwner.taskId)
+      assert.equal(released.find(item => item.workspaceId === gone.workspaceId)?.outcome, 'removed')
+      const rerun = await sweepAtQuit(goneOwner.write.workspaceId)
       assert.ok(
         !rerun.rows.some(
-          entry =>
-            entry.kind === 'workspace' &&
-            [crashed.managed.workspaceId, crashed.owner.write.workspaceId].includes(
-              entry.workspaceId
-            )
+          entry => entry.kind === 'workspace' && entry.workspaceId === gone.workspaceId
         ),
         JSON.stringify(rerun.rows)
-      )
-    }
-  )
-
-  await claim(
-    'a crash after a removal Git left half done, the directory deleted and its admin directory kept, is still settled by the next sweep as the absence dev caused, not retained as a missing directory',
-    async () => {
-      const half = await finishedWithReports('half-removed', [])
-      const admins = join(repo, '.git', 'worktrees')
-      const { mode } = statSync(admins)
-      chmodSync(admins, 0o500)
-      try {
-        await crashSweep('after-git-remove', half.managed.checkout, half.owner.write.workspaceId)
-      } finally {
-        chmodSync(admins, mode)
-      }
-      assert.equal(existsSync(half.managed.checkout), false, 'Git deleted the directory')
-      const view = (await lifecycle.inspect({ taskId: half.owner.taskId })).find(
-        item => item.workspaceId === half.managed.workspaceId
-      )
-      assert.deepEqual(
-        view?.pending.map(item => [item.kind, item.stage]),
-        [['release', 'started']],
-        'the removal is left started, not recorded for review'
-      )
-      const settled = await sweepAtQuit(half.owner.write.workspaceId)
-      const row = rowOf(settled, half.managed.workspaceId)
-      assert.deepEqual(
-        [row.outcome, verdictName(row.verdict)],
-        ['already-absent', 'no-residue'],
-        row.reason
       )
     }
   )
@@ -1176,7 +1087,7 @@ try {
   )
 
   await claim(
-    'a removal the engine records as needing review makes the sweep exit 1, is then skipped and reported by later sweeps, and only an explicit release observes and settles it',
+    'a removal that does not complete makes the sweep exit 1, later sweeps retain it as release-review, and dev workspace release finishes it',
     async () => {
       const checkout = userCheckout('partial')
       const owner = await reserve(checkout)
@@ -1192,7 +1103,7 @@ try {
         chmodSync(admins, mode)
       }
       const stopped = rowOf(partial, managed.workspaceId)
-      assert.equal(stopped.outcome, 'partial', stopped.reason)
+      assert.equal(stopped.outcome, 'review-required', stopped.reason)
       assert.equal(sweepExitCode(partial), 1)
 
       const later = await sweepAtQuit(owner.write.workspaceId)
@@ -1203,17 +1114,10 @@ try {
       )
       assert.equal(sweepExitCode(later), 0, 'a retained workspace is not an attempt')
 
-      const assessments = await lifecycle.check(owner.taskId)
-      const settled = await lifecycle.release({
-        taskId: owner.taskId,
-        commandId: newId(),
-        decided: assessments.map(item => item.subject),
-        decider: { kind: 'user' },
-        workspaceId: managed.workspaceId,
-        occupiedPaths: [],
-      })
-      assert.equal(settled.outcome, 'already-absent', settled.reason)
-      git(['worktree', 'prune'], repo)
+      const settled = await lifecycle.release(owner.taskId)
+      const removal = settled.find(item => item.workspaceId === managed.workspaceId)
+      assert.equal(removal?.outcome, 'removed', JSON.stringify(removal))
+      assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(managed.checkout))
     }
   )
 

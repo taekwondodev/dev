@@ -105,7 +105,6 @@ const checked: string[] = []
 const released: string[] = []
 const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this check' })
 const receipt: SweepReceipt = makeFixtureReceipt({
-  commandId: fixtureId(900),
   moment: 'allocation',
   rows: [
     {
@@ -148,7 +147,6 @@ const lifecycle: WorkspaceLifecycle = {
     return Effect.succeed([
       makeFixtureAssessment({
         descriptor: other,
-        outcome: 'removable',
         completion: {
           kind: 'finished',
           role: 'branch',
@@ -160,7 +158,7 @@ const lifecycle: WorkspaceLifecycle = {
     ])
   },
   release: input => {
-    released.push(input.workspaceId)
+    released.push(input.taskId)
     return Effect.fail(refused)
   },
   sweep: () => Effect.fail(refused),
@@ -230,28 +228,15 @@ try {
     ])
   })
   await claim(
-    "/workspace release of this conversation's own task answers that quitting sweeps it and assesses nothing",
+    '/workspace release in the TUI, for its own task or another, points to the terminal command and assesses, confirms and releases nothing',
     async () => {
-      await runtime.session.prompt(`/workspace release ${current.taskId}`)
-      const answer = displayed().at(-1) ?? ''
-      assert.ok(answer.includes('/quit') && answer.includes('sweeps'), answer)
+      for (const taskId of [current.taskId, other.taskId]) {
+        await runtime.session.prompt(`/workspace release ${taskId}`)
+        const answer = displayed().at(-1) ?? ''
+        assert.ok(answer.includes(`dev workspace release ${taskId}`), answer)
+        assert.ok(answer.includes('swept when dev quits'), answer)
+      }
       assert.deepEqual(checked, [])
-      assert.deepEqual(confirmations, [])
-    }
-  )
-  await claim(
-    '/workspace release of a task with nothing review-required shows its verdicts and asks for no confirmation',
-    async () => {
-      await runtime.session.prompt(`/workspace release ${other.taskId}`)
-      const [eligibility, answer] = displayed().slice(-2)
-      assert.ok(
-        eligibility?.includes('sweep verdict: finished (branch-in-target)') &&
-          eligibility.includes('role: branch worktree') &&
-          eligibility.includes('target: override'),
-        eligibility
-      )
-      assert.ok(answer?.includes('nothing for an explicit release'), answer)
-      assert.deepEqual(checked, [other.taskId])
       assert.deepEqual(confirmations, [])
       assert.deepEqual(released, [])
     }

@@ -201,7 +201,6 @@ export const WorkspaceViewSchema = Schema.Struct({
     'review-required',
     'released',
     'removed',
-    'already-absent',
   ]),
   reason: Schema.NonEmptyString,
   nextAction: Schema.NonEmptyString,
@@ -353,35 +352,8 @@ export const TargetViewSchema = Schema.Struct({
 })
 export type TargetView = typeof TargetViewSchema.Type
 
-export const ReleaseDeciderSchema = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal('user') }),
-  Schema.Struct({
-    kind: Schema.Literal('completion'),
-    policyVersion: Schema.Int,
-    moment: SweepMomentSchema,
-  }),
-])
+export const ReleaseDeciderSchema = Schema.Literals(['user', 'quit', 'allocation'])
 export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
-
-export const ReleaseSubjectSchema = Schema.Struct({
-  repositoryId: WorkspaceId,
-  workspaceId: WorkspaceId,
-  reservationId: WorkspaceId,
-  reservationRevision: Revision,
-  acquisitionId: Schema.optional(WorkspaceId),
-  workspaceRevision: Revision,
-  origin: WorkspaceOriginSchema,
-  path: Schema.NonEmptyString,
-  effect: Schema.Literals(['release-reservation', 'remove-worktree', 'none']),
-
-  head: Schema.optional(CommitSha),
-  stateDigest: Sha256Hex,
-  policyVersion: Schema.Int,
-})
-export type ReleaseSubject = typeof ReleaseSubjectSchema.Type
-export const RELEASE_SUBJECT_FIELDS = Object.keys(
-  ReleaseSubjectSchema.fields
-) as readonly (keyof ReleaseSubject)[]
 
 export const WorkspaceAssessmentSchema = Schema.Struct({
   repositoryId: WorkspaceId,
@@ -390,14 +362,6 @@ export const WorkspaceAssessmentSchema = Schema.Struct({
   reservationId: WorkspaceId,
   path: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,
-  outcome: Schema.Literals([
-    'active',
-    'preserved-for-resume',
-    'blocked',
-    'review-required',
-    'releasable',
-    'removable',
-  ]),
   reasons: Schema.Array(Schema.NonEmptyString),
   nextActions: Schema.Array(Schema.NonEmptyString),
   evidence: Schema.optional(
@@ -415,7 +379,6 @@ export const WorkspaceAssessmentSchema = Schema.Struct({
   residual: Schema.Array(Schema.String),
   target: TargetViewSchema,
   completion: CompletionVerdictSchema,
-  subject: ReleaseSubjectSchema,
 })
 export type WorkspaceAssessment = typeof WorkspaceAssessmentSchema.Type
 
@@ -424,39 +387,16 @@ export const WorkspaceReleaseResultSchema = Schema.Struct({
   workspaceId: WorkspaceId,
   path: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,
-  outcome: Schema.Literals([
-    'released',
-    'removed',
-    'already-absent',
-    'blocked',
-    'review-required',
-    'partial',
-  ]),
+  outcome: Schema.Literals(['released', 'removed', 'failed']),
   reason: Schema.NonEmptyString,
-  nextAction: Schema.NonEmptyString,
-  effects: Schema.Array(Schema.String),
-  retained: Schema.Array(Schema.String),
-  operationId: Schema.optional(WorkspaceId),
 })
 export type WorkspaceReleaseResult = typeof WorkspaceReleaseResultSchema.Type
-
-export const ReleaseRequestSchema = Schema.Struct({
-  taskId: WorkspaceId,
-  commandId: WorkspaceId,
-  decided: Schema.Array(ReleaseSubjectSchema),
-  decider: ReleaseDeciderSchema,
-  workspaceId: WorkspaceId,
-  occupiedPaths: Schema.Array(AbsolutePath),
-})
-export type ReleaseRequest = typeof ReleaseRequestSchema.Type
 
 export const SweepOutcomeSchema = Schema.Literals([
   'removed',
   'released',
-  'already-absent',
   'retained',
   'review-required',
-  'partial',
   'skipped',
 ])
 export type SweepOutcome = typeof SweepOutcomeSchema.Type
@@ -486,7 +426,6 @@ export const SweepRowSchema = Schema.Union([
 ])
 export type SweepRow = typeof SweepRowSchema.Type
 export const SweepReceiptSchema = Schema.Struct({
-  commandId: WorkspaceId,
   moment: SweepMomentSchema,
   rows: Schema.Array(SweepRowSchema),
 })
@@ -537,7 +476,9 @@ export interface WorkspaceLifecycle {
     readonly taskId: WorkspaceId
     readonly ownConversation?: WorkspaceConversation
   }): Effect.Effect<readonly WorkspaceAssessment[], WorkspaceError>
-  release(input: ReleaseRequest): Effect.Effect<WorkspaceReleaseResult, WorkspaceError>
+  release(input: {
+    readonly taskId: WorkspaceId
+  }): Effect.Effect<readonly WorkspaceReleaseResult[], WorkspaceError>
   sweep(input: SweepRequest): Effect.Effect<SweepReceipt, WorkspaceError>
   recordTarget(input: {
     readonly taskId: WorkspaceId

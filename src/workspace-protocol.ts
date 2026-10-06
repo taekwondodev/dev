@@ -2,7 +2,6 @@ import { type Option, Schema } from 'effect'
 import {
   AbsolutePath,
   PublicationReferenceSchema,
-  ReleaseRequestSchema,
   SweepReceiptSchema,
   SweepRequestSchema,
   TaskTargetSchema,
@@ -76,7 +75,7 @@ const CheckRequestSchema = Schema.Struct({
 })
 const ReleaseRequestRpcSchema = Schema.Struct({
   op: Schema.Literal('release'),
-  request: ReleaseRequestSchema,
+  taskId: WorkspaceId,
 })
 const SweepRpcRequestSchema = Schema.Struct({
   op: Schema.Literal('sweep'),
@@ -123,7 +122,7 @@ const RpcReplySchemas = {
   validate: Schema.Null,
   close: Schema.Null,
   check: Schema.Array(WorkspaceAssessmentSchema),
-  release: WorkspaceReleaseResultSchema,
+  release: Schema.Array(WorkspaceReleaseResultSchema),
   sweep: SweepReceiptSchema,
   'record-target': Schema.Null,
   'record-publication': Schema.Null,

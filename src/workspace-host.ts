@@ -29,16 +29,9 @@ import type {
 import type { ReplacedSessionContext } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import { errorText } from './error-text.ts'
 import {
-  formatAssessments,
-  formatReleaseRun,
   formatSweepReceipt,
-  needsExplicitRelease,
-  noExplicitRelease,
   parseWorkspaceCommand,
-  releaseConfirmation,
   runReadOnlyWorkspaceCommand,
-  runRelease,
-  type WorkspaceCommand,
 } from './workspace-command.ts'
 import {
   WorkspaceError,
@@ -58,9 +51,8 @@ import {
   canonicalConversationFile,
   classifyWriteDestination,
   decodeWriteOperand,
-  isWithin,
 } from './workspace-paths.ts'
-import { newId, hasErrorCode } from './workspace-platform.ts'
+import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
@@ -141,8 +133,6 @@ type Admission =
 type WriterAdmission =
   | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant }
   | { readonly kind: 'refused'; readonly refusal: ToolCallEventResult }
-
-type ReleaseCommand = Extract<WorkspaceCommand, { readonly kind: 'release' }>
 
 interface ConversationIdentity {
   readonly sessionId: string
@@ -1253,92 +1243,17 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     yield* closeAttachmentOnce(activeAttachment)
   })
 
-  const releaseInTui = Effect.fnUntraced(function* (
-    api: ExtensionAPI,
-    command: ReleaseCommand,
-    context: ExtensionCommandContext
-  ) {
-    if (parked || pending) {
-      notify(
-        context,
-        'Workspace host is parked or a transition is unresolved; no release was started.',
-        'error'
-      )
-      return
-    }
-    const { binding } = activeAttachment
-    if (binding.taskId === command.taskId) {
-      display(
-        api,
-        context,
-        `Task ${command.taskId} belongs to this conversation. Quitting dev (/quit) ends its uses and then sweeps the repository: finished workspaces are released automatically and the others stay retained with their reason. Use /workspace check ${command.taskId} to see what the sweep will do.`
-      )
-      return
-    }
-    if (!context.hasUI) {
-      notify(
-        context,
-        'Workspace release needs an interactive confirmation; none is available here, so nothing was released.',
-        'error'
-      )
-      return
-    }
-    const checked = yield* Effect.exit(
-      authority.check({
-        taskId: command.taskId,
-        ownConversation: binding.conversation,
-      })
-    )
-    if (Exit.isFailure(checked)) {
-      notify(
-        context,
-        `Workspace assessment failed; nothing was released: ${errorText(Cause.squash(checked.cause))}`,
-        'error'
-      )
-      return
-    }
-    const assessments = checked.value
-    const containing = assessments.find(
-      assessment =>
-        assessment.origin === 'managed' &&
-        (isWithin(assessment.path, binding.conversation.sessionFile) ||
-          assessment.workspaceId === binding.workspaceId)
-    )
-    if (containing !== undefined) {
-      notify(
-        context,
-        `This conversation is inside or bound to managed worktree ${containing.workspaceId} of task ${command.taskId}; quitting sweeps it once it is finished. No release was started; work and the TUI stay active.`,
-        'error'
-      )
-      return
-    }
-    display(api, context, formatAssessments(command.taskId, assessments))
-    if (assessments.length === 0) return
-    if (!needsExplicitRelease(assessments)) {
-      display(api, context, noExplicitRelease(command.taskId))
-      return
-    }
-    const confirmation = releaseConfirmation(command.taskId, assessments)
-    const confirmed = yield* Effect.promise(() =>
-      context.ui.confirm(confirmation.title, confirmation.message)
-    )
-    if (!confirmed) {
-      notify(context, 'Release cancelled before confirmation; nothing was changed.', 'info')
-      return
-    }
-    const run = yield* runRelease(authority, {
-      taskId: command.taskId,
-      confirmed: assessments,
-      occupiedPaths: [resolve(process.cwd()), resolve(context.cwd)],
-      commandId: newId(),
-    })
-    display(api, context, formatReleaseRun(command.taskId, run))
-  })
-
   const workspaceCommand = Effect.fnUntraced(
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
-      if (command.kind === 'release') return yield* releaseInTui(api, command, context)
+      if (command.kind === 'release') {
+        display(
+          api,
+          context,
+          `Release runs only from a terminal: dev workspace release ${command.taskId}. The task of this conversation is swept when dev quits.`
+        )
+        return
+      }
       const result = yield* runReadOnlyWorkspaceCommand(Effect.succeed(authority), command, {
         repositoryRoot: repositoryRoot.resolve(context.cwd),
         current: {

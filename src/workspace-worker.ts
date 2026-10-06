@@ -33,7 +33,7 @@ import { makeGitHubReader, PROVIDER_BUDGET_MS } from './workspace-evidence.ts'
 import { recordPublication, recordTarget } from './workspace-evidence-records.ts'
 import {
   checkTask,
-  releaseWorkspace,
+  releaseTask,
   sweepDeadline,
   sweepRepositoryAtQuit,
   sweepRepositoryForAllocation,
@@ -41,7 +41,7 @@ import {
 } from './workspace-release.ts'
 import { getWorkspace } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
-import { newId, now } from './workspace-platform.ts'
+import { now } from './workspace-platform.ts'
 
 const MAX_ATTACHMENTS = 256
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024
@@ -183,7 +183,6 @@ if (port !== null && engine !== undefined) {
             )
           } catch (cause) {
             receipt = {
-              commandId: newId(),
               moment: 'allocation',
               rows: [
                 {
@@ -259,16 +258,9 @@ if (port !== null && engine !== undefined) {
           )
         )
       case 'release':
-        if (request.request.decider.kind !== 'user')
-          throw new WorkspaceError({
-            outcome: 'invalid',
-            message: 'Only the sweep makes automatic release attempts',
-          })
         return replyTo(
           'release',
-          await engine.run(authority =>
-            releaseWorkspace(authority, request.request, readersUntil(sentAt + PROVIDER_BUDGET_MS))
-          )
+          await engine.run(authority => releaseTask(authority, request.taskId))
         )
       case 'sweep': {
         const deadline = sweepDeadline('quit', sentAt)

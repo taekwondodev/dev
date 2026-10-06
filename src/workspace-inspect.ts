@@ -17,9 +17,7 @@ import {
   getUseRows,
   isActiveUse,
   openOperations,
-  releaseOperations,
   type ReleaseOperationRecord,
-  type WorktreeRemovalRecord,
   type UseRecord,
   type WorkspaceRecord,
 } from './workspace-records.ts'
@@ -119,41 +117,11 @@ const LISTED_PATHS = 5
 export const sampledPaths = (paths: readonly string[]): string =>
   `${paths.slice(0, LISTED_PATHS).join(', ')}${paths.length > LISTED_PATHS ? ', …' : ''}`
 
-const unfinishedDeletion = (operation: WorktreeRemovalRecord): string => {
-  if (operation.phase !== 'cancelled' && operation.phase !== 'confirmed')
-    return 'stopped during its deletion step, so selected files it did not record as deleted may be gone too'
-  const absent = operation.manifest
-    .filter(entry => entry.state === 'absent')
-    .map(entry => entry.path)
-  return absent.length === 0
-    ? 'stopped during its deletion step; no selected file was missing afterwards'
-    : `stopped during its deletion step, after which ${absent.length} selected file(s) were observed absent: ${sampledPaths(absent)}`
+const DECIDER_TEXT: Record<ReleaseDecider, string> = {
+  user: 'By dev workspace release',
+  quit: 'By the sweep at quit',
+  allocation: 'By the sweep before a worktree allocation',
 }
-
-export const deletionHistory = (
-  db: DatabaseSync,
-  workspaceId: WorkspaceId,
-  excludedCommand?: WorkspaceId
-): readonly string[] =>
-  releaseOperations(db, workspaceId).flatMap(operation => {
-    if (operation.effect !== 'remove-worktree' || operation.commandId === excludedCommand) return []
-    const deleted = operation.manifest
-      .filter(entry => entry.state === 'removed')
-      .map(entry => entry.path)
-    const unfinished = operation.steps.some(
-      step => step.kind === 'selected-files' && step.state === 'started'
-    )
-    const parts: string[] = []
-    if (deleted.length > 0)
-      parts.push(`deleted ${deleted.length} selected file(s): ${sampledPaths(deleted)}`)
-    if (unfinished) parts.push(unfinishedDeletion(operation))
-    return parts.length === 0 ? [] : [`Release attempt ${operation.id} ${parts.join(' and ')}.`]
-  })
-
-const deciderText = (decider: ReleaseDecider): string =>
-  decider.kind === 'user'
-    ? 'Confirmed by the user'
-    : `Automatic at ${decider.moment} (completion policy ${decider.policyVersion})`
 
 const receiptView = (
   repositoryId: WorkspaceId,
@@ -161,9 +129,6 @@ const receiptView = (
   release: ReleaseOperationRecord
 ): WorkspaceView => {
   const removed = workspace.status === 'removed'
-  let outcome: WorkspaceView['outcome'] = 'released'
-  if (release.effect === 'remove-worktree')
-    outcome = release.observed === 'already-absent' ? 'already-absent' : 'removed'
   return {
     repositoryId,
     taskId: release.taskId,
@@ -171,8 +136,8 @@ const receiptView = (
     workspaceId: workspace.id,
     path: workspace.path,
     origin: workspace.origin,
-    outcome,
-    reason: `${deciderText(release.decider)}: ${release.result ?? (removed ? 'Removed.' : 'Reservation released.')}`,
+    outcome: release.effect === 'remove-worktree' ? 'removed' : 'released',
+    reason: `${DECIDER_TEXT[release.decider]}: ${release.result ?? (removed ? 'Removed.' : 'Reservation released.')}`,
     nextAction: removed
       ? 'Do not resume a conversation into this path; start from an existing checkout with dev --cwd PATH.'
       : 'The checkout is unreserved; select or create a task before writing there.',
@@ -254,7 +219,7 @@ export const inspectWorkspaces = (
           path: workspace.path,
           origin: workspace.origin,
           outcome,
-          reason: [reason, ...deletionHistory(db, workspace.id)].join(' '),
+          reason,
           nextAction,
           uses: uses.map(use => ({
             id: use.id,

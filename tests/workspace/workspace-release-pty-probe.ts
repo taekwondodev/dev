@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Effect } from 'effect'
 import { launch } from '../../src/launcher-runtime.ts'
 import type { WorkspaceAuthorization, WorkspaceGrant } from '../../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
+import { newId } from '../../src/workspace-platform.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
@@ -75,16 +75,6 @@ try {
     return code
   }
 
-  const runInterrupted = async (args: readonly string[]): Promise<number | null> => {
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL('./workspace-release-interrupt-driver.ts', import.meta.url)), ...args],
-      { stdio: 'inherit', env: { ...process.env, RELEASE_INTERRUPT_ROOT: root } }
-    )
-    return new Promise(resolveExit => {
-      child.once('exit', code => resolveExit(code))
-    })
-  }
   process.stdout.write(`\nDEV_RELEASE_INPUTS ${JSON.stringify({ TASK: taskId })}\n`)
   const reservations = async (task: string): Promise<number> => {
     const still = await openLifecycle({ root })
@@ -96,11 +86,11 @@ try {
   }
 
   await claim(
-    'dev workspace release of a task with nothing review-required refuses with exit 1 before any confirmation, and every reservation remains',
+    'dev workspace release of a task without reservations exits 1 before any confirmation',
     async () => {
-      assert.equal(await run(['--cwd', repo, 'workspace', 'release', unfinishedTask]), 1)
+      assert.equal(await run(['--cwd', repo, 'workspace', 'release', newId()]), 1)
       assert.equal(await reservations(unfinishedTask), 2)
-      assert.ok(existsSync(join(unfinished.checkout, 'tracked.txt')))
+      assert.equal(await reservations(taskId), 3)
     },
     60_000
   )
@@ -123,47 +113,36 @@ try {
       },
       60_000
     )
-  signal('READY_FOR_INTERRUPT')
+  signal('READY_FOR_UNFINISHED')
   await claim(
-    'under the launcher entry point, a SIGINT during the first confirmed attempt lets that attempt finish with its recorded outcome, withdraws the later workspaces unattempted with their reservations kept, and exits 130 after the receipt',
+    'answering y removes an unfinished managed worktree with its undelivered edit and ends the reservation of its pre-existing checkout, which keeps its files; the command exits 0',
     async () => {
-      assert.equal(await runInterrupted(['--cwd', repo, 'workspace', 'release', taskId]), 130)
-      const after = await openLifecycle({ root })
-      try {
-        assert.equal((await after.check(taskId)).length, 2, 'two reservations remain')
-        assert.equal(
-          (await after.inspect({ taskId })).filter(
-            view => view.outcome === 'released' || view.outcome === 'already-absent'
-          ).length,
-          1,
-          'exactly the first workspace has a receipt'
-        )
-      } finally {
-        await after.close()
-      }
+      assert.equal(await run(['--cwd', repo, 'workspace', 'release', unfinishedTask]), 0)
+      assert.ok(!existsSync(unfinished.checkout), 'the unfinished worktree is gone')
+      assert.ok(existsSync(join(unfinishedCheckout, 'tracked.txt')), 'the checkout keeps its files')
+      assert.equal(await reservations(unfinishedTask), 0)
     },
     60_000
   )
   signal('READY_FOR_CONFIRM')
   await claim(
-    'answering y to a fresh release attempts the remaining workspaces: in the end the pre-existing checkout keeps its files, the absent managed worktrees are resolved, and the command exits 0 with the receipt on the terminal',
+    'answering y releases the pre-existing checkout, which keeps its files, resolves the absent managed worktrees, and exits 0 with the receipt on the terminal',
     async () => {
       assert.equal(await run(['--cwd', repo, 'workspace', 'release', taskId]), 0)
       assert.ok(existsSync(join(repo, 'tracked.txt')), 'the pre-existing checkout keeps its files')
       assert.deepEqual(
         git(['worktree', 'list', '--porcelain'], repo)
           .split('\n')
-          .filter(line => line.startsWith('worktree ') && !line.endsWith('/unfinished'))
-          .filter(line => !line.includes(unfinished.checkout)),
-        [`worktree ${repo}`]
+          .filter(line => line.startsWith('worktree ')),
+        [`worktree ${repo}`, `worktree ${unfinishedCheckout}`]
       )
       const after = await openLifecycle({ root })
       try {
         assert.deepEqual(await after.check(taskId), [], 'nothing of the task remains reserved')
         assert.deepEqual((await after.inspect({ taskId })).map(view => view.outcome).toSorted(), [
-          'already-absent',
-          'already-absent',
           'released',
+          'removed',
+          'removed',
         ])
       } finally {
         await after.close()

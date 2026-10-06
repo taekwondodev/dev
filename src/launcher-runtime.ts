@@ -33,7 +33,7 @@ import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
 import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
-import type { WorkspaceAssessment, WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
+import type { WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
 import {
   keptConversationGuidance,
   makeWorkspaceHost,
@@ -44,14 +44,11 @@ import {
 import {
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
-  formatAssessments,
-  formatReleaseRun,
+  formatReleaseResults,
   formatSweepReceipt,
-  needsExplicitRelease,
-  noExplicitRelease,
-  releaseConfirmation,
   releaseExitCode,
-  runRelease,
+  releasePlan,
+  reservedViews,
   sweepExitCode,
 } from './workspace-command.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
@@ -387,22 +384,6 @@ const exitText = (code: ReleaseExitCode): string => {
   }
 }
 
-const attemptRelease = Effect.fnUntraced(function* (
-  lifecycle: WorkspaceLifecycle,
-  input: {
-    readonly taskId: WorkspaceId
-    readonly confirmed: readonly WorkspaceAssessment[]
-    readonly occupiedPaths: readonly string[]
-  },
-  proceed: () => boolean
-): Effect.fn.Return<ReleaseExitCode> {
-  const run = yield* runRelease(lifecycle, { ...input, proceed })
-  const code: ReleaseExitCode = proceed() ? releaseExitCode(run) : 130
-  yield* write(formatReleaseRun(input.taskId, run))
-  yield* write(`Exit ${code}: ${exitText(code)}.`)
-  return code
-}, Effect.uninterruptible)
-
 const tuiClosedNotice = (detached: boolean): string =>
   `\nThe TUI is closed and its session disposed; ${detached ? 'its workspace attachment is closed' : 'closing its workspace attachment was not confirmed, so the sweep rechecks every use'}.`
 
@@ -515,9 +496,6 @@ const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
     return Effect.sync(() => reader.close())
   })
 
-const RELEASE_CANCELLED =
-  'Cancellation requested: workspaces not yet started are skipped; one already under way is observed to its recorded outcome.'
-
 const cancellation = (notice: () => string | undefined) =>
   Effect.acquireRelease(
     Effect.sync(() => {
@@ -545,47 +523,41 @@ const write = (text: string, stream: NodeJS.WriteStream = process.stdout): Effec
 
 const terminalRelease = Effect.fnUntraced(function* (
   dependencies: LauncherDependencies,
-  taskId: WorkspaceId,
-  launchCwd: string
+  taskId: WorkspaceId
 ): Effect.fn.Return<ReleaseExitCode, never, Scope.Scope> {
   const lifecycle = yield* dependencies.workspaceLifecycle
-  const assessed = yield* Effect.exit(lifecycle.check({ taskId }))
-  if (Exit.isFailure(assessed)) {
+  const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
+  if (Exit.isFailure(listed)) {
     yield* write(
-      `Workspace assessment failed; nothing was released: ${errorText(Cause.squash(assessed.cause))}`,
+      `Workspace inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
       process.stderr
     )
     return 1
   }
-  const assessments = assessed.value
-  if (assessments.length === 0) {
-    yield* write(`No workspace records exist for exact task ${taskId}.`, process.stderr)
+  const views = reservedViews(listed.value)
+  if (views.length === 0) {
+    yield* write(
+      `Task ${taskId} holds no workspace reservation; nothing to release.`,
+      process.stderr
+    )
     return 1
   }
-  yield* write(formatAssessments(taskId, assessments))
-  if (!needsExplicitRelease(assessments)) {
-    yield* write(`\n${noExplicitRelease(taskId)}`, process.stderr)
-    return 1
-  }
-  const confirmation = releaseConfirmation(taskId, assessments)
-  yield* write(`\n${confirmation.message}\n`)
-  const confirmed = yield* askConfirmation(
-    `${confirmation.title} Type y to release, anything else to cancel: `
-  )
+  yield* write(releasePlan(taskId, views))
+  const confirmed = yield* askConfirmation('Type y to release, anything else to cancel: ')
   if (!confirmed) {
-    yield* write('Release cancelled before confirmation; nothing was changed.')
+    yield* write('Release cancelled; nothing was changed.')
     return 130
   }
-  const cancel = yield* cancellation(() => RELEASE_CANCELLED)
-  return yield* attemptRelease(
-    lifecycle,
-    {
-      taskId,
-      confirmed: assessments,
-      occupiedPaths: [resolve(process.cwd()), resolve(launchCwd)],
-    },
-    cancel.proceed
-  )
+  const released = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
+  if (Exit.isFailure(released)) {
+    yield* write(
+      `The release did not report back (${errorText(Cause.squash(released.cause))}); run dev workspace inspect ${taskId} and release again if anything remains.`,
+      process.stderr
+    )
+    return 1
+  }
+  yield* write(formatReleaseResults(taskId, released.value))
+  return releaseExitCode(released.value)
 })
 
 const run = Effect.fnUntraced(function* (
@@ -631,7 +603,7 @@ const run = Effect.fnUntraced(function* (
       })
       return
     }
-    process.exitCode = yield* terminalRelease(dependencies, command.taskId, options.cwd)
+    process.exitCode = yield* terminalRelease(dependencies, command.taskId)
     return
   }
 
