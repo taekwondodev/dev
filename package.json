@@ -45,18 +45,18 @@
     "effect": "4.0.1"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.48.0",
+    "@effect/tsgo": "0.48.1",
     "@types/node": "26.6.4",
     "oxc-standard": "^1.4.2",
-    "oxfmt": "^0.71.0",
-    "oxlint": "^1.86.0",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
     "typescript": "7.0.2"
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.1"
   },
   "config": {
-    "pi": "1.0.3"
+    "pi": "1.0.4"
   },
   "engines": {
     "node": ">=26.0.0"
