@@ -34,6 +34,15 @@ interface HeldRequest {
   readonly context: RequestContext
   readonly options: RequestOptions
   finish(input?: number, output?: number, text?: string, error?: string, cost?: number): void
+  callTool(): void
+}
+interface Announcement {
+  readonly entryId: string
+  readonly reason: string
+  readonly fromExtension: boolean
+  readonly willRetry: boolean
+  readonly committed: boolean
+  readonly refreshed: boolean
 }
 const usage = (message: Message, input: number, output = 0): Message => ({
   ...message,
@@ -49,6 +58,29 @@ const messageText = (
     ? content
     : content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('')
 const recent = 'RECENT-MUST-STAY '.repeat(40)
+const holdAnnouncement = () => {
+  let held = false
+  const release = deferred<void>()
+  const before: Pi.ExtensionFactory = api => {
+    api.on('session_compact', async () => {
+      held = true
+      await release.promise
+    })
+  }
+  const entered = () =>
+    waitFor('held session_compact handler', () => (held ? true : undefined), { intervalMs: 5 })
+  return { entered, release, before }
+}
+const announced = (entryId: string): Announcement[] => [
+  {
+    entryId,
+    reason: 'threshold',
+    fromExtension: true,
+    willRetry: false,
+    committed: true,
+    refreshed: true,
+  },
+]
 let sequence = 0
 
 const open = async (
@@ -65,11 +97,15 @@ const open = async (
     readonly extensions?: readonly Pi.ExtensionFactory[]
     readonly before?: Pi.ExtensionFactory
     readonly files?: boolean
+    readonly tool?: boolean
     readonly modelBudgets?: { readonly reserveTokens: number; readonly keepRecentTokens: number }
   } = {}
 ) => {
   const summaries: HeldRequest[] = []
   const ordinary: HeldRequest[] = []
+  const timeline: string[] = []
+  const announcements: Announcement[] = []
+  let bound: Pi.AgentSession | undefined
   let holdOrdinary = false
   let tokens = options.tokens ?? 81921
   const offline = await makeOfflineModel({
@@ -101,9 +137,28 @@ const open = async (
           else stream.push({ type: 'done', reason: 'stop', message })
           stream.end()
         },
+        callTool() {
+          const message = usage(
+            parts.assistantMessage(
+              [
+                {
+                  type: 'toolCall',
+                  id: `probe-${ordinary.length}`,
+                  name: 'probe_tool',
+                  arguments: {},
+                },
+              ],
+              'toolUse'
+            ),
+            100
+          )
+          stream.push({ type: 'done', reason: 'toolUse', message })
+          stream.end()
+        },
       }
       if (isSummary(context)) summaries.push(request)
       else {
+        timeline.push('request')
         ordinary.push(request)
         if (!holdOrdinary) request.finish(tokens, 0, `ordinary-${ordinary.length}`)
       }
@@ -171,6 +226,32 @@ const open = async (
           api.on('session_before_compact', event => {
             reasons.push(event.reason)
           })
+          api.on('session_compact', (event, context) => {
+            const { id, summary } = event.compactionEntry
+            timeline.push(`compact:${id}`)
+            announcements.push({
+              entryId: id,
+              reason: event.reason,
+              fromExtension: event.fromExtension,
+              willRetry: event.willRetry,
+              committed: context.sessionManager.getBranch().some(entry => entry.id === id),
+              refreshed:
+                bound?.messages.some(
+                  message => message.role === 'compactionSummary' && message.summary === summary
+                ) ?? false,
+            })
+          })
+          if (options.tool)
+            api.registerTool({
+              name: 'probe_tool',
+              label: 'Probe tool',
+              description: 'Returns a fixed result.',
+              parameters: { type: 'object', properties: {} },
+              execute: async () => ({
+                content: [{ type: 'text', text: 'PROBE-TOOL-RESULT' }],
+                details: undefined,
+              }),
+            })
         },
         ...(options.extensions ?? []),
       ],
@@ -180,7 +261,12 @@ const open = async (
     services,
     sessionManager: manager,
     model: offline.model,
-    tools: [],
+    tools: options.tool ? ['probe_tool'] : [],
+  })
+  bound = session
+  session.subscribe(event => {
+    if (event.type === 'entry_appended' && event.entry.type === 'compaction')
+      timeline.push(`appended:${event.entry.id}`)
   })
   background.bindSession(session)
   await session.bindExtensions({ mode: 'json' })
@@ -201,6 +287,8 @@ const open = async (
     summaries,
     ordinary,
     reasons,
+    timeline,
+    announcements,
     oldId,
     summary,
     compactions,
@@ -241,6 +329,7 @@ try {
           await sleep(20)
           assert.equal(rig.summaries.length, 0)
           assert.equal(rig.compactions().length, 0)
+          assert.deepEqual(rig.announcements, [])
           assert.equal(rig.observations().filter(event => event.kind === 'attached').length, 1)
           assert.equal(
             rig.observations().filter(event => event.kind === 'background-started').length,
@@ -363,6 +452,7 @@ try {
         request.finish()
         await sleep(20)
         assert.equal(rig.compactions().length, 0)
+        assert.deepEqual(rig.announcements, [])
         active.finish(81930, 0, 'concurrent-result')
         await prompt
         const compacted = await rig.applied()
@@ -412,6 +502,103 @@ try {
   )
 
   await claim(
+    'idle application announces session_compact once after commit and refresh, and the next prompt waits for every handler',
+    async () => {
+      const held = holdAnnouncement()
+      const rig = await open({ before: held.before })
+      try {
+        await rig.start()
+        const request = await rig.summary()
+        request.finish()
+        const compacted = await rig.applied()
+        await held.entered()
+        rig.tokens(100)
+        rig.hold()
+        const prompt = rig.session.prompt('AFTER-IDLE-COMPACTION')
+        await sleep(20)
+        assert.equal(rig.ordinary.length, 1)
+        assert.deepEqual(rig.announcements, [])
+        held.release.resolve()
+        const next = await waitFor('request after announcement', () => rig.ordinary[1], {
+          intervalMs: 5,
+        })
+        assert.deepEqual(rig.announcements, announced(compacted.id))
+        assert.deepEqual(rig.timeline, ['request', `compact:${compacted.id}`, 'request'])
+        assert.ok(textOf(next.context).includes('NATIVE-SUMMARY'))
+        assert.ok(textOf(next.context).includes('RECENT-MUST-STAY'))
+        assert.ok(textOf(next.context).includes('AFTER-IDLE-COMPACTION'))
+        assert.ok(!textOf(next.context).includes('OLD-PREFIX'))
+        next.finish(100, 0)
+        await prompt
+        assert.equal(rig.announcements.length, 1)
+      } finally {
+        held.release.resolve()
+        await rig.close()
+      }
+    }
+  )
+
+  await claim(
+    'boundary application announces after the committed entry, and a tool-result continuation or new prompt waits for every handler',
+    async () => {
+      for (const next of ['tool-result', 'prompt'] as const) {
+        const held = holdAnnouncement()
+        const rig = await open({ before: held.before, tool: true })
+        try {
+          await rig.start()
+          const summary = await rig.summary()
+          rig.hold()
+          const working = rig.session.prompt('WORK-AT-BOUNDARY')
+          const active = await waitFor('ordinary turn at boundary', () => rig.ordinary[1], {
+            intervalMs: 5,
+          })
+          summary.finish()
+          await waitFor(
+            'ready observation',
+            () => rig.observations().find(event => event.kind === 'background-ready'),
+            { intervalMs: 5 }
+          )
+          if (next === 'tool-result') active.callTool()
+          else {
+            active.finish(100, 0, 'BOUNDARY-REACHED')
+            await working
+          }
+          await held.entered()
+          const compacted = await rig.applied()
+          const prompt = next === 'prompt' ? rig.session.prompt('AFTER-BOUNDARY') : working
+          await sleep(20)
+          assert.equal(rig.ordinary.length, 2)
+          assert.deepEqual(rig.announcements, [])
+          held.release.resolve()
+          const continued = await waitFor('request after announcement', () => rig.ordinary[2], {
+            intervalMs: 5,
+          })
+          assert.deepEqual(rig.announcements, announced(compacted.id))
+          assert.deepEqual(rig.timeline.slice(-3), [
+            `appended:${compacted.id}`,
+            `compact:${compacted.id}`,
+            'request',
+          ])
+          const text = textOf(continued.context)
+          assert.ok(text.includes('NATIVE-SUMMARY'))
+          assert.ok(text.includes(next === 'tool-result' ? 'PROBE-TOOL-RESULT' : 'AFTER-BOUNDARY'))
+          assert.ok(!text.includes('OLD-PREFIX'))
+          continued.finish(100, 0)
+          await prompt
+          assert.deepEqual(
+            rig.observations().find(event => event.kind === 'background-ended')?.outcome,
+            { kind: 'applied', placement: 'boundary', entryId: compacted.id }
+          )
+          assert.equal(rig.announcements.length, 1)
+        } finally {
+          held.release.resolve()
+          await rig.close()
+        }
+      }
+    }
+  )
+
+  await claim(
     'abort discards running and ready results without late application or restart, retaining observed discarded usage',
     async () => {
       for (const ready of [false, true]) {
@@ -436,6 +623,7 @@ try {
           if (!ready) request.finish(3, 1)
           await sleep(30)
           assert.equal(rig.compactions().length, 0)
+          assert.deepEqual(rig.announcements, [])
           assert.equal(rig.summaries.length, 1)
           const discarded = rig.manager.getEntries().filter(entry => entry.type === 'usage')
           assert.equal(
@@ -477,6 +665,7 @@ try {
             false
           )
           assert.equal(rig.summaries.length, 1)
+          assert.deepEqual(rig.announcements, [])
           if (change === 'edit')
             assert.equal(JSON.stringify(rig.session.messages).includes('OLD-PREFIX'), false)
           if (change === 'compaction')
@@ -537,6 +726,10 @@ try {
             rig.compactions().some(entry => entry.summary.includes('SUPERSEDED')),
             false
           )
+          assert.deepEqual(
+            rig.announcements.map(event => [event.reason, event.fromExtension, event.entryId]),
+            [[manual ? 'manual' : 'threshold', false, rig.compactions()[0]?.id]]
+          )
         } finally {
           await rig.close()
         }
@@ -571,6 +764,10 @@ try {
         assert.ok(rig.manager.getEntries().some(entry => entry.type === 'context_edit'))
         assert.equal(rig.compactions().length, 1)
         assert.ok(rig.compactions()[0]?.summary.includes('OVERFLOW-RECOVERY'))
+        assert.deepEqual(
+          rig.announcements.map(event => [event.reason, event.fromExtension]),
+          [['overflow', false]]
+        )
         assert.equal(rig.ordinary.length, 3)
         assert.equal(
           rig.observations().find(event => event.kind === 'native-started')?.reason,
@@ -636,6 +833,7 @@ try {
         background.finish(0, 0, '', 'summary provider unavailable')
         await sleep(20)
         assert.equal(rig.compactions().length, 0)
+        assert.deepEqual(rig.announcements, [])
         assert.ok(JSON.stringify(rig.session.messages).includes('OLD-PREFIX'))
         assert.deepEqual(
           rig.observations().find(event => event.kind === 'background-ended')?.outcome,
@@ -691,6 +889,7 @@ try {
         active.finish(100, 0, 'finished')
         await prompt
         assert.equal(rig.compactions().length, 0)
+        assert.deepEqual(rig.announcements, [])
         assert.ok(
           rig.manager
             .getEntries()
@@ -796,6 +995,7 @@ try {
         await abort
         await prompt
         assert.equal(rig.compactions().length, 0)
+        assert.deepEqual(rig.announcements, [])
         const outcomes = rig.observations().filter(event => event.kind === 'background-ended')
         assert.equal(outcomes.length, 1)
         assert.deepEqual(outcomes[0]?.outcome, { kind: 'discarded', reason: 'abort' })
@@ -828,6 +1028,7 @@ try {
         pending.finish()
         await sleep(20)
         assert.equal(rig.compactions().length, 0)
+        assert.deepEqual(rig.announcements, [])
         release.resolve()
         await shutdown
         assert.deepEqual(
@@ -871,6 +1072,7 @@ try {
         active.finish(100, 0)
         await prompt
         assert.equal(rig.compactions().length, 0)
+        assert.deepEqual(rig.announcements, [])
         const outcomes = rig.observations().filter(event => event.kind === 'background-ended')
         assert.equal(outcomes.length, 1)
         assert.deepEqual(outcomes[0]?.outcome, { kind: 'discarded', reason: 'boundary-rejected' })
