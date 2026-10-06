@@ -17,7 +17,11 @@ const checkout = process.env.DEV_RELEASE_FAULT_CHECKOUT
 const crash = (): never => process.exit(1)
 
 const removesWorktree = (args: readonly string[] | undefined): boolean =>
-  args !== undefined && args.includes('worktree') && args.includes('remove')
+  args !== undefined &&
+  args.includes('worktree') &&
+  args.includes('remove') &&
+  checkout !== undefined &&
+  args.includes(checkout)
 
 const arm = (fault: ReleaseFault): void => {
   const spawn = childProcess.spawnSync

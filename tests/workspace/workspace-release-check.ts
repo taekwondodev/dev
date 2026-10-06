@@ -28,6 +28,8 @@ import {
   type WorkspaceReleaseResult,
 } from '../../src/workspace-domain.ts'
 import { decideCompletion } from '../../src/workspace-completion.ts'
+import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
+import { checkTask } from '../../src/workspace-release.ts'
 import {
   integrationFacts,
   isUnavailable,
@@ -391,6 +393,45 @@ try {
     }
   )
 
+  await claim(
+    'an unreadable Git worktree list never authorizes deletion or confirms removal: a locked worktree, its files and registration stay until Git can be read and the lock is removed',
+    async () => {
+      const allocated = await allocateManaged(lifecycle, userCheckout())
+      const { checkout, workspaceId } = allocated.managed
+      const configPath = join(repo, '.git', 'config')
+      const config = readFileSync(configPath)
+      git(['worktree', 'lock', '--reason', 'keep while Git is unreadable', checkout], repo)
+      let results: readonly WorkspaceReleaseResult[]
+      try {
+        writeFileSync(configPath, '[invalid\n')
+        results = await lifecycle.release(allocated.taskId)
+      } finally {
+        writeFileSync(configPath, config)
+      }
+      assert.equal(resultOf(results, workspaceId).outcome, 'failed')
+      assert.equal(readFileSync(join(checkout, 'tracked.txt'), 'utf8'), 'tracked\n')
+      assert.ok(registered(repo).includes(checkout), 'the worktree is still registered')
+      assert.ok(
+        git(['worktree', 'list', '--porcelain'], repo).includes(
+          'locked keep while Git is unreadable'
+        ),
+        'the Git lock survives the failed observation'
+      )
+      assert.equal(
+        (await lifecycle.inspect({ taskId: allocated.taskId })).find(
+          view => view.workspaceId === workspaceId
+        )?.outcome,
+        'review-required'
+      )
+      const locked = await lifecycle.release(allocated.taskId)
+      assert.equal(resultOf(locked, workspaceId).outcome, 'failed')
+      git(['worktree', 'unlock', checkout], repo)
+      const released = await lifecycle.release(allocated.taskId)
+      assert.equal(resultOf(released, workspaceId).outcome, 'removed')
+      assert.ok(!existsSync(checkout))
+    }
+  )
+
   const third = await allocateManaged(lifecycle, repo)
   const taskC = third.taskId
   const m3 = third.managed
@@ -724,6 +765,71 @@ try {
       assert.equal((await viewOf(taskId, managed.workspaceId))?.outcome, 'removed')
     }
   )
+  await claim(
+    'retrying a removal interrupted after Git deleted the worktree preserves its recorded HEAD for the remaining child’s sibling PR search',
+    async () => {
+      const siblingRepo = join(sandbox, 'recovered-sibling-repo')
+      const base = initRepository(siblingRepo)
+      const owner = await lifecycle.attach({ conversation: conversation(), cwd: siblingRepo })
+      ready(await owner.authorize({ kind: 'write' }))
+      const child = ready(await owner.authorize({ kind: 'delegated-write' }))
+      const taskId = requireTask(child.taskId)
+      writeFileSync(join(child.checkout, 'pending.txt'), 'unfinished child\n')
+      const sibling = ready(await owner.authorize({ kind: 'delegated-write' }))
+      writeFileSync(join(sibling.checkout, 'feature.txt'), 'delivered sibling\n')
+      git(['add', 'feature.txt'], sibling.checkout)
+      git(['commit', '--quiet', '-m', 'sibling feature'], sibling.checkout)
+      const head = git(['rev-parse', 'HEAD'], sibling.checkout)
+      await owner.close()
+      await lifecycle.recordTarget(taskId, {
+        kind: 'github',
+        repository: 'owner/recovered-sibling',
+        ref: 'refs/heads/main',
+      })
+      const searched: string[] = []
+      const reader: GitHubReader = {
+        defaultBranch: () => 'main',
+        refTip: () => base,
+        pullRequest: () => 'missing',
+        pullRequestCommits: () => [],
+        mergedPullRequestsForCommit: (_repository, sha) => {
+          searched.push(sha)
+          return []
+        },
+        compare: () => ({ unavailable: 'unexpected comparison of local history' }),
+      }
+      const authority = new WorkspaceAuthority(root)
+      git(['worktree', 'lock', child.checkout], siblingRepo)
+      try {
+        checkTask(authority, taskId, { github: reader })
+        assert.ok(searched.includes(head), 'the live sibling supplies its own HEAD')
+        const faulty = await openLifecycle({
+          root,
+          startWorker: faultyWorker('after-git-remove', sibling.checkout),
+        })
+        try {
+          await expectError(faulty.release(taskId), 'unavailable')
+        } finally {
+          await faulty.close()
+        }
+        assert.ok(!existsSync(sibling.checkout), 'Git removed the sibling before the crash')
+        const results = await lifecycle.release(taskId)
+        assert.equal(resultOf(results, sibling.workspaceId).outcome, 'removed')
+        assert.equal(resultOf(results, child.workspaceId).outcome, 'failed')
+        searched.length = 0
+        checkTask(authority, taskId, { github: reader })
+        assert.ok(
+          searched.includes(head),
+          'the confirmed removal still supplies the sibling HEAD to the PR search'
+        )
+      } finally {
+        authority.close()
+        git(['worktree', 'unlock', child.checkout], siblingRepo)
+        await lifecycle.release(taskId)
+      }
+    }
+  )
+
   await claim(
     'when Git deletes the worktree directory but cannot remove its admin directory, release reports what remains as failed; the next release removes exactly that registration without pruning another one',
     async () => {

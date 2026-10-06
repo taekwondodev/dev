@@ -104,7 +104,7 @@ Before delivery, the workflow must integrate code and assets, reconcile contribu
 
 **Everything left in a released managed worktree is discarded, including dirty edits, undelivered commits, caches and forgotten files.** Release checks no completion, evidence or live use, so run it only when nothing still works in those workspaces. There is no `--yes`, and the session command only names the terminal command.
 
-Release respects a Git lock: a locked worktree fails and stays. When Git no longer lists the worktree, release deletes what remains of its directory under dev's worktree root and its admin directory, unless that admin directory now serves a moved worktree. A failed or interrupted removal stays `release-review` and refuses resume; running release again finishes it.
+Release respects a Git lock: a locked worktree fails and stays. When Git confirms that it no longer lists the worktree, release deletes what remains of its directory under dev's worktree root and its admin directory, unless that admin directory now serves a moved worktree. An unreadable Git worktree list permits neither deletion of leftovers nor confirmation of removal. A failed or interrupted removal stays `release-review` and refuses resume; running release again finishes it. If the directory is already gone, the retry preserves the interrupted removal's recorded HEAD as delivery evidence for the task's other workspaces.
 
 External programs are not coordinated. Stop independently started tools and avoid external edits during a removal; the [accepted filesystem race](../SECURITY.md#outside-the-protection) is not closed.
 

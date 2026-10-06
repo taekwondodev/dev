@@ -150,7 +150,7 @@ const observeRemoval = (workspace: WorkspaceRecord): RemovalObservation => {
   return {
     complete:
       directory === 'absent' &&
-      registered !== true &&
+      registered === false &&
       (admin === 'absent' || adminServesAnotherWorktree(workspace)),
     text: [
       absenceText('directory', directory),
@@ -1071,7 +1071,10 @@ const deleteBelow = (root: string, path: string): string | undefined => {
 
 const disposeWorktree = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): string => {
   let detail = 'Git does not list the worktree'
-  if (listed(workspace) === true) {
+  const registered = listed(workspace)
+  if (registered === undefined)
+    return 'Git worktree registration is unreadable; nothing was deleted'
+  if (registered) {
     const git = removeWorktree(workspace.commonPath, workspace.path)
     if (git.status === 0) return 'git worktree remove --force exited 0'
     detail = `git worktree remove --force failed: ${git.stderr.trim() || `exit ${git.status ?? 'signal'}`}`
@@ -1114,14 +1117,18 @@ const removeForUser = (
   reservation: ReservationRecord,
   workspace: WorkspaceRecord
 ): WorkspaceReleaseResult => {
-  const started = startedRelease(
-    repo,
-    reservation,
-    workspace,
-    'user',
-    'remove-worktree',
-    headOf(authority, workspace)
-  )
+  let head = headOf(authority, workspace)
+  if (head === undefined && observeAbsence(workspace.path) === 'absent')
+    head = inDb(
+      authority,
+      repo,
+      db =>
+        unresolvedReleases(db, workspace.id).findLast(
+          operation =>
+            operation.reservationId === reservation.id && operation.effect === 'remove-worktree'
+        )?.head
+    )
+  const started = startedRelease(repo, reservation, workspace, 'user', 'remove-worktree', head)
   inDb(authority, repo, db =>
     transaction(db, () => {
       closeUnfinishedReleases(db, workspace.id)
