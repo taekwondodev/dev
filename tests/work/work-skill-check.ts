@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
 import { makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
 import { assertStatus, openWorkFixture, script } from './work-check-support.ts'
 
@@ -154,13 +155,7 @@ try {
             text,
             'EXTENSION-MODEL session-tools=find,git_inspect,grep,ls,read after-widening=find,git_inspect,grep,ls,read'
           )
-          assert.deepEqual(view.resources?.tools.toSorted(), [
-            'find',
-            'git_inspect',
-            'grep',
-            'ls',
-            'read',
-          ])
+          assert.deepEqual(view.resources?.tools.toSorted(), READ_ONLY_CHILD_TOOLS.toSorted())
         }
       ),
       claim('the general catalog does not contain an Apple skill', async () => {

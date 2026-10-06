@@ -2,13 +2,18 @@ import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { join } from 'node:path'
-import { Schema } from 'effect'
+import { Effect, Schema } from 'effect'
 import {
   loadInstalledPi,
   makeClaims,
   toolCall,
   type ScriptedContent,
 } from '../workspace/workspace-check-support.ts'
+import {
+  createCoordinatorWorkTool,
+  type CoordinatorLink,
+} from '../../src/work-child-coordination.ts'
+import { READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
 import { openWorkFixture } from './work-check-support.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
@@ -117,7 +122,30 @@ const userTurn = async (lead: Lead, index: number, prompt: string): Promise<void
   await lead.idle()
 }
 
+const unusedLink: CoordinatorLink = {
+  request: () => Effect.die('unused'),
+  pending: Effect.die('unused'),
+  acknowledge: () => Effect.die('unused'),
+  wake: Effect.die('unused'),
+}
+
+const assertReadOnlyCapabilities = (description: string | undefined): void => {
+  assert.ok(description !== undefined)
+  for (const tool of READ_ONLY_CHILD_TOOLS) assert.ok(description.includes(tool), tool)
+  assert.ok(description.includes('no shell, network or gh'))
+  assert.ok(description.includes('in the prompt or a workspace file'))
+}
+
 try {
+  await claim('the lead and coordinator work tools state what a read-only child can reach', () =>
+    withLead({}, async lead => {
+      assertReadOnlyCapabilities(
+        lead.session.getAllTools().find(tool => tool.name === 'work')?.description
+      )
+      assertReadOnlyCapabilities(createCoordinatorWorkTool(unusedLink).description)
+    })
+  )
+
   await claim(
     'outcomes arrive when the current run settles and an eligible batch continues a successful lead run without another user message',
     () =>

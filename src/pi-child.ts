@@ -7,7 +7,14 @@ import { NodeServices } from '@effect/platform-node'
 import { Clock, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 
-import { GenerationId, SKILL_COMMAND, SessionId, TaskId, skillInvocation } from './work-domain.ts'
+import {
+  GenerationId,
+  READ_ONLY_CHILD_TOOLS,
+  SKILL_COMMAND,
+  SessionId,
+  TaskId,
+  skillInvocation,
+} from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
@@ -276,10 +283,10 @@ const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
 })
 
 function childBrief(request: ChildRequest, resources: Resources): string {
-  const inspection =
-    request.coordinate === true
-      ? 'read, grep, find, ls, the safe git_inspect tool and the work tool'
-      : 'read, grep, find, ls, and the safe git_inspect tool'
+  const inspection = [
+    ...READ_ONLY_CHILD_TOOLS,
+    ...(request.coordinate === true ? ['work'] : []),
+  ].join(', ')
   const access =
     request.access === 'read-only'
       ? `Review access is read-only. Use ${inspection} only.`
@@ -804,7 +811,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   ]
   const tools =
     request.access === 'read-only'
-      ? ['read', 'grep', 'find', 'ls', 'git_inspect', ...(link === undefined ? [] : ['work'])]
+      ? [...READ_ONLY_CHILD_TOOLS, ...(link === undefined ? [] : ['work'])]
       : undefined
   const created = yield* Effect.tryPromise({
     try: () =>
