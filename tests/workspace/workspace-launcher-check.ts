@@ -523,7 +523,7 @@ try {
   )
 
   await claim(
-    'dev workspace check <task> returns the role, target and sweep verdict with exit 0 even though it names blockers and eligibility, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
+    'dev workspace check <task> returns the role, target and sweep verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
     async () => {
       const checked = await readOnly(inspectRoot, [
         '--cwd',
@@ -538,7 +538,6 @@ try {
           checked.stdout.includes(firstGrant.workspaceId),
         checked.stdout
       )
-      assert.ok(checked.stdout.includes('eligibility: releasable'), checked.stdout)
       assert.ok(
         checked.stdout.includes('role: pre-existing checkout') &&
           checked.stdout.includes('sweep verdict: finished (clean-checkout)'),

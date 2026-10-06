@@ -8,8 +8,6 @@ import type {
   WorkspaceRole,
 } from './workspace-domain.ts'
 
-export const COMPLETION_POLICY_VERSION = 3
-
 export type Proof =
   | { readonly kind: 'yes'; readonly reason: string }
   | { readonly kind: 'no'; readonly reason: string }
@@ -50,7 +48,6 @@ export interface CompletionFacts {
   readonly allocation: AllocationReason | undefined
   readonly identity: 'verified' | 'absent' | 'unverifiable'
   readonly transitionUnresolved: boolean
-  readonly removalInterrupted: boolean
   readonly releaseReview: boolean
   readonly excluded: boolean
   readonly uses: {
@@ -148,7 +145,7 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
   if (facts.releaseReview)
     return retain(
       'release-review',
-      'An earlier release ended unknown or needing review; only an explicit release observes it.'
+      'An earlier release did not finish; dev workspace release completes it.'
     )
   if (facts.excluded)
     return retain('excluded', 'It belongs to the conversation that is allocating a worktree.')
@@ -186,15 +183,10 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
   }
 
   if (facts.identity === 'absent')
-    return facts.removalInterrupted
-      ? finish(
-          'no-residue',
-          'An interrupted removal by dev left the directory gone; the sweep observes that removal and closes it.'
-        )
-      : retain(
-          'directory-missing',
-          'The worktree directory is gone and no removal by dev explains it; only an explicit release records the absence.'
-        )
+    return retain(
+      'directory-missing',
+      'The worktree directory is gone; dev workspace release records the absence.'
+    )
   if (facts.residue === undefined)
     return retain('residue-unreadable', 'The worktree contents could not be read.')
   const clean = isClean(facts.residue)

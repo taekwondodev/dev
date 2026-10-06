@@ -27,7 +27,6 @@ import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, conversationFileSlot, isWithin } from './workspace-paths.ts'
 import {
   assertNoUnresolvedRelease,
-  cancelUnstartedReleases,
   matchesGitWorkspace,
   getWorkspace,
   getWorkspaceByPath,
@@ -143,11 +142,6 @@ export const attachConversation = (
       ensureNoUnresolvedUse(authority, selected.repo, selected.workspace.id)
       const probe = acquirePathGates(authority.paths, selected.workspace.path, 'writer')
       releaseGates(probe)
-      inDb(authority, selected.repo, db =>
-        transaction(db, () =>
-          cancelUnstartedReleases(db, selected.workspace.id, 'Superseded by an explicit resume')
-        )
-      )
       binding = {
         key: normalized.key,
         conversation: normalized.conversation,

@@ -633,11 +633,10 @@ await claim(
   "/workspace check of the TUI task shows its managed worktree as finished for the sweep, naming the conversation's own live shell as a use that ends when it quits, without parking the host or stopping anything",
   async () => {
     const shown = await waitFor('the check to be displayed', () =>
-      workspaceEntries().find(content => content.includes('Release eligibility for exact task'))
+      workspaceEntries().find(content => content.includes('Sweep assessment for exact task'))
     )
     assert.ok(shown.includes(`workspace ${binding.workspaceId} (managed)`), shown)
     assert.ok(shown.includes('sweep verdict: finished (no-residue)'), shown)
-    assert.ok(shown.includes('eligibility: removable'), shown)
     assert.ok(shown.includes('lead-shell') && shown.includes('they end when it quits'), shown)
     assert.equal(workspaceHost.isParked(), false)
     assert.ok(alive(survivorPid), 'a check stops nothing')
@@ -646,12 +645,12 @@ await claim(
 const confirmationsBeforeRelease = confirmations
 signal('READY_FOR_OWN_RELEASE')
 await claim(
-  "/workspace release of the TUI's own task answers that quitting sweeps it, asks for no confirmation and stops nothing",
+  "/workspace release of the TUI's own task points to the terminal command, asks for no confirmation and stops nothing",
   async () => {
     const answer = await waitFor('the own-task answer', () =>
-      workspaceEntries().find(content => content.includes('belongs to this conversation'))
+      workspaceEntries().find(content => content.includes('Release runs only from a terminal'))
     )
-    assert.ok(answer.includes('/quit') && answer.includes('sweeps'), answer)
+    assert.ok(answer.includes(`dev workspace release ${hostTask}`), answer)
     assert.equal(confirmations, confirmationsBeforeRelease)
     assert.ok(alive(survivorPid), 'the answer stopped nothing')
     assert.ok(existsSync(managed))

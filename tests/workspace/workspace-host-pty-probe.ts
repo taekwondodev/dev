@@ -29,7 +29,6 @@ import { errorText } from '../../src/error-text.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
 import {
   WorkspaceError,
-  type ReleaseRequest,
   type WorkspaceAssessment,
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
@@ -531,11 +530,10 @@ const unsupported = () =>
     })
   )
 
-const releaseRequests: ReleaseRequest[] = []
+const releaseRequests: { readonly taskId: WorkspaceId }[] = []
 const eligibleAssessment = (item: FixtureDescriptor): WorkspaceAssessment =>
   makeFixtureAssessment({
     descriptor: item,
-    outcome: 'removable',
     completion: {
       kind: 'finished',
       role: 'child',
@@ -1704,14 +1702,10 @@ assert.deepEqual(
     ],
     [`Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`],
     [
-      `Release eligibility for exact task ${TASK_RESUME} (a check grants nothing; the sweep at quit or before a worktree allocation rechecks everything):`,
-      `workspace ${WS_RESUME_A} (managed) at ${targetA}`,
+      `Release runs only from a terminal: dev workspace release ${TASK_RESUME}. The task of this conversation is swept when dev quits.`,
     ],
     [
-      `No workspace of task ${TASK_RESUME} is review-required, so there is nothing for an explicit release. Finished workspaces are released automatically when dev quits or before it allocates a worktree; the others stay retained with the reason above.`,
-    ],
-    [
-      `Task ${TASK_B} belongs to this conversation. Quitting dev (/quit) ends its uses and then sweeps the repository: finished workspaces are released automatically and the others stay retained with their reason. Use /workspace check ${TASK_B} to see what the sweep will do.`,
+      `Release runs only from a terminal: dev workspace release ${TASK_B}. The task of this conversation is swept when dev quits.`,
     ],
     [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
   ],

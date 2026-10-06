@@ -1,6 +1,6 @@
 import { execFile as execFileCallback, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstatSync, readlinkSync, realpathSync, type BigIntStats } from 'node:fs'
+import { lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { DateTime, Option, Predicate, Result, Schema } from 'effect'
 import { errorText } from './error-text.ts'
@@ -28,7 +28,7 @@ import {
   assertUnfilteredIndex,
   branchPushRef,
   hasCommit,
-  indexSnapshot,
+  indexPaths,
   isShallowRepository,
   remoteHead,
   remoteNames,
@@ -40,11 +40,8 @@ import {
   untrackedPaths,
   type TrackedChange,
 } from './workspace-git.ts'
-import type { ManifestEntry } from './workspace-records.ts'
 import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
-import { observePhysicalIdentity, type PhysicalObservation } from './workspace-identity.ts'
-
-export const EVIDENCE_POLICY_VERSION = 4
+import { observePhysicalIdentity } from './workspace-identity.ts'
 
 export const sha256Hex = (bytes: Uint8Array | string): string =>
   createHash('sha256').update(bytes).digest('hex')
@@ -475,10 +472,6 @@ export type InventoryFile =
       readonly kind: 'file' | 'symlink'
       readonly path: string
       readonly size: number
-      readonly volumeUuid: string
-      readonly inode: string
-      readonly device: string
-      readonly mtimeNs: string
     }
   | {
       readonly kind: 'nested-repository' | 'other' | 'unreadable' | 'absent'
@@ -489,7 +482,6 @@ export interface Inventory {
   readonly head: string | undefined
   readonly tracked: readonly TrackedChange[]
   readonly trackedFiles: readonly InventoryFile[]
-  readonly trackedDigest: string
   readonly files: readonly InventoryFile[]
   readonly untracked: number
   readonly ignored: number
@@ -545,26 +537,8 @@ export const sensitiveName = (relativePath: string): boolean => {
   return SENSITIVE_PARTS.some(part => name.includes(part))
 }
 
-const identityOf = (
-  stat: BigIntStats,
-  volumeUuid: string
-): {
-  readonly size: number
-  readonly volumeUuid: string
-  readonly inode: string
-  readonly device: string
-  readonly mtimeNs: string
-} => ({
-  size: Number(stat.size),
-  volumeUuid,
-  inode: String(stat.ino),
-  device: String(stat.dev),
-  mtimeNs: String(stat.mtimeNs),
-})
-
 const inventoryFileOf = (
   checkout: string,
-  volumeUuid: string,
   device: string,
   entry: string,
   canonicalParents: Map<string, boolean>
@@ -587,29 +561,23 @@ const inventoryFileOf = (
       detail: errorText(cause),
     }
   }
-  const identity = identityOf(stat, volumeUuid)
-  if (identity.device !== device)
+  if (String(stat.dev) !== device)
     return { path: entry, kind: 'other', detail: 'crosses a mount boundary' }
-  if (stat.isSymbolicLink()) return { path: entry, kind: 'symlink', ...identity }
+  const size = Number(stat.size)
+  if (stat.isSymbolicLink()) return { path: entry, kind: 'symlink', size }
   if (stat.isFile()) {
     if (Number(stat.nlink) !== 1) return { path: entry, kind: 'other', detail: 'has hard links' }
-    return { path: entry, kind: 'file', ...identity }
+    return { path: entry, kind: 'file', size }
   }
   return { path: entry, kind: 'other', detail: 'is not a regular file' }
 }
 
 export const readInventory = (checkout: string, head: string | undefined): Inventory => {
   const root = observePhysicalIdentity(checkout)
-  const index = indexSnapshot(checkout)
+  const index = indexPaths(checkout)
   const canonicalParents = new Map<string, boolean>()
-  const trackedFiles = index.paths.flatMap(entry => {
-    const file = inventoryFileOf(
-      checkout,
-      root.identity.volumeUuid,
-      root.device,
-      entry,
-      canonicalParents
-    )
+  const trackedFiles = index.flatMap(entry => {
+    const file = inventoryFileOf(checkout, root.device, entry, canonicalParents)
     if (file.kind === 'absent') return []
     if (file.kind !== 'file' && file.kind !== 'symlink')
       return blocked(`Cannot inspect tracked entry ${file.path}: ${file.kind}`)
@@ -617,69 +585,17 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
   })
   const others = untrackedPaths(checkout)
   const files = [...others.untracked, ...others.ignored].map(entry =>
-    inventoryFileOf(checkout, root.identity.volumeUuid, root.device, entry, canonicalParents)
+    inventoryFileOf(checkout, root.device, entry, canonicalParents)
   )
-  assertUnfilteredIndex(checkout, index.paths)
-  const trackedDigest = sha256Hex(
-    JSON.stringify({
-      index: index.digest ?? null,
-      contents: trackedFiles.map(file => {
-        const path = join(checkout, file.path)
-        const digest =
-          file.kind === 'symlink'
-            ? sha256Hex(readlinkSync(path, { encoding: 'buffer' }))
-            : regularFileDigest(path)
-        return [file.path, digest]
-      }),
-    })
-  )
+  assertUnfilteredIndex(checkout, index)
   return {
     head,
     tracked: trackedChanges(checkout),
     trackedFiles,
-    trackedDigest,
     files,
     untracked: others.untracked.length,
     ignored: others.ignored.length,
   }
-}
-
-export const entryUnchanged = (
-  checkout: string,
-  entry: ManifestEntry,
-  root: PhysicalObservation
-):
-  | { readonly state: 'same' }
-  | { readonly state: 'absent' }
-  | { readonly state: 'changed'; readonly detail: string } => {
-  let rootStat
-  let stat
-  try {
-    rootStat = lstatSync(checkout, { bigint: true })
-    if (
-      !rootStat.isDirectory() ||
-      String(rootStat.dev) !== root.device ||
-      String(rootStat.ino) !== root.identity.inode
-    )
-      return { state: 'changed', detail: 'workspace directory changed since the check' }
-    stat = lstatSync(join(checkout, entry.path), { bigint: true })
-  } catch (cause) {
-    if (hasErrorCode(cause, 'ENOENT')) return { state: 'absent' }
-    return { state: 'changed', detail: errorText(cause) }
-  }
-  const identity = identityOf(stat, root.identity.volumeUuid)
-  if (
-    identity.device !== root.device ||
-    identity.volumeUuid !== entry.volumeUuid ||
-    identity.inode !== entry.inode ||
-    identity.size !== entry.size ||
-    identity.mtimeNs !== entry.mtimeNs
-  )
-    return { state: 'changed', detail: 'identity or content changed since the check' }
-  if (!stat.isFile()) return { state: 'changed', detail: 'no longer a regular file' }
-  if (regularFileDigest(join(checkout, entry.path)) !== entry.sha256)
-    return { state: 'changed', detail: 'content digest changed' }
-  return { state: 'same' }
 }
 
 const short = (sha: string): string => sha.slice(0, 12)
@@ -1258,40 +1174,10 @@ export const integrationFacts = (
   return { tip: tip.sha, headInTip, pullRequests, rejected, unknown }
 }
 
-export const stateDigestOf = (input: {
-  readonly head: string | undefined
-  readonly inventory: Inventory | undefined
-  readonly targetTip: string | undefined
-  readonly publications: readonly PublicationReference[]
-  readonly absent?: boolean
-}): string =>
-  sha256Hex(
-    JSON.stringify({
-      policy: EVIDENCE_POLICY_VERSION,
-      head: input.head ?? null,
-      absent: input.absent === true,
-      targetTip: input.targetTip ?? null,
-      tracked: input.inventory?.tracked.map(change => [change.kind, change.path]) ?? null,
-      trackedDigest: input.inventory?.trackedDigest ?? null,
-      files:
-        input.inventory === undefined
-          ? null
-          : [...input.inventory.trackedFiles, ...input.inventory.files].map(file =>
-              file.kind === 'file' || file.kind === 'symlink'
-                ? [file.kind, file.path, file.size, file.volumeUuid, file.inode, file.mtimeNs]
-                : [file.kind, file.path]
-            ),
-      publications: input.publications
-        .map(reference => `${reference.relativePath}\0${reference.sha256}\0${reference.byteLength}`)
-        .toSorted(),
-    })
-  )
-
 export interface InventoryVerdict {
   readonly verdict: EvidenceVerdict
   readonly reasons: readonly string[]
   readonly inventory: Inventory
-  readonly manifest: readonly ManifestEntry[]
   readonly counts: {
     readonly trackedChanges: number
     readonly files: number
@@ -1311,7 +1197,6 @@ export const verifyInventory = (
   for (const change of inventory.tracked)
     if (change.kind === 'conflict') invalid.push(`Unresolved conflict: ${change.path}`)
 
-  const manifest: ManifestEntry[] = []
   const publicationsByPath = new Map<string, PublicationReference[]>()
   for (const reference of publications) {
     const references = publicationsByPath.get(reference.relativePath)
@@ -1339,14 +1224,6 @@ export const verifyInventory = (
       continue
     }
     if (file.kind !== 'file' && file.kind !== 'symlink') continue
-    const identity = {
-      path: file.path,
-      volumeUuid: file.volumeUuid,
-      inode: file.inode,
-      size: file.size,
-      mtimeNs: file.mtimeNs,
-      state: 'pending' as const,
-    }
     const references = publicationsByPath.get(file.path)
     if (references !== undefined && sensitiveName(file.path)) {
       blocking += 1
@@ -1367,7 +1244,6 @@ export const verifyInventory = (
       )
       if (match !== undefined) {
         published += 1
-        manifest.push({ ...identity, sha256: digest })
         continue
       }
       blocking += 1
@@ -1385,7 +1261,6 @@ export const verifyInventory = (
     verdict,
     reasons: [...invalid, ...unknown],
     inventory,
-    manifest,
     counts: {
       trackedChanges: inventory.tracked.length,
       files: inventory.files.length,

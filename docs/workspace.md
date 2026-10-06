@@ -12,7 +12,7 @@ Terminal commands are read-only unless stated:
 dev workspace                 # list this repository's tasks and workspaces
 dev workspace inspect <task>  # inspect the exact task across repositories, including next safe action
 dev workspace check <task>    # assess role, target, completion verdict, blockers and evidence
-dev workspace release <task>  # confirm one release attempt for review-required workspaces
+dev workspace release <task>  # confirm, then clear every workspace of the task
 ```
 
 Session commands mirror them:
@@ -21,10 +21,8 @@ Session commands mirror them:
 /workspace                  also shows the current binding and effective directory
 /workspace inspect <task>
 /workspace check <task>     treats this conversation's own uses as ending at quit
-/workspace release <task>   for another task; the current task is swept at /quit
+/workspace release <task>   names the terminal command; releases nothing
 ```
-
-Release is refused before confirmation when the conversation is inside, or bound to, a managed worktree of that task. Quit closes that use before sweeping.
 
 The lead's `workspace` tool has three actions:
 
@@ -89,36 +87,41 @@ At quit and before managed allocation, dev assesses every task of the repository
 
 These are verdict labels, not manual deletion predicates: use `check` to see the assessment. Ignored files alone do not block completion, but unsafe filesystem structure can still block removal.
 
-Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, an open conversation binding, and an uncertain prior release. The integration target is a recorded override, otherwise the `origin` GitHub repository and default branch, otherwise the remote HEAD branch.
+Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, an open conversation binding, and an unfinished earlier release (`release-review`). Whatever the sweep retains, [release](#release) clears. The integration target is a recorded override, otherwise the `origin` GitHub repository and default branch, otherwise the remote HEAD branch.
 
-The budget is 40 seconds at quit and 20 before allocation, measured from the request. Tasks not started become `task-deferred` for the next sweep. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. A worktree containing the quitting conversation's file is retained. The receipt prints at quit, or appears in the conversation before allocation when it has rows.
+Before removing a finished workspace, the sweep takes the structure, presence and writer gates and assesses it again; it acts only if the workspace is still finished with valid evidence. A pre-existing checkout loses only its reservation and that reservation's settled (`quiescent`) use records. A managed worktree is removed with `git worktree remove --force`. Gates held by another dev session, a worktree containing a shell, launcher or quitting conversation, and active installation coordination retain it. A removal that does not complete stays `release-review`, refuses resume and is never retried automatically.
 
-### Release
-
-Explicit release proceeds only when a task has a `review-required` workspace; otherwise it explains and exits 1. It shows the assessment and consequences, requires an interactive terminal confirmation and makes one attempt per confirmed workspace. There is no `--yes` or `--force` bypass.
-
-Every release rechecks evidence under structure, presence and writer gates. A pre-existing checkout loses only its reservation and that reservation's settled (`quiescent`) use records. A managed worktree is removed only when completion and recorded publications still match and no live or uncertain use holds it. **Everything left in a released managed worktree is discarded, including dirty edits, caches and forgotten files.**
-
-Changed identities, nested repositories, mount crossings and failed Git commands, including held locks, block removal. Running release inside a removable worktree retains it. An interrupted release is retained for review and refuses resume until the next sweep or explicit release observes and closes the attempt before reassessment. Files already recorded as deleted remain listed. Repeating release is a fresh request with fresh checks.
+The budget is 40 seconds at quit and 20 before allocation, measured from the request. Tasks not started become `task-deferred` for the next sweep. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. The receipt prints at quit, or appears in the conversation before allocation when it has rows.
 
 Before delivery, the workflow must integrate code and assets, reconcile contributions and publish wanted reports, then record exact publication readback. A failed publication remains in the task checkpoint and stops delivery. A local copy is not a publication. Source-history inclusion proves neither semantic equivalence nor delivery of dirty edits.
 
-External programs are not coordinated. Stop independently started tools and avoid external edits during release; the [accepted filesystem race](../SECURITY.md#outside-the-protection) is not closed by these gates.
+### Release
+
+`dev workspace release <task>` clears every reserved workspace of the task, whatever the sweep verdict. It runs only in an interactive terminal: it lists each workspace with its consequence, asks for one `y`, then:
+
+- removes each managed worktree with `git worktree remove --force`, with its Git registration and reservation;
+- ends the reservation and use records of each pre-existing checkout; its files and commits stay.
+
+**Everything left in a released managed worktree is discarded, including dirty edits, undelivered commits, caches and forgotten files.** Release checks no completion, evidence or live use, so run it only when nothing still works in those workspaces. There is no `--yes`, and the session command only names the terminal command.
+
+Release respects a Git lock: a locked worktree fails and stays. When Git confirms that it no longer lists the worktree, release deletes what remains of its directory under dev's worktree root and its admin directory, unless that admin directory now serves a moved worktree. An unreadable Git worktree list permits neither deletion of leftovers nor confirmation of removal. A failed or interrupted removal stays `release-review` and refuses resume; running release again finishes it. If the directory is already gone, the retry preserves the interrupted removal's recorded HEAD as delivery evidence for the task's other workspaces.
+
+External programs are not coordinated. Stop independently started tools and avoid external edits during a removal; the [accepted filesystem race](../SECURITY.md#outside-the-protection) is not closed.
 
 ### Quit and interruption
 
-`/quit` stops owned work and shells, closes the attachment, releases installation/source claims, then sweeps uninterruptibly and prints a receipt. Ctrl-C before the sweep releases nothing. During the sweep, an attempt reaches its recorded outcome; a Git step also interrupted by the signal ends `partial` for explicit release.
+`/quit` stops owned work and shells, closes the attachment, releases installation/source claims, then sweeps uninterruptibly and prints a receipt. Ctrl-C before the sweep releases nothing. During the sweep, an attempt reaches its recorded outcome; a Git step also interrupted by the signal stays `release-review` until `dev workspace release`.
 
-SIGHUP after quit can end dev without a receipt; the next sweep observes interrupted attempts. Signals, crashes, startup, turn end and session replacements do not initiate sweeps. If a sweep does not report back, its outcome remains unknown and the launcher points to `inspect`.
+SIGHUP after quit can end dev without a receipt; the next sweep reports an interrupted removal as `release-review`. Signals, crashes, startup, turn end and session replacements do not initiate sweeps. If a sweep does not report back, its outcome remains unknown and the launcher points to `inspect`.
 
 ### Exit codes
 
-| Code | Meaning                                                                                                                                                       |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Observation returned; all confirmed releases ended `released`, `removed` or `already-absent`; or quit reached terminal outcomes for every attempted workspace |
-| 1    | Observation unavailable, blocked/partial/uncertain release, unknown sweep outcome, disposal failure or nothing to release                                     |
-| 2    | Invalid or ambiguous arguments, or missing required interaction                                                                                               |
-| 130  | Cancelled confirmation, interrupted release, or quit interrupted before/during the sweep; an in-flight attempt completes and is reported                      |
+| Code | Meaning                                                                                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Observation returned; every workspace of a confirmed release ended `released` or `removed`; or quit reached terminal outcomes              |
+| 1    | Observation unavailable, a failed or unreported release, nothing reserved to release, unknown sweep outcome or an unfinished sweep removal |
+| 2    | Invalid or ambiguous arguments, or missing required interaction                                                                            |
+| 130  | Cancelled confirmation, or quit interrupted before or during the sweep; an in-flight sweep attempt completes and is reported               |
 
 A successful `check` can list blockers. Exit 0 is not permission to remove anything.
 

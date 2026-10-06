@@ -7,9 +7,7 @@ import {
   PublicationReferenceSchema,
   CommitSha,
   ReleaseDeciderSchema,
-  RelativeFilePath,
   Revision,
-  Sha256Hex,
   TaskTargetSchema,
   WorkspaceAccessSchema,
   WorkspaceBindingSchema,
@@ -160,24 +158,7 @@ const TransitionOperationSchema = Schema.Union([
     reason: Schema.Literals(['isolate-contended-writer', 'explicit-task-resume']),
   }),
 ])
-export const ManifestEntrySchema = Schema.Struct({
-  path: RelativeFilePath,
-  volumeUuid: VolumeUuidSchema,
-  inode: InodeSchema,
-  size: Schema.Int,
-  mtimeNs: Schema.String,
-  sha256: Sha256Hex,
-  state: Schema.Literals(['pending', 'removed', 'absent', 'failed']),
-  detail: Schema.optional(Schema.String),
-})
-export type ManifestEntry = typeof ManifestEntrySchema.Type
-const ReleaseStepSchema = Schema.Struct({
-  kind: Schema.Literals(['selected-files', 'git-worktree-remove', 'registration', 'records']),
-  state: Schema.Literals(['pending', 'started', 'done', 'failed', 'observed']),
-  detail: Schema.optional(Schema.String),
-})
-export type ReleaseStep = typeof ReleaseStepSchema.Type
-const ReleaseOperationFields = {
+const ReleaseOperationSchema = Schema.Struct({
   id: WorkspaceId,
   kind: Schema.Literal('release'),
   phase: OperationPhase,
@@ -185,34 +166,15 @@ const ReleaseOperationFields = {
   workspaceId: WorkspaceId,
   taskId: WorkspaceId,
   reservationId: WorkspaceId,
-  acquisitionId: Schema.optional(WorkspaceId),
-  commandId: WorkspaceId,
   decider: ReleaseDeciderSchema,
+  effect: Schema.Literals(['release-reservation', 'remove-worktree']),
   targetPath: Schema.NonEmptyString,
   head: Schema.optional(CommitSha),
-  stateDigest: Sha256Hex,
-  policyVersion: Schema.Int,
   expectedReservationRevision: Revision,
   createdAt: Schema.Finite,
   result: Schema.optional(Schema.String),
-}
-export const ReservationReleaseOperationSchema = Schema.Struct({
-  ...ReleaseOperationFields,
-  effect: Schema.Literal('release-reservation'),
 })
-export const WorktreeRemovalOperationSchema = Schema.Struct({
-  ...ReleaseOperationFields,
-  effect: Schema.Literal('remove-worktree'),
-  gitAdminPath: Schema.NonEmptyString,
-  manifest: Schema.Array(ManifestEntrySchema),
-  steps: Schema.Array(ReleaseStepSchema),
-  observed: Schema.optional(Schema.Literals(['removed', 'already-absent'])),
-})
-export const OperationSchema = Schema.Union([
-  TransitionOperationSchema,
-  ReservationReleaseOperationSchema,
-  WorktreeRemovalOperationSchema,
-])
+export const OperationSchema = Schema.Union([TransitionOperationSchema, ReleaseOperationSchema])
 
 type TaskRecord = typeof TaskSchema.Type
 export type RepositoryCatalogRecord = typeof RepositoryCatalogSchema.Type
@@ -222,9 +184,7 @@ export type BindingRecord = typeof BindingSchema.Type
 export type UseRecord = typeof UseSchema.Type
 export type OperationRecord = typeof OperationSchema.Type
 export type TransitionOperationRecord = typeof TransitionOperationSchema.Type
-export type ReservationReleaseRecord = typeof ReservationReleaseOperationSchema.Type
-export type WorktreeRemovalRecord = typeof WorktreeRemovalOperationSchema.Type
-export type ReleaseOperationRecord = ReservationReleaseRecord | WorktreeRemovalRecord
+export type ReleaseOperationRecord = typeof ReleaseOperationSchema.Type
 
 export const operationRevision = (operation: OperationRecord): number =>
   operation.kind === 'release'
@@ -345,6 +305,10 @@ export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): v
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Reservation changed before its release was recorded: ${value.id}`)
   statement(db, "DELETE FROM uses WHERE reservation_id=? AND stage='quiescent'").run(value.id)
+}
+export const forgetReservation = (db: DatabaseSync, value: ReservationRecord): void => {
+  statement(db, 'DELETE FROM reservations WHERE id=?').run(value.id)
+  statement(db, 'DELETE FROM uses WHERE reservation_id=?').run(value.id)
 }
 export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
   statement(
@@ -535,14 +499,7 @@ const isRelease = (operation: OperationRecord): operation is ReleaseOperationRec
 export const isUnresolvedRelease = (
   operation: OperationRecord
 ): operation is ReleaseOperationRecord =>
-  isRelease(operation) &&
-  (operation.phase === 'started' ||
-    operation.phase === 'unknown' ||
-    operation.phase === 'review-required')
-export const isEngineRecordedRelease = (
-  operation: OperationRecord
-): operation is ReleaseOperationRecord =>
-  isRelease(operation) && (operation.phase === 'unknown' || operation.phase === 'review-required')
+  isRelease(operation) && operation.phase !== 'confirmed' && operation.phase !== 'cancelled'
 export const openOperations = (db: DatabaseSync, workspaceIdValue?: string): OperationRecord[] =>
   workspaceIdValue === undefined
     ? operationsWhere(db, `phase IN ${OPEN_PHASES}`)
@@ -551,34 +508,17 @@ export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: st
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)
     requireReview(
-      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} left this workspace unresolved; observe its effects before using it: ${workspaceIdValue}`
+      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on this workspace; dev workspace release completes it: ${workspaceIdValue}`
     )
 }
 export const unresolvedReleases = (
   db: DatabaseSync,
   workspaceIdValue: string
 ): ReleaseOperationRecord[] => openOperations(db, workspaceIdValue).filter(isUnresolvedRelease)
-const unstartedReleases = (db: DatabaseSync, workspaceIdValue: string): ReleaseOperationRecord[] =>
-  openOperations(db, workspaceIdValue)
-    .filter(isRelease)
-    .filter(operation => operation.phase === 'intent')
-export const releaseOperations = (
-  db: DatabaseSync,
-  workspaceIdValue: string
-): ReleaseOperationRecord[] =>
-  operationsWhere(db, "workspace_id=? AND kind='release'", workspaceIdValue).filter(isRelease)
 export const confirmedReleases = (db: DatabaseSync, taskId: string): ReleaseOperationRecord[] =>
   operationsWhere(db, "task_id=? AND kind='release' AND phase='confirmed'", taskId).filter(
     isRelease
   )
-export const cancelUnstartedReleases = (
-  db: DatabaseSync,
-  workspaceIdValue: string,
-  result: string
-): void => {
-  for (const operation of unstartedReleases(db, workspaceIdValue))
-    saveOperation(db, { ...operation, phase: 'cancelled', result })
-}
 
 export const getPublications = (db: DatabaseSync, taskId: string): PublicationReference[] =>
   rows(

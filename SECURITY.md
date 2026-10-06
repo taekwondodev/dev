@@ -38,7 +38,7 @@ Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's 
 - A read-only child is read-only only through its tool allowlist. Global extensions still initialize and run their event handlers in it, including while it reads the lead's or a coordinator's admitted workspace. A provider that runs its own agent, such as `pi-claude-bridge`, also brings that agent's configuration, including project configuration that Pi folder trust does not gate, and can reach tools outside the allowlist.
 - A child runs with the lead's environment: `NODE_OPTIONS` and every other variable of the shell that launched dev reach it unchanged; the controller sets only the data home and the Pi agent directory.
 - A process that detaches into its own session escapes observation; what a lost observation does to its checkout is in [workspace](docs/workspace.md#behavior).
-- During a release, a process outside dev can move a selected file's parent and redirect the deletion; dev does not guarantee atomic filesystem containment against concurrent external changes. Stop independently started tools and avoid external edits while a release runs.
+- During a removal, a process outside dev can move paths into the worktree and have them deleted with it; dev does not guarantee atomic filesystem containment against concurrent external changes. Stop independently started tools and avoid external edits while a release runs.
 - Git-ignoring `.dev/` and the data home's file permissions are not access control against other software running as your account.
 - Recent acknowledged ownership metadata can be lost after a power failure, and not every loss is detectable.
 

@@ -119,7 +119,6 @@ export const makeFixtureHandoff = (input: {
 
 export const makeFixtureAssessment = (input: {
   readonly descriptor: FixtureDescriptor
-  readonly outcome: WorkspaceAssessment['outcome']
   readonly completion: CompletionVerdict
   readonly reservationId: WorkspaceId
 }) =>
@@ -130,7 +129,6 @@ export const makeFixtureAssessment = (input: {
     reservationId: input.reservationId,
     path: input.descriptor.path,
     origin: input.descriptor.origin,
-    outcome: input.outcome,
     reasons: [input.completion.reason],
     nextActions: ['fixture next action'],
     evidence: { verdict: 'valid', reasons: [] },
@@ -138,22 +136,9 @@ export const makeFixtureAssessment = (input: {
     residual: [],
     target: { source: 'override', description: 'local refs/heads/main, recorded for the task' },
     completion: input.completion,
-    subject: {
-      repositoryId: input.descriptor.repoId,
-      workspaceId: input.descriptor.workspaceId,
-      reservationId: input.reservationId,
-      reservationRevision: 0,
-      workspaceRevision: 0,
-      origin: input.descriptor.origin,
-      path: input.descriptor.path,
-      effect: input.outcome === 'removable' ? 'remove-worktree' : 'none',
-      stateDigest: 'a'.repeat(64),
-      policyVersion: 4,
-    },
   } satisfies WorkspaceAssessment)
 
 export const makeFixtureReceipt = (input: {
-  readonly commandId: WorkspaceId
   readonly moment: SweepReceipt['moment']
   readonly rows: readonly {
     readonly descriptor: FixtureDescriptor
@@ -163,7 +148,6 @@ export const makeFixtureReceipt = (input: {
   }[]
 }) =>
   conforming(SweepReceiptSchema)({
-    commandId: input.commandId,
     moment: input.moment,
     rows: input.rows.map(row => ({
       kind: 'workspace' as const,

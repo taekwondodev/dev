@@ -7,7 +7,6 @@ export const managedFacts = (overrides: Partial<CompletionFacts> = {}): Completi
   allocation: 'delegated-writer',
   identity: 'verified',
   transitionUnresolved: false,
-  removalInterrupted: false,
   releaseReview: false,
   excluded: false,
   uses: { unknown: 0, abandoned: 0, live: 0, conversations: 0 },

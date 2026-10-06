@@ -4,8 +4,6 @@ import { basename, isAbsolute, resolve } from 'node:path'
 import { Option, Schema } from 'effect'
 import { WorkspaceError } from './workspace-domain.ts'
 import { FileIdentitySchema, observePhysicalIdentities } from './workspace-identity.ts'
-import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
-import { errorText } from './error-text.ts'
 
 const GitWorkspaceSchema = Schema.Struct({
   path: Schema.NonEmptyString,
@@ -170,17 +168,7 @@ export interface TrackedChange {
   readonly path: string
   readonly kind: 'changed' | 'renamed' | 'conflict'
 }
-export const indexSnapshot = (
-  checkout: string
-): { readonly paths: readonly string[]; readonly digest: string | undefined } => {
-  const indexPath = git(checkout, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])
-  let digest: string | undefined
-  try {
-    digest = regularFileDigest(indexPath)
-  } catch (cause) {
-    if (!hasErrorCode(cause, 'ENOENT'))
-      throw gitBlocked(`Cannot read Git index: ${errorText(cause)}`)
-  }
+export const indexPaths = (checkout: string): readonly string[] => {
   const entries = git(checkout, ['ls-files', '--stage', '-z'])
     .split('\0')
     .filter(entry => entry.length > 0)
@@ -191,7 +179,7 @@ export const indexSnapshot = (
     const path = entry.slice(separator + 1)
     paths.add(entry.startsWith('160000 ') ? `${path}/` : path)
   }
-  return { paths: [...paths], digest }
+  return [...paths]
 }
 
 export const assertUnfilteredIndex = (checkout: string, paths: readonly string[]): void => {
@@ -328,19 +316,6 @@ export const remoteTip = (checkout: string, remote: string, ref: string): Remote
   const line = result.stdout.split('\n').find(entry => entry.endsWith(`\t${ref}`))
   const sha = line?.split('\t')[0]
   return sha === undefined || sha.length === 0 ? 'missing' : { sha }
-}
-
-export const worktreeLockReason = (repositoryPath: string, path: string): string | undefined => {
-  const fields = git(repositoryPath, ['worktree', 'list', '--porcelain', '-z']).split('\0')
-  let selected = false
-  for (const field of fields) {
-    if (field.startsWith('worktree ')) {
-      selected = field.slice('worktree '.length) === path
-      continue
-    }
-    if (selected && field.startsWith('locked')) return field.slice('locked'.length).trim()
-  }
-  return undefined
 }
 
 export const registeredWorktrees = (repositoryPath: string): readonly string[] =>

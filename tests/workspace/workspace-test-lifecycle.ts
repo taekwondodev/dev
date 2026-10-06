@@ -5,7 +5,6 @@ import { errorText } from '../../src/error-text.ts'
 import {
   WorkspaceError,
   type PublicationReference,
-  type ReleaseRequest,
   type SweepReceipt,
   type SweepRequest,
   type TaskTarget,
@@ -110,7 +109,7 @@ export interface TestLifecycle {
   }): Promise<readonly WorkspaceView[]>
   validate(grant: WorkspaceGrant): Promise<void>
   check(taskId: WorkspaceId): Promise<readonly WorkspaceAssessment[]>
-  release(request: ReleaseRequest): Promise<WorkspaceReleaseResult>
+  release(taskId: WorkspaceId): Promise<readonly WorkspaceReleaseResult[]>
   sweep(request: SweepRequest): Promise<SweepReceipt>
   recordTarget(taskId: WorkspaceId, target: TaskTarget): Promise<void>
   recordPublication(reference: PublicationReference): Promise<void>
@@ -144,7 +143,7 @@ export const openLifecycle = async (options: {
     inspect: input => Effect.runPromise(lifecycle.inspect(input)),
     validate: grant => Effect.runPromise(lifecycle.validate(grant)),
     check: taskId => Effect.runPromise(lifecycle.check({ taskId })),
-    release: request => Effect.runPromise(lifecycle.release(request)),
+    release: taskId => Effect.runPromise(lifecycle.release({ taskId })),
     sweep: request => Effect.runPromise(lifecycle.sweep(request)),
     recordTarget: (taskId, target) => Effect.runPromise(lifecycle.recordTarget({ taskId, target })),
     recordPublication: reference => Effect.runPromise(lifecycle.recordPublication({ reference })),

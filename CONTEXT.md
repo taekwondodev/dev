@@ -36,7 +36,7 @@ The `work` tool's `taskId` is a controller-local key, not the durable workflow-t
 | **Workspace use**         | The recorded presence of a conversation, operation or process. A process use ends only when its family is observed gone; an `unknown` use blocks writers.           |
 | **Completion verdict**    | A workspace's role and either a finished rule or a retained reason, derived from recorded or observed facts rather than a workflow declaration.                     |
 | **Sweep**                 | Dev's budgeted assessment and release of finished workspaces in a repository, at quit and before managed allocation.                                                |
-| **Task release**          | An explicitly confirmed attempt to release one task's reserved workspaces when the sweep leaves a `review-required` case.                                           |
+| **Task release**          | The user's interactively confirmed clearing of every workspace a task reserves, whatever the sweep verdict.                                                         |
 | **Cleanup evidence**      | Recorded target and publication readback facts, combined with use, identity and structural checks. Source-history inclusion does not prove delivery of dirty edits. |
 
 [Workspace](docs/workspace.md) owns commands and release behavior. [ADR 0005](docs/adr/0005-scoped-runtime-coordination.md) records the ownership and disposal constraints.

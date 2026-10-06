@@ -54,7 +54,9 @@ Keep exact operand matching before re-resolution, raw-parent-traversal and Pi-sh
 
 Managed worktrees are disposable after delivery; pre-existing checkouts lose only reservations. The [disposal decision](https://github.com/taekwondodev/dev/issues/42) rejects exhaustive per-file certification: the workflow integrates wanted code/assets, reconciles contributions and publishes selected reports before delivery. Failed publication remains in the task checkpoint. The runtime consumes recorded readback facts, not issue closure or a model's declaration of completion, and adds no parallel workflow authority.
 
-Release may discard all remaining managed contents, including dirty intermediate edits, dependencies and forgotten files. Git's single internal force flag implements this bounded disposal, not an authorization bypass. Live/unknown uses, explicit Git locks, changed identities and unsupported structure still block removal. Never double-force, add unattended release flags, prune broadly or fall back to recursive deletion.
+Release may discard all remaining managed contents, including dirty intermediate edits, dependencies and forgotten files. Git's single internal force flag implements this bounded disposal, not an authorization bypass. Never double-force, add unattended release flags or prune broadly.
+
+Two deciders release. The sweep is automatic, so it acts only on completion evidence: live/unknown uses, changed identities and unsupported structure retain. `dev workspace release` is the user's override: it runs only after an interactive terminal confirmation, consults no completion, evidence or use, and clears every workspace of the task. The user runs it only when nothing still works there, so it neither waits for uses nor takes path gates. It still honours explicit Git locks and the repository structure gate, and deletes leftovers recursively only once Git no longer lists the worktree, only inside dev's managed root and never an admin directory serving a moved worktree. Agent tools have no release path; the session command only names the terminal command.
 
 ### Completion and evidence
 
@@ -62,29 +64,27 @@ The [automatic-release decision](https://github.com/taekwondodev/dev/issues/44) 
 
 Preserve these non-obvious evidence constraints when changing predicates:
 
-- Missing identity, unresolved transitions or live/unknown/abandoned uses retain. A missing directory without dev's own interrupted removal is not proof of completion.
+- Missing identity, unresolved transitions, an unfinished release or live/unknown/abandoned uses retain. A missing directory is never proof of completion.
 - A paused branch at its allocation base is trivially in the target, so delivery requires its own commits. A detached child's delivery PR must strictly descend from its base, postdate allocation and have its merge result reachable from the target; [its own commits may be discarded](https://github.com/taekwondodev/dev/issues/123) because the task PR is the delivery evidence even when the lead integrated the child's work by patch.
 - Sibling evidence comes from the task's managed workspaces with own commits, reserved or removed by a confirmed release. A PR found only through a sibling must contain that sibling's HEAD. Unreadable evidence stays unknown, not refuted.
 - A target override naming the workspace's own branch, remote alias or push destination proves nothing. A differently named configured upstream can be valid. Derive a target only when integration proof is needed.
 - Merged-PR evidence binds independent provider facts to the exact merged source revision. Today's branch tip alone cannot prove what merged. An identical provider read is shared within the request, and late evidence is unavailable.
-- Ignored files do not count as completion residue, but remain in inventory, digests and structural checks ([ignored-file correction](https://github.com/taekwondodev/dev/issues/47)). Fingerprint actual index and tracked bytes/link text, not Git's diff projection: assume-unchanged and skip-worktree can hide edits. Stream regular-file digests from no-follow descriptors.
+- Ignored files do not count as completion residue, but remain in inventory and structural checks ([ignored-file correction](https://github.com/taekwondodev/dev/issues/47)). Publication digests stream regular files from no-follow descriptors.
 - Assessment Git reads disable hooks, prompts, lazy fetching, optional locks, replacements and grafts. Assessment must neither execute project effects nor accept a rewritten history as delivery evidence.
 
 Source-history inclusion is not semantic equivalence and says nothing about dirty edits. Publication heuristics cannot certify content as safe or turn unselected dependencies into disposal blockers.
 
 ### Fenced effects
 
-A check records nothing and holds no gate. Its release subject binds reservation/workspace revisions, HEAD, actual content digest, inventory, target and publications. Evidence and completion policy versions fence decision semantics, not historical storage formats; change the relevant version when predicate meaning changes.
+A check records nothing and holds no gate. The sweep assesses without gates, then for each finished workspace takes the structure, exclusive presence and writer gates, assesses it again and acts only if it is still finished with valid evidence. The gated reassessment is the decision: no subject, digest, policy version or command ID binds an earlier assessment to the attempt. Within one sweep the sibling evidence read when the task was assessed is reused by its gated reassessments. An occupied directory or a conversation file inside the tree retains the workspace.
 
-Release reassesses under structure, exclusive presence and writer gates. Within one sweep the sibling evidence read when the task was assessed is reused for each of its attempts rather than read again per workspace; an explicit release reads it under the gates. A changed subject, newly added workspace, occupied directory, conversation file inside the tree or spent command ID blocks effects. Automatic decisions must still be finished under the gates, and cannot be supplied through the explicit-release RPC. Confirmed user requests remain interactive and apply only to review-required cases.
+Persist a started operation before removal; observe directory, admin directory and Git's worktree list before recording success. A removal that does not complete stays open, refuses resume and makes the sweep retain the workspace as `release-review`; it is never retried automatically. `dev workspace release` supersedes the open attempt and removes again, so an interrupted attempt needs no observation of what it deleted. [ADR 0004](0004-authoritative-lifecycle-incremental-store.md) governs those durable external-effect facts.
 
-Persist intent and effect start before removal; observe directory, admin directory and Git's worktree list before recording success. An interrupted `intent` or `started` operation is observed and closed before a fresh attempt. An ending of `unknown` or `review-required` needs explicit release, not automatic retry. [ADR 0004](0004-authoritative-lifecycle-incremental-store.md) governs those durable external-effect facts.
-
-Installation-source presence is independent of the project's cwd. A runtime or maintenance operation loaded from a managed worktree holds account-wide presence before opening local coordination and rechecks identity. Removal claims the installation's existing local gate under exclusive admission; missing/malformed coordination, including directory symlinks, refuses removal. A gate only inside the tree is insufficient because deletion could recreate it on another inode. Close local claims before source presence; failed closure must not free that presence.
+Installation-source presence is independent of the project's cwd. A runtime or maintenance operation loaded from a managed worktree holds account-wide presence before opening local coordination and rechecks identity. The sweep's removal claims the installation's existing local gate under exclusive admission; missing/malformed coordination, including directory symlinks, retains the worktree. `dev workspace release` claims no installation gate. A gate only inside the tree is insufficient because deletion could recreate it on another inode. Close local claims before source presence; failed closure must not free that presence.
 
 ### Sweep and quit
 
-A sweep is one budgeted worker operation per repository, before allocation's structure gate or after quit disposes the runtime. It assesses tasks and releases finished workspaces with one command ID, the whole task as the bound subject set, and one budgeted GitHub reader. Host-side check/release loops were rejected because they split policy and require another admission decision.
+A sweep is one budgeted worker operation per repository, before allocation's structure gate or after quit disposes the runtime. It assesses tasks and releases finished workspaces with one budgeted GitHub reader. Host-side check/release loops were rejected because they split policy and require another admission decision.
 
 Budgets begin at the host request, including queue time; unstarted tasks become deferred. Quit can prefetch recorded PR evidence before local inventory because disposal leaves the sweep as that worker's only request. Other processes remain coordinated by path gates, short transactions and reassessment. Allocation sweeps stay synchronous inside allocation. Only quit and allocation trigger sweeps, not signals, crashes, startup or turn end.
 
@@ -92,9 +92,9 @@ The launcher intercepts Pi's awaited interactive `dispose` to distinguish quit f
 
 ### Accepted external-process race boundary
 
-Release coordinates participants rather than sandboxing external filesystem changes. A nonparticipating process can move a selected file's parent outside the worktree and replace the old parent path with a symlink between the final check and deletion. Deletion can then affect an external file; a later partial receipt does not undo it. Descriptor-relative deletion alone would not prevent ancestry from moving.
+Release coordinates participants rather than sandboxing external filesystem changes. A nonparticipating process can move paths into the worktree, or replace part of it, while Git or dev deletes it; deletion then affects what that process put there.
 
-The accepted workflow constraint is to run builds/watchers/servers through dev without detaching, stop independently started tools and avoid external changes during release. This does not relax gates, evidence or rechecks. Revisit before supporting external writers during release or promising atomic deletion containment.
+The accepted workflow constraint is to run builds/watchers/servers through dev without detaching, stop independently started tools and avoid external changes during release. This does not relax the sweep's gates, evidence or rechecks. Revisit before supporting external writers during release or promising atomic deletion containment.
 
 ## Effect boundary
 

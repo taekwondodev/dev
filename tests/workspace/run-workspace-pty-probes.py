@@ -204,10 +204,10 @@ PROBES = {
                    occurrence=3),
             Action('ctrl-d', 'Type y to release, anything else to cancel: ', '\x04', delay=0.3,
                    occurrence=4),
-            Action('interrupted-confirm', 'DEV_RELEASE_READY_FOR_INTERRUPT', 'y\r', delay=1.0),
+            Action('unfinished-confirm', 'DEV_RELEASE_READY_FOR_UNFINISHED', 'y\r', delay=1.0),
             Action('confirm', 'DEV_RELEASE_READY_FOR_CONFIRM', 'y\r', delay=1.0),
         ),
-        expect=('Cancellation requested', 'Summary: partial', 'Exit 130'),
+        expect=('the worktree and everything in it are deleted', ': removed', ': released'),
     ),
 }
 

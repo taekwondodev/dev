@@ -337,17 +337,6 @@ const rows: readonly Row[] = [
     expected: 'retained:directory-missing',
     role: 'child',
   },
-  {
-    name: 'a managed worktree whose directory an interrupted removal by dev already deleted',
-    facts: managed({
-      identity: 'absent',
-      removalInterrupted: true,
-      residue: undefined,
-      ownCommits: undefined,
-    }),
-    expected: 'no-residue',
-    role: 'child',
-  },
 ]
 
 const precedence: readonly Row[] = [
