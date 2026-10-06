@@ -39,9 +39,12 @@ import {
 import {
   PublicationDestinations,
   WorkspaceToolError,
+  WorkspaceToolInputSchema,
   makeWorkspaceTool,
+  workspaceToolParameters,
   type PublicationDestinationReader,
 } from '../../src/workspace-tool.ts'
+import { type JsonObject, type Tool, validateToolArguments } from '@earendil-works/pi-ai'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import {
   formatReleaseRun,
@@ -2277,6 +2280,55 @@ try {
   )
 
   await claim(
+    'the workspace tool publishes one described object schema that admits every action and every field of its input shape, so MCP clients requiring an object schema accept it',
+    () => {
+      const parameters = workspaceToolParameters
+      assert.equal(parameters.type, 'object')
+      for (const keyword of ['anyOf', 'oneOf', 'allOf'])
+        assert.ok(!Object.hasOwn(parameters, keyword), `no top-level ${keyword}`)
+      assert.deepEqual(parameters.required, ['action'])
+      const properties = parameters.properties as Record<string, Record<string, unknown>>
+      const variants = WorkspaceToolInputSchema.members.map(member => ({
+        action: member.fields.action.literal,
+        fields: Object.keys(member.fields).filter(field => field !== 'action'),
+      }))
+      assert.deepEqual(
+        properties.action?.enum,
+        variants.map(variant => variant.action)
+      )
+      assert.deepEqual(
+        Object.keys(properties).toSorted(),
+        [...new Set(['action', ...variants.flatMap(variant => variant.fields)])].toSorted()
+      )
+      for (const variant of variants)
+        for (const field of variant.fields)
+          assert.ok(
+            String(properties[field]?.description).includes(variant.action),
+            `${field} says it is used by ${variant.action}`
+          )
+      const tool = { name: 'workspace', description: '', parameters } as unknown as Tool
+      const validate = (input: JsonObject) =>
+        validateToolArguments(tool, {
+          type: 'toolCall',
+          id: 'v',
+          name: 'workspace',
+          arguments: input,
+        })
+      const accepted: JsonObject[] = [
+        { action: 'resume', taskId: 'task', workspaceId: 'workspace' },
+        { action: 'set-target', target: { kind: 'local', ref: 'refs/heads/main' } },
+        {
+          action: 'record-publication',
+          path: 'report.txt',
+          destination: { repository: 'owner/repo', number: 1, commentId: 2 },
+        },
+      ]
+      for (const input of accepted) assert.deepEqual(validate(input), input)
+      assert.throws(() => validate({ action: 'resume', taskId: 'task', unknown: true }))
+    }
+  )
+
+  await claim(
     'the workspace tool records a target override, records a publication only after the destination body or an attachment reads back the exact bytes, and resumes onto a retained workspace through the authority selection',
     async () => {
       const allocated = await allocateManaged(lifecycle, repo)
@@ -2344,6 +2396,15 @@ try {
         } catch (cause) {
           return { ok: false, text: cause instanceof Error ? cause.message : String(cause) }
         }
+      }
+      for (const input of [
+        { action: 'resume' },
+        { action: 'resume', taskId: allocated.taskId, path: 'report.txt' },
+        { action: 'set-target' },
+        { action: 'record-publication', path: 'report.txt' },
+      ]) {
+        const refused = await call(input)
+        assert.ok(!refused.ok, `the action's own input shape refuses ${JSON.stringify(input)}`)
       }
       const targeted = await call({ action: 'set-target', target: localMain })
       assert.ok(targeted.ok, targeted.text)

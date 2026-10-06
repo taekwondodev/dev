@@ -3,7 +3,18 @@ import { lstatSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Cause, Clock, Context, Effect, Exit, Layer, Option, Result, Schema } from 'effect'
+import {
+  Cause,
+  Clock,
+  Context,
+  Effect,
+  Exit,
+  type JsonSchema,
+  Layer,
+  Option,
+  Result,
+  Schema,
+} from 'effect'
 import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
@@ -21,32 +32,78 @@ import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
 
-const WorkspaceToolInputSchema = Schema.Union([
+const InputFields = {
+  taskId: WorkspaceId,
+  workspaceId: WorkspaceId,
+  target: TaskTargetSchema,
+  path: RelativeFilePath,
+  destination: Schema.Struct({
+    repository: GitHubRepositorySchema,
+    number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    commentId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  }),
+}
+
+export const WorkspaceToolInputSchema = Schema.Union([
   Schema.Struct({
     action: Schema.Literal('resume'),
-    taskId: WorkspaceId,
-    workspaceId: Schema.optional(WorkspaceId),
+    taskId: InputFields.taskId,
+    workspaceId: Schema.optional(InputFields.workspaceId),
   }),
   Schema.Struct({
     action: Schema.Literal('set-target'),
-    taskId: Schema.optional(WorkspaceId),
-    target: TaskTargetSchema,
+    taskId: Schema.optional(InputFields.taskId),
+    target: InputFields.target,
   }),
   Schema.Struct({
     action: Schema.Literal('record-publication'),
-    taskId: Schema.optional(WorkspaceId),
-    path: RelativeFilePath,
-    destination: Schema.Struct({
-      repository: GitHubRepositorySchema,
-      number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-      commentId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
-    }),
+    taskId: Schema.optional(InputFields.taskId),
+    path: InputFields.path,
+    destination: InputFields.destination,
   }),
 ])
 type WorkspaceToolInput = typeof WorkspaceToolInputSchema.Type
-const parameters = Schema.toJsonSchemaDocument(WorkspaceToolInputSchema, {
-  onExcessProperty: 'error',
-}).schema
+
+const ToolParametersSchema = Schema.Struct({
+  action: Schema.Literals(['resume', 'set-target', 'record-publication']),
+  taskId: Schema.optionalKey(InputFields.taskId),
+  workspaceId: Schema.optionalKey(InputFields.workspaceId),
+  target: Schema.optionalKey(InputFields.target),
+  path: Schema.optionalKey(InputFields.path),
+  destination: Schema.optionalKey(InputFields.destination),
+})
+
+const fieldDescriptions: { readonly [Field in keyof typeof InputFields]: string } = {
+  taskId:
+    "Exact task id. Required by resume; set-target and record-publication default to this conversation's task.",
+  workspaceId: 'resume only: exact workspace id, required when the task retains several.',
+  target:
+    'set-target only, required: an exact full ref under a local, remote or github authority; github may name the source repository and a pull request.',
+  path: 'record-publication only, required: workspace-relative path of the published file.',
+  destination:
+    'record-publication only, required: the issue or pull request holding the artifact, with commentId when it is in a comment.',
+}
+
+const describeFields = (schema: JsonSchema.JsonSchema): JsonSchema.JsonSchema => {
+  const properties = Schema.decodeUnknownSync(
+    Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Unknown))
+  )(schema.properties)
+  return {
+    ...schema,
+    properties: Object.fromEntries(
+      Object.entries(properties).map(([field, property]) => [
+        field,
+        Object.hasOwn(fieldDescriptions, field)
+          ? { description: fieldDescriptions[field as keyof typeof fieldDescriptions], ...property }
+          : property,
+      ])
+    ),
+  }
+}
+
+export const workspaceToolParameters = describeFields(
+  Schema.toJsonSchemaDocument(ToolParametersSchema, { onExcessProperty: 'error' }).schema
+)
 const decodeInput = Schema.decodeUnknownEffect(WorkspaceToolInputSchema)
 
 export class WorkspaceToolError extends Schema.TaggedError<WorkspaceToolError>()(
@@ -331,8 +388,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     name: 'workspace',
     label: 'Workspace',
     description:
-      "Operate this conversation's workspace task in the workspace authority. resume switches the conversation onto a workspace retained for a task (exact taskId, and workspaceId when the task retains several); the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote (an exact full ref under a local, remote or github authority; github may name the source repository and a pull request). record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree.",
-    parameters,
+      "Operate this conversation's workspace task in the workspace authority. resume switches the conversation onto a workspace retained for a task; the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote. record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree. Each field states which action uses it.",
+    parameters: workspaceToolParameters,
     async execute(_toolCallId, input, _signal, _onUpdate, context) {
       const run: Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> =
         decodeInput(input, {
