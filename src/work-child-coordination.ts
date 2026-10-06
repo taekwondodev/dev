@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Cause, Effect, Option, Queue, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { WorkError, type AttemptId } from './work-domain.ts'
+import { READ_ONLY_CHILD_CAPABILITIES, WorkError, type AttemptId } from './work-domain.ts'
 import {
   ControllerWorkMessageSchema,
   CoordinatorWorkInputSchema,
@@ -21,8 +21,7 @@ type Request =
 
 const LEAF_OUTCOME_GUIDANCE =
   'Leaf outcomes. These are producer observations, not verification; reconcile them before you report your own result.'
-const COORDINATOR_TOOL_DESCRIPTION =
-  'Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused self-contained prompt; start the prompt with /skill:name to load one skill. Dispatch resolves from that /skill: prefix when a rule is configured for it, otherwise the default; pass rule only to override with a configured skill name or "default"; pass model or effort only when the user asked for that model or effort, otherwise let dispatch resolve. A read-only leaf reads your workspace as it is, uncommitted files included; a writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. Outcomes arrive as a message after your turn ends: end the turn instead of polling. list, inspect and cancel cover only your own leaves; cancel with no id stops all of them. Your result is reported only after every leaf has settled and its outcome has reached you. Outcomes are producer observations, not verification.'
+const COORDINATOR_TOOL_DESCRIPTION = `Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused self-contained prompt; start the prompt with /skill:name to load one skill. Dispatch resolves from that /skill: prefix when a rule is configured for it, otherwise the default; pass rule only to override with a configured skill name or "default"; pass model or effort only when the user asked for that model or effort, otherwise let dispatch resolve. A read-only leaf reads your workspace as it is, uncommitted files included. ${READ_ONLY_CHILD_CAPABILITIES} A writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. Outcomes arrive as a message after your turn ends: end the turn instead of polling. list, inspect and cancel cover only your own leaves; cancel with no id stops all of them. Your result is reported only after every leaf has settled and its outcome has reached you. Outcomes are producer observations, not verification.`
 
 const decodeControllerMessage = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
 const parameters = Schema.toJsonSchemaDocument(CoordinatorWorkInputSchema, {
