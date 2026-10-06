@@ -7,7 +7,7 @@ Category: `bug` or `enhancement`.
 ## Readiness
 
 - `needs-grilling`: initial readiness for quick captures awaiting assessment or clarification.
-- `ready-for-agents`: apply when a complete spec or implementation ticket is published.
+- `ready-for-agent`: apply when a complete spec or implementation ticket is published.
 
 ## Activity
 
