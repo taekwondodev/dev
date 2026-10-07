@@ -38,12 +38,12 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
-    "@effect/platform-node-shared": "4.0.1",
-    "effect": "4.0.1"
+    "@effect/platform-node": "4.0.2",
+    "@effect/platform-node-shared": "4.0.2",
+    "effect": "4.0.2"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.48.1",
+    "@effect/tsgo": "0.51.1",
     "@types/node": "26.6.4",
     "oxc-standard": "^1.4.2",
     "oxfmt": "^0.72.0",
@@ -51,10 +51,10 @@
     "typescript": "7.0.2"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.1"
+    "@effect/platform-node-shared": "4.0.2"
   },
   "config": {
-    "pi": "1.0.4"
+    "pi": "1.1.0"
   },
   "engines": {
     "node": ">=26.0.0"
