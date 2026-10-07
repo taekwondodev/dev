@@ -20,16 +20,16 @@ A workflow verifies the artifact. The work controller observes execution; the wo
 
 ## Components
 
-| Source area                                                                                                | Role                                        | Guide                                                                           |
-| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- |
-| `src/launcher.ts`, `src/launcher-runtime.ts`, `src/pi-runtime.ts`, `src/preferences.ts`, `src/profiles.ts` | Startup and runtime composition             | [Launcher](launcher.md)                                                         |
-| `src/background-compaction.ts`, `src/compaction-observation.ts`                                            | Context preparation and observations        | [Compaction](compaction.md)                                                     |
-| `src/work-*.ts`, `src/pi-child.ts`                                                                         | Background execution and child coordination | [Work](work.md)                                                                 |
-| `src/workspace-*.ts`                                                                                       | Authority and host adapters                 | [Workspace](workspace.md)                                                       |
-| `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts`                             | Process observation and runtime claims      | [Workspace](workspace.md)                                                       |
-| `scripts/maintain.ts`, `scripts/upgrade.ts`, `scripts/pi-upgrade.ts`                                       | Installation maintenance and upgrades       | [Launcher](launcher.md#maintenance), [Upgrade](upgrade.md)                      |
-| `scripts/usage-*.ts`                                                                                       | Offline reports and exports                 | [Usage profile](usage-profile.md)                                               |
-| `profiles/`, `config/crew-dispatch.json`                                                                   | Guidance selection and dispatch policy      | [Launcher](launcher.md#profiles-and-resources), [dispatch](../config/README.md) |
+| Source area                                                                                                                       | Role                                        | Guide                                                                           |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- |
+| `src/launcher.ts`, `src/launcher-runtime.ts`, `src/quit-display.ts`, `src/pi-runtime.ts`, `src/preferences.ts`, `src/profiles.ts` | Startup and runtime composition             | [Launcher](launcher.md)                                                         |
+| `src/background-compaction.ts`, `src/compaction-observation.ts`                                                                   | Context preparation and observations        | [Compaction](compaction.md)                                                     |
+| `src/work-*.ts`, `src/pi-child.ts`                                                                                                | Background execution and child coordination | [Work](work.md)                                                                 |
+| `src/workspace-*.ts`                                                                                                              | Authority and host adapters                 | [Workspace](workspace.md)                                                       |
+| `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts`                                                    | Process observation and runtime claims      | [Workspace](workspace.md)                                                       |
+| `scripts/maintain.ts`, `scripts/upgrade.ts`, `scripts/pi-upgrade.ts`                                                              | Installation maintenance and upgrades       | [Launcher](launcher.md#maintenance), [Upgrade](upgrade.md)                      |
+| `scripts/usage-*.ts`                                                                                                              | Offline reports and exports                 | [Usage profile](usage-profile.md)                                               |
+| `profiles/`, `config/crew-dispatch.json`                                                                                          | Guidance selection and dispatch policy      | [Launcher](launcher.md#profiles-and-resources), [dispatch](../config/README.md) |
 
 Contributor setup and checks are in [Development](DEVELOPMENT.md). The trust boundary is in [SECURITY](../SECURITY.md).
 

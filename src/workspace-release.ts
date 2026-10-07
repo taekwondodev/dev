@@ -10,7 +10,9 @@ import {
 import {
   decideCompletion,
   integrationUnknown,
+  CLEAR,
   needsIntegration,
+  RETAINED,
   roleOf,
   type CompletionFacts,
   type IntegrationFacts,
@@ -23,7 +25,6 @@ import {
   type AllocationReason,
   type CompletionVerdict,
   type ReleaseDecider,
-  type RetainedReason,
   type SweepMoment,
   type SweepOutcome,
   type SweepReceipt,
@@ -342,43 +343,6 @@ const ownCommitsOf = (
   return typeof result === 'string' ? result === 'not-ancestor' : undefined
 }
 
-const CLEAR = 'dev workspace release clears the task when you no longer need it.'
-const DELIVER = [
-  'Deliver the work (merge its pull request or integrate its commits); the sweep removes it once it is finished, or dev workspace release removes it now.',
-]
-const RETAINED: Record<
-  RetainedReason,
-  { readonly sweep: SweepOutcome; readonly actions: readonly string[] }
-> = {
-  'identity-unverifiable': { sweep: 'retained', actions: [CLEAR] },
-  'transition-unresolved': { sweep: 'retained', actions: [CLEAR] },
-  'release-review': { sweep: 'review-required', actions: [CLEAR] },
-  excluded: { sweep: 'skipped', actions: [] },
-  'use-unknown': { sweep: 'retained', actions: [] },
-  'use-abandoned': { sweep: 'retained', actions: [] },
-  'use-live': { sweep: 'retained', actions: [] },
-  'directory-missing': { sweep: 'retained', actions: [CLEAR] },
-  'residue-unreadable': {
-    sweep: 'retained',
-    actions: ['Fix the reported read failure; the next sweep rechecks it.', CLEAR],
-  },
-  'checkout-modified': {
-    sweep: 'retained',
-    actions: [
-      'Commit or clean the checkout; a clean checkout loses its reservation automatically when dev quits.',
-    ],
-  },
-  skipped: { sweep: 'skipped', actions: [] },
-  'no-commits': { sweep: 'retained', actions: DELIVER },
-  'integration-unknown': {
-    sweep: 'retained',
-    actions: [
-      'Establish the missing fact (target, history or provider); the lead can record a target with the workspace tool, and dev never fetches or uploads for you.',
-      CLEAR,
-    ],
-  },
-  'not-integrated': { sweep: 'retained', actions: DELIVER },
-}
 const retainedActions = (verdict: CompletionVerdict): readonly string[] =>
   verdict.kind === 'finished' ? [] : RETAINED[verdict.retained].actions
 

@@ -3,7 +3,7 @@ import * as NodeServices from '@effect/platform-node/NodeServices'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
-import { Cause, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
+import { Cause, Clock, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
@@ -33,7 +33,7 @@ import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
 import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
-import type { WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
+import type { SweepReceipt, WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
 import {
   keptConversationGuidance,
   makeWorkspaceHost,
@@ -45,12 +45,23 @@ import {
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
   formatReleaseResults,
-  formatSweepReceipt,
   releaseExitCode,
   releasePlan,
   reservedViews,
   sweepExitCode,
 } from './workspace-command.ts'
+import {
+  formatExitLine,
+  formatQuitReceipt,
+  formatQuitReleasePlan,
+  formatQuitReleaseResults,
+  progressDone,
+  sweepIndicator,
+  tasksToRelease,
+  terminalStyle,
+  type TaskReleasePlan,
+  type TerminalStyle,
+} from './quit-display.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 
 export class LauncherError extends Schema.TaggedError<LauncherError>()('LauncherError', {
@@ -163,7 +174,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     for review-required workspaces only: confirm interactively, then one attempt per workspace\n\nQuitting dev sweeps the repository: finished workspaces are released automatically and the receipt is printed.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     for review-required workspaces only: confirm interactively, then one attempt per workspace\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and tasks that only a release clears are offered for release.\n`
     )
   })
 
@@ -392,6 +403,71 @@ const quitFailureNotice = (detached: boolean, cause: Cause.Cause<unknown>): stri
     ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before the sweep started; nothing was released.\nExit 130: ${exitText(130)}.`
     : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its workspace uses may still be recorded; nothing was swept or released.\nExit 1.`
 
+interface QuitExit {
+  readonly code: ReleaseExitCode
+  readonly text: string
+}
+
+const sweepExit = (receipt: SweepReceipt): QuitExit => {
+  const code = sweepExitCode(receipt)
+  return { code, text: exitText(code) }
+}
+
+const releaseAtQuit = Effect.fnUntraced(function* (
+  lifecycle: WorkspaceLifecycle,
+  receipt: SweepReceipt,
+  style: TerminalStyle,
+  proceed: () => boolean
+): Effect.fn.Return<QuitExit> {
+  const swept = sweepExit(receipt)
+  const plans: TaskReleasePlan[] = []
+  for (const taskId of tasksToRelease(receipt)) {
+    const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
+    if (Exit.isFailure(listed)) {
+      yield* write(
+        `Task ${taskId} could not be listed for a release (${errorText(Cause.squash(listed.cause))}); nothing was released, and the commands above release it later.`
+      )
+      return swept
+    }
+    const views = reservedViews(listed.value)
+    if (views.length > 0) plans.push({ taskId, views })
+  }
+  if (plans.length === 0) return swept
+  yield* write(formatQuitReleasePlan(plans, style))
+  const confirmation = yield* askConfirmation(
+    'Release them now? Type y to release, anything else to quit: '
+  )
+  if (confirmation === 'interrupted')
+    return { code: 130, text: 'release cancelled; nothing was released' }
+  if (confirmation === 'declined') return swept
+  const released = new Set<WorkspaceId>()
+  let failed = false
+  for (const { taskId } of plans) {
+    if (!proceed()) break
+    const results = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
+    if (Exit.isFailure(results)) {
+      failed = true
+      yield* write(
+        `The release of task ${taskId} did not report back (${errorText(Cause.squash(results.cause))}); run dev workspace inspect ${taskId} and release again if anything remains.`
+      )
+      continue
+    }
+    yield* write(formatQuitReleaseResults(taskId, results.value, style))
+    if (releaseExitCode(results.value) === 0) released.add(taskId)
+    else failed = true
+  }
+  if (!proceed())
+    return {
+      code: 130,
+      text: 'interrupted; each started release reached its recorded outcome and no other was started',
+    }
+  if (failed) return { code: 1, text: 'at least one release at quit failed or did not report back' }
+  return sweepExit({
+    ...receipt,
+    rows: receipt.rows.filter(row => row.kind !== 'workspace' || !released.has(row.taskId)),
+  })
+})
+
 export const sweepAtQuit = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
   input: {
@@ -401,26 +477,46 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     readonly proceed: () => boolean
   }
 ): Effect.fn.Return<void> {
+  const style = terminalStyle(process.stdout, process.env)
   yield* write(
-    `${tuiClosedNotice(input.detached)}\nSweeping the repository for finished workspaces...`
+    input.detached
+      ? ''
+      : '\nClosing the workspace attachment was not confirmed, so the sweep rechecks every use.'
   )
+  const started = yield* Clock.currentTimeMillis
   const swept = yield* Effect.exit(
-    lifecycle.sweep({
-      anchorWorkspaceId: input.anchorWorkspaceId,
-      occupiedPaths: input.occupiedPaths.map(path => resolve(path)),
-    })
+    Effect.scoped(
+      Effect.andThen(
+        sweepIndicator(style, process.stdout),
+        lifecycle.sweep({
+          anchorWorkspaceId: input.anchorWorkspaceId,
+          occupiedPaths: input.occupiedPaths.map(path => resolve(path)),
+        })
+      )
+    )
   )
+  const elapsed = (yield* Clock.currentTimeMillis) - started
   if (Exit.isFailure(swept)) {
     yield* write(
-      `The sweep did not report back (${errorText(Cause.squash(swept.cause))}), so its outcome is unknown: it may have released or removed some workspaces. Run dev workspace list in this repository, then dev workspace inspect <task>, to see each recorded outcome.\nExit 1.`
+      `${progressDone(style, true)}The sweep did not report back (${errorText(Cause.squash(swept.cause))}), so its outcome is unknown: it may have released or removed some workspaces. Run dev workspace list in this repository, then dev workspace inspect <task>, to see each recorded outcome.\nExit 1.`
     )
     process.exitCode = 1
     return
   }
-  const code: ReleaseExitCode = input.proceed() ? sweepExitCode(swept.value) : 130
-  yield* write(formatSweepReceipt(swept.value))
-  yield* write(`Exit ${code}: ${code === 130 ? 'interrupted after the sweep' : exitText(code)}.`)
-  process.exitCode = code
+  const receipt = swept.value
+  const sweptExit = sweepExit(receipt)
+  yield* write(
+    `${progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0)}${formatQuitReceipt(receipt, elapsed, style)}`
+  )
+  let exit: QuitExit
+  if (!input.proceed()) exit = { code: 130, text: 'interrupted after the sweep' }
+  else if (process.stdin.isTTY === true && process.stdout.isTTY === true)
+    exit = yield* releaseAtQuit(lifecycle, receipt, style, input.proceed)
+  else exit = sweptExit
+  yield* write(
+    `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
+  )
+  process.exitCode = exit.code
 }, Effect.uninterruptible)
 
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
@@ -474,25 +570,27 @@ interface LauncherDependencies {
   readonly coordination?: CoordinationOptions
 }
 
-const askConfirmation = (prompt: string): Effect.Effect<boolean> =>
-  Effect.callback<boolean>(resume => {
+type Confirmation = 'confirmed' | 'declined' | 'interrupted'
+
+const askConfirmation = (prompt: string): Effect.Effect<Confirmation> =>
+  Effect.callback<Confirmation>(resume => {
     const reader = createInterface({ input: process.stdin, output: process.stdout, terminal: true })
     let answered = false
-    const answer = (confirmed: boolean): void => {
+    const answer = (confirmation: Confirmation): void => {
       if (answered) return
       answered = true
       reader.close()
-      resume(Effect.succeed(confirmed))
+      resume(Effect.succeed(confirmation))
     }
-    const cancel = (): void => {
+    const cancel = (confirmation: Confirmation) => (): void => {
       if (answered) return
       process.stdout.write('(cancelled)\n')
-      answer(false)
+      answer(confirmation)
     }
-    reader.on('SIGINT', cancel)
-    reader.on('SIGTSTP', cancel)
-    reader.on('close', cancel)
-    reader.question(prompt, line => answer(line.trim() === 'y'))
+    reader.on('SIGINT', cancel('interrupted'))
+    reader.on('SIGTSTP', cancel('declined'))
+    reader.on('close', cancel('declined'))
+    reader.question(prompt, line => answer(line.trim() === 'y' ? 'confirmed' : 'declined'))
     return Effect.sync(() => reader.close())
   })
 
@@ -543,8 +641,8 @@ const terminalRelease = Effect.fnUntraced(function* (
     return 1
   }
   yield* write(releasePlan(taskId, views))
-  const confirmed = yield* askConfirmation('Type y to release, anything else to cancel: ')
-  if (!confirmed) {
+  const confirmation = yield* askConfirmation('Type y to release, anything else to cancel: ')
+  if (confirmation !== 'confirmed') {
     yield* write('Release cancelled; nothing was changed.')
     return 130
   }
@@ -813,7 +911,7 @@ const run = Effect.fnUntraced(function* (
         const { proceed } = yield* Scope.provide(outerScope)(
           cancellation(() =>
             sweepStarted
-              ? 'Interrupt received: the sweep runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+              ? 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
               : undefined
           )
         )

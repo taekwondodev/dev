@@ -4,6 +4,7 @@ import type {
   FinishedRule,
   RetainedReason,
   SweepMoment,
+  SweepOutcome,
   WorkspaceOrigin,
   WorkspaceRole,
 } from './workspace-domain.ts'
@@ -27,6 +28,53 @@ export interface IntegrationFacts {
   readonly pullRequests: readonly PullRequestFact[]
   readonly rejected: readonly string[]
   readonly unknown: readonly string[]
+}
+
+export type RetainedAttention = 'release' | 'action' | 'none'
+
+export const CLEAR = 'dev workspace release clears the task when you no longer need it.'
+const DELIVER = [
+  'Deliver the work (merge its pull request or integrate its commits); the sweep removes it once it is finished, or dev workspace release removes it now.',
+]
+export const RETAINED: Record<
+  RetainedReason,
+  {
+    readonly sweep: SweepOutcome
+    readonly attention: RetainedAttention
+    readonly actions: readonly string[]
+  }
+> = {
+  'identity-unverifiable': { sweep: 'retained', attention: 'release', actions: [CLEAR] },
+  'transition-unresolved': { sweep: 'retained', attention: 'release', actions: [CLEAR] },
+  'release-review': { sweep: 'review-required', attention: 'release', actions: [CLEAR] },
+  excluded: { sweep: 'skipped', attention: 'none', actions: [] },
+  'use-unknown': { sweep: 'retained', attention: 'none', actions: [] },
+  'use-abandoned': { sweep: 'retained', attention: 'none', actions: [] },
+  'use-live': { sweep: 'retained', attention: 'none', actions: [] },
+  'directory-missing': { sweep: 'retained', attention: 'release', actions: [CLEAR] },
+  'residue-unreadable': {
+    sweep: 'retained',
+    attention: 'action',
+    actions: ['Fix the reported read failure; the next sweep rechecks it.', CLEAR],
+  },
+  'checkout-modified': {
+    sweep: 'retained',
+    attention: 'none',
+    actions: [
+      'Commit or clean the checkout; a clean checkout loses its reservation automatically when dev quits.',
+    ],
+  },
+  skipped: { sweep: 'skipped', attention: 'none', actions: [] },
+  'no-commits': { sweep: 'retained', attention: 'action', actions: DELIVER },
+  'integration-unknown': {
+    sweep: 'retained',
+    attention: 'action',
+    actions: [
+      'Establish the missing fact (target, history or provider); the lead can record a target with the workspace tool, and dev never fetches or uploads for you.',
+      CLEAR,
+    ],
+  },
+  'not-integrated': { sweep: 'retained', attention: 'action', actions: DELIVER },
 }
 
 export const integrationUnknown = (reason: string): IntegrationFacts => ({

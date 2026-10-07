@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+ESCAPES = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class Probe:
 
 
     expect: tuple[str, ...] = ()
+    expect_raw: tuple[str, ...] = ()
 
     env: tuple[tuple[str, str], ...] = ()
 
@@ -105,7 +107,7 @@ PROBES = {
                    '\x15/workspace release {TASK_HOST}\r'),
             Action('quit', 'DEV_REAL_AUTHORITY_READY_FOR_QUIT', '\x15/quit\r', delay=0.5),
         ),
-        expect=('Workspace sweep at quit', 'removed (automatic)', 'Exit 0: done.'),
+        expect=('Workspace sweep at quit', '✓ removed', 'Exit 0: done.'),
     ),
 
 
@@ -115,8 +117,42 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('its workspace attachment is closed', 'Workspace sweep at quit',
-                ': released (automatic)', ': removed (automatic)', 'Exit 0: done.'),
+        expect=('Sweeping workspaces…', 'Workspace sweep at quit', '✓ released', '✓ removed',
+                '2/2 finished workspace(s) reached a terminal outcome', 'Exit 0: done.'),
+        expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07', '\x1b]8;;file://'),
+        env=(('TERM_PROGRAM', 'ghostty'),),
+    ),
+
+    'quit-release': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(*QUIT_ACTIONS, Action('confirm', 'Release them now?', 'y\r', delay=0.5)),
+        expect=('✗ review', 'Release required:', 'dev workspace release {TASK}',
+                '1 task(s) need a release', 'the worktree and everything in it are deleted',
+                '✓ removed', 'Exit 0: done.'),
+        env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'),),
+    ),
+
+    'quit-release-declined': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(*QUIT_ACTIONS, Action('decline', 'Release them now?', 'n\r', delay=0.5)),
+        expect=('Release required:', 'dev workspace release {TASK}', 'Exit 0: done.'),
+        env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'decline'),),
+    ),
+
+    'quit-release-interrupt': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(*QUIT_ACTIONS, Action('interrupt', 'Release them now?', '\x03', delay=0.5)),
+        expect=('(cancelled)', 'Exit 130: release cancelled; nothing was released.'),
+        env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'interrupt'),),
     ),
 
 
@@ -126,8 +162,7 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Workspace sweep at quit', '{WORKTREE}, task {TASK}: removed (automatic)',
-                'Exit 0: done.'),
+        expect=('Workspace sweep at quit', '✓ removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_SELF_REMOVE', '1'),),
     ),
 
@@ -137,8 +172,8 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Workspace sweep at quit', 'the conversation being closed, is still inside this worktree',
-                'Exit 1:'),
+        expect=('Workspace sweep at quit', '! retained',
+                'the conversation being closed, is still inside this worktree', 'Exit 1:'),
         env=(('LAUNCHER_TUI_CONTAINED_HISTORY', '1'),),
     ),
 
@@ -159,8 +194,8 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Interrupt received: the sweep runs on and observes each attempt',
-                'Workspace sweep at quit', ': removed (automatic)',
+        expect=('Interrupt received: the sweep, or a confirmed release, runs on',
+                'Workspace sweep at quit', '✓ removed',
                 'Exit 130: interrupted after the sweep'),
         env=(('LAUNCHER_TUI_FAULT', 'sigint-during-sweep'),),
     ),
@@ -233,6 +268,7 @@ def run(name: str, probe: Probe) -> bool:
         'LINES': '36',
         'PI_OFFLINE': '1',
         'PI_TELEMETRY_DISABLED': '1',
+        'TERM_PROGRAM': 'probe',
     })
     env.update(dict(probe.env))
     pid, master = pty.fork()
@@ -300,14 +336,16 @@ def run(name: str, probe: Probe) -> bool:
     missing = sorted(action.name for action in probe.actions
                      if action.required and action.name not in sent)
     missing_output = []
-    for needle in probe.expect:
-        try:
-            expected = needle.format_map(inputs)
-        except KeyError:
-            missing_output.append(needle)
-            continue
-        if expected not in text:
-            missing_output.append(expected)
+    plain = ESCAPES.sub('', text)
+    for needles, haystack in ((probe.expect, plain), (probe.expect_raw, text)):
+        for needle in needles:
+            try:
+                expected = needle.format_map(inputs)
+            except KeyError:
+                missing_output.append(needle)
+                continue
+            if expected not in haystack:
+                missing_output.append(expected)
     passed = (os.WIFEXITED(exit_status) and os.WEXITSTATUS(exit_status) == 0
               and report is not None and not missing and not missing_output
               and input_error is None)
