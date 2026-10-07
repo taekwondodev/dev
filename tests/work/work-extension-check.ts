@@ -154,6 +154,9 @@ try {
         const [attempt] = started
         assert.ok(attempt)
         await lead.status('the process completed', value => value.includes('completed'))
+        assert.ok(lead.activities.length >= 2)
+        for (const activity of lead.activities)
+          assert.deepEqual(activity, { sessionId: lead.manager.getSessionId(), active: false })
         assert.deepEqual(delivered(lead), [])
         next.reply(text('launched'))
         const continued = await lead.request(2)

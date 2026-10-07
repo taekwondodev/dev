@@ -14,7 +14,7 @@ import {
   type WorkSetupError,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
-import { workStatusText } from './work-status.ts'
+import { activeWorkChildren, workStatusText } from './work-status.ts'
 import {
   decodeWorkInput,
   LeadWorkInputSchema,
@@ -138,6 +138,7 @@ export const createWorkExtension = ({
   let sessionOwner: OwnerState | undefined
   let session: WorkSession | undefined
   let context: Pi.ExtensionContext | undefined
+  let events: Pi.ExtensionAPI['events'] | undefined
   let removeInputListener: (() => void) | undefined
   let removeSessionListener: (() => void) | undefined
   let idleDeliveryReady = false
@@ -226,9 +227,13 @@ export const createWorkExtension = ({
           withOwner(owner => owner.snapshot)
         ).pipe(
           Effect.flatMap(snapshot =>
-            Effect.sync(() =>
+            Effect.sync(() => {
               ctx.ui.setStatus('dev/work', workStatusText(snapshot, reactivation === 'suspended'))
-            )
+              events?.emit('dev/work-activity', {
+                sessionId: ctx.sessionManager.getSessionId(),
+                active: activeWorkChildren(snapshot).length > 0,
+              })
+            })
           )
         )
       : Effect.void
@@ -545,6 +550,7 @@ export const createWorkExtension = ({
   }
 
   const factory: Pi.ExtensionFactory = pi => {
+    ;({ events } = pi)
     pi.on('session_start', async (_event, ctx) => {
       const previous = sessionOwner
       if (previous?._tag === 'closed') {

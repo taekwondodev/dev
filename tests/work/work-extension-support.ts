@@ -93,6 +93,7 @@ export const openLead = async (
     },
     isWorkspaceParked: () => false,
   })
+  const activities: unknown[] = []
   const services = await pi.createAgentSessionServices({
     cwd: fixture.repository,
     agentDir: fixture.agentDir,
@@ -103,7 +104,12 @@ export const openLead = async (
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
-      extensionFactories: [work.factory],
+      extensionFactories: [
+        work.factory,
+        api => {
+          api.events.on('dev/work-activity', activity => activities.push(activity))
+        },
+      ],
     },
   })
   const { session } = await pi.createAgentSessionFromServices({
@@ -182,6 +188,7 @@ export const openLead = async (
     work,
     requests,
     statuses,
+    activities,
     notices,
     handlerErrors,
     request,
