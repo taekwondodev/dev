@@ -19,7 +19,7 @@ import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
-import { composeResources, getProfile } from './profiles.ts'
+import { composeResources, loadCatalog } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
@@ -709,7 +709,8 @@ const acquireSession = Effect.fn('acquireSession')(function* (
       process.env.PI_OFFLINE = '1'
     })
   const loaded = yield* loadPi.pipe(Effect.mapError(toChildError))
-  const profile = yield* getProfile(request.profile).pipe(Effect.mapError(toChildError))
+  const catalog = yield* loadCatalog.pipe(Effect.mapError(toChildError))
+  const profile = yield* catalog.load(request.profile).pipe(Effect.mapError(toChildError))
   const projectGitRoot = yield* gitRoot(request.cwd).pipe(Effect.mapError(toChildError))
   const resources = yield* composeResources({
     cwd: request.cwd,

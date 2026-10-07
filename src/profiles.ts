@@ -1,6 +1,6 @@
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Effect, FileSystem, Schema } from 'effect'
+import { Config, Effect, FileSystem, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 
 export class ProfileError extends Schema.TaggedError<ProfileError>()('ProfileError', {
@@ -19,6 +19,13 @@ export interface Profile {
   readonly skillPaths: readonly string[]
   readonly soulPath: string
   readonly guidance: string
+}
+
+export interface ProfileCatalog {
+  readonly manifestPath: string
+  readonly defaultProfile: string
+  readonly names: readonly string[]
+  readonly load: (name: string) => Effect.Effect<Profile, ProfileError, FileSystem.FileSystem>
 }
 
 export interface ResourceProvenance {
@@ -40,6 +47,18 @@ export interface ComposeResourcesOptions {
   readonly profile: Profile
 }
 
+export const MANIFEST_FILE = 'manifest.json'
+
+const MANIFEST_EXAMPLE =
+  '{ "default": "general", "profiles": { "general": { "soul": "general/SOUL.md", "skills": [] } } }'
+
+const installationRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
+
+const toProfileError = (error: unknown, operation: string): ProfileError =>
+  error instanceof ProfileError
+    ? error
+    : new ProfileError({ message: `${operation}: ${errorText(error)}`, cause: error })
+
 const homeDirectory = Effect.sync(() => process.env.HOME ?? process.env.USERPROFILE).pipe(
   Effect.filterOrFail(
     (home): home is string => home !== undefined,
@@ -47,87 +66,128 @@ const homeDirectory = Effect.sync(() => process.env.HOME ?? process.env.USERPROF
   )
 )
 
-const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const generalSoul = join(projectRoot, 'profiles/general/SOUL.md')
-const appleSkillsRoot = join(projectRoot, 'profiles/apple/skills')
-const appleSoul = join(projectRoot, 'profiles/apple/SOUL.md')
-const appleSkillNames: readonly string[] = [
-  'swiftui-pro',
-  'swift-concurrency-pro',
-  'swift-testing-pro',
-  'swiftdata-pro',
-]
-
-const toProfileError = (error: unknown, operation: string): ProfileError =>
-  error instanceof ProfileError
-    ? error
-    : new ProfileError({ message: `${operation}: ${errorText(error)}`, cause: error })
-
-const definitions = homeDirectory.pipe(
-  Effect.map(home => {
-    const sharedSkills = resolve(home, '.agents/skills')
-    const appleSkills = appleSkillNames.map(name => join(appleSkillsRoot, name))
-    return {
-      general: {
-        name: 'general',
-        required: [
-          { label: 'shared workflow skills', path: sharedSkills },
-          { label: 'general SOUL.md', path: generalSoul },
-        ],
-        skillPaths: [sharedSkills],
-        soulPath: generalSoul,
-      },
-      apple: {
-        name: 'apple',
-        required: [
-          { label: 'shared workflow skills', path: sharedSkills },
-          { label: 'Apple SOUL.md', path: appleSoul },
-          ...appleSkills.map((path, index) => ({
-            label: `Apple skill ${appleSkillNames[index]}`,
-            path,
-          })),
-        ],
-        skillPaths: [...appleSkills, sharedSkills],
-        soulPath: appleSoul,
-      },
-    }
-  })
+export const profilesRoot: Effect.Effect<string, ProfileError> = Config.String('DEV_PROFILES').pipe(
+  Config.withDefault(join(installationRoot, 'profiles')),
+  Effect.map(path => resolve(path)),
+  Effect.mapError(error => toProfileError(error, 'Cannot resolve the profiles directory'))
 )
 
-export function profileNames(): readonly string[] {
-  return ['general', 'apple']
-}
+export const manifestPath: Effect.Effect<string, ProfileError> = Effect.map(profilesRoot, root =>
+  join(root, MANIFEST_FILE)
+)
 
-export const getProfile: (
+const ProfileLocalPath = Schema.NonEmptyString.check(
+  Schema.makeFilter((path: string) =>
+    isAbsolute(path) || path.split(/[\\/]/).includes('..')
+      ? `"${path}" must be a relative path inside the profiles directory`
+      : undefined
+  )
+)
+
+const ProfileDefinition = Schema.Struct({
+  soul: ProfileLocalPath,
+  skills: Schema.Array(ProfileLocalPath),
+})
+
+const Manifest = Schema.fromJsonString(
+  Schema.Struct({
+    default: Schema.NonEmptyString,
+    profiles: Schema.Record(Schema.NonEmptyString, ProfileDefinition),
+  }).check(
+    Schema.makeFilter(manifest =>
+      Object.hasOwn(manifest.profiles, manifest.default)
+        ? undefined
+        : `default profile "${manifest.default}" is not one of the defined profiles: ${Object.keys(manifest.profiles).join(', ')}`
+    )
+  )
+)
+
+const decodeManifest = Schema.decodeEffect(Manifest)
+
+type ManifestProfiles = typeof Manifest.Type.profiles
+
+const definitionOf = (
+  profiles: ManifestProfiles,
   name: string
-) => Effect.Effect<Profile, ProfileError, FileSystem.FileSystem> = Effect.fnUntraced(
-  function* (name) {
+): ManifestProfiles[string] | undefined =>
+  Object.hasOwn(profiles, name) ? profiles[name] : undefined
+
+const missingResources = (
+  fs: FileSystem.FileSystem,
+  required: readonly RequiredResource[]
+): Effect.Effect<readonly RequiredResource[], unknown> =>
+  Effect.forEach(required, resource =>
+    fs.exists(resource.path).pipe(Effect.map(exists => (exists ? undefined : resource)))
+  ).pipe(
+    Effect.map(resources =>
+      resources.filter((resource): resource is RequiredResource => resource !== undefined)
+    )
+  )
+
+export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem.FileSystem> =
+  Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const values = yield* definitions
-    let profile: (typeof values)[keyof typeof values] | undefined
-    if (name === 'general') profile = values.general
-    else if (name === 'apple') profile = values.apple
-    if (profile === undefined)
+    const root = yield* profilesRoot
+    const path = join(root, MANIFEST_FILE)
+    const sharedSkills = resolve(yield* homeDirectory, '.agents/skills')
+    const exists = yield* fs
+      .exists(path)
+      .pipe(Effect.mapError(error => toProfileError(error, `Cannot read ${path}`)))
+    if (!exists)
       return yield* new ProfileError({
-        message: `Unknown profile "${name}". Choose one of: ${profileNames().join(', ')}.`,
+        message: `No profile manifest at ${path}. Create it with your profiles, for example: ${MANIFEST_EXAMPLE}`,
       })
-    const missing = yield* Effect.forEach(profile.required, resource =>
-      fs.exists(resource.path).pipe(Effect.map(exists => (exists ? undefined : resource)))
-    ).pipe(
-      Effect.map(resources =>
-        resources.filter((resource): resource is RequiredResource => resource !== undefined)
+    const manifest = yield* fs.readFileString(path).pipe(
+      Effect.mapError(error => toProfileError(error, `Cannot read the profile manifest ${path}`)),
+      Effect.flatMap(text =>
+        decodeManifest(text).pipe(
+          Effect.mapError(error => toProfileError(error, `Invalid profile manifest ${path}`))
+        )
       )
     )
-    if (missing.length > 0)
-      return yield* new ProfileError({
-        message: `Profile "${name}" is unavailable; missing ${missing.map(({ label, path }) => `${label} at ${path}`).join(', ')}. Use --profile general or restore the resource.`,
-      })
-    const guidance = yield* fs.readFileString(profile.soulPath)
-    return { ...profile, guidance }
-  },
-  (effect, name) =>
-    Effect.mapError(effect, error => toProfileError(error, `Cannot load profile "${name}"`))
-)
+    const names = Object.keys(manifest.profiles)
+    const load = Effect.fnUntraced(
+      function* (name: string) {
+        const definition = definitionOf(manifest.profiles, name)
+        if (definition === undefined)
+          return yield* new ProfileError({
+            message: `Unknown profile "${name}". Choose one of: ${names.join(', ')} (defined in ${path}).`,
+          })
+        const soulPath = join(root, definition.soul)
+        const skills = definition.skills.map(skill => ({
+          label: `skill ${skill}`,
+          path: join(root, skill),
+        }))
+        const required: readonly RequiredResource[] = [
+          { label: 'shared workflow skills', path: sharedSkills },
+          { label: `SOUL of profile "${name}"`, path: soulPath },
+          ...skills,
+        ]
+        const missing = yield* missingResources(fs, required)
+        if (missing.length > 0)
+          return yield* new ProfileError({
+            message: `Profile "${name}" is unavailable; missing ${missing.map(({ label, path: resource }) => `${label} at ${resource}`).join(', ')}. Restore the resource or change its entry in ${path}.`,
+          })
+        const guidance = yield* fs
+          .readFileString(soulPath)
+          .pipe(
+            Effect.mapError(error =>
+              toProfileError(error, `Cannot read SOUL of profile "${name}" at ${soulPath}`)
+            )
+          )
+        return {
+          name,
+          required,
+          skillPaths: [...skills.map(({ path: skill }) => skill), sharedSkills],
+          soulPath,
+          guidance,
+        } satisfies Profile
+      },
+      (effect, name) =>
+        Effect.mapError(effect, error => toProfileError(error, `Cannot load profile "${name}"`))
+    )
+    return { manifestPath: path, defaultProfile: manifest.default, names, load }
+  })
 
 const projectSkillPathCandidates = (
   cwd: string,

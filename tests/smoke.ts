@@ -5,6 +5,7 @@ import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, FileSystem, Schema } from 'effect'
 import { readPiPin } from '../scripts/pi-pin.ts'
 import { errorText } from '../src/error-text.ts'
+import { writeProfileFixture } from './profile-fixture.ts'
 
 export class SmokeError extends Schema.TaggedError<SmokeError>()('SmokeError', {
   message: Schema.String,
@@ -14,13 +15,14 @@ export class SmokeError extends Schema.TaggedError<SmokeError>()('SmokeError', {
 const run = (
   command: string,
   args: readonly string[],
-  cwd: string
+  cwd: string,
+  env: NodeJS.ProcessEnv
 ): Effect.Effect<string, SmokeError> =>
   Effect.callback(resume => {
     const child = execFile(
       command,
       [...args],
-      { cwd, encoding: 'utf8' },
+      { cwd, encoding: 'utf8', env },
       (error, stdout, stderr) => {
         if (error)
           resume(
@@ -45,6 +47,7 @@ const program = Effect.scoped(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: 'dev-smoke-' })
+    const profiles = writeProfileFixture(join(dataHome, 'profiles'))
     const output = yield* run(
       process.execPath,
       [
@@ -61,10 +64,15 @@ const program = Effect.scoped(
         }), { disableErrorReporting: true })
       `,
       ],
-      checkout
+      checkout,
+      { ...process.env, DEV_PROFILES: profiles.root }
     )
     const pin = yield* readPiPin
-    if (!output.includes(`pi: ${pin} (`) || !output.includes('selection: general'))
+    if (
+      !output.includes(`pi: ${pin} (`) ||
+      !output.includes(`selection: ${profiles.defaultProfile} (configured default)`) ||
+      !output.includes(`SOUL.md: ${profiles.soulPath(profiles.defaultProfile)}`)
+    )
       return yield* new SmokeError({ message: `Unexpected diagnostics:\n${output}` })
     yield* Effect.sync(() => {
       console.log(output.trim())

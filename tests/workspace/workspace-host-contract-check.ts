@@ -1,3 +1,4 @@
+import { installProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
 import {
   mkdirSync,
@@ -60,6 +61,7 @@ for (const path of [sessionDir, agentDir, current.path, join(fixture, 'home', '.
   mkdirSync(path, { recursive: true })
 mkdirSync(dataHome, { mode: 0o700 })
 process.env.HOME = join(fixture, 'home')
+installProfileFixture(join(fixture, 'profiles'))
 process.env.PI_CODING_AGENT_DIR = agentDir
 process.env.PI_OFFLINE = '1'
 process.env.PI_TELEMETRY_DISABLED = '1'

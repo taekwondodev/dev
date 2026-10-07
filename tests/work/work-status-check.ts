@@ -63,7 +63,7 @@ const child = (facts: ChildFacts): AttemptView =>
             packageVersion: '1.0.4',
             cwd: '/repo',
             access: facts.access ?? 'read-only',
-            profile: 'general',
+            profile: 'fixture',
             resources: [],
             invokedSkill: { name: facts.skill, path: `/skills/${facts.skill}/SKILL.md` },
             tools: [],

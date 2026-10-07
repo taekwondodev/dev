@@ -14,7 +14,7 @@ import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher-runtim
 import { WorkOwner } from '../../src/work-controller.ts'
 import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'
-import { getProfile } from '../../src/profiles.ts'
+import { loadCatalog } from '../../src/profiles.ts'
 import { acquireRuntime, type CoordinationOptions } from '../../src/runtime-coordination.ts'
 import { createSessionGuard } from '../../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
@@ -304,7 +304,9 @@ export const openHostRuntime = async (input: {
           api: input.pi,
           packageRoot: input.packageRoot,
           dataHome: input.dataHome,
-          profile: yield* getProfile('general'),
+          profile: yield* Effect.flatMap(loadCatalog, catalog =>
+            catalog.load(catalog.defaultProfile)
+          ),
           guard,
           workspaceHost: host,
           lifecycle: input.lifecycle,

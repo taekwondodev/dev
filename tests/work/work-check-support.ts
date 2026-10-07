@@ -21,6 +21,7 @@ import type {
   WorkOwnerService,
 } from '../../src/work-domain.ts'
 import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
+import { installProfileFixture } from '../profile-fixture.ts'
 import { ownerEffect, waitFor, within } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
@@ -74,6 +75,7 @@ export const openWorkFixture = async (name: string) => {
   for (const path of [skills, join(agentDir, 'extensions'), join(agentDir, 'prompts'), repository])
     mkdirSync(path, { recursive: true })
   mkdirSync(dataHome, { mode: 0o700 })
+  const profiles = installProfileFixture(join(root, 'profiles'))
   process.env.HOME = home
   process.env.PI_OFFLINE = '1'
   process.env.PI_TELEMETRY_DISABLED = '1'
@@ -115,7 +117,7 @@ export const openWorkFixture = async (name: string) => {
   })
 
   const openOwner = (
-    profile = 'general',
+    profile = profiles.defaultProfile,
     wrap: (base: WorkspaceAttachment) => WorkspaceAttachment = base => base
   ) => {
     const outcomes = new Map<string, AttemptView>()
@@ -209,6 +211,7 @@ export const openWorkFixture = async (name: string) => {
     agentDir,
     repository,
     dataHome,
+    profiles,
     git,
     writeSkill,
     lifecycle,

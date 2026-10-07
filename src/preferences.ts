@@ -18,7 +18,7 @@ const PreferenceSchema = Schema.Struct({
 
 const decodePreference = Schema.decodeEffect(Schema.fromJsonString(PreferenceSchema))
 
-type SelectionSource = 'general default' | 'saved preference' | 'temporary override'
+type SelectionSource = 'configured default' | 'saved preference' | 'temporary override'
 
 export interface Selection {
   readonly identity: string
@@ -30,6 +30,7 @@ export interface Selection {
 export interface ResolveSelectionOptions {
   readonly cwd: string
   readonly dataHome: string
+  readonly defaultProfile: string
   readonly explicit?: string
 }
 
@@ -109,13 +110,13 @@ export const resolveSelection: (
     const identity = yield* projectIdentity(options.cwd)
     const path = preferencePath(options.dataHome, identity)
     const saved = (yield* readPreference(path)).profile
-    let source: SelectionSource = 'general default'
+    let source: SelectionSource = 'configured default'
     if (saved !== undefined) source = 'saved preference'
     if (options.explicit !== undefined) source = 'temporary override'
     return {
       identity,
       path,
-      profile: options.explicit ?? saved ?? 'general',
+      profile: options.explicit ?? saved ?? options.defaultProfile,
       source,
     }
   },
