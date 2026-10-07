@@ -997,9 +997,10 @@ try {
       deliverBranch(first.managed.checkout)
       git(['merge', '--quiet', '--ff-only', 'main'], second.managed.checkout)
       deliverBranch(second.managed.checkout)
+      const firstInSweep = first.owner.taskId < second.owner.taskId ? first : second
       const late = await openLifecycle({
         root,
-        startWorker: faultyWorker('clock-after-git-remove', first.managed.checkout),
+        startWorker: faultyWorker('clock-after-git-remove', firstInSweep.managed.checkout),
       })
       let receipt: SweepReceipt
       try {

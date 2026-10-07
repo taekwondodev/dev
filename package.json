@@ -20,7 +20,7 @@
     "start": "node src/launcher.ts",
     "diagnostics": "node src/launcher.ts --diagnostics",
     "smoke": "node tests/launcher-cache-check.ts && node tests/smoke.ts",
-    "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
+    "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/quit-display-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",
     "work:check": "npm run types:pi && node tests/compaction-check.ts && node tests/work/work-dispatch-check.ts && node tests/work/work-status-check.ts && node tests/work/work-store-check.ts && node tests/work/work-skill-check.ts && node tests/work/work-nested-check.ts && node tests/work/work-cancel-check.ts && node tests/work/work-compaction-check.ts && node tests/work/work-extension-check.ts",

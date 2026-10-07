@@ -74,7 +74,7 @@ Missing required resources or Pi resource/extension errors stop startup and name
 
 A refused existing regular session file and its history remain unchanged. An absent path is reported as absent, without inferring whether history existed. Follow the reported reason: a conversation-specific refusal need not block another conversation, but starting fresh cannot bypass repository identity checks. A workspace switch that never reached the host is withdrawn on resume.
 
-Independent repositories can share a data home. [Workspace](workspace.md) governs concurrent sessions, session replacements and `/quit`: quit disposes the session, sweeps the repository and prints a receipt with the documented [exit status](workspace.md#exit-codes).
+Independent repositories can share a data home. [Workspace](workspace.md) governs concurrent sessions, session replacements and `/quit`: quit disposes the session, sweeps the repository, prints a receipt and offers the releases it needs, with the documented [exit status](workspace.md#exit-codes).
 
 ## State
 

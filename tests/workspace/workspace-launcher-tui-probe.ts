@@ -29,6 +29,7 @@ const failedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-quit'
 const failedInteractive = process.env.LAUNCHER_TUI_FAULT === 'interactive-failure'
 const containedHistory = process.env.LAUNCHER_TUI_CONTAINED_HISTORY === '1'
 const removeInstallation = process.env.LAUNCHER_TUI_SELF_REMOVE === '1' || containedHistory
+const missingWorktree = process.env.LAUNCHER_TUI_MISSING_WORKTREE
 const keptClaim = (): string => {
   if (interruptedAfterQuit)
     return 'a SIGINT during the teardown after /quit, before the sweep, exits 130 and releases nothing: both reservations, the worktree and the files stay'
@@ -37,6 +38,8 @@ const keptClaim = (): string => {
   return 'a session disposal failure after /quit exits 1 without sweeping: both reservations, the worktree and the files stay, and the conversation is kept'
 }
 const sweptClaim = (): string => {
+  if (missingWorktree === 'release')
+    return 'a worktree whose directory vanished is offered for release at quit; one y releases its task, the clean checkout is released by the sweep and dev exits 0'
   if (removeInstallation)
     return 'quitting the TUI launched from a finished worktree releases its own installation claims first, then the sweep removes that worktree with the installation, releases the clean checkout and exits 0'
   if (interruptedDuringSweep)
@@ -96,6 +99,7 @@ try {
   }
   await owner.close()
   await lifecycle.close()
+  if (missingWorktree !== undefined) rmSync(worktree, { recursive: true, force: true })
 
   let history: { path: string; text: string } | undefined
   if (failedAfterQuit || failedInteractive || containedHistory) {
@@ -184,6 +188,18 @@ try {
             'the persisted conversation history remains intact'
           )
       })
+    else if (missingWorktree === 'decline' || missingWorktree === 'interrupt')
+      await claim(
+        missingWorktree === 'decline'
+          ? 'declining the release offered at quit for a vanished worktree keeps its reservation, exits with the sweep code 0 and leaves the release command printed'
+          : 'Ctrl-C at the release offered at quit releases nothing and exits 130',
+        () => {
+          assert.equal(exit.signal, null)
+          assert.equal(exit.code, missingWorktree === 'decline' ? 0 : 130)
+          assert.deepEqual(reserved, [managed.grant.workspaceId])
+          assert.deepEqual(outcomes, ['released', 'review-required'])
+        }
+      )
     else if (containedHistory)
       await claim(
         'a finished worktree holding the quitting conversation is kept by the sweep, which exits 1 naming it, while the clean checkout is released and the history stays intact',

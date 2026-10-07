@@ -91,7 +91,11 @@ Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, 
 
 Before removing a finished workspace, the sweep takes the structure, presence and writer gates and assesses it again; it acts only if the workspace is still finished with valid evidence. A pre-existing checkout loses only its reservation and that reservation's settled (`quiescent`) use records. A managed worktree is removed with `git worktree remove --force`. Gates held by another dev session, a worktree containing a shell, launcher or quitting conversation, and active installation coordination retain it. A removal that does not complete stays `release-review`, refuses resume and is never retried automatically.
 
-The budget is 40 seconds at quit and 20 before allocation, measured from the request. Tasks not started become `task-deferred` for the next sweep. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. The receipt prints at quit, or appears in the conversation before allocation when it has rows.
+The budget is 40 seconds at quit and 20 before allocation, measured from the request. Tasks not started become `task-deferred` for the next sweep. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. The receipt appears in the conversation before allocation when it has rows, or prints at quit.
+
+The receipt at quit lists removed and released workspaces, those that need you, and a count of those retained until their use ends, with the sweep's elapsed time. A workspace needs a release when nothing else clears it: an unfinished removal (`review-required`), `release-review`, `directory-missing`, `identity-unverifiable` or `transition-unresolved`. The receipt prints `dev workspace release <task>` for each such task and `dev workspace check <task>` for a task that could not be assessed. Undelivered (`not-integrated`, `no-commits`) or undecidable (`integration-unknown`, `residue-unreadable`) workspaces show their next step instead.
+
+In an interactive terminal, quit then offers those releases: it lists every reserved workspace of each task with its consequence, as `release` does, and asks for one `y` for all of them. Any other answer quits and leaves the commands printed. In Ghostty (`TERM_PROGRAM=ghostty`), the tab shows the sweep's progress and the receipt links each path to its directory; `NO_COLOR` turns colors off. Outside Ghostty or without a TTY, the sweep output is plain text without escape sequences.
 
 Before delivery, the workflow must integrate code and assets, reconcile contributions and publish wanted reports, then record exact publication readback. A failed publication remains in the task checkpoint and stops delivery. A local copy is not a publication. Source-history inclusion proves neither semantic equivalence nor delivery of dirty edits.
 
@@ -102,7 +106,7 @@ Before delivery, the workflow must integrate code and assets, reconcile contribu
 - removes each managed worktree with `git worktree remove --force`, with its Git registration and reservation;
 - ends the reservation and use records of each pre-existing checkout; its files and commits stay.
 
-**Everything left in a released managed worktree is discarded, including dirty edits, undelivered commits, caches and forgotten files.** Release checks no completion, evidence or live use, so run it only when nothing still works in those workspaces. There is no `--yes`, and the session command only names the terminal command.
+**Everything left in a released managed worktree is discarded, including dirty edits, undelivered commits, caches and forgotten files.** Release checks no completion, evidence or live use, so run it only when nothing still works in those workspaces. There is no `--yes`, and the session command only names the terminal command. The release offered at quit follows the same confirmation.
 
 Release respects a Git lock: a locked worktree fails and stays. When Git confirms that it no longer lists the worktree, release deletes what remains of its directory under dev's worktree root and its admin directory, unless that admin directory now serves a moved worktree. An unreadable Git worktree list permits neither deletion of leftovers nor confirmation of removal. A failed or interrupted removal stays `release-review` and refuses resume; running release again finishes it. If the directory is already gone, the retry preserves the interrupted removal's recorded HEAD as delivery evidence for the task's other workspaces.
 
@@ -110,18 +114,20 @@ External programs are not coordinated. Stop independently started tools and avoi
 
 ### Quit and interruption
 
-`/quit` stops owned work and shells, closes the attachment, releases installation/source claims, then sweeps uninterruptibly and prints a receipt. Ctrl-C before the sweep releases nothing. During the sweep, an attempt reaches its recorded outcome; a Git step also interrupted by the signal stays `release-review` until `dev workspace release`.
+`/quit` stops owned work and shells, closes the attachment, releases installation/source claims, then sweeps uninterruptibly, prints a receipt and offers any [needed release](#sweep). Ctrl-C before the sweep releases nothing. During the sweep, an attempt reaches its recorded outcome; a Git step also interrupted by the signal stays `release-review` until `dev workspace release`. Ctrl-C at the release prompt releases nothing; during a confirmed release, each started release reaches its recorded outcome.
 
 SIGHUP after quit can end dev without a receipt; the next sweep reports an interrupted removal as `release-review`. Signals, crashes, startup, turn end and session replacements do not initiate sweeps. If a sweep does not report back, its outcome remains unknown and the launcher points to `inspect`.
 
 ### Exit codes
 
-| Code | Meaning                                                                                                                                    |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Observation returned; every workspace of a confirmed release ended `released` or `removed`; or quit reached terminal outcomes              |
-| 1    | Observation unavailable, a failed or unreported release, nothing reserved to release, unknown sweep outcome or an unfinished sweep removal |
-| 2    | Invalid or ambiguous arguments, or missing required interaction                                                                            |
-| 130  | Cancelled confirmation, or quit interrupted before or during the sweep; an in-flight sweep attempt completes and is reported               |
+| Code | Meaning                                                                                                                                                                    |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Observation returned; every workspace of a confirmed release ended `released` or `removed`; or quit reached terminal outcomes, counting the tasks released at quit as done |
+| 1    | Observation unavailable, a failed or unreported release, nothing reserved to release, unknown sweep outcome or an unfinished sweep removal                                 |
+| 2    | Invalid or ambiguous arguments, or missing required interaction                                                                                                            |
+| 130  | Cancelled confirmation, or quit interrupted before or during the sweep or its release; an in-flight attempt completes and is reported                                      |
+
+Declining the release offered at quit keeps the sweep's code.
 
 A successful `check` can list blockers. Exit 0 is not permission to remove anything.
 
