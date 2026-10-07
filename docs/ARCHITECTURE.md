@@ -48,4 +48,5 @@ Read the relevant record before changing the boundary it governs. This index poi
 | Completion or worktree disposal                    | [ADR 0005: release](adr/0005-scoped-runtime-coordination.md#release)                                                                                           |
 | Effect/Promise boundary                            | [ADR 0005: Effect](adr/0005-scoped-runtime-coordination.md#effect-boundary)                                                                                    |
 | Extension trust                                    | [ADR 0005: extensions](adr/0005-scoped-runtime-coordination.md#executable-extensions)                                                                          |
+| Visual layer, status text or terminal fonts        | [ADR 0006](adr/0006-global-visual-layer.md)                                                                                                                    |
 | Background compaction and diagnostic observations  | [#62](https://github.com/taekwondodev/dev/issues/62), [profiling decision](https://github.com/taekwondodev/dev/issues/62#issuecomment-5954797030)              |

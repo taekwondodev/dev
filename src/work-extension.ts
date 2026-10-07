@@ -12,9 +12,9 @@ import {
   type WorkFailure,
   type WorkOwnerService,
   type WorkSetupError,
-  type WorkSnapshot,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
+import { workStatusText } from './work-status.ts'
 import {
   decodeWorkInput,
   LeadWorkInputSchema,
@@ -219,50 +219,6 @@ export const createWorkExtension = ({
     effect: Effect.Effect<A, WorkFailure, WorkOwner>
   ): Promise<A> => Effect.runPromise(runOwned(ctx, effect))
 
-  const statusText = (snapshot: WorkSnapshot): string | undefined => {
-    const counts = new Map<string, number>()
-    for (const record of snapshot.records)
-      counts.set(record.status, (counts.get(record.status) ?? 0) + 1)
-    const states = [...counts].map(([status, count]) => `${count} ${status}`).join(' · ')
-    const children = snapshot.records.filter(record => record.kind === 'agent')
-    const metered = children.filter(record => typeof record.usage?.total === 'number')
-    const tokens = metered.reduce((sum, record) => sum + (record.usage?.total ?? 0), 0)
-    let usage = children.length ? 'child usage unavailable' : ''
-    if (metered.length) {
-      usage = `children: ${tokens} reported tokens`
-      if (metered.length < children.length)
-        usage += ` (${children.length - metered.length} unavailable)`
-    }
-    const agents = snapshot.records.filter(
-      record =>
-        record.kind === 'agent' && (record.status === 'running' || record.status === 'waiting')
-    )
-    const taskOf = new Map(snapshot.records.map(record => [record.id, record.owner.taskId]))
-    const models = agents
-      .map(record => {
-        const percentage = record.context?.percent
-        const pressure =
-          typeof percentage === 'number' ? `${percentage.toFixed(1)}%` : 'unavailable'
-        const { parent } = record.owner
-        const label =
-          parent === undefined
-            ? record.owner.taskId
-            : `${taskOf.get(parent) ?? parent}>${record.owner.taskId}`
-        return `${label}: ${record.model ?? 'model pending'} context ${pressure}`
-      })
-      .join(' · ')
-    return (
-      [
-        states,
-        models,
-        usage,
-        snapshot.agentsBlocked ? 'subscription exhausted; agents blocked' : '',
-        reactivation === 'suspended' ? 'lead failed; automatic reactivation suspended' : '',
-      ]
-        .filter(Boolean)
-        .join(' | ') || undefined
-    )
-  }
   const updateStatus = (ctx: Pi.ExtensionContext): Effect.Effect<void, WorkFailure> =>
     ctx.hasUI
       ? runOwned(
@@ -270,7 +226,9 @@ export const createWorkExtension = ({
           withOwner(owner => owner.snapshot)
         ).pipe(
           Effect.flatMap(snapshot =>
-            Effect.sync(() => ctx.ui.setStatus('dev/work', statusText(snapshot)))
+            Effect.sync(() =>
+              ctx.ui.setStatus('dev/work', workStatusText(snapshot, reactivation === 'suspended'))
+            )
           )
         )
       : Effect.void
