@@ -1,7 +1,10 @@
+import { FIXTURE_MANIFEST, writeProfileFixture } from '../profile-fixture.ts'
+import { MANIFEST_FILE } from '../../src/profiles.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -56,6 +59,7 @@ const authorityFiles = (root: string) =>
     .toSorted()
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
+const profiles = writeProfileFixture(join(sandbox, 'profiles'))
 const { claim, passed } = makeClaims()
 try {
   const repo = join(sandbox, 'repo')
@@ -216,7 +220,13 @@ try {
         ['--input-type=module', '-e', driver, '--', ...args],
         {
           cwd: devRoot,
-          env: { ...process.env, PI_OFFLINE: '1', LAUNCHER_CHECK_ROOT: authorityRoot, ...env },
+          env: {
+            ...process.env,
+            PI_OFFLINE: '1',
+            LAUNCHER_CHECK_ROOT: authorityRoot,
+            DEV_PROFILES: profiles.root,
+            ...env,
+          },
           timeout: 60000,
         },
         (error, stdout, stderr) => {
@@ -244,7 +254,11 @@ try {
       assert.equal(failed.stderr.split('authority opened').length - 1, 1, failed.stderr)
       assert.match(failed.stderr, /authority worker exited/)
       assert.ok(!existsSync(unopenedRoot))
-      for (const mode of [['--help'], ['--diagnostics'], ['--save-profile', 'general']]) {
+      for (const mode of [
+        ['--help'],
+        ['--diagnostics'],
+        ['--save-profile', profiles.defaultProfile],
+      ]) {
         const result = await runLauncher([...mode, '--cwd', repo, '--data-home', dataHome], env)
         assert.equal(result.code, 0, result.stderr)
         assert.ok(!result.stderr.includes('authority opened'), result.stderr)
@@ -258,7 +272,7 @@ try {
     '--data-home',
     dataHome,
     '--profile',
-    'general',
+    profiles.defaultProfile,
   ]
   await claim(
     'dev --resume of a conversation whose workspace was removed exits 1, names the unchanged conversation file and directs the user to resolve that refusal without recreating the workspace',
@@ -331,19 +345,47 @@ try {
   )
 
   await claim(
-    'dev --probe-runtime builds its Pi runtime on the binding the workspace host prepares and commits, and exits 0 with Pi state only under a disposable HOME',
+    'dev --probe-runtime builds its Pi runtime on the binding the workspace host prepares and commits, exits 0 with Pi state only under a disposable HOME, and loads a profile skill from the installation profiles into the catalog',
     async () => {
       const probeHome = join(sandbox, 'probe-home')
       mkdirSync(join(probeHome, '.agents', 'skills'), { recursive: true })
+      const probeEnv = { HOME: probeHome, LAUNCHER_CHECK_ROOT: join(sandbox, 'probe-authority') }
       const probed = await runLauncher(
-        ['--probe-runtime', '--cwd', repo, '--data-home', dataHome, '--profile', 'general'],
-        { HOME: probeHome, LAUNCHER_CHECK_ROOT: join(sandbox, 'probe-authority'), REPORT_OPEN: '1' }
+        [
+          '--probe-runtime',
+          '--cwd',
+          repo,
+          '--data-home',
+          dataHome,
+          '--profile',
+          profiles.defaultProfile,
+        ],
+        { ...probeEnv, REPORT_OPEN: '1' }
       )
       assert.equal(probed.code, 0, probed.stderr)
       assert.equal(probed.stderr.split('authority opened').length - 1, 1, probed.stderr)
       assert.match(probed.stderr, /authority worker exited/)
       assert.match(probed.stdout, /^runtime probe: ok$/m)
+      assert.match(probed.stdout, /^skills loaded: 0$/m)
       assert.ok(existsSync(join(probeHome, '.pi', 'agent')), 'Pi kept its state in the probe HOME')
+      const stacked = await runLauncher(
+        [
+          '--probe-runtime',
+          '--cwd',
+          repo,
+          '--data-home',
+          dataHome,
+          '--profile',
+          profiles.skillProfile,
+        ],
+        probeEnv
+      )
+      assert.equal(stacked.code, 0, stacked.stderr)
+      assert.match(stacked.stdout, /^skills loaded: 1$/m)
+      assert.ok(
+        stacked.stdout.includes(`${profiles.skill} -> ${join(profiles.skillPath, 'SKILL.md')}`),
+        stacked.stdout
+      )
     }
   )
 
@@ -614,9 +656,12 @@ try {
       })
     )
     writeFileSync(join(brokenPi, 'index.js'), "throw new Error('broken fixture Pi')\n")
-    const outcome = await runLauncher(['--data-home', dataHome, '--profile', 'general'], {
-      DEV_PI_RELEASE: brokenRelease,
-    })
+    const outcome = await runLauncher(
+      ['--data-home', dataHome, '--profile', profiles.defaultProfile],
+      {
+        DEV_PI_RELEASE: brokenRelease,
+      }
+    )
     assert.equal(outcome.code, 1, outcome.stderr)
     assert.ok(
       outcome.stderr.includes(
@@ -644,11 +689,16 @@ try {
   const optionData = join(sandbox, 'option-data')
   const neverData = join(sandbox, 'never-data')
   mkdirSync(join(optionHome, '.agents', 'skills'), { recursive: true })
-  const withOptions = (args: readonly string[], home = optionData) =>
+  const withOptions = (
+    args: readonly string[],
+    home = optionData,
+    env: Readonly<Record<string, string>> = {}
+  ) =>
     runLauncher(args, {
       HOME: optionHome,
       DEV_DATA_HOME: home,
       LAUNCHER_CHECK_ROOT: join(sandbox, 'option-authority'),
+      ...env,
     })
   const selected = async (args: readonly string[]) => {
     const outcome = await withOptions(['--diagnostics', ...args])
@@ -658,10 +708,12 @@ try {
   const savedPreference = await claim(
     'dev --save-profile saves the profile preference of that repository only and opens no session; a new conversation then selects it, --profile wins over it, and an unknown profile name is refused by both options',
     async () => {
-      assert.equal(await selected(['--cwd', repo]), 'general')
-      const saved = await withOptions(['--save-profile', 'apple', '--cwd', repo])
+      assert.equal(await selected(['--cwd', repo]), profiles.defaultProfile)
+      const saved = await withOptions(['--save-profile', profiles.skillProfile, '--cwd', repo])
       assert.equal(saved.code, 0, saved.stderr)
-      const path = /^saved profile apple at (.+)$/m.exec(saved.stdout)?.[1]
+      const path = new RegExp(`^saved profile ${profiles.skillProfile} at (.+)$`, 'm').exec(
+        saved.stdout
+      )?.[1]
       if (path === undefined || !existsSync(path))
         throw new Error(`The saved preference was not reported: ${saved.stdout}`)
       assert.deepEqual(
@@ -669,9 +721,12 @@ try {
         [],
         'saving a preference opened no session'
       )
-      assert.equal(await selected(['--cwd', repo]), 'apple')
-      assert.equal(await selected(['--cwd', repo, '--profile', 'general']), 'general')
-      assert.equal(await selected(['--cwd', secondRepo]), 'general')
+      assert.equal(await selected(['--cwd', repo]), profiles.skillProfile)
+      assert.equal(
+        await selected(['--cwd', repo, '--profile', profiles.defaultProfile]),
+        profiles.defaultProfile
+      )
+      assert.equal(await selected(['--cwd', secondRepo]), profiles.defaultProfile)
       const stored = readFileSync(path, 'utf8')
       for (const option of ['--save-profile', '--profile']) {
         const refused = await withOptions(['--diagnostics', '--cwd', repo, option, 'swift'])
@@ -689,11 +744,134 @@ try {
   await claim(
     'dev refuses a stored profile preference that is not a preference record, names the file, and leaves it as found instead of resetting it',
     async () => {
-      writeFileSync(savedPreference, '"apple"\n')
+      writeFileSync(savedPreference, '"stack"\n')
       const refused = await withOptions(['--diagnostics', '--cwd', repo])
       assert.equal(refused.code, 1, refused.stdout)
       assert.ok(refused.stderr.includes(savedPreference), refused.stderr)
-      assert.equal(readFileSync(savedPreference, 'utf8'), '"apple"\n')
+      assert.equal(readFileSync(savedPreference, 'utf8'), '"stack"\n')
+    }
+  )
+  const manifestData = join(sandbox, 'manifest-data')
+  await claim(
+    'dev refuses startup naming the manifest when it is missing, malformed or names an undefined default, and an unknown profile name lists the defined ones with that manifest',
+    async () => {
+      const refusals: readonly (readonly [string, string | object | undefined, RegExp])[] = [
+        ['missing', undefined, /^Cannot load profiles: No profile manifest at /],
+        ['malformed', '{ "default": ', /^Cannot load profiles: Invalid profile manifest /],
+        [
+          'undefined-default',
+          { ...FIXTURE_MANIFEST, default: 'absent' },
+          /default profile "absent" is not one of the defined profiles: base, stack/,
+        ],
+      ]
+      for (const [name, manifest, expected] of refusals) {
+        const root = join(sandbox, `profiles-${name}`)
+        mkdirSync(root, { recursive: true })
+        if (typeof manifest === 'string') writeFileSync(join(root, MANIFEST_FILE), manifest)
+        else if (manifest !== undefined) writeProfileFixture(root, manifest)
+        const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+          DEV_PROFILES: root,
+        })
+        assert.equal(refused.code, 1, `${name}: ${refused.stdout}`)
+        assert.match(refused.stderr, expected, name)
+        assert.ok(refused.stderr.includes(join(root, MANIFEST_FILE)), `${name}: ${refused.stderr}`)
+      }
+      const unknown = await withOptions(
+        ['--diagnostics', '--cwd', repo, '--profile', 'absent'],
+        manifestData
+      )
+      assert.equal(unknown.code, 1, unknown.stdout)
+      assert.ok(
+        unknown.stderr.includes(
+          `Unknown profile "absent". Choose one of: ${Object.keys(FIXTURE_MANIFEST.profiles).join(', ')} (defined in ${profiles.manifestPath}).`
+        ),
+        unknown.stderr
+      )
+    }
+  )
+  await claim(
+    'a selected profile whose required skill directory is missing, or whose SOUL cannot be read, refuses startup naming the resource and the manifest without suggesting another profile, while a profile of the same manifest that does not need it starts',
+    async () => {
+      const root = join(sandbox, 'profiles-missing-skill')
+      writeProfileFixture(root, {
+        ...FIXTURE_MANIFEST,
+        profiles: {
+          ...FIXTURE_MANIFEST.profiles,
+          stack: { soul: 'stack/SOUL.md', skills: ['stack/skills/absent'] },
+        },
+      })
+      const refused = await withOptions(
+        ['--diagnostics', '--cwd', repo, '--profile', profiles.skillProfile],
+        manifestData,
+        { DEV_PROFILES: root }
+      )
+      assert.equal(refused.code, 1, refused.stdout)
+      assert.ok(
+        refused.stderr.includes(
+          `Profile "stack" is unavailable; missing skill stack/skills/absent at ${join(root, 'stack', 'skills', 'absent')}. Restore the resource or change its entry in ${join(root, MANIFEST_FILE)}.`
+        ),
+        refused.stderr
+      )
+      assert.ok(!refused.stderr.includes('--profile'), 'no other profile is suggested')
+      const started = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: root,
+      })
+      assert.equal(started.code, 0, started.stderr)
+      assert.match(started.stdout, /^selection: base \(configured default\)$/m)
+      const unreadableSoul = join(root, 'base', 'SOUL.md')
+      chmodSync(unreadableSoul, 0o000)
+      try {
+        const unreadable = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+          DEV_PROFILES: root,
+        })
+        assert.equal(unreadable.code, 1, unreadable.stdout)
+        assert.ok(
+          unreadable.stderr.includes(
+            `Cannot load selected profile: Cannot read SOUL of profile "base" at ${unreadableSoul}: PermissionDenied`
+          ),
+          unreadable.stderr
+        )
+      } finally {
+        chmodSync(unreadableSoul, 0o600)
+      }
+    }
+  )
+  await claim(
+    'diagnostics compose the selected SOUL and the profile skills in manifest order before the shared skills; project skill directories come first, and a profile path whose real directory a project path already provides is dropped',
+    async () => {
+      const composed = await withOptions(
+        ['--diagnostics', '--cwd', repo, '--profile', profiles.skillProfile],
+        manifestData
+      )
+      assert.equal(composed.code, 0, composed.stderr)
+      assert.ok(
+        composed.stdout.includes(`SOUL.md: ${profiles.soulPath(profiles.skillProfile)}\n`),
+        composed.stdout
+      )
+      const shared = join(optionHome, '.agents', 'skills')
+      assert.equal(
+        composed.stdout.split('resource paths:\n')[1]?.trim(),
+        [`stack: ${profiles.skillPath}`, `stack: ${shared}`].join('\n')
+      )
+      const resourceRepo = join(sandbox, 'resource-repo')
+      mkdirSync(resourceRepo)
+      initRepository(resourceRepo)
+      mkdirSync(join(resourceRepo, '.pi'))
+      symlinkSync(profiles.skillPath, join(resourceRepo, '.pi', 'skills'))
+      mkdirSync(join(resourceRepo, '.agents', 'skills'), { recursive: true })
+      const deduplicated = await withOptions(
+        ['--diagnostics', '--cwd', resourceRepo, '--profile', profiles.skillProfile],
+        manifestData
+      )
+      assert.equal(deduplicated.code, 0, deduplicated.stderr)
+      assert.equal(
+        deduplicated.stdout.split('resource paths:\n')[1]?.trim(),
+        [
+          `project: ${join(resourceRepo, '.pi', 'skills')}`,
+          `project: ${join(resourceRepo, '.agents', 'skills')}`,
+          `stack: ${shared}`,
+        ].join('\n')
+      )
     }
   )
   await claim(
@@ -713,22 +891,22 @@ try {
       }
       const now = Date.now() / 1000
       record(repo, 'sessions', now - 400)
-      record(repo, 'sessions', now - 300, 'apple')
+      record(repo, 'sessions', now - 300, profiles.skillProfile)
       record(secondRepo, 'sessions', now - 200)
       record(repo, 'child-sessions', now - 100)
       const resume = (cwd: string, extra: readonly string[] = []) =>
         withOptions(['--continue', '--diagnostics', '--cwd', cwd, ...extra], continueData)
-      for (const extra of [[], ['--profile', 'general']]) {
+      for (const extra of [[], ['--profile', profiles.defaultProfile]]) {
         const resumed = await resume(repo, extra)
         assert.equal(resumed.code, 0, resumed.stderr)
-        assert.match(resumed.stdout, /^selection: apple /m)
+        assert.match(resumed.stdout, /^selection: stack \(conversation metadata\)$/m)
       }
       const unrecorded = await resume(secondRepo)
       assert.equal(unrecorded.code, 1, unrecorded.stdout)
       assert.ok(unrecorded.stderr.includes('--profile'), unrecorded.stderr)
-      const chosen = await resume(secondRepo, ['--profile', 'general'])
+      const chosen = await resume(secondRepo, ['--profile', profiles.defaultProfile])
       assert.equal(chosen.code, 0, chosen.stderr)
-      assert.match(chosen.stdout, /^selection: general /m)
+      assert.match(chosen.stdout, /^selection: base \(temporary override\)$/m)
     }
   )
   await claim(
@@ -783,7 +961,14 @@ try {
           await Effect.runPromise(lease.protect({ path: heldFile, sessionId: held.getSessionId() }))
           for (const resumed of [respelled(heldFile), respelled(copied)]) {
             const outcome = await runLauncher(
-              ['--resume', resumed, '--data-home', respelled(caseHome), '--profile', 'general'],
+              [
+                '--resume',
+                resumed,
+                '--data-home',
+                respelled(caseHome),
+                '--profile',
+                profiles.defaultProfile,
+              ],
               { STOP_AFTER_ATTACH: '1' }
             )
             assert.equal(outcome.code, 1, outcome.stderr)

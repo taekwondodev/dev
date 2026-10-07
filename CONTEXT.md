@@ -4,11 +4,11 @@ Dev is a personal agent distro built on Pi. This glossary defines the vocabulary
 
 ## Environment
 
-| Term                        | Meaning                                                                                                                                                 |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Pi**                      | The coding agent and SDK dev integrates. The active pi.dev-managed release is the API reference.                                                        |
-| **Shared workflow library** | Common development guidance owned by `~/Developer/skills`, exposed through `~/.agents/skills`. Dev consumes it rather than copying its rules.           |
-| **Profile**                 | A selectable set of guidance, skills and domain resources, composed by the [launcher](docs/launcher.md). Apple is one profile, not the identity of dev. |
+| Term                        | Meaning                                                                                                                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pi**                      | The coding agent and SDK dev integrates. The active pi.dev-managed release is the API reference.                                                                                                                           |
+| **Shared workflow library** | Common development guidance owned by `~/Developer/skills`, exposed through `~/.agents/skills`. Dev consumes it rather than copying its rules.                                                                              |
+| **Profile**                 | A selectable set of guidance and skills, defined in the installation's untracked `profiles/manifest.json` and composed by the [launcher](docs/launcher.md). Apple is one of the owner's profiles, not the identity of dev. |
 
 ## Background work
 

@@ -131,7 +131,7 @@ try {
     }
   )
 
-  const owner = fixture.openOwner('general')
+  const owner = fixture.openOwner()
   try {
     await claim(
       'writing children edit external files but cannot write another checkout; read-only children cannot change external files',
@@ -771,7 +771,7 @@ try {
             )
           ),
   })
-  const owner = uncertain.openOwner('general', losing)
+  const owner = uncertain.openOwner(uncertain.profiles.defaultProfile, losing)
   try {
     await claim(
       'cancelling a coordinator while its request is still being admitted ends it cancelled with a quiescent use, and the request starts nothing',
@@ -840,7 +840,7 @@ try {
 
 const exhausted = await openWorkFixture('work-nested-quota')
 try {
-  const owner = exhausted.openOwner('general')
+  const owner = exhausted.openOwner()
   try {
     await claim(
       'quota exhaustion reported by a leaf stops its coordinator and blocks new agents in the session',

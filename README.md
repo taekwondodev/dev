@@ -12,7 +12,7 @@ I wanted a terminal-first experience. I was a Hermes main, but I wanted to come 
 
 ## What it does
 
-- **`dev`** opens Pi from the project you are working on, with a profile (`general` or `apple`) that selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
+- **`dev`** opens Pi from the project you are working on, with one of the profiles defined in my local, untracked `profiles/` directory, which selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
 - **`work`** runs commands and delegated Pi children in the background, in separate processes, with version-controlled model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch](config/README.md)
 - **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
 - Long sessions prepare compaction in the background, independently for the lead and each child, then apply it at the first safe boundary. Pi's native blocking recovery remains available. [compaction](docs/compaction.md)
@@ -30,6 +30,8 @@ npm ci
 npm run setup
 npm link --ignore-scripts
 ```
+
+Profiles are personal and stay out of Git: `profiles/manifest.json` names each profile's guidance and skill directories, and dev refuses to start without it. The format is in the [launcher guide](docs/launcher.md#profiles-and-resources).
 
 Then, from any Git project:
 

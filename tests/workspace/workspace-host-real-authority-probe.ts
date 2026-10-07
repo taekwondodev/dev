@@ -1,3 +1,4 @@
+import { installProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import {
@@ -66,6 +67,7 @@ for (const path of [sessionDir, agentDir, dataHome]) mkdir(path)
 const trustStore = new pi.ProjectTrustStore(agentDir)
 trustStore.set(fixture, false)
 process.env.HOME = join(fixture, 'home')
+installProfileFixture(join(fixture, 'profiles'))
 process.env.PI_CODING_AGENT_DIR = agentDir
 process.env.PI_OFFLINE = '1'
 process.env.PI_TELEMETRY_DISABLED = '1'

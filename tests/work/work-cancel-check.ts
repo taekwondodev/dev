@@ -8,7 +8,7 @@ import { cancelLog, HOLD_CANCEL } from './work-child-model.ts'
 const { claim, passed } = makeClaims()
 const fixture = await openWorkFixture('work-cancel')
 try {
-  const owner = fixture.openOwner('general')
+  const owner = fixture.openOwner()
   try {
     await claim(
       'normally exited commands complete regardless of exit code and retain their code in inspection and delivery',

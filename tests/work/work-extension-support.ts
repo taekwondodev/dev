@@ -83,7 +83,7 @@ export const openLead = async (
   })
   const work = createWorkExtension({
     dataHome: fixture.dataHome,
-    profile: 'general',
+    profile: fixture.profiles.defaultProfile,
     workspace: {
       lifecycle: fixture.lifecycle.effect,
       attachment: fixture.attachment.effect,

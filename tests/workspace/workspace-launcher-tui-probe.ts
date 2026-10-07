@@ -1,3 +1,4 @@
+import { installProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import {
@@ -58,6 +59,7 @@ try {
   mkdirSync(repo)
   mkdirSync(dataHome)
   mkdirSync(join(home, '.agents', 'skills'), { recursive: true })
+  const profiles = installProfileFixture(join(sandbox, 'profiles'))
   git(['init', '--quiet', '-b', 'main'], repo)
   git(['config', 'user.name', 'Launcher TUI Probe'], repo)
   git(['config', 'user.email', 'launcher-tui@example.invalid'], repo)
@@ -84,7 +86,7 @@ try {
   await lifecycle.recordTarget(taskId, { kind: 'local', ref: 'refs/heads/main' })
   if (removeInstallation) {
     const source = fileURLToPath(new URL('../../', import.meta.url))
-    for (const path of ['src', 'tests', 'profiles', 'package.json'])
+    for (const path of ['src', 'tests', 'package.json'])
       cpSync(join(source, path), join(worktree, path), { recursive: true })
     symlinkSync(join(source, 'node_modules'), join(worktree, 'node_modules'))
     git(['switch', '--quiet', '-c', 'delivered-installation'], worktree)
@@ -145,7 +147,7 @@ try {
       repo,
       ...(containedHistory ? [] : ['--data-home', dataHome]),
       '--profile',
-      'general',
+      profiles.defaultProfile,
       ...(history === undefined ? [] : ['--resume', history.path]),
     ],
     {

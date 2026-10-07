@@ -216,7 +216,7 @@ try {
         dataHome,
         cwd: grant.cwd,
         sessionId,
-        profile: 'general',
+        profile: 'fixture',
         workspace: {
           lifecycle: authority.effect,
           attachment: attachment.effect,
@@ -711,7 +711,7 @@ try {
             dataHome,
             cwd: grant.cwd,
             sessionId,
-            profile: 'general',
+            profile: 'fixture',
             workspace: {
               lifecycle: authority.effect,
               attachment: lossyAttachment,
@@ -761,7 +761,7 @@ try {
             dataHome,
             cwd: grant.cwd,
             sessionId,
-            profile: 'general',
+            profile: 'fixture',
             workspace: {
               lifecycle: authority.effect,
               attachment: flaky,
@@ -802,7 +802,7 @@ try {
             dataHome,
             cwd: grant.cwd,
             sessionId,
-            profile: 'general',
+            profile: 'fixture',
             workspace: {
               lifecycle: authority.effect,
               attachment: lockingAttachment,

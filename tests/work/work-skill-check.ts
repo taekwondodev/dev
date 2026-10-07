@@ -72,13 +72,13 @@ try {
   )
   writeFileSync(join(fixture.agentDir, 'prompts', 'tpl.md'), 'TEMPLATE-BODY $ARGUMENTS\n')
 
-  const general = fixture.openOwner('general')
+  const base = fixture.openOwner()
   try {
     await Promise.all([
       claim(
         'a leading skill invocation is expanded once into the first user message with its arguments, and the attempt records only the invoked skill',
         async () => {
-          const { view, text } = await general.run({
+          const { view, text } = await base.run({
             taskId: 'native',
             prompt: '/skill:alpha   Do the ALPHA-ASSIGNMENT now.',
           })
@@ -92,7 +92,7 @@ try {
         }
       ),
       claim('a plain prompt reaches the model unchanged and records no skill', async () => {
-        const { view, text } = await general.run({
+        const { view, text } = await base.run({
           taskId: 'plain',
           prompt: 'Plain PLAIN-ASSIGNMENT without a skill.',
         })
@@ -102,14 +102,14 @@ try {
         assert.equal(view.resources?.invokedSkill, undefined)
       }),
       claim('a hidden skill is explicitly invocable', async () => {
-        const { view, text } = await general.run({ taskId: 'hidden', prompt: '/skill:hidden go' })
+        const { view, text } = await base.run({ taskId: 'hidden', prompt: '/skill:hidden go' })
         assertStatus(view, 'completed')
         assert.equal(count(text, 'HIDDEN-BODY'), 1)
       }),
       claim(
         'a child reads a second skill file, and the invocation record does not claim that read',
         async () => {
-          const { view, text } = await general.run({
+          const { view, text } = await base.run({
             taskId: 'second',
             prompt: `/skill:alpha read another skill\n${script([[toolCall('read-beta', 'read', { path: beta })]])}`,
           })
@@ -122,9 +122,9 @@ try {
         'another command, a prompt template and a colliding extension command execute nothing',
         async () => {
           const [command, template, collision] = await Promise.all([
-            general.run({ taskId: 'command', access: 'write', prompt: '/marker PLAIN-COMMAND' }),
-            general.run({ taskId: 'template', access: 'write', prompt: '/tpl TEMPLATE-ARGUMENT' }),
-            general.run({ taskId: 'collision', access: 'write', prompt: '/skill:collide run' }),
+            base.run({ taskId: 'command', access: 'write', prompt: '/marker PLAIN-COMMAND' }),
+            base.run({ taskId: 'template', access: 'write', prompt: '/tpl TEMPLATE-ARGUMENT' }),
+            base.run({ taskId: 'collision', access: 'write', prompt: '/skill:collide run' }),
           ])
           assertStatus(command.view, 'completed')
           assert.ok(
@@ -144,7 +144,7 @@ try {
       claim(
         'a read-only child completes a turn on a model registered by a global extension provider, and that extension cannot add a tool to the allowlist',
         async () => {
-          const { view, text } = await general.run({
+          const { view, text } = await base.run({
             taskId: 'extension-model',
             model: 'ext-fixture/ext-model',
             prompt: 'Review with the extension model.',
@@ -158,26 +158,26 @@ try {
           assert.deepEqual(view.resources?.tools.toSorted(), READ_ONLY_CHILD_TOOLS.toSorted())
         }
       ),
-      claim('the general catalog does not contain an Apple skill', async () => {
-        const { view } = await general.run({
-          taskId: 'general-apple',
-          prompt: '/skill:swiftui-pro x',
+      claim('the default catalog does not contain the skill of another profile', async () => {
+        const { view } = await base.run({
+          taskId: 'base-stack',
+          prompt: `/skill:${fixture.profiles.skill} x`,
         })
         assert.equal(view.status, 'failed')
-        assert.match(view.error ?? '', /Skill "swiftui-pro" is not in this child's catalog/)
+        assert.match(view.error ?? '', /Skill "stack-only" is not in this child's catalog/)
         assert.ok(!fixture.modelCalls().includes(view.id))
       }),
     ])
     await claim(
       'an unknown skill and a skill unreadable when the catalog loads fail the attempt before any model request',
       async () => {
-        const unknown = await general.run({ taskId: 'unknown', prompt: '/skill:missing do it' })
+        const unknown = await base.run({ taskId: 'unknown', prompt: '/skill:missing do it' })
         assert.equal(unknown.view.status, 'failed')
         assert.match(unknown.view.error ?? '', /Skill "missing" is not in this child's catalog/)
         const locked = fixture.writeSkill('locked', 'LOCKED-BODY')
         chmodSync(locked, 0o000)
         try {
-          const unreadable = await general.run({ taskId: 'unreadable', prompt: '/skill:locked do' })
+          const unreadable = await base.run({ taskId: 'unreadable', prompt: '/skill:locked do' })
           assert.equal(unreadable.view.status, 'failed')
           assert.match(unreadable.view.error ?? '', /Skill "locked" is not in this child's catalog/)
           assert.equal(count(unreadable.text, 'LOCKED-BODY'), 0)
@@ -190,23 +190,42 @@ try {
       }
     )
   } finally {
-    await general.close()
+    await base.close()
   }
 
-  const apple = fixture.openOwner('apple')
+  const stack = fixture.openOwner(fixture.profiles.skillProfile)
   try {
-    await claim('the apple catalog adds the Apple skills to the shared ones', async () => {
-      const [swift, shared] = await Promise.all([
-        apple.run({ taskId: 'apple-swift', prompt: '/skill:swiftui-pro x' }),
-        apple.run({ taskId: 'apple-shared', prompt: '/skill:alpha x' }),
-      ])
-      assertStatus(swift.view, 'completed')
-      assert.equal(count(swift.text, '<skill name="swiftui-pro"'), 1)
-      assertStatus(shared.view, 'completed')
-      assert.equal(count(shared.text, 'ALPHA-BODY'), 1)
-    })
+    await claim(
+      'a profile with its own skills puts them before the shared ones, loading them from the installation profiles rather than from the project',
+      async () => {
+        const [own, shared] = await Promise.all([
+          stack.run({ taskId: 'stack-own', prompt: `/skill:${fixture.profiles.skill} x` }),
+          stack.run({ taskId: 'stack-shared', prompt: '/skill:alpha x' }),
+        ])
+        assertStatus(own.view, 'completed')
+        assert.equal(count(own.text, '<skill name="stack-only"'), 1)
+        assert.equal(count(own.text, 'STACK-ONLY-BODY'), 1)
+        assert.deepEqual(own.view.resources?.invokedSkill, {
+          name: fixture.profiles.skill,
+          path: join(fixture.profiles.skillPath, 'SKILL.md'),
+        })
+        assert.deepEqual(
+          own.view.resources?.resources.map(({ source, path }) => [source, path]),
+          [
+            [fixture.profiles.skillProfile, fixture.profiles.skillPath],
+            [fixture.profiles.skillProfile, fixture.skills],
+          ]
+        )
+        assert.ok(
+          !existsSync(join(fixture.repository, 'profiles')),
+          'no profile copy in the project'
+        )
+        assertStatus(shared.view, 'completed')
+        assert.equal(count(shared.text, 'ALPHA-BODY'), 1)
+      }
+    )
   } finally {
-    await apple.close()
+    await stack.close()
   }
 
   console.log(

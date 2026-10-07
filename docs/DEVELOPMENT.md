@@ -29,7 +29,7 @@ Forking before the first user message can fail after a workspace rebind (#98); w
 
 [ARCHITECTURE](ARCHITECTURE.md#components) maps source areas to their behavior docs. [CONTEXT](../CONTEXT.md) owns vocabulary; [AGENTS.md](../AGENTS.md#conditional-references) owns mandatory reading triggers. Portable guidance belongs in profiles or the external shared library, not in this repository's entry point.
 
-Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; the optional `startWorker` argument of `makeWorkspaceLifecycle`, which production never passes, lets checks start the authority worker themselves to exercise its crash, lost-acknowledgment and device-identity contracts and to inject faults into release and sweep. Production loads no test entry or test-selection environment variable.
+Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. Checks that load a profile write a disposable manifest with `tests/profile-fixture.ts` and select it through `DEV_PROFILES`; they never read the installation's personal `profiles/`, so they also run from the upgrade worktree, which has none. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; the optional `startWorker` argument of `makeWorkspaceLifecycle`, which production never passes, lets checks start the authority worker themselves to exercise its crash, lost-acknowledgment and device-identity contracts and to inject faults into release and sweep. Production loads no test entry or test-selection environment variable.
 
 ## Verification
 
@@ -39,7 +39,7 @@ Choose checks for the affected boundary. The commands and their full composition
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                                                         |
 | `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                           |
-| `npm run smoke`            | Launcher diagnostics on temporary private storage, without a model response                                                         |
+| `npm run smoke`            | Launcher diagnostics on temporary private storage and a disposable profile manifest, without a model response                       |
 | `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                   |
 | `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                               |
 | `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                       |

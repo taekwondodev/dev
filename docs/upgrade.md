@@ -12,7 +12,7 @@ Close every dev TUI: both commands take exclusive installation admission. `gh` m
 npm run upgrade
 ```
 
-The command never changes the installation checkout or its `node_modules`, so dev keeps working while an upgrade is red. It works in a private worktree at `.dev/upgrade/worktree`, branched from `origin/main`, and installs the Pi candidate beside it in `.dev/upgrade/pi`.
+The command never changes the installation checkout, its `node_modules` or its personal `profiles/`, so dev keeps working while an upgrade is red. It works in a private worktree at `.dev/upgrade/worktree`, branched from `origin/main`, and installs the Pi candidate beside it in `.dev/upgrade/pi`. That worktree holds no profiles; the checks bring disposable ones.
 
 It picks targets that favor upgrading:
 

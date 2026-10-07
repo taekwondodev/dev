@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`dev` opens Pi in the project being worked on, with dev's extensions, shared skills and one profile. One installation serves every repository. The installation checkout holds code and dispatch policy; the working project supplies its files and instructions; private state stays out of the project and Git.
+`dev` opens Pi in the project being worked on, with dev's extensions, shared skills and one profile. One installation serves every repository. The installation checkout holds code, dispatch policy and the owner's untracked profiles; the working project supplies its files and instructions; private state stays out of the project and Git.
 
 ## Use
 
@@ -11,8 +11,8 @@ From any project:
 ```bash
 dev                               # open here with the saved or default profile
 dev --cwd PATH                    # use PATH as the working project
-dev --profile general|apple       # select a profile for this session
-dev --save-profile general|apple  # save this repository's profile preference
+dev --profile NAME                # select a profile of profiles/manifest.json for this session
+dev --save-profile NAME           # save this repository's profile preference
 dev --continue                    # resume the newest session for this launch directory
 dev --resume PATH.jsonl           # resume a specific Pi session
 dev --data-home PATH              # select private storage, also DEV_DATA_HOME
@@ -59,14 +59,28 @@ Node stores the cache under the operating system's temporary directory (`node-co
 
 ### Profiles and resources
 
-For a new conversation, `--profile` wins over the repository preference, which wins over `general`. A resumed conversation uses its recorded profile; if none was recorded, `--profile` is required.
+Profiles are personal configuration. The installation's `profiles/` directory is ignored by Git and holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Dev knows the manifest format, not profile or skill names:
 
-- `general` uses `profiles/general/SOUL.md` and the shared skills at `~/.agents/skills`.
-- `apple` uses `profiles/apple/SOUL.md` and puts its four Apple skills before the shared skills.
-- Project `.pi/skills` and `.agents/skills` directories, from the launch directory to the Git root, precede profile paths. Duplicate real paths are dropped.
-- SOUL guidance is appended to Pi's system prompt. Native project-instruction discovery is unchanged: dev's own `AGENTS.md` loads only when dev is the working project.
+```json
+{
+  "default": "general",
+  "profiles": {
+    "general": { "soul": "general/SOUL.md", "skills": [] },
+    "apple": {
+      "soul": "apple/SOUL.md",
+      "skills": ["apple/skills/swiftui-pro", "apple/skills/swift-concurrency-pro"]
+    }
+  }
+}
+```
 
-Missing required resources or Pi resource/extension errors stop startup and name the problem. Profiles share private state and sessions; they are guidance selection, not isolation.
+- `default` names the profile of a new conversation when neither `--profile` nor a saved preference selects one. It must be one of `profiles`.
+- Each profile names its `soul`, a Markdown file appended to Pi's system prompt, and its ordered `skills` directories. Paths are relative to `profiles/` and may not use `..`; a symbolic link placed there is followed as the owner's choice, since everything under `profiles/` is trusted personal configuration ([SECURITY](../SECURITY.md#trusted-base)).
+- For a new conversation, `--profile` wins over the repository preference, which wins over the configured default. A resumed conversation uses its recorded profile; if none was recorded, `--profile` is required.
+- Project `.pi/skills` and `.agents/skills` directories, from the launch directory to the Git root, come first; then the profile's skill directories in manifest order; then the shared skills at `~/.agents/skills`. Duplicate real paths are dropped. Native project-instruction discovery is unchanged: dev's own `AGENTS.md` loads only when dev is the working project.
+- The manifest is read from the installation once per launch and once per child start, whatever the working project, managed worktree or data home. `DEV_PROFILES` selects another profiles directory; dev's checks use it for disposable fixtures.
+
+A missing, unreadable or invalid manifest, a default that is not a defined profile, an unknown profile name, a missing SOUL or skill directory of the selected profile, or a Pi resource/extension error stops startup and names the file or resource; no other profile is substituted. Resources of unselected profiles are neither checked nor loaded. Profiles share private state and sessions; they are guidance selection, not isolation.
 
 ### Resume and quit
 
@@ -80,7 +94,7 @@ Independent repositories can share a data home. [Workspace](workspace.md) govern
 
 | Location                                                 | Content                                                                                                                       |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Installation checkout                                    | Code, profiles and version-controlled `config/crew-dispatch.json`                                                             |
+| Installation checkout                                    | Code, version-controlled `config/crew-dispatch.json` and the ignored personal `profiles/` directory                           |
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
@@ -88,6 +102,6 @@ Independent repositories can share a data home. [Workspace](workspace.md) govern
 | `~/.pi/agent/auth.json`                                  | Pi authentication shared by the lead and children                                                                             |
 | `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates and managed worktrees                                                                   |
 
-`--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, authentication, installation coordination and workspace authority keep their own locations. `/login` writes Pi's global auth file; dev never copies credentials. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
+`--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, profiles, authentication, installation coordination and workspace authority keep their own locations. `/login` writes Pi's global auth file; dev never copies credentials. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
 
 A conversation retains its selected profile. If stored dev metadata is invalid, startup refuses it rather than resetting it. A stored profile preference that is not a valid preference record stops launch with exit 1 and an error naming the file; delete that file under `<data-home>/preferences/` ([discard obsolete state](DEVELOPMENT.md#discard-obsolete-state)) and save the preference again. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).

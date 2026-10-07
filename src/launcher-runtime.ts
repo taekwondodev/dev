@@ -18,9 +18,9 @@ import {
 } from './preferences.ts'
 import {
   composeResources,
-  getProfile,
+  loadCatalog,
+  manifestPath,
   resourceSummary,
-  profileNames,
   type ComposedResources,
   type Profile,
 } from './profiles.ts'
@@ -171,10 +171,10 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
     catch: error => toLauncherError(error, 'Cannot parse launcher arguments'),
   })
 
-const printHelp = (): Effect.Effect<void> =>
+const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile (${profileNames().join(' | ')})\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     for review-required workspaces only: confirm interactively, then one attempt per workspace\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and tasks that only a release clears are offered for release.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     for review-required workspaces only: confirm interactively, then one attempt per workspace\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and tasks that only a release clears are offered for release.\n`
     )
   })
 
@@ -663,7 +663,7 @@ const run = Effect.fnUntraced(function* (
   dependencies: LauncherDependencies
 ) {
   const options = yield* parseArgs(argv)
-  if (options.help) return yield* printHelp()
+  if (options.help) return yield* printHelp(yield* manifestPath)
 
   if (options.workspaceArgs !== undefined) {
     const command = yield* parseWorkspaceCommand(options.workspaceArgs)
@@ -707,16 +707,20 @@ const run = Effect.fnUntraced(function* (
 
   const launchCwd = options.cwd
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
+  const catalog = yield* loadCatalog.pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot load profiles'))
+  )
   const lease = yield* acquireRuntime(dataHome, dependencies.coordination)
   const selection = yield* resolveSelection({
     cwd: launchCwd,
     dataHome,
+    defaultProfile: catalog.defaultProfile,
     explicit: options.profile,
   }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve profile selection')))
   if (options.saveProfile !== undefined) {
-    yield* getProfile(options.saveProfile).pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference'))
-    )
+    yield* catalog
+      .load(options.saveProfile)
+      .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference')))
     const path = yield* saveSelection({
       cwd: options.cwd,
       dataHome,
@@ -767,9 +771,9 @@ const run = Effect.fnUntraced(function* (
         'This conversation has no dev profile metadata. Resume it with an explicit --profile choice.',
     })
   if (options.diagnostics) {
-    const diagnosticProfile = yield* getProfile(recorded ?? selection.profile).pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile'))
-    )
+    const diagnosticProfile = yield* catalog
+      .load(recorded ?? selection.profile)
+      .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
     const diagnosticResources = yield* composeResources({
       cwd: launchCwd,
       gitRoot: yield* gitRoot(launchCwd),
@@ -836,15 +840,20 @@ const run = Effect.fnUntraced(function* (
   const effectiveSelection =
     resolve(effectiveCwd) === resolve(launchCwd)
       ? selection
-      : yield* resolveSelection({ cwd: effectiveCwd, dataHome, explicit: options.profile }).pipe(
+      : yield* resolveSelection({
+          cwd: effectiveCwd,
+          dataHome,
+          defaultProfile: catalog.defaultProfile,
+          explicit: options.profile,
+        }).pipe(
           Effect.mapError(error =>
             toLauncherError(error, 'Cannot resolve profile selection for authorized cwd')
           )
         )
   const selectedName = recorded ?? effectiveSelection.profile
-  const profile = yield* getProfile(selectedName).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile'))
-  )
+  const profile = yield* catalog
+    .load(selectedName)
+    .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
   const effectiveRoot = yield* gitRoot(effectiveCwd)
   const resources = yield* composeResources({
     cwd: effectiveCwd,
