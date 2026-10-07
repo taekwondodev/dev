@@ -30,6 +30,12 @@ const agentTitles = (snapshot: WorkSnapshot, agents: readonly AttemptView[]): st
   )
 }
 
+export const activeWorkChildren = (snapshot: WorkSnapshot): readonly AttemptView[] =>
+  snapshot.records.filter(
+    record =>
+      record.kind === 'agent' && (record.status === 'running' || record.status === 'waiting')
+  )
+
 export const workStatusText = (
   snapshot: WorkSnapshot,
   reactivationSuspended: boolean
@@ -47,9 +53,7 @@ export const workStatusText = (
     if (metered.length < children.length)
       usage += ` (${children.length - metered.length} unavailable)`
   }
-  const agents = children.filter(
-    record => record.status === 'running' || record.status === 'waiting'
-  )
+  const agents = activeWorkChildren(snapshot)
   const titles = agentTitles(snapshot, agents)
   const models = agents
     .map((record, index) => {

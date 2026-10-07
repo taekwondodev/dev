@@ -70,6 +70,8 @@ Subscription exhaustion from any attempt, including a leaf, blocks new agents an
 
 The `dev/work` status groups attempt states, active children and child usage with `│`, and items within a group with `·`, so a footer can wrap it at separators ([ADR 0006](adr/0006-global-visual-layer.md)). An active child is titled by the skill it invoked or, without one, by its role: `coordinator`, `reader` or `writer`; the role also covers the moment before the child reports its resources. A leaf is titled `coordinator>leaf` from both titles, and children sharing a title add their task, as in `arena (docs)`. Each shows its model without the provider and its context pressure. Inspection includes parent, invoked skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator, with unavailable values distinct from zero. A deferred workspace gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains its retry boundary.
 
+For global presentation extensions, work emits `dev/work-activity` on Pi's event bus with `{ sessionId, active }` alongside each interactive status update, including session startup and changes while the lead is idle. `active` means at least one delegated child, coordinator or leaf is `running` or `waiting`; local commands and settled attempts do not count. Subscribers filter by session ID and reset on session shutdown. The title extension keeps its spinner while the lead or a child is active, independent of the footer.
+
 ## State
 
 | Path                                   | Content                                                                           |

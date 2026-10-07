@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { type AttemptView, decodeAttemptRecord, type WorkSnapshot } from '../../src/work-domain.ts'
-import { workStatusText } from '../../src/work-status.ts'
+import { activeWorkChildren, workStatusText } from '../../src/work-status.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
@@ -76,6 +76,36 @@ const snapshot = (records: readonly AttemptView[], agentsBlocked = false): WorkS
   unavailable: [],
   agentsBlocked,
 })
+
+await claim(
+  'child activity includes running and waiting leaves but not commands or settled children',
+  () => {
+    const running = child({ index: 1, taskId: 'running' })
+    const waiting = child({ index: 2, taskId: 'waiting', status: 'waiting', parent: 1 })
+    const completed = child({ index: 3, taskId: 'done', status: 'completed' })
+    const command = decodeAttemptRecord({
+      revision: 1,
+      id: attemptId(4),
+      startedAt: 1,
+      kind: 'process',
+      cwd: '/repo',
+      controllerPid: 1,
+      owner: {
+        sessionId: 'session',
+        taskId: 'command',
+        attemptId: attemptId(4),
+        generation: 'generation',
+      },
+      status: 'running',
+    })
+    assert.deepEqual(activeWorkChildren(snapshot([running, waiting, completed, command])), [
+      running,
+      waiting,
+    ])
+    assert.deepEqual(activeWorkChildren(snapshot([completed, command])), [])
+    assert.deepEqual(activeWorkChildren(snapshot([])), [])
+  }
+)
 
 await claim('an active child is titled by the skill it invoked', () => {
   const text = workStatusText(
