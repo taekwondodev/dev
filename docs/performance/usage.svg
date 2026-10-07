@@ -1,26 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="300" viewBox="0 0 1080 300" role="img">
-  <title>dev in real use: 10 lead and 3 child sessions, 2026-09-29 to 2026-10-01</title>
+  <title>dev in real use: 70 lead and 141 child sessions, 2026-10-03 to 2026-10-07</title>
   <rect width="1080" height="300" rx="28" fill="#111111"/>
   <text x="540" y="48" text-anchor="middle" fill="#F5F5F5" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="20">dev in real use</text>
-  <text x="540" y="74" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">10 lead and 3 child sessions, 2026-09-29 to 2026-10-01</text>
+  <text x="540" y="74" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">70 lead and 141 child sessions, 2026-10-03 to 2026-10-07</text>
   <rect x="42" y="100" width="180" height="160" rx="20" fill="#1C1C1E"/>
   <text x="132" y="144" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">Cache-read share</text>
-  <text x="132" y="192" text-anchor="middle" fill="#7DFFB3" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">96.0%</text>
+  <text x="132" y="192" text-anchor="middle" fill="#7DFFB3" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">98.0%</text>
   <text x="132" y="222" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="12">lead prompt tokens</text>
   <rect x="246" y="100" width="180" height="160" rx="20" fill="#1C1C1E"/>
   <text x="336" y="144" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">Tool calls success</text>
-  <text x="336" y="192" text-anchor="middle" fill="#64D2FF" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">95.4%</text>
-  <text x="336" y="222" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="12">4.6% with error</text>
+  <text x="336" y="192" text-anchor="middle" fill="#64D2FF" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">95.3%</text>
+  <text x="336" y="222" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="12">4.7% with error</text>
   <rect x="450" y="100" width="180" height="160" rx="20" fill="#1C1C1E"/>
   <text x="540" y="144" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">Children</text>
-  <text x="540" y="192" text-anchor="middle" fill="#FFD60A" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">0.30</text>
+  <text x="540" y="192" text-anchor="middle" fill="#FFD60A" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">2.00</text>
   <text x="540" y="222" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="12">mean per lead session</text>
   <rect x="654" y="100" width="180" height="160" rx="20" fill="#1C1C1E"/>
   <text x="744" y="144" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">Model latency</text>
-  <text x="744" y="192" text-anchor="middle" fill="#FF9F0A" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">8.6 s</text>
+  <text x="744" y="192" text-anchor="middle" fill="#FF9F0A" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">8.9 s</text>
   <text x="744" y="222" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="12">p50 per lead request</text>
   <rect x="858" y="100" width="180" height="160" rx="20" fill="#1C1C1E"/>
   <text x="948" y="144" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="13">Tool result size</text>
-  <text x="948" y="192" text-anchor="middle" fill="#BF5AF2" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">4.4 KiB</text>
+  <text x="948" y="192" text-anchor="middle" fill="#BF5AF2" font-family="SF Pro Display, Helvetica Neue, sans-serif" font-size="28">2.9 KiB</text>
   <text x="948" y="222" text-anchor="middle" fill="#8E8E93" font-family="SF Pro Text, Helvetica Neue, sans-serif" font-size="12">mean per lead result</text>
 </svg>

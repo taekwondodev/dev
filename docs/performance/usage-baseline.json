@@ -5,38 +5,38 @@
   },
   "undecodableLinesInDataHome": 0,
   "sample": {
-    "leadSessions": 10,
-    "childSessions": 3,
-    "requests": 339,
-    "toolCalls": 501,
-    "firstDate": "2026-09-29",
-    "lastDate": "2026-10-01"
+    "leadSessions": 70,
+    "childSessions": 141,
+    "requests": 6656,
+    "toolCalls": 8677,
+    "firstDate": "2026-10-03",
+    "lastDate": "2026-10-07"
   },
   "usage": {
     "total": {
-      "entries": 339,
-      "unknown": 0,
-      "input": 1017957,
-      "output": 96483,
-      "reasoning": 38317,
-      "reasoningEntries": 334,
-      "cacheRead": 20888448,
-      "cacheWrite": 0,
-      "uncached": 1017957,
-      "cacheReadShare": 0.953531535639919
+      "entries": 6669,
+      "unknown": 6,
+      "input": 14745698,
+      "output": 3943469,
+      "reasoning": 1656097,
+      "reasoningEntries": 6642,
+      "cacheRead": 761050041,
+      "cacheWrite": 7490852,
+      "uncached": 22236550,
+      "cacheReadShare": 0.9716112209049675
     },
     "bySource": {
       "assistant": {
-        "entries": 339,
+        "entries": 6656,
         "unknown": 0,
-        "input": 1017957,
-        "output": 96483,
-        "reasoning": 38317,
-        "reasoningEntries": 334,
-        "cacheRead": 20888448,
-        "cacheWrite": 0,
-        "uncached": 1017957,
-        "cacheReadShare": 0.953531535639919
+        "input": 14215793,
+        "output": 3925756,
+        "reasoning": 1655496,
+        "reasoningEntries": 6629,
+        "cacheRead": 761050041,
+        "cacheWrite": 7490852,
+        "uncached": 21706645,
+        "cacheReadShare": 0.9722689752917677
       },
       "tool": {
         "entries": 0,
@@ -51,28 +51,28 @@
         "cacheReadShare": null
       },
       "standalone": {
-        "entries": 0,
+        "entries": 12,
         "unknown": 0,
-        "input": 0,
-        "output": 0,
-        "reasoning": 0,
-        "reasoningEntries": 0,
+        "input": 465675,
+        "output": 14768,
+        "reasoning": 507,
+        "reasoningEntries": 12,
         "cacheRead": 0,
         "cacheWrite": 0,
-        "uncached": 0,
-        "cacheReadShare": null
+        "uncached": 465675,
+        "cacheReadShare": 0
       },
       "compaction": {
-        "entries": 0,
-        "unknown": 0,
-        "input": 0,
-        "output": 0,
-        "reasoning": 0,
-        "reasoningEntries": 0,
+        "entries": 1,
+        "unknown": 6,
+        "input": 64230,
+        "output": 2945,
+        "reasoning": 94,
+        "reasoningEntries": 1,
         "cacheRead": 0,
         "cacheWrite": 0,
-        "uncached": 0,
-        "cacheReadShare": null
+        "uncached": 64230,
+        "cacheReadShare": 0
       },
       "branch-summary": {
         "entries": 0,
@@ -89,441 +89,534 @@
     },
     "requests": {
       "first": {
-        "entries": 13,
+        "entries": 211,
         "unknown": 0,
-        "input": 113919,
-        "output": 1138,
-        "reasoning": 49,
-        "reasoningEntries": 13,
-        "cacheRead": 9728,
-        "cacheWrite": 0,
-        "uncached": 113919,
-        "cacheReadShare": 0.07867558452691938
+        "input": 1747724,
+        "output": 22479,
+        "reasoning": 1988,
+        "reasoningEntries": 206,
+        "cacheRead": 307633,
+        "cacheWrite": 355078,
+        "uncached": 2102802,
+        "cacheReadShare": 0.12762551157778576
       },
       "later": {
-        "entries": 326,
+        "entries": 6445,
         "unknown": 0,
-        "input": 904038,
-        "output": 95345,
-        "reasoning": 38268,
-        "reasoningEntries": 321,
-        "cacheRead": 20878720,
-        "cacheWrite": 0,
-        "uncached": 904038,
-        "cacheReadShare": 0.9584975419549719
+        "input": 12468069,
+        "output": 3903277,
+        "reasoning": 1653508,
+        "reasoningEntries": 6423,
+        "cacheRead": 760742408,
+        "cacheWrite": 7135774,
+        "uncached": 19603843,
+        "cacheReadShare": 0.9748780198855598
       }
     },
     "byRole": {
       "lead": {
-        "entries": 308,
-        "unknown": 0,
-        "input": 852244,
-        "output": 89486,
-        "reasoning": 35695,
-        "reasoningEntries": 303,
-        "cacheRead": 20228480,
-        "cacheWrite": 0,
-        "uncached": 852244,
-        "cacheReadShare": 0.9595723562435522
+        "entries": 5327,
+        "unknown": 6,
+        "input": 7664501,
+        "output": 3598975,
+        "reasoning": 1569366,
+        "reasoningEntries": 5304,
+        "cacheRead": 719784629,
+        "cacheWrite": 7213931,
+        "uncached": 14878432,
+        "cacheReadShare": 0.9797479514217743
       },
       "coordinator": {
-        "entries": 0,
+        "entries": 23,
         "unknown": 0,
-        "input": 0,
-        "output": 0,
-        "reasoning": 0,
-        "reasoningEntries": 0,
-        "cacheRead": 0,
+        "input": 60914,
+        "output": 6201,
+        "reasoning": 358,
+        "reasoningEntries": 23,
+        "cacheRead": 728064,
         "cacheWrite": 0,
-        "uncached": 0,
-        "cacheReadShare": null
+        "uncached": 60914,
+        "cacheReadShare": 0.9227937914618659
       },
       "leaf": {
-        "entries": 0,
+        "entries": 13,
         "unknown": 0,
-        "input": 0,
-        "output": 0,
-        "reasoning": 0,
-        "reasoningEntries": 0,
-        "cacheRead": 0,
+        "input": 117154,
+        "output": 6438,
+        "reasoning": 255,
+        "reasoningEntries": 13,
+        "cacheRead": 279552,
         "cacheWrite": 0,
-        "uncached": 0,
-        "cacheReadShare": null
+        "uncached": 117154,
+        "cacheReadShare": 0.7046830650406094
       },
       "child": {
-        "entries": 31,
+        "entries": 1296,
         "unknown": 0,
-        "input": 165713,
-        "output": 6997,
-        "reasoning": 2622,
-        "reasoningEntries": 31,
-        "cacheRead": 659968,
-        "cacheWrite": 0,
-        "uncached": 165713,
-        "cacheReadShare": 0.799301425126653
+        "input": 6848957,
+        "output": 330811,
+        "reasoning": 85897,
+        "reasoningEntries": 1292,
+        "cacheRead": 40007428,
+        "cacheWrite": 276921,
+        "uncached": 7125878,
+        "cacheReadShare": 0.8488143819149881
       },
       "unattributed": {
-        "entries": 0,
+        "entries": 10,
         "unknown": 0,
-        "input": 0,
-        "output": 0,
-        "reasoning": 0,
-        "reasoningEntries": 0,
-        "cacheRead": 0,
+        "input": 54172,
+        "output": 1044,
+        "reasoning": 221,
+        "reasoningEntries": 10,
+        "cacheRead": 250368,
         "cacheWrite": 0,
-        "uncached": 0,
-        "cacheReadShare": null
+        "uncached": 54172,
+        "cacheReadShare": 0.8221186051093452
       }
     },
     "byEffort": [
       {
-        "effort": "xhigh",
-        "tokens": {
-          "entries": 196,
-          "unknown": 0,
-          "input": 572913,
-          "output": 74797,
-          "reasoning": 32906,
-          "reasoningEntries": 191,
-          "cacheRead": 18243584,
-          "cacheWrite": 0,
-          "uncached": 572913,
-          "cacheReadShare": 0.9695526218296636
-        }
-      },
-      {
         "effort": "medium",
         "tokens": {
-          "entries": 134,
+          "entries": 3565,
           "unknown": 0,
-          "input": 343518,
-          "output": 16996,
-          "reasoning": 3040,
-          "reasoningEntries": 134,
-          "cacheRead": 2491776,
-          "cacheWrite": 0,
-          "uncached": 343518,
-          "cacheReadShare": 0.8788421941428296
+          "input": 11714077,
+          "output": 1197319,
+          "reasoning": 546266,
+          "reasoningEntries": 3550,
+          "cacheRead": 242124674,
+          "cacheWrite": 712464,
+          "uncached": 12426541,
+          "cacheReadShare": 0.9511825508277382
         }
       },
       {
         "effort": "high",
         "tokens": {
-          "entries": 9,
+          "entries": 2693,
           "unknown": 0,
-          "input": 101526,
-          "output": 4690,
-          "reasoning": 2371,
-          "reasoningEntries": 9,
-          "cacheRead": 153088,
+          "input": 1895363,
+          "output": 2267702,
+          "reasoning": 888314,
+          "reasoningEntries": 2682,
+          "cacheRead": 443886204,
+          "cacheWrite": 6001016,
+          "uncached": 7896379,
+          "cacheReadShare": 0.9825217277134387
+        }
+      },
+      {
+        "effort": "xhigh",
+        "tokens": {
+          "entries": 398,
+          "unknown": 0,
+          "input": 606353,
+          "output": 460735,
+          "reasoning": 220916,
+          "reasoningEntries": 397,
+          "cacheRead": 75039163,
+          "cacheWrite": 777372,
+          "uncached": 1383725,
+          "cacheReadShare": 0.9818938404944865
+        }
+      },
+      {
+        "effort": "unrecorded",
+        "tokens": {
+          "entries": 13,
+          "unknown": 6,
+          "input": 529905,
+          "output": 17713,
+          "reasoning": 601,
+          "reasoningEntries": 13,
+          "cacheRead": 0,
           "cacheWrite": 0,
-          "uncached": 101526,
-          "cacheReadShare": 0.6012552334121455
+          "uncached": 529905,
+          "cacheReadShare": 0
         }
       }
     ]
   },
   "attribution": {
-    "entries": 339,
-    "modelUnrecorded": 0,
-    "effortUnrecorded": 0,
-    "childSessions": 3,
-    "unattributedChildSessions": 0
+    "entries": 6675,
+    "modelUnrecorded": 7,
+    "effortUnrecorded": 19,
+    "childSessions": 141,
+    "unattributedChildSessions": 1
   },
   "tools": {
-    "invocations": 501,
-    "matched": 498,
-    "unmatchedCalls": 3,
-    "interruptedUnmatched": 3,
+    "invocations": 8677,
+    "matched": 8675,
+    "unmatchedCalls": 2,
+    "interruptedUnmatched": 2,
     "unmatchedResults": 0,
     "outcomes": {
-      "returned": 475,
-      "invocation": 5,
-      "execution": 12,
-      "blocked": 6,
-      "cancelled": 0,
-      "unclassified": 0,
-      "unmatched": 3
+      "returned": 8269,
+      "invocation": 103,
+      "execution": 226,
+      "blocked": 49,
+      "cancelled": 4,
+      "unclassified": 24,
+      "unmatched": 2
     },
     "candidateSequences": {
-      "repeatedErrors": 2,
-      "recoveries": 15
+      "repeatedErrors": 46,
+      "recoveries": 287
     },
     "byTool": [
       {
         "tool": "read",
-        "invocations": 253,
+        "invocations": 3304,
         "outcomes": {
-          "returned": 244,
-          "invocation": 4,
+          "returned": 3247,
+          "invocation": 50,
           "execution": 0,
-          "blocked": 2,
+          "blocked": 7,
           "cancelled": 0,
           "unclassified": 0,
-          "unmatched": 3
+          "unmatched": 0
         },
-        "results": 250,
-        "bytes": 1437998,
-        "meanBytes": 5751.992,
-        "medianBytes": 3579,
-        "p90Bytes": 11884,
-        "share": 0.6041180913874822
+        "results": 3304,
+        "bytes": 19518587,
+        "meanBytes": 5907.562651331719,
+        "medianBytes": 4452,
+        "p90Bytes": 12679,
+        "share": 0.5324843176517444
       },
       {
         "tool": "bash",
-        "invocations": 148,
+        "invocations": 3289,
         "outcomes": {
-          "returned": 134,
-          "invocation": 0,
-          "execution": 12,
-          "blocked": 2,
-          "cancelled": 0,
+          "returned": 3020,
+          "invocation": 1,
+          "execution": 226,
+          "blocked": 36,
+          "cancelled": 4,
           "unclassified": 0,
-          "unmatched": 0
+          "unmatched": 2
         },
-        "results": 148,
-        "bytes": 666488,
-        "meanBytes": 4503.2972972972975,
-        "medianBytes": 1176,
-        "p90Bytes": 12079,
-        "share": 0.2799986220374856
+        "results": 3287,
+        "bytes": 9256388,
+        "meanBytes": 2816.0596288408883,
+        "medianBytes": 758,
+        "p90Bytes": 7328,
+        "share": 0.25252245196334117
       },
       {
         "tool": "git_inspect",
-        "invocations": 6,
+        "invocations": 315,
         "outcomes": {
-          "returned": 6,
-          "invocation": 0,
-          "execution": 0,
-          "blocked": 0,
-          "cancelled": 0,
-          "unclassified": 0,
-          "unmatched": 0
-        },
-        "results": 6,
-        "bytes": 116870,
-        "meanBytes": 19478.333333333332,
-        "medianBytes": 2178,
-        "p90Bytes": 53645,
-        "share": 0.04909831678517985
-      },
-      {
-        "tool": "grep",
-        "invocations": 9,
-        "outcomes": {
-          "returned": 9,
-          "invocation": 0,
-          "execution": 0,
-          "blocked": 0,
-          "cancelled": 0,
-          "unclassified": 0,
-          "unmatched": 0
-        },
-        "results": 9,
-        "bytes": 76578,
-        "meanBytes": 8508.666666666666,
-        "medianBytes": 5366,
-        "p90Bytes": 21284,
-        "share": 0.03217122360550614
-      },
-      {
-        "tool": "work",
-        "invocations": 23,
-        "outcomes": {
-          "returned": 22,
+          "returned": 306,
           "invocation": 1,
           "execution": 0,
           "blocked": 0,
           "cancelled": 0,
-          "unclassified": 0,
+          "unclassified": 8,
           "unmatched": 0
         },
-        "results": 23,
-        "bytes": 53775,
-        "meanBytes": 2338.0434782608695,
-        "medianBytes": 1380,
-        "p90Bytes": 6172,
-        "share": 0.022591443356918338
+        "results": 315,
+        "bytes": 5527466,
+        "meanBytes": 17547.51111111111,
+        "medianBytes": 2199,
+        "p90Bytes": 65575,
+        "share": 0.15079416155243291
+      },
+      {
+        "tool": "grep",
+        "invocations": 211,
+        "outcomes": {
+          "returned": 206,
+          "invocation": 3,
+          "execution": 0,
+          "blocked": 0,
+          "cancelled": 0,
+          "unclassified": 2,
+          "unmatched": 0
+        },
+        "results": 211,
+        "bytes": 1315439,
+        "meanBytes": 6234.308056872038,
+        "medianBytes": 2806,
+        "p90Bytes": 16127,
+        "share": 0.0358863394326389
+      },
+      {
+        "tool": "work",
+        "invocations": 447,
+        "outcomes": {
+          "returned": 426,
+          "invocation": 10,
+          "execution": 0,
+          "blocked": 0,
+          "cancelled": 0,
+          "unclassified": 11,
+          "unmatched": 0
+        },
+        "results": 447,
+        "bytes": 841137,
+        "meanBytes": 1881.7382550335572,
+        "medianBytes": 868,
+        "p90Bytes": 4653,
+        "share": 0.022946961350052406
       },
       {
         "tool": "find",
-        "invocations": 6,
+        "invocations": 103,
         "outcomes": {
-          "returned": 6,
-          "invocation": 0,
+          "returned": 99,
+          "invocation": 4,
           "execution": 0,
           "blocked": 0,
           "cancelled": 0,
           "unclassified": 0,
           "unmatched": 0
         },
-        "results": 6,
-        "bytes": 24733,
-        "meanBytes": 4122.166666666667,
-        "medianBytes": 939,
-        "p90Bytes": 12868,
-        "share": 0.010390593557353068
+        "results": 103,
+        "bytes": 105332,
+        "meanBytes": 1022.6407766990292,
+        "medianBytes": 79,
+        "p90Bytes": 1855,
+        "share": 0.002873550126701976
       },
       {
         "tool": "edit",
-        "invocations": 46,
+        "invocations": 704,
         "outcomes": {
-          "returned": 46,
+          "returned": 665,
+          "invocation": 34,
+          "execution": 0,
+          "blocked": 4,
+          "cancelled": 0,
+          "unclassified": 1,
+          "unmatched": 0
+        },
+        "results": 704,
+        "bytes": 64060,
+        "meanBytes": 90.99431818181819,
+        "medianBytes": 66,
+        "p90Bytes": 216,
+        "share": 0.0017476134614032638
+      },
+      {
+        "tool": "write",
+        "invocations": 280,
+        "outcomes": {
+          "returned": 278,
           "invocation": 0,
           "execution": 0,
-          "blocked": 0,
+          "blocked": 2,
           "cancelled": 0,
           "unclassified": 0,
           "unmatched": 0
         },
-        "results": 46,
-        "bytes": 3244,
-        "meanBytes": 70.52173913043478,
-        "medianBytes": 73,
-        "p90Bytes": 85,
-        "share": 0.0013628385355619356
+        "results": 280,
+        "bytes": 23002,
+        "meanBytes": 82.15,
+        "medianBytes": 58,
+        "p90Bytes": 202,
+        "share": 0.0006275149053886649
       },
       {
-        "tool": "write",
+        "tool": "workspace",
         "invocations": 10,
         "outcomes": {
           "returned": 8,
           "invocation": 0,
           "execution": 0,
-          "blocked": 2,
+          "blocked": 0,
+          "cancelled": 0,
+          "unclassified": 2,
+          "unmatched": 0
+        },
+        "results": 10,
+        "bytes": 2698,
+        "meanBytes": 269.8,
+        "medianBytes": 208,
+        "p90Bytes": 541,
+        "share": 0.00007360382639503599
+      },
+      {
+        "tool": "ls",
+        "invocations": 14,
+        "outcomes": {
+          "returned": 14,
+          "invocation": 0,
+          "execution": 0,
+          "blocked": 0,
           "cancelled": 0,
           "unclassified": 0,
           "unmatched": 0
         },
-        "results": 10,
-        "bytes": 640,
-        "meanBytes": 64,
-        "medianBytes": 58,
-        "p90Bytes": 100,
-        "share": 0.00026887073451283564
+        "results": 14,
+        "bytes": 1594,
+        "meanBytes": 113.85714285714286,
+        "medianBytes": 100,
+        "p90Bytes": 184,
+        "share": 0.00004348572990129258
       }
     ]
   },
   "reads": {
-    "calls": 250,
-    "failed": 6,
-    "unknownCoverage": 0,
-    "bytes": 1437348,
+    "calls": 3304,
+    "failed": 57,
+    "unknownCoverage": 126,
+    "bytes": 19513422,
     "relations": {
-      "first": 230,
-      "pagination": 2,
-      "disjoint": 5,
-      "overlap": 7,
-      "unknown": 0
+      "first": 2586,
+      "pagination": 45,
+      "disjoint": 158,
+      "overlap": 330,
+      "unknown": 128
     },
     "overlap": {
-      "identical": 4,
-      "changed": 3,
-      "afterCompaction": 0,
+      "identical": 207,
+      "changed": 123,
+      "afterCompaction": 116,
       "afterContextEdit": 0,
-      "afterOwnWrite": 0,
-      "lines": 120,
-      "bytes": 9204
+      "afterOwnWrite": 118,
+      "lines": 22536,
+      "bytes": 1226224
     },
     "truncation": {
       "lines": 0,
-      "bytes": 2,
-      "firstLine": 0
+      "bytes": 16,
+      "firstLine": 2
     },
-    "limited": 40,
+    "limited": 724,
     "crossAgent": {
-      "paths": 48,
-      "reads": 155
+      "paths": 323,
+      "reads": 2506
     }
   },
   "git": {
-    "requests": 267,
-    "whole": 7,
-    "inCompound": 260,
-    "truncated": 1,
+    "requests": 3419,
+    "whole": 333,
+    "inCompound": 3086,
+    "truncated": 78,
     "repeats": {
-      "requests": 77,
+      "requests": 908,
       "identicalResults": 0,
       "changedResults": 0,
-      "unknownResults": 77
+      "unknownResults": 908
     },
     "byOperation": [
       {
         "tool": "bash",
         "operation": "diff",
-        "requests": 73,
-        "repeats": 22,
+        "requests": 788,
+        "repeats": 254,
         "identicalResults": 0,
-        "truncated": 0
+        "truncated": 10
       },
       {
         "tool": "bash",
         "operation": "status",
-        "requests": 65,
-        "repeats": 34,
+        "requests": 654,
+        "repeats": 370,
+        "identicalResults": 0,
+        "truncated": 6
+      },
+      {
+        "tool": "bash",
+        "operation": "log",
+        "requests": 286,
+        "repeats": 55,
+        "identicalResults": 0,
+        "truncated": 3
+      },
+      {
+        "tool": "bash",
+        "operation": "rev-parse",
+        "requests": 182,
+        "repeats": 57,
+        "identicalResults": 0,
+        "truncated": 2
+      },
+      {
+        "tool": "git_inspect",
+        "operation": "diff",
+        "requests": 181,
+        "repeats": 1,
+        "identicalResults": 0,
+        "truncated": 39
+      },
+      {
+        "tool": "bash",
+        "operation": "branch",
+        "requests": 151,
+        "repeats": 12,
         "identicalResults": 0,
         "truncated": 1
       },
       {
         "tool": "bash",
-        "operation": "log",
-        "requests": 27,
-        "repeats": 6,
-        "identicalResults": 0,
-        "truncated": 0
-      },
-      {
-        "tool": "bash",
-        "operation": "branch",
-        "requests": 13,
-        "repeats": 2,
-        "identicalResults": 0,
-        "truncated": 0
-      },
-      {
-        "tool": "bash",
         "operation": "ls-remote",
-        "requests": 12,
-        "repeats": 6,
+        "requests": 145,
+        "repeats": 35,
+        "identicalResults": 0,
+        "truncated": 1
+      },
+      {
+        "tool": "bash",
+        "operation": "fetch",
+        "requests": 126,
+        "repeats": 45,
+        "identicalResults": 0,
+        "truncated": 1
+      },
+      {
+        "tool": "bash",
+        "operation": "show",
+        "requests": 115,
+        "repeats": 4,
+        "identicalResults": 0,
+        "truncated": 2
+      },
+      {
+        "tool": "bash",
+        "operation": "worktree",
+        "requests": 95,
+        "repeats": 25,
         "identicalResults": 0,
         "truncated": 0
       },
       {
-        "tool": "bash",
-        "operation": "rev-parse",
-        "requests": 10,
-        "repeats": 2,
-        "identicalResults": 0,
-        "truncated": 0
-      },
-      {
-        "tool": "bash",
-        "operation": "remote",
-        "requests": 8,
+        "tool": "git_inspect",
+        "operation": "status",
+        "requests": 92,
         "repeats": 0,
         "identicalResults": 0,
         "truncated": 0
       },
       {
         "tool": "bash",
-        "operation": "fetch",
-        "requests": 7,
-        "repeats": 3,
+        "operation": "remote",
+        "requests": 82,
+        "repeats": 23,
         "identicalResults": 0,
-        "truncated": 0
+        "truncated": 1
       },
       {
         "tool": "bash",
-        "operation": "worktree",
-        "requests": 7,
+        "operation": "switch",
+        "requests": 70,
         "repeats": 2,
         "identicalResults": 0,
-        "truncated": 0
+        "truncated": 1
       },
       {
         "tool": "bash",
         "operation": "add",
-        "requests": 6,
+        "requests": 67,
+        "repeats": 2,
+        "identicalResults": 0,
+        "truncated": 1
+      },
+      {
+        "tool": "bash",
+        "operation": "commit",
+        "requests": 62,
         "repeats": 0,
         "identicalResults": 0,
         "truncated": 0
@@ -531,6 +624,102 @@
       {
         "tool": "bash",
         "operation": "push",
+        "requests": 58,
+        "repeats": 3,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "ls-files",
+        "requests": 35,
+        "repeats": 4,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "merge-base",
+        "requests": 33,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "apply",
+        "requests": 26,
+        "repeats": 8,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "merge",
+        "requests": 23,
+        "repeats": 1,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "git_inspect",
+        "operation": "log",
+        "requests": 18,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "git_inspect",
+        "operation": "show",
+        "requests": 15,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 7
+      },
+      {
+        "tool": "bash",
+        "operation": "check-ignore",
+        "requests": 13,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "show-ref",
+        "requests": 10,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 1
+      },
+      {
+        "tool": "bash",
+        "operation": "mktree",
+        "requests": 9,
+        "repeats": 3,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "hash-object",
+        "requests": 7,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "ls-tree",
+        "requests": 7,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "archive",
         "requests": 6,
         "repeats": 0,
         "identicalResults": 0,
@@ -538,7 +727,31 @@
       },
       {
         "tool": "bash",
-        "operation": "commit",
+        "operation": "merge-tree",
+        "requests": 6,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "write-tree",
+        "requests": 6,
+        "repeats": 2,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "git_inspect",
+        "operation": "files",
+        "requests": 6,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "commit-tree",
         "requests": 5,
         "repeats": 0,
         "identicalResults": 0,
@@ -546,15 +759,7 @@
       },
       {
         "tool": "bash",
-        "operation": "show",
-        "requests": 5,
-        "repeats": 0,
-        "identicalResults": 0,
-        "truncated": 0
-      },
-      {
-        "tool": "bash",
-        "operation": "ls-files",
+        "operation": "checkout",
         "requests": 4,
         "repeats": 0,
         "identicalResults": 0,
@@ -562,7 +767,23 @@
       },
       {
         "tool": "bash",
-        "operation": "merge",
+        "operation": "rm",
+        "requests": 4,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "stash",
+        "requests": 4,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "rebase",
         "requests": 3,
         "repeats": 0,
         "identicalResults": 0,
@@ -570,39 +791,23 @@
       },
       {
         "tool": "bash",
-        "operation": "merge-base",
+        "operation": "rev-list",
         "requests": 3,
-        "repeats": 0,
+        "repeats": 1,
         "identicalResults": 0,
         "truncated": 0
       },
       {
         "tool": "bash",
-        "operation": "symbolic-ref",
-        "requests": 3,
-        "repeats": 0,
-        "identicalResults": 0,
-        "truncated": 0
-      },
-      {
-        "tool": "bash",
-        "operation": "switch",
+        "operation": "config",
         "requests": 2,
         "repeats": 0,
         "identicalResults": 0,
         "truncated": 0
       },
       {
-        "tool": "git_inspect",
-        "operation": "diff",
-        "requests": 2,
-        "repeats": 0,
-        "identicalResults": 0,
-        "truncated": 0
-      },
-      {
-        "tool": "git_inspect",
-        "operation": "status",
+        "tool": "bash",
+        "operation": "for-each-ref",
         "requests": 2,
         "repeats": 0,
         "identicalResults": 0,
@@ -611,6 +816,62 @@
       {
         "tool": "bash",
         "operation": "grep",
+        "requests": 2,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "init",
+        "requests": 2,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "other",
+        "requests": 2,
+        "repeats": 1,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "pull",
+        "requests": 2,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "symbolic-ref",
+        "requests": 2,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "bash",
+        "operation": "tag",
+        "requests": 2,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 0
+      },
+      {
+        "tool": "git_inspect",
+        "operation": "staged-diff",
+        "requests": 2,
+        "repeats": 0,
+        "identicalResults": 0,
+        "truncated": 2
+      },
+      {
+        "tool": "bash",
+        "operation": "clone",
         "requests": 1,
         "repeats": 0,
         "identicalResults": 0,
@@ -618,23 +879,23 @@
       },
       {
         "tool": "bash",
-        "operation": "rev-list",
+        "operation": "reflog",
         "requests": 1,
         "repeats": 0,
         "identicalResults": 0,
         "truncated": 0
       },
       {
-        "tool": "git_inspect",
-        "operation": "log",
+        "tool": "bash",
+        "operation": "restore",
         "requests": 1,
         "repeats": 0,
         "identicalResults": 0,
         "truncated": 0
       },
       {
-        "tool": "git_inspect",
-        "operation": "show",
+        "tool": "bash",
+        "operation": "update-ref",
         "requests": 1,
         "repeats": 0,
         "identicalResults": 0,
@@ -643,104 +904,110 @@
     ]
   },
   "context": {
-    "sessions": 13,
+    "sessions": 211,
     "initialTokens": {
-      "median": 10353,
-      "p90": 11161,
-      "max": 11407
+      "median": 10633,
+      "p90": 19013,
+      "max": 23356
     },
     "peakTokens": {
-      "median": 40081,
-      "p90": 163730,
-      "max": 174429
+      "median": 45460,
+      "p90": 165247,
+      "max": 567233
     },
     "growthTokens": {
-      "median": 30285,
-      "p90": 153617,
-      "max": 164273
+      "median": 34730,
+      "p90": 147506,
+      "max": 546681
     },
-    "compactions": 0,
+    "compactions": 7,
     "tokensBefore": {
-      "recorded": 0,
-      "total": 0,
-      "median": null
+      "recorded": 7,
+      "total": 1646094,
+      "median": 229688
     },
     "synthesis": {
-      "entries": 0,
-      "unknown": 0,
-      "input": 0,
-      "output": 0,
-      "reasoning": 0,
-      "reasoningEntries": 0,
+      "entries": 1,
+      "unknown": 6,
+      "input": 64230,
+      "output": 2945,
+      "reasoning": 94,
+      "reasoningEntries": 1,
       "cacheRead": 0,
       "cacheWrite": 0,
-      "uncached": 0,
-      "cacheReadShare": null
+      "uncached": 64230,
+      "cacheReadShare": 0
     },
     "afterCompaction": {
-      "requests": 0,
-      "withoutCacheRead": 0
+      "requests": 7,
+      "withoutCacheRead": 2
     }
   },
   "lead": {
-    "sessions": 10,
+    "sessions": 70,
     "toolCallsPerSession": {
-      "median": 13,
-      "minimum": 5,
-      "maximum": 143
+      "median": 53,
+      "minimum": 0,
+      "maximum": 739
     },
     "toolResults": {
-      "results": 417,
-      "bytes": 1869172,
-      "meanBytes": 4482.4268585131895,
+      "results": 6199,
+      "bytes": 18307834,
+      "meanBytes": 2953.352798838522,
       "byTool": [
         {
           "tool": "read",
-          "results": 190,
-          "bytes": 1145025,
-          "share": 0.6125840746597959
+          "results": 1785,
+          "bytes": 8702866,
+          "share": 0.47536295118253746
         },
         {
           "tool": "bash",
-          "results": 148,
-          "bytes": 666488,
-          "share": 0.3565685768885902
+          "results": 3076,
+          "bytes": 8690876,
+          "share": 0.47470804028483105
         },
         {
           "tool": "work",
-          "results": 23,
-          "bytes": 53775,
-          "share": 0.02876942303865027
+          "results": 440,
+          "bytes": 832926,
+          "share": 0.045495605870142806
         },
         {
           "tool": "edit",
-          "results": 46,
-          "bytes": 3244,
-          "share": 0.0017355278165947275
+          "results": 639,
+          "bytes": 58254,
+          "share": 0.003181916550040819
         },
         {
           "tool": "write",
+          "results": 249,
+          "bytes": 20214,
+          "share": 0.0011041175051073764
+        },
+        {
+          "tool": "workspace",
           "results": 10,
-          "bytes": 640,
-          "share": 0.0003423975963688735
+          "bytes": 2698,
+          "share": 0.00014736860734044236
         }
       ]
     },
     "children": {
-      "agentAttempts": 3,
-      "processAttempts": 7,
-      "meanPerSession": 0.3,
-      "sessionShare": 0.2
+      "agentAttempts": 140,
+      "processAttempts": 52,
+      "meanPerSession": 2,
+      "sessionShare": 0.42857142857142855
     },
     "latency": {
-      "requests": 308,
-      "p50Ms": 8553,
-      "p90Ms": 25714
+      "requests": 5314,
+      "p50Ms": 8887,
+      "p90Ms": 31037
     },
     "timeSplit": {
-      "modelMs": 3650308,
-      "toolMs": 399625,
-      "userMs": 7922777
+      "modelMs": 79459801,
+      "toolMs": 40616097,
+      "userMs": 55157772
     }
   }
 }
