@@ -336,11 +336,15 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   ): RemoteAttachment => {
     let current = binding
     let done = false
+    const delegated = new Set<string>()
     const open = <A>(effect: Effect.Effect<A, WorkspaceError>) =>
       Effect.suspend(() => (done ? Effect.fail(closedAttachment) : effect))
     return {
       get binding() {
         return current
+      },
+      get delegatedCwds() {
+        return [...delegated]
       },
       refreshBinding(next) {
         if (!done) current = next
@@ -349,7 +353,14 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
         if (!done) Queue.offerUnsafe(receipts, receipt)
       },
       sweeps: Stream.fromQueue(receipts),
-      authorize: operation => open(request({ op: 'authorize', attachmentId, operation })),
+      authorize: operation =>
+        open(
+          Effect.suspend(() => {
+            if (operation.kind === 'delegated-write' && operation.cwd !== undefined)
+              delegated.add(operation.cwd)
+            return request({ op: 'authorize', attachmentId, operation })
+          })
+        ),
       select: selection => open(request({ op: 'select', attachmentId, selection })),
       reportExecution: (grant, fact) =>
         open(request({ op: 'report-execution', attachmentId, grant, fact })),

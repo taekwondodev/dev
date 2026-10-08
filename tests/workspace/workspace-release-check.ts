@@ -975,6 +975,7 @@ try {
   const sweepRow = async (anchor: WorkspaceId, workspaceId: WorkspaceId) => {
     const receipt: SweepReceipt = await lifecycle.sweep({
       anchorWorkspaceId: anchor,
+      delegatedCwds: [],
       occupiedPaths: [],
     })
     const row = receipt.rows.find(

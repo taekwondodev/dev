@@ -40,6 +40,9 @@ const withReport = (
   get binding() {
     return base.binding
   },
+  get delegatedCwds() {
+    return base.delegatedCwds
+  },
   authorize: operation => base.authorize(operation),
   select: selection => base.select(selection),
   handoff: (transition, replace) => base.handoff(transition, replace),

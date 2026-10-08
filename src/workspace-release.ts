@@ -1201,6 +1201,7 @@ interface SweepRun {
   readonly context: AssessmentContext
   readonly expired: (index: number) => boolean
   readonly fail: (taskId: WorkspaceId, cause: unknown) => void
+  readonly abort: (cause: unknown) => void
   readonly settle: (index: number, taskId: WorkspaceId, assessed: readonly Assessed[]) => boolean
   readonly receipt: () => SweepReceipt
 }
@@ -1250,6 +1251,12 @@ const startSweep = (
         kind: 'task-failure',
         taskId,
         reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
+      })
+    },
+    abort: cause => {
+      receipt.push({
+        kind: 'sweep-failure',
+        reason: `The sweep stopped before assessing every task of this repository; the rows above are its recorded outcomes and nothing else was attempted: ${errorText(cause)}`,
       })
     },
     settle: (index, taskId, assessed) => {
@@ -1345,21 +1352,25 @@ export const sweepRepositoryAtQuit = async (
   readers: EvidenceReaders
 ): Promise<SweepReceipt> => {
   const sweep = startSweep(authority, input, readers)
-  if (sweep.taskIds.length > 0)
-    inDb(authority, input.repositoryId, db => {
-      for (const taskId of sweep.taskIds)
-        void prefetchEvidence(readers, getTask(db, taskId)?.target)
-    })
-  for (const [index, taskId] of sweep.taskIds.entries()) {
-    if (sweep.expired(index)) break
-    let assessed: readonly Assessed[]
-    try {
-      assessed = await assessTaskAtQuit(authority, taskId, readers, sweep.context)
-    } catch (cause) {
-      sweep.fail(taskId, cause)
-      continue
+  try {
+    if (sweep.taskIds.length > 0)
+      inDb(authority, input.repositoryId, db => {
+        for (const taskId of sweep.taskIds)
+          void prefetchEvidence(readers, getTask(db, taskId)?.target)
+      })
+    for (const [index, taskId] of sweep.taskIds.entries()) {
+      if (sweep.expired(index)) break
+      let assessed: readonly Assessed[]
+      try {
+        assessed = await assessTaskAtQuit(authority, taskId, readers, sweep.context)
+      } catch (cause) {
+        sweep.fail(taskId, cause)
+        continue
+      }
+      if (sweep.settle(index, taskId, assessed)) break
     }
-    if (sweep.settle(index, taskId, assessed)) break
+  } catch (cause) {
+    sweep.abort(cause)
   }
   return sweep.receipt()
 }

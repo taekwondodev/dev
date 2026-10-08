@@ -97,8 +97,11 @@ const receiptsOf = async (attachment: TestAttachment) => {
   await closing
   return receipts
 }
-const sweepWith = (using: TestLifecycle, anchor: WorkspaceId) =>
-  using.sweep({ anchorWorkspaceId: anchor, occupiedPaths: [] })
+const sweepWith = (
+  using: TestLifecycle,
+  anchor: WorkspaceId,
+  delegatedCwds: readonly string[] = []
+) => using.sweep({ anchorWorkspaceId: anchor, delegatedCwds, occupiedPaths: [] })
 const publication = (
   taskId: WorkspaceId,
   workspaceId: WorkspaceId,
@@ -460,6 +463,131 @@ try {
     }
   )
   await liveOwner.owner.close()
+
+  await claim(
+    'quit sweeps the repositories of the checkouts the conversation delegated into, including one whose delegation was refused: a delivered foreign worktree is removed and an undelivered one is retained with its reason, while the anchor repository alone never lists them',
+    async () => {
+      const foreignRepo = join(sandbox, 'foreign-repo')
+      mkdirSync(foreignRepo)
+      git(['init', '--quiet', '-b', 'main'], foreignRepo)
+      git(['config', 'user.name', 'Sweep Check'], foreignRepo)
+      git(['config', 'user.email', 'sweep-check@example.invalid'], foreignRepo)
+      writeFileSync(join(foreignRepo, 'tracked.txt'), 'foreign\n')
+      git(['add', '.'], foreignRepo)
+      git(['commit', '--quiet', '-m', 'foreign fixture'], foreignRepo)
+      const owner = await reserve(userCheckout('foreign-delegator'))
+      const delivered = ready(
+        await owner.owner.authorize({ kind: 'delegated-write', cwd: foreignRepo })
+      )
+      const undelivered = ready(
+        await owner.owner.authorize({ kind: 'delegated-write', cwd: foreignRepo })
+      )
+      assert.notEqual(delivered.repositoryId, owner.write.repositoryId)
+      assert.equal(undelivered.taskId, delivered.taskId)
+      const unborn = join(sandbox, 'unborn-repo')
+      mkdirSync(unborn)
+      git(['init', '--quiet', '-b', 'main'], unborn)
+      await assert.rejects(
+        owner.owner.authorize({ kind: 'delegated-write', cwd: unborn }),
+        /no current commit/
+      )
+      assert.deepEqual(
+        owner.owner.effect.delegatedCwds,
+        [foreignRepo, unborn],
+        'every delegation directory is retained for quit, refused ones included'
+      )
+      const foreignTask = taskOf(delivered)
+      await owner.owner.close()
+      await lifecycle.recordTarget(foreignTask, localMain)
+      const branch = `foreign-delivery-${newId()}`
+      git(['switch', '--quiet', '-c', branch], delivered.checkout)
+      writeFileSync(join(delivered.checkout, 'delivered.txt'), 'delivered\n')
+      git(['add', 'delivered.txt'], delivered.checkout)
+      git(['commit', '--quiet', '-m', 'delivered'], delivered.checkout)
+      git(['merge', '--quiet', '--ff-only', branch], foreignRepo)
+      git(['switch', '--quiet', '-c', 'foreign-unmerged'], undelivered.checkout)
+      writeFileSync(join(undelivered.checkout, 'pending.txt'), 'pending\n')
+      git(['add', 'pending.txt'], undelivered.checkout)
+      git(['commit', '--quiet', '-m', 'pending'], undelivered.checkout)
+
+      const anchorOnly = await sweepAtQuit(owner.write.workspaceId)
+      assert.ok(
+        !anchorOnly.rows.some(row => row.kind === 'workspace' && row.taskId === foreignTask),
+        JSON.stringify(anchorOnly.rows)
+      )
+      assert.ok(existsSync(delivered.checkout))
+
+      const receipt = await sweepWith(lifecycle, owner.write.workspaceId, [
+        ...owner.owner.effect.delegatedCwds,
+        join(sandbox, 'never-a-checkout'),
+      ])
+      assert.deepEqual(
+        receipt.rows.filter(row => row.kind === 'sweep-failure' || row.kind === 'task-failure'),
+        [],
+        'a refused or unresolvable delegation directory does not fail the sweep'
+      )
+      const removed = rowOf(receipt, delivered.workspaceId)
+      assert.deepEqual(
+        [removed.outcome, verdictName(removed.verdict)],
+        ['removed', 'branch-in-target']
+      )
+      assert.equal(existsSync(delivered.checkout), false)
+      assert.ok(!git(['worktree', 'list', '--porcelain'], foreignRepo).includes(delivered.checkout))
+      const kept = rowOf(receipt, undelivered.workspaceId)
+      assert.deepEqual(
+        [kept.outcome, verdictName(kept.verdict)],
+        ['retained', 'retained:not-integrated']
+      )
+      assert.ok(existsSync(join(undelivered.checkout, 'pending.txt')))
+      assert.equal(readFileSync(join(foreignRepo, 'tracked.txt'), 'utf8'), 'foreign\n')
+      assert.equal(
+        (await lifecycle.inspect({ cwd: foreignRepo })).find(
+          view => view.workspaceId === undelivered.workspaceId
+        )?.taskId,
+        foreignTask,
+        'the foreign task is listed in its own repository'
+      )
+    }
+  )
+
+  await claim(
+    'a repository whose records cannot be read at quit yields a sweep-failure row naming it instead of losing the receipt: the anchor repository still reports its tasks, nothing is touched, and the next sweep finishes both',
+    async () => {
+      const foreignRepo = join(sandbox, 'foreign-repo')
+      const owner = await reserve(userCheckout('foreign-failure'))
+      const child = ready(
+        await owner.owner.authorize({ kind: 'delegated-write', cwd: foreignRepo })
+      )
+      await owner.owner.close()
+      const shardDirectory = join(root, 'repos', child.repositoryId)
+      chmodSync(shardDirectory, 0o000)
+      let receipt: SweepReceipt
+      try {
+        receipt = await sweepWith(lifecycle, owner.write.workspaceId, [foreignRepo])
+      } finally {
+        chmodSync(shardDirectory, 0o700)
+      }
+      assert.ok(
+        receipt.rows.some(row => row.kind === 'task-failure' && row.taskId === owner.taskId),
+        `the anchor repository's receipt survived: ${JSON.stringify(receipt.rows)}`
+      )
+      const failure = receipt.rows.find(row => row.kind === 'sweep-failure')
+      assert.ok(failure !== undefined, JSON.stringify(receipt.rows))
+      assert.ok(failure.reason.includes(join(foreignRepo, '.git')), failure.reason)
+      assert.ok(
+        !receipt.rows.some(row => row.kind === 'workspace' && row.workspaceId === child.workspaceId)
+      )
+      assert.ok(existsSync(child.checkout), 'the unassessed worktree is untouched')
+      const recovery = await sweepWith(lifecycle, owner.write.workspaceId, [foreignRepo])
+      assert.equal(rowOf(recovery, owner.write.workspaceId).outcome, 'released')
+      const recovered = rowOf(recovery, child.workspaceId)
+      assert.deepEqual(
+        [recovered.outcome, verdictName(recovered.verdict)],
+        ['removed', 'no-residue']
+      )
+      assert.equal(existsSync(child.checkout), false)
+    }
+  )
 
   await claim(
     'a detached worktree at its base with only Git-ignored files is automatically removed at quit',

@@ -1,5 +1,6 @@
 import { installProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import {
   mkdirSync,
   mkdtempSync,
@@ -124,9 +125,12 @@ const receipt: SweepReceipt = makeFixtureReceipt({
   ],
 })
 const receipts = await Effect.runPromise(Queue.make<SweepReceipt, Cause.Done>())
+const authorized: string[] = []
 const attachment: WorkspaceAttachment = {
   binding: makeFixtureBinding({ conversation, descriptor: current }),
+  delegatedCwds: [],
   authorize: operation => {
+    authorized.push(operation.kind)
     if (operation.kind === 'write') Queue.offerUnsafe(receipts, receipt)
     return Effect.fail(refused)
   },
@@ -167,8 +171,13 @@ const lifecycle: WorkspaceLifecycle = {
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
 }
+const foreignCheckout = join(fixture, 'projects', 'foreign-checkout')
+mkdirSync(foreignCheckout, { recursive: true })
+execFileSync('git', ['init', '--quiet', foreignCheckout])
+const foreignFile = join(foreignCheckout, 'lead-edit.txt')
 const steps: readonly ScriptedContent[] = [
   [toolCall('work-allocation', 'work', { action: 'process', taskId: 'tests', command: 'true' })],
+  [toolCall('foreign-write', 'write', { path: foreignFile, content: 'forbidden' })],
 ]
 let calls = 0
 const offline = await makeOfflineModel({
@@ -256,6 +265,31 @@ try {
           shown[0].includes('removed (automatic)'),
         shown[0]
       )
+    }
+  )
+  await claim(
+    "a native write from the lead into another checkout is refused before any workspace admission, so a foreign delegation changes nothing about the lead's own destinations",
+    async () => {
+      const before = authorized.length
+      await runtime.session.prompt('write into the other checkout')
+      const result = runtime.session.sessionManager
+        .getEntries()
+        .flatMap(entry =>
+          entry.type === 'message' &&
+          entry.message.role === 'toolResult' &&
+          entry.message.toolCallId === 'foreign-write'
+            ? [entry.message]
+            : []
+        )
+        .at(0)
+      assert.ok(result !== undefined, 'the refused write has no tool result')
+      assert.equal(result.isError, true)
+      const text = result.content
+        .flatMap(part => (part.type === 'text' ? [part.text] : []))
+        .join('\n')
+      assert.match(text, /another checkout/)
+      assert.equal(existsSync(foreignFile), false)
+      assert.deepEqual(authorized.slice(before), [], 'the refusal reached workspace admission')
     }
   )
   await claim(

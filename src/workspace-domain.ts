@@ -141,9 +141,15 @@ export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
 export const WorkspaceOperationSchema = Schema.Union([
   Schema.Struct({
-    kind: Schema.Literals(['read', 'write', 'delegated-write']),
+    kind: Schema.Literals(['read', 'write']),
     cwd: Schema.optional(AbsolutePath),
     execution: Schema.optional(WorkspaceExecutionSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('delegated-write'),
+    cwd: Schema.optional(AbsolutePath),
+    execution: Schema.optional(WorkspaceExecutionSchema),
+    coordinator: Schema.optional(WorkspaceGrantSchema),
   }),
   Schema.Struct({
     kind: Schema.Literal('native-file-write'),
@@ -435,6 +441,7 @@ export const WORKER_REQUEST_TIMEOUT_MS = 60_000
 
 export const SweepRequestSchema = Schema.Struct({
   anchorWorkspaceId: WorkspaceId,
+  delegatedCwds: Schema.Array(AbsolutePath),
   occupiedPaths: Schema.Array(AbsolutePath),
 })
 export type SweepRequest = typeof SweepRequestSchema.Type
@@ -445,6 +452,7 @@ export type HostReplace = (
 
 export interface WorkspaceAttachment {
   readonly binding: WorkspaceBinding
+  readonly delegatedCwds: readonly string[]
   authorize(operation: WorkspaceOperation): Effect.Effect<WorkspaceAuthorization, WorkspaceError>
   select(selection: WorkspaceSelection): Effect.Effect<WorkspaceHandoff, WorkspaceError>
   reportExecution(

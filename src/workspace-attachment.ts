@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import {
   inDb,
   findBinding,
+  registerWorkspace,
   validateWorkspace,
   type WorkspaceAuthority,
 } from './workspace-authority.ts'
@@ -23,14 +24,11 @@ import {
   conversationIdentity,
   releaseGates,
 } from './workspace-gates.ts'
-import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
+import { canonicalGitWorkspace } from './workspace-git.ts'
 import { canonicalPathSlot, conversationFileSlot, isWithin } from './workspace-paths.ts'
 import {
   assertNoUnresolvedRelease,
-  matchesGitWorkspace,
   getWorkspace,
-  getWorkspaceByPath,
-  putWorkspace,
   getBinding,
   putBinding,
   getUse,
@@ -38,8 +36,6 @@ import {
   getOperation,
   saveOperation,
   getActiveUseRows,
-  makeWorkspaceRecord,
-  type WorkspaceRecord,
   type BindingRecord,
 } from './workspace-records.ts'
 import { transaction } from './workspace-sqlite.ts'
@@ -221,6 +217,7 @@ export const attachConversation = (
       leaseAttachments: new Map(),
       extraGates: [],
       deferredGateReleases: new Map(),
+      foreignTasks: new Map(),
       refs: 0,
       parked: false,
       closing: false,
@@ -271,33 +268,6 @@ const retireUnstartedTransition = (
     )
   }
   return withdrawn
-}
-
-const registerWorkspace = (
-  authority: WorkspaceAuthority,
-  repo: WorkspaceId,
-  git: GitWorkspace
-): WorkspaceRecord => {
-  return inDb(
-    authority,
-    repo,
-    db =>
-      transaction(db, () => {
-        const existing = getWorkspaceByPath(db, git.path)
-        if (existing !== undefined) {
-          if (!matchesGitWorkspace(existing, git))
-            requireReview(`Workspace path slot was replaced: ${existing.path}`)
-          if (existing.status !== 'ready')
-            requireReview(`Workspace allocation is unresolved: ${existing.path}`)
-          return existing
-        }
-        const record = makeWorkspaceRecord(repo, git, 'pre-existing')
-        putWorkspace(db, record)
-        return record
-      }),
-    true,
-    git
-  )
 }
 
 const ensureNoUnresolvedUse = (

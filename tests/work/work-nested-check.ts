@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Effect, Schema } from 'effect'
 import { executeWork, type summary } from '../../src/work-actions.ts'
 import { asAttemptId, type AttemptView } from '../../src/work-domain.ts'
+import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { ControllerWorkMessageSchema, trackOutcomeAttempts } from '../../src/work-protocol.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../../src/workspace-domain.ts'
 import {
@@ -182,6 +183,145 @@ try {
         assert.equal(reader.view.resources?.tools.includes('write'), false)
         assert.equal(reader.view.resources?.tools.includes('edit'), false)
         for (const path of paths) assert.equal(readFileSync(path, 'utf8'), 'two')
+      }
+    )
+    await claim(
+      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; the lead's native writes there stay refused; a leaf cannot name a cwd",
+      async () => {
+        const foreign = join(fixture.root, 'foreign-repo')
+        mkdirSync(foreign)
+        fixture.git(['init', '--quiet', '-b', 'main'], foreign)
+        fixture.git(['config', 'user.email', 'work-check@example.invalid'], foreign)
+        fixture.git(['config', 'user.name', 'work check'], foreign)
+        fixture.git(['config', 'commit.gpgsign', 'false'], foreign)
+        writeFileSync(join(foreign, 'AGENTS.md'), 'FIXTURE-INSTRUCTIONS foreign-checkout\n')
+        writeFileSync(join(foreign, 'tracked.txt'), 'foreign committed\n')
+        fixture.git(['add', '.'], foreign)
+        fixture.git(['commit', '--quiet', '-m', 'foreign fixture'], foreign)
+        const foreignHead = fixture.git(['rev-parse', 'HEAD'], foreign)
+        writeFileSync(join(foreign, 'untracked.txt'), 'foreign untracked\n')
+
+        const writer = await owner.run({
+          taskId: 'foreign-writer',
+          access: 'write',
+          cwd: foreign,
+          prompt: `Foreign writer\n${script([
+            [
+              toolCall('w', 'write', { path: 'from-child.txt', content: 'written elsewhere\n' }),
+              toolCall('r', 'read', { path: 'tracked.txt' }),
+              toolCall('u', 'read', { path: 'untracked.txt' }),
+            ],
+          ])}`,
+        })
+        assertStatus(writer.view, 'completed')
+        const worktree = writer.view.worktree?.path
+        assert.ok(worktree !== undefined, JSON.stringify(writer.view))
+        assert.equal(writer.view.cwd, worktree)
+        assert.ok(worktree.startsWith(`${fixture.lifecycle.effect.root}/`), worktree)
+        assert.equal(fixture.git(['rev-parse', 'HEAD'], worktree), foreignHead)
+        assert.equal(
+          fixture.git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree),
+          join(foreign, '.git')
+        )
+        assert.equal(readFileSync(join(worktree, 'from-child.txt'), 'utf8'), 'written elsewhere\n')
+        assert.ok(!existsSync(join(foreign, 'from-child.txt')))
+        assert.ok(!existsSync(join(fixture.repository, 'from-child.txt')))
+        assert.ok(!existsSync(join(worktree, 'untracked.txt')), 'dirty files are not copied')
+        assert.equal(count(writer.text, 'foreign committed'), 1)
+        assert.match(writer.text, /FIXTURE-INSTRUCTIONS foreign-checkout/)
+        assert.equal(fixture.attachment.binding.cwd, fixture.repository)
+        const foreignViews = await fixture.lifecycle.inspect({ cwd: foreign })
+        assert.ok(
+          foreignViews.some(
+            view =>
+              view.workspaceId === writer.view.workspaceId &&
+              view.taskId === writer.view.workflowTaskId &&
+              view.origin === 'managed'
+          ),
+          JSON.stringify(foreignViews)
+        )
+        assert.ok(
+          !(await fixture.lifecycle.inspect({ cwd: fixture.repository })).some(
+            view => view.workspaceId === writer.view.workspaceId
+          )
+        )
+
+        const reader = await owner.run({
+          taskId: 'foreign-reader',
+          access: 'read-only',
+          cwd: foreign,
+          prompt: `Foreign reader\n${script([[toolCall('u', 'read', { path: 'untracked.txt' })]])}`,
+        })
+        assertStatus(reader.view, 'completed')
+        assert.equal(reader.view.cwd, foreign)
+        assert.equal(reader.view.worktree, undefined)
+        assert.equal(count(reader.text, 'foreign untracked'), 1)
+        assert.match(reader.text, /FIXTURE-INSTRUCTIONS foreign-checkout/)
+
+        const leadScope = {
+          checkout: fixture.repository,
+          authorityRoot: fixture.lifecycle.effect.root,
+        }
+        assert.throws(
+          () => classifyWriteDestination(leadScope, fixture.repository, join(foreign, 'lead.txt')),
+          /another checkout/
+        )
+        assert.throws(
+          () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),
+          /authority metadata or another managed workspace/
+        )
+
+        const tree = await owner.run({
+          taskId: 'foreign-coordinator',
+          access: 'write',
+          coordinate: true,
+          cwd: foreign,
+          prompt: phase(
+            `Foreign coordinator\n${raw(RAW_MARKER, [
+              {
+                type: 'work-request',
+                requestId: 'leaf-cwd',
+                input: delegation('foreign-leaf-cwd', 'Leaf elsewhere', { cwd: foreign }),
+              },
+              {
+                type: 'work-request',
+                requestId: 'leaf-writer',
+                input: delegation('foreign-leaf-writer', 'Writing leaf', { access: 'write' }),
+              },
+            ])}`,
+            [
+              work(
+                'd',
+                delegation(
+                  'foreign-leaf-reader',
+                  `Reading leaf\n${script([[toolCall('t', 'read', { path: 'tracked.txt' })]])}`
+                )
+              ),
+            ]
+          ),
+        })
+        assertStatus(tree.view, 'completed')
+        const coordinatorWorktree = tree.view.worktree?.path
+        assert.ok(coordinatorWorktree !== undefined && coordinatorWorktree !== worktree)
+        assert.equal(
+          fixture.git(
+            ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+            coordinatorWorktree
+          ),
+          join(foreign, '.git')
+        )
+        const leafReader = await owner.leaf(tree.view.id, 'foreign-leaf-reader', settled)
+        assertStatus(leafReader, 'completed')
+        assert.equal(leafReader.cwd, coordinatorWorktree)
+        assert.equal(count(await owner.result(leafReader.id), 'foreign committed'), 1)
+        assert.match(refusal(fixture.dataHome, tree.view.id, 'leaf-cwd'), /\["cwd"\]/)
+        assert.match(refusal(fixture.dataHome, tree.view.id, 'leaf-writer'), /read-only leaves/)
+        const records = await owner.records()
+        for (const taskId of ['foreign-leaf-cwd', 'foreign-leaf-writer'])
+          assert.ok(
+            !records.some(record => record.owner.taskId === taskId),
+            `${taskId} was started`
+          )
       }
     )
     await claim(
@@ -716,6 +856,9 @@ try {
   const losing = (base: WorkspaceAttachment): WorkspaceAttachment => ({
     get binding() {
       return base.binding
+    },
+    get delegatedCwds() {
+      return base.delegatedCwds
     },
     select: selection => base.select(selection),
     handoff: (transition, replace) => base.handoff(transition, replace),

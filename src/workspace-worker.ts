@@ -15,6 +15,8 @@ import {
   invalid,
   WorkspaceError,
   type SweepReceipt,
+  type SweepRequest,
+  type SweepRow,
   type WorkspaceId,
 } from './workspace-domain.ts'
 import { WorkspaceEngine, type EngineAttachment } from './workspace-engine.ts'
@@ -39,6 +41,7 @@ import {
   sweepRepositoryForAllocation,
   type EvidenceReaders,
 } from './workspace-release.ts'
+import { canonicalGitWorkspace } from './workspace-git.ts'
 import { getWorkspace } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { now } from './workspace-platform.ts'
@@ -105,10 +108,61 @@ const readersUntil = (deadline: number): EvidenceReaders => ({
 })
 
 const repositoryOf = (authority: WorkspaceAuthority, workspaceId: WorkspaceId): WorkspaceId => {
-  for (const repository of authority.listRepositories())
-    if (inDb(authority, repository.id, db => getWorkspace(db, workspaceId) !== undefined))
-      return repository.id
+  const failures: unknown[] = []
+  for (const repository of authority.listRepositories()) {
+    try {
+      if (inDb(authority, repository.id, db => getWorkspace(db, workspaceId) !== undefined))
+        return repository.id
+    } catch (cause) {
+      failures.push(cause)
+    }
+  }
+  if (failures[0] !== undefined) throw failures[0]
   return invalid(`Workspace ${workspaceId} is unknown to the workspace authority`)
+}
+
+const registeredRepositoryOf = (
+  authority: WorkspaceAuthority,
+  cwd: string
+): WorkspaceId | undefined => {
+  try {
+    return authority.findRepository(canonicalGitWorkspace(cwd))
+  } catch {
+    return undefined
+  }
+}
+
+const sweepAtQuit = async (
+  authority: WorkspaceAuthority,
+  request: SweepRequest,
+  deadline: number
+): Promise<SweepReceipt> => {
+  const repositories = new Set([repositoryOf(authority, request.anchorWorkspaceId)])
+  for (const cwd of request.delegatedCwds) {
+    const repository = registeredRepositoryOf(authority, cwd)
+    if (repository !== undefined) repositories.add(repository)
+  }
+  const commonPaths = new Map(
+    authority.listRepositories().map(repository => [repository.id, repository.commonPath])
+  )
+  const readers = readersUntil(deadline)
+  const rows: SweepRow[] = []
+  for (const repositoryId of repositories) {
+    try {
+      const receipt = await sweepRepositoryAtQuit(
+        authority,
+        { repositoryId, moment: 'quit', deadline, occupiedPaths: request.occupiedPaths },
+        readers
+      )
+      rows.push(...receipt.rows)
+    } catch (cause) {
+      rows.push({
+        kind: 'sweep-failure',
+        reason: `The sweep could not assess the repository at ${commonPaths.get(repositoryId) ?? repositoryId}, so nothing of it was released: ${errorText(cause)}`,
+      })
+    }
+  }
+  return { moment: 'quit', rows }
 }
 
 if (port !== null && engine !== undefined) {
@@ -262,24 +316,13 @@ if (port !== null && engine !== undefined) {
           'release',
           await engine.run(authority => releaseTask(authority, request.taskId))
         )
-      case 'sweep': {
-        const deadline = sweepDeadline('quit', sentAt)
+      case 'sweep':
         return replyTo(
           'sweep',
           await engine.run(authority =>
-            sweepRepositoryAtQuit(
-              authority,
-              {
-                repositoryId: repositoryOf(authority, request.request.anchorWorkspaceId),
-                moment: 'quit',
-                deadline,
-                occupiedPaths: request.request.occupiedPaths,
-              },
-              readersUntil(deadline)
-            )
+            sweepAtQuit(authority, request.request, sweepDeadline('quit', sentAt))
           )
         )
-      }
       case 'record-target':
         await engine.run(authority => recordTarget(authority, request.taskId, request.target))
         return replyTo('record-target', null)
