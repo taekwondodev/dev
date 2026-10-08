@@ -31,6 +31,7 @@ const failedInteractive = process.env.LAUNCHER_TUI_FAULT === 'interactive-failur
 const containedHistory = process.env.LAUNCHER_TUI_CONTAINED_HISTORY === '1'
 const removeInstallation = process.env.LAUNCHER_TUI_SELF_REMOVE === '1' || containedHistory
 const missingWorktree = process.env.LAUNCHER_TUI_MISSING_WORKTREE
+const undeliveredWorktree = process.env.LAUNCHER_TUI_UNDELIVERED_WORKTREE === '1'
 const keptClaim = (): string => {
   if (interruptedAfterQuit)
     return 'a SIGINT during the teardown after /quit, before the sweep, exits 130 and releases nothing: both reservations, the worktree and the files stay'
@@ -39,6 +40,8 @@ const keptClaim = (): string => {
   return 'a session disposal failure after /quit exits 1 without sweeping: both reservations, the worktree and the files stay, and the conversation is kept'
 }
 const sweptClaim = (): string => {
+  if (undeliveredWorktree)
+    return 'quit offers a worktree with unintegrated commits and dirty edits; one y removes it, while the clean checkout is released automatically'
   if (missingWorktree === 'release')
     return 'a worktree whose directory vanished is offered for release at quit; one y releases its task, the clean checkout is released by the sweep and dev exits 0'
   if (removeInstallation)
@@ -99,7 +102,21 @@ try {
       mkdirSync(dataHome, { mode: 0o700 })
     }
   }
+  if (undeliveredWorktree) {
+    writeFileSync(join(worktree, 'undelivered.txt'), 'not integrated\n')
+    git(['add', 'undelivered.txt'], worktree)
+    git(['commit', '--quiet', '-m', 'undelivered'], worktree)
+    writeFileSync(join(worktree, 'dirty.txt'), 'uncommitted\n')
+  }
   await owner.close()
+  if (undeliveredWorktree) {
+    const assessment = (await lifecycle.check(taskId)).find(
+      view => view.workspaceId === managed.grant.workspaceId
+    )
+    assert.equal(assessment?.completion.kind, 'retained')
+    if (assessment?.completion.kind === 'retained')
+      assert.equal(assessment.completion.retained, 'not-integrated')
+  }
   await lifecycle.close()
   if (missingWorktree !== undefined) rmSync(worktree, { recursive: true, force: true })
 

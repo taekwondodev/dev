@@ -1,8 +1,6 @@
-import { homedir } from 'node:os'
-import { pathToFileURL } from 'node:url'
 import { Clock, Effect, type Scope } from 'effect'
-import { RETAINED } from './workspace-completion.ts'
 import type {
+  RetainedReason,
   SweepReceipt,
   SweepRow,
   WorkspaceId,
@@ -32,14 +30,6 @@ type Tone = 'ok' | 'fail' | 'warn' | 'dim' | 'bold'
 const TONE: Record<Tone, string> = { ok: '32', fail: '31', warn: '33', dim: '2', bold: '1' }
 const paint = (style: TerminalStyle, tone: Tone, text: string): string =>
   style.color ? `\x1b[${TONE[tone]}m${text}\x1b[0m` : text
-
-const HOME = homedir()
-const pathText = (style: TerminalStyle, path: string): string => {
-  const shown = path === HOME || path.startsWith(`${HOME}/`) ? `~${path.slice(HOME.length)}` : path
-  return style.ghostty ? `\x1b]8;;${pathToFileURL(path).href}\x1b\\${shown}\x1b]8;;\x1b\\` : shown
-}
-
-const shortId = (id: WorkspaceId): string => id.slice(0, 8)
 
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
 const PROGRESS_FAILED = '\x1b]9;4;2;100\x07'
@@ -93,150 +83,157 @@ export const sweepIndicator = Effect.fnUntraced(function* (
 })
 
 type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
-type Attention = 'done' | 'release' | 'unfinished' | 'action' | 'none'
 
-const attentionOf = (row: WorkspaceRow): Attention => {
-  if (row.outcome === 'removed' || row.outcome === 'released') return 'done'
-  if (row.outcome === 'review-required') return 'release'
-  if (row.verdict.kind === 'finished') return 'unfinished'
-  return RETAINED[row.verdict.retained].attention
+const RETAINED_DISPLAY: Record<
+  RetainedReason,
+  { readonly release: boolean; readonly status: string }
+> = {
+  'identity-unverifiable': {
+    release: true,
+    status: 'The workspace identity could not be verified.',
+  },
+  'transition-unresolved': { release: true, status: 'A workspace transition has not finished.' },
+  'release-review': { release: true, status: 'An earlier removal did not finish.' },
+  excluded: {
+    release: false,
+    status: 'The workspace belongs to the conversation allocating a worktree.',
+  },
+  'use-unknown': { release: false, status: 'A workspace use is unresolved.' },
+  'use-abandoned': {
+    release: false,
+    status: 'A previous session ended without settling its workspace use.',
+  },
+  'use-live': { release: false, status: 'A session or process is still using the workspace.' },
+  'directory-missing': {
+    release: true,
+    status: 'The worktree directory is missing, but its reservation remains.',
+  },
+  'residue-unreadable': { release: true, status: 'The workspace contents could not be read.' },
+  'checkout-modified': { release: true, status: 'The checkout has uncommitted changes.' },
+  skipped: { release: false, status: 'The workspace was excluded from this sweep.' },
+  'no-commits': { release: true, status: 'The workspace has no commits proving delivery.' },
+  'integration-unknown': {
+    release: true,
+    status: 'Integration could not be assessed with the available evidence.',
+  },
+  'not-integrated': {
+    release: true,
+    status: 'Delivery to the integration target could not be verified.',
+  },
 }
+
+const isDone = (row: { readonly outcome: string }): boolean =>
+  row.outcome === 'removed' || row.outcome === 'released'
 
 const workspaceRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
   receipt.rows.filter((row): row is WorkspaceRow => row.kind === 'workspace')
 
-const unique = (ids: readonly WorkspaceId[]): readonly WorkspaceId[] => [...new Set(ids)]
+const canOfferRelease = (row: WorkspaceRow): boolean =>
+  row.outcome === 'review-required' ||
+  (row.verdict.kind === 'retained' && RETAINED_DISPLAY[row.verdict.retained].release)
 
-export const tasksToRelease = (receipt: SweepReceipt): readonly WorkspaceId[] =>
-  unique(
-    workspaceRows(receipt)
-      .filter(row => attentionOf(row) === 'release')
-      .map(row => row.taskId)
-  )
-
-const tasksToCheck = (receipt: SweepReceipt): readonly WorkspaceId[] =>
-  unique(receipt.rows.flatMap(row => (row.kind === 'task-failure' ? [row.taskId] : [])))
-
-const LABEL_WIDTH = 12
-const headline = (
-  style: TerminalStyle,
-  tone: Tone,
-  mark: string,
-  label: string,
-  rest: string
-): string => `${paint(style, tone, `${mark} ${label.padEnd(LABEL_WIDTH)}`)} ${rest}`
-
-const detail = (style: TerminalStyle, text: string): string => `    ${paint(style, 'dim', text)}`
-
-const where = (style: TerminalStyle, row: WorkspaceRow): string =>
-  `${pathText(style, row.path)}  ${paint(style, 'dim', `task ${shortId(row.taskId)}`)}`
-
-const workspaceLines = (style: TerminalStyle, row: WorkspaceRow): readonly string[] => {
-  switch (attentionOf(row)) {
-    case 'done': {
-      const rule = row.verdict.kind === 'finished' ? `  (${row.verdict.rule})` : ''
-      return [
-        headline(style, 'ok', '✓', row.outcome, `${where(style, row)}${paint(style, 'dim', rule)}`),
-      ]
-    }
-    case 'release':
-      return [headline(style, 'fail', '✗', 'review', where(style, row)), detail(style, row.reason)]
-    case 'unfinished':
-      return [
-        headline(style, 'warn', '!', row.outcome, where(style, row)),
-        detail(style, row.reason),
-      ]
-    case 'action': {
-      const next =
-        row.verdict.kind === 'retained' ? RETAINED[row.verdict.retained].actions[0] : undefined
-      return [
-        headline(style, 'dim', '·', 'kept', where(style, row)),
-        detail(style, row.reason),
-        ...(next === undefined ? [] : [detail(style, `next: ${next}`)]),
-      ]
-    }
-    case 'none':
-      return []
+export const tasksToRelease = (receipt: SweepReceipt): readonly WorkspaceId[] => {
+  const remaining = workspaceRows(receipt).filter(row => !isDone(row))
+  const excluded = new Set(remaining.filter(row => !canOfferRelease(row)).map(row => row.taskId))
+  for (const row of receipt.rows) {
+    if (row.kind === 'task-failure' || row.kind === 'task-deferred') excluded.add(row.taskId)
   }
+  return [...new Set(remaining.filter(row => !excluded.has(row.taskId)).map(row => row.taskId))]
 }
 
-const quietSummary = (style: TerminalStyle, rows: readonly WorkspaceRow[]): readonly string[] => {
-  const counts = new Map<string, number>()
-  for (const row of rows) {
-    if (attentionOf(row) !== 'none' || row.verdict.kind !== 'retained') continue
-    counts.set(row.verdict.retained, (counts.get(row.verdict.retained) ?? 0) + 1)
-  }
-  if (counts.size === 0) return []
-  const total = [...counts.values()].reduce((sum, count) => sum + count, 0)
-  const reasons = [...counts.entries()]
-    .map(([reason, count]) => (count === 1 ? reason : `${reason} ×${count}`))
-    .join(', ')
-  return [paint(style, 'dim', `· ${total} retained (${reasons})`)]
+const statusOf = (row: WorkspaceRow): string => {
+  if (row.verdict.kind === 'retained') return RETAINED_DISPLAY[row.verdict.retained].status
+  return row.outcome === 'review-required'
+    ? 'An earlier removal did not finish.'
+    : 'A cleanup guard blocked removal after completion was verified.'
 }
 
-const commandBlock = (
-  style: TerminalStyle,
-  title: string,
-  command: string,
-  taskIds: readonly WorkspaceId[]
-): readonly string[] =>
-  taskIds.length === 0
-    ? []
-    : [
-        paint(style, 'bold', title),
-        ...taskIds.map(taskId => `  ${paint(style, 'warn', `${command} ${taskId}`)}`),
-      ]
+const commandStatus = (style: TerminalStyle, command: string, status: string): string =>
+  `${paint(style, 'warn', command)}\n${paint(style, 'dim', `Status: ${status}`)}`
 
-const TERMINAL_OUTCOMES: ReadonlySet<WorkspaceRow['outcome']> = new Set(['removed', 'released'])
+const count = (value: number, noun: string): string => `${value} ${noun}${value === 1 ? '' : 's'}`
+
+const successes = (rows: readonly { readonly outcome: string }[], style: TerminalStyle): string => {
+  const removed = rows.filter(row => row.outcome === 'removed').length
+  const released = rows.filter(row => row.outcome === 'released').length
+  return [
+    ...(removed === 0 ? [] : [paint(style, 'ok', `✓ ${count(removed, 'worktree')} removed`)]),
+    ...(released === 0 ? [] : [paint(style, 'ok', `✓ ${count(released, 'reservation')} released`)]),
+  ].join(' · ')
+}
 
 export const formatQuitReceipt = (
   receipt: SweepReceipt,
   elapsedMs: number,
-  style: TerminalStyle
+  style: TerminalStyle,
+  excluded: ReadonlyMap<WorkspaceId, string> = new Map()
 ): string => {
   const rows = workspaceRows(receipt)
-  const attempted = rows.filter(row => row.verdict.kind === 'finished')
-  const terminal = attempted.filter(row => TERMINAL_OUTCOMES.has(row.outcome)).length
-  const deferred = receipt.rows.filter(row => row.kind === 'task-deferred').length
-  const actions = receipt.rows.filter(
-    row => row.kind !== 'workspace' || attentionOf(row) !== 'action'
-  )
-  const kept = rows.filter(row => attentionOf(row) === 'action')
-  const lines = [...actions, ...kept].flatMap((row): readonly string[] => {
+  const offered = new Set(tasksToRelease(receipt).filter(taskId => !excluded.has(taskId)))
+  const remaining = rows.filter(row => !isDone(row))
+  const blocks = (selected: readonly WorkspaceRow[]): readonly string[] =>
+    selected.map(row =>
+      commandStatus(
+        style,
+        `dev workspace release ${row.taskId}`,
+        excluded.get(row.taskId) ?? statusOf(row)
+      )
+    )
+  const unavailable = remaining.filter(row => !offered.has(row.taskId))
+  const unassessed = receipt.rows.flatMap(row => {
     switch (row.kind) {
-      case 'workspace':
-        return workspaceLines(style, row)
       case 'task-failure':
         return [
-          headline(style, 'fail', '✗', 'not assessed', paint(style, 'dim', `task ${row.taskId}`)),
-          detail(style, row.reason),
+          commandStatus(
+            style,
+            `dev workspace check ${row.taskId}`,
+            'The workspace assessment failed.'
+          ),
         ]
       case 'task-deferred':
-        return []
+        return [
+          commandStatus(
+            style,
+            `dev workspace check ${row.taskId}`,
+            'The sweep ran out of time before assessing this task.'
+          ),
+        ]
       case 'sweep-failure':
-        return [headline(style, 'fail', '✗', 'sweep failed', ''), detail(style, row.reason)]
+        return [
+          commandStatus(
+            style,
+            'dev workspace list',
+            'The sweep failed before every task could be assessed.'
+          ),
+        ]
+      case 'workspace':
+        return []
     }
   })
   const summary =
-    receipt.rows.length === 0
-      ? 'no reserved workspace'
-      : `${terminal}/${attempted.length} finished workspace(s) reached a terminal outcome`
+    successes(rows, style) ||
+    (receipt.rows.length === 0 ? 'No reserved workspaces' : 'No workspaces removed')
   return [
-    paint(style, 'bold', 'Workspace sweep at quit'),
-    ...lines,
-    ...quietSummary(style, rows),
-    ...(deferred === 0
+    `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`,
+    ...blocks(remaining.filter(row => offered.has(row.taskId))),
+    ...(unavailable.length === 0
       ? []
-      : [paint(style, 'dim', `· ${deferred} task(s) deferred to the next sweep (time budget)`)]),
-    paint(style, 'dim', `${summary} · ${seconds(elapsedMs)}`),
-    ...commandBlock(style, 'Release required:', 'dev workspace release', tasksToRelease(receipt)),
-    ...commandBlock(
-      style,
-      'Assessment failed, check:',
-      'dev workspace check',
-      tasksToCheck(receipt)
-    ),
-  ].join('\n')
+      : [paint(style, 'bold', 'Not included in the quick release:'), ...blocks(unavailable)]),
+    ...unassessed,
+  ].join('\n\n')
+}
+
+export const quitReleaseExclusion = (
+  receipt: SweepReceipt,
+  views: readonly WorkspaceView[]
+): string | undefined => {
+  const assessed = new Set(workspaceRows(receipt).map(row => row.workspaceId))
+  if (views.some(view => !assessed.has(view.workspaceId)))
+    return 'The task has workspaces that this sweep did not assess.'
+  if (views.some(view => view.uses.some(use => use.stage !== 'quiescent')))
+    return 'The task has an active or unresolved workspace use.'
+  if (views.length === 0) return 'The task no longer has any workspace reservations.'
+  return undefined
 }
 
 export interface TaskReleasePlan {
@@ -247,38 +244,68 @@ export interface TaskReleasePlan {
 export const formatQuitReleasePlan = (
   plans: readonly TaskReleasePlan[],
   style: TerminalStyle
-): string =>
-  [
-    paint(
-      style,
-      'bold',
-      `${plans.length} task(s) need a release; it clears every workspace of each task:`
-    ),
-    ...plans.flatMap(({ taskId, views }) =>
-      views.map(
-        view =>
-          `  ${paint(style, 'dim', `task ${shortId(taskId)}`)}  ${pathText(style, view.path)}  ${
-            view.origin === 'managed'
-              ? paint(style, 'fail', 'the worktree and everything in it are deleted')
-              : paint(style, 'dim', 'only the reservation ends; files and commits stay')
-          }`
-      )
-    ),
+): string => {
+  const views = plans.flatMap(plan => plan.views)
+  const managed = views.filter(view => view.origin === 'managed').length
+  const existing = views.length - managed
+  const scope = [
+    ...(managed === 0 ? [] : [count(managed, 'managed worktree')]),
+    ...(existing === 0 ? [] : [count(existing, 'checkout reservation')]),
+  ].join(', ')
+  return [
+    '',
+    paint(style, 'bold', `Release ${count(plans.length, 'task')} (${scope})?`),
+    ...(managed === 0
+      ? []
+      : [
+          paint(
+            style,
+            'fail',
+            'This deletes all their managed worktrees, including uncommitted changes and undelivered commits.'
+          ),
+        ]),
+    ...(existing === 0
+      ? []
+      : ['Pre-existing checkouts keep their files and commits; only their reservations end.']),
   ].join('\n')
+}
+
+export const formatQuitReleasePrompt = (style: TerminalStyle): string =>
+  paint(style, 'warn', '[y = release, Enter = keep] ')
+
+export const formatQuitSweepFailure = (style: TerminalStyle): string =>
+  commandStatus(
+    style,
+    'dev workspace list',
+    'The sweep did not report back; its outcome is unknown.'
+  )
+
+export const formatQuitReleaseFailure = (
+  taskId: WorkspaceId,
+  outcome: 'failed' | 'unreported',
+  style: TerminalStyle
+): string =>
+  commandStatus(
+    style,
+    `dev workspace release ${taskId}`,
+    outcome === 'failed'
+      ? 'The release failed; its recorded outcome needs review.'
+      : 'The release did not report back; its outcome is unknown.'
+  )
 
 export const formatQuitReleaseResults = (
   taskId: WorkspaceId,
   results: readonly WorkspaceReleaseResult[],
   style: TerminalStyle
 ): string =>
-  results
-    .flatMap(result => {
-      const rest = `${pathText(style, result.path)}  ${paint(style, 'dim', `task ${shortId(taskId)}`)}`
-      return result.outcome === 'failed'
-        ? [headline(style, 'fail', '✗', 'failed', rest), detail(style, result.reason)]
-        : [headline(style, 'ok', '✓', result.outcome, rest)]
-    })
-    .join('\n')
+  [
+    successes(results, style),
+    ...results
+      .filter(result => result.outcome === 'failed')
+      .map(() => formatQuitReleaseFailure(taskId, 'failed', style)),
+  ]
+    .filter(text => text.length > 0)
+    .join('\n\n')
 
 export const formatExitLine = (style: TerminalStyle, code: number, text: string): string =>
   paint(style, code === 0 ? 'ok' : 'fail', `Exit ${code}: ${text}.`)
