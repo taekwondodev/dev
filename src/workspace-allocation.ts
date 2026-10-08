@@ -4,11 +4,11 @@ import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './wor
 import {
   assertNoLiveExecution,
   type ConversationState,
-  type CurrentSource,
   type GateIntent,
   type GrantLease,
   type HeldPathGate,
   type LeaseKind,
+  type WorkspaceSource,
 } from './workspace-conversation.ts'
 import {
   requireReview,
@@ -173,7 +173,7 @@ const orderedAllocationGates = (
 }
 
 interface Allocation {
-  readonly source: CurrentSource
+  readonly source: WorkspaceSource
   readonly taskId: WorkspaceId
   readonly workspace: WorkspaceRecord
   readonly reservation: ReservationRecord
@@ -213,7 +213,7 @@ export type AllocationSweep = (
 const allocateWorktree = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  source: CurrentSource,
+  source: WorkspaceSource,
   taskId: WorkspaceId,
   reason: AllocationReason,
   sweep: AllocationSweep,
@@ -277,15 +277,17 @@ const allocateWorktree = (
       createdAt: now(),
     } satisfies TransitionOperationRecord
     operation = intent
+    inDb(authority, state.repositoryId, db => {
+      const binding = getBinding(db, state.key)
+      if (
+        binding === undefined ||
+        binding.revision !== state.binding.revision ||
+        binding.workspaceId !== state.binding.workspaceId
+      )
+        requireReview('Conversation binding changed before worktree allocation')
+    })
     inDb(authority, source.repo, db =>
       transaction(db, () => {
-        const binding = getBinding(db, state.key)
-        if (
-          binding === undefined ||
-          binding.revision !== state.binding.revision ||
-          binding.workspaceId !== source.workspace.id
-        )
-          requireReview('Conversation binding changed before worktree allocation')
         const task = getTask(db, taskId)
         if (task === undefined)
           putTask(db, { id: taskId, repositoryId: source.repo, revision: 0, createdAt: now() })
@@ -387,7 +389,7 @@ const allocateWorktree = (
 export const allocateDelegatedWorkspace = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  source: CurrentSource,
+  source: WorkspaceSource,
   taskId: WorkspaceId,
   execution: WorkspaceExecution | undefined,
   sweep: AllocationSweep
@@ -427,7 +429,7 @@ export const allocateDelegatedWorkspace = (
 export const isolateContendedWriter = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  source: CurrentSource,
+  source: WorkspaceSource,
   taskId: WorkspaceId,
   sweep: AllocationSweep
 ): WorkspaceAuthorization => {

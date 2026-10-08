@@ -472,6 +472,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
   input: {
     readonly anchorWorkspaceId: WorkspaceId
+    readonly delegatedCwds: readonly string[]
     readonly occupiedPaths: readonly string[]
     readonly detached: boolean
     readonly proceed: () => boolean
@@ -490,6 +491,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
         sweepIndicator(style, process.stdout),
         lifecycle.sweep({
           anchorWorkspaceId: input.anchorWorkspaceId,
+          delegatedCwds: input.delegatedCwds,
           occupiedPaths: input.occupiedPaths.map(path => resolve(path)),
         })
       )
@@ -932,7 +934,7 @@ const run = Effect.fnUntraced(function* (
     yield* sessionProgram
     if (quit === undefined) return false
     yield* lease.release
-    const { binding } = workspaceHost.attachment
+    const { binding, delegatedCwds } = workspaceHost.attachment
     yield* Effect.sync(() => {
       try {
         process.chdir(returnCwd)
@@ -946,6 +948,7 @@ const run = Effect.fnUntraced(function* (
         Effect.andThen(
           sweepAtQuit(workspaceLifecycle, {
             anchorWorkspaceId: binding.workspaceId,
+            delegatedCwds,
             occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
             detached: workspaceHost.isDetached(),
             proceed,

@@ -42,11 +42,13 @@ export type GrantLease = LeaseKind & {
 export type ScopedLease = Extract<GrantLease, { readonly withinUseId: WorkspaceId }>
 export const isScoped = (lease: GrantLease): lease is ScopedLease =>
   lease.kind === 'native-file-write' || lease.kind === 'opaque'
-export interface CurrentSource {
+export interface WorkspaceSource {
   readonly repo: WorkspaceId
-  readonly binding: BindingRecord
   readonly workspace: WorkspaceRecord
   readonly git: GitWorkspace
+}
+export interface CurrentSource extends WorkspaceSource {
+  readonly binding: BindingRecord
 }
 export interface GateIntent {
   readonly repositoryId: WorkspaceId
@@ -76,6 +78,7 @@ export interface ConversationState {
   readonly leaseAttachments: Map<WorkspaceId, Set<WorkspaceId>>
   readonly extraGates: HeldPathGate[]
   readonly deferredGateReleases: Map<string, GateWorkspace>
+  readonly foreignTasks: Map<WorkspaceId, WorkspaceId>
   refs: number
   parked: boolean
   closing: boolean

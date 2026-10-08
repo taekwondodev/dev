@@ -24,6 +24,10 @@ import { canonicalPath, isWithin } from './workspace-paths.ts'
 import {
   RepositoryCatalogSchema,
   getWorkspace,
+  getWorkspaceByPath,
+  putWorkspace,
+  makeWorkspaceRecord,
+  matchesGitWorkspace,
   getReservationById,
   getBinding,
   validateWorkspacePath,
@@ -649,6 +653,31 @@ export const inDb = <A>(
   create = false,
   git?: GitWorkspace
 ): A => authority.inShard(repo, callback, create, git)
+export const registerWorkspace = (
+  authority: WorkspaceAuthority,
+  repo: WorkspaceId,
+  git: GitWorkspace
+): WorkspaceRecord =>
+  inDb(
+    authority,
+    repo,
+    db =>
+      transaction(db, () => {
+        const existing = getWorkspaceByPath(db, git.path)
+        if (existing !== undefined) {
+          if (!matchesGitWorkspace(existing, git))
+            requireReview(`Workspace path slot was replaced: ${existing.path}`)
+          if (existing.status !== 'ready')
+            requireReview(`Workspace allocation is unresolved: ${existing.path}`)
+          return existing
+        }
+        const record = makeWorkspaceRecord(repo, git, 'pre-existing')
+        putWorkspace(db, record)
+        return record
+      }),
+    true,
+    git
+  )
 export const taskWorkspaces = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId

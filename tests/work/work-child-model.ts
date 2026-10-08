@@ -58,6 +58,15 @@ const textOf = (content: unknown): string => {
     )
     .join('')
 }
+const systemTextOf = (message: unknown): string[] =>
+  Predicate.isObject(message) && message.role === 'system'
+    ? [
+        textOf(message.content),
+        ...(Predicate.isObject(message.sections)
+          ? Object.values(message.sections).filter(section => typeof section === 'string')
+          : []),
+      ]
+    : []
 
 const scriptedStream = (calls: string, attemptId: string) => {
   let assignment: string | undefined
@@ -74,7 +83,7 @@ const scriptedStream = (calls: string, attemptId: string) => {
         'systemPrompt' in context && typeof context.systemPrompt === 'string'
           ? context.systemPrompt
           : '',
-        ...byRole('system'),
+        ...messages.flatMap(systemTextOf),
       ].join('\n')
       if (system.includes('You are a context summarization assistant.')) {
         appendFileSync(calls, `summary:${attemptId}\n`)
@@ -125,6 +134,8 @@ const scriptedStream = (calls: string, attemptId: string) => {
             'MODEL-SAW',
             assignment,
             `SYSTEM-SKILL-BLOCKS ${system.split('<skill name=').length - 1}`,
+            'SYSTEM-INSTRUCTIONS',
+            ...(system.match(/FIXTURE-INSTRUCTIONS [^\n]*/g) ?? []),
             'TOOL-RESULTS',
             ...byRole('toolResult'),
             'LATER-MESSAGES',

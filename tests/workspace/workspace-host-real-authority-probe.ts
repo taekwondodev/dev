@@ -716,6 +716,7 @@ await claim(
           },
           {
             anchorWorkspaceId: binding.workspaceId,
+            delegatedCwds: [],
             occupiedPaths: [fixture, initialSessionFile],
             detached: workspaceHost.isDetached(),
             proceed: () => true,
@@ -740,6 +741,7 @@ await claim(
     await Effect.runPromise(
       sweepAtQuit(lifecycle.effect, {
         anchorWorkspaceId: binding.workspaceId,
+        delegatedCwds: [],
         occupiedPaths: [fixture, initialSessionFile],
         detached: workspaceHost.isDetached(),
         proceed: () => true,

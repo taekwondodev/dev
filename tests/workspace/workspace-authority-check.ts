@@ -198,6 +198,12 @@ const processExecution = (name: string): WorkspaceExecution => ({
   attemptId: `${name}-attempt`,
   generation: `${name}-generation`,
 })
+const foreignExecution = (attemptId: string): WorkspaceExecution => ({
+  sessionId: 'delegated-session',
+  taskKey: 'foreign',
+  attemptId,
+  generation: 'foreign',
+})
 const liveProcess = {
   pid: process.pid,
   parent: process.ppid,
@@ -593,6 +599,130 @@ try {
     }
   )
 
+  const foreignRepo = join(sandbox, 'foreign-repo')
+  const foreignCommit = initRepository(foreignRepo, 'foreign.txt', 'foreign fixture\n')
+  writeFileSync(join(foreignRepo, 'untracked.txt'), 'dirty foreign data\n')
+  const foreignGrant = await claim(
+    "a delegated write with a cwd in another checkout allocates a worktree from that checkout's HEAD, registers it and one task per conversation in that repository, copies no dirty file, admits a read-only child on the checkout itself, and refuses directories outside any checkout, inside the authority or inside managed worktrees; process writes and plain reads stay bound",
+    async () => {
+      const boundBefore = delegated.binding
+      const elsewhere = ready(
+        await delegated.authorize({
+          kind: 'delegated-write',
+          cwd: foreignRepo,
+          execution: foreignExecution('foreign-one'),
+        })
+      )
+      assert.deepEqual([elsewhere.origin, elsewhere.access], ['managed', 'write'])
+      assert.notEqual(elsewhere.repositoryId, delegatedGrant.repositoryId)
+      assert.notEqual(elsewhere.taskId, delegatedGrant.taskId)
+      assert.ok(inside(root, elsewhere.checkout), elsewhere.checkout)
+      assert.equal(elsewhere.cwd, elsewhere.checkout)
+      assert.equal(git(['rev-parse', 'HEAD'], elsewhere.checkout), foreignCommit)
+      assert.equal(
+        readFileSync(join(elsewhere.checkout, 'foreign.txt'), 'utf8'),
+        'foreign fixture\n'
+      )
+      assert.equal(existsSync(join(elsewhere.checkout, 'untracked.txt')), false)
+      assert.equal(readFileSync(join(foreignRepo, 'untracked.txt'), 'utf8'), 'dirty foreign data\n')
+      assert.deepEqual(delegated.binding, boundBefore, 'the lead stays bound to its own checkout')
+      const second = ready(
+        await delegated.authorize({ kind: 'delegated-write', cwd: join(foreignRepo, '.') })
+      )
+      assert.equal(
+        second.taskId,
+        elsewhere.taskId,
+        'one foreign task per conversation and checkout'
+      )
+      assert.notEqual(second.workspaceId, elsewhere.workspaceId)
+      const views = await lifecycle.inspect({ cwd: foreignRepo })
+      for (const grant of [elsewhere, second])
+        assert.ok(
+          views.some(
+            view =>
+              view.workspaceId === grant.workspaceId &&
+              view.repositoryId === grant.repositoryId &&
+              view.taskId === grant.taskId &&
+              view.origin === 'managed'
+          ),
+          JSON.stringify(views)
+        )
+      assert.ok(
+        views.some(view => view.path === foreignRepo && view.origin === 'pre-existing'),
+        JSON.stringify(views)
+      )
+      assert.ok(
+        !(await lifecycle.inspect({ cwd: repo })).some(
+          view => view.workspaceId === elsewhere.workspaceId
+        ),
+        'the foreign worktree is not recorded in the bound repository'
+      )
+      const reader = ready(
+        await delegated.authorize({
+          kind: 'read',
+          cwd: foreignRepo,
+          execution: foreignExecution('foreign-reader'),
+        })
+      )
+      assert.deepEqual(
+        [reader.access, reader.origin, reader.checkout, reader.cwd, reader.taskId],
+        ['read', 'pre-existing', foreignRepo, foreignRepo, elsewhere.taskId]
+      )
+      const plain = join(sandbox, 'not-a-checkout')
+      mkdirSync(plain)
+      const otherConversationWorktree = activeContender.binding.cwd
+      assert.ok(
+        inside(root, otherConversationWorktree) &&
+          otherConversationWorktree !== elsewhere.checkout &&
+          activeContender.binding.conversation.sessionId !==
+            delegated.binding.conversation.sessionId,
+        'the contender is bound to a managed worktree of another conversation'
+      )
+      for (const cwd of [plain, root, elsewhere.checkout, otherConversationWorktree])
+        await expectWorkspaceError(delegated.authorize({ kind: 'delegated-write', cwd }), 'invalid')
+      await expectWorkspaceError(
+        delegated.authorize({ kind: 'write', cwd: foreignRepo }),
+        'invalid'
+      )
+      await expectWorkspaceError(delegated.authorize({ kind: 'read', cwd: foreignRepo }), 'invalid')
+      return elsewhere
+    }
+  )
+
+  await claim(
+    "with another task reserving the foreign checkout, a foreign delegation still gets an isolated worktree from that checkout's HEAD and the reserving task's files stay untouched",
+    async () => {
+      const reserving = await lifecycle.attach({
+        conversation: conversation('foreign-owner'),
+        cwd: foreignRepo,
+      })
+      const reservation = ready(await reserving.authorize({ kind: 'write' }))
+      assert.equal(reservation.checkout, foreignRepo)
+      writeFileSync(join(foreignRepo, 'foreign.txt'), 'owner working-tree edit\n')
+      const isolated = ready(
+        await delegated.authorize({ kind: 'delegated-write', cwd: foreignRepo })
+      )
+      assert.equal(isolated.origin, 'managed')
+      assert.equal(isolated.taskId, foreignGrant.taskId)
+      assert.notEqual(isolated.taskId, reservation.taskId)
+      assert.equal(git(['rev-parse', 'HEAD'], isolated.checkout), foreignCommit)
+      assert.equal(
+        readFileSync(join(isolated.checkout, 'foreign.txt'), 'utf8'),
+        'foreign fixture\n'
+      )
+      assert.equal(
+        readFileSync(join(foreignRepo, 'foreign.txt'), 'utf8'),
+        'owner working-tree edit\n'
+      )
+      assert.equal(
+        ready(await reserving.authorize({ kind: 'write' })).workspaceId,
+        reservation.workspaceId,
+        'the reserving writer keeps its checkout'
+      )
+      await reserving.close()
+    }
+  )
+
   await claim(
     'workspace switch refusals distinguish lead-shell recovery from work cancellation, even when a work task is named lead-shell',
     async () => {
@@ -959,7 +1089,12 @@ try {
       await reopenedHandoff.handoff(transition, async () => 'confirmed')
       assert.equal(reopenedHandoff.binding.workspaceId, delegatedGrant.workspaceId)
       await reopenedHandoff.close()
-      assert.equal((await reopened.inspect({})).filter(view => view.origin === 'managed').length, 5)
+      assert.equal(
+        (await reopened.inspect({})).filter(
+          view => view.origin === 'managed' && view.repositoryId !== foreignGrant.repositoryId
+        ).length,
+        5
+      )
       await reopened.close()
     }
   )

@@ -26,17 +26,17 @@ The `work` tool's `taskId` is a controller-local key, not the durable workflow-t
 
 ## Workspace
 
-| Term                      | Meaning                                                                                                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Workflow task**         | A unit of work whose durable identity spans conversations and attempts, with one or more workspaces.                                                                |
-| **Workspace**             | A Git checkout used by a workflow task, pre-existing or allocated by dev.                                                                                           |
-| **Managed worktree**      | A workspace allocated inside the authority from the exact current commit of the lead checkout. It is disposable once its work is delivered.                         |
-| **Workspace reservation** | The durable association retaining a workspace for a task, independently of executions using it.                                                                     |
-| **Write acquisition**     | An execution's exclusive right to write a workspace, with an identity distinct from prior acquisitions.                                                             |
-| **Workspace use**         | The recorded presence of a conversation, operation or process. A process use ends only when its family is observed gone; an `unknown` use blocks writers.           |
-| **Completion verdict**    | A workspace's role and either a finished rule or a retained reason, derived from recorded or observed facts rather than a workflow declaration.                     |
-| **Sweep**                 | Dev's budgeted assessment and release of finished workspaces in a repository, at quit and before managed allocation.                                                |
-| **Task release**          | The user's interactively confirmed clearing of every workspace a task reserves, whatever the sweep verdict.                                                         |
-| **Cleanup evidence**      | Recorded target and publication readback facts, combined with use, identity and structural checks. Source-history inclusion does not prove delivery of dirty edits. |
+| Term                      | Meaning                                                                                                                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Workflow task**         | A unit of work whose durable identity spans conversations and attempts, with one or more workspaces.                                                                                     |
+| **Workspace**             | A Git checkout used by a workflow task, pre-existing or allocated by dev.                                                                                                                |
+| **Managed worktree**      | A workspace allocated inside the authority from the exact current commit of its source checkout, the lead's or another checkout named for a delegation. It is disposable once delivered. |
+| **Workspace reservation** | The durable association retaining a workspace for a task, independently of executions using it.                                                                                          |
+| **Write acquisition**     | An execution's exclusive right to write a workspace, with an identity distinct from prior acquisitions.                                                                                  |
+| **Workspace use**         | The recorded presence of a conversation, operation or process. A process use ends only when its family is observed gone; an `unknown` use blocks writers.                                |
+| **Completion verdict**    | A workspace's role and either a finished rule or a retained reason, derived from recorded or observed facts rather than a workflow declaration.                                          |
+| **Sweep**                 | Dev's budgeted assessment and release of finished workspaces in a repository, at quit and before managed allocation.                                                                     |
+| **Task release**          | The user's interactively confirmed clearing of every workspace a task reserves, whatever the sweep verdict.                                                                              |
+| **Cleanup evidence**      | Recorded target and publication readback facts, combined with use, identity and structural checks. Source-history inclusion does not prove delivery of dirty edits.                      |
 
 [Workspace](docs/workspace.md) owns commands and release behavior. [ADR 0005](docs/adr/0005-scoped-runtime-coordination.md) records the ownership and disposal constraints.

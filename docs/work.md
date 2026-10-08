@@ -14,6 +14,8 @@ A leading `/skill:name` loads the skill natively and selects dispatch as describ
 
 Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 
+For `delegate`, `cwd` may name a directory inside another Git checkout. The child then works in a managed worktree allocated from that checkout's current commit, or reads that checkout directly when read-only, and discovers that repository's project instructions, skills and delivery policy natively; it delivers through that repository's own policy. The lead stays bound to its own repository: it reads the other checkout with its native read tools, inspects the attempt, and still cannot write or edit there ([native writes](workspace.md#native-writes)). `process` commands keep `cwd` inside the bound workspace, leaves cannot name a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there. [Workspace](workspace.md#admission-and-isolation) describes the admission and the refused directories.
+
 ```text
 /work                        list this session's attempts, including leaves and their parent
 /work dispatch               inspect configured dispatch rules; not a prerequisite to launch
@@ -30,7 +32,7 @@ Writer attempts show their managed-worktree path as `blocked` while use is unres
 
 ### Execution and access
 
-A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions in the requested directory, under the lead checkout's writer admission. A delegated writer receives a distinct worktree from the lead's exact current commit: modified, untracked and ignored files are not copied. Its reservation outlives the attempt.
+A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions in the requested directory, under the lead checkout's writer admission. A delegated writer receives a distinct worktree from the exact current commit of its source checkout, the lead's or the other checkout named by `cwd`: modified, untracked and ignored files are not copied. Its reservation outlives the attempt, and `worktree.path` records the worktree wherever it was allocated.
 
 A read-only child loads the same global extensions as a writing child, so it can use every model their providers register. Its tools are an allowlist: inspection tools, plus `work` for a coordinator, with no shell, edit or extension tool, so it cannot reach the network or `gh`. Both `work` tool descriptions state this, so callers put issue, PR or other external text in the prompt or a workspace file. An extension tool that reuses an inspection tool's name is blocked, so the child loses that tool. Every child receives project instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Writing children use the same [native destination policy](workspace.md#native-writes) as the lead, with controller checks through the file-operation boundary.
 

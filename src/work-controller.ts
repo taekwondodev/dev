@@ -139,8 +139,10 @@ const admissionOf = (
   execution: WorkspaceExecution
 ): WorkspaceOperation => {
   if (request.kind === 'process') return { kind: 'write', cwd }
-  if (parent !== undefined && request.access === 'read-only')
-    return { kind: 'leaf-read', coordinator: parent.workspace, execution }
+  if (parent !== undefined)
+    return request.access === 'read-only'
+      ? { kind: 'leaf-read', coordinator: parent.workspace, execution }
+      : { kind: 'delegated-write', coordinator: parent.workspace, execution }
   return { kind: request.access === 'read-only' ? 'read' : 'delegated-write', cwd, execution }
 }
 

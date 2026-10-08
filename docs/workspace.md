@@ -44,6 +44,8 @@ Independent checkouts and linked worktrees progress concurrently. Only dev's str
 
 Tools need a recorded effect classification; an unknown tool is refused visibly without ending the turn. Trusted project resources load under [Pi folder trust](../SECURITY.md#trusted-base). A read-only leaf is admitted on its running coordinator's workspace, the sole read outside the conversation's own binding ([work](work.md#coordinators-and-leaves)).
 
+A `work` delegation whose `cwd` lies in another Git checkout admits that checkout as a foreign source. Dev identifies it physically like the conversation's own checkout, registers it as a pre-existing workspace in that repository's authority, and allocates the writer's worktree from its current commit after the usual sweep of that repository; a read-only child shares presence on the checkout like any reader. The foreign worktrees of one conversation and checkout belong to one workflow task for the session, created on first use, and are listed by `dev workspace` in that repository. The conversation stays bound to its own checkout: `/workspace` shows that binding, `set-target` acts on the conversation's own task, and `process` commands, leaves and native writes do not follow. A `cwd` outside any Git checkout, inside the authority's storage or inside a managed worktree is refused, as is a replaced or unreadable checkout.
+
 ### Native writes
 
 Lead and writing-child write/edit classify destinations before writer admission:
@@ -75,7 +77,7 @@ A gate-close failure is deferred: the report succeeds with a warning, the gate r
 
 ### Sweep
 
-At quit and before managed allocation, dev assesses every task of the repository and makes one fenced attempt per finished workspace. Completion comes from recorded and observed facts, not declarations that work is done.
+At quit and before managed allocation, dev assesses every task of the repository and makes one fenced attempt per finished workspace. At quit, the repositories of the other checkouts the conversation delegated into during the session follow, refused delegations included, within the same budget, so those worktrees reach the same verdicts and the same receipt. A repository whose records cannot be read at that moment is reported as a failed sweep row with its cause and nothing of it is released; the other repositories still reach their outcomes, and the next sweep assesses it again. Completion comes from recorded and observed facts, not declarations that work is done.
 
 | Finished rule      | Meaning                                                                                                      |
 | ------------------ | ------------------------------------------------------------------------------------------------------------ |

@@ -6,7 +6,13 @@ import {
   isolateContendedWriter,
   type AllocationSweep,
 } from './workspace-allocation.ts'
-import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
+import {
+  toGrant,
+  inDb,
+  registerWorkspace,
+  validateWorkspace,
+  type WorkspaceAuthority,
+} from './workspace-authority.ts'
 import {
   isScoped,
   retryDeferredGateReleases,
@@ -16,6 +22,7 @@ import {
   type CurrentSource,
   type GrantLease,
   type LeaseKind,
+  type WorkspaceSource,
 } from './workspace-conversation.ts'
 import {
   blocked,
@@ -34,6 +41,7 @@ import {
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
+import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import {
   assertDestinationUnchanged,
   classifyWriteDestination,
@@ -59,6 +67,7 @@ import {
 } from './workspace-records.ts'
 import { transaction } from './workspace-sqlite.ts'
 import { newId, now } from './workspace-platform.ts'
+import { errorText } from './error-text.ts'
 
 const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<WorkspaceId>()
@@ -136,22 +145,24 @@ const admit = (
     return authorizeScoped(authority, attachment, operation)
   if (operation.kind === 'leaf-read')
     return authorizeLeafRead(authority, attachment, operation.coordinator, operation.execution)
+  if (operation.kind === 'delegated-write' && operation.coordinator !== undefined)
+    assertLocalCoordinator(attachment, operation.coordinator)
   const source = currentSource(authority, state)
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
   if (!isWithin(source.workspace.path, cwd))
-    invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
+    return authorizeForeign(authority, state, operation, source.binding.revision, cwd, sweep)
   if (operation.kind === 'read') {
-    const ready = authorizeRead(authority, state, source, cwd)
-    if (operation.execution === undefined) return ready
-    const base = state.leases.get(ready.grant.useId)
-    if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
-    return executionUse(
+    const ready = authorizeRead(
       authority,
       state,
-      validateGrant(authority, state, base.grant),
-      operation.execution
+      source,
+      source.binding.taskId,
+      source.binding.revision,
+      cwd
     )
+    if (operation.execution === undefined) return ready
+    return attributeReader(authority, state, ready.grant, operation.execution)
   }
   if (operation.kind === 'delegated-write')
     return allocateDelegatedWorkspace(
@@ -288,6 +299,80 @@ const admit = (
   }
 }
 
+const assertLocalCoordinator = (
+  attachment: AttachmentHandle,
+  coordinator: WorkspaceGrant
+): void => {
+  const owners = attachment.state.leaseAttachments.get(coordinator.useId)
+  if (owners === undefined || !owners.has(attachment.token))
+    requireReview('Coordinator grant was not issued to this attachment')
+  if (coordinator.repositoryId !== attachment.state.repositoryId)
+    invalid(
+      'A coordinator delegated into another checkout can start only read-only leaves there; it writes that checkout itself'
+    )
+}
+
+const foreignSource = (authority: WorkspaceAuthority, cwd: string): WorkspaceSource => {
+  if (isWithin(authority.root, cwd))
+    invalid(
+      `A delegated child cannot start inside dev authority storage or a managed workspace: ${cwd}`
+    )
+  let git: GitWorkspace
+  try {
+    git = canonicalGitWorkspace(cwd)
+  } catch (cause) {
+    return invalid(
+      `Operation cwd is outside the selected workspace and not inside another Git checkout: ${cwd} (${errorText(cause)})`
+    )
+  }
+  const repo = authority.registerRepository(git)
+  return { repo, workspace: registerWorkspace(authority, repo, git), git }
+}
+
+const authorizeForeign = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  operation: Extract<WorkspaceOperation, { readonly kind: 'read' | 'write' | 'delegated-write' }>,
+  bindingRevision: number,
+  cwd: string,
+  sweep: AllocationSweep
+): WorkspaceAuthorization => {
+  if (
+    operation.kind === 'write' ||
+    (operation.kind === 'read' && operation.execution === undefined)
+  )
+    invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
+  const source = foreignSource(authority, cwd)
+  const taskId = state.foreignTasks.get(source.workspace.id)
+  if (operation.kind === 'read') {
+    const ready = authorizeRead(authority, state, source, taskId, bindingRevision, cwd)
+    return attributeReader(authority, state, ready.grant, operation.execution)
+  }
+  const allocated = allocateDelegatedWorkspace(
+    authority,
+    state,
+    source,
+    taskId ?? newId(),
+    operation.execution,
+    sweep
+  )
+  if (allocated.kind === 'ready' && allocated.grant.taskId !== undefined)
+    state.foreignTasks.set(source.workspace.id, allocated.grant.taskId)
+  return allocated
+}
+
+const attributeReader = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  grant: WorkspaceGrant,
+  execution: WorkspaceExecution | undefined
+): WorkspaceAuthorization => {
+  if (execution === undefined) invalid('A delegated reader needs an execution identity')
+  const base = state.leases.get(grant.useId)
+  if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
+  return executionUse(authority, state, validateGrant(authority, state, base.grant), execution)
+}
+
 const authorizeScoped = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
@@ -369,10 +454,12 @@ const authorizeScoped = (
 const authorizeRead = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  source: CurrentSource,
+  source: WorkspaceSource,
+  taskId: WorkspaceId | undefined,
+  bindingRevision: number,
   cwd: string
 ): WorkspaceAuthorization & { readonly kind: 'ready' } => {
-  const { repo, workspace, binding } = source
+  const { repo, workspace } = source
   const ready = (grant: WorkspaceGrant): WorkspaceAuthorization & { readonly kind: 'ready' } => {
     const warning = writerWarning(authority, state, repo, workspace.id)
     return { kind: 'ready', grant, ...(warning === undefined ? {} : { warning }) }
@@ -383,7 +470,7 @@ const authorizeRead = (
       lease.kind === 'ordinary' &&
       lease.grant.access === 'read' &&
       lease.grant.workspaceId === workspace.id &&
-      lease.grant.revision === binding.revision
+      lease.grant.revision === bindingRevision
     )
       return ready(lease.grant)
   }
@@ -393,13 +480,13 @@ const authorizeRead = (
     const use = {
       id: newId(),
       workspaceId: workspace.id,
-      taskId: binding.taskId,
+      taskId,
       ...(reservation === undefined ? {} : { reservationId: reservation.id }),
       access: 'read',
       stage: 'authorized',
       processes: [],
       incarnation: state.incarnation,
-      bindingRevision: binding.revision,
+      bindingRevision,
       revision: 0,
       createdAt: now(),
       updatedAt: now(),

@@ -459,6 +459,7 @@ const makeAttachment = (
     get binding() {
       return binding
     },
+    delegatedCwds: [],
     authorize: operation => fromAsync(() => rules.authorize(operation)),
     select: selection => fromAsync(() => rules.select(selection)),
     reportExecution: (grant, fact) =>
