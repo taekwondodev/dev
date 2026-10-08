@@ -118,7 +118,7 @@ External programs are not coordinated. Stop independently started tools and avoi
 
 `/quit` stops owned work and shells, closes the attachment, releases installation/source claims, then sweeps uninterruptibly, prints a receipt and offers the [eligible remaining tasks for release](#sweep). Ctrl-C before the sweep releases nothing. During the sweep, an attempt reaches its recorded outcome; a Git step also interrupted by the signal stays `release-review` until `dev workspace release`. Ctrl-C at the release prompt releases nothing; during a confirmed release, each started release reaches its recorded outcome.
 
-SIGHUP after quit can end dev without a receipt; the next sweep reports an interrupted removal as `release-review`. Signals, crashes, startup, turn end and session replacements do not initiate sweeps. If a sweep does not report back, its outcome remains unknown and the launcher points to `inspect`.
+SIGHUP after quit can end dev without a receipt; the next sweep reports an interrupted removal as `release-review`. Signals, crashes, startup, turn end and session replacements do not initiate sweeps. If a sweep does not report back, its outcome remains unknown and the launcher points to `dev workspace list`.
 
 ### Exit codes
 
