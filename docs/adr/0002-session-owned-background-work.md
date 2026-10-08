@@ -28,6 +28,4 @@ Use Pi's `/skill:name` expansion instead of injected skill bodies or a filtered 
 
 The [workspace integration decision](https://github.com/taekwondodev/dev/issues/30#issuecomment-5797305294) keeps WorkOwner as process/attempt authority and WorkspaceLifecycle as reservation/binding authority. Before releasing user code, publish launch intent and captured process identity under a distinct use/acquisition fence.
 
-An attempt's completion is not workspace quiescence. Its use ends only when the process group and tracked descendants are observed gone; lost observation leaves an `unknown` use that blocks independently of attempt retention. Ending a conversation alone releases no workspace. Only user quit follows disposal with a sweep; signals, crashes and replacements initiate none.
-
-[ADR 0004](0004-authoritative-lifecycle-incremental-store.md) owns lifecycle persistence. [ADR 0005](0005-scoped-runtime-coordination.md#release) owns release after observed quiescence.
+Attempt completion does not establish workspace quiescence. [ADR 0005](0005-scoped-runtime-coordination.md#process-observation) owns the process-observation criterion; [its release decision](0005-scoped-runtime-coordination.md#release) separates automatic disposal from explicit task release. [ADR 0004](0004-authoritative-lifecycle-incremental-store.md) owns lifecycle persistence.

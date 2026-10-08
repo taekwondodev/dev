@@ -14,7 +14,7 @@ Preparation begins ahead of Pi's native blocking threshold when there is a valid
 
 A ready summary applies at the first safe turn or settle boundary, or immediately while idle without a model request. The selected recent history and messages added during preparation remain verbatim. Raw conversation history stays stored.
 
-Each applied summary is announced to loaded extensions through Pi's `session_compact` event, with the committed `compactionEntry`, `fromExtension: true`, `reason: 'threshold'` and `willRetry: false`, as native automatic compaction sends. Extensions that mirror history, such as `pi-claude-bridge`, rebuild from it. The event is sent after the entry is stored and the context refreshed. The next model request, whether a new prompt or a continuation after a tool result, waits until every handler has completed. Discarded or rejected summaries send no event, and a superseding native compaction sends only its own. The TUI's `compaction_start` and `compaction_end` events are not sent for background summaries.
+Applied summaries notify loaded extensions through Pi's `session_compact` event after history and context are updated. The next model request waits for those handlers, so extensions that mirror history can rebuild first. Discarded summaries send no notification; native compaction keeps its own notification. Background summaries do not emit the TUI's blocking-compaction start/end events.
 
 Changing the summarized context, branch or session invalidates a pending result. Navigation, reload and closing discard pending work; reopening restores stored history, not an unfinished preparation. Preparation failure leaves ordinary work and native recovery available.
 

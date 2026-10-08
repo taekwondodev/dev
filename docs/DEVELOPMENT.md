@@ -23,11 +23,11 @@ Checks and setup regenerate an ignored `node_modules/@earendil-works` link to th
 
 ### Pi integration limits
 
-Forking before the first user message can fail after a workspace rebind (#98); we leave this unfixed because dev-cycle does not use `/fork`.
+Forking before the first user message can fail after a workspace rebind. [Issue #98](https://github.com/taekwondodev/dev/issues/98) tracks that limit.
 
 ## Find the owner
 
-[ARCHITECTURE](ARCHITECTURE.md#components) maps source areas to their behavior docs. [CONTEXT](../CONTEXT.md) owns vocabulary; [AGENTS.md](../AGENTS.md#conditional-references) owns mandatory reading triggers. Portable guidance belongs in profiles or the external shared library, not in this repository's entry point.
+[Architecture](ARCHITECTURE.md#components) maps source areas to their behavior guides. [AGENTS.md](../AGENTS.md#read-for-the-change) supplies mandatory reading triggers. Use the [documentation ownership table](#documentation-ownership) when the change affects more than code.
 
 Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. Checks that load a profile write a disposable manifest with `tests/profile-fixture.ts` and select it through `DEV_PROFILES`; they never read the installation's personal `profiles/`, so they also run from the upgrade worktree, which has none. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots; the optional `startWorker` argument of `makeWorkspaceLifecycle`, which production never passes, lets checks start the authority worker themselves to exercise its crash, lost-acknowledgment and device-identity contracts and to inject faults into release and sweep. Production loads no test entry or test-selection environment variable.
 
@@ -57,7 +57,7 @@ The source-comment policy in `scripts/code-policy.ts` allows shebangs and commen
 
 For the command procedure and its publication effects, use [Upgrade](upgrade.md). This section is for investigating or changing the integration.
 
-`scripts/upgrade.ts` owns targets, the worktree, checks, the report and publication; `scripts/pi-upgrade.ts` owns the Pi candidate, its comparison and activation. The upgrade runs every non-mutating check in the [verification table](#verification) except `dev:probe`; keep that list in step with the table. A red run retains its worktree and candidate, and the report gives each check's rerun command for the worktree.
+`scripts/upgrade.ts` owns targets, the worktree, checks, the report and publication; `scripts/pi-upgrade.ts` owns the Pi candidate, its comparison and activation. Keep the check composition aligned with the [upgrade contract](upgrade.md#1-upgrade-and-verify) and the [verification table](#verification).
 
 Use the installed Pi contracts below and the integration tests when an API changes. Session replacement and tool termination are exercised in `tests/workspace/workspace-host-session-check.ts`; native skill invocation and coordinator delivery in `tests/work/`; compaction in `tests/compaction-check.ts`, child checks and TUI probes. Profiler decoding depends on recorded message shapes and error/continuation text, so type checking alone cannot verify it: run `profile:check` and retain the upgrade guide's live-session check.
 
@@ -79,23 +79,27 @@ Keep API dependencies in their adapters and regression tests, not a second API i
 
 ## Documentation ownership
 
+Update the owner of each meaning; link to it from other artifacts.
+
 | Artifact                      | Owns                                                                                           |
 | ----------------------------- | ---------------------------------------------------------------------------------------------- |
 | GitHub issue                  | Problem, scope, requirements, acceptance criteria and unresolved decisions for a piece of work |
-| Pull request                  | The proposed implementation, review discussion and verification evidence for that change       |
-| `docs/adr/`                   | Accepted architectural decisions, alternatives and enduring rationale                          |
-| `CONTEXT.md`                  | Domain terms and their meanings                                                                |
-| `AGENTS.md`                   | Repository-wide agent instructions and conditional reading triggers                            |
-| `docs/ARCHITECTURE.md`        | Current component responsibilities and an index of decision records                            |
-| Feature guide                 | How to use one capability, its observable behavior, limits and recovery                        |
-| `docs/DEVELOPMENT.md`         | Contributor setup, local checks and maintenance of dev's code                                  |
+| Pull request                  | Implementation scope, review discussion and verification evidence for that change              |
+| `docs/adr/`                   | Accepted architectural choices, alternatives and enduring rationale                            |
+| `CONTEXT.md`                  | Domain terms and distinctions                                                                  |
+| `AGENTS.md`                   | Repository-wide agent guardrails and conditional reading triggers                              |
+| `docs/agents/`                | Repository-specific tracker, label, delivery and domain conventions                            |
+| `docs/ARCHITECTURE.md`        | Current component responsibilities and a decision-record index                                 |
+| `README.md`                   | Project introduction, installation entry point and documentation navigation                    |
+| Feature guide                 | Use, observable behavior, limits and recovery for one capability                               |
+| `SECURITY.md`                 | Trusted base, extension review requirements and protection limits                              |
+| `docs/DEVELOPMENT.md`         | Contributor setup, verification and maintenance conventions                                    |
 | Code, tests and configuration | Exact APIs, algorithms, schemas and executable defaults                                        |
+| Shared workflow library       | Portable development procedures and skill contracts                                            |
 
 When adding a tool, link its guide from the component map and add a conditional reading trigger in `AGENTS.md`. Choose headings for the user's task; a feature guide is not an implementation walkthrough or test plan. Native Pi commands need documentation here only where dev changes them.
 
-Update an existing owner instead of copying its meaning. Use links for cross-cutting constraints. For example, a usage-report guide explains an unknown metric; the parser and tests define how it is recognized, the issue states the requested behavior, and the PR records the evidence for that change.
-
-Use the shared `domain-modeling` necessity gate and format for ADRs. New ADRs take the next number and an architecture pointer, with a link to the accepted decision. Verification performed for one change stays with that issue or PR, not in a reusable guide.
+Use the shared `domain-modeling` necessity gate and format for ADRs. New ADRs take the next number, link the accepted decision and appear in the architecture index.
 
 ## Private-state relocation
 

@@ -1,20 +1,5 @@
-# Domain Docs
+# Domain conventions
 
-How the dev-cycle skills consume this repo's domain documentation when exploring the codebase.
+Use [CONTEXT](../../CONTEXT.md) for domain terms in issues, specs, tests and code. Before changing a boundary, use the [decision index](../ARCHITECTURE.md#decision-records) to find and read its rationale.
 
-## Before exploring, read these
-
-- **`CONTEXT.md`** at the repo root: the glossary of this single-context repository.
-- **`docs/adr/`**: the ADRs that touch the area you are about to work in. Use the decision-record index in `docs/ARCHITECTURE.md` to find the owner; read the rationale in that record.
-
-## Use the glossary's vocabulary
-
-When your output names a domain concept (in an issue title, a ticket, a spec, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
-
-If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
-
-## Flag ADR conflicts
-
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
-
-> _Contradicts ADR-0005 (scoped admission). It may be worth reopening because…_
+A missing term is a modeling question: check whether an existing term already fits, otherwise note the gap for `domain-modeling`. Surface conflicts with an accepted decision explicitly, naming the record and the proposed change, rather than silently overriding it.
