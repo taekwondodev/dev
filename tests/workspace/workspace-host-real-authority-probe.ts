@@ -692,7 +692,7 @@ await claim(
   }
 )
 await claim(
-  'a quit sweep that never reports back exits 1 saying its outcome is unknown and pointing to inspect, not that nothing was released',
+  'a quit sweep that never reports back exits 1 saying its outcome is unknown and pointing to the list command, not that nothing was released',
   async () => {
     process.exitCode = undefined
     const printed: string[] = []
@@ -729,7 +729,7 @@ await claim(
     const text = printed.join('')
     assert.equal(process.exitCode, 1)
     assert.ok(text.includes('its outcome is unknown'), text)
-    assert.ok(text.includes('dev workspace inspect'), text)
+    assert.ok(text.includes('dev workspace list'), text)
     assert.ok(!text.includes('nothing was released'), text)
     assert.ok(existsSync(managed), 'the stubbed sweep touched nothing')
   }
