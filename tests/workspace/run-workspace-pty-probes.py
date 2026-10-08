@@ -170,6 +170,19 @@ PROBES = {
         env=(('LAUNCHER_TUI_UNDELIVERED_WORKTREE', '1'), ('TERM_PROGRAM', 'ghostty')),
     ),
 
+    'quit-abandoned': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
+        expect=('Not included in the quick release:', 'dev workspace release {CRASHED_TASK}',
+                'Release task {CRASHED_TASK} (1 managed worktree)?',
+                'Status: A previous session ended without settling its workspace use.',
+                'Exit 0: done.'),
+        env=(('LAUNCHER_TUI_ABANDONED_USE', '1'),),
+    ),
+
     'quit-self-remove': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',

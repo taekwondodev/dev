@@ -1,6 +1,6 @@
 import { installProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import {
   cpSync,
   existsSync,
@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
+import { WorkspaceId } from '../../src/workspace-domain.ts'
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-tui-')))
 const signal = (marker: string) => process.stdout.write(`\nDEV_LAUNCHER_TUI_${marker}\n`)
@@ -32,6 +33,7 @@ const containedHistory = process.env.LAUNCHER_TUI_CONTAINED_HISTORY === '1'
 const removeInstallation = process.env.LAUNCHER_TUI_SELF_REMOVE === '1' || containedHistory
 const missingWorktree = process.env.LAUNCHER_TUI_MISSING_WORKTREE
 const undeliveredWorktree = process.env.LAUNCHER_TUI_UNDELIVERED_WORKTREE === '1'
+const abandonedUse = process.env.LAUNCHER_TUI_ABANDONED_USE === '1'
 const keptClaim = (): string => {
   if (interruptedAfterQuit)
     return 'a SIGINT during the teardown after /quit, before the sweep, exits 130 and releases nothing: both reservations, the worktree and the files stay'
@@ -42,6 +44,8 @@ const keptClaim = (): string => {
 const sweptClaim = (): string => {
   if (undeliveredWorktree)
     return 'quit offers a worktree with unintegrated commits and dirty edits; one y removes it, while the clean checkout is released automatically'
+  if (abandonedUse)
+    return 'a worktree left by a killed session is asked about on its own at quit; y removes it, while the finished worktree and the clean checkout are swept and dev exits 0'
   if (missingWorktree === 'release')
     return 'a worktree whose directory vanished is offered for release at quit; one y releases its task, the clean checkout is released by the sweep and dev exits 0'
   if (removeInstallation)
@@ -50,6 +54,37 @@ const sweptClaim = (): string => {
     return 'a SIGINT to dev once the quit sweep has started lets the sweep run on: the finished worktree is removed, the clean checkout released, and dev exits 130 after the receipt'
   return 'quitting the TUI disposes the runtime, then the sweep removes the finished worktree, releases the clean checkout, prints the receipt and exits 0'
 }
+const crashWithDelegatedWrite = (
+  root: string,
+  repo: string,
+  home: string
+): { readonly taskId: WorkspaceId; readonly checkout: string } => {
+  const sessionFile = join(home, 'crashed.jsonl')
+  writeFileSync(sessionFile, '{}\n', { mode: 0o600 })
+  const lifecycleUrl = new URL('./workspace-test-lifecycle.ts', import.meta.url).href
+  const conversation = { sessionId: 'launcher-tui-crashed', sessionFile, dataHome: home }
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+        import { openLifecycle } from ${JSON.stringify(lifecycleUrl)}
+        const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
+        const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation)}, cwd: ${JSON.stringify(repo)} })
+        const write = await attachment.authorize({ kind: 'delegated-write' })
+        if (write.kind !== 'ready') throw new Error(JSON.stringify(write))
+        process.stdout.write(JSON.stringify({ taskId: write.grant.taskId, checkout: write.grant.checkout }))
+        process.kill(process.pid, 'SIGKILL')
+      `,
+    ],
+    { encoding: 'utf8' }
+  )
+  assert.equal(child.signal, 'SIGKILL', child.stderr)
+  const { taskId, checkout } = JSON.parse(child.stdout) as { taskId: string; checkout: string }
+  return { taskId: WorkspaceId.make(taskId), checkout }
+}
+
 try {
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
     throw new Error(
@@ -119,6 +154,7 @@ try {
   }
   await lifecycle.close()
   if (missingWorktree !== undefined) rmSync(worktree, { recursive: true, force: true })
+  const crashed = abandonedUse ? crashWithDelegatedWrite(root, repo, ownerHome) : undefined
 
   let history: { path: string; text: string } | undefined
   if (failedAfterQuit || failedInteractive || containedHistory) {
@@ -153,7 +189,7 @@ try {
     ? join(worktree, 'tests', 'workspace', 'workspace-launcher-tui-driver.ts')
     : fileURLToPath(new URL('./workspace-launcher-tui-driver.ts', import.meta.url))
   process.stdout.write(
-    `\nDEV_LAUNCHER_TUI_INPUTS ${JSON.stringify({ TASK: taskId, REPO: repo, WORKTREE: worktree })}\n`
+    `\nDEV_LAUNCHER_TUI_INPUTS ${JSON.stringify({ TASK: taskId, REPO: repo, WORKTREE: worktree, CRASHED_TASK: crashed?.taskId ?? '' })}\n`
   )
   signal('STARTING_LAUNCHER')
   const child = spawn(
@@ -234,12 +270,16 @@ try {
         }
       )
     else
-      await claim(sweptClaim(), () => {
+      await claim(sweptClaim(), async () => {
         assert.equal(exit.signal, null)
         assert.equal(exit.code, interruptedDuringSweep ? 130 : 0)
         assert.deepEqual(reserved, [], 'nothing of the task remains reserved')
         assert.deepEqual(outcomes, ['released', 'removed'])
         assert.equal(existsSync(worktree), false)
+        if (crashed !== undefined) {
+          assert.deepEqual(await after.check(crashed.taskId), [])
+          assert.equal(existsSync(crashed.checkout), false)
+        }
         assert.equal(listed, 1)
         assert.ok(existsSync(join(repo, 'AGENTS.md')))
         assert.ok(existsSync(fileURLToPath(new URL('../../node_modules/effect', import.meta.url))))

@@ -6,8 +6,11 @@ import {
   formatQuitReleasePlan,
   formatQuitReleaseResults,
   formatQuitSweepFailure,
+  formatQuitTaskReleasePlan,
   progressDone,
   quitReleaseExclusion,
+  taskReleaseExclusion,
+  tasksToConfirm,
   tasksToRelease,
   terminalStyle,
 } from '../../src/quit-display.ts'
@@ -108,6 +111,33 @@ await claim(
 )
 
 await claim(
+  'a task used by a live session is neither shown nor asked about; a task with only unsettled uses is asked alone, while guarded or unassessed tasks keep only their command',
+  () => {
+    const live = row(retained('use-live'), 'retained')
+    const liveSibling = row(retained('not-integrated'), 'retained', live.taskId)
+    const gated = row(finished, 'retained')
+    const withLive: SweepReceipt = {
+      moment: 'quit',
+      rows: [...receipt.rows, live, liveSibling, gated],
+    }
+    assert.deepEqual(tasksToRelease(withLive), [undelivered.taskId])
+    assert.deepEqual(tasksToConfirm(withLive), [abandoned.taskId])
+    const unsettledUnassessed: SweepReceipt = {
+      moment: 'quit',
+      rows: [abandoned, { kind: 'task-failure', taskId: abandoned.taskId, reason: 'threw' }],
+    }
+    assert.deepEqual(tasksToConfirm(unsettledUnassessed), [])
+    const text = formatQuitReceipt(withLive, 12900, plain)
+    assert.ok(!text.includes(live.taskId), text)
+    assert.ok(text.includes(`dev workspace release ${gated.taskId}`), text)
+    assert.equal(
+      formatQuitReceipt({ moment: 'quit', rows: [live] }, 100, plain),
+      'No workspaces removed · 0.1s'
+    )
+  }
+)
+
+await claim(
   'unassessed tasks get a full check command and are not silently offered for release',
   () => {
     const text = formatQuitReceipt(
@@ -192,6 +222,26 @@ await claim(
     assert.equal(
       quitReleaseExclusion(receipt, []),
       'The task no longer has any workspace reservations.'
+    )
+    const unsettled = {
+      ...view,
+      taskId: abandoned.taskId,
+      workspaceId: abandoned.workspaceId,
+      uses: [{ id: id('2003'), access: 'write' as const, stage: 'active' }],
+    }
+    assert.equal(taskReleaseExclusion(receipt, [unsettled]), undefined)
+    assert.equal(
+      taskReleaseExclusion(receipt, [unsettled, { ...unsettled, workspaceId: id('2004') }]),
+      'The task has workspaces that this sweep did not assess.'
+    )
+    assert.equal(
+      formatQuitTaskReleasePlan(receipt, { taskId: abandoned.taskId, views: [unsettled] }, plain),
+      [
+        '',
+        `Release task ${abandoned.taskId} (1 managed worktree)?`,
+        'Status: A previous session ended without settling its workspace use.',
+        'This deletes the managed worktrees, including uncommitted changes and undelivered commits.',
+      ].join('\n')
     )
     const plans = [
       {

@@ -84,40 +84,46 @@ export const sweepIndicator = Effect.fnUntraced(function* (
 
 type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
 
+type ReleaseOffer = 'together' | 'alone' | 'never'
+const OFFER_RANK: Record<ReleaseOffer, number> = { together: 0, alone: 1, never: 2 }
+
 const RETAINED_DISPLAY: Record<
   RetainedReason,
-  { readonly release: boolean; readonly status: string }
+  { readonly offer: ReleaseOffer; readonly status: string }
 > = {
   'identity-unverifiable': {
-    release: true,
+    offer: 'together',
     status: 'The workspace identity could not be verified.',
   },
-  'transition-unresolved': { release: true, status: 'A workspace transition has not finished.' },
-  'release-review': { release: true, status: 'An earlier removal did not finish.' },
+  'transition-unresolved': {
+    offer: 'together',
+    status: 'A workspace transition has not finished.',
+  },
+  'release-review': { offer: 'together', status: 'An earlier removal did not finish.' },
   excluded: {
-    release: false,
+    offer: 'never',
     status: 'The workspace belongs to the conversation allocating a worktree.',
   },
-  'use-unknown': { release: false, status: 'A workspace use is unresolved.' },
+  'use-unknown': { offer: 'alone', status: 'A workspace use is unresolved.' },
   'use-abandoned': {
-    release: false,
+    offer: 'alone',
     status: 'A previous session ended without settling its workspace use.',
   },
-  'use-live': { release: false, status: 'A session or process is still using the workspace.' },
+  'use-live': { offer: 'never', status: 'A session or process is still using the workspace.' },
   'directory-missing': {
-    release: true,
+    offer: 'together',
     status: 'The worktree directory is missing, but its reservation remains.',
   },
-  'residue-unreadable': { release: true, status: 'The workspace contents could not be read.' },
-  'checkout-modified': { release: true, status: 'The checkout has uncommitted changes.' },
-  skipped: { release: false, status: 'The workspace was excluded from this sweep.' },
-  'no-commits': { release: true, status: 'The workspace has no commits proving delivery.' },
+  'residue-unreadable': { offer: 'together', status: 'The workspace contents could not be read.' },
+  'checkout-modified': { offer: 'together', status: 'The checkout has uncommitted changes.' },
+  skipped: { offer: 'never', status: 'The workspace was excluded from this sweep.' },
+  'no-commits': { offer: 'together', status: 'The workspace has no commits proving delivery.' },
   'integration-unknown': {
-    release: true,
+    offer: 'together',
     status: 'Integration could not be assessed with the available evidence.',
   },
   'not-integrated': {
-    release: true,
+    offer: 'together',
     status: 'Delivery to the integration target could not be verified.',
   },
 }
@@ -128,18 +134,45 @@ const isDone = (row: { readonly outcome: string }): boolean =>
 const workspaceRows = (receipt: SweepReceipt): readonly WorkspaceRow[] =>
   receipt.rows.filter((row): row is WorkspaceRow => row.kind === 'workspace')
 
-const canOfferRelease = (row: WorkspaceRow): boolean =>
-  row.outcome === 'review-required' ||
-  (row.verdict.kind === 'retained' && RETAINED_DISPLAY[row.verdict.retained].release)
-
-export const tasksToRelease = (receipt: SweepReceipt): readonly WorkspaceId[] => {
-  const remaining = workspaceRows(receipt).filter(row => !isDone(row))
-  const excluded = new Set(remaining.filter(row => !canOfferRelease(row)).map(row => row.taskId))
-  for (const row of receipt.rows) {
-    if (row.kind === 'task-failure' || row.kind === 'task-deferred') excluded.add(row.taskId)
-  }
-  return [...new Set(remaining.filter(row => !excluded.has(row.taskId)).map(row => row.taskId))]
+const offerOf = (row: WorkspaceRow): ReleaseOffer => {
+  if (row.outcome === 'review-required') return 'together'
+  return row.verdict.kind === 'retained' ? RETAINED_DISPLAY[row.verdict.retained].offer : 'never'
 }
+
+const tasksInUse = (receipt: SweepReceipt): ReadonlySet<WorkspaceId> =>
+  new Set(
+    workspaceRows(receipt)
+      .filter(row => row.verdict.kind === 'retained' && row.verdict.retained === 'use-live')
+      .map(row => row.taskId)
+  )
+
+const remainingRows = (receipt: SweepReceipt): readonly WorkspaceRow[] => {
+  const inUse = tasksInUse(receipt)
+  return workspaceRows(receipt).filter(row => !isDone(row) && !inUse.has(row.taskId))
+}
+
+const taskOffers = (receipt: SweepReceipt): ReadonlyMap<WorkspaceId, ReleaseOffer> => {
+  const offers = new Map<WorkspaceId, ReleaseOffer>()
+  const raise = (taskId: WorkspaceId, offer: ReleaseOffer): void => {
+    const current = offers.get(taskId) ?? 'together'
+    offers.set(taskId, OFFER_RANK[offer] > OFFER_RANK[current] ? offer : current)
+  }
+  for (const row of remainingRows(receipt)) raise(row.taskId, offerOf(row))
+  for (const row of receipt.rows) {
+    if ((row.kind === 'task-failure' || row.kind === 'task-deferred') && offers.has(row.taskId))
+      raise(row.taskId, 'never')
+  }
+  return offers
+}
+
+const tasksOffered = (receipt: SweepReceipt, offer: ReleaseOffer): readonly WorkspaceId[] =>
+  [...taskOffers(receipt)].filter(([, value]) => value === offer).map(([taskId]) => taskId)
+
+export const tasksToRelease = (receipt: SweepReceipt): readonly WorkspaceId[] =>
+  tasksOffered(receipt, 'together')
+
+export const tasksToConfirm = (receipt: SweepReceipt): readonly WorkspaceId[] =>
+  tasksOffered(receipt, 'alone')
 
 const statusOf = (row: WorkspaceRow): string => {
   if (row.verdict.kind === 'retained') return RETAINED_DISPLAY[row.verdict.retained].status
@@ -170,7 +203,7 @@ export const formatQuitReceipt = (
 ): string => {
   const rows = workspaceRows(receipt)
   const offered = new Set(tasksToRelease(receipt).filter(taskId => !excluded.has(taskId)))
-  const remaining = rows.filter(row => !isDone(row))
+  const remaining = remainingRows(receipt)
   const blocks = (selected: readonly WorkspaceRow[]): readonly string[] =>
     selected.map(row =>
       commandStatus(
@@ -223,17 +256,24 @@ export const formatQuitReceipt = (
   ].join('\n\n')
 }
 
-export const quitReleaseExclusion = (
+export const taskReleaseExclusion = (
   receipt: SweepReceipt,
   views: readonly WorkspaceView[]
 ): string | undefined => {
   const assessed = new Set(workspaceRows(receipt).map(row => row.workspaceId))
   if (views.some(view => !assessed.has(view.workspaceId)))
     return 'The task has workspaces that this sweep did not assess.'
-  if (views.some(view => view.uses.some(use => use.stage !== 'quiescent')))
-    return 'The task has an active or unresolved workspace use.'
   if (views.length === 0) return 'The task no longer has any workspace reservations.'
   return undefined
+}
+
+export const quitReleaseExclusion = (
+  receipt: SweepReceipt,
+  views: readonly WorkspaceView[]
+): string | undefined => {
+  if (views.some(view => view.uses.some(use => use.stage !== 'quiescent')))
+    return 'The task has an active or unresolved workspace use.'
+  return taskReleaseExclusion(receipt, views)
 }
 
 export interface TaskReleasePlan {
@@ -241,11 +281,12 @@ export interface TaskReleasePlan {
   readonly views: readonly WorkspaceView[]
 }
 
-export const formatQuitReleasePlan = (
-  plans: readonly TaskReleasePlan[],
-  style: TerminalStyle
+const releaseConsequences = (
+  title: (scope: string) => string,
+  views: readonly WorkspaceView[],
+  style: TerminalStyle,
+  status: readonly string[] = []
 ): string => {
-  const views = plans.flatMap(plan => plan.views)
   const managed = views.filter(view => view.origin === 'managed').length
   const existing = views.length - managed
   const scope = [
@@ -254,14 +295,15 @@ export const formatQuitReleasePlan = (
   ].join(', ')
   return [
     '',
-    paint(style, 'bold', `Release ${count(plans.length, 'task')} (${scope})?`),
+    paint(style, 'bold', title(scope)),
+    ...status.map(text => paint(style, 'dim', `Status: ${text}`)),
     ...(managed === 0
       ? []
       : [
           paint(
             style,
             'fail',
-            'This deletes all their managed worktrees, including uncommitted changes and undelivered commits.'
+            'This deletes the managed worktrees, including uncommitted changes and undelivered commits.'
           ),
         ]),
     ...(existing === 0
@@ -269,6 +311,29 @@ export const formatQuitReleasePlan = (
       : ['Pre-existing checkouts keep their files and commits; only their reservations end.']),
   ].join('\n')
 }
+
+export const formatQuitReleasePlan = (
+  plans: readonly TaskReleasePlan[],
+  style: TerminalStyle
+): string =>
+  releaseConsequences(
+    scope => `Release ${count(plans.length, 'task')} (${scope})?`,
+    plans.flatMap(plan => plan.views),
+    style
+  )
+
+export const formatQuitTaskReleasePlan = (
+  receipt: SweepReceipt,
+  plan: TaskReleasePlan,
+  style: TerminalStyle
+): string =>
+  releaseConsequences(scope => `Release task ${plan.taskId} (${scope})?`, plan.views, style, [
+    ...new Set(
+      remainingRows(receipt)
+        .filter(row => row.taskId === plan.taskId)
+        .map(statusOf)
+    ),
+  ])
 
 export const formatQuitReleasePrompt = (style: TerminalStyle): string =>
   paint(style, 'warn', '[y = release, Enter = keep] ')

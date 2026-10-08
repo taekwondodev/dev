@@ -99,7 +99,7 @@ Automatic sweeps run at quit and before managed allocation, not at startup, turn
 
 The budget is 40 seconds at quit and 20 before allocation, measured from the request. Unstarted tasks become `task-deferred`. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. Quit also sweeps repositories resolved from other checkouts selected for delegation during the session, including refused delegations, within the same budget. A repository assessment failure is reported without preventing the others from proceeding; a later sweep can assess it again.
 
-Allocation receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then a complete release command and short status for each retained workspace. Failed or deferred assessments get a check command instead. Use `dev workspace check <task>` for paths and detailed evidence.
+Allocation receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then a complete release command and short status for each retained workspace. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task>` for paths and detailed evidence.
 
 ### Release
 
@@ -115,11 +115,13 @@ Stop independently started tools and avoid external edits during removal. The [e
 
 `/quit` stops owned work and shells, closes the attachment and installation/source claims, then sweeps and prints its receipt.
 
-An interactive quit offers one confirmation to release eligible remaining tasks, including undelivered or undecidable work. The offer excludes a whole task if any reserved workspace is unassessed, skipped, guarded against cleanup, active or unresolved, or cannot be inspected. Excluded tasks remain listed with commands and statuses. This convenience filter is not a guarantee against concurrent use: the [release warning](#release) still applies.
+An interactive quit offers one confirmation to release eligible remaining tasks, including undelivered or undecidable work. The offer excludes a whole task if any reserved workspace is unassessed, skipped, guarded against cleanup, active or unresolved, or cannot be inspected. Excluded tasks remain listed with commands and statuses.
 
-The prompt counts managed worktrees and pre-existing reservations and explains their consequences. Only `y` releases them; Enter or any other answer keeps them. Ghostty shows sweep progress in the tab and colored status output; `NO_COLOR` disables colors. Other terminals and non-TTY output use plain text. Without an interactive terminal there is no release prompt.
+A task excluded only because a previous session left its use unsettled or unresolved is then offered alone, with its status. Tasks guarded against cleanup, unassessed, or with a reserved workspace outside this sweep are never offered: run their command after checking them. These convenience filters are not a guarantee against concurrent use: the [release warning](#release) still applies.
 
-Ctrl-C before the sweep or at the confirmation releases nothing. During sweep or confirmed release, started attempts reach recorded outcomes; an interrupted Git step stays `release-review`. SIGHUP can end dev without a receipt. If a sweep does not report back, its outcome is unknown and the launcher points to `dev workspace list`.
+Each prompt counts managed worktrees and pre-existing reservations and explains their consequences. Only `y` releases them; Enter or any other answer keeps them. Ghostty shows sweep progress in the tab and colored status output; `NO_COLOR` disables colors. Other terminals and non-TTY output use plain text. Without an interactive terminal there is no release prompt.
+
+Ctrl-C before the sweep or at a confirmation starts no further release. During sweep or confirmed release, started attempts reach recorded outcomes; an interrupted Git step stays `release-review`. SIGHUP can end dev without a receipt. If a sweep does not report back, its outcome is unknown and the launcher points to `dev workspace list`.
 
 ### Exit codes
 
