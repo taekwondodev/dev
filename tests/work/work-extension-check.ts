@@ -129,21 +129,29 @@ const unusedLink: CoordinatorLink = {
   wake: Effect.die('unused'),
 }
 
-const assertReadOnlyCapabilities = (description: string | undefined): void => {
+const assertWorkGuidance = (description: string | undefined): void => {
   assert.ok(description !== undefined)
   for (const tool of READ_ONLY_CHILD_TOOLS) assert.ok(description.includes(tool), tool)
   assert.ok(description.includes('no shell, network or gh'))
   assert.ok(description.includes('in the prompt or a workspace file'))
+  assert.ok(description.includes('otherwise end your turn and let outcomes resume you'))
+  assert.ok(
+    description.includes(
+      'Do not use sleep, wait loops, or repeated list/inspect calls just to await completion.'
+    )
+  )
 }
 
 try {
-  await claim('the lead and coordinator work tools state what a read-only child can reach', () =>
-    withLead({}, async lead => {
-      assertReadOnlyCapabilities(
-        lead.session.getAllTools().find(tool => tool.name === 'work')?.description
-      )
-      assertReadOnlyCapabilities(createCoordinatorWorkTool(unusedLink).description)
-    })
+  await claim(
+    'the lead and coordinator work tools state access limits and non-polling wait guidance',
+    () =>
+      withLead({}, async lead => {
+        assertWorkGuidance(
+          lead.session.getAllTools().find(tool => tool.name === 'work')?.description
+        )
+        assertWorkGuidance(createCoordinatorWorkTool(unusedLink).description)
+      })
   )
 
   await claim(
