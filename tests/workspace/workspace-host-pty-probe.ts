@@ -30,7 +30,6 @@ import { errorText } from '../../src/error-text.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
 import {
   WorkspaceError,
-  type WorkspaceAssessment,
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
   type WorkspaceBinding,
@@ -65,7 +64,6 @@ import {
 } from './workspace-check-support.ts'
 import {
   fixtureId as id,
-  makeFixtureAssessment,
   makeFixtureBinding,
   makeFixtureGrant,
   makeFixtureHandoff,
@@ -533,29 +531,17 @@ const unsupported = () =>
     })
   )
 
+const checkedTasks: WorkspaceId[] = []
 const releaseRequests: { readonly taskId: WorkspaceId }[] = []
-const eligibleAssessment = (item: FixtureDescriptor): WorkspaceAssessment =>
-  makeFixtureAssessment({
-    descriptor: item,
-    completion: {
-      kind: 'finished',
-      role: 'child',
-      rule: 'child-delivered',
-      reason: 'fixture: a merged pull request of the task descends from the base',
-    },
-    reservationId: reservationIdOf(item),
-  })
 const lifecycle: WorkspaceLifecycle = {
   root: join(fixture, 'authority'),
   attach: input => fromAsync(() => fixtureLifecycle.attach(input)),
   inspect: input => fromAsync(() => fixtureLifecycle.inspect(input)),
   validate: grant => fromAsync(() => fixtureLifecycle.validate(grant)),
-  check: input =>
-    input.taskId === TASK_RESUME
-      ? Effect.succeed(
-          resumeDescriptors.filter(item => item.workspaceId === WS_RESUME_A).map(eligibleAssessment)
-        )
-      : unsupported(),
+  check: input => {
+    checkedTasks.push(input.taskId)
+    return Effect.succeed([])
+  },
   release: input => {
     releaseRequests.push(input)
     return unsupported()
@@ -1231,6 +1217,7 @@ await within(waitForCommand('list:1'), 90000, 'TUI /workspace list')
 await within(waitForCommand('inspect:1'), 90000, 'TUI /workspace inspect')
 await within(waitForCommand('release:1'), 90000, 'TUI /workspace release of another task')
 await within(waitForCommand('release:2'), 90000, "TUI /workspace release of the TUI's own task")
+assert.deepEqual(checkedTasks, [], 'neither release assessed a task')
 assert.deepEqual(releaseRequests, [], 'neither release attempted anything')
 assert.equal(
   timeline.filter(entry => entry.kind === 'confirm').length,

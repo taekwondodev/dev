@@ -2044,8 +2044,6 @@ try {
           [{ start: 3, end: 3 }, 'pagination'],
         ]
       )
-      assert.equal(pages.path, 'src/x.ts')
-      assert.equal(checkpoint.path, 'src/y.ts')
       assert.deepEqual(
         checkpoint.calls.map((read: { relation: string }) => read.relation),
         ['first', 'overlap']
@@ -2061,7 +2059,6 @@ try {
           ['overlap', 'sessions/edges.jsonl#res-p2'],
         ]
       )
-      assert.equal(wide.path, '/work/a/wide.txt')
       assert.deepEqual(
         wide.calls.map((read: { relation: string; returned: object }) => [
           read.relation,

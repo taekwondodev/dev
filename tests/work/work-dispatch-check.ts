@@ -36,7 +36,7 @@ await claim('a prompt that invokes a skill without a rule selects the default', 
 await claim('a plain prompt selects the default', async () => {
   assert.deepEqual(await resolve(configured, { prompt: 'Summarize the implement module' }), cheap)
 })
-await claim('an explicit rule beats the skill prefix', async () => {
+await claim('an explicit rule selects its profile without a skill prefix', async () => {
   assert.deepEqual(await resolve(configured, { prompt: 'plain', rule: 'implement' }), strong)
 })
 await claim('rule "default" beats a configured skill prefix', async () => {

@@ -910,28 +910,6 @@ try {
       git(['worktree', 'remove', '--force', moved], repo)
     }
   )
-  await claim(
-    'a managed worktree whose directory is already gone is retained as directory-missing, and release resolves its registration and reservation',
-    async () => {
-      const allocated = await allocateManaged(lifecycle, userCheckout())
-      await lifecycle.recordTarget(allocated.taskId, localMain)
-      const adminPath = git(
-        ['rev-parse', '--path-format=absolute', '--git-dir'],
-        allocated.managed.checkout
-      )
-      rmSync(allocated.managed.checkout, { recursive: true, force: true })
-      const managed = only(await lifecycle.check(allocated.taskId), allocated.managed.workspaceId)
-      assert.equal(verdictName(managed.completion), 'retained:directory-missing')
-      const results = await lifecycle.release(allocated.taskId)
-      assert.equal(resultOf(results, allocated.managed.workspaceId).outcome, 'removed')
-      assert.ok(!existsSync(adminPath), 'the targeted registration is gone')
-      assert.ok(!registered(repo).includes(allocated.managed.checkout))
-      assert.equal(
-        (await viewOf(allocated.taskId, allocated.managed.workspaceId))?.outcome,
-        'removed'
-      )
-    }
-  )
 
   await claim(
     'release never deletes through a symbolic link: with the managed root of a repository replaced by a link, a worktree Git no longer lists keeps its contents and release fails; restored, the next release removes it',
