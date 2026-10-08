@@ -14,7 +14,20 @@
       {
         "name": "@effect/language-service",
         "diagnosticSeverity": { "floatingEffect": "error" },
-        "allowedUnstableApis": ["effect/http", "effect/process", "effect/workers"]
+        "allowedUnstableApis": [
+          "effect/ByteSize",
+          "effect/FileSystem",
+          "effect/http",
+          "effect/process",
+          "effect/workers",
+          "@effect/platform-node/NodeFileSystem",
+          "@effect/platform-node/NodePath",
+          "@effect/platform-node/NodeRuntime",
+          "@effect/platform-node/NodeServices",
+          "@effect/platform-node/NodeWorker",
+          "@effect/platform-node/NodeWorkerRunner",
+          "@effect/platform-node-shared/NodeChildProcessSpawner"
+        ]
       }
     ]
   },

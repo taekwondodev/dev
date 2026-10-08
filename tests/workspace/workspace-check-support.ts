@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, Exit, Layer, Scope } from 'effect'
+import { ConfigProvider, Effect, Exit, Layer, Scope } from 'effect'
 import type * as Pi from '../../node_modules/@earendil-works/pi-coding-agent/dist/index.js'
 import type * as PiEventStream from '../../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js'
 import type {
@@ -23,6 +23,9 @@ import { PublicationDestinations } from '../../src/workspace-tool.ts'
 import { RepositoryRoot } from '../../src/preferences.ts'
 
 class TimedOut extends Error {}
+
+const nodeServicesWithCurrentEnvironment = () =>
+  Layer.mergeAll(NodeServices.layer, ConfigProvider.layer(ConfigProvider.fromEnv()))
 
 export const ownerEffect = <A>(
   f: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>
@@ -288,7 +291,7 @@ export const openHostRuntime = async (input: {
             Layer.mergeAll(
               Layer.succeed(RepositoryRoot, { resolve: input.repositoryRoot }),
               PublicationDestinations.layer
-            ).pipe(Layer.provideMerge(NodeServices.layer))
+            ).pipe(Layer.provideMerge(nodeServicesWithCurrentEnvironment()))
           )
         )
       )
@@ -318,7 +321,7 @@ export const openHostRuntime = async (input: {
                 model: input.offline.model,
               }),
         })
-      }).pipe(Effect.provide(NodeServices.layer))
+      }).pipe(Effect.provide(nodeServicesWithCurrentEnvironment()))
     )
     const runtime = await input.pi.createAgentSessionRuntime(runtimeFactory, {
       cwd: input.cwd,
