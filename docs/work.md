@@ -54,6 +54,8 @@ Aborting a coordinator tool call interrupts its local wait, not an IPC request a
 
 ### Delivery and verification
 
+While background work runs, the lead and coordinators may do independent work. When only waiting remains, end the turn and let outcome delivery resume it. Do not use `sleep`, wait loops or repeated `list`/`inspect` calls just to await completion. This applies to commands and all delegated work, including reviews; inspection remains available for diagnosis or a requested progress check.
+
 Outcomes arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
 A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.

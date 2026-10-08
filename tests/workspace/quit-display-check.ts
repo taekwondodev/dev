@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import {
   formatExitLine,
   formatQuitReceipt,
+  formatQuitReleaseFailure,
   formatQuitReleasePlan,
+  formatQuitReleaseResults,
+  formatQuitSweepFailure,
   progressDone,
+  quitReleaseExclusion,
   tasksToRelease,
   terminalStyle,
 } from '../../src/quit-display.ts'
@@ -21,12 +22,8 @@ import {
 import { makeClaims } from './workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
-
 const id = (suffix: string): WorkspaceId =>
   WorkspaceId.make(`00000000-0000-4000-8000-${suffix.padStart(12, '0')}`)
-const worktree = (name: string): string =>
-  join(homedir(), 'Library', 'Application Support', 'dev', 'worktrees', name)
-
 type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
 let next = 0
 const row = (
@@ -37,11 +34,11 @@ const row = (
   kind: 'workspace',
   taskId,
   workspaceId: id(`9${next}`),
-  path: worktree(`w${next}`),
+  path: `/worktrees/w${next}`,
   origin: 'managed',
   verdict,
   outcome,
-  reason: `reason of ${outcome}`,
+  reason: 'Verbose Git evidence that belongs in workspace check',
 })
 const finished: CompletionVerdict = {
   kind: 'finished',
@@ -55,84 +52,110 @@ const retained = (reason: RetainedReason): CompletionVerdict => ({
   retained: reason,
   reason: `retained: ${reason}`,
 })
-
 const removed = row(finished, 'removed')
-const unfinishedRemoval = row(finished, 'review-required')
-const gated = row(finished, 'retained')
-const missing = row(retained('directory-missing'), 'retained')
-const reviewSibling = row(retained('release-review'), 'review-required', missing.taskId)
-const notIntegrated = row(retained('not-integrated'), 'retained')
-const live = row(retained('use-live'), 'retained')
-const modified = row(retained('checkout-modified'), 'retained')
-const failedTask = id('77')
-const receipt: SweepReceipt = {
-  moment: 'quit',
-  rows: [
-    notIntegrated,
-    removed,
-    unfinishedRemoval,
-    gated,
-    missing,
-    reviewSibling,
-    live,
-    modified,
-    { kind: 'task-failure', taskId: failedTask, reason: 'assessment threw' },
-    { kind: 'task-deferred', taskId: id('78'), reason: 'budget' },
-  ],
-}
-
+const undelivered = row(retained('not-integrated'), 'retained')
+const abandoned = row(retained('use-abandoned'), 'retained')
+const receipt: SweepReceipt = { moment: 'quit', rows: [undelivered, removed, abandoned] }
 const plain = terminalStyle({ isTTY: false }, { TERM_PROGRAM: 'ghostty' })
 const ghostty = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'ghostty' })
 const ghosttyNoColor = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'ghostty', NO_COLOR: '1' })
 
 await claim(
-  'only workspaces that nothing but a release clears ask for one, once per task: an unfinished removal, a missing directory and an earlier unfinished release',
+  'mixed quit output offers undelivered work with a full command and English status, and separates abandoned use without paths or Git diagnostics',
   () => {
-    assert.deepEqual(tasksToRelease(receipt), [unfinishedRemoval.taskId, missing.taskId])
+    assert.deepEqual(tasksToRelease(receipt), [undelivered.taskId])
+    assert.equal(
+      formatQuitReceipt(receipt, 12900, plain),
+      [
+        '✓ 1 worktree removed · 12.9s',
+        '',
+        `dev workspace release ${undelivered.taskId}`,
+        'Status: Delivery to the integration target could not be verified.',
+        '',
+        'Not included in the quick release:',
+        '',
+        `dev workspace release ${abandoned.taskId}`,
+        'Status: A previous session ended without settling its workspace use.',
+      ].join('\n')
+    )
   }
 )
 
 await claim(
-  'the plain receipt carries no escape sequence and gives full release and check commands, hints for undelivered work and a count of the quiet rest',
+  'quick release deduplicates tasks and excludes the entire task when any sibling is still in use or cannot be swept safely',
   () => {
-    const text = formatQuitReceipt(receipt, 3412, plain)
-    assert.ok(!text.includes('\x1b'), text)
-    assert.ok(text.includes(`dev workspace release ${unfinishedRemoval.taskId}`), text)
-    assert.ok(text.includes(`dev workspace release ${missing.taskId}`), text)
-    assert.equal(text.split(`dev workspace release ${missing.taskId}\n`).length, 2, text)
-    assert.ok(text.includes(`dev workspace check ${failedTask}`), text)
-    assert.ok(!text.includes(`dev workspace release ${notIntegrated.taskId}`), text)
-    assert.ok(text.includes('next: Deliver the work'), text)
-    assert.ok(text.indexOf('✓ removed') < text.indexOf('· kept'), text)
-    assert.ok(text.lastIndexOf('✗ review') < text.indexOf('· kept'), text)
-    assert.ok(
-      text.includes('reason of retained'),
-      'a finished workspace the sweep could not remove says why'
+    const missing = row(retained('directory-missing'), 'retained')
+    const review = row(retained('release-review'), 'review-required', missing.taskId)
+    const uncommitted = row(retained('no-commits'), 'retained')
+    const unknownIntegration = row(retained('integration-unknown'), 'retained')
+    assert.deepEqual(
+      tasksToRelease({ moment: 'quit', rows: [missing, review, uncommitted, unknownIntegration] }),
+      [missing.taskId, uncommitted.taskId, unknownIntegration.taskId]
     )
-    assert.ok(text.includes('· 2 retained (use-live, checkout-modified)'), text)
-    assert.ok(text.includes('· 1 task(s) deferred to the next sweep'), text)
-    assert.ok(text.includes('1/3 finished workspace(s) reached a terminal outcome · 3.4s'), text)
-    assert.ok(!text.includes(live.path.replace(homedir(), '~')), 'a live workspace is only counted')
-    assert.ok(text.includes(removed.path.replace(homedir(), '~')), text)
+    for (const reason of [
+      'use-live',
+      'use-unknown',
+      'use-abandoned',
+      'excluded',
+      'skipped',
+    ] as const) {
+      const sibling = row(retained(reason), 'retained', undelivered.taskId)
+      assert.deepEqual(tasksToRelease({ moment: 'quit', rows: [undelivered, sibling] }), [])
+    }
+    const gated = row(finished, 'retained', undelivered.taskId)
+    assert.deepEqual(tasksToRelease({ moment: 'quit', rows: [undelivered, gated] }), [])
   }
 )
 
-await claim('an empty sweep says so with its elapsed time', () => {
+await claim(
+  'unassessed tasks get a full check command and are not silently offered for release',
+  () => {
+    const text = formatQuitReceipt(
+      {
+        moment: 'quit',
+        rows: [
+          { kind: 'task-failure', taskId: id('70'), reason: 'assessment threw' },
+          { kind: 'task-deferred', taskId: id('71'), reason: 'budget' },
+        ],
+      },
+      40000,
+      plain
+    )
+    assert.ok(
+      text.includes(`dev workspace check ${id('70')}\nStatus: The workspace assessment failed.`),
+      text
+    )
+    assert.ok(
+      text.includes(
+        `dev workspace check ${id('71')}\nStatus: The sweep ran out of time before assessing this task.`
+      ),
+      text
+    )
+  }
+)
+
+await claim('empty sweep and non-Ghostty terminals stay plain and concise', () => {
   assert.equal(
     formatQuitReceipt({ moment: 'quit', rows: [] }, 120, plain),
-    'Workspace sweep at quit\nno reserved workspace · 0.1s'
+    'No reserved workspaces · 0.1s'
   )
+  const style = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'other' })
+  assert.deepEqual(style, { live: false, color: false, ghostty: false })
+  assert.equal(formatQuitReceipt(receipt, 12900, style), formatQuitReceipt(receipt, 12900, plain))
+  assert.equal(formatExitLine(style, 0, 'done'), 'Exit 0: done.')
 })
 
 await claim(
-  'in Ghostty paths link to their directory and the tab progress ends as error or success; NO_COLOR drops colors, not links',
+  'Ghostty colors success green, commands yellow and status dim without path links; NO_COLOR preserves the same plain content',
   () => {
-    const text = formatQuitReceipt(receipt, 1000, ghostty)
-    assert.ok(text.includes(`\x1b]8;;${pathToFileURL(removed.path).href}\x1b\\`), text)
-    assert.ok(text.includes('\x1b[31m'), text)
-    const uncolored = formatQuitReceipt(receipt, 1000, ghosttyNoColor)
-    assert.ok(!uncolored.includes('\x1b['), uncolored)
-    assert.ok(uncolored.includes('\x1b]8;;'), uncolored)
+    const text = formatQuitReceipt(receipt, 12900, ghostty)
+    assert.ok(text.includes('\x1b[32m✓ 1 worktree removed\x1b[0m'), text)
+    assert.ok(text.includes(`\x1b[33mdev workspace release ${undelivered.taskId}\x1b[0m`), text)
+    assert.ok(text.includes('\x1b[2mStatus:'), text)
+    assert.equal(
+      formatQuitReceipt(receipt, 12900, ghosttyNoColor),
+      formatQuitReceipt(receipt, 12900, plain)
+    )
     assert.equal(progressDone(ghostty, true), '\x1b]9;4;2;100\x07')
     assert.equal(progressDone(ghostty, false), '\x1b]9;4;1;100\x07')
     assert.equal(progressDone(plain, true), '')
@@ -140,59 +163,113 @@ await claim(
 )
 
 await claim(
-  'outside Ghostty, even a TTY gets plain text with no redraw, color or OSC sequence',
+  'preflight excludes unassessed or active siblings; the confirmation counts the whole task and explains consequences without paths',
   () => {
-    const style = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'other' })
-    assert.deepEqual(style, { live: false, color: false, ghostty: false })
-    assert.deepEqual(terminalStyle({ isTTY: true }, {}), style)
-    assert.ok(!formatQuitReceipt(receipt, 1000, style).includes('\x1b'))
-    assert.equal(progressDone(style, false), '')
-    assert.equal(formatExitLine(style, 0, 'done'), 'Exit 0: done.')
+    const view = {
+      repositoryId: id('1000'),
+      taskId: undelivered.taskId,
+      workspaceId: undelivered.workspaceId,
+      path: '/worktrees/one',
+      origin: 'managed' as const,
+      reservationId: id('1002'),
+      outcome: 'preserved-for-resume' as const,
+      reason: 'kept',
+      nextAction: 'resume',
+      uses: [],
+      pending: [],
+    }
+    assert.equal(quitReleaseExclusion(receipt, [view]), undefined)
+    assert.equal(
+      quitReleaseExclusion(receipt, [view, { ...view, workspaceId: id('2001') }]),
+      'The task has workspaces that this sweep did not assess.'
+    )
+    assert.equal(
+      quitReleaseExclusion(receipt, [
+        { ...view, uses: [{ id: id('2002'), access: 'read', stage: 'unknown' }] },
+      ]),
+      'The task has an active or unresolved workspace use.'
+    )
+    assert.equal(
+      quitReleaseExclusion(receipt, []),
+      'The task no longer has any workspace reservations.'
+    )
+    const plans = [
+      {
+        taskId: undelivered.taskId,
+        views: [
+          view,
+          {
+            ...view,
+            repositoryId: id('2000'),
+            workspaceId: id('2001'),
+            path: '/other-repository/worktree',
+          },
+          { ...view, workspaceId: id('1003'), path: '/repo', origin: 'pre-existing' as const },
+        ],
+      },
+    ]
+    const text = formatQuitReleasePlan(plans, plain)
+    assert.ok(text.includes('Release 1 task (2 managed worktrees, 1 checkout reservation)?'), text)
+    assert.ok(text.includes('including uncommitted changes and undelivered commits'), text)
+    assert.ok(
+      text.includes(
+        'Pre-existing checkouts keep their files and commits; only their reservations end.'
+      ),
+      text
+    )
+    assert.ok(!text.includes('/worktrees/one') && !text.includes('/repo'), text)
+    const colored = formatQuitReleasePlan(plans, ghostty)
+    assert.ok(colored.includes('\x1b[31m'), colored)
   }
 )
 
 await claim(
-  'the release plan at quit names every reserved workspace of each task with its consequence',
+  'release results count success without paths and leave full task commands for failures',
   () => {
-    const text = formatQuitReleasePlan(
+    const result = {
+      repositoryId: id('1000'),
+      workspaceId: id('1001'),
+      path: '/worktrees/one',
+      origin: 'managed' as const,
+      outcome: 'removed' as const,
+      reason: 'removed',
+    }
+    assert.equal(
+      formatQuitReleaseResults(undelivered.taskId, [result], plain),
+      '✓ 1 worktree removed'
+    )
+    const failed = formatQuitReleaseResults(
+      undelivered.taskId,
       [
         {
-          taskId: missing.taskId,
-          views: [
-            {
-              repositoryId: id('1000'),
-              taskId: missing.taskId,
-              workspaceId: id('1001'),
-              path: worktree('gone'),
-              origin: 'managed',
-              reservationId: id('1002'),
-              outcome: 'blocked',
-              reason: 'gone',
-              nextAction: 'release',
-              uses: [],
-              pending: [],
-            },
-            {
-              repositoryId: id('1000'),
-              taskId: missing.taskId,
-              workspaceId: id('1003'),
-              path: '/repo',
-              origin: 'pre-existing',
-              reservationId: id('1004'),
-              outcome: 'preserved-for-resume',
-              reason: 'kept',
-              nextAction: 'resume',
-              uses: [],
-              pending: [],
-            },
-          ],
+          ...result,
+          outcome: 'failed',
+          reason: 'Worktree /worktrees/one is locked. Verbose operational detail.',
         },
       ],
       plain
     )
-    assert.ok(text.startsWith('1 task(s) need a release'), text)
-    assert.ok(text.includes('the worktree and everything in it are deleted'), text)
-    assert.ok(text.includes('/repo  only the reservation ends; files and commits stay'), text)
+    assert.ok(
+      failed.includes(
+        `dev workspace release ${undelivered.taskId}\nStatus: The release failed; its recorded outcome needs review.`
+      ),
+      failed
+    )
+    assert.ok(!failed.includes(result.path), failed)
+    assert.equal(
+      formatQuitReleaseFailure(undelivered.taskId, 'unreported', plain),
+      `dev workspace release ${undelivered.taskId}\nStatus: The release did not report back; its outcome is unknown.`
+    )
+    assert.equal(
+      formatQuitSweepFailure(plain),
+      'dev workspace list\nStatus: The sweep did not report back; its outcome is unknown.'
+    )
+    const sweepFailure = formatQuitReceipt(
+      { moment: 'quit', rows: [{ kind: 'sweep-failure', reason: 'Error at /private/path' }] },
+      1,
+      plain
+    )
+    assert.ok(!sweepFailure.includes('/private/path'), sweepFailure)
   }
 )
 

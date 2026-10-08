@@ -109,7 +109,7 @@ PROBES = {
                    '\x15/workspace release {TASK_HOST}\r'),
             Action('quit', 'DEV_REAL_AUTHORITY_READY_FOR_QUIT', '\x15/quit\r', delay=0.5),
         ),
-        expect=('Workspace sweep at quit', '✓ removed', 'Exit 0: done.'),
+        expect=('✓ 1 worktree removed', 'Exit 0: done.'),
     ),
 
 
@@ -119,9 +119,9 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Sweeping workspaces…', 'Workspace sweep at quit', '✓ released', '✓ removed',
-                '2/2 finished workspace(s) reached a terminal outcome', 'Exit 0: done.'),
-        expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07', '\x1b]8;;file://'),
+        expect=('Sweeping workspaces…', '✓ 1 reservation released', '✓ 1 worktree removed',
+                'Exit 0: done.'),
+        expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07'),
         env=(('TERM_PROGRAM', 'ghostty'),),
     ),
 
@@ -130,10 +130,10 @@ PROBES = {
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=(*QUIT_ACTIONS, Action('confirm', 'Release them now?', 'y\r', delay=0.5)),
-        expect=('✗ review', 'Release required:', 'dev workspace release {TASK}',
-                '1 task(s) need a release', 'the worktree and everything in it are deleted',
-                '✓ removed', 'Exit 0: done.'),
+        actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
+        expect=('dev workspace release {TASK}', 'Status: The worktree directory is missing',
+                'Release 1 task (1 managed worktree)?', 'including uncommitted changes and undelivered commits',
+                '✓ 1 worktree removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'),),
     ),
 
@@ -142,8 +142,8 @@ PROBES = {
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=(*QUIT_ACTIONS, Action('decline', 'Release them now?', 'n\r', delay=0.5)),
-        expect=('Release required:', 'dev workspace release {TASK}', 'Exit 0: done.'),
+        actions=(*QUIT_ACTIONS, Action('decline', '[y = release, Enter = keep]', '\r', delay=0.5)),
+        expect=('dev workspace release {TASK}', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'decline'),),
     ),
 
@@ -152,11 +152,23 @@ PROBES = {
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
-        actions=(*QUIT_ACTIONS, Action('interrupt', 'Release them now?', '\x03', delay=0.5)),
+        actions=(*QUIT_ACTIONS, Action('interrupt', '[y = release, Enter = keep]', '\x03', delay=0.5)),
         expect=('(cancelled)', 'Exit 130: release cancelled; nothing was released.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'interrupt'),),
     ),
 
+
+    'quit-undelivered': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
+        expect=('dev workspace release {TASK}',
+                'Status: Delivery to the integration target could not be verified.',
+                'Release 1 task (1 managed worktree)?', '✓ 1 worktree removed', 'Exit 0: done.'),
+        expect_raw=('\x1b[33mdev workspace release ', '\x1b[2mStatus:', '\x1b[31mThis deletes'),
+        env=(('LAUNCHER_TUI_UNDELIVERED_WORKTREE', '1'), ('TERM_PROGRAM', 'ghostty')),
+    ),
 
     'quit-self-remove': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
@@ -164,7 +176,7 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Workspace sweep at quit', '✓ removed', 'Exit 0: done.'),
+        expect=('✓ 1 worktree removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_SELF_REMOVE', '1'),),
     ),
 
@@ -174,8 +186,8 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Workspace sweep at quit', '! retained',
-                'the conversation being closed, is still inside this worktree', 'Exit 1:'),
+        expect=('Not included in the quick release:',
+                'Status: A cleanup guard blocked removal after completion was verified.', 'Exit 1:'),
         env=(('LAUNCHER_TUI_CONTAINED_HISTORY', '1'),),
     ),
 
@@ -197,7 +209,7 @@ PROBES = {
         timeout=240.0,
         actions=QUIT_ACTIONS,
         expect=('Interrupt received: the sweep, or a confirmed release, runs on',
-                'Workspace sweep at quit', '✓ removed',
+                '✓ 1 worktree removed',
                 'Exit 130: interrupted after the sweep'),
         env=(('LAUNCHER_TUI_FAULT', 'sigint-during-sweep'),),
     ),
