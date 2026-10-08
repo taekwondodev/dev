@@ -56,11 +56,14 @@ import {
   formatQuitReleaseFailure,
   formatQuitReleasePlan,
   formatQuitReleasePrompt,
+  formatQuitTaskReleasePlan,
   formatQuitReleaseResults,
   formatQuitSweepFailure,
   progressDone,
   quitReleaseExclusion,
   sweepIndicator,
+  taskReleaseExclusion,
+  tasksToConfirm,
   tasksToRelease,
   terminalStyle,
   type TaskReleasePlan,
@@ -178,7 +181,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks without active or unresolved uses are offered for release.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -425,39 +428,66 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   elapsedMs: number
 ): Effect.fn.Return<QuitExit> {
   const swept = sweepExit(receipt)
-  const plans: TaskReleasePlan[] = []
   const excluded = new Map<WorkspaceId, string>()
-  for (const taskId of tasksToRelease(receipt)) {
-    const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
-    if (Exit.isFailure(listed)) {
-      excluded.set(taskId, 'The task could not be inspected before confirmation.')
-      continue
+  const preflight = Effect.fnUntraced(function* (
+    taskIds: readonly WorkspaceId[],
+    exclusion: typeof quitReleaseExclusion
+  ): Effect.fn.Return<readonly TaskReleasePlan[]> {
+    const plans: TaskReleasePlan[] = []
+    for (const taskId of taskIds) {
+      const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
+      if (Exit.isFailure(listed)) {
+        excluded.set(taskId, 'The task could not be inspected before confirmation.')
+        continue
+      }
+      const views = reservedViews(listed.value)
+      const reason = exclusion(receipt, views)
+      if (reason === undefined) plans.push({ taskId, views })
+      else excluded.set(taskId, reason)
     }
-    const views = reservedViews(listed.value)
-    const reason = quitReleaseExclusion(receipt, views)
-    if (reason === undefined) plans.push({ taskId, views })
-    else excluded.set(taskId, reason)
-  }
+    return plans
+  })
+  const plans = yield* preflight(tasksToRelease(receipt), quitReleaseExclusion)
+  const singles = yield* preflight(tasksToConfirm(receipt), taskReleaseExclusion)
   yield* write(formatQuitReceipt(receipt, elapsedMs, style, excluded))
-  if (plans.length === 0 || !proceed()) return swept
-  yield* write(formatQuitReleasePlan(plans, style))
-  const confirmation = yield* askConfirmation(formatQuitReleasePrompt(style))
-  if (confirmation === 'interrupted')
-    return { code: 130, text: 'release cancelled; nothing was released' }
-  if (confirmation === 'declined') return swept
   const released = new Set<WorkspaceId>()
   let failed = false
-  for (const { taskId } of plans) {
-    if (!proceed()) break
-    const results = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
-    if (Exit.isFailure(results)) {
-      failed = true
-      yield* write(formatQuitReleaseFailure(taskId, 'unreported', style))
-      continue
+  const release = Effect.fnUntraced(function* (taskIds: readonly WorkspaceId[]) {
+    for (const taskId of taskIds) {
+      if (!proceed()) return
+      const results = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
+      if (Exit.isFailure(results)) {
+        failed = true
+        yield* write(formatQuitReleaseFailure(taskId, 'unreported', style))
+        continue
+      }
+      yield* write(formatQuitReleaseResults(taskId, results.value, style))
+      if (releaseExitCode(results.value) === 0) released.add(taskId)
+      else failed = true
     }
-    yield* write(formatQuitReleaseResults(taskId, results.value, style))
-    if (releaseExitCode(results.value) === 0) released.add(taskId)
-    else failed = true
+  })
+  const cancelled = (): QuitExit => ({
+    code: 130,
+    text:
+      released.size === 0 && !failed
+        ? 'release cancelled; nothing was released'
+        : 'release cancelled; each confirmed release reached its recorded outcome and no other was started',
+  })
+  const confirmations: (readonly [string, readonly WorkspaceId[]])[] = [
+    ...(plans.length === 0
+      ? []
+      : [[formatQuitReleasePlan(plans, style), plans.map(plan => plan.taskId)] as const]),
+    ...singles.map(
+      plan => [formatQuitTaskReleasePlan(receipt, plan, style), [plan.taskId]] as const
+    ),
+  ]
+  if (confirmations.length === 0 || !proceed()) return swept
+  for (const [question, taskIds] of confirmations) {
+    if (!proceed()) break
+    yield* write(question)
+    const confirmation = yield* askConfirmation(formatQuitReleasePrompt(style))
+    if (confirmation === 'interrupted') return cancelled()
+    if (confirmation === 'confirmed') yield* release(taskIds)
   }
   if (!proceed())
     return {
