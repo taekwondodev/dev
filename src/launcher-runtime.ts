@@ -53,9 +53,13 @@ import {
 import {
   formatExitLine,
   formatQuitReceipt,
+  formatQuitReleaseFailure,
   formatQuitReleasePlan,
+  formatQuitReleasePrompt,
   formatQuitReleaseResults,
+  formatQuitSweepFailure,
   progressDone,
+  quitReleaseExclusion,
   sweepIndicator,
   tasksToRelease,
   terminalStyle,
@@ -174,7 +178,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     for review-required workspaces only: confirm interactively, then one attempt per workspace\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and tasks that only a release clears are offered for release.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks without active or unresolved uses are offered for release.\n`
     )
   })
 
@@ -417,26 +421,27 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
   receipt: SweepReceipt,
   style: TerminalStyle,
-  proceed: () => boolean
+  proceed: () => boolean,
+  elapsedMs: number
 ): Effect.fn.Return<QuitExit> {
   const swept = sweepExit(receipt)
   const plans: TaskReleasePlan[] = []
+  const excluded = new Map<WorkspaceId, string>()
   for (const taskId of tasksToRelease(receipt)) {
     const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
     if (Exit.isFailure(listed)) {
-      yield* write(
-        `Task ${taskId} could not be listed for a release (${errorText(Cause.squash(listed.cause))}); nothing was released, and the commands above release it later.`
-      )
-      return swept
+      excluded.set(taskId, 'The task could not be inspected before confirmation.')
+      continue
     }
     const views = reservedViews(listed.value)
-    if (views.length > 0) plans.push({ taskId, views })
+    const reason = quitReleaseExclusion(receipt, views)
+    if (reason === undefined) plans.push({ taskId, views })
+    else excluded.set(taskId, reason)
   }
-  if (plans.length === 0) return swept
+  yield* write(formatQuitReceipt(receipt, elapsedMs, style, excluded))
+  if (plans.length === 0 || !proceed()) return swept
   yield* write(formatQuitReleasePlan(plans, style))
-  const confirmation = yield* askConfirmation(
-    'Release them now? Type y to release, anything else to quit: '
-  )
+  const confirmation = yield* askConfirmation(formatQuitReleasePrompt(style))
   if (confirmation === 'interrupted')
     return { code: 130, text: 'release cancelled; nothing was released' }
   if (confirmation === 'declined') return swept
@@ -447,9 +452,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
     const results = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
     if (Exit.isFailure(results)) {
       failed = true
-      yield* write(
-        `The release of task ${taskId} did not report back (${errorText(Cause.squash(results.cause))}); run dev workspace inspect ${taskId} and release again if anything remains.`
-      )
+      yield* write(formatQuitReleaseFailure(taskId, 'unreported', style))
       continue
     }
     yield* write(formatQuitReleaseResults(taskId, results.value, style))
@@ -497,22 +500,22 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
   )
   const elapsed = (yield* Clock.currentTimeMillis) - started
   if (Exit.isFailure(swept)) {
-    yield* write(
-      `${progressDone(style, true)}The sweep did not report back (${errorText(Cause.squash(swept.cause))}), so its outcome is unknown: it may have released or removed some workspaces. Run dev workspace list in this repository, then dev workspace inspect <task>, to see each recorded outcome.\nExit 1.`
-    )
+    yield* write(`${progressDone(style, true)}${formatQuitSweepFailure(style)}\nExit 1.`)
     process.exitCode = 1
     return
   }
   const receipt = swept.value
   const sweptExit = sweepExit(receipt)
-  yield* write(
-    `${progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0)}${formatQuitReceipt(receipt, elapsed, style)}`
-  )
+  yield* write(progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0))
   let exit: QuitExit
-  if (!input.proceed()) exit = { code: 130, text: 'interrupted after the sweep' }
-  else if (process.stdin.isTTY === true && process.stdout.isTTY === true)
-    exit = yield* releaseAtQuit(lifecycle, receipt, style, input.proceed)
-  else exit = sweptExit
+  if (input.proceed() && process.stdin.isTTY === true && process.stdout.isTTY === true) {
+    exit = yield* releaseAtQuit(lifecycle, receipt, style, input.proceed, elapsed)
+    if (!input.proceed() && exit.code !== 130)
+      exit = { code: 130, text: 'interrupted after the sweep' }
+  } else {
+    yield* write(formatQuitReceipt(receipt, elapsed, style))
+    exit = input.proceed() ? sweptExit : { code: 130, text: 'interrupted after the sweep' }
+  }
   yield* write(
     `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
   )
