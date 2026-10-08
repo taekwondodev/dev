@@ -154,7 +154,7 @@ await claim('children of the same type are told apart by their task', () => {
   )
 })
 
-await claim('a leaf is titled after its coordinator type, even once the parent settled', () => {
+await claim('leaf titles use the parent type or a fallback when it is absent', () => {
   const coordinator = child({ index: 1, taskId: 'plan', skill: 'arena', coordinator: true })
   const leaf = child({ index: 2, taskId: 'r', skill: 'code-review', parent: 1, model: 'p/m' })
   const orphan = child({ index: 3, taskId: 'x', parent: 9, model: 'p/m' })

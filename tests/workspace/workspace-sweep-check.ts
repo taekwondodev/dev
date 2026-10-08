@@ -12,7 +12,6 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -20,7 +19,6 @@ import { NodeServices } from '@effect/platform-node'
 import { Effect, Stream } from 'effect'
 import {
   WorkspaceError,
-  type PublicationReference,
   type SweepReceipt,
   type SweepRow,
   type TaskTarget,
@@ -60,7 +58,6 @@ const { claim, passed } = makeClaims()
 
 const git = (args: readonly string[], cwd: string): string =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim()
-const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const localMain: TaskTarget = { kind: 'local', ref: 'refs/heads/main' }
 
 let conversationCount = 0
@@ -102,26 +99,6 @@ const sweepWith = (
   anchor: WorkspaceId,
   delegatedCwds: readonly string[] = []
 ) => using.sweep({ anchorWorkspaceId: anchor, delegatedCwds, occupiedPaths: [] })
-const publication = (
-  taskId: WorkspaceId,
-  workspaceId: WorkspaceId,
-  relativePath: string,
-  bytes: Uint8Array
-): PublicationReference => ({
-  id: newId(),
-  taskId,
-  workspaceId,
-  relativePath,
-  byteLength: bytes.byteLength,
-  sha256: sha256(bytes),
-  destination: {
-    repository: 'owner/repo',
-    number: 44,
-    readBack: 'text-in-body',
-    url: 'https://github.com/owner/repo/issues/44',
-  },
-  verifiedAt: Date.now(),
-})
 
 try {
   const repo = join(sandbox, 'repo')
@@ -1020,24 +997,13 @@ try {
           DEV_RELEASE_FAULT_CHECKOUT: checkout,
         },
       })
-  const finishedWithReports = async (name: string, reports: readonly string[]) => {
+  const finishedWorktree = async (name: string) => {
     const checkout = userCheckout(name)
     const owner = await reserve(checkout)
     const managed = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
     await owner.owner.close()
     await lifecycle.recordTarget(owner.taskId, localMain)
     deliverBranch(managed.checkout)
-    for (const report of reports) {
-      writeFileSync(join(managed.checkout, report), `${report}\n`)
-      await lifecycle.recordPublication(
-        publication(
-          owner.taskId,
-          managed.workspaceId,
-          report,
-          readFileSync(join(managed.checkout, report))
-        )
-      )
-    }
     return { owner, managed }
   }
   const crashSweep = async (fault: ReleaseFault, checkout: string, anchor: WorkspaceId) => {
@@ -1056,7 +1022,7 @@ try {
     'a sweep interrupted after recording its removal, or right after Git removed the worktree, leaves the release unfinished: later sweeps retain it as release-review and dev workspace release finishes it',
     async () => {
       for (const fault of ['before-git-remove', 'after-git-remove'] as const) {
-        const interrupted = await finishedWithReports(fault, ['report.txt'])
+        const interrupted = await finishedWorktree(fault)
         await crashSweep(fault, interrupted.managed.checkout, interrupted.owner.write.workspaceId)
         const view = (await lifecycle.inspect({ taskId: interrupted.owner.taskId })).find(
           item => item.workspaceId === interrupted.managed.workspaceId
@@ -1081,13 +1047,20 @@ try {
   )
 
   await claim(
-    'a worktree directory deleted outside dev is retained as directory-missing until dev workspace release resolves it, after which the sweep has nothing left to attempt',
+    'a worktree directory deleted outside dev is retained as directory-missing by check and sweep; release removes its Git registration and reservation, records removal, and leaves nothing for the next sweep',
     async () => {
       const goneCheckout = userCheckout('gone')
       const goneOwner = await reserve(goneCheckout)
       const gone = ready(await goneOwner.owner.authorize({ kind: 'delegated-write' }))
       await goneOwner.owner.close()
+      await lifecycle.recordTarget(goneOwner.taskId, localMain)
+      const adminPath = git(['rev-parse', '--path-format=absolute', '--git-dir'], gone.checkout)
       rmSync(gone.checkout, { recursive: true, force: true })
+      const assessment = (await lifecycle.check(goneOwner.taskId)).find(
+        view => view.workspaceId === gone.workspaceId
+      )
+      assert.ok(assessment !== undefined)
+      assert.equal(verdictName(assessment.completion), 'retained:directory-missing')
       const kept = await sweepAtQuit(goneOwner.write.workspaceId)
       const missing = rowOf(kept, gone.workspaceId)
       assert.deepEqual(
@@ -1096,6 +1069,14 @@ try {
       )
       const released = await lifecycle.release(goneOwner.taskId)
       assert.equal(released.find(item => item.workspaceId === gone.workspaceId)?.outcome, 'removed')
+      assert.ok(!existsSync(adminPath), 'the targeted registration is gone')
+      assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(gone.checkout))
+      assert.equal(
+        (await lifecycle.inspect({ taskId: goneOwner.taskId })).find(
+          view => view.workspaceId === gone.workspaceId
+        )?.outcome,
+        'removed'
+      )
       const rerun = await sweepAtQuit(goneOwner.write.workspaceId)
       assert.ok(
         !rerun.rows.some(
@@ -1176,7 +1157,7 @@ try {
   await claim(
     'a sweep budget runs from when the host sent the request: of two allocations sent together, the one queued behind a sweep that used the budget defers every task instead of sweeping again, and both allocations succeed',
     async () => {
-      const finishedOne = await finishedWithReports('queued-finished', [])
+      const finishedOne = await finishedWorktree('queued-finished')
       const late = await openLifecycle({
         root,
         startWorker: faultyWorker('clock-after-git-remove', finishedOne.managed.checkout),

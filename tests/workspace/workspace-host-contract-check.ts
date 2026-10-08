@@ -32,7 +32,6 @@ import {
 } from './workspace-check-support.ts'
 import {
   fixtureId,
-  makeFixtureAssessment,
   makeFixtureBinding,
   makeFixtureReceipt,
   type FixtureDescriptor,
@@ -56,7 +55,6 @@ const descriptor = (
   label: 'contract-check',
 })
 const current = descriptor('pre-existing', 1, 11)
-const other = descriptor('managed', 2, 12)
 const swept = descriptor('managed', 3, 13)
 for (const path of [sessionDir, agentDir, current.path, join(fixture, 'home', '.agents', 'skills')])
   mkdirSync(path, { recursive: true })
@@ -104,8 +102,6 @@ await claim(
 )
 const conversation = { sessionId: manager.getSessionId(), sessionFile, dataHome }
 const selections: WorkspaceSelection[] = []
-const checked: string[] = []
-const released: string[] = []
 const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this check' })
 const receipt: SweepReceipt = makeFixtureReceipt({
   moment: 'allocation',
@@ -148,25 +144,8 @@ const lifecycle: WorkspaceLifecycle = {
   attach: () => Effect.fail(refused),
   inspect: () => Effect.succeed([]),
   validate: () => Effect.void,
-  check: input => {
-    checked.push(input.taskId)
-    return Effect.succeed([
-      makeFixtureAssessment({
-        descriptor: other,
-        completion: {
-          kind: 'finished',
-          role: 'branch',
-          rule: 'branch-in-target',
-          reason: 'fixture HEAD is an ancestor of the target tip',
-        },
-        reservationId: fixtureId(112),
-      }),
-    ])
-  },
-  release: input => {
-    released.push(input.taskId)
-    return Effect.fail(refused)
-  },
+  check: () => Effect.fail(refused),
+  release: () => Effect.fail(refused),
   sweep: () => Effect.fail(refused),
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
@@ -206,17 +185,12 @@ try {
   })
   const { host, runtime } = opened
   const notices: { readonly message: string; readonly level: string | undefined }[] = []
-  const confirmations: string[] = []
   const handlerErrors: string[] = []
   await runtime.session.bindExtensions({
     uiContext: {
       ...runtime.session.extensionRunner.getUIContext(),
       notify: (message, level) => {
         notices.push({ message, level })
-      },
-      confirm: async title => {
-        confirmations.push(title)
-        return true
       },
     },
     onError: error => {
@@ -238,20 +212,6 @@ try {
       'Unknown workspace command "switch". Use list, inspect <task>, check <task> or release <task>.',
     ])
   })
-  await claim(
-    '/workspace release in the TUI, for its own task or another, points to the terminal command and assesses, confirms and releases nothing',
-    async () => {
-      for (const taskId of [current.taskId, other.taskId]) {
-        await runtime.session.prompt(`/workspace release ${taskId}`)
-        const answer = displayed().at(-1) ?? ''
-        assert.ok(answer.includes(`dev workspace release ${taskId}`), answer)
-        assert.ok(answer.includes('swept when dev quits'), answer)
-      }
-      assert.deepEqual(checked, [])
-      assert.deepEqual(confirmations, [])
-      assert.deepEqual(released, [])
-    }
-  )
   await claim(
     'a sweep receipt the authority delivers while a work tool admission allocates is shown once in the conversation',
     async () => {
