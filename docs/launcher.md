@@ -51,11 +51,11 @@ Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage 
 
 ### Startup cache
 
-The launcher enables Node's best-effort module compile cache before loading its runtime and shares the cache location with the workspace worker. Subsequent launches can reuse compiled code; the first launch populates the cache. Specific platform imports avoid loading unrelated dependencies during startup. Profiles, resources and workspace state are still read and validated on every launch.
+Dev uses Node's best-effort module compile cache. The first launch populates it; later launches can reuse compiled code. Profiles, resources and workspace state are still validated on every launch.
 
-For runtime launches, the scoped workspace worker starts while Pi loads. Workspace attachment still waits for conversation checks; help, diagnostics and save-only commands do not start this worker. If startup fails, the worker is closed with the launcher's scope.
+The cache lives in the operating system's temporary directory (`node-compile-cache`), or `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup, and source or runtime changes need no manual reset.
 
-Node stores the cache under the operating system's temporary directory (`node-compile-cache`), or the location selected by `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup. Node owns cache invalidation when source or runtime changes; no rebuild or cache reset is needed after editing dev.
+Help, diagnostics and save-only commands do not start the workspace worker.
 
 ### Profiles and resources
 
@@ -88,7 +88,7 @@ A missing, unreadable or invalid manifest, a default that is not a defined profi
 
 A refused existing regular session file and its history remain unchanged. An absent path is reported as absent, without inferring whether history existed. Follow the reported reason: a conversation-specific refusal need not block another conversation, but starting fresh cannot bypass repository identity checks. A workspace switch that never reached the host is withdrawn on resume.
 
-Independent repositories can share a data home. [Workspace](workspace.md) governs concurrent sessions, session replacements and `/quit`: quit disposes the session, sweeps the repository, prints a command-and-status receipt and offers one confirmation for eligible remaining tasks, with the documented [exit status](workspace.md#exit-codes).
+Independent repositories can share a data home. See [workspace session commands](workspace.md#session-commands) for replacements and [quit and interruption](workspace.md#quit-and-interruption) for cleanup, the release offer and exit status.
 
 ## State
 
@@ -99,9 +99,9 @@ Independent repositories can share a data home. [Workspace](workspace.md) govern
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
 | `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
-| `~/.pi/agent/auth.json`                                  | Pi authentication shared by the lead and children                                                                             |
+| Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |
 | `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates and managed worktrees                                                                   |
 
-`--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, profiles, authentication, installation coordination and workspace authority keep their own locations. `/login` writes Pi's global auth file; dev never copies credentials. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
+`--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, profiles, authentication, installation coordination and workspace authority keep their own locations. `/login` updates the shared Pi credential store. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
 
 A conversation retains its selected profile. If stored dev metadata is invalid, startup refuses it rather than resetting it. A stored profile preference that is not a valid preference record stops launch with exit 1 and an error naming the file; delete that file under `<data-home>/preferences/` ([discard obsolete state](DEVELOPMENT.md#discard-obsolete-state)) and save the preference again. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).

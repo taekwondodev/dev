@@ -22,7 +22,7 @@ The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECT
 
 ## Use dev
 
-Dev is built for me: it assumes `pi` installed with the [pi.dev installer](https://pi.dev) (`curl -fsSL https://pi.dev/install.sh | sh`), the skill library at `~/.agents/skills`, and Node 26 or newer with a SQLite that carries the WAL-reset fix. Read [SECURITY](SECURITY.md) before installing.
+Dev is built for me: it assumes `pi` installed with the [pi.dev installer](https://pi.dev), the skill library at `~/.agents/skills`, and Node satisfying `package.json` with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug). Read [SECURITY](SECURITY.md) before installing.
 
 ```bash
 cd ~/Developer/dev
@@ -64,6 +64,4 @@ Measured on my own use of dev, not on benchmarks: every lead and child session f
   <img src="docs/performance/usage.svg" alt="Lead cache-read share, tool calls without and with error across all sessions, mean children per lead session, p50 model latency and mean tool result size">
 </p>
 
-Tool-call percentages cover lead and child sessions, counting only calls with a recorded result. Calls without a result are excluded. “Success” means the tool returned without a recorded error, not that the task was correct.
-
-Regenerate the aggregates with `npm run profile -- --export docs/performance`. Only allowlisted aggregates are committed; reports and drilldowns stay private unless explicitly exported. [Usage profile](docs/usage-profile.md) defines the metrics, sample rules and export boundary.
+The [metric definitions](docs/usage-profile.md#read-the-results) explain what these charts establish, including why tool success is not task correctness. To regenerate the committed charts, follow [export for publication](docs/usage-profile.md#export-for-publication); private reports and drilldowns are not public exports.

@@ -14,8 +14,6 @@ A leading `/skill:name` loads the skill natively and selects dispatch as describ
 
 Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 
-For `delegate`, `cwd` may name a directory inside another Git checkout. The child then works in a managed worktree allocated from that checkout's current commit, or reads that checkout directly when read-only, and discovers that repository's project instructions, skills and delivery policy natively; it delivers through that repository's own policy. The lead stays bound to its own repository: it reads the other checkout with its native read tools, inspects the attempt, and still cannot write or edit there ([native writes](workspace.md#native-writes)). `process` commands keep `cwd` inside the bound workspace, leaves cannot name a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there. [Workspace](workspace.md#admission-and-isolation) describes the admission and the refused directories.
-
 ```text
 /work                        list this session's attempts, including leaves and their parent
 /work dispatch               inspect configured dispatch rules; not a prerequisite to launch
@@ -32,15 +30,25 @@ Writer attempts show their managed-worktree path as `blocked` while use is unres
 
 ### Execution and access
 
-A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions in the requested directory, under the lead checkout's writer admission. A delegated writer receives a distinct worktree from the exact current commit of its source checkout, the lead's or the other checkout named by `cwd`: modified, untracked and ignored files are not copied. Its reservation outlives the attempt, and `worktree.path` records the worktree wherever it was allocated.
+A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission.
 
-A read-only child loads the same global extensions as a writing child, so it can use every model their providers register. Its tools are an allowlist: inspection tools, plus `work` for a coordinator, with no shell, edit or extension tool, so it cannot reach the network or `gh`. Both `work` tool descriptions state this, so callers put issue, PR or other external text in the prompt or a workspace file. An extension tool that reuses an inspection tool's name is blocked, so the child loses that tool. Every child receives project instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Writing children use the same [native destination policy](workspace.md#native-writes) as the lead, with controller checks through the file-operation boundary.
+Every child receives its working project's instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Read-only children have inspection tools, plus `work` for coordinators, but no shell, edit, network or `gh` tool. Put issue, PR or other external text in the prompt or a workspace file. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
+
+The [security model](../SECURITY.md#outside-the-protection) explains why the allowlist does not sandbox trusted extensions or external agent providers.
 
 Pi expands a verified leading skill invocation once in the first user message, including hidden skills. Unknown or unreadable skills and extension-command collisions fail before a model request. Other commands and prompt templates are not expanded. The attempt records the invoked skill, not every skill the child later reads.
 
 Every child has independent [background compaction](compaction.md).
 
 Command text must follow the [credential rule](../SECURITY.md#credentials). Process separation and read-only tools are not an OS sandbox.
+
+### Delegation scope
+
+A delegated writer receives a distinct managed worktree from the source checkout's exact current commit. Modified, untracked and ignored files are not copied. `worktree.path` records the allocation, whose reservation outlives the attempt.
+
+For `delegate`, `cwd` can select another Git checkout. The child follows that repository's project instructions, skills and delivery policy; a read-only child reads the selected checkout directly. The lead stays bound to its original repository and can read and inspect the result, but its native writes there remain refused. See [workspace selection](workspace.md#delegation-into-another-checkout) for admission and task identity.
+
+`process` commands keep `cwd` inside the bound workspace. Leaves cannot select a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there.
 
 ### Coordinators and leaves
 
@@ -72,9 +80,11 @@ A local command that exits normally is `completed`, even with a nonzero exit cod
 
 Subscription exhaustion from any attempt, including a leaf, blocks new agents and automatic continuation for the rest of the session; another user message does not clear it. Existing commands finish and their outcomes are recorded. A final lead provider or transport failure after Pi retries suspends automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
 
-The `dev/work` status groups attempt states, active children and child usage with `│`, and items within a group with `·`, so a footer can wrap it at separators ([ADR 0006](adr/0006-global-visual-layer.md)). An active child is titled by the skill it invoked or, without one, by its role: `coordinator`, `reader` or `writer`; the role also covers the moment before the child reports its resources. A leaf is titled `coordinator>leaf` from both titles, and children sharing a title add their task, as in `arena (docs)`. Each shows its model without the provider and its context pressure. Inspection includes parent, invoked skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator, with unavailable values distinct from zero. A deferred workspace gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains its retry boundary.
+### Status and inspection
 
-For global presentation extensions, work emits `dev/work-activity` on Pi's event bus with `{ sessionId, active }` alongside each interactive status update, including session startup and changes while the lead is idle. `active` means at least one delegated child, coordinator or leaf is `running` or `waiting`; local commands and settled attempts do not count. Subscribers filter by session ID and reset on session shutdown. The title extension keeps its spinner while the lead or a child is active, independent of the footer.
+The `dev/work` status shows attempt states, active children and usage. Children are titled by invoked skill or by role (`coordinator`, `reader`, `writer`); leaves show `coordinator>leaf`, and repeated titles add the task key. Each shows its model and context pressure. Inspection includes parent, skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+
+Global extensions own presentation, including title activity while a child runs and the lead is idle. See [ADR 0006](adr/0006-global-visual-layer.md) for the presentation boundary and status-text contract. A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
 
 ## State
 
@@ -86,7 +96,7 @@ For global presentation extensions, work emits `dev/work-activity` on Pi's event
 
 Retention keeps seven days from completion and the newest 64 completed results within that window. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries.
 
-Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the supported Node minimum (26.0.0) and an embedded SQLite with the WAL-reset fix; the Node number alone does not establish safety.
+Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the Node minimum in `package.json` and an embedded SQLite with the [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug); the Node number alone does not establish safety.
 
 Invalid or corrupt storage is refused, not rebuilt from logs. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 
