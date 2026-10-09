@@ -21,6 +21,7 @@
     "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/quit-display-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",
+    "web:check": "npm run types:pi && node tests/web/web-read-check.ts && node tests/web/web-host-check.ts",
     "work:check": "npm run types:pi && node tests/compaction-check.ts && node tests/work/work-dispatch-check.ts && node tests/work/work-status-check.ts && node tests/work/work-store-check.ts && node tests/work/work-skill-check.ts && node tests/work/work-nested-check.ts && node tests/work/work-cancel-check.ts && node tests/work/work-compaction-check.ts && node tests/work/work-extension-check.ts",
     "setup": "node scripts/maintain.ts setup",
     "update": "node scripts/maintain.ts update",
@@ -40,7 +41,9 @@
   "dependencies": {
     "@effect/platform-node": "4.0.2",
     "@effect/platform-node-shared": "4.0.2",
-    "effect": "4.0.2"
+    "@mozilla/readability": "0.6.0",
+    "effect": "4.0.2",
+    "linkedom": "0.18.13"
   },
   "devDependencies": {
     "@effect/tsgo": "0.51.1",

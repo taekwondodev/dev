@@ -3,7 +3,19 @@ import * as NodeServices from '@effect/platform-node/NodeServices'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
-import { Cause, Clock, Deferred, Effect, Exit, Layer, Option, Schema, Scope } from 'effect'
+import {
+  Cause,
+  Clock,
+  DateTime,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schema,
+  Scope,
+} from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
@@ -27,6 +39,9 @@ import {
 import { errorText } from './error-text.ts'
 import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
 import { createWorkExtension } from './work-extension.ts'
+import { createWebExtension } from './web-extension.ts'
+import { makeWebReader, type WebReader } from './web-reader.ts'
+import { makeBrowserProfileOwner, type BrowserProfileStatus } from './web-profile.ts'
 import { PublicationDestinations } from './workspace-tool.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
 import { readDispatch } from './work-dispatch.ts'
@@ -87,6 +102,7 @@ interface LaunchOptions {
   readonly probeRuntime: boolean
   readonly help: boolean
   readonly workspaceArgs?: readonly string[]
+  readonly browserArgs?: readonly string[]
 }
 
 type RuntimeFactory = Parameters<PiApi['createAgentSessionRuntime']>[0]
@@ -145,6 +161,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         probeRuntime: boolean
         help: boolean
         workspaceArgs?: readonly string[]
+        browserArgs?: readonly string[]
       } = {
         cwd: process.cwd(),
         continueSession: false,
@@ -166,6 +183,9 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         else if (arg === 'workspace') {
           values.workspaceArgs = argv.slice(index + 1)
           break
+        } else if (arg === 'browser') {
+          values.browserArgs = argv.slice(index + 1)
+          break
         } else throw new Error(`Unknown option ${arg}. Use --help.`)
       }
       return {
@@ -181,7 +201,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -236,6 +256,7 @@ export interface RuntimeParts {
   readonly guard: SessionGuard
   readonly workspaceHost: WorkspaceHost
   readonly lifecycle: WorkspaceLifecycle
+  readonly webReader: WebReader
   readonly modelRuntime?: Effect.Effect<ModelRuntime, LauncherError>
   readonly model?: SessionModel
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
@@ -247,7 +268,7 @@ const createRuntime = Effect.fnUntraced(function* (
   parts: RuntimeParts,
   runtimeOptions: RuntimeFactoryOptions
 ): Effect.fn.Return<RuntimeFactoryResult, LauncherError, RuntimeFactoryServices> {
-  const { api, packageRoot, dataHome, profile, guard, workspaceHost, lifecycle } = parts
+  const { api, packageRoot, dataHome, profile, guard, workspaceHost, lifecycle, webReader } = parts
   const { attachment, cwd, sessionManager } = yield* workspaceHost
     .prepareRuntime({ sessionManager: runtimeOptions.sessionManager, cwd: runtimeOptions.cwd })
     .pipe(
@@ -297,6 +318,8 @@ const createRuntime = Effect.fnUntraced(function* (
     { name: 'dev:session-guard', factory: guard.factory },
     { name: 'dev:work', factory: work.factory },
     { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
+    { name: 'dev:web', factory: createWebExtension(webReader).factory },
+    { name: 'dev:codemode', factory: api.createCodemodeExtension({ mode: 'on' }) },
   ]
   const services = yield* fromPromise('Cannot create Pi session services', () =>
     api.createAgentSessionServices({
@@ -327,6 +350,7 @@ const createRuntime = Effect.fnUntraced(function* (
       sessionManager,
       sessionStartEvent: runtimeOptions.sessionStartEvent,
       ...(parts.model === undefined ? {} : { model: parts.model }),
+      tools: ['+codemode'],
       customTools: [
         api.defineTool(
           api.createBashToolDefinition(cwd, {
@@ -693,6 +717,62 @@ const terminalRelease = Effect.fnUntraced(function* (
   return releaseExitCode(released.value)
 })
 
+const formatBrowserStatus = (status: BrowserProfileStatus): string =>
+  [
+    `chrome: ${status.chrome ?? 'not installed in /Applications or ~/Applications'}`,
+    `source profile: ${status.source}/${status.profileDirectory}`,
+    `authenticated rendering: ${status.enabled ? 'enabled' : 'disabled (dev browser enable)'}`,
+    `dev copy: ${
+      status.copy === undefined
+        ? 'absent'
+        : `${status.copy.complete ? 'complete' : 'incomplete'}, refreshed ${DateTime.formatIso(DateTime.makeUnsafe(status.copy.refreshedAt))} from ${status.copy.source}/${status.copy.profileDirectory}`
+    }`,
+    `in use: ${status.inUse ? 'yes, a dev session holds the copy for Chrome or pending shutdown verification' : 'no'}`,
+  ].join('\n')
+
+const BrowserSubcommand = Schema.Literals(['status', 'revoke', 'enable'])
+const REVOKE_SETTLE = Duration.seconds(10)
+
+const browserCommand = Effect.fnUntraced(function* (
+  args: readonly string[],
+  dataHome: string
+): Effect.fn.Return<number, LauncherError> {
+  const [first = 'status', ...rest] = args
+  const command = Schema.decodeUnknownOption(BrowserSubcommand)(first)
+  if (rest.length > 0 || Option.isNone(command)) {
+    yield* write(
+      `Unknown browser command: ${args.join(' ')}. Use: dev browser [status | revoke | enable].`,
+      process.stderr
+    )
+    return 2
+  }
+  const owner = makeBrowserProfileOwner({ dataHome })
+  const operations = {
+    status: Effect.map(owner.status, formatBrowserStatus),
+    enable: Effect.as(
+      owner.enable,
+      'Authenticated browser rendering is enabled for this data home.'
+    ),
+    revoke: Effect.map(owner.revoke(REVOKE_SETTLE), revoked => {
+      switch (revoked.kind) {
+        case 'removed':
+          return `Authenticated browser rendering is disabled and dev's profile copy was deleted: ${revoked.path}. Your Chrome profile was not touched.`
+        case 'already-absent':
+          return 'Authenticated browser rendering is disabled; dev held no profile copy. Your Chrome profile was not touched.'
+        case 'kept-live':
+          return `Authenticated browser rendering is disabled: no further launch will use the copy. The copy at ${revoked.path} was kept because a dev session holds it for Chrome or pending shutdown verification; retry settlement in that session, then rerun dev browser revoke. Your Chrome profile was not touched.`
+      }
+    }),
+  }
+  const outcome = yield* Effect.exit(operations[command.value])
+  if (Exit.isFailure(outcome)) {
+    yield* write(errorText(Cause.squash(outcome.cause)), process.stderr)
+    return 1
+  }
+  yield* write(outcome.value)
+  return 0
+})
+
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
   dependencies: LauncherDependencies
@@ -737,6 +817,14 @@ const run = Effect.fnUntraced(function* (
       return
     }
     process.exitCode = yield* terminalRelease(dependencies, command.taskId)
+    return
+  }
+
+  if (options.browserArgs !== undefined) {
+    process.exitCode = yield* browserCommand(
+      options.browserArgs,
+      options.dataHome ?? (yield* defaultDataHome)
+    )
     return
   }
 
@@ -902,6 +990,18 @@ const run = Effect.fnUntraced(function* (
         source: effectiveSelection.source,
       })
     })
+  const readerScope = yield* Scope.make()
+  const webReader = yield* Scope.provide(readerScope)(
+    makeWebReader({
+      profile: { dataHome },
+      onBrowserShutdown: outcome => {
+        if (outcome.kind === 'unobserved')
+          process.stderr.write(
+            `Chrome helper processes of the read_url browser were not observed gone: ${outcome.message}. The profile copy remains locked in this dev process; a later browser read or session close will retry settlement. Exiting dev releases the lock without proving Chrome has stopped.\n`
+          )
+      },
+    })
+  )
   const createRuntimeFactory = yield* makeRuntimeFactory({
     api,
     packageRoot: packageInfo.root,
@@ -910,6 +1010,7 @@ const run = Effect.fnUntraced(function* (
     guard,
     workspaceHost,
     lifecycle: workspaceLifecycle,
+    webReader,
   })
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
@@ -964,7 +1065,7 @@ const run = Effect.fnUntraced(function* (
     })
   )
   return yield* Effect.gen(function* () {
-    yield* sessionProgram
+    yield* Effect.ensuring(sessionProgram, Scope.close(readerScope, Exit.void))
     if (quit === undefined) return false
     yield* lease.release
     const { binding, delegatedCwds } = workspaceHost.attachment

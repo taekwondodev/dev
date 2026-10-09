@@ -37,6 +37,7 @@ const suites = [
   'workspace:tui',
   'workspace:github',
   'work:check',
+  'web:check',
 ] as const
 type Step = 'install' | (typeof suites)[number]
 const pullRequestBodyLimit = 65_536
