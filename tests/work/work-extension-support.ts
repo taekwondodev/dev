@@ -36,6 +36,7 @@ export const openLead = async (
     readonly send?: (deliver: SendCustomMessage) => SendCustomMessage
     readonly notify?: (notice: Notice) => void
     readonly tools?: readonly string[]
+    readonly codemode?: boolean
   } = {}
 ) => {
   const { pi, importFromPi } = installed
@@ -110,6 +111,7 @@ export const openLead = async (
         api => {
           api.events.on('dev/work-activity', activity => activities.push(activity))
         },
+        ...(options.codemode === true ? [pi.createCodemodeExtension({ mode: 'on' })] : []),
       ],
     },
   })

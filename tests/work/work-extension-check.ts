@@ -191,6 +191,27 @@ try {
       })
   )
 
+  await claim('a codemode script cannot wait through nested bash while owned work runs', () =>
+    withLead({ tools: ['work', 'bash', 'codemode'], codemode: true }, async lead => {
+      const held = gate()
+      const { run, next } = await launch(lead, 0, [held.command])
+      const started = Date.now()
+      const code = "return await tools.bash({ command: 'sleep 240; echo ok' })"
+      next.reply([toolCall('script', 'codemode', { code })])
+      const refused = await lead.request(2)
+      assert.ok(Date.now() - started < 30_000)
+      assert.ok(seen(refused).includes('Script failed'), seen(refused))
+      assert.ok(seen(refused).includes('task-0-0 running'), seen(refused))
+      refused.reply(text('waiting for outcomes'))
+      await run
+      await lead.idle()
+      held.open()
+      const continued = await lead.request(3)
+      continued.reply(text('done'))
+      await lead.idle()
+    })
+  )
+
   await claim(
     'outcomes arrive when the current run settles and an eligible batch continues a successful lead run without another user message',
     () =>
