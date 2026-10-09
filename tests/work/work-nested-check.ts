@@ -668,6 +668,28 @@ try {
     )
 
     await claim(
+      'a writing coordinator cannot wait through bash while its leaf is live',
+      async () => {
+        const started = Date.now()
+        const { view, text } = await owner.run({
+          taskId: 'sleeper',
+          access: 'write',
+          coordinate: true,
+          prompt: phase(
+            'Sleeping phase',
+            [work('l', delegation('held-leaf', `Held leaf\n${script([slow(3_000)])}`))],
+            [toolCall('wait', 'bash', { command: 'sleep 240; echo ok' })]
+          ),
+        })
+        assertStatus(view, 'completed')
+        assert.ok(Date.now() - started < 120_000)
+        assert.equal(count(text, 'Refused: this command only waits'), 1, text)
+        assert.match(text, /1 live leaves/)
+        assertStatus(await owner.leaf(view.id, 'held-leaf', settled), 'completed')
+      }
+    )
+
+    await claim(
       'a read-only leaf of a writing coordinator reads its modified and untracked files under a read use recorded on that worktree, a writer leaf gets its own worktree, and usage is reported once per attempt',
       async () => {
         const { view, text } = await owner.run({

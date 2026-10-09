@@ -685,7 +685,9 @@ export const createWorkExtension = ({
       const active = snapshot.value.records.filter(
         record => record.status === 'running' || record.status === 'waiting'
       )
-      return active.length > 0 ? { block: true, reason: waitRefusal(active) } : undefined
+      if (active.length === 0) return undefined
+      const running = active.map(record => `${record.owner.taskId} ${record.status}`).join(', ')
+      return { block: true, reason: waitRefusal(running) }
     })
     pi.registerCommand('work', {
       description:
