@@ -20,6 +20,7 @@ dev --diagnostics                 # print resolved paths, Pi installation and re
 dev --probe-runtime               # create a runtime without the TUI or a model call
 dev --help
 dev workspace ...                 # workspace observation and release commands
+dev browser [status|revoke|enable]  # authenticated Chrome profile copy used by read_url
 ```
 
 ### Maintenance
@@ -55,7 +56,9 @@ Dev uses Node's best-effort module compile cache. The first launch populates it;
 
 The cache lives in the operating system's temporary directory (`node-compile-cache`), or `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup, and source or runtime changes need no manual reset.
 
-Help, diagnostics and save-only commands do not start the workspace worker.
+Help, diagnostics, save-only and browser commands do not start the workspace worker.
+
+Every lead session registers dev's `read_url` reader and Pi's native `codemode`, so the model can read documentation URLs directly or compose reads in scripts. [Read URL](web-read.md) owns that behavior; children receive neither tool.
 
 ### Profiles and resources
 
@@ -97,6 +100,7 @@ Independent repositories can share a data home. See [workspace session commands]
 | Installation checkout                                    | Code, version-controlled `config/crew-dispatch.json` and the ignored personal `profiles/` directory                           |
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
+| `<data-home>/browser/`                                   | Dev's copy of the active Chrome profile, its lock, copy state and revocation marker ([Read URL](web-read.md#state))           |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
 | `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
 | Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |

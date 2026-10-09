@@ -20,6 +20,7 @@ import { createSessionGuard } from '../../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../../src/workspace-host.ts'
 import { PublicationDestinations } from '../../src/workspace-tool.ts'
+import { makeWebReader, type WebReader } from '../../src/web-reader.ts'
 import { RepositoryRoot } from '../../src/preferences.ts'
 
 class TimedOut extends Error {}
@@ -273,6 +274,7 @@ export const openHostRuntime = async (input: {
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
   readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
   readonly extensions?: RuntimeParts['extensions']
+  readonly webReader?: WebReader
 }) => {
   const resolveImportPath = await loadImportPathResolver(input.packageRoot)
   const scope = Scope.makeUnsafe()
@@ -301,6 +303,15 @@ export const openHostRuntime = async (input: {
         Scope.provide(scope)(acquireRuntime(input.dataHome, input.coordination))
       )
     )
+    const webReader =
+      input.webReader ??
+      (await Effect.runPromise(
+        Scope.provide(scope)(
+          makeWebReader({ profile: { dataHome: input.dataHome } }).pipe(
+            Effect.provide(nodeServicesWithCurrentEnvironment())
+          )
+        )
+      ))
     const runtimeFactory = await Effect.runPromise(
       Effect.gen(function* () {
         return yield* makeRuntimeFactory({
@@ -313,6 +324,7 @@ export const openHostRuntime = async (input: {
           guard,
           workspaceHost: host,
           lifecycle: input.lifecycle,
+          webReader,
           extensions: input.extensions,
           ...(input.offline === undefined
             ? {}

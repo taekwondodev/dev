@@ -98,6 +98,7 @@ Deliberate departures from the Effect guide:
 - Launcher and maintenance argument parsing stay manual to preserve pass-through, error output and startup cost.
 - `runGit` in `src/pi-child.ts` and `readHead` in `src/workspace-tool.ts` use `node:child_process` because the Effect spawner hides the terminating signal, changing model-visible errors.
 - Startup's `git rev-parse` in `src/preferences.ts` and `which pi` in `src/pi-runtime.ts` also stay there: they are short, uninterrupted commands for which the spawner added measurable startup time.
+- The URL reader's `src/web-network.ts` issues requests through `node:http` and `node:https` directly, because its network policy pins each connection to a validated address through the request's `lookup` option and revalidates every redirect itself; a generic HTTP client would resolve names again. `src/web-browser.ts` spawns Chrome with `node:child_process` because the DevTools pipe needs file descriptors 3 and 4, which the Effect spawner does not expose.
 - `allowedUnstableApis` admits only the modules needed from the pinned release, not all Effect APIs; no stable alternatives exist for the admitted integrations.
 - The authority client is a lazily opened scoped Effect passed by argument, not a layer-provided service that would start the worker for help or diagnostics.
 

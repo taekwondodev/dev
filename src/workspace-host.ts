@@ -54,6 +54,7 @@ import {
 } from './workspace-paths.ts'
 import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
+import { READ_URL_TOOL } from './web-extension.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
   'WorkspaceHostError',
@@ -306,7 +307,14 @@ export const keptConversationGuidance = (
   return `${fileState}\n${nextAction}`
 }
 
-type ToolEffect = 'read' | 'native-write' | 'workspace-shell' | 'work-owner' | 'workspace-tool'
+type ToolEffect =
+  | 'read'
+  | 'native-write'
+  | 'workspace-shell'
+  | 'work-owner'
+  | 'workspace-tool'
+  | 'web-read'
+  | 'codemode'
 
 function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
   if (!tool) return undefined
@@ -318,6 +326,10 @@ function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
     return 'work-owner'
   if (source === 'inline' && path === '<inline:dev:workspace-host>' && tool.name === 'workspace')
     return 'workspace-tool'
+  if (source === 'inline' && path === '<inline:dev:web>' && tool.name === READ_URL_TOOL)
+    return 'web-read'
+  if (source === 'inline' && path === '<inline:dev:codemode>' && tool.name === 'codemode')
+    return 'codemode'
   return undefined
 }
 
@@ -926,6 +938,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           reason: `Tool ${event.toolName} has no verified workspace effect in dev, so it was not executed. A supported extension must have its project effects reviewed and recorded first (ADR 0005).`,
         })
       case 'work-owner':
+      case 'web-read':
+      case 'codemode':
         return Effect.void
       case 'read':
       case 'workspace-tool':
@@ -1352,6 +1366,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         readerWarnings.delete(event.toolCallId)
         return {
           content: [...event.content, { type: 'text', text: `[dev workspace] ${warning}` }],
+          ...(event.structuredContent === undefined
+            ? {}
+            : { structuredContent: event.structuredContent }),
         }
       })
 

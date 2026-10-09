@@ -70,11 +70,15 @@ const integrationSurfaces = [
     label: 'resource loader',
     matches: matching(/resource ?loader|AGENTS\.md|SYSTEM\.md|system prompt/i),
   },
+  {
+    label: 'codemode',
+    matches: matching(/codemode|structuredContent|outputSchema|nested tool/i),
+  },
 ] as const
 
 type SurfaceLabel = (typeof integrationSurfaces)[number]['label']
 
-const unusedSurfaces = /\bMCP\b|codemode|\btool[ _]search\b/i
+const unusedSurfaces = /\bMCP\b|\btool[ _]search\b/i
 
 const repeatedSection = /^### New Features\s*$/
 
@@ -223,7 +227,7 @@ const apisDevUses = (surfaces: Surfaces): string => {
 }
 
 const leftOutNote = (count: number): string =>
-  `${count === 1 ? 'mentions' : 'mention'} MCP, codemode or tool search`
+  `${count === 1 ? 'mentions' : 'mention'} MCP or tool search`
 
 const changelogReading = ({
   changelog,

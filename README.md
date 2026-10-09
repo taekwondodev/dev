@@ -15,6 +15,7 @@ I wanted a terminal-first experience. I was a Hermes main, but I wanted to come 
 - **`dev`** opens Pi from the project you are working on, with one of the profiles defined in my local, untracked `profiles/` directory, which selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
 - **`work`** runs commands and delegated Pi children in the background, in separate processes, with version-controlled model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch](config/README.md)
 - **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
+- **`read_url`** reads a documentation page by URL with cited sources, negotiating Markdown first, extracting HTML locally and rendering in your installed Chrome with a dev-owned copy of your profile only when static content is unusable; Pi's native codemode composes such reads in scripts. [read URL](docs/web-read.md)
 - Long sessions prepare compaction in the background, independently for the lead and each child, then apply it at the first safe boundary. Pi's native blocking recovery remains available. [compaction](docs/compaction.md)
 - The workflow itself (sizing, grilling, specs, implementation, review) comes from a shared skill library; dev owns only the integration.
 
@@ -42,17 +43,18 @@ dev
 
 ## Documentation
 
-| Task                                        | Start here                             |
-| ------------------------------------------- | -------------------------------------- |
-| Launch, select a profile or resume          | [Launcher](docs/launcher.md)           |
-| Run background commands or delegate         | [Work](docs/work.md)                   |
-| Inspect retained work and release worktrees | [Workspace](docs/workspace.md)         |
-| Understand long-session context handling    | [Compaction](docs/compaction.md)       |
-| Interpret private metrics or export charts  | [Usage profile](docs/usage-profile.md) |
-| Upgrade Pi and dev's dependencies           | [Upgrade](docs/upgrade.md)             |
-| Change dev's code                           | [Development](docs/DEVELOPMENT.md)     |
-| Find components and decision records        | [Architecture](docs/ARCHITECTURE.md)   |
-| Look up domain terms                        | [CONTEXT](CONTEXT.md)                  |
+| Task                                                    | Start here                             |
+| ------------------------------------------------------- | -------------------------------------- |
+| Launch, select a profile or resume                      | [Launcher](docs/launcher.md)           |
+| Run background commands or delegate                     | [Work](docs/work.md)                   |
+| Inspect retained work and release worktrees             | [Workspace](docs/workspace.md)         |
+| Read documentation URLs, manage the Chrome profile copy | [Read URL](docs/web-read.md)           |
+| Understand long-session context handling                | [Compaction](docs/compaction.md)       |
+| Interpret private metrics or export charts              | [Usage profile](docs/usage-profile.md) |
+| Upgrade Pi and dev's dependencies                       | [Upgrade](docs/upgrade.md)             |
+| Change dev's code                                       | [Development](docs/DEVELOPMENT.md)     |
+| Find components and decision records                    | [Architecture](docs/ARCHITECTURE.md)   |
+| Look up domain terms                                    | [CONTEXT](CONTEXT.md)                  |
 
 Agent contributors start from [AGENTS.md](AGENTS.md); the [security model](SECURITY.md) applies to every integration.
 

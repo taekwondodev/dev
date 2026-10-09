@@ -15,6 +15,8 @@ npm start
 
 Sources are strict, erasable TypeScript, run directly through Node type stripping. There is no build step. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
 
+Before `npm install` or `npm uninstall` in a checkout that already ran a check, remove the ignored `node_modules/@earendil-works` link: npm prunes through it and deletes the Pi release's packages from the installation. `npm ci` and `npm run types:pi` recreate the link; `npm run upgrade` works in a fresh worktree and is not affected.
+
 ### Pi installation and declarations
 
 Install Pi with the [pi.dev installer](https://pi.dev). Dev follows `pi` on `PATH` to its managed `install/` directory and resolves the release named in `current-version`; an npm Pi installation is refused.
@@ -35,19 +37,20 @@ Tests follow the integration boundary: launcher smoke, usage-profile fixtures, w
 
 Choose checks for the affected boundary. The commands and their full composition are in `package.json`; these are their purposes and non-obvious limits.
 
-| Check                      | Evidence                                                                                                                            |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                                                         |
-| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                           |
-| `npm run smoke`            | Launcher diagnostics on temporary private storage and a disposable profile manifest, without a model response                       |
-| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                   |
-| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                               |
-| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                       |
-| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                    |
-| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery |
-| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                  |
+| Check                      | Evidence                                                                                                                                           |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run lint`             | Type checking, strict Effect diagnostics and Oxlint with warnings as errors                                                                        |
+| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                          |
+| `npm run smoke`            | Launcher diagnostics on temporary private storage and a disposable profile manifest, without a model response                                      |
+| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                                  |
+| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                                              |
+| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                                      |
+| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                                   |
+| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery                |
+| `npm run web:check`        | URL policy, pinned retrieval, extraction, continuation, the installed Chrome on a fixture profile copy, and direct/codemode reads through the host |
+| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                                 |
 
-Only `workspace:github` touches the network; the checks use disposable storage rather than real authority state or credentials. That reader check is deliberately outside the recurring workspace suite. Run it when the GitHub reader or its adapter facts change; fakes cannot establish that integration.
+Only `workspace:github` touches the network; `web:check` serves its own loopback fixtures, launches the installed Chrome on a disposable fixture profile and skips the browser claims when Chrome is absent. The checks use disposable storage rather than real authority state or credentials. That reader check is deliberately outside the recurring workspace suite. Run it when the GitHub reader or its adapter facts change; fakes cannot establish that integration.
 
 Use the actual TUI for interactive behavior. The Python pseudo-terminal driver exists because Node has no built-in pty; it drives TypeScript fixtures. To run one probe, use `python3 tests/workspace/run-workspace-pty-probes.py <name>`; the driver lists the supported names. Match proof to the change rather than adding a test or benchmark campaign by default.
 
@@ -75,6 +78,7 @@ Keep API dependencies in their adapters and regression tests, not a second API i
 - [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md)
 - [Session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md)
 - [Compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
+- [Codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)
 - [Security](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/security.md)
 
 ## Documentation ownership

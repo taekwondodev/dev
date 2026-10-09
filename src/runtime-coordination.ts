@@ -194,6 +194,9 @@ const lockDatabase = (
   }
 }
 
+export const acquireExclusiveLock = (path: string, conflict: string): GateRelease =>
+  lockDatabase(path, false, conflict)
+
 export const holdExistingInstallationForRemoval = (checkout: string): GateRelease => {
   let directory = checkout
   for (const part of ['.dev', 'coordination']) {
