@@ -26,6 +26,7 @@ import { makeNativeWrites } from './workspace-native-write.ts'
 import {
   acquireCoordinatorLink,
   coordinate,
+  coordinatorWaitGuard,
   createCoordinatorWorkTool,
   type CoordinatorLink,
 } from './work-child-coordination.ts'
@@ -771,6 +772,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
                 nativeWrites
               ),
             },
+            ...(link === undefined
+              ? []
+              : [{ name: 'dev:coordinator-wait-guard', factory: coordinatorWaitGuard(link) }]),
           ],
         },
       }),

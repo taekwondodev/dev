@@ -12,6 +12,7 @@ import {
 } from './work-protocol.ts'
 import { errorText } from './error-text.ts'
 import { awaitReply } from './work-child-ipc.ts'
+import { waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
 
 type Reply = Extract<ControllerWorkMessage, { readonly requestId: string }>
 type Pending = Extract<ControllerWorkMessage, { readonly type: 'work-pending' }>
@@ -155,6 +156,24 @@ export const createCoordinatorWorkTool = (link: CoordinatorLink): Pi.ToolDefinit
       { signal }
     ),
 })
+
+export const coordinatorWaitGuard =
+  (link: CoordinatorLink): Pi.ExtensionFactory =>
+  pi => {
+    pi.on('tool_call', async event => {
+      const command = 'command' in event.input ? event.input.command : undefined
+      if (event.toolName !== 'bash' || typeof command !== 'string' || !waitOnlyCommand(command))
+        return undefined
+      const pending = await Effect.runPromise(Effect.option(link.pending))
+      if (pending._tag === 'None') return undefined
+      const { live, outcomes } = pending.value
+      if (live === 0 && outcomes.length === 0) return undefined
+      return {
+        block: true,
+        reason: waitRefusal(`${live} live leaves, ${outcomes.length} undelivered outcomes`),
+      }
+    })
+  }
 
 export const coordinate = Effect.fn('coordinate')(function* (
   session: Pi.AgentSession,

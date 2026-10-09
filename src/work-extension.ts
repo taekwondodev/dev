@@ -15,6 +15,7 @@ import {
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
 import { activeWorkChildren, workStatusText } from './work-status.ts'
+import { waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
 import {
   decodeWorkInput,
   LeadWorkInputSchema,
@@ -668,6 +669,26 @@ export const createWorkExtension = ({
     pi.on('tool_result', event =>
       rebindRefusals.delete(event.toolCallId) ? { isError: true } : undefined
     )
+    pi.on('tool_call', async event => {
+      const command = 'command' in event.input ? event.input.command : undefined
+      if (
+        event.toolName !== 'bash' ||
+        typeof command !== 'string' ||
+        !waitOnlyCommand(command) ||
+        sessionOwner?._tag !== 'active'
+      )
+        return undefined
+      const snapshot = await Effect.runPromise(
+        ownedBy(sessionOwner, owner => owner.snapshot).pipe(Effect.option)
+      )
+      if (snapshot._tag === 'None') return undefined
+      const active = snapshot.value.records.filter(
+        record => record.status === 'running' || record.status === 'waiting'
+      )
+      if (active.length === 0) return undefined
+      const running = active.map(record => `${record.owner.taskId} ${record.status}`).join(', ')
+      return { block: true, reason: waitRefusal(running) }
+    })
     pi.registerCommand('work', {
       description:
         'Background work: list | dispatch | stop [attempt] | inspect <attempt> [stdout|stderr|result] [offset]',
