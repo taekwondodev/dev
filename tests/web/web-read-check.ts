@@ -8,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -280,9 +281,12 @@ const chrome = findChrome(CHROME_EXECUTABLES)
 const shutdowns: BrowserShutdown[] = []
 const profileOptions = { dataHome, sourceUserData, chromeExecutables: CHROME_EXECUTABLES }
 const readerScope = Scope.makeUnsafe()
-const openReader = (overrides: Partial<Parameters<typeof makeWebReader>[0]> = {}) =>
+const openReader = (
+  overrides: Partial<Parameters<typeof makeWebReader>[0]> = {},
+  scope = readerScope
+) =>
   Effect.runPromise(
-    Scope.provide(readerScope)(
+    Scope.provide(scope)(
       makeWebReader({
         profile: profileOptions,
         resolveAddress: fixtureResolver,
@@ -885,6 +889,82 @@ try {
         assert.match(failureOf(await pending), /session ended/)
         await sleep(1500)
         await assertCopyReleased(profileOptions, 'after ending the session mid-fetch')
+      }
+    )
+    await claim(
+      'unobserved shutdown retains the profile lock through bounded retries and scope disposal, then a fresh reader releases it and relaunches once observation recovers',
+      async () => {
+        const scope = Scope.makeUnsafe()
+        const ending = await openReader({}, scope)
+        const owner = makeBrowserProfileOwner(profileOptions)
+        const copy = join(dataHome, 'browser', 'user-data')
+        const bin = join(fixture, 'failed-observer')
+        mkdirSync(bin)
+        writeFileSync(join(bin, 'ps'), '#!/bin/sh\nexit 7\n', { mode: 0o700 })
+        const path = process.env.PATH
+        const before = sha(cookiesPath)
+        try {
+          for (const [name, mode] of [
+            ['not-executable', 0o600],
+            ['exits-before-devtools', 0o700],
+          ] as const) {
+            const executable = join(bin, name)
+            writeFileSync(executable, '#!/bin/sh\nexit 1\n', { mode })
+            const failedLaunch = await openReader({
+              profile: { ...profileOptions, chromeExecutables: [executable] },
+            })
+            const fallback = documentOf(await read(failedLaunch, { url: `${origin}/js.html` }))
+            assert.equal(fallback.document.method, 'html')
+            assert.match(
+              fallback.document.limitations.join('\n'),
+              /browser rendering was unavailable/
+            )
+            await assertCopyReleased(profileOptions, `after ${name}`)
+            await Effect.runPromise(failedLaunch.endSession('failed launch'))
+          }
+          documentOf(await read(ending, { url: `${origin}/js.html` }))
+          assert.ok(chromeRunningOn(copy) > 0)
+          process.env.PATH = `${bin}:${path ?? ''}`
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const started = performance.now()
+            await Effect.runPromise(ending.endSession('failed observation'))
+            assert.ok(performance.now() - started < 5000, 'failed observation returns promptly')
+            assert.equal(shutdowns.at(-1)?.kind, 'unobserved')
+            assert.equal((await Effect.runPromise(owner.status)).inUse, true)
+          }
+          await Effect.runPromise(Scope.close(scope, Exit.void))
+          assert.equal((await Effect.runPromise(owner.status)).inUse, true)
+          const acquisition = await Effect.runPromiseExit(owner.acquire(Date.now()))
+          assert.ok(Exit.isFailure(acquisition), 'another owner cannot refresh the copy')
+          const started = performance.now()
+          assert.equal(
+            (await Effect.runPromise(owner.revoke(Duration.millis(100)))).kind,
+            'kept-live'
+          )
+          assert.ok(performance.now() - started < 2000, 'revoke returns without waiting forever')
+          assert.ok(existsSync(copy), 'revoke cannot delete the uncertain copy')
+          await Effect.runPromise(owner.enable)
+          process.env.PATH = path
+          const recovered = await openReader()
+          const slice = documentOf(await read(recovered, { url: `${origin}/js.html` }))
+          assert.equal(slice.document.method, 'browser', slice.document.limitations.join('\n'))
+          assert.equal(shutdowns.at(-1)?.kind, 'settled', 'old ownership settled before relaunch')
+          assert.ok(chromeRunningOn(copy) > 0, 'the new reader acquired the released copy')
+          await Effect.runPromise(recovered.endSession('recovered observation'))
+          await Effect.runPromise(recovered.endSession('idempotent close'))
+          await assertCopyReleased(profileOptions, 'after recovery and repeated close')
+          assert.equal(
+            (await Effect.runPromise(owner.revoke(Duration.millis(100)))).kind,
+            'removed'
+          )
+          assert.ok(!existsSync(copy), 'revocation succeeds after verified settlement')
+          await Effect.runPromise(owner.enable)
+          assert.equal(sha(cookiesPath), before, 'the source profile was not changed')
+        } finally {
+          process.env.PATH = path
+          await Effect.runPromise(Scope.close(scope, Exit.void))
+          await Effect.runPromise(ending.endSession('observation regression cleanup'))
+        }
       }
     )
     await claim(

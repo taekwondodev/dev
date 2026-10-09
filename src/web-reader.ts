@@ -13,9 +13,10 @@ import {
 import type { ChildProcessSpawner } from 'effect/process'
 import { errorText } from './error-text.ts'
 import {
-  type BrowserError,
+  BrowserError,
   launchChrome,
   renderPage,
+  retryChromeShutdown,
   type Browser,
   type BrowserShutdown,
   type RenderedPage,
@@ -162,7 +163,10 @@ export const makeWebReader = Effect.fnUntraced(function* (
 
   const closeBrowser = Effect.gen(function* () {
     const current = live
-    if (current === undefined) return
+    if (current === undefined) {
+      yield* retryChromeShutdown(owner.paths.userDataDir)
+      return
+    }
     live = undefined
     const timer = current.idleTimer
     current.idleTimer = undefined
@@ -193,10 +197,22 @@ export const makeWebReader = Effect.fnUntraced(function* (
   const openBrowser: Effect.Effect<LiveBrowser, BrowserFailure> = Effect.uninterruptible(
     Effect.gen(function* () {
       if (live !== undefined) return live
+      const previous = yield* retryChromeShutdown(owner.paths.userDataDir)
+      if (previous.kind === 'unobserved')
+        return yield* new BrowserError({
+          reason: 'shutdown',
+          message: `${previous.message}. The profile copy is still locked; a later browser read or session close will retry settlement.`,
+        })
       const now = yield* Clock.currentTimeMillis
       const acquired = yield* owner.acquire(now)
       const scope = yield* Scope.fork(readerScope)
-      yield* Scope.addFinalizer(scope, Effect.sync(acquired.release))
+      let shutdownReported = false
+      yield* Scope.addFinalizer(
+        scope,
+        Effect.sync(() => {
+          if (!shutdownReported) acquired.release()
+        })
+      )
       const browser = yield* launchChrome(
         {
           executable: acquired.chrome,
@@ -206,7 +222,11 @@ export const makeWebReader = Effect.fnUntraced(function* (
             ...(options.chromeArguments ?? []),
           ],
         },
-        outcome => options.onBrowserShutdown?.(outcome)
+        outcome => {
+          shutdownReported = true
+          if (outcome.kind === 'settled') acquired.release()
+          options.onBrowserShutdown?.(outcome)
+        }
       ).pipe(
         Scope.provide(scope),
         Effect.provide(spawnerContext),

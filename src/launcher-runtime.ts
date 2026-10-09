@@ -727,7 +727,7 @@ const formatBrowserStatus = (status: BrowserProfileStatus): string =>
         ? 'absent'
         : `${status.copy.complete ? 'complete' : 'incomplete'}, refreshed ${DateTime.formatIso(DateTime.makeUnsafe(status.copy.refreshedAt))} from ${status.copy.source}/${status.copy.profileDirectory}`
     }`,
-    `in use: ${status.inUse ? 'yes, a dev session has Chrome open on it' : 'no'}`,
+    `in use: ${status.inUse ? 'yes, a dev session holds the copy for Chrome or pending shutdown verification' : 'no'}`,
   ].join('\n')
 
 const BrowserSubcommand = Schema.Literals(['status', 'revoke', 'enable'])
@@ -760,7 +760,7 @@ const browserCommand = Effect.fnUntraced(function* (
         case 'already-absent':
           return 'Authenticated browser rendering is disabled; dev held no profile copy. Your Chrome profile was not touched.'
         case 'kept-live':
-          return `Authenticated browser rendering is disabled: no further launch will use the copy. The copy at ${revoked.path} was kept because a dev session still has Chrome open on it; rerun dev browser revoke once that session closes its browser. Your Chrome profile was not touched.`
+          return `Authenticated browser rendering is disabled: no further launch will use the copy. The copy at ${revoked.path} was kept because a dev session holds it for Chrome or pending shutdown verification; retry settlement in that session, then rerun dev browser revoke. Your Chrome profile was not touched.`
       }
     }),
   }
@@ -997,7 +997,7 @@ const run = Effect.fnUntraced(function* (
       onBrowserShutdown: outcome => {
         if (outcome.kind === 'unobserved')
           process.stderr.write(
-            `Chrome helper processes of the read_url browser were not observed gone: ${outcome.message}\n`
+            `Chrome helper processes of the read_url browser were not observed gone: ${outcome.message}. The profile copy remains locked in this dev process; a later browser read or session close will retry settlement. Exiting dev releases the lock without proving Chrome has stopped.\n`
           )
       },
     })

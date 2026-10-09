@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { userInfo } from 'node:os'
+import { resolve } from 'node:path'
 import { Readable, Writable } from 'node:stream'
-import { Deferred, Duration, Effect, Exit, Schedule, Schema, Scope } from 'effect'
+import { Deferred, Duration, Effect, Exit, Schedule, Schema, Scope, Semaphore } from 'effect'
 import type { ChildProcessSpawner } from 'effect/process'
 import { errorText } from './error-text.ts'
 import { processObserver, type ObservedProcess } from './process-family.ts'
@@ -244,12 +245,20 @@ const shutdown = Effect.fnUntraced(function* (
   }
 })
 
+const pendingShutdowns = new Map<string, Effect.Effect<BrowserShutdown>>()
+
+export const retryChromeShutdown = (userDataDir: string): Effect.Effect<BrowserShutdown> =>
+  Effect.suspend(
+    () => pendingShutdowns.get(resolve(userDataDir)) ?? Effect.succeed({ kind: 'settled' })
+  )
+
 export const launchChrome = (
   launch: ChromeLaunch,
   onShutdown: (outcome: BrowserShutdown) => void = () => {}
 ): Effect.Effect<Browser, BrowserError, Scope.Scope | ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.acquireRelease(
     Effect.gen(function* () {
+      const context = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>()
       const observer = yield* processObserver
       const child = yield* Effect.try({
         try: () =>
@@ -277,18 +286,39 @@ export const launchChrome = (
       const table = yield* observer.processTable.pipe(Effect.orElseSucceed(() => []))
       const family: ChromeFamily = { root: table.find(item => item.pid === pid), known: [] }
       const cdp = yield* makeCdpClient(fromChrome, toChrome)
+      const closing = yield* Semaphore.make(1)
+      const key = resolve(launch.userDataDir)
+      let settled = false
+      const close: Effect.Effect<BrowserShutdown> = closing
+        .withPermits(1)(
+          Effect.suspend(() =>
+            settled
+              ? Effect.succeed({ kind: 'settled' } as const)
+              : shutdown(child, cdp, family).pipe(
+                  Effect.provide(context),
+                  Effect.tap(outcome =>
+                    Effect.sync(() => {
+                      settled = outcome.kind === 'settled'
+                      if (settled) pendingShutdowns.delete(key)
+                      else pendingShutdowns.set(key, close)
+                      onShutdown(outcome)
+                    })
+                  )
+                )
+          )
+        )
+        .pipe(Effect.uninterruptible)
       yield* Effect.timeoutOrElse(cdp.send('Browser.getVersion'), {
         duration: Duration.seconds(20),
         orElse: () =>
           Effect.fail(fail('launch', 'Chrome did not answer DevTools within 20 seconds')),
       }).pipe(
         Effect.andThen(cdp.send('Browser.setDownloadBehavior', { behavior: 'deny' })),
-        Effect.tapError(() => shutdown(child, cdp, family))
+        Effect.tapError(() => close)
       )
-      return { browser: { cdp, pid } satisfies Browser, child, family }
+      return { browser: { cdp, pid } satisfies Browser, close }
     }),
-    ({ child, browser, family }) =>
-      shutdown(child, browser.cdp, family).pipe(Effect.map(onShutdown))
+    ({ close }) => close
   ).pipe(Effect.map(({ browser }) => browser))
 
 export interface RenderedPage {
