@@ -14,6 +14,7 @@ import {
   type CoordinatorLink,
 } from '../../src/work-child-coordination.ts'
 import { READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
+import { waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture } from './work-check-support.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
@@ -151,6 +152,42 @@ try {
           lead.session.getAllTools().find(tool => tool.name === 'work')?.description
         )
         assertWorkGuidance(createCoordinatorWorkTool(unusedLink).description)
+      })
+  )
+
+  await claim(
+    'a shell command that only waits is refused while owned work runs and allowed otherwise',
+    () =>
+      withLead({ tools: ['work', 'bash'] }, async lead => {
+        for (const command of ['sleep 240; echo ok', 'sleep 5', 'sleep 1 && sleep 2\n'])
+          assert.ok(waitOnlyCommand(command), command)
+        for (const command of ['sleep 1; ls', 'echo ok', 'sleep', 'while true; do sleep 1; done'])
+          assert.ok(!waitOnlyCommand(command), command)
+        const held = gate()
+        const { run, next } = await launch(lead, 0, [held.command])
+        const started = Date.now()
+        next.reply([toolCall('wait', 'bash', { command: 'sleep 240; echo ok' })])
+        const refused = await lead.request(2)
+        assert.ok(Date.now() - started < 30_000)
+        assert.ok(seen(refused).includes('task-0-0 running'), seen(refused))
+        assert.ok(seen(refused).includes('end your turn now'), seen(refused))
+        refused.reply([toolCall('mixed', 'bash', { command: 'sleep 0; echo waiting' })])
+        const mixed = await lead.request(3)
+        assert.ok(seen(mixed).includes('Refused'), seen(mixed))
+        mixed.reply([toolCall('work', 'bash', { command: 'sleep 0; ls -d .' })])
+        const allowed = await lead.request(4)
+        assert.ok(!seen(allowed).includes('Refused'), seen(allowed))
+        allowed.reply(text('waiting for outcomes'))
+        await run
+        await lead.idle()
+        held.open()
+        const continued = await lead.request(5)
+        assert.ok(seen(continued).includes('completed'), seen(continued))
+        continued.reply([toolCall('idle', 'bash', { command: 'sleep 0; echo idle-ok' })])
+        const idle = await lead.request(6)
+        assert.ok(seen(idle).includes('idle-ok'), seen(idle))
+        idle.reply(text('done'))
+        await lead.idle()
       })
   )
 

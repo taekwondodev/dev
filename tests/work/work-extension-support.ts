@@ -35,6 +35,7 @@ export const openLead = async (
   options: {
     readonly send?: (deliver: SendCustomMessage) => SendCustomMessage
     readonly notify?: (notice: Notice) => void
+    readonly tools?: readonly string[]
   } = {}
 ) => {
   const { pi, importFromPi } = installed
@@ -116,7 +117,7 @@ export const openLead = async (
     services,
     sessionManager: manager,
     model: offline.model,
-    tools: ['work'],
+    tools: [...(options.tools ?? ['work'])],
   })
   const deliver: SendCustomMessage = (message, sendOptions) =>
     session.sendCustomMessage(message, sendOptions)
