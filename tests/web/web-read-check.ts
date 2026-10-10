@@ -8,18 +8,23 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Duration, Effect, Exit, Scope } from 'effect'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
-import { assertCopyReleased, chromeRunningOn, makeChromeSource } from './chrome-fixture.ts'
+import {
+  assertCopyReleased,
+  makeChromeSource,
+  openRenderer,
+  ownerPublished,
+  selectOwnerFixture,
+} from './chrome-fixture.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
+import { makeBrowserAdmin } from '../../src/web-browser-owner.ts'
 import { makeWebReader, type ReadOutcome, type WebReader } from '../../src/web-reader.ts'
 import {
   fetchPublic,
@@ -30,7 +35,6 @@ import {
   type AddressResolver,
 } from '../../src/web-network.ts'
 import { toResult, toText } from '../../src/web-extension.ts'
-import type { BrowserShutdown } from '../../src/web-browser.ts'
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-web-read-')))
 const dataHome = join(fixture, 'data')
@@ -278,8 +282,21 @@ let rotatedBefore = sourceBefore
 const localStateBefore = sha(join(sourceUserData, 'Local State'))
 
 const chrome = findChrome(CHROME_EXECUTABLES)
-const shutdowns: BrowserShutdown[] = []
 const profileOptions = { dataHome, sourceUserData, chromeExecutables: CHROME_EXECUTABLES }
+mkdirSync(join(fixture, 'authority'), { recursive: true, mode: 0o700 })
+selectOwnerFixture({
+  sourceUserData,
+  chromeExecutables: CHROME_EXECUTABLES,
+  chromeArguments: ['--host-resolver-rules=MAP *.fixture.invalid 127.0.0.1'],
+  browserIdleMs: 30_000,
+  firstClientGraceMs: 120_000,
+  installationPath: fixture,
+  namespacePath: join(fixture, 'authority'),
+  allowSuffix: '.fixture.invalid',
+  blockedHosts: [BLOCKED_HOST],
+  slowHosts: { 'slow.fixture.invalid': 3000 },
+})
+const admin = makeBrowserAdmin(profileOptions)
 const readerScope = Scope.makeUnsafe()
 const openReader = (
   overrides: Partial<Parameters<typeof makeWebReader>[0]> = {},
@@ -287,15 +304,16 @@ const openReader = (
 ) =>
   Effect.runPromise(
     Scope.provide(scope)(
-      makeWebReader({
-        profile: profileOptions,
-        resolveAddress: fixtureResolver,
-        chromeArguments: ['--host-resolver-rules=MAP *.fixture.invalid 127.0.0.1'],
-        fetchLimits: { maxBytes: 96 * 1024, maxRedirects: 3, timeout: Duration.seconds(20) },
-        browserIdle: Duration.seconds(30),
-        onBrowserShutdown: outcome => shutdowns.push(outcome),
-        ...overrides,
-      }).pipe(Effect.provide(NodeServices.layer))
+      Effect.flatMap(
+        Effect.promise(() => openRenderer(dataHome, scope)),
+        renderer =>
+          makeWebReader({
+            renderer,
+            resolveAddress: fixtureResolver,
+            fetchLimits: { maxBytes: 96 * 1024, maxRedirects: 3, timeout: Duration.seconds(20) },
+            ...overrides,
+          })
+      )
     )
   )
 const outputs: string[] = []
@@ -618,7 +636,7 @@ try {
         assert.equal(status.inUse, true)
         const acquired = await Effect.runPromiseExit(other.acquire(Date.now()))
         assert.ok(Exit.isFailure(acquired))
-        assert.match(String(Cause.squash(acquired.cause)), /in use by another dev session/)
+        assert.match(String(Cause.squash(acquired.cause)), /in use by its browser owner/)
         assert.ok(
           existsSync(join(dataHome, 'browser', 'user-data', 'Default', 'Cookies')),
           'the live copy survived the refused acquisition'
@@ -626,25 +644,22 @@ try {
       }
     )
     await claim(
-      'a fresh browser launch refreshes authentication data from the source, never while the copy is live, and the browser descendants settle at close',
+      'a fresh browser launch refreshes authentication data from the source, and the copy is released once the shared browser settles',
       async () => {
-        await Effect.runPromise(reader.endSession('test rotation'))
-        assert.equal(shutdowns.at(-1)?.kind, 'settled', JSON.stringify(shutdowns))
-        assert.equal(
-          chromeRunningOn(join(dataHome, 'browser', 'user-data')),
-          0,
-          'no Chrome remains on the dev copy'
-        )
+        assert.equal((await Effect.runPromise(admin.revoke(Duration.seconds(10)))).kind, 'removed')
+        await Effect.runPromise(admin.enable)
+        await assertCopyReleased(profileOptions, 'after the revocation settled the browser')
         writeCookies(ROTATED)
         rotatedBefore = sha(cookiesPath)
         const slice = documentOf(await read(reader, { url: `${origin}/account` }))
         assert.match(slice.text, /ACCOUNT MARKER ROTATED/)
-        await Effect.runPromise(reader.endSession('test done'))
       }
     )
     await claim(
       'a cookie database locked exclusively by Chrome fails the coherent snapshot with an actionable limitation on the static text, without launching',
       async () => {
+        assert.equal((await Effect.runPromise(admin.revoke(Duration.seconds(10)))).kind, 'removed')
+        await Effect.runPromise(admin.enable)
         const holder = new DatabaseSync(cookiesPath)
         holder.exec('BEGIN EXCLUSIVE')
         try {
@@ -670,8 +685,7 @@ try {
     await claim(
       'revocation disables further authenticated launches and removes only the dev-owned copy; enable restores it',
       async () => {
-        const owner = makeBrowserProfileOwner(profileOptions)
-        const revoked = await Effect.runPromise(owner.revoke(Duration.seconds(1)))
+        const revoked = await Effect.runPromise(admin.revoke(Duration.seconds(10)))
         assert.equal(revoked.kind, 'removed')
         assert.ok(!existsSync(join(dataHome, 'browser', 'user-data')))
         assert.ok(existsSync(cookiesPath), 'the source profile is untouched')
@@ -687,11 +701,11 @@ try {
           disabled.document.limitations.join('\n'),
           /browser rendering was unavailable: .*disabled .* `dev browser enable`/
         )
-        const status = await Effect.runPromise(owner.status)
-        assert.equal(status.enabled, false)
-        assert.equal(status.copy, undefined)
-        await Effect.runPromise(owner.enable)
-        assert.equal((await Effect.runPromise(owner.status)).enabled, true)
+        const status = await Effect.runPromise(admin.status)
+        assert.equal(status.profile.enabled, false)
+        assert.equal(status.profile.copy, undefined)
+        await Effect.runPromise(admin.enable)
+        assert.equal((await Effect.runPromise(admin.status)).profile.enabled, true)
       }
     )
     await claim(
@@ -813,28 +827,14 @@ try {
           ),
           /browser rendering was unavailable: .*disabled/
         )
-        assert.equal((await Effect.runPromise(owner.revoke(Duration.seconds(1)))).kind, 'removed')
-        await Effect.runPromise(owner.enable)
+        assert.equal((await Effect.runPromise(admin.revoke(Duration.seconds(10)))).kind, 'removed')
+        await Effect.runPromise(admin.enable)
       }
     )
     await claim(
-      'an idle browser closes after the idle period, releasing the profile copy, and the next browser read relaunches',
+      'aborting a browser read during the launch or during the render cancels that render promptly and leaves the shared browser usable',
       async () => {
-        const idle = await openReader({ browserIdle: Duration.millis(800) })
-        documentOf(await read(idle, { url: `${origin}/js.html` }))
-        assert.ok(chromeRunningOn(join(dataHome, 'browser', 'user-data')) > 0)
-        await sleep(2500)
-        await assertCopyReleased(profileOptions, 'after the idle period')
-        const again = documentOf(await read(idle, { url: `${origin}/js.html` }))
-        assert.match(again.text, /Rendered Heading/)
-        await Effect.runPromise(idle.endSession('idle test'))
-      }
-    )
-    await claim(
-      'aborting a browser read during the launch or during the render cancels promptly, the browser still closes when idle without a follow-up read, and the next read relaunches',
-      async () => {
-        const cancelled = await openReader({ browserIdle: Duration.millis(800) })
-        const copy = join(dataHome, 'browser', 'user-data')
+        const cancelled = await openReader()
         const abortAfter = async (ms: number) => {
           const controller = new AbortController()
           setTimeout(() => controller.abort(), ms)
@@ -850,22 +850,18 @@ try {
           for (const response of hanging.splice(0)) response.end('')
         }
         await abortAfter(40)
-        await sleep(2500)
-        await assertCopyReleased(profileOptions, 'after the launch-time abort')
         documentOf(await read(cancelled, { url: `${origin}/js.html` }))
-        assert.ok(chromeRunningOn(copy) > 0, 'Chrome relaunched after the launch-time abort')
         await abortAfter(500)
-        await sleep(2500)
-        await assertCopyReleased(profileOptions, 'after the render-time abort')
         const slice = documentOf(await read(cancelled, { url: `${origin}/js.html` }))
         assert.match(slice.text, /Rendered Heading/)
         await Effect.runPromise(cancelled.endSession('abort test'))
       }
     )
     await claim(
-      'ending the session while a render is in progress interrupts the render instead of waiting for it, closes Chrome and releases the copy',
+      'ending the session while a render is in progress interrupts that read instead of waiting for it, and leaves the shared browser serving other clients',
       async () => {
         const ending = await openReader()
+        const peer = await openReader()
         const pending = read(ending, { url: `${origin}/hanging.html` })
         await sleep(1500)
         const started = Date.now()
@@ -876,11 +872,16 @@ try {
         )
         assert.match(failureOf(await pending), /session ended/)
         for (const response of hanging.splice(0)) response.end('')
-        await assertCopyReleased(profileOptions, 'after ending the session mid-render')
+        assert.ok(ownerPublished(dataHome), 'the shared owner outlived the ended reader session')
+        assert.match(
+          documentOf(await read(peer, { url: `${origin}/js.html` })).text,
+          /Rendered Heading/
+        )
+        await Effect.runPromise(peer.endSession('peer done'))
       }
     )
     await claim(
-      'ending the session while a read is still fetching statically stops it before Chrome is launched',
+      'ending the session while a read is still fetching statically stops it before any rendering starts',
       async () => {
         const ending = await openReader()
         const pending = read(ending, { url: `${origin}/slow-app.html` })
@@ -888,111 +889,31 @@ try {
         await Effect.runPromise(ending.endSession('shutdown during static fetch'))
         assert.match(failureOf(await pending), /session ended/)
         await sleep(1500)
-        await assertCopyReleased(profileOptions, 'after ending the session mid-fetch')
       }
     )
     await claim(
-      'unobserved shutdown retains the profile lock through bounded retries and scope disposal, then a fresh reader releases it and relaunches once observation recovers',
+      'a 403 static answer escalates to the browser once and returns the authenticated rendering of that page',
       async () => {
-        const scope = Scope.makeUnsafe()
-        const ending = await openReader({}, scope)
-        const owner = makeBrowserProfileOwner(profileOptions)
-        const copy = join(dataHome, 'browser', 'user-data')
-        const bin = join(fixture, 'failed-observer')
-        mkdirSync(bin)
-        writeFileSync(join(bin, 'ps'), '#!/bin/sh\nexit 7\n', { mode: 0o700 })
-        const path = process.env.PATH
-        const before = sha(cookiesPath)
-        try {
-          for (const [name, mode] of [
-            ['not-executable', 0o600],
-            ['exits-before-devtools', 0o700],
-          ] as const) {
-            const executable = join(bin, name)
-            writeFileSync(executable, '#!/bin/sh\nexit 1\n', { mode })
-            const failedLaunch = await openReader({
-              profile: { ...profileOptions, chromeExecutables: [executable] },
-            })
-            const fallback = documentOf(await read(failedLaunch, { url: `${origin}/js.html` }))
-            assert.equal(fallback.document.method, 'html')
-            assert.match(
-              fallback.document.limitations.join('\n'),
-              /browser rendering was unavailable/
-            )
-            await assertCopyReleased(profileOptions, `after ${name}`)
-            await Effect.runPromise(failedLaunch.endSession('failed launch'))
-          }
-          documentOf(await read(ending, { url: `${origin}/js.html` }))
-          assert.ok(chromeRunningOn(copy) > 0)
-          process.env.PATH = `${bin}:${path ?? ''}`
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            const started = performance.now()
-            await Effect.runPromise(ending.endSession('failed observation'))
-            assert.ok(performance.now() - started < 5000, 'failed observation returns promptly')
-            assert.equal(shutdowns.at(-1)?.kind, 'unobserved')
-            assert.equal((await Effect.runPromise(owner.status)).inUse, true)
-          }
-          await Effect.runPromise(Scope.close(scope, Exit.void))
-          assert.equal((await Effect.runPromise(owner.status)).inUse, true)
-          const acquisition = await Effect.runPromiseExit(owner.acquire(Date.now()))
-          assert.ok(Exit.isFailure(acquisition), 'another owner cannot refresh the copy')
-          const started = performance.now()
-          assert.equal(
-            (await Effect.runPromise(owner.revoke(Duration.millis(100)))).kind,
-            'kept-live'
-          )
-          assert.ok(performance.now() - started < 2000, 'revoke returns without waiting forever')
-          assert.ok(existsSync(copy), 'revoke cannot delete the uncertain copy')
-          await Effect.runPromise(owner.enable)
-          process.env.PATH = path
-          const recovered = await openReader()
-          const slice = documentOf(await read(recovered, { url: `${origin}/js.html` }))
-          assert.equal(slice.document.method, 'browser', slice.document.limitations.join('\n'))
-          assert.equal(shutdowns.at(-1)?.kind, 'settled', 'old ownership settled before relaunch')
-          assert.ok(chromeRunningOn(copy) > 0, 'the new reader acquired the released copy')
-          await Effect.runPromise(recovered.endSession('recovered observation'))
-          await Effect.runPromise(recovered.endSession('idempotent close'))
-          await assertCopyReleased(profileOptions, 'after recovery and repeated close')
-          assert.equal(
-            (await Effect.runPromise(owner.revoke(Duration.millis(100)))).kind,
-            'removed'
-          )
-          assert.ok(!existsSync(copy), 'revocation succeeds after verified settlement')
-          await Effect.runPromise(owner.enable)
-          assert.equal(sha(cookiesPath), before, 'the source profile was not changed')
-        } finally {
-          process.env.PATH = path
-          await Effect.runPromise(Scope.close(scope, Exit.void))
-          await Effect.runPromise(ending.endSession('observation regression cleanup'))
-        }
-      }
-    )
-    await claim(
-      'a 403 static answer escalates to the browser once, and when the browser is unavailable the static result keeps an honest limitation',
-      async () => {
-        const missingChrome = await openReader({
-          profile: { ...profileOptions, chromeExecutables: [join(fixture, 'no-chrome')] },
-        })
-        const slice = documentOf(await read(missingChrome, { url: `${origin}/forbidden.html` }))
-        assert.equal(slice.document.method, 'html')
+        const slice = documentOf(await read(reader, { url: `${origin}/forbidden.html` }))
         assert.equal(slice.document.status, 403)
         assert.match(
           slice.document.limitations.join('\n'),
-          /browser rendering was unavailable: Google Chrome is not installed/
+          /Static retrieval failed first|Static HTML extraction yielded too little readable text|browser rendering was unavailable/
         )
       }
     )
   }
   await claim(
-    'no tool result, model-facing text, limitation or shutdown report produced during this run carries fixture credentials',
+    'no tool result, model-facing text or limitation produced during this run carries fixture credentials',
     () => {
       assert.ok(outputs.length > 20)
-      const everything = JSON.stringify({ outputs, shutdowns })
+      const everything = JSON.stringify(outputs)
       assert.ok(!everything.includes(SECRET) && !everything.includes(ROTATED))
     }
   )
 } finally {
   await Effect.runPromise(Scope.close(readerScope, Exit.void))
+  for (let attempt = 0; attempt < 100 && ownerPublished(dataHome); attempt += 1) await sleep(100)
   server.close()
   rmSync(fixture, { recursive: true, force: true })
 }

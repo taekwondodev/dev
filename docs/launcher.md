@@ -20,7 +20,7 @@ dev --diagnostics                 # print resolved paths, Pi installation and re
 dev --probe-runtime               # create a runtime without the TUI or a model call
 dev --help
 dev workspace ...                 # workspace observation and release commands
-dev browser [status|revoke|enable]  # authenticated Chrome profile copy used by read_url
+dev browser [status|revoke|enable]  # authenticated Chrome profile copy and browser owner used by read_url
 ```
 
 ### Maintenance
@@ -58,7 +58,7 @@ The cache lives in the operating system's temporary directory (`node-compile-cac
 
 Help, diagnostics, save-only and browser commands do not start the workspace worker.
 
-Every lead session registers dev's `read_url` reader and Pi's native `codemode`, so the model can read documentation URLs directly or compose reads in scripts. [Read URL](web-read.md) owns that behavior; children receive neither tool.
+Every lead session registers dev's `read_url` reader and Pi's native `codemode`, so the model can read documentation URLs directly or compose reads in scripts. Children receive both as well, with no model catalog in their scripts. Rendering is served by one shared browser owner per data home, started on demand. [Read URL](web-read.md) owns that behavior.
 
 ### Profiles and resources
 

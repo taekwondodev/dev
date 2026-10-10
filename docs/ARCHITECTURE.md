@@ -51,4 +51,5 @@ Read the relevant record before changing the boundary it governs. This index poi
 | Extension trust                                    | [ADR 0005: extensions](adr/0005-scoped-runtime-coordination.md#executable-extensions)                                                                          |
 | Visual layer, status text or terminal fonts        | [ADR 0006](adr/0006-global-visual-layer.md)                                                                                                                    |
 | URL reading, network policy, browser profile copy  | [#88](https://github.com/taekwondodev/dev/issues/88)                                                                                                           |
+| Shared browser ownership and child reader access   | [#144](https://github.com/taekwondodev/dev/issues/144)                                                                                                         |
 | Background compaction and diagnostic observations  | [#62](https://github.com/taekwondodev/dev/issues/62), [profiling decision](https://github.com/taekwondodev/dev/issues/62#issuecomment-5954797030)              |

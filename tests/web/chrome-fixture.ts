@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Effect } from 'effect'
+import { type Duration, Effect, Scope } from 'effect'
 import { makeBrowserProfileOwner, type BrowserProfileOptions } from '../../src/web-profile.ts'
+import {
+  BrowserOwnerError,
+  makeOwnerBootstrap,
+  makeSessionRenderer,
+  type SessionRenderer,
+} from '../../src/web-browser-owner.ts'
 
 const CHROME_UTC_2100 = 15_770_000_000_000_000n
 const COOKIE_SCHEMA = [
@@ -69,6 +75,64 @@ export const chromeRunningOn = (userDataDir: string): number =>
   execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' })
     .split('\n')
     .filter(line => line.includes(`--user-data-dir=${userDataDir}`)).length
+
+export const OWNER_ENTRY = new URL('./browser-owner-entry.ts', import.meta.url)
+export const FIXTURE_VARIABLE = 'DEV_WEB_FIXTURE'
+
+export interface OwnerFixture {
+  readonly sourceUserData?: string
+  readonly chromeExecutables?: readonly string[]
+  readonly chromeArguments?: readonly string[]
+  readonly browserIdleMs?: number
+  readonly firstClientGraceMs?: number
+  readonly installationPath: string
+  readonly namespacePath: string
+  readonly allowSuffix: string
+  readonly blockedHosts: readonly string[]
+  readonly slowHosts: Readonly<Record<string, number>>
+  readonly hang?: boolean
+}
+
+export const selectOwnerFixture = (fixture: OwnerFixture): void => {
+  process.env[FIXTURE_VARIABLE] = JSON.stringify(fixture)
+}
+
+export const ownerBootstrap = (dataHome: string, failures: string[] = []) =>
+  makeOwnerBootstrap({
+    dataHome,
+    entry: OWNER_ENTRY,
+    onFailure: message => failures.push(message),
+  })
+
+export const openRenderer = (
+  dataHome: string,
+  scope: Scope.Closeable,
+  failures: string[] = [],
+  renderBudget?: Duration.Duration
+): Promise<SessionRenderer> =>
+  Effect.runPromise(
+    Scope.provide(scope)(
+      makeSessionRenderer({
+        dataHome,
+        ensureOwner: ownerBootstrap(dataHome, failures).ensure,
+        ...(renderBudget === undefined ? {} : { renderBudget }),
+      })
+    )
+  )
+
+export const staticOnlyRenderer: SessionRenderer = {
+  render: () =>
+    Effect.fail(
+      new BrowserOwnerError({
+        reason: 'unavailable',
+        message: 'This check composes no browser owner; rendering is unavailable.',
+      })
+    ),
+  endSession: Effect.void,
+}
+
+export const ownerPublished = (dataHome: string): boolean =>
+  existsSync(join(dataHome, 'browser', 'owner.json'))
 
 export const assertCopyReleased = async (
   profile: BrowserProfileOptions,

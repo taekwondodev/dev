@@ -143,6 +143,10 @@ export const ChildMessageSchema = Schema.Union([
     useId: WorkspaceId,
     operation: Schema.Literals(['read', 'write']),
   }),
+  strictMessage({ type: Schema.Literal('browser-ensure'), requestId: RequestId }, [
+    'type',
+    'requestId',
+  ]),
   strictMessage(
     { type: Schema.Literal('work-request'), requestId: RequestId, input: Schema.Unknown },
     ['type', 'requestId', 'input']
@@ -188,6 +192,12 @@ export const ControllerWorkMessageSchema = Schema.Union([
     outcomes: Schema.Array(LeafOutcomeSchema),
   }),
   Schema.Struct({ type: Schema.Literal('work-wake') }),
+  Schema.Struct({
+    type: Schema.Literal('browser-ready'),
+    requestId: RequestId,
+    ok: Schema.Boolean,
+    reason: Schema.optional(Schema.String),
+  }),
 ])
 export type ControllerWorkMessage = typeof ControllerWorkMessageSchema.Type
 
@@ -260,7 +270,12 @@ const validateMessageContext = (
   message: ChildMessage,
   options: { readonly cwd: string; readonly sessionDir: string }
 ): ChildMessage => {
-  if (message.type === 'workspace-check' || isCoordinationMessage(message)) return message
+  if (
+    message.type === 'workspace-check' ||
+    message.type === 'browser-ensure' ||
+    isCoordinationMessage(message)
+  )
+    return message
   if (message.sessionFile !== undefined)
     validateSessionFile(message.sessionFile, options.sessionDir)
   if (message.resources !== undefined) validateResources(message.resources, options.cwd)

@@ -40,3 +40,14 @@ A `work` **task key** (`taskId`) is local to the controller. It is not the durab
 | **[Cleanup evidence](docs/workspace.md#completion-evidence)** | Recorded target and publication readback facts used alongside use, identity and structural checks.      |
 
 See [Workspace](docs/workspace.md) for admission, completion and release behavior.
+
+## Document reading
+
+| Term              | Meaning                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Reader**        | A lead or child session's own URL retrieval, extraction and document snapshots.                            |
+| **Browser owner** | The single dev runtime per data home owning the profile copy, Chrome, its policy and every render.         |
+| **Render**        | One reader's page tree in the shared browser, the unit of attribution, cancellation and teardown.          |
+| **Profile copy**  | Dev's refreshed copy of the active Chrome profile, guarded by a kernel lock while a browser is live on it. |
+
+[Read URL](docs/web-read.md) owns retrieval, rendering and revocation behavior.

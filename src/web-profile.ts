@@ -36,16 +36,20 @@ export interface BrowserProfilePaths {
   readonly root: string
   readonly userDataDir: string
   readonly lock: string
+  readonly gate: string
+  readonly locator: string
   readonly disabled: string
   readonly state: string
 }
 
-const browserProfilePaths = (dataHome: string): BrowserProfilePaths => {
+export const browserProfilePaths = (dataHome: string): BrowserProfilePaths => {
   const root = join(dataHome, 'browser')
   return {
     root,
     userDataDir: join(root, 'user-data'),
     lock: join(root, 'profile.sqlite'),
+    gate: join(root, 'owner.sqlite'),
+    locator: join(root, 'owner.json'),
     disabled: join(root, 'disabled'),
     state: join(root, 'copy-state.json'),
   }
@@ -106,12 +110,13 @@ const COPIED_PROFILE_FILES = ['Preferences', 'Secure Preferences', 'Network/Tran
 const COPIED_PROFILE_DIRECTORIES = ['Local Storage', 'IndexedDB']
 const LEVELDB_LOCK = 'LOCK'
 
-const privateDirectory = (path: string): void => {
+export const privateBrowserDirectory = (path: string): void => {
   mkdirSync(path, { recursive: true, mode: 0o700 })
   if (lstatSync(path).isSymbolicLink())
     throw new Error(`Browser storage must not be a symlink: ${path}`)
   chmodSync(path, 0o700)
 }
+const privateDirectory = privateBrowserDirectory
 
 const regularSource = (path: string): boolean => {
   try {
@@ -174,7 +179,10 @@ export interface AcquiredProfile {
 export interface BrowserProfileOwner {
   readonly paths: BrowserProfilePaths
   readonly status: Effect.Effect<BrowserProfileStatus, BrowserProfileError>
+  readonly disabled: Effect.Effect<boolean, BrowserProfileError>
   readonly acquire: (now: number) => Effect.Effect<AcquiredProfile, BrowserProfileError>
+  readonly disable: Effect.Effect<void, BrowserProfileError>
+  readonly removeHeldCopy: Effect.Effect<RevocationOutcome, BrowserProfileError>
   readonly revoke: (
     settleWithin: Duration.Duration
   ) => Effect.Effect<RevocationOutcome, BrowserProfileError>
@@ -190,10 +198,12 @@ export interface BrowserProfileStatus {
   readonly inUse: boolean
 }
 
-export type RevocationOutcome =
-  | { readonly kind: 'removed'; readonly path: string }
-  | { readonly kind: 'already-absent' }
-  | { readonly kind: 'kept-live'; readonly path: string }
+export const RevocationOutcomeSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('removed'), path: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal('already-absent') }),
+  Schema.Struct({ kind: Schema.Literal('kept-live'), path: Schema.String }),
+])
+export type RevocationOutcome = typeof RevocationOutcomeSchema.Type
 
 export interface BrowserProfileOptions {
   readonly dataHome: string
@@ -201,7 +211,7 @@ export interface BrowserProfileOptions {
   readonly sourceUserData?: string
 }
 
-const lockConflict = 'The dev browser profile copy is in use by another dev session.'
+const lockConflict = 'The dev browser profile copy is in use by its browser owner.'
 const LOCK_RETRY_INTERVAL = Duration.millis(250)
 
 const withLock = <A>(paths: BrowserProfilePaths, run: (release: GateRelease) => A): A => {
@@ -304,8 +314,26 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
       copy: { userDataDir: paths.userDataDir, profileDirectory, source, refreshedAt: now },
     }
   }
+  const removeCopy = (): RevocationOutcome => {
+    const present = existsSync(paths.userDataDir)
+    if (present) {
+      const root = realpathSync(paths.root)
+      const real = realpathSync(paths.userDataDir)
+      if (real !== root && real.startsWith(`${root}/`))
+        rmSync(real, { recursive: true, force: true })
+    }
+    rmSync(paths.state, { force: true })
+    return present ? { kind: 'removed', path: paths.userDataDir } : { kind: 'already-absent' }
+  }
+  const writeDisabled = (): void => {
+    privateDirectory(paths.root)
+    closeSync(openSync(paths.disabled, 'a', 0o600))
+  }
   return {
     paths,
+    disabled: native(() => regularSource(paths.disabled)),
+    disable: native(writeDisabled),
+    removeHeldCopy: native(removeCopy),
     status: native(() => {
       let inUse = false
       try {
@@ -327,25 +355,12 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
     }),
     acquire: now => native(() => withLock(paths, release => ({ ...refresh(now), release }))),
     revoke: Effect.fnUntraced(function* (settleWithin: Duration.Duration) {
-      yield* native(() => {
-        privateDirectory(paths.root)
-        closeSync(openSync(paths.disabled, 'a', 0o600))
-      })
+      yield* native(writeDisabled)
       const keptLive: RevocationOutcome = { kind: 'kept-live', path: paths.userDataDir }
-      const removeCopy: Effect.Effect<RevocationOutcome, BrowserProfileError> = native(() =>
+      const removeLockedCopy: Effect.Effect<RevocationOutcome, BrowserProfileError> = native(() =>
         withLock(paths, release => {
           try {
-            const present = existsSync(paths.userDataDir)
-            if (present) {
-              const root = realpathSync(paths.root)
-              const real = realpathSync(paths.userDataDir)
-              if (real !== root && real.startsWith(`${root}/`))
-                rmSync(real, { recursive: true, force: true })
-            }
-            rmSync(paths.state, { force: true })
-            return present
-              ? ({ kind: 'removed', path: paths.userDataDir } satisfies RevocationOutcome)
-              : ({ kind: 'already-absent' } satisfies RevocationOutcome)
+            return removeCopy()
           } finally {
             release()
           }
@@ -356,7 +371,7 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
           () => Effect.succeed(keptLive)
         )
       )
-      return yield* Effect.repeat(removeCopy, {
+      return yield* Effect.repeat(removeLockedCopy, {
         schedule: Schedule.spaced(LOCK_RETRY_INTERVAL).pipe(
           Schedule.upTo({ duration: settleWithin })
         ),

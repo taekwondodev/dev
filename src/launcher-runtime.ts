@@ -41,7 +41,12 @@ import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-
 import { createWorkExtension } from './work-extension.ts'
 import { createWebExtension } from './web-extension.ts'
 import { makeWebReader, type WebReader } from './web-reader.ts'
-import { makeBrowserProfileOwner, type BrowserProfileStatus } from './web-profile.ts'
+import {
+  makeBrowserAdmin,
+  makeOwnerBootstrap,
+  makeSessionRenderer,
+  type BrowserOwnerStatus,
+} from './web-browser-owner.ts'
 import { PublicationDestinations } from './workspace-tool.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
 import { readDispatch } from './work-dispatch.ts'
@@ -717,17 +722,29 @@ const terminalRelease = Effect.fnUntraced(function* (
   return releaseExitCode(released.value)
 })
 
-const formatBrowserStatus = (status: BrowserProfileStatus): string =>
+const formatOwner = (owner: BrowserOwnerStatus['owner']): string => {
+  switch (owner.kind) {
+    case 'absent':
+      return 'browser owner: not running; the next render starts one'
+    case 'unavailable':
+      return `browser owner: ${owner.message}`
+    case 'live':
+      return `browser owner: running with ${owner.activity.clients} client(s), ${owner.activity.rendering} rendering, ${owner.activity.queued} queued, Chrome ${owner.activity.chrome ? 'live' : 'closed'}${owner.activity.draining ? ', shutting down' : ''}${owner.activity.unobserved === undefined ? '' : `; unverified Chrome shutdown: ${owner.activity.unobserved}`}`
+  }
+}
+
+const formatBrowserStatus = (status: BrowserOwnerStatus): string =>
   [
-    `chrome: ${status.chrome ?? 'not installed in /Applications or ~/Applications'}`,
-    `source profile: ${status.source}/${status.profileDirectory}`,
-    `authenticated rendering: ${status.enabled ? 'enabled' : 'disabled (dev browser enable)'}`,
+    `chrome: ${status.profile.chrome ?? 'not installed in /Applications or ~/Applications'}`,
+    `source profile: ${status.profile.source}/${status.profile.profileDirectory}`,
+    `authenticated rendering: ${status.profile.enabled ? 'enabled' : 'disabled (dev browser enable)'}`,
     `dev copy: ${
-      status.copy === undefined
+      status.profile.copy === undefined
         ? 'absent'
-        : `${status.copy.complete ? 'complete' : 'incomplete'}, refreshed ${DateTime.formatIso(DateTime.makeUnsafe(status.copy.refreshedAt))} from ${status.copy.source}/${status.copy.profileDirectory}`
+        : `${status.profile.copy.complete ? 'complete' : 'incomplete'}, refreshed ${DateTime.formatIso(DateTime.makeUnsafe(status.profile.copy.refreshedAt))} from ${status.profile.copy.source}/${status.profile.copy.profileDirectory}`
     }`,
-    `in use: ${status.inUse ? 'yes, a dev session holds the copy for Chrome or pending shutdown verification' : 'no'}`,
+    `in use: ${status.profile.inUse ? 'yes, a dev browser owner holds the copy for Chrome or pending shutdown verification' : 'no'}`,
+    formatOwner(status.owner),
   ].join('\n')
 
 const BrowserSubcommand = Schema.Literals(['status', 'revoke', 'enable'])
@@ -746,7 +763,7 @@ const browserCommand = Effect.fnUntraced(function* (
     )
     return 2
   }
-  const owner = makeBrowserProfileOwner({ dataHome })
+  const owner = makeBrowserAdmin({ dataHome })
   const operations = {
     status: Effect.map(owner.status, formatBrowserStatus),
     enable: Effect.as(
@@ -760,7 +777,7 @@ const browserCommand = Effect.fnUntraced(function* (
         case 'already-absent':
           return 'Authenticated browser rendering is disabled; dev held no profile copy. Your Chrome profile was not touched.'
         case 'kept-live':
-          return `Authenticated browser rendering is disabled: no further launch will use the copy. The copy at ${revoked.path} was kept because a dev session holds it for Chrome or pending shutdown verification; retry settlement in that session, then rerun dev browser revoke. Your Chrome profile was not touched.`
+          return `Authenticated browser rendering is disabled: no further launch will use the copy. The copy at ${revoked.path} was kept because reads were still draining or Chrome's shutdown could not be verified; rerun dev browser revoke once they finish. Your Chrome profile was not touched.`
       }
     }),
   }
@@ -992,15 +1009,18 @@ const run = Effect.fnUntraced(function* (
     })
   const readerScope = yield* Scope.make()
   const webReader = yield* Scope.provide(readerScope)(
-    makeWebReader({
-      profile: { dataHome },
-      onBrowserShutdown: outcome => {
-        if (outcome.kind === 'unobserved')
-          process.stderr.write(
-            `Chrome helper processes of the read_url browser were not observed gone: ${outcome.message}. The profile copy remains locked in this dev process; a later browser read or session close will retry settlement. Exiting dev releases the lock without proving Chrome has stopped.\n`
-          )
-      },
-    })
+    Effect.flatMap(
+      makeSessionRenderer({
+        dataHome,
+        ensureOwner: makeOwnerBootstrap({
+          dataHome,
+          onFailure: message => {
+            process.stderr.write(`The dev browser owner could not start: ${message}\n`)
+          },
+        }).ensure,
+      }),
+      renderer => makeWebReader({ renderer })
+    )
   )
   const createRuntimeFactory = yield* makeRuntimeFactory({
     api,

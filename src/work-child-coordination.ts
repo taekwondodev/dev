@@ -62,6 +62,7 @@ const exchange = (
         if (
           Option.isSome(reply) &&
           reply.value.type !== 'work-wake' &&
+          reply.value.type !== 'browser-ready' &&
           reply.value.requestId === requestId
         )
           settle(Effect.succeed(reply.value))

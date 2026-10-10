@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs'
-import { Option, Predicate, Schema } from 'effect'
+import { Effect, Option, Predicate, Schema } from 'effect'
 import { ChildRequestEnvelope, serveChild } from '../../src/pi-child.ts'
+import { WebNetworkError } from '../../src/web-network.ts'
 import { ControllerWorkMessageSchema } from '../../src/work-protocol.ts'
 import {
   cancelLog,
@@ -104,5 +105,16 @@ process.on = ((event: string, listener: (...args: unknown[]) => void) =>
     if (assignment.holdCancel && cancelling) setTimeout(() => listener(...args), HOLD_CANCEL_MS)
     else listener(...args)
   })) as typeof process.on
-serveChild({ modelRuntime: scriptedModelRuntime })
+serveChild({
+  modelRuntime: scriptedModelRuntime,
+  resolveAddress: host =>
+    host.endsWith('.fixture.invalid')
+      ? Effect.succeed('127.0.0.1')
+      : Effect.fail(
+          new WebNetworkError({
+            reason: 'destination',
+            message: `${host} refused by the child fixture resolver`,
+          })
+        ),
+})
 process.on = listen

@@ -12,7 +12,7 @@ Treat dev as unreleased: dev-owned state has exactly one schema, the final one. 
 
 - **Domain:** read [CONTEXT](CONTEXT.md) before changing related behavior. [Domain conventions](docs/agents/domain.md) govern terminology and decision conflicts.
 - **Ownership:** before changing component, storage, admission or release boundaries, read [Architecture](docs/ARCHITECTURE.md) and the relevant record in its [decision index](docs/ARCHITECTURE.md#decision-records).
-- **Security:** before changing extensions, resource loading or project effects through tools, event handlers or children, read [SECURITY](SECURITY.md). Before changing the URL reader's network policy, Chrome launch or profile copy, also read its [browser profile boundary](SECURITY.md#browser-profile-copy).
+- **Security:** before changing extensions, resource loading or project effects through tools, event handlers or children, read [SECURITY](SECURITY.md). Before changing the URL reader's network policy, Chrome launch, profile copy or the shared browser owner and its IPC, also read its [browser profile boundary](SECURITY.md#browser-profile-copy).
 - **Behavior:** read and update the owning guide: [launcher](docs/launcher.md), [work](docs/work.md), [workspace](docs/workspace.md), [read URL](docs/web-read.md), [compaction](docs/compaction.md) or [usage profile](docs/usage-profile.md).
 - **Maintenance:** use [Development](docs/DEVELOPMENT.md) for setup, verification, adding tools and private-state relocation. Before dependency or Pi upgrades, read [Upgrade](docs/upgrade.md).
 - **Documentation:** use the [ownership table](docs/DEVELOPMENT.md#documentation-ownership) before adding or relocating guidance, requirements, rationale or evidence.

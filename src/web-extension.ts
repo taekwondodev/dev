@@ -1,9 +1,8 @@
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Effect, type JsonSchema, Schema } from 'effect'
 import { DocumentLink, RetrievalMethod, type DocumentSlice } from './web-documents.ts'
+import { READ_URL_TOOL } from './integrated-tools.ts'
 import type { ReadOutcome, WebReader } from './web-reader.ts'
-
-export const READ_URL_TOOL = 'read_url'
 
 const InputSchema = Schema.Struct({
   url: Schema.optionalKey(Schema.String),

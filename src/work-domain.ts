@@ -31,7 +31,8 @@ export const WorkAccessSchema = Schema.Literals(['read-only', 'write'] as const)
 export type WorkAccess = typeof WorkAccessSchema.Type
 
 export const READ_ONLY_CHILD_TOOLS = ['read', 'grep', 'find', 'ls', 'git_inspect'] as const
-export const READ_ONLY_CHILD_CAPABILITIES = `A read-only child has only ${READ_ONLY_CHILD_TOOLS.join(', ')}: no shell, network or gh. Put issue, PR or other external text in the prompt or a workspace file.`
+export const INTEGRATED_CHILD_TOOLS = ['read_url', 'codemode'] as const
+export const READ_ONLY_CHILD_CAPABILITIES = `A read-only child has only ${[...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].join(', ')}: it can read documentation URLs and compose tool calls in scripts, but has no shell, no edits and no gh. Put issue, PR or other external text in the prompt or a workspace file.`
 
 export const WorkStatusSchema = Schema.Literals([
   'running',

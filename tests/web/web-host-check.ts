@@ -5,13 +5,20 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import * as NodeServices from '@effect/platform-node/NodeServices'
+import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { Duration, Effect, Exit, Schema, Scope } from 'effect'
+import { Effect, Exit, Schema, Scope } from 'effect'
 import { makeWebReader } from '../../src/web-reader.ts'
 import { ReadUrlResultSchema } from '../../src/web-extension.ts'
 import { CHROME_EXECUTABLES, findChrome } from '../../src/web-profile.ts'
-import { assertCopyReleased, chromeRunningOn, makeChromeSource } from './chrome-fixture.ts'
+import {
+  assertCopyReleased,
+  chromeRunningOn,
+  makeChromeSource,
+  openRenderer,
+  ownerPublished,
+  selectOwnerFixture,
+} from './chrome-fixture.ts'
 import {
   loadInstalledPi,
   makeClaims,
@@ -102,15 +109,26 @@ const profile =
     ? { dataHome, chromeExecutables: [join(fixture, 'no-chrome')] }
     : { dataHome, sourceUserData: source.userData, chromeExecutables: CHROME_EXECUTABLES }
 const copyDir = join(dataHome, 'browser', 'user-data')
+mkdirSync(join(fixture, 'authority'), { recursive: true, mode: 0o700 })
+selectOwnerFixture({
+  ...(chrome === undefined
+    ? { chromeExecutables: [join(fixture, 'no-chrome')] }
+    : { sourceUserData: source.userData, chromeExecutables: CHROME_EXECUTABLES }),
+  chromeArguments: ['--host-resolver-rules=MAP *.fixture.invalid 127.0.0.1'],
+  firstClientGraceMs: 60_000,
+  installationPath: fixture,
+  namespacePath: join(fixture, 'authority'),
+  allowSuffix: '.fixture.invalid',
+  blockedHosts: [],
+  slowHosts: {},
+})
 const readerScope = Scope.makeUnsafe()
 const webReader = await Effect.runPromise(
   Scope.provide(readerScope)(
-    makeWebReader({
-      profile,
-      resolveAddress: () => Effect.succeed('127.0.0.1'),
-      chromeArguments: ['--host-resolver-rules=MAP *.fixture.invalid 127.0.0.1'],
-      browserIdle: Duration.minutes(3),
-    }).pipe(Effect.provide(NodeServices.layer))
+    Effect.flatMap(
+      Effect.promise(() => openRenderer(dataHome, readerScope)),
+      renderer => makeWebReader({ renderer, resolveAddress: () => Effect.succeed('127.0.0.1') })
+    )
   )
 )
 
@@ -160,7 +178,7 @@ const read = await tools.read({ path: 'AGENTS.md' })
 const page = await tools.read_url({ url: ${JSON.stringify(url)} })
 let rogueOutcome = 'not attempted'
 try { await tools.rogue({}); rogueOutcome = 'ran' } catch (error) { rogueOutcome = String(error) }
-return { read, page, rogueOutcome }
+return { read, page, rogueOutcome, models: typeof models }
 `
 const script = scripted([
   [toolCall('direct-read', 'read', { path: 'AGENTS.md' })],
@@ -310,6 +328,7 @@ try {
       const { continuation: _s, ...scriptRest } = viaScript
       assert.deepEqual(scriptRest, directRest)
       assert.match(String(output.rogueOutcome), /no verified workspace effect/)
+      assert.equal(output.models, 'object', "the lead's codemode keeps its model catalog")
       const nested = recorded.filter(item => item.parentToolCallId === 'scripted')
       assert.deepEqual(
         nested.map(item => item.toolName),
@@ -336,7 +355,7 @@ try {
   })
   if (chrome !== undefined) {
     await claim(
-      'a page rendered by Chrome through the host survives as a tool result, and a session reload closes the browser and releases the profile copy before it returns',
+      'a page rendered through the host survives as a tool result, and a session reload ends only this reader client while the shared browser stays available',
       async () => {
         await opened.runtime.session.prompt('Render the fixture app page.')
         await opened.runtime.session.waitForIdle()
@@ -345,20 +364,27 @@ try {
         assert.match(rendered.text, /Rendered Heading/)
         assert.ok(chromeRunningOn(copyDir) > 0, 'Chrome was live on the dev copy')
         await opened.runtime.session.reload()
-        await assertCopyReleased(profile, 'after the reload')
+        assert.ok(ownerPublished(dataHome), 'the shared browser owner outlived the reload')
       }
     )
     await claim(
-      'after the reload the reader relaunches Chrome for the next render, and disposing the runtime closes it and releases the copy before dispose returns',
+      'after the reload the same reader renders again through the shared browser, and disposing the runtime leaves no Chrome on the copy once the last client is gone',
       async () => {
         await opened.runtime.session.prompt('Render the fixture app page again.')
         await opened.runtime.session.waitForIdle()
         const again = asResult(find('rendered-again').structuredContent)
-        assert.match(again.text, /Rendered Heading/)
-        assert.ok(chromeRunningOn(copyDir) > 0, 'Chrome was relaunched on the dev copy')
+        assert.match(
+          again.text,
+          /Rendered Heading/,
+          JSON.stringify({ error: again.error, limitations: again.limitations })
+        )
+        assert.ok(chromeRunningOn(copyDir) > 0, 'the shared browser served the next render')
         closed = true
         await opened.close()
-        await assertCopyReleased(profile, 'after dispose')
+        await Effect.runPromise(Scope.close(readerScope, Exit.void))
+        for (let attempt = 0; attempt < 100 && ownerPublished(dataHome); attempt += 1)
+          await sleep(100)
+        await assertCopyReleased(profile, 'after the last client disconnected')
       }
     )
   }
