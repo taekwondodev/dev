@@ -136,6 +136,7 @@ export const openWorkFixture = async (name: string) => {
           },
         },
         childEntry: new URL('./work-child-entry.ts', import.meta.url),
+        browserOwnerEntry: new URL('../web/browser-owner-entry.ts', import.meta.url),
         onOutcome: attempt => {
           outcomes.set(attempt.id, attempt)
           for (const deliver of awaited.get(attempt.id) ?? []) deliver(attempt)

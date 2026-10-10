@@ -1,26 +1,7 @@
-import {
-  Cause,
-  Clock,
-  Duration,
-  Effect,
-  Exit,
-  Fiber,
-  FiberSet,
-  Schema,
-  Scope,
-  Semaphore,
-} from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import { Cause, Effect, Exit, Fiber, FiberSet, Schema, Scope, Semaphore } from 'effect'
 import { errorText } from './error-text.ts'
-import {
-  BrowserError,
-  launchChrome,
-  renderPage,
-  retryChromeShutdown,
-  type Browser,
-  type BrowserShutdown,
-  type RenderedPage,
-} from './web-browser.ts'
+import type { BrowserError, RenderedPage } from './web-browser.ts'
+import type { BrowserOwnerError, SessionRenderer } from './web-browser-owner.ts'
 import {
   DEFAULT_SLICE_CHARS,
   MAX_SLICE_CHARS,
@@ -44,17 +25,12 @@ import {
   defaultFetchLimits,
   fetchPublic,
   resolvePublicAddress,
-  validateUrl,
   type AddressResolver,
   type FetchLimits,
   type FetchedResponse,
   type WebNetworkError,
 } from './web-network.ts'
-import {
-  type BrowserProfileError,
-  makeBrowserProfileOwner,
-  type BrowserProfileOptions,
-} from './web-profile.ts'
+import type { BrowserProfileError } from './web-profile.ts'
 
 export interface ReadRequest {
   readonly url?: string
@@ -70,7 +46,7 @@ class ReadCancelled extends Schema.TaggedError<ReadCancelled>()('ReadCancelled',
   message: Schema.String,
 }) {}
 
-type BrowserFailure = BrowserError | BrowserProfileError
+type BrowserFailure = BrowserError | BrowserProfileError | BrowserOwnerError
 type ReadFailure = WebNetworkError | BrowserFailure | ReadCancelled
 
 export interface WebReader {
@@ -79,14 +55,10 @@ export interface WebReader {
 }
 
 export interface WebReaderOptions {
-  readonly profile: BrowserProfileOptions
+  readonly renderer: SessionRenderer
   readonly fetchLimits?: FetchLimits
   readonly resolveAddress?: AddressResolver
-  readonly chromeArguments?: readonly string[]
-  readonly browserIdle?: Duration.Duration
-  readonly renderTimeout?: Duration.Duration
   readonly staticConcurrency?: number
-  readonly onBrowserShutdown?: (outcome: BrowserShutdown) => void
 }
 
 const INDEX_CANDIDATES = ['/llms.txt', '/llms-full.txt']
@@ -111,10 +83,7 @@ const statusLimitation = (status: number): string | undefined => {
 const clampChars = (requested: number | undefined): number =>
   Math.min(MAX_SLICE_CHARS, Math.max(MIN_SLICE_CHARS, requested ?? DEFAULT_SLICE_CHARS))
 
-const BROWSER_IDLE = Duration.minutes(3)
-const RENDER_TIMEOUT = Duration.seconds(40)
 const STATIC_CONCURRENCY = 4
-const ADMISSION_CONCURRENCY = 8
 const RENDERED_NOTE =
   'Rendered with the installed Chrome using a dev-owned copy of your authenticated profile; the origin may have recorded this visit.'
 
@@ -141,132 +110,20 @@ const cancellable = <A, E>(
 
 export const makeWebReader = Effect.fnUntraced(function* (
   options: WebReaderOptions
-): Effect.fn.Return<WebReader, never, Scope.Scope | ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.fn.Return<WebReader, never, Scope.Scope> {
   const snapshots = makeDocumentSnapshots()
-  const owner = makeBrowserProfileOwner(options.profile)
   const limits = options.fetchLimits ?? defaultFetchLimits
   const resolve = options.resolveAddress ?? resolvePublicAddress
-  const spawnerContext = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>()
   const readerScope = yield* Effect.scope
-  const browserSemaphore = yield* Semaphore.make(1)
   const staticSemaphore = yield* Semaphore.make(options.staticConcurrency ?? STATIC_CONCURRENCY)
-  const admissionSemaphore = yield* Semaphore.make(ADMISSION_CONCURRENCY)
-
-  interface LiveBrowser {
-    readonly browser: Browser
-    readonly scope: Scope.Closeable
-    idleTimer: Fiber.Fiber<void> | undefined
-  }
-  let live: LiveBrowser | undefined
   const reads = yield* FiberSet.make<ReadOutcome, never>()
   const stopReads = FiberSet.clear(reads)
-
-  const closeBrowser = Effect.gen(function* () {
-    const current = live
-    if (current === undefined) {
-      yield* retryChromeShutdown(owner.paths.userDataDir)
-      return
-    }
-    live = undefined
-    const timer = current.idleTimer
-    current.idleTimer = undefined
-    if (timer !== undefined) yield* Fiber.interrupt(timer)
-    yield* Scope.close(current.scope, Exit.void)
-  })
-
-  const closeWhenIdle = (current: LiveBrowser) =>
-    browserSemaphore.withPermits(1)(
-      Effect.suspend(() => {
-        if (live !== current) return Effect.void
-        current.idleTimer = undefined
-        return closeBrowser
-      })
-    )
-
-  const scheduleIdleClose = Effect.fnUntraced(function* (current: LiveBrowser) {
-    if (live !== current) return
-    if (current.idleTimer !== undefined) yield* Fiber.interrupt(current.idleTimer)
-    current.idleTimer = yield* Effect.forkIn(
-      Effect.sleep(options.browserIdle ?? BROWSER_IDLE).pipe(
-        Effect.andThen(closeWhenIdle(current))
-      ),
-      readerScope
-    )
-  })
-
-  const openBrowser: Effect.Effect<LiveBrowser, BrowserFailure> = Effect.uninterruptible(
-    Effect.gen(function* () {
-      if (live !== undefined) return live
-      const previous = yield* retryChromeShutdown(owner.paths.userDataDir)
-      if (previous.kind === 'unobserved')
-        return yield* new BrowserError({
-          reason: 'shutdown',
-          message: `${previous.message}. The profile copy is still locked; a later browser read or session close will retry settlement.`,
-        })
-      const now = yield* Clock.currentTimeMillis
-      const acquired = yield* owner.acquire(now)
-      const scope = yield* Scope.fork(readerScope)
-      let shutdownReported = false
-      yield* Scope.addFinalizer(
-        scope,
-        Effect.sync(() => {
-          if (!shutdownReported) acquired.release()
-        })
-      )
-      const browser = yield* launchChrome(
-        {
-          executable: acquired.chrome,
-          userDataDir: acquired.copy.userDataDir,
-          extraArguments: [
-            `--profile-directory=${acquired.copy.profileDirectory}`,
-            ...(options.chromeArguments ?? []),
-          ],
-        },
-        outcome => {
-          shutdownReported = true
-          if (outcome.kind === 'settled') acquired.release()
-          options.onBrowserShutdown?.(outcome)
-        }
-      ).pipe(
-        Scope.provide(scope),
-        Effect.provide(spawnerContext),
-        Effect.tapError(() => Scope.close(scope, Exit.void))
-      )
-      const opened: LiveBrowser = { browser, scope, idleTimer: undefined }
-      live = opened
-      return opened
-    })
-  )
-
-  const policy = {
-    admit: (url: string) =>
-      admissionSemaphore.withPermits(1)(
-        validateUrl(url).pipe(
-          Effect.flatMap(valid => resolve(valid.hostname)),
-          Effect.asVoid
-        )
-      ),
-  }
 
   const renderWithBrowser = (
     url: string,
     signal: AbortSignal | undefined
   ): Effect.Effect<RenderedPage, BrowserFailure | ReadCancelled> =>
-    cancellable(
-      browserSemaphore.withPermits(1)(
-        Effect.flatMap(openBrowser, current =>
-          renderPage(current.browser, url, policy, {
-            timeout: options.renderTimeout ?? RENDER_TIMEOUT,
-            maxHtmlChars: limits.maxBytes,
-          }).pipe(Effect.tapError(() => closeBrowser))
-        ).pipe(
-          Effect.ensuring(
-            Effect.suspend(() => (live === undefined ? Effect.void : scheduleIdleClose(live)))
-          )
-        )
-      ),
-      signal
-    )
+    cancellable(options.renderer.render(url, limits.maxBytes), signal)
 
   const staticDocument = (
     response: FetchedResponse
@@ -429,14 +286,12 @@ export const makeWebReader = Effect.fnUntraced(function* (
       )
     )
 
-  const shutdownBrowser = stopReads.pipe(
-    Effect.andThen(browserSemaphore.withPermits(1)(closeBrowser))
-  )
-  yield* Scope.addFinalizer(readerScope, shutdownBrowser)
+  const shutdownReads = stopReads.pipe(Effect.andThen(options.renderer.endSession))
+  yield* Scope.addFinalizer(readerScope, shutdownReads)
 
   return {
     read,
     endSession: reason =>
-      Effect.sync(() => snapshots.clear(reason)).pipe(Effect.andThen(shutdownBrowser)),
+      Effect.sync(() => snapshots.clear(reason)).pipe(Effect.andThen(shutdownReads)),
   }
 })

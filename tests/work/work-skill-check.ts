@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
+import { INTEGRATED_CHILD_TOOLS, READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
 import { makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
 import { assertStatus, openWorkFixture, script } from './work-check-support.ts'
 
@@ -153,9 +153,12 @@ try {
           assert.equal(view.model, 'ext-fixture/ext-model')
           assert.equal(
             text,
-            'EXTENSION-MODEL session-tools=find,git_inspect,grep,ls,read after-widening=find,git_inspect,grep,ls,read'
+            'EXTENSION-MODEL session-tools=codemode,find,git_inspect,grep,ls,read,read_url after-widening=codemode,find,git_inspect,grep,ls,read,read_url'
           )
-          assert.deepEqual(view.resources?.tools.toSorted(), READ_ONLY_CHILD_TOOLS.toSorted())
+          assert.deepEqual(
+            view.resources?.tools.toSorted(),
+            [...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].toSorted()
+          )
         }
       ),
       claim('the default catalog does not contain the skill of another profile', async () => {

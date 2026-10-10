@@ -54,7 +54,7 @@ import {
 } from './workspace-paths.ts'
 import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
-import { READ_URL_TOOL } from './web-extension.ts'
+import { isIntegratedCodemode, isIntegratedReader } from './integrated-tools.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
   'WorkspaceHostError',
@@ -326,10 +326,8 @@ function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
     return 'work-owner'
   if (source === 'inline' && path === '<inline:dev:workspace-host>' && tool.name === 'workspace')
     return 'workspace-tool'
-  if (source === 'inline' && path === '<inline:dev:web>' && tool.name === READ_URL_TOOL)
-    return 'web-read'
-  if (source === 'inline' && path === '<inline:dev:codemode>' && tool.name === 'codemode')
-    return 'codemode'
+  if (isIntegratedReader(tool)) return 'web-read'
+  if (isIntegratedCodemode(tool)) return 'codemode'
   return undefined
 }
 

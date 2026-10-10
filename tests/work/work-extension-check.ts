@@ -13,7 +13,7 @@ import {
   createCoordinatorWorkTool,
   type CoordinatorLink,
 } from '../../src/work-child-coordination.ts'
-import { READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
+import { INTEGRATED_CHILD_TOOLS, READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
 import { waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture } from './work-check-support.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
@@ -132,8 +132,9 @@ const unusedLink: CoordinatorLink = {
 
 const assertWorkGuidance = (description: string | undefined): void => {
   assert.ok(description !== undefined)
-  for (const tool of READ_ONLY_CHILD_TOOLS) assert.ok(description.includes(tool), tool)
-  assert.ok(description.includes('no shell, network or gh'))
+  for (const tool of [...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS])
+    assert.ok(description.includes(tool), tool)
+  assert.ok(description.includes('no shell, no edits and no gh'))
   assert.ok(description.includes('in the prompt or a workspace file'))
   assert.ok(description.includes('otherwise end your turn and let outcomes resume you'))
   assert.ok(

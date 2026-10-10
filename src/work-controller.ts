@@ -93,6 +93,7 @@ import {
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { commandRunner, type RunCommand } from './command.ts'
+import { makeOwnerBootstrap } from './web-browser-owner.ts'
 import { errorText } from './error-text.ts'
 
 type ProcessEvent =
@@ -167,6 +168,7 @@ interface WorkOwnerOptions {
   readonly onChange?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
   readonly childEntry?: URL
+  readonly browserOwnerEntry?: URL
 }
 
 const PI_CHILD_ENTRY = new URL('./pi-child.ts', import.meta.url)
@@ -426,6 +428,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const onChange = options.onChange ?? (() => undefined)
   const onOutcome = options.onOutcome ?? (() => undefined)
   const childEntry = options.childEntry ?? PI_CHILD_ENTRY
+  const browserOwner = makeOwnerBootstrap({
+    dataHome,
+    ...(options.browserOwnerEntry === undefined ? {} : { entry: options.browserOwnerEntry }),
+  })
 
   const snapshot: Effect.Effect<WorkSnapshot, WorkFailure> = Effect.gen(function* () {
     const listed = yield* store.list
@@ -1323,6 +1329,31 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           useId: job.workspace.useId,
           allowed: Result.isSuccess(checked),
           ...(Result.isFailure(checked) ? { reason: errorText(checked.failure) } : {}),
+        })
+        return
+      }
+      if (message.type === 'browser-ensure') {
+        const { child } = job
+        if (child === undefined)
+          return yield* new WorkError({ message: 'Child browser owner is unavailable' })
+        const ensured = yield* Effect.result(
+          withPreparedPermit(
+            token.sessionId,
+            token.generation,
+            job.task,
+            job.kind,
+            token.attemptId,
+            Effect.flatMap(
+              workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure)),
+              () => browserOwner.ensure.pipe(Effect.mapError(toFailure))
+            )
+          )
+        )
+        yield* sendIpc(child, {
+          type: 'browser-ready',
+          requestId: message.requestId,
+          ok: Result.isSuccess(ensured),
+          ...(Result.isFailure(ensured) ? { reason: errorText(ensured.failure) } : {}),
         })
         return
       }

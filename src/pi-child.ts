@@ -22,6 +22,12 @@ import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, loadCatalog } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
+import { requestBrowserOwner } from './work-child-browser.ts'
+import { makeSessionRenderer } from './web-browser-owner.ts'
+import { makeWebReader } from './web-reader.ts'
+import { createWebExtension } from './web-extension.ts'
+import type { AddressResolver } from './web-network.ts'
+import { CODEMODE_TOOL, READ_URL_TOOL } from './integrated-tools.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
 import {
   acquireCoordinatorLink,
@@ -133,6 +139,7 @@ export interface ChildServeOptions {
     pi: LoadedPi,
     request: ChildRequest
   ) => Effect.Effect<Pi.ModelRuntime, ChildError>
+  readonly resolveAddress?: AddressResolver
 }
 interface ChildRunOptions extends ChildServeOptions {
   readonly signal?: AbortSignal
@@ -286,6 +293,8 @@ const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
 function childBrief(request: ChildRequest, resources: Resources): string {
   const inspection = [
     ...READ_ONLY_CHILD_TOOLS,
+    READ_URL_TOOL,
+    CODEMODE_TOOL,
     ...(request.coordinate === true ? ['work'] : []),
   ].join(', ')
   const access =
@@ -752,6 +761,14 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const compaction = yield* createBackgroundCompaction(loaded.api, loaded.packageInfo.root).pipe(
     Effect.mapError(toChildError)
   )
+  const webReader = yield* Effect.flatMap(
+    makeSessionRenderer({ dataHome: request.dataHome, ensureOwner: requestBrowserOwner() }),
+    renderer =>
+      makeWebReader({
+        renderer,
+        ...(options.resolveAddress === undefined ? {} : { resolveAddress: options.resolveAddress }),
+      })
+  )
   const services = yield* Effect.tryPromise({
     try: () =>
       loaded.api.createAgentSessionServices({
@@ -771,6 +788,11 @@ const acquireSession = Effect.fn('acquireSession')(function* (
                 request.authorityRoot,
                 nativeWrites
               ),
+            },
+            { name: 'dev:web', factory: createWebExtension(webReader).factory },
+            {
+              name: 'dev:codemode',
+              factory: loaded.api.createCodemodeExtension({ mode: 'on', models: false }),
             },
             ...(link === undefined
               ? []
@@ -816,8 +838,13 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   ]
   const tools =
     request.access === 'read-only'
-      ? [...READ_ONLY_CHILD_TOOLS, ...(link === undefined ? [] : ['work'])]
-      : undefined
+      ? [
+          ...READ_ONLY_CHILD_TOOLS,
+          READ_URL_TOOL,
+          CODEMODE_TOOL,
+          ...(link === undefined ? [] : ['work']),
+        ]
+      : [`+${CODEMODE_TOOL}`]
   const created = yield* Effect.tryPromise({
     try: () =>
       loaded.api.createAgentSessionFromServices({

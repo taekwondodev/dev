@@ -21,6 +21,7 @@ import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspac
 import { makeWorkspaceHost } from '../../src/workspace-host.ts'
 import { PublicationDestinations } from '../../src/workspace-tool.ts'
 import { makeWebReader, type WebReader } from '../../src/web-reader.ts'
+import { staticOnlyRenderer } from '../web/chrome-fixture.ts'
 import { RepositoryRoot } from '../../src/preferences.ts'
 
 class TimedOut extends Error {}
@@ -306,11 +307,7 @@ export const openHostRuntime = async (input: {
     const webReader =
       input.webReader ??
       (await Effect.runPromise(
-        Scope.provide(scope)(
-          makeWebReader({ profile: { dataHome: input.dataHome } }).pipe(
-            Effect.provide(nodeServicesWithCurrentEnvironment())
-          )
-        )
+        Scope.provide(scope)(makeWebReader({ renderer: staticOnlyRenderer }))
       ))
     const runtimeFactory = await Effect.runPromise(
       Effect.gen(function* () {

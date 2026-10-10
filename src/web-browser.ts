@@ -339,6 +339,11 @@ export interface RenderOptions {
   readonly maxHtmlChars: number
 }
 
+export interface RenderHost {
+  render(url: string, options: RenderOptions): Effect.Effect<RenderedPage, BrowserError>
+  readonly active: () => number
+}
+
 const Attached = Schema.Struct({ sessionId: Schema.String })
 const Created = Schema.Struct({ targetId: Schema.String })
 const Evaluated = Schema.Struct({
@@ -346,14 +351,16 @@ const Evaluated = Schema.Struct({
 })
 const PausedRequest = Schema.Struct({
   requestId: Schema.String,
+  frameId: Schema.optional(Schema.String),
   request: Schema.Struct({ url: Schema.String }),
 })
 const DetachedEvent = Schema.Struct({ sessionId: Schema.String })
 const AttachedEvent = Schema.Struct({
   sessionId: Schema.String,
   waitingForDebugger: Schema.Boolean,
-  targetInfo: Schema.Struct({ type: Schema.String }),
+  targetInfo: Schema.Struct({ targetId: Schema.String, type: Schema.String }),
 })
+const FrameAttachedEvent = Schema.Struct({ frameId: Schema.String })
 const ResponseReceived = Schema.Struct({
   type: Schema.String,
   response: Schema.Struct({ status: Schema.Finite, url: Schema.String }),
@@ -398,26 +405,54 @@ const WORKER_TARGETS = new Set(['worker', 'shared_worker', 'service_worker'])
 
 const SETTLE_AFTER_LOAD = Duration.millis(750)
 const TEARDOWN_SETTLE = Duration.seconds(2)
+const ATTRIBUTION_BUDGET = Duration.millis(500)
+const ATTRIBUTION_INTERVAL = Duration.millis(25)
+const TOMBSTONE_GRACE = Duration.seconds(2)
 
-export const renderPage = Effect.fnUntraced(function* (
+type RenderPhase = 'active' | 'closing' | 'closed'
+
+interface OwnedRender {
+  readonly key: number
+  readonly targets: Set<string>
+  readonly sessions: Set<string>
+  readonly pageSessions: Set<string>
+  readonly frames: Set<string>
+  readonly outstanding: Map<string, string | undefined>
+  readonly loaded: Deferred.Deferred<void>
+  readonly detached: Deferred.Deferred<void>
+  targetId: string | undefined
+  main: { readonly sessionId: string } | undefined
+  blocked: number
+  status: number | undefined
+  phase: RenderPhase
+}
+
+export const makeRenderHost = Effect.fnUntraced(function* (
   browser: Browser,
-  url: string,
-  policy: SubrequestPolicy,
-  options: RenderOptions
-): Effect.fn.Return<RenderedPage, BrowserError> {
+  policy: SubrequestPolicy
+): Effect.fn.Return<RenderHost, BrowserError, Scope.Scope> {
   const { cdp } = browser
-  let blocked = 0
-  const loaded = yield* Deferred.make<void>()
-  let mainStatus: number | undefined
+  const hostScope = yield* Effect.scope
   const handlers = yield* Scope.make()
   const runFork = Effect.runForkWith(yield* Effect.context<never>())
   const runEvent = (effect: Effect.Effect<void, BrowserError>) =>
     runFork(Effect.forkIn(Effect.ignore(effect), handlers))
-  const pageSessions = new Set<string>()
-  const enablePage = (sessionId: string) =>
+  const targetOwners = new Map<string, OwnedRender>()
+  const sessionOwners = new Map<string, OwnedRender>()
+  const frameOwners = new Map<string, OwnedRender>()
+  const renders = new Set<OwnedRender>()
+  let nextKey = 0
+
+  const autoAttach = (sessionId: string) =>
+    cdp.send(
+      'Target.setAutoAttach',
+      { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+      sessionId
+    )
+  const enablePage = (owner: OwnedRender, sessionId: string) =>
     Effect.all(
       [
-        Effect.sync(() => pageSessions.add(sessionId)),
+        Effect.sync(() => owner.pageSessions.add(sessionId)),
         cdp.send('Page.enable', {}, sessionId),
         cdp.send('Runtime.enable', {}, sessionId),
         cdp.send(
@@ -429,159 +464,239 @@ export const renderPage = Effect.fnUntraced(function* (
       ],
       { discard: true }
     )
-  const autoAttach = (sessionId: string) =>
-    cdp.send(
-      'Target.setAutoAttach',
-      { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
-      sessionId
-    )
   const enableWorker = (sessionId: string) =>
     cdp
       .send('Runtime.evaluate', { expression: DISABLED_WORKER_CHANNELS_SCRIPT }, sessionId)
       .pipe(Effect.andThen(Effect.ignore(autoAttach(sessionId))))
-  const outstanding = new Map<string, string | undefined>()
-  let closing = false
   const refuse = (requestId: string, sessionId: string | undefined) =>
     cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId)
+
+  const awaitAttribution = (frameId: string): Effect.Effect<OwnedRender | undefined> =>
+    Effect.repeat(
+      Effect.sync(() => frameOwners.get(frameId)),
+      {
+        schedule: Schedule.spaced(ATTRIBUTION_INTERVAL).pipe(
+          Schedule.upTo({ duration: ATTRIBUTION_BUDGET })
+        ),
+        until: owner => owner !== undefined,
+      }
+    )
+
   const handlePaused = Effect.fnUntraced(function* (
     sessionId: string | undefined,
     params: unknown
   ): Effect.fn.Return<void, BrowserError> {
     const paused = yield* decode(PausedRequest)(params)
-    outstanding.set(paused.requestId, sessionId)
-    const admitted = yield* Effect.exit(policy.admit(paused.request.url))
-    if (Exit.isFailure(admitted)) {
-      if (/^https?:/i.test(paused.request.url)) blocked += 1
+    const { frameId } = paused
+    let owner = frameId === undefined ? undefined : frameOwners.get(frameId)
+    if (owner === undefined && frameId !== undefined) owner = yield* awaitAttribution(frameId)
+    if (owner === undefined || owner.phase !== 'active') {
       yield* refuse(paused.requestId, sessionId)
-    } else yield* cdp.send('Fetch.continueRequest', { requestId: paused.requestId }, sessionId)
-    outstanding.delete(paused.requestId)
+      return
+    }
+    owner.outstanding.set(paused.requestId, sessionId)
+    const admitted = yield* Effect.exit(policy.admit(paused.request.url))
+    if (owner.outstanding.delete(paused.requestId) && owner.phase === 'active') {
+      if (Exit.isFailure(admitted)) {
+        if (/^https?:/i.test(paused.request.url)) owner.blocked += 1
+        yield* refuse(paused.requestId, sessionId)
+      } else yield* cdp.send('Fetch.continueRequest', { requestId: paused.requestId }, sessionId)
+    } else yield* refuse(paused.requestId, sessionId)
   })
-  const refuseLate = (sessionId: string | undefined, params: unknown) => {
-    const decoded = Schema.decodeUnknownResult(PausedRequest)(params)
-    if (decoded._tag === 'Success')
-      runFork(Effect.ignore(refuse(decoded.success.requestId, sessionId)))
-  }
-  const stopScripts = Effect.suspend(() =>
-    Effect.forEach(
-      pageSessions,
-      sessionId =>
-        Effect.ignore(cdp.send('Emulation.setScriptExecutionDisabled', { value: true }, sessionId)),
-      { discard: true }
-    )
-  )
-  const refuseOutstanding = Effect.suspend(() => {
-    const pending = [...outstanding]
-    outstanding.clear()
-    return Effect.forEach(
-      pending,
-      ([requestId, sessionId]) => Effect.ignore(refuse(requestId, sessionId)),
-      { discard: true }
-    )
+
+  const handleAttached = Effect.fnUntraced(function* (
+    via: string | undefined,
+    params: unknown
+  ): Effect.fn.Return<void, BrowserError> {
+    const { sessionId, waitingForDebugger, targetInfo } = yield* decode(AttachedEvent)(params)
+    const inherited = targetInfo.type === 'page' ? undefined : sessionOwners.get(via ?? '')
+    const owner = via === undefined ? targetOwners.get(targetInfo.targetId) : inherited
+    if (owner === undefined || owner.phase !== 'active') {
+      yield* Effect.ignore(cdp.send('Target.detachFromTarget', { sessionId }))
+      if (via !== undefined)
+        yield* Effect.ignore(cdp.send('Target.closeTarget', { targetId: targetInfo.targetId }))
+      return
+    }
+    owner.sessions.add(sessionId)
+    owner.targets.add(targetInfo.targetId)
+    sessionOwners.set(sessionId, owner)
+    targetOwners.set(targetInfo.targetId, owner)
+    if (WORKER_TARGETS.has(targetInfo.type)) yield* enableWorker(sessionId)
+    else {
+      owner.frames.add(targetInfo.targetId)
+      frameOwners.set(targetInfo.targetId, owner)
+      if (via !== undefined) yield* enablePage(owner, sessionId)
+    }
+    if (waitingForDebugger) yield* cdp.send('Runtime.runIfWaitingForDebugger', {}, sessionId)
   })
-  let page: { readonly targetId: string; readonly sessionId: string } | undefined
-  const detached = yield* Deferred.make<void>()
+
   const unsubscribe = cdp.subscribe(event => {
-    if (event.method === 'Fetch.requestPaused') {
-      if (closing) refuseLate(event.sessionId, event.params)
-      else runEvent(handlePaused(event.sessionId, event.params))
-    } else if (event.method === 'Target.attachedToTarget') {
-      const decoded = Schema.decodeUnknownResult(AttachedEvent)(event.params)
-      if (decoded._tag !== 'Success') return
-      const { sessionId, waitingForDebugger, targetInfo } = decoded.success
-      runEvent(
-        (WORKER_TARGETS.has(targetInfo.type)
-          ? enableWorker(sessionId)
-          : enablePage(sessionId)
-        ).pipe(
-          Effect.andThen(
-            waitingForDebugger
-              ? cdp.send('Runtime.runIfWaitingForDebugger', {}, sessionId)
-              : Effect.void
-          ),
-          Effect.asVoid
-        )
-      )
-    } else if (event.method === 'Page.loadEventFired' && event.sessionId === page?.sessionId)
-      Deferred.doneUnsafe(loaded, Exit.void)
-    else if (event.method === 'Target.detachedFromTarget') {
+    if (event.method === 'Fetch.requestPaused')
+      runEvent(handlePaused(event.sessionId, event.params))
+    else if (event.method === 'Target.attachedToTarget')
+      runEvent(handleAttached(event.sessionId, event.params))
+    else if (event.sessionId === undefined) return
+    else if (event.method === 'Page.frameAttached') {
+      const owner = sessionOwners.get(event.sessionId)
+      const decoded = Schema.decodeUnknownResult(FrameAttachedEvent)(event.params)
+      if (owner === undefined || decoded._tag !== 'Success') return
+      owner.frames.add(decoded.success.frameId)
+      frameOwners.set(decoded.success.frameId, owner)
+    } else if (event.method === 'Page.loadEventFired') {
+      const owner = sessionOwners.get(event.sessionId)
+      if (owner?.main?.sessionId === event.sessionId) Deferred.doneUnsafe(owner.loaded, Exit.void)
+    } else if (event.method === 'Target.detachedFromTarget') {
       const decoded = Schema.decodeUnknownResult(DetachedEvent)(event.params)
-      if (decoded._tag === 'Success' && decoded.success.sessionId === page?.sessionId)
-        Deferred.doneUnsafe(detached, Exit.void)
-    } else if (event.method === 'Network.responseReceived' && event.sessionId === page?.sessionId) {
+      if (decoded._tag !== 'Success') return
+      const owner = sessionOwners.get(decoded.success.sessionId)
+      if (owner?.main?.sessionId === decoded.success.sessionId)
+        Deferred.doneUnsafe(owner.detached, Exit.void)
+    } else if (event.method === 'Network.responseReceived') {
+      const owner = sessionOwners.get(event.sessionId)
+      if (owner?.main?.sessionId !== event.sessionId || owner.status !== undefined) return
       const decoded = Schema.decodeUnknownResult(ResponseReceived)(event.params)
-      if (
-        decoded._tag === 'Success' &&
-        decoded.success.type === 'Document' &&
-        mainStatus === undefined
-      )
-        mainStatus = decoded.success.response.status
+      if (decoded._tag === 'Success' && decoded.success.type === 'Document')
+        owner.status = decoded.success.response.status
     }
   })
-  const render = Effect.gen(function* () {
-    yield* cdp.send('Fetch.enable', FETCH_PATTERNS)
-    const created = yield* cdp
-      .send('Target.createTarget', { url: 'about:blank' })
-      .pipe(Effect.flatMap(decode(Created)))
-    const attached = yield* cdp
-      .send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
-      .pipe(Effect.flatMap(decode(Attached)))
-    page = { targetId: created.targetId, sessionId: attached.sessionId }
-    yield* enablePage(attached.sessionId)
-    yield* cdp.send('Network.enable', {}, attached.sessionId)
-    const navigated = yield* cdp
-      .send('Page.navigate', { url }, attached.sessionId)
-      .pipe(Effect.flatMap(decode(NavigateResult)))
-    if (navigated.errorText !== undefined)
-      return yield* fail('navigation', `Chrome could not load ${url}: ${navigated.errorText}`)
-    yield* Deferred.await(loaded)
-    yield* Effect.sleep(SETTLE_AFTER_LOAD)
-    const snapshot = yield* cdp
-      .send(
-        'Runtime.evaluate',
-        { expression: snapshotScript(options.maxHtmlChars), returnByValue: true },
-        attached.sessionId
+
+  const forget = (owner: OwnedRender) =>
+    Effect.sleep(TOMBSTONE_GRACE).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          owner.phase = 'closed'
+          for (const id of owner.targets)
+            if (targetOwners.get(id) === owner) targetOwners.delete(id)
+          for (const id of owner.sessions)
+            if (sessionOwners.get(id) === owner) sessionOwners.delete(id)
+          for (const id of owner.frames) if (frameOwners.get(id) === owner) frameOwners.delete(id)
+          renders.delete(owner)
+        })
       )
-      .pipe(
-        Effect.flatMap(decode(Evaluated)),
-        Effect.flatMap(({ result }) => decode(PageSnapshot)(result.value))
-      )
-    return {
-      finalUrl: snapshot.url,
-      title: snapshot.title,
-      html: snapshot.html,
-      htmlTruncated: snapshot.truncated,
-      status: mainStatus,
-      blockedRequests: blocked,
-    } satisfies RenderedPage
-  })
-  return yield* Effect.timeoutOrElse(render, {
-    duration: options.timeout,
-    orElse: () =>
-      Effect.fail(
-        fail(
-          'timeout',
-          `Chrome did not finish loading ${url} within ${Duration.toSeconds(options.timeout)} seconds`
-        )
-      ),
-  }).pipe(
-    Effect.ensuring(
-      Effect.suspend(() => {
-        closing = true
-        const target = page
-        return Scope.close(handlers, Exit.void).pipe(
-          Effect.andThen(refuseOutstanding),
-          Effect.andThen(stopScripts),
-          Effect.andThen(
-            target === undefined
-              ? Effect.void
-              : Effect.ignore(cdp.send('Target.closeTarget', { targetId: target.targetId })).pipe(
-                  Effect.andThen(Effect.timeoutOption(Deferred.await(detached), TEARDOWN_SETTLE))
+    )
+
+  const teardown = (owner: OwnedRender): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      owner.phase = 'closing'
+      const pending = [...owner.outstanding]
+      owner.outstanding.clear()
+      const { targetId } = owner
+      return Effect.forEach(
+        pending,
+        ([requestId, sessionId]) => Effect.ignore(refuse(requestId, sessionId)),
+        { discard: true }
+      ).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            owner.pageSessions,
+            sessionId =>
+              Effect.ignore(
+                cdp.send('Emulation.setScriptExecutionDisabled', { value: true }, sessionId)
+              ),
+            { discard: true }
+          )
+        ),
+        Effect.andThen(
+          targetId === undefined
+            ? Effect.void
+            : Effect.ignore(cdp.send('Target.closeTarget', { targetId })).pipe(
+                Effect.andThen(
+                  owner.main === undefined
+                    ? Effect.void
+                    : Effect.timeoutOption(Deferred.await(owner.detached), TEARDOWN_SETTLE)
                 )
-          ),
-          Effect.andThen(Effect.ignore(cdp.send('Fetch.disable'))),
-          Effect.andThen(Effect.sync(unsubscribe))
-        )
+              )
+        ),
+        Effect.andThen(Effect.forkIn(forget(owner), hostScope)),
+        Effect.asVoid,
+        Effect.uninterruptible
+      )
+    })
+
+  const render = (url: string, options: RenderOptions): Effect.Effect<RenderedPage, BrowserError> =>
+    Effect.gen(function* () {
+      nextKey += 1
+      const owner: OwnedRender = {
+        key: nextKey,
+        targets: new Set(),
+        sessions: new Set(),
+        pageSessions: new Set(),
+        frames: new Set(),
+        outstanding: new Map(),
+        loaded: yield* Deferred.make<void>(),
+        detached: yield* Deferred.make<void>(),
+        targetId: undefined,
+        main: undefined,
+        blocked: 0,
+        status: undefined,
+        phase: 'active',
+      }
+      renders.add(owner)
+      const work = Effect.gen(function* () {
+        const created = yield* cdp
+          .send('Target.createTarget', { url: 'about:blank' })
+          .pipe(Effect.flatMap(decode(Created)))
+        owner.targetId = created.targetId
+        owner.targets.add(created.targetId)
+        owner.frames.add(created.targetId)
+        targetOwners.set(created.targetId, owner)
+        frameOwners.set(created.targetId, owner)
+        const attached = yield* cdp
+          .send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
+          .pipe(Effect.flatMap(decode(Attached)))
+        owner.main = { sessionId: attached.sessionId }
+        owner.sessions.add(attached.sessionId)
+        sessionOwners.set(attached.sessionId, owner)
+        yield* enablePage(owner, attached.sessionId)
+        yield* cdp.send('Network.enable', {}, attached.sessionId)
+        const navigated = yield* cdp
+          .send('Page.navigate', { url }, attached.sessionId)
+          .pipe(Effect.flatMap(decode(NavigateResult)))
+        if (navigated.errorText !== undefined)
+          return yield* fail('navigation', `Chrome could not load ${url}: ${navigated.errorText}`)
+        yield* Deferred.await(owner.loaded)
+        yield* Effect.sleep(SETTLE_AFTER_LOAD)
+        const snapshot = yield* cdp
+          .send(
+            'Runtime.evaluate',
+            { expression: snapshotScript(options.maxHtmlChars), returnByValue: true },
+            attached.sessionId
+          )
+          .pipe(
+            Effect.flatMap(decode(Evaluated)),
+            Effect.flatMap(({ result }) => decode(PageSnapshot)(result.value))
+          )
+        return {
+          finalUrl: snapshot.url,
+          title: snapshot.title,
+          html: snapshot.html,
+          htmlTruncated: snapshot.truncated,
+          status: owner.status,
+          blockedRequests: owner.blocked,
+        } satisfies RenderedPage
       })
+      return yield* Effect.timeoutOrElse(work, {
+        duration: options.timeout,
+        orElse: () =>
+          Effect.fail(
+            fail(
+              'timeout',
+              `Chrome did not finish loading ${url} within ${Duration.toSeconds(options.timeout)} seconds`
+            )
+          ),
+      }).pipe(Effect.ensuring(teardown(owner)))
+    })
+
+  yield* cdp.send('Fetch.enable', FETCH_PATTERNS)
+  yield* Scope.addFinalizer(
+    hostScope,
+    Scope.close(handlers, Exit.void).pipe(
+      Effect.andThen(Effect.ignore(Effect.timeout(cdp.send('Fetch.disable'), Duration.seconds(2)))),
+      Effect.andThen(Effect.sync(unsubscribe))
     )
   )
+  return {
+    render,
+    active: () => [...renders].filter(owner => owner.phase === 'active').length,
+  }
 })
