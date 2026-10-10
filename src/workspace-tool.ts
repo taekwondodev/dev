@@ -27,6 +27,7 @@ import {
   type WorkspaceAttachment,
   type WorkspaceHandoff,
   type WorkspaceLifecycle,
+  type WorkspaceView,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
@@ -40,7 +41,7 @@ const InputFields = {
   destination: Schema.Struct({
     repository: GitHubRepositorySchema,
     number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-    commentId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+    commentId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   }),
 }
 
@@ -78,7 +79,7 @@ const fieldDescriptions: { readonly [Field in keyof typeof InputFields]: string 
     "Exact task id. Required by resume; set-target and record-publication default to this conversation's task.",
   workspaceId: 'resume only: exact workspace id, required when the task retains several.',
   target:
-    'set-target only, required: an exact full ref under a local, remote or github authority; github may name the source repository and a pull request.',
+    'set-target only, required: a full ref such as refs/heads/main (a bare branch name is refused) under a local, remote or github authority; github may name the source repository and a pull request number.',
   path: 'record-publication only, required: workspace-relative path of the published file.',
   destination:
     'record-publication only, required: the issue or pull request holding the artifact, with commentId when it is in a comment.',
@@ -208,6 +209,9 @@ const containsWholeLines = (body: string, text: string): boolean => {
   }
 }
 
+const viewText = (view: WorkspaceView): string =>
+  `${view.workspaceId} at ${view.path} is ${view.outcome}: ${view.reason} ${view.nextAction}`
+
 const utf8Text = (bytes: Uint8Array): string | undefined => {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
@@ -272,12 +276,21 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       input.workspaceId === undefined
         ? candidates.find(() => candidates.length === 1)
         : candidates.find(entry => entry.view.workspaceId === input.workspaceId)
-    if (candidate === undefined)
+    if (candidate === undefined) {
+      const resumable = candidates.map(entry => viewText(entry.view)).join(' | ')
+      if (candidates.length === 0)
+        return yield* refuse(
+          `Task ${input.taskId} has no workspace that resume can select, with or without workspaceId: ${views.map(viewText).join(' | ') || 'no workspace records exist'}`
+        )
+      if (input.workspaceId === undefined)
+        return yield* refuse(
+          `Task ${input.taskId} has several retained workspaces; pass workspaceId, one of: ${resumable}`
+        )
+      const selected = views.filter(view => view.workspaceId === input.workspaceId).map(viewText)
       return yield* refuse(
-        candidates.length === 0 || input.workspaceId !== undefined
-          ? `Task ${input.taskId} has no matching workspace preserved for resume: ${views.map(view => `${view.workspaceId} is ${view.outcome}`).join('; ') || 'no workspace records exist'}.`
-          : `Task ${input.taskId} has several retained workspaces; pass workspaceId, one of: ${candidates.map(entry => `${entry.view.workspaceId} at ${entry.view.path}`).join('; ')}.`
+        `Workspace ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'no such workspace record'}. Resumable: ${resumable}`
       )
+    }
     const { binding } = attachment
     if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId)
       return {

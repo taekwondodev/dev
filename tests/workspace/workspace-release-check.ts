@@ -1952,6 +1952,15 @@ try {
         { action: 'resume', taskId: 'task', workspaceId: 'workspace' },
         { action: 'set-target', target: { kind: 'local', ref: 'refs/heads/main' } },
         {
+          action: 'set-target',
+          target: {
+            kind: 'github',
+            repository: 'owner/repo',
+            ref: 'refs/heads/main',
+            pullRequest: 7,
+          },
+        },
+        {
           action: 'record-publication',
           path: 'report.txt',
           destination: { repository: 'owner/repo', number: 1, commentId: 2 },
@@ -1959,11 +1968,30 @@ try {
       ]
       for (const input of accepted) assert.deepEqual(validate(input), input)
       assert.throws(() => validate({ action: 'resume', taskId: 'task', unknown: true }))
+      assert.ok(
+        !JSON.stringify(parameters).includes('"null"'),
+        'an omitted field is absent, never null: the decoder refuses null, so the schema must not offer it'
+      )
+      assert.throws(() =>
+        validate({
+          action: 'set-target',
+          target: {
+            kind: 'github',
+            repository: 'owner/repo',
+            ref: 'refs/heads/main',
+            pullRequest: null,
+          },
+        })
+      )
+      assert.ok(
+        String(properties.target?.description).includes('refs/heads/'),
+        'the target description shows the full-ref form the decoder enforces'
+      )
     }
   )
 
   await claim(
-    'the workspace tool records a target override, records a publication only after the destination body or an attachment reads back the exact bytes, and resumes onto a retained workspace through the authority selection',
+    'the workspace tool records a target override, records a publication only after the destination body or an attachment reads back the exact bytes, refuses to resume a workspace in use with its reason and next action, and resumes onto a retained workspace through the authority selection',
     async () => {
       const allocator = await lifecycle.attach({
         conversation: conversation(),
@@ -2102,12 +2130,6 @@ try {
         destination: { repository: 'owner/repo', number: 37, commentId: 9 },
       })
       assert.ok(!selectedSecret.ok)
-      await bound.close()
-      const managed = only(await lifecycle.check(allocated.taskId), allocated.managed.workspaceId)
-      assert.equal(managed.completion.kind, 'finished', managed.reasons.join(' '))
-      assert.equal(managed.evidence?.verdict, 'valid', managed.reasons.join(' '))
-      assert.equal(managed.inventory?.published, 2)
-      assert.equal(managed.inventory?.disposable, 2)
 
       const elsewhere = await lifecycle.attach({ conversation: conversation(), cwd: repo })
       const requested: WorkspaceHandoff[] = []
@@ -2120,6 +2142,43 @@ try {
           requested.push(handoff)
         },
       })
+      const resumeRefusal = async (input: JsonObject) => {
+        try {
+          await resumeTool.execute('resume', input as never, undefined, undefined, context())
+          return undefined
+        } catch (cause) {
+          return cause instanceof Error ? cause.message : String(cause)
+        }
+      }
+      const writing = ready(await bound.authorize({ kind: 'write' }))
+      assert.equal(writing.workspaceId, allocated.managed.workspaceId)
+      const occupiedInputs: JsonObject[] = [
+        { action: 'resume', taskId: allocated.taskId, workspaceId: allocated.managed.workspaceId },
+        { action: 'resume', taskId: allocated.taskId },
+      ]
+      for (const input of occupiedInputs) {
+        const occupied = await resumeRefusal(input)
+        assert.ok(
+          occupied !== undefined,
+          'a workspace in use by another conversation is not resumable'
+        )
+        assert.ok(
+          occupied.includes('with or without workspaceId') &&
+            occupied.includes(allocated.managed.workspaceId) &&
+            occupied.includes('is active: ') &&
+            occupied.includes('Do not take this workspace from its current user.'),
+          `the refusal carries the outcome, reason and next action the authority already knows: ${occupied}`
+        )
+      }
+      assert.equal(requested.length, 0, 'a refused resume hands nothing to the host')
+
+      await bound.close()
+      const managed = only(await lifecycle.check(allocated.taskId), allocated.managed.workspaceId)
+      assert.equal(managed.completion.kind, 'finished', managed.reasons.join(' '))
+      assert.equal(managed.evidence?.verdict, 'valid', managed.reasons.join(' '))
+      assert.equal(managed.inventory?.published, 2)
+      assert.equal(managed.inventory?.disposable, 2)
+
       const resumed = await resumeTool.execute(
         'resume',
         { action: 'resume', taskId: allocated.taskId } as never,

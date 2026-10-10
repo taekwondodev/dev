@@ -17,11 +17,11 @@ In a session, `/workspace` also shows the current binding and effective director
 
 The lead's `workspace` tool has three actions:
 
-| Action               | Effect                                                                                                                  |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `resume`             | Switch to a retained workspace at turn end without moving files; refused while the conversation has live shells or work |
-| `set-target`         | Override the conversation task's inferred integration target                                                            |
-| `record-publication` | Verify exact readback of an already published issue/PR artifact and record the evidence                                 |
+| Action               | Effect                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `resume`             | Switch to a retained workspace at turn end without moving files; refused while the conversation has live shells or work. A refusal reports each workspace's outcome, reason and next action |
+| `set-target`         | Override the conversation task's inferred integration target                                                                                                                                |
+| `record-publication` | Verify exact readback of an already published issue/PR artifact and record the evidence                                                                                                     |
 
 The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 

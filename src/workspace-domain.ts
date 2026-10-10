@@ -251,8 +251,8 @@ export const TaskTargetSchema = Schema.Union([
     repository: GitHubRepositorySchema,
     ref: FullRef,
 
-    sourceRepository: Schema.optional(GitHubRepositorySchema),
-    pullRequest: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+    sourceRepository: Schema.optionalKey(GitHubRepositorySchema),
+    pullRequest: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   }),
 ])
 export type TaskTarget = typeof TaskTargetSchema.Type
@@ -271,7 +271,7 @@ export const RelativeFilePath = Schema.NonEmptyString.check(
 export const PublicationDestinationSchema = Schema.Struct({
   repository: GitHubRepositorySchema,
   number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  commentId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  commentId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   readBack: Schema.Literals(['text-in-body', 'attachment-sha256']),
   url: Schema.NonEmptyString,
 })
