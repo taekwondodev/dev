@@ -3,10 +3,13 @@ import { relative, isAbsolute } from 'node:path'
 import type { SessionEntry, SessionManager } from '@earendil-works/pi-coding-agent'
 import { WorkspaceId } from './workspace-domain.ts'
 import {
+  AttemptFactsSchema,
   AttemptId,
+  AttemptOutcomeSchema,
   ContextUsageSchema,
   ChildResourcesSchema,
   type ChildResources,
+  READ_ONLY_CHILD_CAPABILITIES,
   UsageSchema,
   WorkAccessSchema,
   WorkError,
@@ -96,29 +99,65 @@ const ResultMessageSchema = strictMessage(
   )
 )
 
+const text = (description: string) => Schema.optionalKey(Schema.String.annotate({ description }))
+
 const sharedWorkInput = {
-  taskId: Schema.optionalKey(Schema.String),
-  prompt: Schema.optionalKey(Schema.String),
-  id: Schema.optionalKey(Schema.String),
-  access: Schema.optionalKey(WorkAccessSchema),
-  harness: Schema.optionalKey(Schema.String),
-  model: Schema.optionalKey(Schema.String),
-  effort: Schema.optionalKey(Schema.String),
-  rule: Schema.optionalKey(Schema.String),
-  stream: Schema.optionalKey(Schema.Literals(['stdout', 'stderr', 'result'])),
-  offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  taskId: text('Task key for process and delegate; not the workflowTaskId.'),
+  prompt: text(
+    'Focused, self-contained assignment, never a transcript; /skill:name first loads one skill.'
+  ),
+  id: text('Attempt id for inspect and cancel.'),
+  access: Schema.optionalKey(
+    WorkAccessSchema.annotate({
+      description: `read-only (default; reviews) or write. ${READ_ONLY_CHILD_CAPABILITIES} A writer gets a distinct worktree without dirty files.`,
+    })
+  ),
+  harness: text('Leave unset.'),
+  model: text('Only when the user asked for it.'),
+  effort: text('Only when the user asked for it.'),
+  rule: text('Skill name or "default" to override dispatch.'),
+  stream: Schema.optionalKey(
+    Schema.Literals(['stdout', 'stderr', 'result']).annotate({
+      description: "With inspect: page a stream; result is a child's answer.",
+    })
+  ),
+  offset: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+      description: 'Byte offset of a stream page, or the list page start.',
+    })
+  ),
 }
 
 export const LeadWorkInputSchema = Schema.Struct({
-  action: Schema.Literals(['process', 'delegate', 'dispatch', 'list', 'inspect', 'cancel']),
-  command: Schema.optionalKey(Schema.String),
-  cwd: Schema.optionalKey(Schema.String),
-  coordinate: Schema.optionalKey(Schema.Boolean),
+  action: Schema.Literals([
+    'process',
+    'delegate',
+    'dispatch',
+    'list',
+    'inspect',
+    'cancel',
+  ]).annotate({
+    description:
+      'process: shell command; delegate: Pi child; dispatch: model policy; list; inspect; cancel (all without id).',
+  }),
+  command: text('Shell command for process.'),
+  cwd: text(
+    'Working directory. For delegate it may lie in another Git checkout, which the child then works in under its own instructions and delivery policy; your native writes there stay refused.'
+  ),
+  coordinate: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        'Let the child run a whole phase through leaves within its own access; only its outcome reaches you.',
+    })
+  ),
   ...sharedWorkInput,
 })
 
 export const CoordinatorWorkInputSchema = Schema.Struct({
-  action: Schema.Literals(['delegate', 'dispatch', 'list', 'inspect', 'cancel']),
+  action: Schema.Literals(['delegate', 'dispatch', 'list', 'inspect', 'cancel']).annotate({
+    description:
+      'delegate: leaf child; dispatch: model policy; list; inspect; cancel (all without id).',
+  }),
   ...sharedWorkInput,
 })
 
@@ -168,9 +207,11 @@ export const isCoordinationMessage = (message: ChildMessage): message is Coordin
   message.type === 'work-idle' ||
   message.type === 'work-outcomes-ack'
 
-const LeafOutcomeSchema = Schema.StructWithRest(Schema.Struct({ id: AttemptId }), [
-  Schema.Record(Schema.String, Schema.Unknown),
-])
+const LeafOutcomeSchema = Schema.Struct({
+  outcome: AttemptOutcomeSchema,
+  facts: AttemptFactsSchema,
+})
+export type OutcomeEntry = typeof LeafOutcomeSchema.Type
 
 export const ControllerWorkMessageSchema = Schema.Union([
   Schema.Struct({
@@ -207,11 +248,14 @@ const decodeDeliveryDetails = Schema.decodeUnknownResult(
   Schema.Struct({ attempts: Schema.Array(AttemptId) })
 )
 
-export const outcomeMessage = (items: readonly { readonly id: AttemptId }[], guidance: string) => ({
+export const outcomeMessage = (entries: readonly OutcomeEntry[], guidance: string) => ({
   customType: OUTCOME_MESSAGE,
   display: true,
-  content: `${guidance}\n${JSON.stringify(items)}`,
-  details: { attempts: items.map(record => record.id) },
+  content: `${guidance}\n${JSON.stringify(entries.map(entry => entry.outcome))}`,
+  details: {
+    attempts: entries.map(entry => entry.facts.id),
+    children: entries.map(entry => entry.facts),
+  },
 })
 
 export const outcomeAttempts = (

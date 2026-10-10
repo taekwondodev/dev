@@ -17,14 +17,14 @@ Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `
 ```text
 /work                        list this session's attempts, including leaves and their parent
 /work dispatch               inspect configured dispatch rules; not a prerequisite to launch
-/work inspect <id>           inspect outcome, logs and tracked artifact changes
+/work inspect <id>           inspect the complete record, logs and tracked artifact changes
 /work inspect <id> stdout 0  page output by byte offset; continue with nextOffset
 /work inspect <id> stderr 0  page stderr; use result for a child's retained answer
 /work stop <id>              cancel an attempt and, for a coordinator, its leaves
 /work stop                   cancel all owned attempts, including while the lead is idle
 ```
 
-Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Protocol reminders in descriptions and outcomes guide the model; they do not enforce compliance or authorize deletion. [Workspace](workspace.md) owns reservation and release.
+Every `work` result is one object with a `kind` and the matching field: an attempt summary for `process`, `delegate` and `cancel` with an id, a snapshot of summaries for `list` and `cancel` without an id, the dispatch configuration, an inspection, or one log page. The summary carries what the model acts on: identity, task key, parent, coordinator flag, workflow task and workspace ids, cwd, kind, status, access, model, invoked skill, worktree path and cleanup state, exit code, completion time, one merged error, context and usage totals when known, and the delivery, cleanup, gate, observation and recovery notices when present. It stays small on purpose, because the model reads it on every call and in every outcome. The inspection is the summary with the complete persisted record, the stale-artifact flag and the retained logs; `inspect` with a stream returns one log page. A log page carries its stream, text, truncation and next offset, never a path. In a codemode script, `tools.work(...)` resolves to that same structured result, and `describeTool('work')` shows its typed declaration. Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Protocol reminders in descriptions and outcomes guide the model; they do not enforce compliance or authorize deletion. [Workspace](workspace.md) owns reservation and release.
 
 ## Behavior
 
@@ -56,7 +56,7 @@ Nesting stops at lead, coordinator, leaf. A coordinator starts no local commands
 
 A read-only leaf reads its coordinator's admitted workspace, including uncommitted files. A writing leaf gets a separate worktree from the lead's commit, without the coordinator's edits.
 
-Leaf outcomes arrive after the coordinator's turn ends and include retained inspection/results. Repeated delivery adds no message. The controller withholds the coordinator's result while a request is pending, a leaf is live or an outcome remains undelivered; an early report is a protocol failure. Unobserved leaf termination is reported as `unknown`.
+Leaf outcomes arrive after the coordinator's turn ends with the same content as lead outcomes. Repeated delivery adds no message. The controller withholds the coordinator's result while a request is pending, a leaf is live or an outcome remains undelivered; an early report is a protocol failure. Unobserved leaf termination is reported as `unknown`.
 
 Aborting a coordinator tool call interrupts its local wait, not an IPC request already sent: the controller may still admit that leaf. Stop the coordinator to cancel its owned work. Cancellation never rolls back performed effects.
 
@@ -64,7 +64,7 @@ Aborting a coordinator tool call interrupts its local wait, not an IPC request a
 
 While background work runs, the lead and coordinators may do independent work. When only waiting remains, end the turn and let outcome delivery resume it. Do not use `sleep`, wait loops or repeated `list`/`inspect` calls just to await completion. This applies to commands and all delegated work, including reviews; inspection remains available for diagnosis or a requested progress check. While the lead owns running or waiting work, or a coordinator has live leaves or undelivered leaf outcomes, dev refuses that agent's `bash` call whose command only waits: `sleep`, optionally joined with `echo`, `printf`, `true` or `:`. Pi runs a codemode `tools.bash` call through the same hook, so the refusal applies to it too. A `sleep` combined with any other command, inside a loop, or without owned work still runs.
 
-Outcomes arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
+An outcome message carries each attempt's summary, its stale-artifact flag and its retained logs, including a child's answer, so the common case needs no `inspect`; the complete record stays available through `inspect`. The message's details, which the model does not read, carry the attempt ids that drive acknowledgment and each child's facts (kind, parent, coordinator flag, session file) that the [usage profile](usage-profile.md) reads from persisted sessions. Outcomes arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
 A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.
 
@@ -82,7 +82,7 @@ Subscription exhaustion from any attempt, including a leaf, blocks new agents an
 
 ### Status and inspection
 
-The `dev/work` status shows attempt states, active children and usage. Children are titled by invoked skill or by role (`coordinator`, `reader`, `writer`); leaves show `coordinator>leaf`, and repeated titles add the task key. Each shows its model and context pressure. Inspection includes parent, skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+The `dev/work` status shows attempt states, active children and usage. Children are titled by invoked skill or by role (`coordinator`, `reader`, `writer`); leaves show `coordinator>leaf`, and repeated titles add the task key. Each shows its model and context pressure. Inspection includes the complete record with parent, skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
 
 Global extensions own presentation, including title activity while a child runs and the lead is idle. See [ADR 0006](adr/0006-global-visual-layer.md) for the presentation boundary and status-text contract. A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
 

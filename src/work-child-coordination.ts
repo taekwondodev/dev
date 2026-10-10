@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { Cause, Effect, Option, Queue, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { READ_ONLY_CHILD_CAPABILITIES, WorkError, type AttemptId } from './work-domain.ts'
+import {
+  WorkError,
+  WorkResultSchema,
+  workResultOutputSchema,
+  type AttemptId,
+} from './work-domain.ts'
 import {
   ControllerWorkMessageSchema,
   CoordinatorWorkInputSchema,
@@ -22,9 +27,11 @@ type Request =
 
 const LEAF_OUTCOME_GUIDANCE =
   'Leaf outcomes. These are producer observations, not verification; reconcile them before you report your own result.'
-const COORDINATOR_TOOL_DESCRIPTION = `Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused self-contained prompt; start the prompt with /skill:name to load one skill. Dispatch resolves from that /skill: prefix when a rule is configured for it, otherwise the default; pass rule only to override with a configured skill name or "default"; pass model or effort only when the user asked for that model or effort, otherwise let dispatch resolve. A read-only leaf reads your workspace as it is, uncommitted files included. ${READ_ONLY_CHILD_CAPABILITIES} A writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. Outcomes arrive as a message after your turn ends. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. list, inspect and cancel cover only your own leaves; cancel with no id stops all of them. Your result is reported only after every leaf has settled and its outcome has reached you. Outcomes are producer observations, not verification.`
+export const COORDINATOR_TOOL_DESCRIPTION =
+  'Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused, self-contained prompt; a read-only leaf reads your workspace as it is, uncommitted files included, and a writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. list, inspect and cancel cover only your own leaves; cancel without an id stops them all. Leaf outcomes arrive as a message after your turn ends, with the retained answer and logs. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. Your result is reported only after every leaf settled and its outcome reached you; outcomes are observations, not verification.'
 
 const decodeControllerMessage = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
+const decodeResult = Schema.decodeUnknownEffect(WorkResultSchema)
 const parameters = Schema.toJsonSchemaDocument(CoordinatorWorkInputSchema, {
   onExcessProperty: 'error',
 }).schema
@@ -146,12 +153,21 @@ export const createCoordinatorWorkTool = (link: CoordinatorLink): Pi.ToolDefinit
   description: COORDINATOR_TOOL_DESCRIPTION,
   promptSnippet: 'Delegate leaf children and inspect their outcomes',
   parameters,
+  outputSchema: workResultOutputSchema,
   execute: (_toolCallId, input, signal) =>
     Effect.runPromise(
       link.request(input).pipe(
+        Effect.flatMap(raw =>
+          decodeResult(raw, { onExcessProperty: 'error' }).pipe(
+            Effect.mapError(cause =>
+              unavailable(`Work controller sent an invalid result: ${errorText(cause)}`)
+            )
+          )
+        ),
         Effect.map(result => ({
-          content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}) }],
-          details: undefined,
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          details: result,
+          structuredContent: result,
         }))
       ),
       { signal }
@@ -185,7 +201,7 @@ export const coordinate = Effect.fn('coordinate')(function* (
   while (!stopped()) {
     const pending = yield* link.pending
     const delivered = receipts()
-    const fresh = pending.outcomes.filter(outcome => !delivered.has(outcome.id))
+    const fresh = pending.outcomes.filter(entry => !delivered.has(entry.facts.id))
     if (fresh.length > 0)
       yield* Effect.tryPromise({
         try: async () => {
@@ -199,7 +215,7 @@ export const coordinate = Effect.fn('coordinate')(function* (
     if (pending.outcomes.length > 0) {
       const received = receipts()
       const acknowledged = pending.outcomes
-        .map(outcome => outcome.id)
+        .map(entry => entry.facts.id)
         .filter(id => received.has(id))
       if (acknowledged.length < pending.outcomes.length)
         return yield* unavailable('A leaf outcome did not reach the coordinator conversation')

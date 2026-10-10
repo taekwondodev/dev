@@ -13,7 +13,13 @@ import {
   createCoordinatorWorkTool,
   type CoordinatorLink,
 } from '../../src/work-child-coordination.ts'
-import { INTEGRATED_CHILD_TOOLS, READ_ONLY_CHILD_TOOLS } from '../../src/work-domain.ts'
+import {
+  AttemptOutcomeSchema,
+  INTEGRATED_CHILD_TOOLS,
+  READ_ONLY_CHILD_TOOLS,
+  WorkResultSchema,
+  type WorkResult,
+} from '../../src/work-domain.ts'
 import { waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture } from './work-check-support.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
@@ -26,26 +32,28 @@ const { claim, passed } = makeClaims()
 const fixture = await openWorkFixture('work-extension')
 process.env.PI_CODING_AGENT_DIR = fixture.agentDir
 
-const decodeStarted = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Struct({ id: Schema.String, pid: Schema.Int }))
+const decodeResult = Schema.decodeUnknownSync(Schema.fromJsonString(WorkResultSchema), {
+  onExcessProperty: 'error',
+})
+const decodeStructured = Schema.decodeUnknownSync(WorkResultSchema, {
+  onExcessProperty: 'error',
+})
+const decodeOutcomes = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(AttemptOutcomeSchema)),
+  { onExcessProperty: 'error' }
 )
 const decodeDelivered = Schema.decodeUnknownSync(
   Schema.Struct({ attempts: Schema.Array(Schema.String) })
 )
-const decodeListing = Schema.decodeUnknownSync(
-  Schema.fromJsonString(
-    Schema.Struct({
-      cancellationRequested: Schema.optional(Schema.Boolean),
-      records: Schema.Array(
-        Schema.Struct({
-          id: Schema.String,
-          status: Schema.String,
-          deliveryError: Schema.optional(Schema.String),
-        })
-      ),
-    })
-  )
+const decodeParameters = Schema.decodeUnknownSync(
+  Schema.Struct({
+    properties: Schema.Record(
+      Schema.String,
+      Schema.Struct({ description: Schema.optionalKey(Schema.String) })
+    ),
+  })
 )
+const decodeRecordPid = Schema.decodeUnknownSync(Schema.Struct({ pid: Schema.Int }))
 
 let gates = 0
 const gate = () => {
@@ -58,6 +66,14 @@ const gate = () => {
 
 const text = (value: string): ScriptedContent => [{ type: 'text', text: value }]
 const seen = (request: LeadRequest): string => JSON.stringify(request.context.messages.at(-1))
+const toolResults = (request: LeadRequest): string[] =>
+  request.context.messages.flatMap(message => {
+    if (message.role !== 'toolResult' || typeof message.content === 'string') return []
+    return [message.content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('\n')]
+  })
+const outcomeItems = (content: string) => decodeOutcomes(content.slice(content.indexOf('\n') + 1))
+const byKind = (items: readonly WorkResult[]) =>
+  items.toSorted((left, right) => left.kind.localeCompare(right.kind))
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
@@ -94,21 +110,51 @@ const launch = async (lead: Lead, index: number, commands: readonly string[]) =>
     )
   )
   const next = await lead.request(index + 1)
-  const started = next.context.messages.slice(-commands.length).map(message => {
-    const [part] = typeof message.content === 'string' ? [] : message.content
-    return decodeStarted(part?.type === 'text' ? part.text : undefined)
-  })
+  const started = toolResults(next)
+    .slice(-commands.length)
+    .map(result => {
+      const { kind, attempt } = decodeResult(result)
+      assert.equal(kind, 'attempt')
+      assert.ok(attempt !== undefined)
+      return attempt
+    })
   return { run, next, started }
 }
 
 const delivered = (lead: Lead): string[] =>
   lead.customMessages(OUTCOME).flatMap(entry => decodeDelivered(entry.details).attempts)
 
-const listing = async (lead: Lead, command = '/work') => {
+const displayed = async (lead: Lead, command: string) => {
   await lead.session.prompt(command)
-  const shown = lead.customMessages(INSPECTION).at(-1)
-  assert.ok(shown !== undefined && typeof shown.content === 'string')
-  return decodeListing(shown.content)
+  const message = lead.customMessages(INSPECTION).at(-1)
+  assert.ok(message !== undefined && typeof message.content === 'string')
+  return decodeResult(message.content)
+}
+
+const listing = async (lead: Lead, command = '/work') => {
+  const { kind, snapshot } = await displayed(lead, command)
+  assert.equal(kind, 'snapshot')
+  assert.ok(snapshot !== undefined)
+  return snapshot
+}
+
+const pidOf = async (lead: Lead, id: string): Promise<number> => {
+  const { kind, inspection } = await displayed(lead, `/work inspect ${id}`)
+  assert.equal(kind, 'inspection')
+  assert.ok(inspection !== undefined)
+  return decodeRecordPid(inspection.record).pid
+}
+
+const readOutcomes = async (lead: Lead, from: number, expected: number): Promise<void> => {
+  const settled = () => delivered(lead).length >= expected && lead.session.isIdle
+  for (let index = from; ; index += 1) {
+    const request = await lead.wait(
+      'a continuation or every outcome delivered',
+      () => lead.requests[index] ?? (settled() ? null : undefined)
+    )
+    if (request === null) break
+    request.reply(text('outcome read'))
+  }
 }
 
 const userTurn = async (lead: Lead, index: number, prompt: string): Promise<void> => {
@@ -130,29 +176,180 @@ const unusedLink: CoordinatorLink = {
   wake: Effect.die('unused'),
 }
 
-const assertWorkGuidance = (description: string | undefined): void => {
-  assert.ok(description !== undefined)
-  for (const tool of [...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS])
-    assert.ok(description.includes(tool), tool)
-  assert.ok(description.includes('no shell, no edits and no gh'))
-  assert.ok(description.includes('in the prompt or a workspace file'))
-  assert.ok(description.includes('otherwise end your turn and let outcomes resume you'))
+const assertWorkGuidance = (
+  tool: { readonly description?: string; readonly parameters?: unknown } | undefined,
+  limit: number
+): void => {
+  assert.ok(tool?.description !== undefined)
+  const access = decodeParameters(tool.parameters).properties.access?.description ?? ''
+  for (const name of [...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS])
+    assert.ok(access.includes(name), name)
+  assert.ok(access.includes('no shell, no edits and no gh'))
+  assert.ok(access.includes('in the prompt or a workspace file'))
+  assert.ok(tool.description.includes('otherwise end your turn and let outcomes resume you'))
   assert.ok(
-    description.includes(
+    tool.description.includes(
       'Do not use sleep, wait loops, or repeated list/inspect calls just to await completion.'
     )
   )
+  assert.ok(tool.description.length <= limit, `${tool.description.length} > ${limit}`)
 }
 
 try {
   await claim(
-    'the lead and coordinator work tools state access limits and non-polling wait guidance',
+    'the lead and coordinator work tools state access limits in the access parameter and non-polling wait guidance in a bounded description',
     () =>
       withLead({}, async lead => {
-        assertWorkGuidance(
-          lead.session.getAllTools().find(tool => tool.name === 'work')?.description
+        const tool = lead.session.getAllTools().find(candidate => candidate.name === 'work')
+        assertWorkGuidance(tool, 1500)
+        assertWorkGuidance(createCoordinatorWorkTool(unusedLink), 800)
+      })
+  )
+
+  await claim(
+    'every work action returns a structured summary that decodes strictly, equals its text content, and keeps process and workspace facts for inspect',
+    async () => {
+      const structured: unknown[] = []
+      await withLead(
+        {
+          onToolResult: event => {
+            if (event.toolName === 'work') structured.push(event.structuredContent)
+          },
+        },
+        async lead => {
+          const held = gate()
+          const { run, next, started } = await launch(lead, 0, [held.command, 'true'])
+          const [slow, quick] = started
+          assert.ok(slow && quick)
+          await lead.status('the quick attempt completed', value => value.includes('completed'))
+          next.reply([
+            toolCall('dispatch', 'work', { action: 'dispatch' }),
+            toolCall('list', 'work', { action: 'list' }),
+            toolCall('inspect', 'work', { action: 'inspect', id: quick.id }),
+            toolCall('page', 'work', {
+              action: 'inspect',
+              id: quick.id,
+              stream: 'stdout',
+              offset: 0,
+            }),
+            toolCall('cancel', 'work', { action: 'cancel', id: slow.id }),
+          ])
+          const after = await lead.request(2)
+          const results = toolResults(after)
+            .slice(-5)
+            .map(result => decodeResult(result))
+          assert.deepEqual(
+            results.map(result => result.kind),
+            ['dispatch', 'snapshot', 'inspection', 'log', 'attempt']
+          )
+          const [dispatch, snapshot, inspection, page, cancelled] = results
+          assert.equal(dispatch?.dispatch?.configured, true)
+          assert.throws(() => decodeStructured({ kind: 'dispatch', dispatch: {} }))
+          assert.throws(() =>
+            decodeStructured({
+              kind: 'dispatch',
+              dispatch: { ...dispatch?.dispatch, default: { harness: 'pi', model: 42 } },
+            })
+          )
+          assert.deepEqual(
+            snapshot?.snapshot?.records.map(record => record.id).toSorted(),
+            [slow.id, quick.id].toSorted()
+          )
+          assert.equal(inspection?.inspection?.status, 'completed')
+          assert.equal(inspection?.inspection?.exitCode, 0)
+          assert.equal(typeof decodeRecordPid(inspection?.inspection?.record).pid, 'number')
+          assert.equal(inspection?.inspection?.staleArtifact, false)
+          assert.deepEqual(
+            inspection?.inspection?.logs.map(log => log.stream),
+            ['stdout', 'stderr']
+          )
+          assert.deepEqual(page?.log, {
+            stream: 'stdout',
+            available: true,
+            nextOffset: 0,
+            truncated: false,
+            text: '',
+          })
+          assert.equal(cancelled?.attempt?.id, slow.id)
+          assert.equal(cancelled?.attempt?.status, 'cancelled')
+          assert.deepEqual(
+            byKind(structured.slice(-5).map(value => decodeStructured(value))),
+            byKind(results)
+          )
+          after.reply(text('inspected'))
+          await readOutcomes(lead, 3, 2)
+          await run
+          await lead.idle()
+          assert.deepEqual(delivered(lead).toSorted(), [slow.id, quick.id].toSorted())
+        }
+      )
+    }
+  )
+
+  await claim(
+    'a codemode script launches two attempts and receives typed summaries, the work declaration says what scripts receive, and describeTool returns the typed result',
+    () =>
+      withLead({ tools: ['work', 'codemode'], codemode: true }, async lead => {
+        const run = lead.session.prompt('launch from a script')
+        const first = await lead.request(0)
+        const code = `
+const results = await Promise.allSettled([
+  tools.work({ action: 'process', taskId: 'script-a', command: 'true' }),
+  tools.work({ action: 'process', taskId: 'script-b', command: 'true' }),
+])
+const declaration = String(await describeTool('work'))
+return JSON.stringify({
+  typed: declaration.includes('Promise<{') && declaration.includes('kind: "attempt" | "snapshot"'),
+  typedDispatch: declaration.includes('dispatch?: { configured: true; default: {') && declaration.includes('rules: { [key: string]: {'),
+  launched: results.map(result => result.status === 'fulfilled'
+    ? { kind: result.value.kind, id: result.value.attempt?.id, status: result.value.attempt?.status, shape: typeof result.value }
+    : { error: String(result.reason) }),
+})
+`
+        first.reply([toolCall('script', 'codemode', { code })])
+        const after = await lead.request(1)
+        const [scripted] = toolResults(after).slice(-1)
+        assert.ok(scripted?.includes('Script completed'), scripted ?? 'no script result')
+        const output = /\{"typed".*\}\]\}/s.exec(scripted ?? '')?.[0]
+        assert.ok(output !== undefined, scripted ?? 'no script result')
+        const { typed, typedDispatch, launched } = Schema.decodeSync(
+          Schema.fromJsonString(
+            Schema.Struct({
+              typed: Schema.Boolean,
+              typedDispatch: Schema.Boolean,
+              launched: Schema.Array(
+                Schema.Struct({
+                  kind: Schema.String,
+                  id: Schema.String,
+                  status: Schema.String,
+                  shape: Schema.String,
+                })
+              ),
+            })
+          )
+        )(output)
+        assert.equal(typed, true, 'describeTool shows the typed result')
+        assert.equal(typedDispatch, true, 'describeTool shows the dispatch configuration fields')
+        assert.equal(launched.length, 2)
+        for (const item of launched) {
+          assert.equal(item.kind, 'attempt')
+          assert.equal(item.shape, 'object')
+          assert.ok(['running', 'waiting', 'completed'].includes(item.status), item.status)
+        }
+        const declared = after.context.messages
+          .flatMap(message => (message.role === 'system' ? (message.toolsAdded ?? []) : []))
+          .findLast(tool => tool.name === 'work')
+        assert.ok(
+          declared?.description.includes(
+            'Codemode: `tools.work(args)` resolves to `{ kind, attempt?, snapshot?, dispatch?, inspection?, log? }`'
+          ),
+          declared?.description ?? 'no work tool in the model request'
         )
-        assertWorkGuidance(createCoordinatorWorkTool(unusedLink).description)
+        after.reply(text('launched from a script'))
+        await readOutcomes(lead, 2, 2)
+        await run
+        await lead.idle()
+        assert.deepEqual(delivered(lead).toSorted(), launched.map(item => item.id).toSorted())
       })
   )
 
@@ -229,6 +426,21 @@ try {
         const continued = await lead.request(2)
         assert.ok(seen(continued).includes(attempt.id) && seen(continued).includes('completed'))
         assert.deepEqual(delivered(lead), [attempt.id])
+        const [outcome] = lead.customMessages(OUTCOME)
+        assert.ok(outcome !== undefined && typeof outcome.content === 'string')
+        const [item] = outcomeItems(outcome.content)
+        assert.ok(item !== undefined)
+        assert.equal(item.id, attempt.id)
+        assert.equal(item.status, 'completed')
+        assert.equal(item.exitCode, 0)
+        assert.equal(item.staleArtifact, false)
+        assert.deepEqual(
+          item.logs.map(log => [log.stream, log.available, log.text]),
+          [
+            ['stdout', true, ''],
+            ['stderr', true, ''],
+          ]
+        )
         continued.reply(text('outcome read'))
         await run
         await lead.idle()
@@ -464,7 +676,10 @@ try {
       await lead.idle()
       await userTurn(lead, 4, 'unrelated question')
       assert.deepEqual(delivered(lead), [attempt.id])
-      assert.deepEqual((await listing(lead)).records, [{ id: attempt.id, status: 'completed' }])
+      assert.deepEqual(
+        (await listing(lead)).records.map(record => [record.id, record.status]),
+        [[attempt.id, 'completed']]
+      )
       assert.equal(lead.requests.length, 5)
     })
   )
@@ -499,6 +714,7 @@ try {
         next.reply(text('launched'))
         await run
         await lead.idle()
+        const [onePid, otherPid] = [await pidOf(lead, one.id), await pidOf(lead, other.id)]
         await lead.session.prompt(`/work stop ${one.id}`)
         const reported = await lead.request(2)
         assert.ok(seen(reported).includes(one.id) && seen(reported).includes('cancelled'))
@@ -511,15 +727,15 @@ try {
             [other.id, 'running'],
           ].toSorted()
         )
-        assert.equal(alive(one.pid), false)
-        assert.equal(alive(other.pid), true)
+        assert.equal(alive(onePid), false)
+        assert.equal(alive(otherPid), true)
         const stopped = await listing(lead, '/work stop')
         assert.equal(stopped.cancellationRequested, true)
         assert.deepEqual(
           stopped.records.map(record => record.status),
           ['cancelled', 'cancelled']
         )
-        assert.equal(alive(other.pid), false)
+        assert.equal(alive(otherPid), false)
         assert.equal(lead.session.isIdle, true)
       })
   )
@@ -533,10 +749,10 @@ try {
       assert.equal(lead.session.isStreaming, true)
       lead.typeTerminal('\u001b')
       await lead.status('the attempt cancelled', value => value === '1 cancelled')
-      assert.equal(alive(attempt.pid), false)
       next.reply(text('launched'))
       await run
       await lead.idle()
+      assert.equal(alive(await pidOf(lead, attempt.id)), false)
       assert.deepEqual(lead.notices, [])
     })
   )
@@ -550,9 +766,10 @@ try {
     next.reply(text('launched'))
     await run
     await lead.idle()
-    assert.equal(alive(attempt.pid), true)
+    const pid = await pidOf(lead, attempt.id)
+    assert.equal(alive(pid), true)
     await lead.close()
-    assert.equal(alive(attempt.pid), false)
+    assert.equal(alive(pid), false)
     assert.deepEqual(lead.handlerErrors, [])
   })
 } finally {

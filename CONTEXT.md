@@ -12,15 +12,17 @@ Dev is a personal agent distro built on Pi. This glossary defines terms used in 
 
 ## Background work
 
-| Term                 | Meaning                                                                                                              |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Lead**             | The Pi conversation the user pairs with.                                                                             |
-| **Attempt**          | One command or child execution owned by a lead's controller, including a leaf started through a coordinator.         |
-| **Child**            | A delegated Pi conversation in a separate process with a focused assignment, access level and dispatch selection.    |
-| **Coordinator**      | A child authorized to delegate leaves for one assignment.                                                            |
-| **Leaf**             | A coordinator's child, with no further delegation authority.                                                         |
-| **Dispatch rule**    | A configured harness, model and effort selection for a skill or the default case.                                    |
-| **Outcome delivery** | An attempt's result arriving in the conversation that started it, acknowledged on that conversation's active branch. |
+| Term                 | Meaning                                                                                                                |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Lead**             | The Pi conversation the user pairs with.                                                                               |
+| **Attempt**          | One command or child execution owned by a lead's controller, including a leaf started through a coordinator.           |
+| **Child**            | A delegated Pi conversation in a separate process with a focused assignment, access level and dispatch selection.      |
+| **Coordinator**      | A child authorized to delegate leaves for one assignment.                                                              |
+| **Leaf**             | A coordinator's child, with no further delegation authority.                                                           |
+| **Dispatch rule**    | A configured harness, model and effort selection for a skill or the default case.                                      |
+| **Outcome delivery** | An attempt's result arriving in the conversation that started it, acknowledged on that conversation's active branch.   |
+| **Attempt summary**  | The small view of an attempt that `work` results and outcomes carry: what the model acts on, not every persisted fact. |
+| **Inspection**       | An attempt summary with the complete persisted record, the stale-artifact flag and the retained logs.                  |
 
 A `work` **task key** (`taskId`) is local to the controller. It is not the durable **workflow task** identity (`workflowTaskId`). [Work](docs/work.md) owns execution and delivery behavior; [dispatch](config/README.md) owns selection rules.
 

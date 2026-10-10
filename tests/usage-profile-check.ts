@@ -178,8 +178,20 @@ const conversation = (start: string) => {
       entry('custom', id, parentId, second, { customType: 'dev:compaction-observation', data }),
     contextEdit: (id: string, parentId: string, second: number, targetId: string) =>
       entry('context_edit', id, parentId, second, { targetId, replacement: null }),
-    custom: (id: string, parentId: string, second: number, customType: string, content: string) =>
-      entry('custom_message', id, parentId, second, { customType, content, display: true }),
+    custom: (
+      id: string,
+      parentId: string,
+      second: number,
+      customType: string,
+      content: string,
+      details: Json = {}
+    ) =>
+      entry('custom_message', id, parentId, second, {
+        customType,
+        content,
+        display: true,
+        details,
+      }),
   }
 }
 
@@ -582,17 +594,31 @@ const periodsHome = join(root, 'periods')
   const attempts = [
     {
       id: 'coord',
+      taskId: 'review',
       kind: 'agent',
-      owner: { sessionId: 'fixture' },
+      status: 'completed',
       coordinator: true,
-      sessionFile: '/data/child-sessions/coord.jsonl',
+      staleArtifact: false,
+      logs: [],
     },
     {
       id: 'leaf',
+      taskId: 'review-leaf',
       kind: 'agent',
-      owner: { sessionId: 'fixture', parent: 'coord' },
-      sessionFile: '/data/child-sessions/leaf.jsonl',
+      status: 'completed',
+      parent: 'coord',
+      staleArtifact: false,
+      logs: [],
     },
+  ]
+  const children = [
+    {
+      id: 'coord',
+      kind: 'agent',
+      coordinator: true,
+      sessionFile: '/data/child-sessions/coord.jsonl',
+    },
+    { id: 'leaf', kind: 'agent', parent: 'coord', sessionFile: '/data/child-sessions/leaf.jsonl' },
   ]
   writeSession(periodsHome, 'sessions', 'lead', [
     lead.header(),
@@ -608,9 +634,21 @@ const periodsHome = join(root, 'periods')
       usage: tokens(10, 1),
     }),
     lead.result('res-d1', 'a1', 40, delegate, {
-      details: { id: 'coord', kind: 'agent', owner: { sessionId: 'fixture' }, coordinator: true },
+      details: {
+        kind: 'attempt',
+        attempt: {
+          id: 'coord',
+          taskId: 'review',
+          kind: 'agent',
+          status: 'running',
+          coordinator: true,
+        },
+      },
     }),
-    lead.custom('oc', 'res-d1', 60, 'dev/work-outcome', `Outcomes\n${JSON.stringify(attempts)}`),
+    lead.custom('oc', 'res-d1', 60, 'dev/work-outcome', `Outcomes\n${JSON.stringify(attempts)}`, {
+      attempts: ['coord', 'leaf'],
+      children,
+    }),
     lead.assistant('a2', 'oc', 60, { model: 'beta', usage: tokens(20, 2) }),
     lead.user('u2', 'a2', 60 + 12 * 3600, 'continue'),
     lead.assistant('a3', 'u2', 60 + 12 * 3600 + 10, {
