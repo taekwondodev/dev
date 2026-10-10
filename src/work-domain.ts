@@ -419,7 +419,7 @@ const WorkResultFields = Schema.Struct({
   }),
   attempt: Schema.optionalKey(AttemptSummarySchema),
   snapshot: Schema.optionalKey(WorkSnapshotViewSchema),
-  dispatch: Schema.optionalKey(Schema.JsonObject),
+  dispatch: Schema.optionalKey(DispatchConfigSchema),
   inspection: Schema.optionalKey(AttemptInspectionSchema),
   log: Schema.optionalKey(LogViewSchema),
 })

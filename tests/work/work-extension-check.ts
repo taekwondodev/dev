@@ -244,6 +244,13 @@ try {
           )
           const [dispatch, snapshot, inspection, page, cancelled] = results
           assert.equal(dispatch?.dispatch?.configured, true)
+          assert.throws(() => decodeStructured({ kind: 'dispatch', dispatch: {} }))
+          assert.throws(() =>
+            decodeStructured({
+              kind: 'dispatch',
+              dispatch: { ...dispatch?.dispatch, default: { harness: 'pi', model: 42 } },
+            })
+          )
           assert.deepEqual(
             snapshot?.snapshot?.records.map(record => record.id).toSorted(),
             [slow.id, quick.id].toSorted()
@@ -293,6 +300,7 @@ const results = await Promise.allSettled([
 const declaration = String(await describeTool('work'))
 return JSON.stringify({
   typed: declaration.includes('Promise<{') && declaration.includes('kind: "attempt" | "snapshot"'),
+  typedDispatch: declaration.includes('dispatch?: { configured: true; default: {') && declaration.includes('rules: { [key: string]: {'),
   launched: results.map(result => result.status === 'fulfilled'
     ? { kind: result.value.kind, id: result.value.attempt?.id, status: result.value.attempt?.status, shape: typeof result.value }
     : { error: String(result.reason) }),
@@ -304,10 +312,11 @@ return JSON.stringify({
         assert.ok(scripted?.includes('Script completed'), scripted ?? 'no script result')
         const output = /\{"typed".*\}\]\}/s.exec(scripted ?? '')?.[0]
         assert.ok(output !== undefined, scripted ?? 'no script result')
-        const { typed, launched } = Schema.decodeSync(
+        const { typed, typedDispatch, launched } = Schema.decodeSync(
           Schema.fromJsonString(
             Schema.Struct({
               typed: Schema.Boolean,
+              typedDispatch: Schema.Boolean,
               launched: Schema.Array(
                 Schema.Struct({
                   kind: Schema.String,
@@ -320,6 +329,7 @@ return JSON.stringify({
           )
         )(output)
         assert.equal(typed, true, 'describeTool shows the typed result')
+        assert.equal(typedDispatch, true, 'describeTool shows the dispatch configuration fields')
         assert.equal(launched.length, 2)
         for (const item of launched) {
           assert.equal(item.kind, 'attempt')
