@@ -12,7 +12,7 @@ import {
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { Effect, Stream } from 'effect'
+import { Effect, Schema, Stream } from 'effect'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -27,6 +27,7 @@ import type {
 } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import type { AgentSessionRuntime } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js'
 import { errorText } from '../../src/error-text.ts'
+import { WorkResultSchema } from '../../src/work-domain.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
 import {
   WorkspaceError,
@@ -786,6 +787,9 @@ interface WorkResult {
   readonly id: string
   readonly status: string
 }
+const decodeWorkResult = Schema.decodeUnknownSync(Schema.fromJsonString(WorkResultSchema), {
+  onExcessProperty: 'error',
+})
 const hostBlocks: HostBlock[] = []
 const hostMessages: string[] = []
 const handoffMessages: string[] = []
@@ -1004,17 +1008,15 @@ const observer =
     api.on('tool_result', event => {
       if (event.toolCallId.startsWith('work-owner-')) {
         const text = textOf(event.content)
-        const parsed: unknown = JSON.parse(text)
+        const result = decodeWorkResult(text)
         assert.ok(
-          typeof parsed === 'object' &&
-            parsed !== null &&
-            'id' in parsed &&
-            typeof parsed.id === 'string' &&
-            'status' in parsed &&
-            typeof parsed.status === 'string',
+          result.kind === 'attempt' && result.attempt !== undefined,
           `WorkOwner returned an unexpected result: ${text}`
         )
-        processResults.set(event.toolCallId, { id: parsed.id, status: parsed.status })
+        processResults.set(event.toolCallId, {
+          id: result.attempt.id,
+          status: result.attempt.status,
+        })
         if (event.toolCallId === 'work-owner-process') workToolReturned.resolve()
       }
     })
