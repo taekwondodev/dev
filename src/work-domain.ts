@@ -32,7 +32,7 @@ export type WorkAccess = typeof WorkAccessSchema.Type
 
 export const READ_ONLY_CHILD_TOOLS = ['read', 'grep', 'find', 'ls', 'git_inspect'] as const
 export const INTEGRATED_CHILD_TOOLS = ['read_url', 'codemode'] as const
-export const READ_ONLY_CHILD_CAPABILITIES = `A read-only child has only ${[...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].join(', ')}: it can read documentation URLs and compose tool calls in scripts, but has no shell, no edits and no gh. Put issue, PR or other external text in the prompt or a workspace file.`
+export const READ_ONLY_CHILD_CAPABILITIES = `A read-only child has only ${[...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].join(', ')}: no shell, no edits and no gh. Put issue, PR or other external text in the prompt or a workspace file.`
 
 export const WorkStatusSchema = Schema.Literals([
   'running',
@@ -327,9 +327,115 @@ export interface LogPage {
 
 export type AttemptDescription = AttemptView & {
   readonly staleArtifact: boolean | 'unknown'
-  readonly evidence: string
   readonly logs: readonly (LogPage & { readonly stream: LogRequest['stream'] })[]
 }
+
+const OptionalText = Schema.optionalKey(Schema.String)
+const optionalText = (description: string) =>
+  Schema.optionalKey(Schema.String.annotate({ description }))
+
+export const AttemptSummarySchema = Schema.Struct({
+  id: AttemptId,
+  taskId: Schema.String,
+  parent: Schema.optionalKey(AttemptId),
+  coordinator: Schema.optionalKey(Schema.Boolean),
+  workflowTaskId: optionalText('For workspace resume.'),
+  workspaceId: OptionalText,
+  cwd: Schema.String,
+  kind: WorkKindSchema,
+  status: WorkStatusSchema.annotate({
+    description: 'completed: any exit code; failed: could not run or report; unknown: unobserved.',
+  }),
+  access: Schema.optionalKey(WorkAccessSchema),
+  model: OptionalText,
+  invokedSkill: OptionalText,
+  worktree: Schema.optionalKey(
+    Schema.Struct({
+      path: Schema.String,
+      cleanup: Schema.Literals(['blocked', 'review-required']),
+    })
+  ),
+  exitCode: Schema.optionalKey(Schema.NullOr(Schema.Int)),
+  completedAt: Schema.optionalKey(Schema.Finite),
+  error: OptionalText,
+  context: Schema.optionalKey(ContextUsageSchema),
+  usage: Schema.optionalKey(Schema.Struct({ total: Schema.Finite, cost: Schema.Finite })),
+  deliveryError: OptionalText,
+  cleanupError: OptionalText,
+  gateReleaseWarning: OptionalText,
+  processObservation: OptionalText,
+  recovery: OptionalText,
+})
+export type AttemptSummary = typeof AttemptSummarySchema.Type
+
+export const AttemptFactsSchema = Schema.Struct({
+  id: AttemptId,
+  kind: WorkKindSchema,
+  parent: Schema.optionalKey(AttemptId),
+  coordinator: Schema.optionalKey(Schema.Boolean),
+  sessionFile: OptionalText,
+})
+export type AttemptFacts = typeof AttemptFactsSchema.Type
+
+export const LogViewSchema = Schema.Struct({
+  stream: Schema.Literals(['stdout', 'stderr', 'result']),
+  available: Schema.Boolean,
+  reason: OptionalText,
+  text: OptionalText,
+  truncated: Schema.optionalKey(Schema.Boolean),
+  nextOffset: Schema.optionalKey(Schema.Int),
+})
+export type LogView = typeof LogViewSchema.Type
+
+export const AttemptOutcomeSchema = Schema.Struct({
+  ...AttemptSummarySchema.fields,
+  staleArtifact: Schema.Union([Schema.Boolean, Schema.Literal('unknown')]).annotate({
+    description: 'Tracked files changed after completion.',
+  }),
+  logs: Schema.Array(LogViewSchema),
+})
+export type AttemptOutcome = typeof AttemptOutcomeSchema.Type
+
+export const AttemptInspectionSchema = Schema.Struct({
+  ...AttemptOutcomeSchema.fields,
+  record: Schema.JsonObject.annotate({ description: 'The complete persisted attempt record.' }),
+})
+export type AttemptInspection = typeof AttemptInspectionSchema.Type
+
+export const WorkSnapshotViewSchema = Schema.Struct({
+  records: Schema.Array(AttemptSummarySchema),
+  unavailable: Schema.Array(Schema.Struct({ id: Schema.String, error: Schema.String })),
+  agentsBlocked: Schema.Boolean,
+  total: Schema.Int,
+  nextOffset: Schema.NullOr(Schema.Int),
+  cancellationRequested: Schema.optionalKey(Schema.Boolean),
+})
+export type WorkSnapshotView = typeof WorkSnapshotViewSchema.Type
+
+const WorkResultFields = Schema.Struct({
+  kind: Schema.Literals(['attempt', 'snapshot', 'dispatch', 'inspection', 'log']).annotate({
+    description:
+      'attempt: process, delegate, cancel <id>; snapshot: list, cancel; inspection: inspect; log: inspect with stream.',
+  }),
+  attempt: Schema.optionalKey(AttemptSummarySchema),
+  snapshot: Schema.optionalKey(WorkSnapshotViewSchema),
+  dispatch: Schema.optionalKey(Schema.JsonObject),
+  inspection: Schema.optionalKey(AttemptInspectionSchema),
+  log: Schema.optionalKey(LogViewSchema),
+})
+
+export const WorkResultSchema = WorkResultFields.check(
+  Schema.makeFilter((result: typeof WorkResultFields.Type) =>
+    result[result.kind] === undefined
+      ? `A ${result.kind} result carries no ${result.kind} field`
+      : undefined
+  )
+)
+export type WorkResult = typeof WorkResultSchema.Type
+
+export const workResultOutputSchema = Schema.toJsonSchemaDocument(WorkResultSchema, {
+  onExcessProperty: 'error',
+}).schema
 
 export interface ProcessStartRequest {
   readonly taskId: string

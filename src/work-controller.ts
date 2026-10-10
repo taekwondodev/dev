@@ -63,7 +63,13 @@ import {
 } from './work-lifecycle.ts'
 import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.ts'
 import { compactText, isRecordUnavailable, WorkStore } from './work-store.ts'
-import { executeWork, unavailableAttempt, type WorkActions } from './work-actions.ts'
+import {
+  executeWork,
+  factsOf,
+  outcomeView,
+  unavailableAttempt,
+  type WorkActions,
+} from './work-actions.ts'
 import {
   ChildMessageSchema,
   CoordinatorWorkInputSchema,
@@ -522,8 +528,6 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     return {
       ...viewOf(record),
       staleArtifact,
-      evidence:
-        'Process outcome, not artifact verification. Reconcile changed or unknown artifacts before accepting the result.',
       logs,
     }
   }, Effect.mapError(toFailure))
@@ -908,7 +912,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       const live = job.leaves.size
       const outcomes = yield* Effect.forEach(
         [...job.undelivered.values()],
-        view => inspect(view.id).pipe(Effect.orElseSucceed(() => view)),
+        view =>
+          inspect(view.id).pipe(
+            Effect.map(description => ({
+              outcome: outcomeView(description),
+              facts: factsOf(description),
+            })),
+            Effect.orElseSucceed(() => ({ outcome: outcomeView(view), facts: factsOf(view) }))
+          ),
         { concurrency: 'unbounded' }
       )
       return yield* reply({ type: 'work-pending', requestId, live, outcomes })

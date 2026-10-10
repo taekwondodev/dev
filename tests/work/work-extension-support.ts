@@ -37,6 +37,10 @@ export const openLead = async (
     readonly notify?: (notice: Notice) => void
     readonly tools?: readonly string[]
     readonly codemode?: boolean
+    readonly onToolResult?: (event: {
+      readonly toolName: string
+      readonly structuredContent?: unknown
+    }) => void
   } = {}
 ) => {
   const { pi, importFromPi } = installed
@@ -110,6 +114,10 @@ export const openLead = async (
         work.factory,
         api => {
           api.events.on('dev/work-activity', activity => activities.push(activity))
+          api.on('tool_result', event => {
+            options.onToolResult?.(event)
+            return undefined
+          })
         },
         ...(options.codemode === true ? [pi.createCodemodeExtension({ mode: 'on' })] : []),
       ],

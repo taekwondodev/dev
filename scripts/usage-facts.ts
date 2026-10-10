@@ -126,14 +126,13 @@ const classify = (result: ResultEntry): ResultOutcome => {
 
 const recordedAttempts = (entry: Entry): readonly AttemptRecord[] => {
   if (entry.kind === 'outcome') return entry.attempts
-  if (entry.kind === 'result')
-    return entry.attempt === undefined ? entry.listedAttempts : [entry.attempt]
+  if (entry.kind === 'result') return entry.attempt === undefined ? [] : [entry.attempt]
   return []
 }
 
 const roleOf = (attempt: AttemptRecord): Role => {
   if (attempt.coordinator === true) return 'coordinator'
-  return attempt.owner.parent === undefined ? 'child' : 'leaf'
+  return attempt.parent === undefined ? 'child' : 'leaf'
 }
 
 export const recordedRoles = (session: SessionRecord): (readonly [string, Role])[] =>
@@ -1116,9 +1115,7 @@ const timeFacts = (index: SessionIndex): TimeFact[] => {
 const attemptFacts = (index: SessionIndex): AttemptFact[] =>
   index.role === 'lead'
     ? index.measured.flatMap(entry =>
-        entry.kind === 'result' &&
-        entry.attempt !== undefined &&
-        entry.attempt.owner.parent === undefined
+        entry.kind === 'result' && entry.attempt !== undefined && entry.attempt.parent === undefined
           ? [{ ...index.located(entry), attempt: entry.attempt.id, kind: entry.attempt.kind }]
           : []
       )

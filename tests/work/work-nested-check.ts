@@ -3,8 +3,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { Effect, Schema } from 'effect'
-import { executeWork, type summary } from '../../src/work-actions.ts'
-import { asAttemptId, type AttemptView } from '../../src/work-domain.ts'
+import { executeWork } from '../../src/work-actions.ts'
+import {
+  asAttemptId,
+  AttemptFactsSchema,
+  AttemptOutcomeSchema,
+  type AttemptView,
+} from '../../src/work-domain.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { ControllerWorkMessageSchema, trackOutcomeAttempts } from '../../src/work-protocol.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../../src/workspace-domain.ts'
@@ -45,6 +50,35 @@ const say = (text: string) => [{ type: 'text', text }]
 const slow = (delayMs: number) => ({ delayMs, content: say('slow reply') })
 type ToolInput = Parameters<typeof toolCall>[2]
 const work = (id: string, input: ToolInput) => toolCall(id, 'work', input)
+const decodeOutcomes = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(AttemptOutcomeSchema)),
+  { onExcessProperty: 'error' }
+)
+const decodeEntry = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      customType: Schema.optionalKey(Schema.String),
+      content: Schema.optionalKey(Schema.String),
+      details: Schema.optionalKey(Schema.Struct({ children: Schema.Array(AttemptFactsSchema) })),
+    })
+  )
+)
+const outcomesReceivedBy = (view: AttemptView) => {
+  assert.ok(view.sessionFile !== undefined)
+  const entries = readFileSync(view.sessionFile, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => decodeEntry(line))
+    .filter(entry => entry.customType === 'dev/work-outcome')
+  return {
+    outcomes: entries.flatMap(entry =>
+      entry.content === undefined
+        ? []
+        : decodeOutcomes(entry.content.slice(entry.content.indexOf('\n') + 1))
+    ),
+    children: entries.flatMap(entry => entry.details?.children ?? []),
+  }
+}
 const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): ToolInput => ({
   action: 'delegate',
   taskId,
@@ -478,6 +512,24 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         const [, heldLater = ''] = heldText.split('LATER-MESSAGES')
         assert.ok(freeLater.includes(quickLeaf.id) && !freeLater.includes(slowLeaf.id))
         assert.ok(heldLater.includes(slowLeaf.id) && !heldLater.includes(quickLeaf.id))
+        const received = outcomesReceivedBy(freeView)
+        const [leafOutcome] = received.outcomes
+        assert.ok(leafOutcome !== undefined)
+        assert.deepEqual(
+          received.children.map(child => [child.id, child.parent, child.sessionFile]),
+          [[quickLeaf.id, free.id, quickLeaf.sessionFile]]
+        )
+        assert.equal(leafOutcome.id, quickLeaf.id)
+        assert.equal(leafOutcome.status, 'completed')
+        assert.equal(leafOutcome.parent, free.id)
+        assert.deepEqual(
+          leafOutcome.logs.map(log => log.stream),
+          ['result', 'stderr']
+        )
+        assert.ok(
+          leafOutcome.logs[0]?.text?.startsWith('MODEL-SAW\nQuick leaf'),
+          leafOutcome.logs[0]?.text ?? 'no result text'
+        )
         assert.ok(
           completedAt(freeView) < completedAt(slowLeaf),
           'the free coordinator waited for another branch'
@@ -888,24 +940,20 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.equal(count(rewrite, 'committed'), 1)
         assert.equal(count(rewrite, 'MODIFIED-BY-COORDINATOR'), 0)
 
-        const listed = (await owner.call(actions => executeWork(actions, { action: 'list' }))) as {
-          readonly records: readonly ReturnType<typeof summary>[]
-        }
-        const row = (id: string) => listed.records.find(record => record.id === id)
-        const total = (id: string) => {
-          const usage = row(id)?.usage
-          return typeof usage === 'object' ? usage.total : usage
-        }
+        const listed = await owner.call(actions => executeWork(actions, { action: 'list' }))
+        assert.equal(listed.kind, 'snapshot')
+        const row = (id: string) => listed.snapshot?.records.find(record => record.id === id)
+        const total = (id: string) => row(id)?.usage?.total
         const calls = fixture.modelCalls()
         const requests = (id: string) => calls.filter(attempt => attempt === id).length
         assert.equal(row(view.id)?.coordinator, true)
         assert.equal(row(reviewer.id)?.parent, view.id)
-        assert.ok(row(reviewer.id)?.tools?.includes('git_inspect'))
+        assert.ok(reviewer.resources?.tools.includes('git_inspect'))
         assert.equal(requests(reviewer.id), 2)
         assert.equal(total(reviewer.id), 16)
         assert.ok(requests(view.id) >= 4)
         assert.equal(total(view.id), 11 * requests(view.id))
-        assert.equal(row(rewriter.id)?.usage, 'unavailable')
+        assert.equal(row(rewriter.id)?.usage, undefined)
       }
     )
 

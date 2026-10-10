@@ -133,7 +133,7 @@ const decodeThinkingLevel = Schema.decodeUnknownOption(
 const decodeContextEdit = Schema.decodeUnknownOption(Schema.Struct({ targetId: Schema.String }))
 
 const decodeCustomMessage = Schema.decodeUnknownOption(
-  Schema.Struct({ customType: Schema.String, content: Schema.optional(MessageContent) })
+  Schema.Struct({ customType: Schema.String, details: Schema.optional(Schema.Unknown) })
 )
 
 const OptionalText = Schema.optional(Schema.NullOr(Schema.String))
@@ -159,17 +159,19 @@ const decodeGitInspectInput = Schema.decodeUnknownOption(
 const AttemptRecord = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(['agent', 'process']),
-  owner: Schema.Struct({ parent: Schema.optional(Schema.String) }),
+  parent: Schema.optional(Schema.String),
   coordinator: Schema.optional(Schema.Boolean),
   sessionFile: Schema.optional(Schema.String),
 })
 export type AttemptRecord = typeof AttemptRecord.Type
 
 const decodeAttempt = Schema.decodeUnknownOption(AttemptRecord)
-const decodeAttemptList = Schema.decodeUnknownOption(
-  Schema.Struct({ records: Schema.Array(Schema.Unknown) })
+const decodeAttemptResult = Schema.decodeUnknownOption(
+  Schema.Struct({ kind: Schema.Literal('attempt'), attempt: AttemptRecord })
 )
-const decodeItems = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.Unknown)))
+const decodeOutcomeChildren = Schema.decodeUnknownOption(
+  Schema.Struct({ children: Schema.Array(Schema.Unknown) })
+)
 
 const TruncationSchema = Schema.Struct({
   truncated: Schema.Boolean,
@@ -230,7 +232,6 @@ type Payload =
       readonly blocks: readonly Block[]
       readonly truncation: TruncationDetails | 'malformed' | undefined
       readonly attempt: AttemptRecord | undefined
-      readonly listedAttempts: readonly AttemptRecord[]
       readonly usage: Usage | undefined
     }
   | { readonly kind: 'user'; readonly skill: string | undefined }
@@ -348,25 +349,16 @@ const inputOf = (name: string, args: unknown): ToolInput => {
 const attemptsIn = (values: readonly unknown[]): AttemptRecord[] =>
   values.flatMap(value => Option.toArray(decodeAttempt(value)))
 
-const listedAttempts = (details: unknown): AttemptRecord[] =>
-  Option.match(decodeAttemptList(details), {
-    onNone: () => [],
-    onSome: list => attemptsIn(list.records),
-  })
-
 const truncationOf = (details: unknown): TruncationDetails | 'malformed' | undefined =>
   Predicate.hasProperty(details, 'truncation')
     ? Option.getOrElse(decodeTruncation(details.truncation), () => 'malformed' as const)
     : undefined
 
-const outcomeAttempts = (content: typeof MessageContent.Type | undefined): AttemptRecord[] => {
-  const text = content === undefined ? undefined : firstText(content)
-  if (text === undefined) return []
-  return Option.match(decodeItems(text.slice(text.lastIndexOf('\n') + 1)), {
+const outcomeAttempts = (details: unknown): AttemptRecord[] =>
+  Option.match(decodeOutcomeChildren(details), {
     onNone: () => [],
-    onSome: attemptsIn,
+    onSome: outcome => attemptsIn(outcome.children),
   })
-}
 
 const resultPayload = (value: unknown): Payload | undefined =>
   Option.getOrUndefined(
@@ -384,8 +376,11 @@ const resultPayload = (value: unknown): Payload | undefined =>
           })
         ),
         truncation: truncationOf(message.details),
-        attempt: work ? Option.getOrUndefined(decodeAttempt(message.details)) : undefined,
-        listedAttempts: work ? listedAttempts(message.details) : [],
+        attempt: work
+          ? Option.getOrUndefined(
+              Option.map(decodeAttemptResult(message.details), result => result.attempt)
+            )
+          : undefined,
         usage: message.usage === undefined ? undefined : usageOf(message.usage),
       }
     })
@@ -441,7 +436,7 @@ const customMessagePayload = (value: unknown): Payload | undefined =>
     Option.map(decodeCustomMessage(value), (entry): Payload => {
       if (entry.customType === 'dev/workspace-handoff') return { kind: 'handoff' }
       if (entry.customType === 'dev/work-outcome')
-        return { kind: 'outcome', attempts: outcomeAttempts(entry.content) }
+        return { kind: 'outcome', attempts: outcomeAttempts(entry.details) }
       return { kind: 'other' }
     })
   )
