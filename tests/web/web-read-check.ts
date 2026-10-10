@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Cause, Duration, Effect, Exit, Scope } from 'effect'
+import { Cause, Deferred, Duration, Effect, Exit, Scope } from 'effect'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 import {
   assertCopyReleased,
@@ -25,6 +25,7 @@ import {
 } from './chrome-fixture.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin } from '../../src/web-browser-owner.ts'
+import { BrowserError, makeRenderHost, type CdpClient } from '../../src/web-browser.ts'
 import { makeWebReader, type ReadOutcome, type WebReader } from '../../src/web-reader.ts'
 import {
   fetchPublic,
@@ -340,6 +341,41 @@ const failureOf = (outcome: ReadOutcome) => {
   return outcome.error
 }
 try {
+  await claim(
+    'a target created before attach failure is closed with exactly one owned-target close command',
+    async () => {
+      const calls: { method: string; params: unknown }[] = []
+      const closed = await Effect.runPromise(Deferred.make<void, BrowserError>())
+      const cdp: CdpClient = {
+        closed,
+        subscribe: () => () => {},
+        send: (method, params = {}) => {
+          calls.push({ method, params })
+          if (method === 'Target.createTarget') return Effect.succeed({ targetId: 'owned-target' })
+          if (method === 'Target.attachToTarget')
+            return Effect.fail(new BrowserError({ reason: 'protocol', message: 'attach failed' }))
+          return Effect.void
+        },
+      }
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const host = yield* makeRenderHost({ cdp, pid: 1 }, { admit: () => Effect.void })
+            yield* Effect.ignore(
+              host.render('https://example.com/', {
+                timeout: Duration.seconds(1),
+                maxHtmlChars: 1000,
+              })
+            )
+          })
+        )
+      )
+      assert.deepEqual(
+        calls.filter(call => call.method === 'Target.closeTarget'),
+        [{ method: 'Target.closeTarget', params: { targetId: 'owned-target' } }]
+      )
+    }
+  )
   await claim(
     'URL policy refuses non-http schemes, credentials, literal private hosts and local names before any connection',
     async () => {

@@ -420,7 +420,8 @@ interface OwnedRender {
   readonly outstanding: Map<string, string | undefined>
   readonly loaded: Deferred.Deferred<void>
   readonly detached: Deferred.Deferred<void>
-  main: { readonly targetId: string; readonly sessionId: string } | undefined
+  targetId: string | undefined
+  main: { readonly sessionId: string } | undefined
   blocked: number
   status: number | undefined
   phase: RenderPhase
@@ -579,7 +580,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
       owner.phase = 'closing'
       const pending = [...owner.outstanding]
       owner.outstanding.clear()
-      const target = owner.main
+      const { targetId } = owner
       return Effect.forEach(
         pending,
         ([requestId, sessionId]) => Effect.ignore(refuse(requestId, sessionId)),
@@ -596,11 +597,13 @@ export const makeRenderHost = Effect.fnUntraced(function* (
           )
         ),
         Effect.andThen(
-          target === undefined
+          targetId === undefined
             ? Effect.void
-            : Effect.ignore(cdp.send('Target.closeTarget', { targetId: target.targetId })).pipe(
+            : Effect.ignore(cdp.send('Target.closeTarget', { targetId })).pipe(
                 Effect.andThen(
-                  Effect.timeoutOption(Deferred.await(owner.detached), TEARDOWN_SETTLE)
+                  owner.main === undefined
+                    ? Effect.void
+                    : Effect.timeoutOption(Deferred.await(owner.detached), TEARDOWN_SETTLE)
                 )
               )
         ),
@@ -622,6 +625,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
         outstanding: new Map(),
         loaded: yield* Deferred.make<void>(),
         detached: yield* Deferred.make<void>(),
+        targetId: undefined,
         main: undefined,
         blocked: 0,
         status: undefined,
@@ -632,6 +636,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
         const created = yield* cdp
           .send('Target.createTarget', { url: 'about:blank' })
           .pipe(Effect.flatMap(decode(Created)))
+        owner.targetId = created.targetId
         owner.targets.add(created.targetId)
         owner.frames.add(created.targetId)
         targetOwners.set(created.targetId, owner)
@@ -639,7 +644,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
         const attached = yield* cdp
           .send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
           .pipe(Effect.flatMap(decode(Attached)))
-        owner.main = { targetId: created.targetId, sessionId: attached.sessionId }
+        owner.main = { sessionId: attached.sessionId }
         owner.sessions.add(attached.sessionId)
         sessionOwners.set(attached.sessionId, owner)
         yield* enablePage(owner, attached.sessionId)

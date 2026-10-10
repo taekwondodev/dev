@@ -11,13 +11,13 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:http'
-import { createConnection, type Socket } from 'node:net'
+import { createConnection, createServer as createSocketServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Cause, Duration, Effect, Exit, Fiber, Scope } from 'effect'
-import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { makeClaims, waitFor } from '../workspace/workspace-check-support.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
 import {
@@ -158,6 +158,55 @@ const processGroup = (pid: number): string =>
   execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim()
 
 try {
+  await claim(
+    'administrative IPC has a finite deadline and closes its socket when an owner accepts but never replies, without claiming revocation succeeded',
+    async () => {
+      const home = join(fixture, 'silent-admin')
+      const root = join(home, 'browser')
+      mkdirSync(join(root, 'user-data'), { recursive: true, mode: 0o700 })
+      const sentinel = join(root, 'user-data', 'kept')
+      writeFileSync(sentinel, 'not settled')
+      const socketPath = join(fixture, 'admin.sock')
+      const sockets = new Set<Socket>()
+      const silent = createSocketServer(socket => {
+        sockets.add(socket)
+        socket.on('data', () => {})
+        socket.once('close', () => sockets.delete(socket))
+      })
+      await new Promise<void>(resolve => silent.listen(socketPath, resolve))
+      writeFileSync(
+        join(root, 'owner.json'),
+        JSON.stringify({
+          epoch: 'silent-fixture',
+          socket: socketPath,
+          pid: process.pid,
+          startedAt: Date.now(),
+          installation: realpathSync(fileURLToPath(new URL('../../', import.meta.url))),
+        })
+      )
+      try {
+        const started = Date.now()
+        const outcome = await Effect.runPromiseExit(
+          makeBrowserAdmin({ ...profileOptions, dataHome: home })
+            .revoke(Duration.millis(10))
+            .pipe(Effect.timeout('4 seconds'))
+        )
+        assert.ok(Exit.isFailure(outcome))
+        assert.match(
+          String(Cause.squash(outcome.cause)),
+          /administrative request.*deadline.*unverified/
+        )
+        assert.ok(Date.now() - started < 3500, 'the administrative deadline bounded the request')
+        await waitFor('the timed-out admin socket to close', () =>
+          sockets.size === 0 ? true : undefined
+        )
+        assert.equal(readFileSync(sentinel, 'utf8'), 'not settled')
+      } finally {
+        for (const socket of sockets) socket.destroy()
+        await new Promise<void>(resolve => silent.close(() => resolve()))
+      }
+    }
+  )
   if (chrome === undefined) {
     await claim(
       'without an installed Chrome the renderer reports an honest failure and publishes no owner',
@@ -239,7 +288,15 @@ try {
         const peerClient = await openRenderer(dataHome, newScope(), failures)
         const slow = Effect.runFork(slowClient.render(`${origin}/slow.html?m=SLOW`, MAX_HTML))
         const peer = Effect.runFork(peerClient.render(`${origin}/page.html?m=PEER`, MAX_HTML))
-        await sleep(700)
+        await waitFor('both clients to render concurrently in the shared Chrome', async () => {
+          const status = await Effect.runPromise(admin.status)
+          return status.owner.kind === 'live' &&
+            status.owner.activity.rendering >= 2 &&
+            seen.includes('/slow.html?SLOW') &&
+            seen.includes('/page.html?PEER')
+            ? true
+            : undefined
+        })
         await Effect.runPromise(Fiber.interrupt(slow))
         const page = await Effect.runPromise(Fiber.join(peer))
         assert.match(text(page.html), /MARKER PEER SIGNED IN/)
@@ -695,7 +752,97 @@ try {
       }
     )
     await claim(
-      'a stale locator left by a dead owner does not block a fresh owner, and status reports the absent owner honestly',
+      'owner death fails pending rendering and neither a subsequent read nor revocation reuses or deletes a copy while Chrome survives',
+      async () => {
+        const home = join(fixture, 'crashed')
+        mkdirSync(home, { mode: 0o700 })
+        selectOwnerFixture({ ...baseFixture, browserIdleMs: 60_000 })
+        const renderer = await openRenderer(home, newScope(), [], Duration.seconds(15))
+        await Effect.runPromise(renderer.render(`${origin}/page.html?m=BEFORECRASH`, MAX_HTML))
+        const copy = join(home, 'browser', 'user-data')
+        const record = join(home, 'browser', 'owner.json')
+        const state = join(home, 'browser', 'copy-state.json')
+        const published = JSON.parse(readFileSync(record, 'utf8')) as { pid: number }
+        const beforeRecord = readFileSync(record, 'utf8')
+        const beforeState = readFileSync(state, 'utf8')
+        const rootPid = Number(
+          execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' })
+            .split('\n')
+            .find(
+              line =>
+                line.includes(`--user-data-dir=${copy}`) && line.includes('--remote-debugging-pipe')
+            )
+            ?.trim()
+            .split(/\s+/)[0]
+        )
+        assert.ok(
+          Number.isInteger(rootPid) && rootPid > 0,
+          'the fixture Chrome process is observed'
+        )
+        const pending = Effect.runFork(renderer.render(`${origin}/slow.html?m=CRASH`, MAX_HTML))
+        const crashedAdmin = makeBrowserAdmin({ ...profileOptions, dataHome: home })
+        try {
+          await waitFor('the pending render to reach Chrome', () =>
+            seen.includes('/slow.html?CRASH') ? true : undefined
+          )
+          process.kill(rootPid, 'SIGSTOP')
+          process.kill(published.pid, 'SIGKILL')
+          const outcome = await Effect.runPromise(Fiber.await(pending))
+          assert.ok(Exit.isFailure(outcome), 'the interrupted render failed without replay')
+          await waitFor('the dead owner to release its profile lock', async () =>
+            (
+              await Effect.runPromise(
+                makeBrowserProfileOwner({ ...profileOptions, dataHome: home }).status
+              )
+            ).inUse
+              ? undefined
+              : true
+          )
+          assert.ok(
+            chromeRunningOn(copy) > 0,
+            'Chrome survives the owner despite free kernel locks'
+          )
+          const next = await Effect.runPromiseExit(
+            renderer.render(`${origin}/page.html?m=AFTERCRASH`, MAX_HTML)
+          )
+          assert.ok(Exit.isFailure(next))
+          assert.match(String(Cause.squash(next.cause)), /shutdown is unverified/)
+          assert.equal(
+            readFileSync(record, 'utf8'),
+            beforeRecord,
+            'no replacement owner was published'
+          )
+          assert.equal(readFileSync(state, 'utf8'), beforeState, 'the profile was not refreshed')
+          const revoked = await Effect.runPromise(crashedAdmin.revoke(Duration.millis(100)))
+          assert.equal(revoked.kind, 'kept-live')
+          assert.ok(existsSync(copy), 'revocation retained the uncertain copy')
+          assert.ok(
+            existsSync(join(home, 'browser', 'disabled')),
+            'revocation disabled future rendering'
+          )
+          await Effect.runPromise(crashedAdmin.enable)
+          const bootstrap = await Effect.runPromiseExit(ownerBootstrap(home).ensure)
+          assert.ok(Exit.isFailure(bootstrap), 'enable did not erase unverified ownership')
+          assert.equal(readFileSync(state, 'utf8'), beforeState)
+          assert.equal((await Effect.runPromise(crashedAdmin.status)).owner.kind, 'unavailable')
+        } finally {
+          await Effect.runPromise(Fiber.interrupt(pending))
+          const current = JSON.parse(readFileSync(record, 'utf8')) as { pid: number }
+          for (const pid of new Set([published.pid, current.pid, -rootPid])) {
+            try {
+              process.kill(pid, 'SIGKILL')
+            } catch {}
+          }
+          await waitFor('fixture Chrome to stop', () =>
+            chromeRunningOn(copy) === 0 ? true : undefined
+          )
+          rmSync(record, { force: true })
+          selectOwnerFixture(baseFixture)
+        }
+      }
+    )
+    await claim(
+      'a cleanly retired owner leaves no locator and the next reader can start a fresh owner',
       async () => {
         const absent = await Effect.runPromise(admin.status)
         assert.equal(absent.owner.kind, 'absent')

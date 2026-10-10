@@ -527,18 +527,22 @@ const connectForAdmin = (
   BrowserOwnerError,
   Scope.Scope
 > =>
-  Effect.acquireRelease(
-    Effect.callback<
+  Effect.gen(function* () {
+    const locator = readLocator(paths)
+    if (locator === undefined)
+      return yield* ownerFailure('unavailable', 'No browser owner is published')
+    const socket = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => createConnection({ path: locator.socket }),
+        catch: cause => ownerFailure('unavailable', errorText(cause)),
+      }),
+      acquired => Effect.sync(() => acquired.destroy())
+    )
+    socket.unref()
+    const bound = yield* Effect.callback<
       { readonly channel: FrameChannel; readonly pending: Map<string, PendingReply> },
       BrowserOwnerError
     >(resume => {
-      const locator = readLocator(paths)
-      if (locator === undefined) {
-        resume(Effect.fail(ownerFailure('unavailable', 'No browser owner is published')))
-        return
-      }
-      const socket = createConnection({ path: locator.socket })
-      socket.unref()
       const pending = new Map<string, PendingReply>()
       let settled = false
       const channel = readFrames(
@@ -567,10 +571,8 @@ const connectForAdmin = (
         resume(Effect.succeed({ channel, pending }))
       })
       return Effect.void
-    }),
-    bound => Effect.sync(() => bound.channel.close())
-  ).pipe(
-    Effect.map(bound => ({
+    })
+    return {
       close: Effect.sync(() => bound.channel.close()),
       request: (request: OwnerRequest) =>
         Effect.callback<OwnerReply, BrowserOwnerError>(resume => {
@@ -588,11 +590,26 @@ const connectForAdmin = (
             bound.pending.delete(request.requestId)
           })
         }),
-    }))
-  )
+    }
+  })
 
 const asRequestId = Schema.decodeSync(RequestId)
 const newRequestId = (): RequestId => asRequestId(randomUUID())
+
+const ownerRecorded = (paths: BrowserProfilePaths): boolean =>
+  lstatSync(paths.locator, { throwIfNoEntry: false }) !== undefined
+
+const requireSettledOwner = (paths: BrowserProfilePaths): Effect.Effect<void, BrowserOwnerError> =>
+  Effect.suspend(() =>
+    ownerRecorded(paths)
+      ? Effect.fail(
+          ownerFailure(
+            'unavailable',
+            `A previous browser owner left ${paths.locator}; Chrome shutdown is unverified. Stop any remaining dev-owned Chrome processes and remove this record only after verifying they are gone.`
+          )
+        )
+      : Effect.void
+  )
 
 const gateHeld = (paths: BrowserProfilePaths): boolean => {
   try {
@@ -625,11 +642,23 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
   const profile = makeBrowserProfileOwner(options)
   const live = <A>(
     request: OwnerRequest,
-    accept: (reply: OwnerReply) => Effect.Effect<A, BrowserOwnerError>
+    accept: (reply: OwnerReply) => Effect.Effect<A, BrowserOwnerError>,
+    budget: Duration.Duration = BOOTSTRAP_BUDGET
   ): Effect.Effect<A, BrowserOwnerError> =>
     Effect.scoped(
       Effect.flatMap(connectForAdmin(paths), owner =>
         Effect.flatMap(owner.request(request), accept)
+      ).pipe(
+        Effect.timeoutOrElse({
+          duration: budget,
+          orElse: () =>
+            Effect.fail(
+              ownerFailure(
+                'protocol',
+                'The browser owner did not answer the administrative request before its deadline; its outcome is unverified'
+              )
+            ),
+        })
       )
     )
   return {
@@ -650,24 +679,42 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
       const locator = readLocator(paths)
       return {
         profile: current,
-        owner:
-          locator === undefined
-            ? { kind: 'absent' }
-            : {
-                kind: 'unavailable',
-                message: `A browser owner is published for process ${locator.pid} but did not answer; it may have died without settling Chrome.`,
-              },
+        owner: ownerRecorded(paths)
+          ? {
+              kind: 'unavailable',
+              message:
+                locator === undefined
+                  ? 'The browser owner record is unreadable or belongs to another installation; Chrome shutdown is unverified.'
+                  : `A browser owner is published for process ${locator.pid} but did not answer; it may have died without settling Chrome.`,
+            }
+          : { kind: 'absent' },
       } satisfies BrowserOwnerStatus
     }),
     revoke: wait =>
-      live({ type: 'revoke', requestId: newRequestId(), waitMs: Duration.toMillis(wait) }, reply =>
-        reply.type === 'revoked'
-          ? Effect.succeed(reply.outcome)
-          : Effect.fail(ownerFailure('protocol', 'The browser owner sent an unexpected revocation'))
+      live(
+        { type: 'revoke', requestId: newRequestId(), waitMs: Duration.toMillis(wait) },
+        reply =>
+          reply.type === 'revoked'
+            ? Effect.succeed(reply.outcome)
+            : Effect.fail(
+                ownerFailure('protocol', 'The browser owner sent an unexpected revocation')
+              ),
+        Duration.sum(Duration.min(wait, REVOKE_SETTLE), Duration.seconds(2))
       ).pipe(
         Effect.catchIf(
           error => error.reason === 'unavailable',
-          () => withStartupGate(paths, profile.revoke(wait))
+          () =>
+            withStartupGate(
+              paths,
+              Effect.suspend(() =>
+                ownerRecorded(paths)
+                  ? Effect.as(profile.disable, {
+                      kind: 'kept-live',
+                      path: paths.userDataDir,
+                    } satisfies RevocationOutcome)
+                  : profile.revoke(wait)
+              )
+            )
         )
       ),
     enable: live({ type: 'enable', requestId: newRequestId() }, reply =>
@@ -759,6 +806,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
     ),
     release => Effect.sync(release)
   )
+  yield* requireSettledOwner(paths)
   yield* acquireRuntime(dataHome, options.coordination).pipe(
     Effect.mapError(error => ownerFailure('bootstrap', error.message))
   )
@@ -1229,7 +1277,8 @@ const runBrowserOwner = Effect.fnUntraced(function* (
     () =>
       Effect.sync(() => {
         const current = readLocator(paths)
-        if (current?.epoch === epoch) rmSync(paths.locator, { force: true })
+        if (current?.epoch === epoch && live === undefined && retained === undefined)
+          rmSync(paths.locator, { force: true })
       })
   )
   yield* bootstrap.ready
@@ -1464,7 +1513,9 @@ export const makeOwnerBootstrap = (options: {
   return {
     ensure: starting.withPermits(1)(
       Effect.suspend(() =>
-        gateHeld(paths) ? Effect.flatMap(awaitGateOutcome, follow) : spawnOrFollow
+        gateHeld(paths)
+          ? Effect.flatMap(awaitGateOutcome, follow)
+          : Effect.andThen(requireSettledOwner(paths), spawnOrFollow)
       )
     ),
   }
