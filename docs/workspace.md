@@ -17,11 +17,11 @@ In a session, `/workspace` also shows the current binding and effective director
 
 The lead's `workspace` tool has three actions:
 
-| Action               | Effect                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resume`             | Switch to a retained workspace at turn end without moving files; refused while the conversation has live shells or work. A refusal reports each workspace's outcome, reason and next action |
-| `set-target`         | Override the conversation task's inferred integration target                                                                                                                                |
-| `record-publication` | Verify exact readback of an already published issue/PR artifact and record the evidence                                                                                                     |
+| Action               | Effect                                                                                                                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `resume`             | End the turn and switch to a retained workspace without moving files; refused while the conversation has live shells or work. A refusal reports each workspace's outcome, reason and next action |
+| `set-target`         | Override the conversation task's inferred integration target                                                                                                                                     |
+| `record-publication` | Verify exact readback of an already published issue/PR artifact and record the evidence                                                                                                          |
 
 The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 
@@ -34,6 +34,8 @@ Project writes, shells and work launches are admitted before execution. The firs
 A live process prevents switching or isolation until it is stopped or finishes.
 
 Tools need a recorded effect classification. An unknown tool is refused visibly without ending the turn. Resource trust and pre-admission initialization are governed by [SECURITY](../SECURITY.md#trusted-base).
+
+A rebind requested by a tool call ends the turn, as Escape would: the refused call keeps its reason, sibling calls that had not run are cancelled, a notice names the rebind reason, and the conversation switches once the turn settles. After the switch, the follow-up tells the model to re-evaluate the refused operation in the new workspace rather than replay it, and that cancelled calls may be issued again. Queued messages and the editor draft are carried into the new session. [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) records why the run ends.
 
 #### Delegation into another checkout
 

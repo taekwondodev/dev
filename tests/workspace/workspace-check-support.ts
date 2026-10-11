@@ -170,6 +170,11 @@ export const emitReply = (
   signal: AbortSignal | undefined
 ) => {
   const stream = eventStreams.createAssistantMessageEventStream()
+  if (signal?.aborted) {
+    stream.push({ type: 'error', reason: 'aborted', error: assistantMessage([], 'aborted') })
+    stream.end()
+    return stream
+  }
   const message = assistantMessage(reply.content, reply.stopReason)
   const timer = setTimeout(() => {
     stream.push(
@@ -195,6 +200,8 @@ export const replay =
   (next: () => ScriptedContent, delayMs = 10) =>
   (parts: ScriptedStreamParts): StreamSimple =>
   (_model, _context, options) => {
+    if (options?.signal?.aborted)
+      return emitReply(parts, { content: [], stopReason: 'aborted', delayMs: 0 }, options.signal)
     const content = next()
     const stopReason = content.some(part => part.type === 'toolCall') ? 'toolUse' : 'stop'
     return emitReply(parts, { content, stopReason, delayMs }, options?.signal)

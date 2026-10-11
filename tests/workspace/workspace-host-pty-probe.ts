@@ -738,6 +738,8 @@ let runtime: AgentSessionRuntime | undefined
 const scriptedStream =
   (parts: ScriptedStreamParts): StreamSimple =>
   (_model, context, options) => {
+    if (options?.signal?.aborted)
+      return emitReply(parts, { content: [], stopReason: 'aborted', delayMs: 0 }, options.signal)
     const parked = workspaceHost.isParked()
     const step = parked ? staleContinuation : (script[scriptIndex++] ?? extraStep)
     lastStep = step.id
@@ -811,6 +813,7 @@ const pendingEditorSnapshots: { readonly cwd: string; readonly editor: string }[
 const toolRegistryByPath = new Map<string, ToolInfo[]>()
 const processResults = new Map<string, WorkResult>()
 const terminalInputs: string[] = []
+const abortedRuns: { readonly step: string; readonly terminalInputs: number }[] = []
 let mainTurnWasDone = false
 
 const textOf = (content: readonly { readonly type: string; readonly text?: string }[]): string =>
@@ -873,6 +876,11 @@ const observeUi = <C extends ExtensionContext>(context: C): C => {
   })
 }
 
+const wrapObservedUi =
+  (handler: (event: never, context: ExtensionContext) => unknown) =>
+  (event: never, context: ExtensionContext) =>
+    handler(event, observeUi(context))
+
 const wrapWorkspaceCommand = (
   command: Omit<RegisteredCommand, 'name' | 'sourceInfo'>
 ): Omit<RegisteredCommand, 'name' | 'sourceInfo'> => ({
@@ -912,6 +920,8 @@ const instrumentHost =
             return (event: string, handler: never) => {
               if (event === 'tool_call') return target.on(event, wrapToolCall(handler))
               if (event === 'user_bash') return target.on(event, wrapUserBash(handler))
+              if (event === 'tool_execution_end')
+                return Reflect.apply(target.on, target, [event, wrapObservedUi(handler)])
               return Reflect.apply(target.on, target, [event, handler])
             }
           if (property === 'registerTool')
@@ -1004,6 +1014,9 @@ const observer =
           assert.equal(terminalInputs.length, 0, 'model abort was not caused by a terminal Escape')
           abortedWithoutEscape.resolve()
         })
+    })
+    api.on('agent_settled', event => {
+      if (event.aborted) abortedRuns.push({ step: lastStep, terminalInputs: terminalInputs.length })
     })
     api.on('tool_result', event => {
       if (event.toolCallId.startsWith('work-owner-')) {
@@ -1333,8 +1346,12 @@ const PARKED = /Workspace host is parked; stale tools are blocked/
 const REBIND = /requires a host rebind: fixture .* The operation was not executed/
 const UNVERIFIED = /has no verified workspace effect in dev, so it was not executed/
 expectBlock('stale-native-lead', lead, true, REBIND)
-expectBlock('stale-custom-lead', lead, true, PARKED)
-expectBlock('stale-shadow-read-lead', lead, true, PARKED)
+for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
+  assert.equal(
+    blockOf(toolCallId),
+    undefined,
+    `${toolCallId} never reached the host: the run ended at the rebind before it was prepared`
+  )
 expectBlock('stale-shadow-read-a', targetA, false, UNVERIFIED)
 expectBlock('stale-native-a', targetA, true, REBIND)
 expectBlock('rejected-native-b', targetB, false, /Native write was not executed: .*parent/)
@@ -1385,19 +1402,23 @@ assert.deepEqual(
   'every unparked provider request ran in the expected runtime'
 )
 const staleCalls = providerCalls.filter(call => call.parked)
-for (const call of staleCalls)
-  assert.deepEqual(
-    [call.step, resolve(call.cwd ?? '')],
-    [staleContinuation.id, resolve(targetA)],
-    'a parked continuation can only follow the mixed stale batch at writer-a'
-  )
-for (const toolCallId of ['parked-native', 'parked-bash'])
-  for (const block of hostBlocks.filter(item => item.toolCallId === toolCallId))
-    assert.deepEqual([block.terminate, PARKED.test(block.reason)], [true, true])
-assert.equal(
-  hostBlocks.filter(item => item.toolCallId.startsWith('parked-')).length,
-  staleCalls.length * 2,
-  'every call of a parked continuation was fenced'
+assert.deepEqual(staleCalls, [], 'no provider request ran in a parked context')
+assert.deepEqual(
+  hostBlocks.filter(item => PARKED.test(item.reason)),
+  [],
+  'no tool call was refused as parked: every rebind ended its run first'
+)
+assert.deepEqual(
+  abortedRuns,
+  [
+    { step: 'stale-lead', terminalInputs: 0 },
+    { step: 'stale-a', terminalInputs: 0 },
+    { step: 'escape-stream', terminalInputs: 1 },
+    { step: 'resume-explicit', terminalInputs: 1 },
+    { step: 'resume-refused', terminalInputs: 1 },
+    { step: 'resume-fail', terminalInputs: 1 },
+  ],
+  'each tool-originated rebind ended its run through a session abort, the first two before any terminal Escape; the provider-side abort is not a session abort'
 )
 
 const toolResults = new Map(
@@ -1415,10 +1436,20 @@ const toolResults = new Map(
     )
 )
 const toolResultIds = [...toolResults.keys()]
+for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
+  assert.equal(
+    toolResults.has(toolCallId),
+    false,
+    `${toolCallId} has no persisted result: Pi answers it synthetically on the next request`
+  )
+for (const [toolCallId, reason] of [
+  ['stale-native-lead', REBIND],
+  ['stale-native-a', REBIND],
+  ['stale-shadow-read-a', UNVERIFIED],
+] as const)
+  assert.match(toolResults.get(toolCallId)?.text ?? '', reason, `${toolCallId} kept its reason`)
 for (const toolCallId of [
   'stale-native-lead',
-  'stale-custom-lead',
-  'stale-shadow-read-lead',
   'stale-shadow-read-a',
   'stale-native-a',
   'fresh-native-b',
@@ -1670,16 +1701,27 @@ assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB
 assert.ok(inspections.some(input => input.taskId === TASK_LEAD))
 const switchedTo = (workspaceId: string, cwd: string): string =>
   `Workspace is now ${workspaceId} at ${cwd}. The blocked operation was not replayed.`
+const cancelledSiblings =
+  'Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed.'
 const reevaluate = (reason: string, workspaceId: string, cwd: string): string =>
-  `Workspace admission changed after ${reason}. The prior operation was blocked and was not replayed. Current workspace: ${workspaceId} at ${cwd}. Re-evaluate the user's request using this new context; do not repeat the blocked tool payload.`
+  `Workspace admission changed after ${reason}. Dev ended that turn. Current workspace: ${workspaceId} at ${cwd}. The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it. ${cancelledSiblings}`
 assert.deepEqual(
   handoffMessages,
   [
     reevaluate('fixture competing writer required an isolated workspace', WS_A, targetA),
     reevaluate('fixture repeated contention required another isolated workspace', WS_B, targetB),
-    `This conversation resumed onto a retained workspace through the workspace tool: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Continue the conversation in this new context.`,
+    `This conversation resumed onto a retained workspace through the workspace tool: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Dev ended the turn that requested it. ${cancelledSiblings} Continue the conversation in this new context.`,
   ],
-  'the model was told why each switch happened, and only blocked operations were called blocked'
+  'the model was told why each switch happened, which call was refused and which calls were cancelled'
+)
+assert.deepEqual(
+  timeline.flatMap(entry =>
+    entry.kind === 'notify' && entry.message.startsWith('Ending this turn for a workspace rebind')
+      ? [[entry.level, entry.message]]
+      : []
+  ),
+  handoffs.map(item => ['info', `Ending this turn for a workspace rebind: ${item.reason}.`]),
+  'each tool-originated rebind explained the ended turn before the switch'
 )
 assert.deepEqual(
   hostMessages.map(headings),
@@ -1799,6 +1841,7 @@ const report = {
   },
   providerCalls: providerCalls.map(({ step, cwd, parked }) => ({ step, cwd, parked })),
   parkedContinuationCalls: staleCalls.length,
+  abortedRuns,
   hostBlocks,
   staleToolResultsPersisted: toolResultIds,
   nativeFileWrites: nativeWrites.map(use => ({ grant: use.grant, facts: use.facts })),
@@ -1823,7 +1866,7 @@ const report = {
   childShadowedRead,
   networkAttempts,
   observations: [
-    `Pi ends a tool batch early only when every result sets terminate. The unverified-tool block is non-terminating, so the stale writer-a batch that mixed it with a rebind block let Pi issue ${staleCalls.length} provider request(s) in the parked writer-a context; every tool call from it was fenced with terminate and had no effect.`,
+    `Pi ends a tool batch early only when every result sets terminate, so the host ends the run itself at the refused call's execution end: ${staleCalls.length} provider request(s) ran in a parked context, ${abortedRuns.length} runs ended with stop reason aborted, and sibling calls prepared after the rebind were left unanswered for Pi to answer synthetically.`,
   ],
   limits: [
     'WorkspaceLifecycle is a typed stub that issues grants and records the reported facts without judging them; admission rules, the execution stage machine, fencing, live-execution refusals, persistence and writer-grant restoration after a cancelled switch are covered by the real-authority probe and workspace-authority-check.ts, not here.',
