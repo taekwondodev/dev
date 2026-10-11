@@ -15,8 +15,8 @@ I wanted a terminal-first experience. I was a Hermes main, but I wanted to come 
 - **`dev`** opens Pi from the project you are working on, with one of the profiles defined in my local, untracked `profiles/` directory, which selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
 - **`work`** runs commands and delegated Pi children in the background, in separate processes, with version-controlled model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch](config/README.md)
 - **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
-- **`read_url`** reads a documentation page by URL with cited sources, negotiating Markdown first, extracting HTML locally and rendering in your installed Chrome with a dev-owned copy of your profile only when static content is unusable; Pi's native codemode composes such reads in scripts. The lead and every delegated child read this way, sharing one authenticated browser. [read URL](docs/web-read.md)
-- Long sessions prepare compaction in the background, independently for the lead and each child, then apply it at the first safe boundary. Pi's native blocking recovery remains available. [compaction](docs/compaction.md)
+- **`read_url`** gives the lead and children sourced page text, using an authenticated Chrome profile copy when needed. Pi's native codemode can compose reads in scripts. [read URL](docs/web-read.md)
+- **Background compaction** prepares long-session summaries while the lead and children keep working. [compaction](docs/compaction.md)
 - The workflow itself (sizing, grilling, specs, implementation, review) comes from a shared skill library; dev owns only the integration.
 
 The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECTURE.md). What dev trusts and what it does not protect: [SECURITY](SECURITY.md).
