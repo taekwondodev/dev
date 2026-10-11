@@ -31,11 +31,11 @@ Forking before the first user message can fail after a workspace rebind. [Issue 
 
 [Architecture](ARCHITECTURE.md#components) maps source areas to their behavior guides. [AGENTS.md](../AGENTS.md#read-for-the-change) supplies mandatory reading triggers. Use the [documentation ownership table](#documentation-ownership) when the change affects more than code.
 
-Tests follow the integration boundary: launcher smoke, usage-profile fixtures, workspace authority/host/process checks, and work-controller/child checks. Checks that load a profile write a disposable manifest with `tests/profile-fixture.ts` and select it through `DEV_PROFILES`; they never read the installation's personal `profiles/`, so they also run from the upgrade worktree, which has none. The child test entry in `tests/work/` and the launcher's `makeRuntimeFactory` provide offline scripted-model composition roots, and that entry also injects the child reader's address resolver, which production never passes; the optional `startWorker` argument of `makeWorkspaceLifecycle`, which production never passes, lets checks start the authority worker themselves to exercise its crash, lost-acknowledgment and device-identity contracts and to inject faults into release and sweep. Production loads no test entry or test-selection environment variable.
-
 ## Verification
 
 Choose checks for the affected boundary. The commands and their full composition are in `package.json`; these are their purposes and non-obvious limits.
+
+Tests follow integration boundaries and use disposable storage. Profile fixtures come from `tests/profile-fixture.ts` through `DEV_PROFILES`, so checks also run in worktrees without personal profiles. Keep scripted models, injected resolvers and fault controls in test composition roots; production must not load test entries or test-selection variables.
 
 | Check                      | Evidence                                                                                                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -50,7 +50,9 @@ Choose checks for the affected boundary. The commands and their full composition
 | `npm run web:check`        | URL policy, pinned retrieval, extraction, continuation, the installed Chrome on a fixture profile copy, the shared browser owner with concurrent independent clients, and direct/codemode reads through the host |
 | `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                                                                                               |
 
-Only `workspace:github` touches the network; `web:check` serves its own loopback fixtures, launches the installed Chrome on a disposable fixture profile and skips the browser claims when Chrome is absent. Its owner claims start real browser-owner processes through `tests/web/browser-owner-entry.ts`, which reads its disposable profile, Chrome path, resolver and coordination roots from a fixture variable; production loads neither that entry nor that variable. The checks use disposable storage rather than real authority state or credentials. That reader check is deliberately outside the recurring workspace suite. Run it when the GitHub reader or its adapter facts change; fakes cannot establish that integration.
+`workspace:github` is the only check that contacts an external service. It is outside the recurring workspace suite; run it when the GitHub reader or its adapter facts change, because fakes cannot establish that integration.
+
+`web:check` serves loopback fixtures and launches the installed Chrome on a disposable profile. It skips browser claims when Chrome is absent; a passing run with those skips is not browser evidence.
 
 Use the actual TUI for interactive behavior. The Python pseudo-terminal driver exists because Node has no built-in pty; it drives TypeScript fixtures. To run one probe, use `python3 tests/workspace/run-workspace-pty-probes.py <name>`; the driver lists the supported names. Match proof to the change rather than adding a test or benchmark campaign by default.
 
@@ -83,7 +85,7 @@ Keep API dependencies in their adapters and regression tests, not a second API i
 
 ## Documentation ownership
 
-Update the owner of each meaning; link to it from other artifacts.
+Update the owner of each meaning; link to it from other artifacts. Issues and PRs retain the scope and evidence of a change. Maintained documentation describes the current system, with links to those records where the history matters.
 
 | Artifact                      | Owns                                                                                           |
 | ----------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -101,7 +103,7 @@ Update the owner of each meaning; link to it from other artifacts.
 | Code, tests and configuration | Exact APIs, algorithms, schemas and executable defaults                                        |
 | Shared workflow library       | Portable development procedures and skill contracts                                            |
 
-When adding a tool, link its guide from the component map and add a conditional reading trigger in `AGENTS.md`. Choose headings for the user's task; a feature guide is not an implementation walkthrough or test plan. Native Pi commands need documentation here only where dev changes them.
+When adding a tool, link its guide from the component map and add a conditional reading trigger in `AGENTS.md`. Choose headings for the user's task; a feature guide is not an implementation walkthrough or test plan. Refer to tool declarations and configuration for field inventories and exact defaults. Native Pi commands need documentation here only where dev changes them.
 
 Use the shared `domain-modeling` necessity gate and format for ADRs. New ADRs take the next number, link the accepted decision and appear in the architecture index.
 

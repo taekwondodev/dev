@@ -10,7 +10,7 @@ Ask the lead to run a command or delegate an assignment. It calls `work` with `a
 
 A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). Give paths, facts and acceptance conditions, not the lead's transcript. This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
 
-`skill` names the skill the child loads first; Pi expands it natively into the child's first message and it selects dispatch as described in [Dispatch](../config/README.md#resolution). A prompt that begins with `/skill:name` without the field is normalized into it, so the child behaves the same; with the field set, the prompt is passed as written. Leave `model` and `effort` unset for normal delegation; use those overrides only when the user requested them.
+`skill` names the skill the child loads first and selects [dispatch](../config/README.md#resolution). Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Leave `model` and `effort` unset unless the user requested those overrides.
 
 Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 
@@ -24,7 +24,9 @@ Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `
 /work stop                   cancel all owned attempts, including while the lead is idle
 ```
 
-Every `work` result is one object with a `kind` and the matching field: an attempt summary for `process`, `delegate` and `cancel` with an id, a snapshot of summaries for `list` and `cancel` without an id, the dispatch configuration, an inspection, or one log page. The summary carries what the model acts on: identity, task key, parent, coordinator flag, workflow task and workspace ids, cwd, kind, status, access, model, invoked skill, worktree path and cleanup state, exit code, completion time, one merged error, context and usage totals when known, and the delivery, cleanup, gate, observation and recovery notices when present. It stays small on purpose, because the model reads it on every call and in every outcome. The inspection is the summary with the complete persisted record, the stale-artifact flag and the retained logs; `inspect` with a stream returns one log page. A log page carries its stream, text, truncation and next offset, never a path. In a codemode script, `tools.work(...)` resolves to that same structured result, and `describeTool('work')` shows its typed declaration. Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Protocol reminders in descriptions and outcomes guide the model; they do not enforce compliance or authorize deletion. [Workspace](workspace.md) owns reservation and release.
+Results show attempt summaries; use `inspect` for the complete record, stale-artifact status and retained logs, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result; use `describeTool('work')` for its current declaration.
+
+Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Neither status authorizes deletion. [Workspace](workspace.md) owns reservation and release.
 
 ## Behavior
 
@@ -32,7 +34,9 @@ Every `work` result is one object with a `kind` and the matching field: an attem
 
 A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission.
 
-Every child receives its working project's instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Every child also gets dev's `read_url` reader and Pi's native `codemode`, so it can read documentation URLs and compose tool calls in a script; scripts in children reach no model catalog. Read-only children have inspection tools, `read_url`, `codemode` and `work` for coordinators, but no shell, edit or `gh` tool, and a script cannot reach past that allowlist. Reading a URL is a network effect with the shared authenticated browser profile: see [read URL](web-read.md). Put issue, PR or other external text in the prompt or a workspace file. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
+Every child receives its working project's instructions, Pi's base prompt, profile guidance and its full skill catalog, not the lead's conversation. Read-only children have inspection tools, `read_url`, `codemode` and `work` for coordinators, but no shell, edit or `gh` tool. Put issue, PR or other external text in the prompt or a workspace file. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
+
+Children can [read URLs](web-read.md) directly or through codemode, including authenticated pages. Scripts retain the child's tool permissions and have no model catalog; see [codemode's trust boundary](../SECURITY.md#trusted-base).
 
 The [security model](../SECURITY.md#outside-the-protection) explains why the allowlist does not sandbox trusted extensions or external agent providers.
 
@@ -62,9 +66,9 @@ Aborting a coordinator tool call interrupts its local wait, not an IPC request a
 
 ### Delivery and verification
 
-While background work runs, the lead and coordinators may do independent work. When only waiting remains, end the turn and let outcome delivery resume it. Do not use `sleep`, wait loops or repeated `list`/`inspect` calls just to await completion. This applies to commands and all delegated work, including reviews; inspection remains available for diagnosis or a requested progress check. While the lead owns running or waiting work, or a coordinator has live leaves or undelivered leaf outcomes, dev refuses that agent's `bash` call whose command only waits: `sleep`, optionally joined with `echo`, `printf`, `true` or `:`. Pi runs a codemode `tools.bash` call through the same hook, so the refusal applies to it too. A `sleep` combined with any other command, inside a loop, or without owned work still runs.
+While background work runs, do independent work or end the turn and let outcome delivery resume it. Do not poll or run shell waits just to await completion; inspection remains available for diagnosis or a requested progress check. Dev refuses simple sleep-only waits while the agent owns pending work, including through codemode. This guard is not a general shell-loop detector.
 
-An outcome message carries each attempt's summary, its stale-artifact flag and its retained logs, including a child's answer, so the common case needs no `inspect`; the complete record stays available through `inspect`. The message's details, which the model does not read, carry the attempt ids that drive acknowledgment and each child's facts (kind, parent, coordinator flag, session file) that the [usage profile](usage-profile.md) reads from persisted sessions. Outcomes arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
+Outcomes include summaries, stale-artifact status and retained logs, including a child's answer, so the common case needs no `inspect`. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
 A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.
 

@@ -15,8 +15,12 @@ Dev serves one person on one macOS account, primarily working on code, UI protot
 | Dev launcher            | Profile composition, installed Pi resolution, runtime lifecycle and private data paths              |
 | Work controller         | Attempt admission, process observation, cancellation, usage and outcome delivery                    |
 | Workspace authority     | Durable reservations, workspace uses, write admission, isolation and release                        |
+| URL reader              | Session-local retrieval, extraction and document snapshots                                          |
+| Browser owner           | Shared Chrome, authenticated profile copy and render isolation for one data home                    |
 
 A workflow verifies the artifact. The work controller observes execution; the workspace authority decides admission and release from its recorded and observed facts. These responsibilities do not substitute for one another.
+
+Only rendering crosses from a URL reader to the shared browser owner. The owner is an independent runtime with its own installation claim, not a delegated attempt or workspace user. The lead's work controller starts it on a child's behalf so its lifetime is independent of that attempt.
 
 ## Components
 
@@ -36,9 +40,9 @@ Contributor setup and checks are in [Development](DEVELOPMENT.md). The trust bou
 
 ## Decision records
 
-Read the relevant record before changing the boundary it governs. This index points to rationale rather than repeating it.
+Read the relevant record before changing the boundary it governs. This index links ADRs or the original accepted decision where no separate ADR exists; feature guides remain the source for current behavior.
 
-| Change under consideration                         | Record                                                                                                                                                         |
+| Change under consideration                         | Rationale source                                                                                                                                               |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pi integration or profile composition              | [#7](https://github.com/taekwondodev/dev/issues/7), [#11](https://github.com/taekwondodev/dev/issues/11), [#20](https://github.com/taekwondodev/dev/issues/20) |
 | Child isolation, controller ownership or delivery  | [ADR 0002](adr/0002-session-owned-background-work.md)                                                                                                          |

@@ -14,14 +14,10 @@ Preparation begins ahead of Pi's native blocking threshold when there is a valid
 
 A ready summary applies at the first safe turn or settle boundary, or immediately while idle without a model request. The selected recent history and messages added during preparation remain verbatim. Raw conversation history stays stored.
 
-Applied summaries notify loaded extensions through Pi's `session_compact` event after history and context are updated. The next model request waits for those handlers, so extensions that mirror history can rebuild first. Discarded summaries send no notification; native compaction keeps its own notification. Background summaries do not emit the TUI's blocking-compaction start/end events.
+Loaded extensions observe applied summaries before the next model request, so their view of history stays current. Discarded preparations send no notification. Background preparation does not show Pi's blocking-compaction UI.
 
 Changing the summarized context, branch or session invalidates a pending result. Navigation, reload and closing discard pending work; reopening restores stored history, not an unfinished preparation. Preparation failure leaves ordinary work and native recovery available.
 
-Compaction grants children no extra tools or write permissions. Observed summarization usage counts once in the session's totals, including completed summaries that were discarded.
-
 ## Inspect compaction activity
 
-Run `npm run profile` and read the [compaction figures](usage-profile.md#timing-and-compaction). Observations are collected automatically in session files, outside model context, without extra inference. Diagnostic-write failures reduce report coverage without blocking work or compaction.
-
-The report can show what was prepared, applied or discarded. It cannot establish that a run became faster or that a summary retained everything useful; inspect the conversation when assessing information loss.
+Run `npm run profile`; [Timing and compaction](usage-profile.md#timing-and-compaction) explains the figures and their limits. Observations are collected automatically in session files, outside model context, without extra inference. Diagnostic-write failures reduce report coverage without blocking work or compaction.

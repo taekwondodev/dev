@@ -58,8 +58,6 @@ The cache lives in the operating system's temporary directory (`node-compile-cac
 
 Help, diagnostics, save-only and browser commands do not start the workspace worker.
 
-Every lead session registers dev's `read_url` reader and Pi's native `codemode`, so the model can read documentation URLs directly or compose reads in scripts. Children receive both as well, with no model catalog in their scripts. Rendering is served by one shared browser owner per data home, started on demand. [Read URL](web-read.md) owns that behavior.
-
 ### Profiles and resources
 
 Profiles are personal configuration. The installation's `profiles/` directory is ignored by Git and holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Dev knows the manifest format, not profile or skill names:
@@ -100,7 +98,7 @@ Independent repositories can share a data home. See [workspace session commands]
 | Installation checkout                                    | Code, version-controlled `config/crew-dispatch.json` and the ignored personal `profiles/` directory                           |
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
-| `<data-home>/browser/`                                   | Dev's copy of the active Chrome profile, its lock, copy state and revocation marker ([Read URL](web-read.md#state))           |
+| `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
 | `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
 | Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |
