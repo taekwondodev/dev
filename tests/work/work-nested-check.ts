@@ -83,7 +83,6 @@ const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): Tool
   action: 'delegate',
   taskId,
   prompt,
-  rule: 'default',
   model: CHILD_MODEL,
   ...extra,
 })
@@ -559,6 +558,40 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       )
       assert.ok(offered.length >= 2, 'the unacknowledged outcome was not offered again')
     })
+
+    await claim(
+      'a leaf delegated with the skill field loads that skill, a leading invocation in the prompt is normalized into the field, and a nameless invocation is refused before any leaf starts',
+      async () => {
+        const alpha = fixture.writeSkill('alpha', 'ALPHA-BODY follow the alpha procedure.')
+        const { view, text } = await owner.run({
+          taskId: 'skilled',
+          coordinate: true,
+          prompt: phase('Skilled phase', [
+            work('s', delegation('skilled-leaf', 'Do the LEAF-ASSIGNMENT.', { skill: 'alpha' })),
+            work('l', delegation('legacy-leaf', '/skill:alpha   Do the LEGACY-ASSIGNMENT.')),
+            work('n', delegation('nameless-leaf', '/skill: Do nothing.')),
+          ]),
+        })
+        assertStatus(view, 'completed')
+        assert.match(text, /skill needs a skill name/)
+        const records = await owner.records()
+        assert.ok(!records.some(record => record.owner.taskId === 'nameless-leaf'))
+        for (const [taskId, assignment] of [
+          ['skilled-leaf', 'Do the LEAF-ASSIGNMENT.'],
+          ['legacy-leaf', 'Do the LEGACY-ASSIGNMENT.'],
+        ] as const) {
+          const leaf = await owner.leaf(view.id, taskId, settled)
+          assertStatus(leaf, 'completed')
+          assert.deepEqual(leaf.resources?.invokedSkill, { name: 'alpha', path: alpha })
+          const seen = await owner.result(leaf.id)
+          assert.match(seen, /^MODEL-SAW\n<skill name="alpha"/)
+          assert.equal(count(seen, '<skill name="alpha"'), 1)
+          assert.equal(count(seen, 'ALPHA-BODY'), 1)
+          assert.equal(count(seen, assignment), 1)
+          assert.equal(count(seen, '/skill:alpha'), 0)
+        }
+      }
+    )
 
     await claim(
       'an unauthorized child and a leaf have no work tool, and their requests start nothing',

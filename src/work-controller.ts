@@ -475,7 +475,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     request: AgentStartRequest,
     parent: Job | undefined
   ): Effect.fn.Return<AttemptView, WorkFailure> {
-    if (!request.prompt.trim()) return yield* new WorkError({ message: 'prompt is required' })
+    if (request.skill !== undefined && !request.skill.trim())
+      return yield* new WorkError({ message: 'skill needs a skill name' })
+    if (request.skill === undefined && !request.prompt.trim())
+      return yield* new WorkError({ message: 'prompt is required' })
     if (parent !== undefined) {
       if (request.coordinate === true || request.cwd !== undefined)
         return yield* new WorkError({
@@ -1230,6 +1233,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
                 sessionDir: join(dataHome, 'child-sessions'),
                 access: request.access,
                 prompt: request.prompt,
+                ...(request.skill === undefined ? {} : { skill: request.skill }),
                 ...(record.coordinator === true ? { coordinate: true } : {}),
                 owner: record.owner,
                 workspace: job.workspace,

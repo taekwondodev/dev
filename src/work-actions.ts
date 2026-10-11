@@ -2,6 +2,7 @@ import { Effect, Schema } from 'effect'
 import {
   asAttemptId,
   isAttemptId,
+  skillInvocation,
   WorkError,
   type AgentStartRequest,
   type AttemptDescription,
@@ -147,17 +148,25 @@ const startProcess = (
   return actions.startProcess(request).pipe(Effect.map(attemptResult))
 }
 
+const assignment = (input: WorkInput): { readonly skill?: string; readonly prompt: string } => {
+  const prompt = input.prompt ?? ''
+  if (input.skill !== undefined) return { skill: input.skill, prompt }
+  const invocation = skillInvocation(prompt)
+  return invocation === undefined
+    ? { prompt }
+    : { skill: invocation.name, prompt: invocation.assignment }
+}
+
 const startAgent = (
   actions: WorkActions,
   input: WorkInput
 ): Effect.Effect<WorkResult, WorkFailure> => {
   const request: AgentStartRequest = {
     taskId: input.taskId ?? '',
-    prompt: input.prompt ?? '',
+    ...assignment(input),
     access: input.access ?? 'read-only',
     ...(input.coordinate === undefined ? {} : { coordinate: input.coordinate }),
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-    ...(input.rule === undefined ? {} : { rule: input.rule }),
     ...(input.harness === undefined ? {} : { harness: input.harness }),
     ...(input.model === undefined ? {} : { model: input.model }),
     ...(input.effort === undefined ? {} : { effort: input.effort }),

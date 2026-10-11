@@ -76,13 +76,15 @@ try {
   try {
     await Promise.all([
       claim(
-        'a leading skill invocation is expanded once into the first user message with its arguments, and the attempt records only the invoked skill',
+        'the skill field is expanded once into the first user message before the assignment, and the attempt records only the invoked skill',
         async () => {
           const { view, text } = await base.run({
             taskId: 'native',
-            prompt: '/skill:alpha   Do the ALPHA-ASSIGNMENT now.',
+            skill: 'alpha',
+            prompt: 'Do the ALPHA-ASSIGNMENT now.',
           })
           assertStatus(view, 'completed')
+          assert.match(text, /^MODEL-SAW\n<skill name="alpha"/)
           assert.equal(count(text, '<skill name="alpha"'), 1)
           assert.equal(count(text, 'ALPHA-BODY'), 1)
           assert.equal(count(text, 'Do the ALPHA-ASSIGNMENT now.'), 1)
@@ -101,8 +103,50 @@ try {
         assert.equal(count(text, '<skill name='), 0)
         assert.equal(view.resources?.invokedSkill, undefined)
       }),
+      claim(
+        'an invocation inside a sentence stays text, and with the skill field set a leading invocation in the prompt stays text too',
+        async () => {
+          const [sentence, both] = await Promise.all([
+            base.run({ taskId: 'sentence', prompt: 'Use /skill:alpha. Do the ALPHA-ASSIGNMENT.' }),
+            base.run({
+              taskId: 'both',
+              skill: 'alpha',
+              prompt: '/skill:beta Do the BETA-ASSIGNMENT.',
+            }),
+          ])
+          assertStatus(sentence.view, 'completed')
+          assert.match(sentence.text, /^MODEL-SAW\nUse \/skill:alpha\. Do the ALPHA-ASSIGNMENT\.\n/)
+          assert.equal(count(sentence.text, '<skill name='), 0)
+          assert.equal(sentence.view.resources?.invokedSkill, undefined)
+          assertStatus(both.view, 'completed')
+          assert.equal(count(both.text, '<skill name="alpha"'), 1)
+          assert.equal(count(both.text, '<skill name="beta"'), 0)
+          assert.equal(count(both.text, 'BETA-BODY'), 0)
+          assert.equal(count(both.text, '/skill:beta Do the BETA-ASSIGNMENT.'), 1)
+          assert.deepEqual(both.view.resources?.invokedSkill, { name: 'alpha', path: alpha })
+        }
+      ),
+      claim('a blank skill field fails before any attempt starts', async () => {
+        await assert.rejects(
+          base.delegate({ taskId: 'blank-field', skill: ' ', prompt: 'x' }),
+          /skill needs a skill name/
+        )
+        const records = await base.records()
+        assert.ok(!records.some(record => record.owner.taskId === 'blank-field'))
+      }),
+      claim('a skill without an assignment is invoked alone', async () => {
+        const { view, text } = await base.run({
+          taskId: 'skill-only',
+          skill: 'alpha',
+          prompt: '  ',
+        })
+        assertStatus(view, 'completed')
+        assert.match(text, /^MODEL-SAW\n<skill name="alpha"/)
+        assert.equal(count(text, 'ALPHA-BODY'), 1)
+        assert.deepEqual(view.resources?.invokedSkill, { name: 'alpha', path: alpha })
+      }),
       claim('a hidden skill is explicitly invocable', async () => {
-        const { view, text } = await base.run({ taskId: 'hidden', prompt: '/skill:hidden go' })
+        const { view, text } = await base.run({ taskId: 'hidden', skill: 'hidden', prompt: 'go' })
         assertStatus(view, 'completed')
         assert.equal(count(text, 'HIDDEN-BODY'), 1)
       }),
@@ -111,7 +155,8 @@ try {
         async () => {
           const { view, text } = await base.run({
             taskId: 'second',
-            prompt: `/skill:alpha read another skill\n${script([[toolCall('read-beta', 'read', { path: beta })]])}`,
+            skill: 'alpha',
+            prompt: `read another skill\n${script([[toolCall('read-beta', 'read', { path: beta })]])}`,
           })
           assertStatus(view, 'completed')
           assert.match(text, /TOOL-RESULTS\n[\s\S]*BETA-BODY/)
@@ -124,7 +169,7 @@ try {
           const [command, template, collision] = await Promise.all([
             base.run({ taskId: 'command', access: 'write', prompt: '/marker PLAIN-COMMAND' }),
             base.run({ taskId: 'template', access: 'write', prompt: '/tpl TEMPLATE-ARGUMENT' }),
-            base.run({ taskId: 'collision', access: 'write', prompt: '/skill:collide run' }),
+            base.run({ taskId: 'collision', access: 'write', skill: 'collide', prompt: 'run' }),
           ])
           assertStatus(command.view, 'completed')
           assert.ok(
@@ -164,7 +209,8 @@ try {
       claim('the default catalog does not contain the skill of another profile', async () => {
         const { view } = await base.run({
           taskId: 'base-stack',
-          prompt: `/skill:${fixture.profiles.skill} x`,
+          skill: fixture.profiles.skill,
+          prompt: 'x',
         })
         assert.equal(view.status, 'failed')
         assert.match(view.error ?? '', /Skill "stack-only" is not in this child's catalog/)
@@ -174,13 +220,13 @@ try {
     await claim(
       'an unknown skill and a skill unreadable when the catalog loads fail the attempt before any model request',
       async () => {
-        const unknown = await base.run({ taskId: 'unknown', prompt: '/skill:missing do it' })
+        const unknown = await base.run({ taskId: 'unknown', skill: 'missing', prompt: 'do it' })
         assert.equal(unknown.view.status, 'failed')
         assert.match(unknown.view.error ?? '', /Skill "missing" is not in this child's catalog/)
         const locked = fixture.writeSkill('locked', 'LOCKED-BODY')
         chmodSync(locked, 0o000)
         try {
-          const unreadable = await base.run({ taskId: 'unreadable', prompt: '/skill:locked do' })
+          const unreadable = await base.run({ taskId: 'unreadable', skill: 'locked', prompt: 'do' })
           assert.equal(unreadable.view.status, 'failed')
           assert.match(unreadable.view.error ?? '', /Skill "locked" is not in this child's catalog/)
           assert.equal(count(unreadable.text, 'LOCKED-BODY'), 0)
@@ -202,8 +248,8 @@ try {
       'a profile with its own skills puts them before the shared ones, loading them from the installation profiles rather than from the project',
       async () => {
         const [own, shared] = await Promise.all([
-          stack.run({ taskId: 'stack-own', prompt: `/skill:${fixture.profiles.skill} x` }),
-          stack.run({ taskId: 'stack-shared', prompt: '/skill:alpha x' }),
+          stack.run({ taskId: 'stack-own', skill: fixture.profiles.skill, prompt: 'x' }),
+          stack.run({ taskId: 'stack-shared', skill: 'alpha', prompt: 'x' }),
         ])
         assertStatus(own.view, 'completed')
         assert.equal(count(own.text, '<skill name="stack-only"'), 1)

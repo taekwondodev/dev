@@ -26,33 +26,17 @@ const strong = { harness: 'pi', model: 'provider/strong', effort: 'high' }
 const cheap = { harness: 'pi', model: 'provider/cheap' }
 const configured = { rules: { implement: strong }, default: cheap }
 
-await claim('a prompt that invokes a configured skill selects that skill rule', async () => {
-  assert.deepEqual(await resolve(configured, { prompt: '/skill:implement ticket #1' }), strong)
-  assert.deepEqual(await resolve(configured, { prompt: '  /skill:implement' }), strong)
+await claim('a skill with a configured rule selects that rule', async () => {
+  assert.deepEqual(await resolve(configured, { skill: 'implement' }), strong)
 })
-await claim('a prompt that invokes a skill without a rule selects the default', async () => {
-  assert.deepEqual(await resolve(configured, { prompt: '/skill:code-review diff' }), cheap)
-})
-await claim('a plain prompt selects the default', async () => {
-  assert.deepEqual(await resolve(configured, { prompt: 'Summarize the implement module' }), cheap)
-})
-await claim('an explicit rule selects its profile without a skill prefix', async () => {
-  assert.deepEqual(await resolve(configured, { prompt: 'plain', rule: 'implement' }), strong)
-})
-await claim('rule "default" beats a configured skill prefix', async () => {
-  assert.deepEqual(
-    await resolve(configured, { prompt: '/skill:implement x', rule: 'default' }),
-    cheap
-  )
-})
-await claim('an unknown rule fails without substituting a profile', async () => {
-  assert.match(await refusal(configured, { prompt: 'x', rule: 'review' }), /Unknown dispatch rule/)
-  assert.match(await refusal(configured, { prompt: 'x', rule: '0' }), /Unknown dispatch rule/)
+await claim('a skill without a rule and a missing skill both select the default', async () => {
+  assert.deepEqual(await resolve(configured, { skill: 'code-review' }), cheap)
+  assert.deepEqual(await resolve(configured, {}), cheap)
 })
 await claim('explicit model and effort override the selected profile', async () => {
   assert.deepEqual(
     await resolve(configured, {
-      prompt: '/skill:implement x',
+      skill: 'implement',
       model: 'provider/other',
       effort: 'low',
     }),
@@ -60,30 +44,24 @@ await claim('explicit model and effort override the selected profile', async () 
   )
 })
 await claim('a blank explicit model or an unknown effort fails naming the field', async () => {
-  assert.match(
-    await refusal(configured, { prompt: 'x', model: ' ' }),
-    /whitespace[\s\S]*\["model"\]/
-  )
-  assert.match(
-    await refusal(configured, { prompt: 'x', effort: 'bogus' }),
-    /"off"[\s\S]*\["effort"\]/
-  )
+  assert.match(await refusal(configured, { model: ' ' }), /whitespace[\s\S]*\["model"\]/)
+  assert.match(await refusal(configured, { effort: 'bogus' }), /"off"[\s\S]*\["effort"\]/)
 })
 await claim('a rule named default fails parsing with that reason', async () => {
   assert.match(
-    await refusal({ rules: { default: cheap }, default: cheap }, { prompt: 'x' }),
+    await refusal({ rules: { default: cheap }, default: cheap }, {}),
     /Cannot read dispatch configuration[\s\S]*cannot be named "default"/
   )
 })
 await claim('a rule key with whitespace fails parsing naming the key', async () => {
   assert.match(
-    await refusal({ rules: { 'code review': cheap }, default: cheap }, { prompt: 'x' }),
+    await refusal({ rules: { 'code review': cheap }, default: cheap }, {}),
     /Cannot read dispatch configuration[\s\S]*"code review" must be a nonempty skill name without whitespace/
   )
 })
 await claim('an array of rules fails parsing at the rules key', async () => {
   assert.match(
-    await refusal({ rules: [{ when: 'x', use: cheap }], default: cheap }, { prompt: 'x' }),
+    await refusal({ rules: [{ when: 'x', use: cheap }], default: cheap }, {}),
     /Cannot read dispatch configuration[\s\S]*Expected object[\s\S]*\["rules"\]/
   )
 })
@@ -91,7 +69,7 @@ await claim('an unknown field inside a rule fails parsing at that field', async 
   assert.match(
     await refusal(
       { rules: { implement: { ...strong, when: 'Implementation' } }, default: cheap },
-      { prompt: 'x' }
+      {}
     ),
     /Cannot read dispatch configuration[\s\S]*excess property[\s\S]*\["rules"\]\["implement"\]\["when"\]/
   )
@@ -100,14 +78,14 @@ await claim(
   'a blank default model, a foreign harness and invalid JSON fail with their reason',
   async () => {
     assert.match(
-      await refusal({ rules: {}, default: { harness: 'pi', model: ' ' } }, { prompt: 'x' }),
+      await refusal({ rules: {}, default: { harness: 'pi', model: ' ' } }, {}),
       /whitespace[\s\S]*\["default"\]\["model"\]/
     )
     assert.match(
-      await refusal({ rules: {}, default: { harness: 'claude' } }, { prompt: 'x' }),
+      await refusal({ rules: {}, default: { harness: 'claude' } }, {}),
       /Expected "pi"[\s\S]*\["default"\]\["harness"\]/
     )
-    assert.match(await refusal('{not json', { prompt: 'x' }), /valid JSON/)
+    assert.match(await refusal('{not json', {}), /valid JSON/)
   }
 )
 await claim('the shipped configuration has no rules and a pi default with a model', async () => {

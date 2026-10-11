@@ -10,7 +10,7 @@ Ask the lead to run a command or delegate an assignment. It calls `work` with `a
 
 A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). Give paths, facts and acceptance conditions, not the lead's transcript. This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
 
-A leading `/skill:name` loads the skill natively and selects dispatch as described in [Dispatch](../config/README.md#resolution). Leave `rule`, `model` and `effort` unset for normal delegation; use explicit model/effort overrides only when the user requested them.
+`skill` names the skill the child loads first; Pi expands it natively into the child's first message and it selects dispatch as described in [Dispatch](../config/README.md#resolution). A prompt that begins with `/skill:name` without the field is normalized into it, so the child behaves the same; with the field set, the prompt is passed as written. Leave `model` and `effort` unset for normal delegation; use those overrides only when the user requested them.
 
 Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 

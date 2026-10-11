@@ -181,7 +181,11 @@ const assertWorkGuidance = (
   limit: number
 ): void => {
   assert.ok(tool?.description !== undefined)
-  const access = decodeParameters(tool.parameters).properties.access?.description ?? ''
+  const { properties } = decodeParameters(tool.parameters)
+  assert.ok(properties.skill?.description?.includes('dispatch rule'), 'skill parameter')
+  assert.equal(properties.rule, undefined, 'rule parameter')
+  assert.ok(!(properties.prompt?.description ?? '').includes('/skill:'), 'prompt description')
+  const access = properties.access?.description ?? ''
   for (const name of [...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS])
     assert.ok(access.includes(name), name)
   assert.ok(access.includes('no shell, no edits and no gh'))
@@ -203,6 +207,29 @@ try {
         const tool = lead.session.getAllTools().find(candidate => candidate.name === 'work')
         assertWorkGuidance(tool, 1500)
         assertWorkGuidance(createCoordinatorWorkTool(unusedLink), 800)
+      })
+  )
+
+  await claim(
+    'a delegation carrying the removed rule field is refused as an unknown property before any attempt starts',
+    () =>
+      withLead({}, async lead => {
+        const run = lead.session.prompt('delegate with a legacy field')
+        const first = await lead.request(0)
+        first.reply([
+          toolCall('legacy', 'work', {
+            action: 'delegate',
+            taskId: 'legacy',
+            prompt: 'Review nothing',
+            rule: 'default',
+          }),
+        ])
+        const after = await lead.request(1)
+        const [refused] = toolResults(after).slice(-1)
+        assert.match(refused ?? '', /must not have additional properties/)
+        after.reply(text('refused'))
+        await run
+        assert.deepEqual((await listing(lead)).records, [])
       })
   )
 
