@@ -136,6 +136,18 @@ const toolResults = (runtime: Pi.AgentSessionRuntime) => (toolCallId: string) =>
   }
 }
 
+const handoffText = (entry: Pi.SessionEntry): string | undefined => {
+  if (entry.type === 'custom_message' && entry.customType === 'dev/workspace-handoff')
+    return String(entry.content)
+  if (
+    entry.type === 'message' &&
+    entry.message.role === 'custom' &&
+    entry.message.customType === 'dev/workspace-handoff'
+  )
+    return String(entry.message.content)
+  return undefined
+}
+
 const { claim, passed } = makeClaims()
 const lifecycle = await openLifecycle({ root: join(fixture, 'authority') })
 const squatterFile = join(dataHome, 'squatter.jsonl')
@@ -238,6 +250,74 @@ try {
           /no admitted destination/
         )
         assert.ok(!existsSync(latePath))
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'a rebind inside a mixed tool batch ends the run: the admitted sibling read is cancelled unexecuted, Pi spends no request in the old context, and the handoff tells the model which call was refused and which were cancelled',
+    async () => {
+      const { offline: mixed, script } = await offlineScript('mixed-batch', [
+        [
+          toolCall('mixed-read', 'read', { path: 'AGENTS.md' }),
+          toolCall('mixed-bash', 'bash', { command: 'touch mixed-batch.txt' }),
+        ],
+        [toolCall('mixed-after', 'write', { path: 'mixed-after.txt', content: 'after\n' })],
+      ])
+      const { manager, attached } = await attachLeadConversation()
+      const opened = await openLeadHost({ attachment: attached.effect, manager, offline: mixed })
+      try {
+        await opened.runtime.session.prompt('Read the guide and touch a file.')
+        await waitFor(
+          'the scripted turns',
+          () => (script.calls() >= 3 ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        await opened.runtime.session.waitForIdle()
+        const result = toolResults(opened.runtime)
+        assert.equal(script.calls(), 3, 'no model request was spent in the old context')
+        assert.equal(result('mixed-bash').isError, true)
+        assert.match(
+          result('mixed-bash').text,
+          /requires a host rebind: .*The operation was not executed/,
+          'the refused call keeps its reason'
+        )
+        assert.deepEqual(result('mixed-read'), { isError: true, text: 'Operation aborted' })
+        assert.ok(!existsSync(join(lead, 'mixed-batch.txt')), 'the held checkout was not touched')
+        assert.notEqual(
+          resolve(opened.runtime.cwd),
+          resolve(lead),
+          'the lead left the held checkout'
+        )
+        assert.equal(result('mixed-after').isError, false, result('mixed-after').text)
+        assert.equal(readFileSync(join(opened.runtime.cwd, 'mixed-after.txt'), 'utf8'), 'after\n')
+        const entries = opened.runtime.session.sessionManager.getEntries()
+        const handoffs = entries.flatMap(entry => {
+          const text = handoffText(entry)
+          return text === undefined ? [] : [text]
+        })
+        assert.equal(handoffs.length, 1)
+        assert.match(
+          handoffs[0] ?? '',
+          /^Workspace admission changed after .*\. Dev ended that turn\. Current workspace: .*\. The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it\. Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed\.$/
+        )
+        const endedTurns = entries.flatMap(entry =>
+          entry.type === 'message' &&
+          entry.message.role === 'assistant' &&
+          entry.message.stopReason !== 'toolUse' &&
+          entry.message.stopReason !== 'stop'
+            ? [entry.message]
+            : []
+        )
+        assert.equal(
+          endedTurns.length,
+          1,
+          'the ended run persisted one assistant turn, as an Escape would'
+        )
+        assert.match(endedTurns[0]?.errorMessage ?? '', /aborted/i)
+        assert.equal(opened.host.isParked(), false, 'the host completed the switch')
+        assert.deepEqual(await pendingAtLead(), [])
       } finally {
         await opened.close()
       }

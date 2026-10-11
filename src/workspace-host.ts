@@ -266,6 +266,9 @@ const display = (api: ExtensionAPI, context: ExtensionContext, message: string):
   }
 }
 
+const cancelledSiblingsNotice =
+  'Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed.'
+
 const switchNotices = (
   { origin, handoff }: PendingTransition,
   binding: WorkspaceBinding
@@ -274,15 +277,18 @@ const switchNotices = (
   return origin === 'tool-resume'
     ? {
         user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}.`,
-        model: `This conversation resumed onto a retained workspace through the workspace tool: ${handoff.reason}. ${current} Continue the conversation in this new context.`,
+        model: `This conversation resumed onto a retained workspace through the workspace tool: ${handoff.reason}. ${current} Dev ended the turn that requested it. ${cancelledSiblingsNotice} Continue the conversation in this new context.`,
         unqueued: 'Submit a new prompt.',
       }
     : {
         user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}. The blocked operation was not replayed.`,
-        model: `Workspace admission changed after ${handoff.reason}. The prior operation was blocked and was not replayed. ${current} Re-evaluate the user's request using this new context; do not repeat the blocked tool payload.`,
+        model: `Workspace admission changed after ${handoff.reason}. Dev ended that turn. ${current} The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it. ${cancelledSiblingsNotice}`,
         unqueued: 'The blocked request was not replayed; submit a new prompt.',
       }
 }
+
+const rebindTurnEndNotice = (handoff: WorkspaceHandoff): string =>
+  `Ending this turn for a workspace rebind: ${handoff.reason}.`
 
 export const keptConversationGuidance = (
   sessionFile: string,
@@ -374,6 +380,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let parked: false | 'switch' = false
   let closed = false
   let pending: PendingTransition | undefined
+  let armedRunEnd: PendingTransition | undefined
   let invokingHandoffSwitch = false
   let replacing = false
   let quitting = false
@@ -743,6 +750,24 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const transition = makeTransition(handoff, origin, context, 'requested')
     pending = transition
     if (immediate) scheduleHandoff(transition)
+    else armedRunEnd = transition
+  }
+
+  const endRunForRebind = (context: ExtensionContext): void => {
+    const transition = armedRunEnd
+    if (transition === undefined) return
+    armedRunEnd = undefined
+    if (pending !== transition) return
+    notify(context, rebindTurnEndNotice(transition.handoff))
+    try {
+      context.abort()
+    } catch (error) {
+      notify(
+        context,
+        `The turn could not be ended for the workspace rebind, so Pi may spend one more request before the switch: ${errorText(error)}`,
+        'warning'
+      )
+    }
   }
 
   const authorization = Effect.fnUntraced(
@@ -1346,12 +1371,13 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
 
       api.on('tool_call', (event, context) => runPromise(safeToolCall(api, event, context)))
 
-      api.on('tool_execution_end', event =>
+      api.on('tool_execution_end', (event, context) =>
         runPromise(
           nativeWrites.finish(event.toolCallId).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 readerWarnings.delete(event.toolCallId)
+                endRunForRebind(context)
               })
             )
           )
