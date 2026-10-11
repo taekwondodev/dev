@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { decodeNestedCalls } from './usage-codemode.ts'
 import {
   BACKGROUND_COMPACTION_USAGE,
   COMPACTION_OBSERVATION,
@@ -82,6 +83,7 @@ const decodeToolResult = Schema.decodeUnknownOption(
       toolName: Schema.String,
       content: Schema.Array(Schema.Unknown),
       details: Schema.optional(Schema.Unknown),
+      nestedCalls: Schema.optional(Schema.Unknown),
       usage: Schema.optional(Schema.Unknown),
       isError: Schema.Boolean,
     }),
@@ -230,6 +232,7 @@ type Payload =
       readonly tool: string
       readonly isError: boolean
       readonly blocks: readonly Block[]
+      readonly nestedCalls: ReturnType<typeof decodeNestedCalls>
       readonly truncation: TruncationDetails | 'malformed' | undefined
       readonly attempt: AttemptRecord | undefined
       readonly usage: Usage | undefined
@@ -375,6 +378,8 @@ const resultPayload = (value: unknown): Payload | undefined =>
             onSome: ({ text }): Block => ({ type: 'text', text }),
           })
         ),
+        nestedCalls:
+          message.toolName === 'codemode' ? decodeNestedCalls(message.nestedCalls) : 'missing',
         truncation: truncationOf(message.details),
         attempt: work
           ? Option.getOrUndefined(

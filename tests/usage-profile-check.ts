@@ -66,6 +66,7 @@ interface ResultOptions {
   readonly blocks?: readonly Json[]
   readonly isError?: boolean
   readonly details?: unknown
+  readonly nestedCalls?: unknown
   readonly usage?: unknown
 }
 
@@ -144,6 +145,7 @@ const conversation = (start: string) => {
         toolName: call.name,
         content: options.blocks ?? [{ type: 'text', text: options.text ?? 'ok' }],
         details: options.details ?? {},
+        ...(options.nestedCalls === undefined ? {} : { nestedCalls: options.nestedCalls }),
         ...(options.usage === undefined ? {} : { usage: options.usage }),
         isError: options.isError ?? false,
       }),
@@ -1038,6 +1040,103 @@ const repositoryState = () => ({
 })
 
 try {
+  await claim(
+    'codemode operations stay separate, preserve outer totals and exports, and expose missing, malformed and incomplete metadata',
+    async () => {
+      const home = join(root, 'nested')
+      const lead = conversation('2026-09-29T23:59:50Z')
+      const codeCall = { id: 'code', name: 'codemode', arguments: {} }
+      const nestedCalls = {
+        complete: false,
+        calls: [
+          {
+            id: 'a',
+            name: 'read',
+            status: 'ok',
+            durationMs: 10,
+            arguments: { path: 'PRIVATE-ARGS' },
+          },
+          { id: 'b', name: 'read', status: 'error', durationMs: 20, error: 'PRIVATE-ERROR' },
+          { id: 'c', name: 'bash', status: 'unfinished' },
+          { id: 'd', name: 'read', status: 'invalid' },
+        ],
+      }
+      const entries = [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a', 'u', 1, { calls: [codeCall] }),
+        lead.result('r', 'a', 11, codeCall, { nestedCalls }),
+        lead.result('missing', 'r', 12, codeCall),
+        lead.result('malformed', 'missing', 13, codeCall, { nestedCalls: null }),
+        lead.result('empty', 'malformed', 14, codeCall, {
+          nestedCalls: { calls: [], complete: true },
+        }),
+      ]
+      writeSession(home, 'sessions', 'nested', entries)
+      writeSession(home, 'child-sessions', 'copied', [
+        lead.header({ parentSession: '/source.jsonl', timestamp: '2026-10-01T00:00:00Z' }),
+        ...entries.slice(1),
+      ])
+      const original = digestTree(join(home, 'sessions'))
+      assert.equal((await profile(home))._tag, 'Success')
+      const withNested = report(home)
+      const summary = withNested.periods[0].codemode
+      assert.deepEqual(summary.coverage, {
+        results: 4,
+        recorded: 2,
+        missing: 1,
+        malformed: 1,
+        incomplete: 1,
+        malformedCalls: 1,
+      })
+      assert.equal(summary.operations, 3)
+      assert.deepEqual(summary.byTool, [
+        {
+          tool: 'bash',
+          ok: 0,
+          error: 0,
+          unfinished: 1,
+          durations: { samples: 0, medianMs: null, maxMs: null },
+        },
+        {
+          tool: 'read',
+          ok: 1,
+          error: 1,
+          unfinished: 0,
+          durations: { samples: 2, medianMs: 10, maxMs: 20 },
+        },
+      ])
+      assert.doesNotMatch(JSON.stringify(withNested), /PRIVATE-ARGS|PRIVATE-ERROR/)
+      assert.deepEqual(digestTree(join(home, 'sessions')), original)
+      const before = await period('..2026-09-30')
+      await profile(home, [before])
+      assert.equal(report(home, before.label).periods[0].codemode.coverage.results, 0)
+      const exportWith = join(root, 'nested-export-with')
+      assert.equal(maintain('--data-home', home, '--export', exportWith).status, 0)
+      writeSession(
+        home,
+        'sessions',
+        'nested',
+        entries.map(entry => {
+          if (!('message' in entry)) return entry
+          assert.ok(typeof entry.message === 'object' && entry.message !== null)
+          Object.assign(entry.message, { nestedCalls: undefined })
+          return entry
+        })
+      )
+      await profile(home)
+      const withoutNested = report(home)
+      for (const value of [withNested, withoutNested]) delete value.periods[0].codemode
+      assert.deepEqual(withNested, withoutNested)
+      const exportWithout = join(root, 'nested-export-without')
+      assert.equal(maintain('--data-home', home, '--export', exportWithout).status, 0)
+      for (const name of ['usage-baseline.json', 'usage.svg', 'tools.svg'])
+        assert.equal(
+          readFileSync(join(exportWith, name), 'utf8'),
+          readFileSync(join(exportWithout, name), 'utf8')
+        )
+    }
+  )
   await claim(
     'native call and result IDs pair through ancestry; invocation errors, execution failures, blocked, cancelled, unclassified and unmatched calls stay distinct, a failing command stays an execution failure whatever its output says, a failure pairs only with the first call of the same tool in a later response and never with a call of its own response, the pair is only a candidate, and a returned result is never a quality claim',
     async () => {
