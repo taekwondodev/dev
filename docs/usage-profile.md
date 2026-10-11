@@ -35,6 +35,14 @@ Calls without results are unmatched. The chart's success percentage is `returned
 
 Candidate repeated-error or recovery sequences connect a failed result to a later call of the same tool. They suggest places to inspect, not an established causal relation.
 
+### Operations inside codemode
+
+The private report shows codemode's recorded internal operations separately from outer tool calls. It reads Pi's `nestedCalls` metadata offline, without changing prompts, tool responses or transcript collection. Existing token totals, outer tool metrics and public exports are unchanged.
+
+Internal `ok`, `error` and `unfinished` counts describe each operation, even when the outer script returns without error. Missing or malformed metadata is unknown coverage, not zero operations. Incomplete metadata can omit calls or arguments or contain unfinished work; malformed calls are counted separately and excluded from operation totals. A complete empty list records zero operations.
+
+These observations belong to the outer result's UTC period and exclude copied fork history. Duration samples, nearest-rank medians and maxima describe individual operations, not additive elapsed time: operations may overlap and durations may be absent. Arguments, raw errors and operation results are not included in this report. Internal results are not recorded by Pi, so the report does not infer read overlap, Git result equality or child attribution from these operations.
+
 ### Reads and Git requests
 
 Read overlap compares returned line ranges within one branch and session. It distinguishes pagination, identical or changed text, and intervening compaction or edits. Images and incomplete range information have unknown coverage. Repeated reads in separate sessions remain separate observations; overlap is not proven waste or billed tokens.

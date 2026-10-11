@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { codemodeReport, codemodeSession, type CodemodeReport } from './usage-codemode.ts'
 import { Array as Arr, DateTime, Effect, FileSystem, Option, Schema } from 'effect'
 import { orUnavailable, percent, renderCharts, seconds, size } from './usage-charts.ts'
 import { ROLES, type TokenTotals, USAGE_SOURCES } from './usage-export.ts'
@@ -74,6 +75,7 @@ interface ProfileOptions {
 }
 
 type PrivatePeriod = PeriodSummary & {
+  readonly codemode: CodemodeReport
   readonly compaction: CompactionReport
   readonly drilldowns: Drilldowns
 }
@@ -125,6 +127,7 @@ const exportFiles = Effect.fn('exportFiles')(function* (
 const measured = (session: SessionRecord) => ({
   analysis: analyzeSession(session),
   compaction: compactionSession(session),
+  codemode: codemodeSession(session),
 })
 
 export const profileUsage = Effect.fn('profileUsage')(function* ({
@@ -139,9 +142,11 @@ export const profileUsage = Effect.fn('profileUsage')(function* ({
   ]
   const analysis = analyze(sessions.map(session => session.analysis))
   const compactions = sessions.map(session => session.compaction)
+  const nested = sessions.flatMap(session => session.codemode)
   const reported = periods.map(period => ({
     ...summarize(analysis.facts, period, privateNames),
     compaction: compactionReport(compactions, period),
+    codemode: codemodeReport(nested, period),
     drilldowns: drilldowns(analysis.facts, period),
   }))
   const labels = periods.map(period => period.label)
@@ -443,6 +448,27 @@ const compactionLines = ({ compaction }: PrivatePeriod): string[] => {
   ]
 }
 
+const codemodeLines = ({ codemode }: PrivatePeriod): string[] => {
+  const { coverage: c } = codemode
+  if (c.results === 0) return []
+  return [
+    `Codemode internal operations: ${codemode.operations} observed, separate from outer tool totals; ${c.recorded}/${c.results} results with metadata, ${c.missing} missing, ${c.malformed} malformed, ${c.incomplete} incomplete, ${c.malformedCalls} malformed calls. Unknown coverage is not zero operations.`,
+    ...table(
+      ['internal tool', 'ok', 'error', 'unfinished', 'timed', 'median ms', 'max ms'],
+      codemode.byTool.map(row => [
+        row.tool,
+        String(row.ok),
+        String(row.error),
+        String(row.unfinished),
+        String(row.durations.samples),
+        orUnavailable(row.durations.medianMs, value => value.toFixed(1)),
+        orUnavailable(row.durations.maxMs, value => value.toFixed(1)),
+      ])
+    ),
+    '  Result-period observations; durations are per operation, not additive wall time. Internal results are not recorded; read overlap, Git results and child attribution are not inferred.',
+  ]
+}
+
 const periodLines = (summary: PrivatePeriod): string[] => {
   const { sample } = summary
   if (sample === null)
@@ -455,6 +481,7 @@ const periodLines = (summary: PrivatePeriod): string[] => {
     ...usageLines(summary),
     '',
     ...toolLines(summary),
+    ...codemodeLines(summary),
     '',
     ...readLines(summary),
     '',
