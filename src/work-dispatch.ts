@@ -4,7 +4,6 @@ import {
   WorkDispatchError,
   DispatchProfileSchema,
   DispatchRulesSchema,
-  skillInvocation,
   type DispatchConfig,
   type DispatchInput,
   type DispatchProfile,
@@ -39,29 +38,16 @@ export const readDispatch: Effect.Effect<DispatchConfig, WorkDispatchError, File
     )
   )
 
-const select = (
-  config: DispatchConfig,
-  input: DispatchInput
-): Effect.Effect<DispatchProfile, WorkDispatchError> => {
-  if (input.rule === undefined) {
-    const name = skillInvocation(input.prompt)?.name
-    return Effect.succeed(
-      name !== undefined && Object.hasOwn(config.rules, name) ? config.rules[name] : config.default
-    )
-  }
-  if (input.rule === 'default') return Effect.succeed(config.default)
-  return Object.hasOwn(config.rules, input.rule)
-    ? Effect.succeed(config.rules[input.rule])
-    : Effect.fail(
-        failure(`Unknown dispatch rule "${input.rule}"; pass a configured skill name or "default"`)
-      )
-}
+const select = (config: DispatchConfig, input: DispatchInput): DispatchProfile =>
+  input.skill !== undefined && Object.hasOwn(config.rules, input.skill)
+    ? config.rules[input.skill]
+    : config.default
 
 export const resolveDispatch = Effect.fnUntraced(function* (
   input: DispatchInput
 ): Effect.fn.Return<DispatchProfile, WorkDispatchError, FileSystem.FileSystem> {
   const config = yield* readDispatch
-  const selected = yield* select(config, input)
+  const selected = select(config, input)
   if (input.harness !== undefined && input.harness !== 'pi') {
     return yield* failure(`Unsupported harness: ${input.harness}; only pi is available`)
   }

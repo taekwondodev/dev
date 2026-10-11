@@ -13,7 +13,6 @@ import {
   SKILL_COMMAND,
   SessionId,
   TaskId,
-  skillInvocation,
 } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
@@ -77,7 +76,8 @@ export const ChildRequestEnvelope = Schema.Struct({
   access: Schema.Literals(ACCESS_MODES),
   workspace: WorkspaceGrantSchema,
   authorityRoot: AbsolutePath,
-  prompt: Schema.NonEmptyString,
+  prompt: Schema.String,
+  skill: Schema.optional(Schema.NonEmptyString),
   coordinate: Schema.optional(Schema.Boolean),
   owner: Schema.Struct({
     sessionId: SessionId,
@@ -257,13 +257,10 @@ function resolveExplicitModel(modelReferenceText: string, modelRuntime: Pi.Model
 
 const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
   session: Pi.AgentSession,
+  name: string | undefined,
   prompt: string
 ): Effect.fn.Return<InitialPrompt, ChildError, FileSystem.FileSystem> {
-  const invocation = skillInvocation(prompt)
-  if (invocation === undefined) return { text: prompt }
-  const { name, assignment } = invocation
-  if (name === '')
-    return yield* new ChildError({ message: 'A skill invocation needs a skill name' })
+  if (name === undefined) return { text: prompt }
   const skill = session.resourceLoader.getSkills().skills.find(candidate => candidate.name === name)
   if (skill === undefined)
     return yield* new ChildError({
@@ -283,7 +280,7 @@ const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
     return yield* new ChildError({
       message: `An extension command named "skill:${name}" would run instead of the skill; no model request was made`,
     })
-  const text = assignment.trim()
+  const text = prompt.trim()
   return {
     text: text === '' ? `${SKILL_COMMAND}${name}` : `${SKILL_COMMAND}${name} ${text}`,
     skill,
@@ -891,7 +888,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     session.setThinkingLevel(effort)
     state.effort = session.thinkingLevel
   }
-  const initialPrompt = yield* resolveInitialPrompt(session, request.prompt)
+  const initialPrompt = yield* resolveInitialPrompt(session, request.skill, request.prompt)
   const resourceContext = makeContext(
     request,
     loaded.packageInfo,

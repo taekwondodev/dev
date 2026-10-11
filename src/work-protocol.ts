@@ -103,9 +103,8 @@ const text = (description: string) => Schema.optionalKey(Schema.String.annotate(
 
 const sharedWorkInput = {
   taskId: text('Task key for process and delegate; not the workflowTaskId.'),
-  prompt: text(
-    'Focused, self-contained assignment, never a transcript; /skill:name first loads one skill.'
-  ),
+  prompt: text('Focused, self-contained assignment, never a transcript.'),
+  skill: text('Skill the child loads first; selects its dispatch rule.'),
   id: text('Attempt id for inspect and cancel.'),
   access: Schema.optionalKey(
     WorkAccessSchema.annotate({
@@ -115,7 +114,6 @@ const sharedWorkInput = {
   harness: text('Leave unset.'),
   model: text('Only when the user asked for it.'),
   effort: text('Only when the user asked for it.'),
-  rule: text('Skill name or "default" to override dispatch.'),
   stream: Schema.optionalKey(
     Schema.Literals(['stdout', 'stderr', 'result']).annotate({
       description: "With inspect: page a stream; result is a child's answer.",

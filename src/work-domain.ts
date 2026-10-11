@@ -83,8 +83,7 @@ export const DispatchConfigSchema = Schema.Struct({
 export type DispatchConfig = typeof DispatchConfigSchema.Type
 
 export interface DispatchInput {
-  readonly prompt: string
-  readonly rule?: string
+  readonly skill?: string
   readonly harness?: string
   readonly model?: string
   readonly effort?: string
@@ -449,7 +448,7 @@ export interface AgentStartRequest {
   readonly access: WorkAccess
   readonly coordinate?: boolean
   readonly cwd?: string
-  readonly rule?: string
+  readonly skill?: string
   readonly harness?: string
   readonly model?: string
   readonly effort?: string
