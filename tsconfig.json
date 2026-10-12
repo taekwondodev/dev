@@ -13,7 +13,16 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "diagnosticSeverity": { "floatingEffect": "error" },
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "returnEffectInGen": "error",
+          "promiseInEffectSuccess": "error",
+          "effectInVoidSuccess": "error",
+          "lazyPromiseInEffectSync": "error",
+          "unsafeEffectTypeAssertion": "error",
+          "missingReturnYieldStar": "error",
+          "missingStarInYieldEffectGen": "error"
+        },
         "allowedUnstableApis": [
           "effect/ByteSize",
           "effect/FileSystem",
