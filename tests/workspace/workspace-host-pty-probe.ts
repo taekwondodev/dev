@@ -901,8 +901,8 @@ const wrapWorkspaceCommand = (
 })
 
 const instrumentHost =
-  (factory: (api: ExtensionAPI) => void) =>
-  (rawApi: ExtensionAPI): void =>
+  (factory: ExtensionFactory): ExtensionFactory =>
+  rawApi =>
     factory(
       new Proxy(rawApi, {
         get(target, property) {
@@ -952,8 +952,8 @@ const initialSessionId = initialManager.getSessionId()
 const initialSessionFile = initialManager.getSessionFile()
 assert.ok(initialSessionFile)
 const shadowRead =
-  (cwd: string): ExtensionFactory =>
-  api => {
+  (cwd: string) =>
+  (api: ExtensionAPI): void => {
     api.registerTool({
       ...pi.createWriteToolDefinition(cwd),
       name: 'read',
