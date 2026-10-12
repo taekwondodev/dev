@@ -58,9 +58,9 @@ Use the actual TUI for interactive behavior. The Python pseudo-terminal driver e
 
 The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
 
-`lint:types` runs the selected Promise rules from `.oxlintrc-type-aware.json` using the development-only `oxlint-tsgolint` dependency. Its separate configuration avoids activating the general preset's dormant type-aware style rules. Explicit `void` remains an opt-out for intentional Promise detachment, not proof that rejection is handled.
+The separate Promise-check configuration avoids activating the general preset's dormant type-aware style rules. Explicit `void` remains an opt-out for intentional Promise detachment, not proof that rejection is handled.
 
-Static checks protect correctness without prescribing runtime rewrites. Preserve the [Effect boundary decisions](adr/0005-scoped-runtime-coordination.md#effect-boundary): native APIs, Promise adapters and unchanged external errors are intentional at those boundaries. Effect-native and tracing preferences are not blanket errors, and `unknown` error channels are not globally forbidden. Do not trade runtime performance for stylistic conformance; demonstrate a correctness need or a measured benefit before changing a runtime mechanism.
+When addressing lint diagnostics, preserve the [Effect boundary decisions](adr/0005-scoped-runtime-coordination.md#effect-boundary). A lint-driven runtime rewrite needs a demonstrated correctness need or measured benefit, not stylistic preference alone.
 
 ## Upgrades
 
