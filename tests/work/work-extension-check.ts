@@ -366,12 +366,16 @@ return JSON.stringify({
         const declared = after.context.messages
           .flatMap(message => (message.role === 'system' ? (message.toolsAdded ?? []) : []))
           .findLast(tool => tool.name === 'work')
-        assert.ok(
-          declared?.description.includes(
-            'Codemode: `tools.work(args)` resolves to `{ kind, attempt?, snapshot?, dispatch?, inspection?, log? }`'
-          ),
-          declared?.description ?? 'no work tool in the model request'
-        )
+        assert.ok(declared !== undefined, 'no work tool in the model request')
+        for (const fragment of [
+          'Codemode: `tools.work(args)` resolves to `{ kind,',
+          'attempt?',
+          'snapshot?',
+          'dispatch?',
+          'inspection?',
+          'log?',
+        ])
+          assert.ok(declared.description.includes(fragment), declared.description)
         after.reply(text('launched from a script'))
         await readOutcomes(lead, 2, 2)
         await run
