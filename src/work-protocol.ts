@@ -121,7 +121,8 @@ const sharedWorkInput = {
   ),
   offset: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
-      description: 'Byte offset of a stream page, or the list page start.',
+      description:
+        'Byte offset of a stream page, or the list page start. Continue with nextOffset until it is null.',
     })
   ),
 }

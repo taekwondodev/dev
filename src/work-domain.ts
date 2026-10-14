@@ -318,7 +318,7 @@ export interface LogPage {
   readonly path: string
   readonly reason?: string
   readonly offset?: number
-  readonly nextOffset?: number
+  readonly nextOffset?: number | null
   readonly size?: number
   readonly truncated?: boolean
   readonly text?: string
@@ -381,8 +381,14 @@ export const LogViewSchema = Schema.Struct({
   available: Schema.Boolean,
   reason: OptionalText,
   text: OptionalText,
-  truncated: Schema.optionalKey(Schema.Boolean),
-  nextOffset: Schema.optionalKey(Schema.Int),
+  truncated: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: 'The page is not the whole stream.' })
+  ),
+  nextOffset: Schema.optionalKey(
+    Schema.NullOr(Schema.Int).annotate({
+      description: 'Offset of the next page, or null at the end of the stream.',
+    })
+  ),
 })
 export type LogView = typeof LogViewSchema.Type
 

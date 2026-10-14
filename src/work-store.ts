@@ -458,7 +458,7 @@ interface LogRead {
   readonly path: string
   readonly reason?: string
   readonly offset?: number
-  readonly nextOffset?: number
+  readonly nextOffset?: number | null
   readonly size?: number
   readonly truncated?: boolean
   readonly text?: string
@@ -716,13 +716,14 @@ export class WorkStore extends Context.Service<
             const buffer = new Uint8Array(Math.min(limit, Math.max(0, size - start)))
             const bytes = yield* file.read(buffer)
             const chunk = buffer.subarray(0, bytes)
+            const end = start + chunk.byteLength
             return {
               available: true,
               path,
               offset: start,
-              nextOffset: start + chunk.byteLength,
+              nextOffset: end < size ? end : null,
               size,
-              truncated: start > 0 || start + chunk.byteLength < size,
+              truncated: start > 0 || end < size,
               text: Buffer.from(chunk).toString('utf8'),
             }
           },
