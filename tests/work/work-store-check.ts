@@ -148,6 +148,49 @@ try {
         )
       )
   )
+  await claim(
+    'log paging ends with a null nextOffset at the end of the stream, also for the default tail and offsets beyond the end',
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const home = join(root, 'paging')
+          const store = yield* WorkStore
+          const record = yield* store.create(asAttemptId('00000000-0000-0000-0000-000000000002'), {
+            kind: 'process',
+            cwd: home,
+            controllerPid: process.pid,
+            owner: {
+              sessionId: asSessionId('paging-check'),
+              taskId: asTaskId('paging-check'),
+              generation: asGenerationId('paging-check'),
+            },
+          })
+          const content = 'abcdefghij'
+          writeFileSync(store.logPath(record.id, 'stdout'), content)
+          const page = (offset?: number) => store.readLog(record.id, 'stdout', offset, 4)
+
+          const first = yield* page(0)
+          assert.deepEqual([first.text, first.truncated, first.nextOffset], ['abcd', true, 4])
+          const second = yield* page(4)
+          assert.deepEqual([second.text, second.truncated, second.nextOffset], ['efgh', true, 8])
+          const last = yield* page(8)
+          assert.deepEqual([last.text, last.truncated, last.nextOffset], ['ij', true, null])
+          const beyond = yield* page(content.length)
+          assert.deepEqual([beyond.text, beyond.nextOffset], ['', null])
+          const tail = yield* page()
+          assert.deepEqual([tail.text, tail.truncated, tail.nextOffset], ['ghij', true, null])
+          const whole = yield* store.readLog(record.id, 'stdout', 0, 64)
+          assert.deepEqual([whole.text, whole.truncated, whole.nextOffset], [content, false, null])
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            WorkStore.layer(join(root, 'paging'), asSessionId('paging-check')).pipe(
+              Layer.provide(NodeFileSystem.layer)
+            )
+          )
+        )
+      )
+  )
   await claim('a corrupt database is refused and left as found, not rebuilt', () =>
     Effect.runPromise(
       Effect.gen(function* () {

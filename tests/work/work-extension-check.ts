@@ -293,7 +293,7 @@ try {
           assert.deepEqual(page?.log, {
             stream: 'stdout',
             available: true,
-            nextOffset: 0,
+            nextOffset: null,
             truncated: false,
             text: '',
           })

@@ -18,7 +18,7 @@ Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `
 /work                        list this session's attempts, including leaves and their parent
 /work dispatch               inspect configured dispatch rules; not a prerequisite to launch
 /work inspect <id>           inspect the complete record, logs and tracked artifact changes
-/work inspect <id> stdout 0  page output by byte offset; continue with nextOffset
+/work inspect <id> stdout 0  page output by byte offset; continue with nextOffset until it is null
 /work inspect <id> stderr 0  page stderr; use result for a child's retained answer
 /work stop <id>              cancel an attempt and, for a coordinator, its leaves
 /work stop                   cancel all owned attempts, including while the lead is idle
