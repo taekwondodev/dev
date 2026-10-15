@@ -1336,6 +1336,19 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
                 ),
               catch: toFailure,
             })
+            if (message.operation === 'foreign-write') {
+              if (message.checkout === undefined)
+                return yield* new WorkError({
+                  message: 'A foreign write check names the checkout to reserve',
+                })
+              const reserved = yield* workspace.attachment
+                .authorize({ kind: 'foreign-write', cwd: message.checkout })
+                .pipe(Effect.mapError(toFailure))
+              if (reserved.kind !== 'ready')
+                return yield* new WorkError({
+                  message: 'The other checkout was not reserved for this conversation',
+                })
+            }
           })
         )
         yield* sendIpc(child, {

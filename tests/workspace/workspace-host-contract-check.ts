@@ -100,9 +100,16 @@ await claim(
     assert.ok(!removed.includes('Pi has not written'))
   }
 )
-const conversation = { sessionId: manager.getSessionId(), sessionFile, dataHome }
+const conversation = {
+  sessionId: manager.getSessionId(),
+  sessionFile,
+  dataHome,
+}
 const selections: WorkspaceSelection[] = []
-const refused = new WorkspaceError({ outcome: 'blocked', message: 'not used by this check' })
+const refused = new WorkspaceError({
+  outcome: 'blocked',
+  message: 'not used by this check',
+})
 const receipt: SweepReceipt = makeFixtureReceipt({
   moment: 'allocation',
   rows: [
@@ -150,13 +157,47 @@ const lifecycle: WorkspaceLifecycle = {
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
 }
-const foreignCheckout = join(fixture, 'projects', 'foreign-checkout')
-mkdirSync(foreignCheckout, { recursive: true })
-execFileSync('git', ['init', '--quiet', foreignCheckout])
+execFileSync('git', ['init', '--quiet', current.path])
+execFileSync('git', [
+  '-C',
+  current.path,
+  '-c',
+  'user.name=Host Contract',
+  '-c',
+  'user.email=host-contract@example.invalid',
+  'commit',
+  '--quiet',
+  '--allow-empty',
+  '-m',
+  'fixture',
+])
+const foreignCheckout = join(fixture, 'projects', 'linked-worktree')
+execFileSync('git', [
+  '-C',
+  current.path,
+  'worktree',
+  'add',
+  '--quiet',
+  '--detach',
+  foreignCheckout,
+  'HEAD',
+])
+writeFileSync(join(current.path, 'lead-edit.txt'), 'bound copy\n')
 const foreignFile = join(foreignCheckout, 'lead-edit.txt')
 const steps: readonly ScriptedContent[] = [
-  [toolCall('work-allocation', 'work', { action: 'process', taskId: 'tests', command: 'true' })],
-  [toolCall('foreign-write', 'write', { path: foreignFile, content: 'forbidden' })],
+  [
+    toolCall('work-allocation', 'work', {
+      action: 'process',
+      taskId: 'tests',
+      command: 'true',
+    }),
+  ],
+  [
+    toolCall('foreign-write', 'write', {
+      path: foreignFile,
+      content: 'forbidden',
+    }),
+  ],
 ]
 let calls = 0
 const offline = await makeOfflineModel({
@@ -170,7 +211,10 @@ const offline = await makeOfflineModel({
 let opened: Awaited<ReturnType<typeof openHostRuntime>> | undefined
 try {
   opened = await openHostRuntime({
-    coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
+    coordination: {
+      installationPath: fixture,
+      namespacePath: join(fixture, 'authority'),
+    },
     pi,
     packageRoot: packageInfo.root,
     lifecycle,
@@ -184,7 +228,10 @@ try {
     offline,
   })
   const { host, runtime } = opened
-  const notices: { readonly message: string; readonly level: string | undefined }[] = []
+  const notices: {
+    readonly message: string
+    readonly level: string | undefined
+  }[] = []
   const handlerErrors: string[] = []
   await runtime.session.bindExtensions({
     uiContext: {
@@ -228,7 +275,7 @@ try {
     }
   )
   await claim(
-    "a native write from the lead into another checkout is refused before any workspace admission, so a foreign delegation changes nothing about the lead's own destinations",
+    'a native write from the lead into another worktree of its repository is refused before any workspace admission and names the same file in the bound workspace',
     async () => {
       const before = authorized.length
       await runtime.session.prompt('write into the other checkout')
@@ -247,8 +294,10 @@ try {
       const text = result.content
         .flatMap(part => (part.type === 'text' ? [part.text] : []))
         .join('\n')
-      assert.match(text, /another checkout/)
+      assert.match(text, /another worktree of this repository/)
+      assert.ok(text.includes(`instead: ${join(current.path, 'lead-edit.txt')}`), text)
       assert.equal(existsSync(foreignFile), false)
+      assert.equal(readFileSync(join(current.path, 'lead-edit.txt'), 'utf8'), 'bound copy\n')
       assert.deepEqual(authorized.slice(before), [], 'the refusal reached workspace admission')
     }
   )

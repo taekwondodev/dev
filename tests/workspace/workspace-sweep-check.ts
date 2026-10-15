@@ -528,6 +528,39 @@ try {
   )
 
   await claim(
+    'quit sweeps a repository the conversation wrote into natively: the clean pre-existing checkout loses its reservation and keeps its files',
+    async () => {
+      const written = join(sandbox, 'foreign-written-repo')
+      mkdirSync(written)
+      git(['init', '--quiet', '-b', 'main'], written)
+      git(['config', 'user.name', 'Sweep Check'], written)
+      git(['config', 'user.email', 'sweep-check@example.invalid'], written)
+      writeFileSync(join(written, 'tracked.txt'), 'written\n')
+      git(['add', '.'], written)
+      git(['commit', '--quiet', '-m', 'written fixture'], written)
+      const owner = await reserve(userCheckout('foreign-writer'))
+      const grant = ready(await owner.owner.authorize({ kind: 'foreign-write', cwd: written }))
+      assert.equal(grant.checkout, written)
+      assert.deepEqual(owner.owner.effect.delegatedCwds, [written])
+      await owner.owner.close()
+      const receipt = await sweepWith(
+        lifecycle,
+        owner.write.workspaceId,
+        owner.owner.effect.delegatedCwds
+      )
+      const row = rowOf(receipt, grant.workspaceId)
+      assert.deepEqual([row.outcome, verdictName(row.verdict)], ['released', 'clean-checkout'])
+      assert.equal(readFileSync(join(written, 'tracked.txt'), 'utf8'), 'written\n')
+      assert.equal(
+        (await lifecycle.inspect({ cwd: written })).find(view => view.path === written)
+          ?.reservationId,
+        undefined,
+        'the reservation ended'
+      )
+    }
+  )
+
+  await claim(
     'a repository whose records cannot be read at quit yields a sweep-failure row naming it instead of losing the receipt: the anchor repository still reports its tasks, nothing is touched, and the next sweep finishes both',
     async () => {
       const foreignRepo = join(sandbox, 'foreign-repo')

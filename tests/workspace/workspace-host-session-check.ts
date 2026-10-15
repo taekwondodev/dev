@@ -258,6 +258,56 @@ try {
     }
   )
   await claim(
+    'native write/edit into another repository reserves that checkout for the conversation and writes in place, without a worktree, a rebind or a change to the lead binding',
+    async () => {
+      const other = join(fixture, 'other-repo')
+      mkdirSync(other)
+      git(['init', '--quiet', '-b', 'main'], other)
+      git(['config', 'user.email', 'host-session@example.invalid'], other)
+      git(['config', 'user.name', 'host session check'], other)
+      writeFileSync(join(other, 'README.md'), 'other repository\n')
+      git(['add', 'README.md'], other)
+      git(['commit', '--quiet', '-m', 'other fixture'], other)
+      const target = join(other, 'notes', 'lead.txt')
+      const { offline, script } = await offlineScript('foreign-native', [
+        [toolCall('foreign-write', 'write', { path: target, content: 'one' })],
+        [toolCall('foreign-edit', 'edit', { path: target, oldText: 'one', newText: 'two' })],
+      ])
+      const { manager, attached } = await attachLeadConversation()
+      const before = await lifecycle.inspect({ cwd: lead })
+      const opened = await openLeadHost({ attachment: attached.effect, manager, offline })
+      try {
+        await opened.runtime.session.prompt('Write and edit the file in the other repository.')
+        await opened.runtime.session.waitForIdle()
+        for (const id of ['foreign-write', 'foreign-edit']) {
+          const result = toolResults(opened.runtime)(id)
+          assert.equal(result.isError, false, result.text)
+        }
+        assert.equal(readFileSync(target, 'utf8'), 'two')
+        assert.equal(script.calls(), 3)
+        assert.equal(opened.runtime.cwd, lead)
+        assert.equal(opened.host.isParked(), false)
+        assert.deepEqual(attached.binding.cwd, lead)
+        assert.deepEqual(await lifecycle.inspect({ cwd: lead }), before)
+        const views = await lifecycle.inspect({ cwd: other })
+        assert.ok(
+          views.every(view => view.origin === 'pre-existing'),
+          `no worktree was allocated: ${JSON.stringify(views)}`
+        )
+        assert.ok(
+          views.some(
+            view =>
+              view.path === other && view.reservationId !== undefined && view.taskId !== undefined
+          ),
+          JSON.stringify(views)
+        )
+        assert.deepEqual(attached.effect.delegatedCwds, [other])
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
     'a rebind inside a mixed tool batch ends the run: the admitted sibling read is cancelled unexecuted, Pi spends no request in the old context, and the handoff tells the model which call was refused and which were cancelled',
     async () => {
       const { offline: mixed, script } = await offlineScript('mixed-batch', [

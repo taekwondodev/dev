@@ -50,7 +50,7 @@ Command text must follow the [credential rule](../SECURITY.md#credentials). Proc
 
 A delegated writer receives a distinct managed worktree from the source checkout's exact current commit. Modified, untracked and ignored files are not copied. `worktree.path` records the allocation, whose reservation outlives the attempt.
 
-For `delegate`, `cwd` can select another Git checkout. The child follows that repository's project instructions, skills and delivery policy; a read-only child reads the selected checkout directly. The lead stays bound to its original repository and can read and inspect the result, but its native writes there remain refused. See [workspace selection](workspace.md#delegation-into-another-checkout) for admission and task identity.
+For `delegate`, `cwd` can select another Git checkout. The child follows that repository's project instructions, skills and delivery policy; a read-only child reads the selected checkout directly. The lead stays bound to its original repository and can read and inspect the result; its own native writes into that checkout follow the [native destination policy](workspace.md#native-writes) and are refused while the child's task reserves it. See [workspace selection](workspace.md#delegation-into-another-checkout) for admission and task identity.
 
 `process` commands keep `cwd` inside the bound workspace. Leaves cannot select a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there.
 

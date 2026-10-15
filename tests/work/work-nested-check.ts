@@ -342,7 +342,63 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; the lead's native writes there stay refused; a leaf cannot name a cwd",
+      "a writing child's native write into another repository reserves that checkout for the lead conversation through the controller and writes in place without a worktree; a read-only child's write there is refused",
+      async () => {
+        const third = join(fixture.root, 'third-repo')
+        mkdirSync(third)
+        fixture.git(['init', '--quiet', '-b', 'main'], third)
+        fixture.git(['config', 'user.email', 'work-check@example.invalid'], third)
+        fixture.git(['config', 'user.name', 'work check'], third)
+        fixture.git(['config', 'commit.gpgsign', 'false'], third)
+        writeFileSync(join(third, 'tracked.txt'), 'third committed\n')
+        fixture.git(['add', '.'], third)
+        fixture.git(['commit', '--quiet', '-m', 'third fixture'], third)
+        const target = join(third, 'from-child.txt')
+        assert.deepEqual(
+          await fixture.lifecycle.inspect({ cwd: third }),
+          [],
+          'the third repository is unknown to the authority before the child writes'
+        )
+        assert.ok(!fixture.attachment.effect.delegatedCwds.includes(third))
+
+        const writer = await owner.run({
+          taskId: 'third-writer',
+          access: 'write',
+          prompt: `Third writer\n${script([
+            [toolCall('tw', 'write', { path: target, content: 'reserved by child\n' })],
+            [toolCall('te', 'edit', { path: target, oldText: 'child', newText: 'the child' })],
+          ])}`,
+        })
+        assertStatus(writer.view, 'completed')
+        assert.equal(readFileSync(target, 'utf8'), 'reserved by the child\n')
+        const thirdViews = await fixture.lifecycle.inspect({ cwd: third })
+        assert.ok(
+          thirdViews.every(view => view.origin === 'pre-existing'),
+          `no worktree was allocated: ${JSON.stringify(thirdViews)}`
+        )
+        assert.ok(
+          thirdViews.some(
+            view =>
+              view.path === third && view.reservationId !== undefined && view.taskId !== undefined
+          ),
+          JSON.stringify(thirdViews)
+        )
+        assert.ok(fixture.attachment.effect.delegatedCwds.includes(third))
+
+        const reader = await owner.run({
+          taskId: 'third-reader',
+          access: 'read-only',
+          prompt: `Third reader\n${script([
+            [toolCall('tr', 'write', { path: join(third, 'forbidden.txt'), content: 'no' })],
+          ])}`,
+        })
+        assertStatus(reader.view, 'completed')
+        assert.equal(reader.view.resources?.tools.includes('write'), false)
+        assert.ok(!existsSync(join(third, 'forbidden.txt')))
+      }
+    )
+    await claim(
+      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; the lead classifies that checkout as a repository to reserve; a leaf cannot name a cwd",
       async () => {
         const foreign = join(fixture.root, 'foreign-repo')
         mkdirSync(foreign)
@@ -418,9 +474,15 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           checkout: fixture.repository,
           authorityRoot: fixture.lifecycle.effect.root,
         }
-        assert.throws(
-          () => classifyWriteDestination(leadScope, fixture.repository, join(foreign, 'lead.txt')),
-          /another checkout/
+        assert.deepEqual(
+          classifyWriteDestination(leadScope, fixture.repository, join(foreign, 'lead.txt')),
+          {
+            kind: 'foreign',
+            operand: join(foreign, 'lead.txt'),
+            path: join(foreign, 'lead.txt'),
+            checkout: foreign,
+          },
+          'the lead classifies the other repository as a destination to reserve, not as a refusal'
         )
         assert.throws(
           () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),

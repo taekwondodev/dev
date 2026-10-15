@@ -724,6 +724,63 @@ try {
   )
 
   await claim(
+    "a lead native write into another repository reserves that checkout for the conversation's foreign task without a worktree or rebind, reuses its grant, admits a scoped write within it, and is refused with the delegation remedy while another task reserves the checkout",
+    async () => {
+      await assert.rejects(
+        delegated.authorize({ kind: 'foreign-write', cwd: foreignRepo }),
+        error =>
+          error instanceof WorkspaceError &&
+          error.outcome === 'blocked' &&
+          /reserved by another task; delegate the change with work delegate/.test(error.message)
+      )
+      const leadRepo = join(sandbox, 'lead-write-repo')
+      initRepository(leadRepo, 'lead.txt', 'lead fixture\n')
+      const boundBefore = delegated.binding
+      const grant = ready(await delegated.authorize({ kind: 'foreign-write', cwd: leadRepo }))
+      assert.deepEqual(
+        [grant.origin, grant.access, grant.checkout, grant.cwd],
+        ['pre-existing', 'write', leadRepo, leadRepo]
+      )
+      assert.notEqual(grant.repositoryId, delegatedGrant.repositoryId)
+      assert.ok(grant.reservationId !== undefined && grant.taskId !== undefined)
+      assert.deepEqual(delegated.binding, boundBefore, 'the lead stays bound to its own checkout')
+      const again = ready(
+        await delegated.authorize({ kind: 'foreign-write', cwd: join(leadRepo, '.') })
+      )
+      assert.equal(again.useId, grant.useId, 'one foreign write grant per checkout')
+      const scoped = ready(
+        await delegated.authorize({
+          kind: 'native-file-write',
+          within: grant,
+          path: join(leadRepo, 'lead.txt'),
+          cwd: leadRepo,
+        })
+      )
+      assert.equal(scoped.path, join(leadRepo, 'lead.txt'))
+      await delegated.reportExecution(scoped, { kind: 'operation-started' })
+      await delegated.reportExecution(scoped, { kind: 'operation-completed' })
+      const views = await lifecycle.inspect({ cwd: leadRepo })
+      assert.ok(
+        views.every(view => view.origin === 'pre-existing'),
+        `no worktree was allocated: ${JSON.stringify(views)}`
+      )
+      assert.ok(
+        views.some(
+          view =>
+            view.path === leadRepo &&
+            view.taskId === grant.taskId &&
+            view.reservationId === grant.reservationId
+        ),
+        JSON.stringify(views)
+      )
+      await expectWorkspaceError(
+        delegated.authorize({ kind: 'foreign-write', cwd: delegated.binding.cwd }),
+        'invalid'
+      )
+    }
+  )
+
+  await claim(
     'workspace switch refusals distinguish lead-shell recovery from work cancellation, even when a work task is named lead-shell',
     async () => {
       const guidanceRoot = await openLifecycle({ root: join(sandbox, 'guidance-authority') })

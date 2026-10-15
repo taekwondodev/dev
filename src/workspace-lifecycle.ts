@@ -356,7 +356,10 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       authorize: operation =>
         open(
           Effect.suspend(() => {
-            if (operation.kind === 'delegated-write' && operation.cwd !== undefined)
+            if (
+              (operation.kind === 'delegated-write' || operation.kind === 'foreign-write') &&
+              operation.cwd !== undefined
+            )
               delegated.add(operation.cwd)
             return request({ op: 'authorize', attachmentId, operation })
           })

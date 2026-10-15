@@ -274,7 +274,9 @@ const issue = (
 }
 
 const executionOf = (operation: WorkspaceOperation): WorkspaceExecution | undefined =>
-  operation.kind === 'native-file-write' ? undefined : operation.execution
+  operation.kind === 'native-file-write' || operation.kind === 'foreign-write'
+    ? undefined
+    : operation.execution
 const withinOf = (operation: WorkspaceOperation): WorkspaceGrant | undefined =>
   operation.kind === 'native-file-write' || operation.kind === 'opaque'
     ? operation.within
@@ -374,6 +376,8 @@ const makeAttachment = (
         case 'native-file-write':
         case 'opaque':
           return authorizeScoped(owned, operation)
+        case 'foreign-write':
+          throw new Error('the stub lifecycle reserves no other checkout')
         case 'leaf-read':
           throw new Error('the stub lifecycle admits no leaf')
       }

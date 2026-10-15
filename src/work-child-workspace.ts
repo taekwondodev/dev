@@ -29,9 +29,14 @@ export interface ControllerChannel extends ReplyChannel {
 const unavailableError = (message: string) =>
   new WorkspaceError({ outcome: 'unavailable', message })
 
+export type ChildWorkspaceOperation =
+  | 'read'
+  | 'write'
+  | { readonly kind: 'foreign-write'; readonly checkout: string }
+
 export const checkChildWorkspace = (
   grant: WorkspaceGrant,
-  operation: 'read' | 'write',
+  operation: ChildWorkspaceOperation,
   channel: ControllerChannel = process
 ): Effect.Effect<void, WorkspaceError> =>
   Effect.callback<void, WorkspaceError>(resume => {
@@ -68,9 +73,19 @@ export const checkChildWorkspace = (
       },
     })
     try {
-      channel.send({ type: 'workspace-check', requestId, useId: grant.useId, operation }, cause => {
-        if (cause !== null) settle(Effect.fail(unavailableError(errorText(cause))))
-      })
+      channel.send(
+        {
+          type: 'workspace-check',
+          requestId,
+          useId: grant.useId,
+          ...(typeof operation === 'string'
+            ? { operation }
+            : { operation: operation.kind, checkout: operation.checkout }),
+        },
+        cause => {
+          if (cause !== null) settle(Effect.fail(unavailableError(errorText(cause))))
+        }
+      )
     } catch (cause) {
       settle(Effect.fail(unavailableError(errorText(cause))))
     }
@@ -123,6 +138,12 @@ export const childWorkspaceExtension =
                 classifyWriteDestination(scope, grant.cwd, decodeWriteOperand(event.input)),
               catch: cause => new WorkspaceError({ outcome: 'invalid', message: errorText(cause) }),
             })
+            if (destination.kind === 'foreign')
+              yield* checkChildWorkspace(
+                grant,
+                { kind: 'foreign-write', checkout: destination.checkout },
+                channel
+              )
             yield* nativeWrites.admit({
               toolCallId: event.toolCallId,
               scope,
