@@ -38,12 +38,15 @@ Review the report's breaking versions, Pi changelog, changed contracts and audit
 
 ## 3. Merge, update and activate
 
-After merging:
+After merging the upgrade PR, run from dev's main installation checkout:
 
 ```bash
-npm run update     # fast-forward; reinstalls dependencies when package-lock.json changed
+git switch main
+npm run update
 npm run pi:update  # only when the upgrade changed Pi
 ```
+
+A successful update removes the upgrade worktree and its attached local branch and retires its workspace inventory entry, even when dev is already up to date. This cleanup runs only from the main installation checkout on `main`; the Pi candidate stays available for activation.
 
 `pi:update` activates the Pi pinned in `package.json`. It requires the verified candidate in `.dev/upgrade/pi` and that release still being Pi's latest; otherwise run `npm run upgrade` again. It checks the active version and installed lockfile against the candidate, runs smoke and prints diagnostics. On success it removes the candidate release.
 

@@ -195,7 +195,7 @@ export const attachConversation = (
         requireReview(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
       if (workspace.status === 'removed')
         requireReview(
-          `The workspace bound to this conversation was removed by release ${workspace.removalOperationId ?? '(unrecorded)'} and is not recreated: ${workspace.path}`
+          `The workspace bound to this conversation was removed${workspace.removalOperationId === undefined ? '' : ` by release ${workspace.removalOperationId}`} and is not recreated: ${workspace.path}`
         )
       if (lstatIfExists(workspace.path) === undefined)
         requireReview(

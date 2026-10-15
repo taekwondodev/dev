@@ -46,7 +46,7 @@ Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: thes
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 
-Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage profile](usage-profile.md) for periods, metrics and public exports.
+For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics and public exports.
 
 ## Behavior
 

@@ -3,6 +3,7 @@ import { Array as Arr, DateTime, Effect, FileSystem, Option, Predicate, Schema }
 import { errorText } from '../src/error-text.ts'
 import { resolvePiPackage } from '../src/pi-runtime.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
+import { upgradeBranch } from '../src/workspace-upgrade.ts'
 import { git, npmInstallFlags, run, streamed, upgradeHome } from './checkout.ts'
 import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
 import { PiVersion } from './pi-pin.ts'
@@ -26,7 +27,6 @@ const worktree = join(upgradeHome, 'worktree')
 const reportPath = join(upgradeHome, 'report.md')
 const bodyPath = join(upgradeHome, 'pull-request.md')
 const branchPrefix = 'chore/upgrade-'
-const upgradeBranch = /^chore\/upgrade-\d{4}-\d{2}-\d{2}(?:-\d+)?$/
 const manifestFiles = ['package.json', 'package-lock.json']
 const suites = [
   'lint',
