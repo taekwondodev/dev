@@ -986,8 +986,20 @@ try {
   )
 
   await claim(
-    'a sweep at a conversation replacement releases the clean pre-existing reservation of the closed conversation and removes its finished worktree, retains a modified checkout with its reason, and records the replacement as the decider',
+    'a sweep at a conversation replacement releases the clean pre-existing reservation and removes its finished worktree, retains a modified checkout and a live child with their reasons, and records the replacement as the decider',
     async () => {
+      const activeOwner = await reserve(userCheckout('replacement-live'))
+      const activeChild = ready(
+        await activeOwner.owner.authorize({
+          kind: 'delegated-write',
+          execution: {
+            sessionId: 'replacement-live',
+            taskKey: 'live-child',
+            attemptId: newId(),
+            generation: '1',
+          },
+        })
+      )
       const cleanCheckout = userCheckout('replacement-clean')
       const cleanOwner = await reserve(cleanCheckout)
       const finishedChild = ready(await cleanOwner.owner.authorize({ kind: 'delegated-write' }))
@@ -1023,6 +1035,13 @@ try {
         ['retained', 'retained:checkout-modified']
       )
       assert.ok((await reservedTasks()).includes(modifiedOwner.taskId))
+      const active = rowOf(receipt, activeChild.workspaceId)
+      assert.deepEqual(
+        [active.outcome, verdictName(active.verdict)],
+        ['retained', 'retained:use-live']
+      )
+      assert.ok(existsSync(activeChild.checkout), 'the live child worktree is untouched')
+      assert.ok((await reservedTasks()).includes(activeOwner.taskId))
       assert.ok(
         formatSweepReceipt(receipt).startsWith('Workspace sweep at the conversation replacement'),
         formatSweepReceipt(receipt)
@@ -1032,6 +1051,7 @@ try {
       )
       assert.equal(view?.outcome, 'removed')
       assert.ok(view?.reason.startsWith('By the sweep at a conversation replacement'), view?.reason)
+      await activeOwner.owner.close()
     }
   )
 

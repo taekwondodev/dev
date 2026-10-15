@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join, relative, resolve } from 'node:path'
+import { mock } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
@@ -661,6 +662,13 @@ try {
         (await lifecycle.inspect({ cwd: fresh })).find(
           view => resolve(view.path) === resolve(fresh)
         )
+      const output = mock.method(process.stderr, 'write')
+      const receipts = () =>
+        output.mock.calls
+          .map(call => String(call.arguments[0]))
+          .join('')
+          .split('Workspace sweep at the conversation replacement')
+          .slice(1)
       const sessionId = () => freshHost.runtime.session.sessionManager.getSessionId()
       const replace = async (what: string) => {
         const previous = sessionId()
@@ -679,6 +687,10 @@ try {
         assert.ok(firstTask !== undefined, 'the first conversation reserves the checkout')
 
         await replace('the first /new')
+        assert.equal(receipts().length, 1, 'the replacement shows one receipt before the next turn')
+        assert.ok(receipts()[0]?.includes(freshAttached.binding.workspaceId))
+        assert.match(receipts()[0] ?? '', /released \(automatic\)/)
+        assert.match(receipts()[0] ?? '', /finished \(clean-checkout\)/)
         await freshHost.runtime.session.prompt('Write another scratch file.')
         await freshHost.runtime.session.waitForIdle()
         const next = toolResults(freshHost.runtime)('next-write')
@@ -698,6 +710,9 @@ try {
 
         writeFileSync(join(fresh, 'AGENTS.md'), 'modified before the next /new\n')
         await replace('the second /new')
+        assert.equal(receipts().length, 2, 'the second replacement shows one more receipt')
+        assert.ok(receipts()[1]?.includes(freshAttached.binding.workspaceId))
+        assert.match(receipts()[1] ?? '', /retained \(checkout-modified\)/)
         await freshHost.runtime.session.prompt('Write one more scratch file.')
         await freshHost.runtime.session.waitForIdle()
         assert.equal(toolResults(freshHost.runtime)('modified-write').isError, true)
@@ -716,14 +731,16 @@ try {
           readFileSync(join(fresh, 'AGENTS.md'), 'utf8'),
           'modified before the next /new\n'
         )
+        assert.equal(receipts().length, 2, 'later turns do not replay replacement receipts')
       } finally {
+        output.mock.restore()
         await freshHost.close()
       }
     }
   )
 
   await claim(
-    'a /new whose leaving attachment fails to close still starts the next conversation: nothing is swept or released, and its first write is isolated as before',
+    'a /new whose leaving attachment fails to close reports the failure and starts the next conversation, keeping the reservation and isolating its first write',
     async () => {
       const held = join(fixture, 'held')
       mkdirSync(join(held, 'scratch'), { recursive: true })
@@ -760,6 +777,7 @@ try {
       const checkoutTask = async () =>
         (await lifecycle.inspect({ cwd: held })).find(view => resolve(view.path) === resolve(held))
           ?.taskId
+      const output = mock.method(process.stderr, 'write')
       try {
         await heldHost.runtime.session.prompt('Write a scratch file.')
         await heldHost.runtime.session.waitForIdle()
@@ -774,6 +792,10 @@ try {
         await unparked(heldHost.host, 'the next conversation to leave the parked state')
         assert.notEqual(heldHost.runtime.session.sessionManager.getSessionId(), previous)
         assert.equal(await checkoutTask(), firstTask, 'the reservation is untouched')
+        const receipt = output.mock.calls.map(call => String(call.arguments[0])).join('')
+        assert.match(receipt, /Workspace sweep at the conversation replacement/)
+        assert.match(receipt, /close refused by the probe/)
+        assert.match(receipt, /nothing was swept or released/)
         await heldHost.runtime.session.prompt('Write another scratch file.')
         await heldHost.runtime.session.waitForIdle()
         assert.equal(toolResults(heldHost.runtime)('held-next').isError, true)
@@ -785,6 +807,7 @@ try {
           'the reservation still belongs to the first task'
         )
       } finally {
+        output.mock.restore()
         await heldHost.close()
         await heldAttached.close()
       }
