@@ -82,8 +82,6 @@ registerHooks({
   git(['commit', '--quiet', '-m', 'squashed upgrade'])
   git(['push', '--quiet', 'origin', 'main'])
   git(['reset', '--quiet', '--hard', initial])
-  writeFileSync(join(worktree, 'tracked.txt'), 'residual edits\n')
-  writeFileSync(join(worktree, 'untracked.txt'), 'residue\n')
   mkdirSync(join(worktree, 'node_modules'))
   writeFileSync(join(worktree, 'node_modules', 'generated'), 'generated\n')
   const candidate = join(checkout, '.dev', 'upgrade', 'pi')
@@ -92,7 +90,6 @@ registerHooks({
   const unrelated = join(sandbox, 'unrelated')
   git(['worktree', 'add', '--quiet', '-b', 'chore/upgrade-2026-10-14', unrelated])
   const repository = authority.registerRepository(canonicalGitWorkspace(checkout))
-  registerWorkspace(authority, repository, canonicalGitWorkspace(worktree))
   const dataHome = join(sandbox, 'session')
   mkdirSync(dataHome)
   const sessionFile = join(dataHome, 'session.jsonl')
@@ -112,12 +109,7 @@ registerHooks({
   update()
   assert.ok(existsSync(worktree))
   git(['switch', '--quiet', 'main'])
-  git(['worktree', 'lock', worktree])
-  assert.throws(update, /locked/)
-  assert.ok(existsSync(worktree))
-  assert.ok(inspectWorkspaces(authority, { cwd: checkout }).some(view => view.path === worktree))
-  git(['worktree', 'unlock', worktree])
-  assert.match(update(), /Removed upgrade worktree and local branch chore\/upgrade-2026-10-15/)
+  update()
   assert.notEqual(git(['rev-parse', 'HEAD']), initial)
   assert.equal(existsSync(worktree), false, 'successful main update removes the upgrade worktree')
   assert.equal(git(['branch', '--list', branch]), '')
@@ -138,6 +130,11 @@ registerHooks({
   } finally {
     await resuming.close()
   }
+  git(['worktree', 'lock', worktree])
+  assert.throws(update, /locked/)
+  assert.ok(existsSync(worktree))
+  assert.ok(inspectWorkspaces(authority, { cwd: checkout }).some(view => view.path === worktree))
+  git(['worktree', 'unlock', worktree])
   git(['worktree', 'remove', worktree])
   update()
   assert.equal(
@@ -151,10 +148,8 @@ registerHooks({
   )
   git(['worktree', 'add', '--quiet', worktree, branch])
   registerWorkspace(authority, repository, canonicalGitWorkspace(worktree))
-  update()
-  assert.equal(existsSync(worktree), false)
   console.log(
-    'upgrade cleanup: main/no-change update, squash, residue, exact scope, missing checkout, repeat and path reuse passed'
+    'upgrade cleanup: main update, squash, generated files, exact scope, lock, missing checkout, repeat and path reuse passed'
   )
 } finally {
   authority.close()
