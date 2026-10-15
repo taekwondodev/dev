@@ -509,9 +509,9 @@ const auditCell = (audit: Option.Option<AuditSummary>): string =>
 const howToFix = (upgrade: Upgrade): string =>
   Option.match(upgrade.branch, {
     onNone: () =>
-      'Fix on a branch from `main` and merge it, then run `npm run upgrade` again to verify the pinned Pi.',
+      'Fix on a branch from `main` and merge it, then run `npm run pi:update` again to verify the pinned Pi.',
     onSome: ({ name, detached }) =>
-      `Fix on \`${name}\`, for example in the installation's \`.dev/upgrade/worktree\`, push${detached ? ` with \`git push origin HEAD:${name}\`` : ''}, then run \`npm run upgrade\` again: it re-verifies this pull request and replaces this report.`,
+      `Fix on \`${name}\`, for example in the installation's \`.dev/upgrade/worktree\`, push${detached ? ` with \`git push origin HEAD:${name}\`` : ''}, then run \`npm run pi:update\` again: it re-verifies this pull request and replaces this report.`,
   })
 
 const beforeMerging = (upgrade: Upgrade, tail: number): readonly string[] => {
@@ -567,7 +567,7 @@ const renderTimes = (verification: Verification): string =>
 
 const afterMerging = (upgrade: Upgrade): string =>
   Option.isSome(upgrade.verification.pi)
-    ? 'After merging: `npm run update`, then `npm run pi:update`, then `npm run profile` after one live session.'
+    ? 'After merging: `npm run update`, then `npm run profile` after one live session.'
     : 'After merging: `npm run update`.'
 
 const renderSummary = (upgrade: Upgrade): readonly string[] => {
@@ -623,7 +623,7 @@ const fittedBody = (upgrade: Upgrade, date: string): string => {
   }
   return `${[
     ...renderSummary(upgrade),
-    `${howToFix(upgrade)}\n\nThe full report exceeds the pull request body limit. It is saved in \`.dev/upgrade/report.md\` of the installation that ran \`npm run upgrade\`.`,
+    `${howToFix(upgrade)}\n\nThe full report exceeds the pull request body limit. It is saved in \`.dev/upgrade/report.md\` of the installation that ran \`npm run pi:update\`.`,
     afterMerging(upgrade),
     verifiedLine(upgrade, date),
   ].join('\n\n')}\n`
@@ -645,7 +645,7 @@ const ghCommand = (args: readonly string[]): string => ['gh', ...args].map(shell
 const outcome = (upgrade: Upgrade): string =>
   isGreen(upgrade)
     ? 'green'
-    : `red; fix it on ${Option.match(upgrade.branch, { onNone: () => 'its branch', onSome: ({ name }) => name })}, for example in ${worktree}, push and run npm run upgrade again`
+    : `red; fix it on ${Option.match(upgrade.branch, { onNone: () => 'its branch', onSome: ({ name }) => name })}, for example in ${worktree}, push and run npm run pi:update again`
 
 const openPullRequest = Effect.fnUntraced(function* (upgrade: Upgrade, branch: string) {
   const others = (yield* worktreePaths([])).filter(path => !manifestFiles.includes(path))
@@ -730,9 +730,7 @@ const fresh = Effect.gen(function* () {
     return yield* new UpgradeError({
       message: `main pins Pi ${pi}, but it failed checks against that release; see ${reportPath}.`,
     })
-  yield* say(
-    `main pins Pi ${pi} and it passed every check. Activate it with npm run update, then npm run pi:update.\n`
-  )
+  yield* say(`main pins Pi ${pi} and it passed every check. Activate it with npm run update.\n`)
 })
 
 const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
@@ -784,7 +782,7 @@ const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
   const [current] = (yield* git(['ls-remote', 'origin', `refs/heads/${branch}`])).split('\t')
   if (current !== commit)
     return yield* new UpgradeError({
-      message: `Not updating ${pullRequest.url}: ${branch} moved or was deleted on origin during verification; run npm run upgrade again to verify its current head.`,
+      message: `Not updating ${pullRequest.url}: ${branch} moved or was deleted on origin during verification; run npm run pi:update again to verify its current head.`,
     })
   yield* run('gh', edit).pipe(
     Effect.mapError(
