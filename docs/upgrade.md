@@ -38,12 +38,17 @@ Review the report's breaking versions, Pi changelog, changed contracts and audit
 
 ## 3. Merge, update and activate
 
-After merging:
+After squash-merging the upgrade PR, close every dev session and run from dev's main installation checkout on `main`:
 
 ```bash
-npm run update     # fast-forward; reinstalls dependencies when package-lock.json changed
+git switch main
+npm run update     # update dev, then remove the upgrade worktree and its local branch
 npm run pi:update  # only when the upgrade changed Pi
 ```
+
+A successful update removes `.dev/upgrade/worktree` and its attached local upgrade branch, and retires that checkout's workspace inventory entry. No manual `git worktree remove` is needed. Completing the merge and any wanted work is a precondition of this procedure, not something cleanup rechecks. Cleanup also runs when dev is already up to date, stays within these exact upgrade artifacts, and leaves `.dev/upgrade/pi` for activation. Updates from other branches or linked checkouts skip cleanup and identify the required checkout. Existing maintenance, workspace identity and ownership protections still apply; cleanup does not release a task reservation.
+
+A checkout already removed outside dev has its inactive inventory entry retired, without guessing a branch name. Retired conversation bindings remain unable to resume into a later worktree at the same path.
 
 `pi:update` activates the Pi pinned in `package.json`. It requires the verified candidate in `.dev/upgrade/pi` and that release still being Pi's latest; otherwise run `npm run upgrade` again. It checks the active version and installed lockfile against the candidate, runs smoke and prints diagnostics. On success it removes the candidate release.
 

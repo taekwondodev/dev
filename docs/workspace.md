@@ -142,4 +142,6 @@ The account-wide location is in the launcher's [state map](launcher.md#state). A
 
 First use creates an absent authority. Missing parts of a known authority, invalid layout and damaged storage are refused, not reset. Each process validates a database's schema and integrity on first opening that file identity. In-place overwrites are not rechecked until another process starts: stop every dev session before restoring or copying over a database. Keep coordination databases on disk during normal operation; use [Development](DEVELOPMENT.md#discard-obsolete-state) for obsolete-state removal.
 
+The installation's [upgrade cleanup](upgrade.md#3-merge-update-and-activate) retires its exact pre-existing upgrade checkout after removal, leaving historical bindings tied to the removed identity and freeing that path for the next upgrade. This is not a task release or a general workspace sweep.
+
 Paths containing newlines are refused for checkouts and Git directories. Replacing either at the same path changes its identity and can prevent resume. Inspect the reported reason rather than deleting coordination files to bypass it.

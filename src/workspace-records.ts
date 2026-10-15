@@ -610,7 +610,7 @@ export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace):
 export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
   if (record.status === 'removed')
     return requireReview(
-      `Workspace was removed by release ${record.removalOperationId ?? '(unrecorded)'} and is not recreated: ${record.path}`
+      `Workspace was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
     )
   if (record.status !== 'ready')
     return requireReview(`Workspace allocation is unresolved: ${record.path}`)

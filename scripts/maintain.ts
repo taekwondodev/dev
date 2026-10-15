@@ -5,6 +5,9 @@ import { FetchHttpClient } from 'effect/http'
 import { errorText } from '../src/error-text.ts'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
+import { WorkspaceAuthority } from '../src/workspace-authority.ts'
+import { defaultAuthorityRoot } from '../src/workspace-authority-root.ts'
+import { cleanupUpgradeWorkspace } from '../src/workspace-upgrade.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 import { checkout, checkoutIsClean, git, npmInstallFlags, run, streamed } from './checkout.ts'
 import { updatePi } from './pi-upgrade.ts'
@@ -114,14 +117,27 @@ const update = Effect.fnUntraced(
         exitCodes: [0, 1],
       }
     )
-    if (lockfile.exitCode === 0) return
-    const install = yield* streamed('npm', ['ci', ...npmInstallFlags])
-    if (!install.passed)
-      return yield* new MaintenanceError({
-        message: `Updated the checkout, but npm ci failed; rerun npm ci --ignore-scripts && npm run types:pi:\n${lastLines(install.output, 40)}`,
-      })
-    yield* linkPiDeclarations
-    yield* say('reinstalled dependencies from the updated package-lock.json\n')
+    if (lockfile.exitCode !== 0) {
+      const install = yield* streamed('npm', ['ci', ...npmInstallFlags])
+      if (!install.passed)
+        return yield* new MaintenanceError({
+          message: `Updated the checkout, but npm ci failed; rerun npm ci --ignore-scripts && npm run types:pi:\n${lastLines(install.output, 40)}`,
+        })
+      yield* linkPiDeclarations
+      yield* say('reinstalled dependencies from the updated package-lock.json\n')
+    }
+    const cleanup = yield* Effect.try({
+      try: () => {
+        const authority = new WorkspaceAuthority(defaultAuthorityRoot())
+        try {
+          return cleanupUpgradeWorkspace(authority, checkout)
+        } finally {
+          authority.close()
+        }
+      },
+      catch: cause => failed('Dev updated, but upgrade cleanup failed', cause),
+    })
+    yield* say(cleanup)
   },
   Effect.scoped,
   Effect.mapError(error =>
