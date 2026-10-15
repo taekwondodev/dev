@@ -42,11 +42,11 @@ Maintenance commands take options as `--flag value`. An unknown option or a stra
 
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
-Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update reinstalls dependencies when the merged `package-lock.json` changed. A successful update on `main` in the main installation checkout also removes the upgrade worktree and its local branch, following the post-merge [upgrade procedure](upgrade.md#3-merge-update-and-activate). When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
+Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update reinstalls dependencies when the merged `package-lock.json` changed. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 
-Read [Upgrade](upgrade.md) before upgrading or activating a release, and [usage profile](usage-profile.md) for periods, metrics and public exports.
+For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics and public exports.
 
 ## Behavior
 
