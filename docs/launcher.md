@@ -34,7 +34,7 @@ npm run update -- --remote origin --branch main         # fast-forward dev and a
 npm run upgrade                                        # alias for update, with the same options
 npm run rollback -- --ref REVISION                      # detach at a revision
 npm run profile [-- --data-home PATH]                   # private usage report
-npm run pi:update                                      # upgrade Pi and dependencies; publish one PR, red or green
+npm run pi:update                                      # upgrade Pi and dependencies; publish one PR
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
