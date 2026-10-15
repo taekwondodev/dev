@@ -74,6 +74,7 @@ The same conversation cannot attach in two dev sessions, even across installatio
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/resume`, import of a conversation already in dev's sessions | Attach the target before teardown; refusal preserves the current session                                                                                      |
 | `/new`, `/fork`, import of a copied conversation              | Attach after teardown; authority refusal ends the session. A copied conversation outside Git is refused before teardown                                       |
+| `/new`, import of a copied conversation                       | Close the leaving conversation's attachment and sweep its repositories before the new conversation attaches, so a clean checkout is kept by the first write   |
 | `/fork`                                                       | Start a new conversation in the current workspace without the original task; first write isolates from the current commit. Commit changes first to carry them |
 | Confirmed replacement                                         | Stop the leaving session's shells and work; all replacements are refused while a workspace switch is pending                                                  |
 | `/reload`                                                     | Keep lead shells observed; see [work cancellation](work.md#cancellation-and-session-changes) for attempts                                                     |
@@ -83,13 +84,13 @@ The same conversation cannot attach in two dev sessions, even across installatio
 
 `check` and sweep derive completion from recorded and observed facts, not declarations that work is done. The target is a recorded override, otherwise the `origin` GitHub repository's default branch, otherwise the remote HEAD branch.
 
-| Finished rule      | Meaning                                                                           |
-| ------------------ | --------------------------------------------------------------------------------- |
-| `clean-checkout`   | A pre-existing checkout has no completion residue; applies at quit only           |
-| `no-residue`       | A managed workspace has no remaining work under the completion rules              |
-| `branch-merged`    | A bound merged PR's source includes the workspace HEAD                            |
-| `branch-in-target` | The workspace HEAD is included in its target                                      |
-| `child-delivered`  | Task PR evidence establishes a child's delivery; its own commits need not survive |
+| Finished rule      | Meaning                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------- |
+| `clean-checkout`   | A pre-existing checkout has no completion residue; applies at quit and at a replacement |
+| `no-residue`       | A managed workspace has no remaining work under the completion rules                    |
+| `branch-merged`    | A bound merged PR's source includes the workspace HEAD                                  |
+| `branch-in-target` | The workspace HEAD is included in its target                                            |
+| `child-delivered`  | Task PR evidence establishes a child's delivery; its own commits need not survive       |
 
 These are assessment labels, not manual deletion predicates. Ignored files alone do not block completion, but unsafe filesystem structure can. Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, open conversation bindings and `release-review`.
 
@@ -97,11 +98,11 @@ Use `record-publication` for selected reports or artifacts already published in 
 
 ### Sweep
 
-Automatic sweeps run at quit and before managed allocation, not at startup, turn end, session replacement, crash or signal shutdown. Each finished workspace gets one fenced removal attempt after reassessment. A pre-existing checkout loses only its reservation and settled use records; a managed worktree is removed. Live gates, occupied worktrees, active installation coordination or changed evidence retain it. Incomplete removal becomes `release-review`, refuses resume and is never retried automatically.
+Automatic sweeps run at quit, at a conversation replacement by `/new` or a copied import, and before managed allocation; not at startup, turn end, `/fork`, `/resume`, crash or signal shutdown. The replacement sweep runs after the leaving conversation's attachment closes and before the new conversation attaches, so the leaving conversation ends its own claim as it would at quit; a clean pre-existing checkout loses its reservation and the new conversation's first write keeps it, while a modified checkout stays reserved and that write isolates as before. A failed replacement sweep is a receipt row, not a failed `/new`. Each finished workspace gets one fenced removal attempt after reassessment. A pre-existing checkout loses only its reservation and settled use records; a managed worktree is removed. Live gates, occupied worktrees, active installation coordination or changed evidence retain it. Incomplete removal becomes `release-review`, refuses resume and is never retried automatically.
 
-The budget is 40 seconds at quit and 20 before allocation, measured from the request. Unstarted tasks become `task-deferred`. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. Quit also sweeps repositories resolved from other checkouts selected for delegation during the session, including refused delegations, within the same budget. A repository assessment failure is reported without preventing the others from proceeding; a later sweep can assess it again.
+The budget is 40 seconds at quit and 20 at a replacement or before allocation, measured from the request. Unstarted tasks become `task-deferred`. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces. Quit also sweeps repositories resolved from other checkouts selected for delegation during the session, including refused delegations, within the same budget. A repository assessment failure is reported without preventing the others from proceeding; a later sweep can assess it again.
 
-Allocation receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then a complete release command and short status for each retained workspace. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task>` for paths and detailed evidence.
+Allocation and replacement receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then a complete release command and short status for each retained workspace. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task>` for paths and detailed evidence.
 
 ### Release
 

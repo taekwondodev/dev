@@ -2,6 +2,7 @@ import { Effect, Option, Schema } from 'effect'
 import {
   WorkspaceId,
   type CompletionVerdict,
+  type SweepMoment,
   type SweepReceipt,
   type SweepRow,
   type WorkspaceAssessment,
@@ -205,7 +206,7 @@ export const formatAssessments = (
 ): string => {
   if (assessments.length === 0) return noTaskRecords(taskId)
   return [
-    `Sweep assessment for exact task ${taskId} (a check changes nothing; the sweep at quit or before a worktree allocation rechecks everything):`,
+    `Sweep assessment for exact task ${taskId} (a check changes nothing; the sweep at quit, at a conversation replacement or before a worktree allocation rechecks everything):`,
     ...sortedAssessments(assessments).flatMap(assessmentText),
   ].join('\n')
 }
@@ -278,8 +279,14 @@ const TERMINAL_SWEEP_OUTCOMES: ReadonlySet<WorkspaceRow['outcome']> = new Set([
 export const sweepExitCode = (receipt: SweepReceipt): 0 | 1 =>
   attemptedRows(receipt).every(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)) ? 0 : 1
 
+const SWEEP_MOMENT_TEXT: Record<SweepMoment, string> = {
+  quit: 'at quit',
+  replacement: 'at the conversation replacement',
+  allocation: 'before a worktree allocation',
+}
+
 export const formatSweepReceipt = (receipt: SweepReceipt): string => {
-  const moment = receipt.moment === 'quit' ? 'at quit' : 'before a worktree allocation'
+  const moment = SWEEP_MOMENT_TEXT[receipt.moment]
   if (receipt.rows.length === 0) return `Workspace sweep ${moment}: no reserved workspace.`
   const attempted = attemptedRows(receipt)
   const terminal = attempted.filter(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)).length

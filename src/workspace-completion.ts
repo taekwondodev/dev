@@ -216,8 +216,11 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
         'checkout-modified',
         `The checkout has ${facts.residue.tracked} tracked change(s) and ${facts.residue.untracked} untracked file(s); only a clean checkout loses its reservation automatically.`
       )
-    if (facts.moment !== 'quit')
-      return retain('skipped', 'A clean pre-existing checkout loses its reservation only at quit.')
+    if (facts.moment === 'allocation')
+      return retain(
+        'skipped',
+        'A clean pre-existing checkout loses its reservation only at quit or at a conversation replacement.'
+      )
     return finish(
       'clean-checkout',
       'Clean pre-existing checkout: its reservation ends; files and commits stay untouched.'

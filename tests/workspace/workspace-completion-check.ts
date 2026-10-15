@@ -190,6 +190,24 @@ const rows: readonly Row[] = [
     role: 'pre-existing',
   },
   {
+    name: 'the clean main checkout at a conversation replacement',
+    facts: checkout({ moment: 'replacement' }),
+    expected: 'clean-checkout',
+    role: 'pre-existing',
+  },
+  {
+    name: 'the modified main checkout at a conversation replacement',
+    facts: checkout({ moment: 'replacement', residue: { tracked: 1, untracked: 0, ignored: 0 } }),
+    expected: 'retained:checkout-modified',
+    role: 'pre-existing',
+  },
+  {
+    name: 'the clean contention worktree at its base at a conversation replacement',
+    facts: managed({ moment: 'replacement', allocation: 'checkout-contention' }),
+    expected: 'no-residue',
+    role: 'detached',
+  },
+  {
     name: 'a branch worktree at its base with dirty edits',
     facts: managed({
       allocation: 'checkout-contention',

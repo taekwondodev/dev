@@ -25,6 +25,7 @@ import {
   type AllocationReason,
   type CompletionVerdict,
   type ReleaseDecider,
+  type ClosingSweepMoment,
   type SweepMoment,
   type SweepOutcome,
   type SweepReceipt,
@@ -719,7 +720,7 @@ const prefetchEvidence = (
   }
 }
 
-const assessTaskAtQuit = (
+const assessTaskAtClose = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId,
   readers: EvidenceReaders,
@@ -1191,6 +1192,7 @@ export interface SweepInput {
 
 const SWEEP_BUDGET_MS: Record<SweepMoment, number> = {
   quit: (WORKER_REQUEST_TIMEOUT_MS * 2) / 3,
+  replacement: WORKER_REQUEST_TIMEOUT_MS / 3,
   allocation: WORKER_REQUEST_TIMEOUT_MS / 3,
 }
 export const sweepDeadline = (moment: SweepMoment, requestedAt: number): number =>
@@ -1346,9 +1348,9 @@ export const sweepRepositoryForAllocation = (
   return sweep.receipt()
 }
 
-export const sweepRepositoryAtQuit = async (
+export const sweepRepositoryAtClose = async (
   authority: WorkspaceAuthority,
-  input: SweepInput & { readonly moment: 'quit' },
+  input: SweepInput & { readonly moment: ClosingSweepMoment },
   readers: EvidenceReaders
 ): Promise<SweepReceipt> => {
   const sweep = startSweep(authority, input, readers)
@@ -1362,7 +1364,7 @@ export const sweepRepositoryAtQuit = async (
       if (sweep.expired(index)) break
       let assessed: readonly Assessed[]
       try {
-        assessed = await assessTaskAtQuit(authority, taskId, readers, sweep.context)
+        assessed = await assessTaskAtClose(authority, taskId, readers, sweep.context)
       } catch (cause) {
         sweep.fail(taskId, cause)
         continue

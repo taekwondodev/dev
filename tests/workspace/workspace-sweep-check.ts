@@ -32,7 +32,7 @@ import { makeGitHubReader, type GitHubReader } from '../../src/workspace-evidenc
 import {
   checkTask,
   sweepDeadline,
-  sweepRepositoryAtQuit,
+  sweepRepositoryAtClose,
   type EvidenceReaders,
 } from '../../src/workspace-release.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
@@ -98,7 +98,7 @@ const sweepWith = (
   using: TestLifecycle,
   anchor: WorkspaceId,
   delegatedCwds: readonly string[] = []
-) => using.sweep({ anchorWorkspaceId: anchor, delegatedCwds, occupiedPaths: [] })
+) => using.sweep({ moment: 'quit', anchorWorkspaceId: anchor, delegatedCwds, occupiedPaths: [] })
 
 try {
   const repo = join(sandbox, 'repo')
@@ -819,7 +819,7 @@ try {
       const deadline = sweepDeadline('quit', requestedAt)
       const authority = new WorkspaceAuthority(root)
       try {
-        const pendingSweep = sweepRepositoryAtQuit(
+        const pendingSweep = sweepRepositoryAtClose(
           authority,
           {
             repositoryId: owner.write.repositoryId,
@@ -982,6 +982,56 @@ try {
         ['removed', 'removed', 'released'],
         'once the caller has quit, its workspaces are finished and swept'
       )
+    }
+  )
+
+  await claim(
+    'a sweep at a conversation replacement releases the clean pre-existing reservation of the closed conversation and removes its finished worktree, retains a modified checkout with its reason, and records the replacement as the decider',
+    async () => {
+      const cleanCheckout = userCheckout('replacement-clean')
+      const cleanOwner = await reserve(cleanCheckout)
+      const finishedChild = ready(await cleanOwner.owner.authorize({ kind: 'delegated-write' }))
+      await cleanOwner.owner.close()
+      const modifiedCheckout = userCheckout('replacement-modified')
+      const modifiedOwner = await reserve(modifiedCheckout)
+      await modifiedOwner.owner.close()
+      writeFileSync(join(modifiedCheckout, 'tracked.txt'), 'edited before the replacement\n')
+
+      const receipt = await lifecycle.sweep({
+        moment: 'replacement',
+        anchorWorkspaceId: cleanOwner.write.workspaceId,
+        delegatedCwds: [],
+        occupiedPaths: [],
+      })
+      assert.equal(receipt.moment, 'replacement')
+      const released = rowOf(receipt, cleanOwner.write.workspaceId)
+      assert.deepEqual(
+        [released.outcome, verdictName(released.verdict)],
+        ['released', 'clean-checkout']
+      )
+      assert.ok(
+        !(await reservedTasks()).includes(cleanOwner.taskId),
+        'the clean checkout is free for the next conversation'
+      )
+      assert.equal(readFileSync(join(cleanCheckout, 'tracked.txt'), 'utf8'), 'tracked\n')
+      const removed = rowOf(receipt, finishedChild.workspaceId)
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
+      assert.equal(existsSync(finishedChild.checkout), false)
+      const modified = rowOf(receipt, modifiedOwner.write.workspaceId)
+      assert.deepEqual(
+        [modified.outcome, verdictName(modified.verdict)],
+        ['retained', 'retained:checkout-modified']
+      )
+      assert.ok((await reservedTasks()).includes(modifiedOwner.taskId))
+      assert.ok(
+        formatSweepReceipt(receipt).startsWith('Workspace sweep at the conversation replacement'),
+        formatSweepReceipt(receipt)
+      )
+      const view = (await lifecycle.inspect({ taskId: cleanOwner.taskId })).find(
+        entry => entry.workspaceId === finishedChild.workspaceId
+      )
+      assert.equal(view?.outcome, 'removed')
+      assert.ok(view?.reason.startsWith('By the sweep at a conversation replacement'), view?.reason)
     }
   )
 
