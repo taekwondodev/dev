@@ -283,6 +283,7 @@ export const openHostRuntime = async (input: {
   readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
   readonly extensions?: RuntimeParts['extensions']
   readonly webReader?: WebReader
+  readonly mode?: 'headless' | 'tui'
 }) => {
   const resolveImportPath = await loadImportPathResolver(input.packageRoot)
   const scope = Scope.makeUnsafe()
@@ -346,6 +347,29 @@ export const openHostRuntime = async (input: {
     })
     host.bindRuntime(runtime)
     guard.bind(runtime)
+    if ((input.mode ?? 'headless') === 'headless') {
+      const bindHeadless = (session: typeof runtime.session) =>
+        session.bindExtensions({
+          mode: 'print',
+          commandContextActions: {
+            waitForIdle: () => session.waitForIdle(),
+            newSession: options => runtime.newSession(options),
+            fork: async (entryId, options) => ({
+              cancelled: (await runtime.fork(entryId, options)).cancelled,
+            }),
+            navigateTree: async (targetId, options) => ({
+              cancelled: (await session.navigateTree(targetId, options)).cancelled,
+            }),
+            switchSession: (sessionPath, options) => runtime.switchSession(sessionPath, options),
+            reload: () => session.reload(),
+          },
+          onError: error => {
+            process.stderr.write(`Extension error (${error.extensionPath}): ${error.error}\n`)
+          },
+        })
+      runtime.setRebindSession(() => bindHeadless(runtime.session))
+      await bindHeadless(runtime.session)
+    }
     return {
       host,
       runtime,

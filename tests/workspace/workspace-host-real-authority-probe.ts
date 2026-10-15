@@ -248,6 +248,7 @@ const recordHostNotices =
     )
 
 const opened = await openHostRuntime({
+  mode: 'tui',
   coordination: { installationPath: fixture, namespacePath: authorityRoot },
   pi,
   packageRoot: packageInfo.root,
