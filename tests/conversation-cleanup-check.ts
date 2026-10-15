@@ -11,6 +11,7 @@ import {
   rmSync,
   symlinkSync,
   linkSync,
+  unlinkSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,11 +23,13 @@ import { AttemptId, GenerationId, SessionId, TaskId } from '../src/work-domain.t
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
 import { withDisposableConversation } from '../src/workspace-retention.ts'
+import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
 import { openLifecycle } from './workspace/workspace-test-lifecycle.ts'
 import { loadPi, findRecentSession } from '../src/pi-runtime.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'dev-conversation-cleanup-'))
 const home = join(root, 'home')
+const otherHome = join(root, 'other-home')
 const namespace = join(root, 'authority')
 const installation = join(root, 'installation')
 mkdirSync(home)
@@ -43,11 +46,13 @@ const makeSession = (directory: string, name: string, time: number) => {
   utimesSync(path, time, time)
   return path
 }
-for (const category of ['sessions', 'child-sessions']) {
-  const directory = join(home, category)
-  mkdirSync(directory)
-  for (let index = 0; index < 101; index++)
-    makeSession(directory, String(index).padStart(3, '0'), 1000 + index)
+for (const dataHome of [home, otherHome]) {
+  for (const category of ['sessions', 'child-sessions']) {
+    const directory = join(dataHome, category)
+    mkdirSync(directory, { recursive: true })
+    for (let index = 0; index < 101; index++)
+      makeSession(directory, String(index).padStart(3, '0'), 1000 + index)
+  }
 }
 const leads = join(home, 'sessions')
 const futureEntry = join(leads, '000.jsonl')
@@ -78,14 +83,14 @@ for (const args of [
 ])
   execFileSync('git', ['-C', repository, ...args])
 const lifecycle = await openLifecycle({ root: namespace })
+const attachment = await lifecycle.attach({
+  conversation: { sessionId: 'retained', sessionFile: retained, dataHome: home },
+  cwd: repository,
+})
 try {
-  const attachment = await lifecycle.attach({
-    conversation: { sessionId: 'retained', sessionFile: retained, dataHome: home },
-    cwd: repository,
-  })
   await attachment.authorize({ kind: 'write' })
-  await attachment.close()
 } finally {
+  await attachment.close()
   await lifecycle.close()
 }
 const malformed = join(leads, 'malformed.jsonl')
@@ -138,19 +143,33 @@ try {
       assert.equal(yield* cleanConversations(home, namespace), 2)
       assert.ok(existsSync(live))
       assert.ok(existsSync(active))
-      assert.equal(existsSync(futureEntry), false)
       assert.ok(existsSync(retained))
       assert.ok(existsSync(recovery))
       assert.ok(existsSync(malformed))
       assert.ok(existsSync(outside))
       assert.ok(existsSync(join(leads, 'linked.jsonl')))
       assert.ok(existsSync(join(leads, 'hardlinked.jsonl')))
-      for (const category of ['sessions', 'child-sessions']) {
-        assert.equal(existsSync(join(home, category, '000.jsonl')), false)
-        assert.equal(
-          readdirSync(join(home, category)).filter(name => /^\d{3}\.jsonl$/.test(name)).length,
-          100
-        )
+      for (const category of ['sessions', 'child-sessions'])
+        assert.ok(existsSync(join(otherHome, category, '000.jsonl')))
+      assert.equal(
+        yield* cleanConversations(otherHome, namespace).pipe(
+          Effect.provide(
+            WorkStore.layer(otherHome, SessionId.make('other-home')).pipe(
+              Layer.provide(NodeServices.layer)
+            )
+          )
+        ),
+        2
+      )
+      for (const dataHome of [home, otherHome]) {
+        for (const category of ['sessions', 'child-sessions']) {
+          assert.equal(existsSync(join(dataHome, category, '000.jsonl')), false)
+          assert.equal(
+            readdirSync(join(dataHome, category)).filter(name => /^\d{3}\.jsonl$/.test(name))
+              .length,
+            100
+          )
+        }
       }
       assert.equal(yield* cleanConversations(home, namespace), 0)
       const { api, packageInfo } = yield* loadPi
@@ -166,13 +185,21 @@ try {
           withDisposableConversation(observer, conversation, () => true),
           true
         )
-        yield* lease.protect({ path: late, sessionId: 'late' })
-        assert.throws(
-          () =>
-            withDisposableConversation(observer, conversation, () => {
-              throw new Error('must not reach deletion')
-            }),
-          error => error instanceof Error && !error.message.includes('must not reach deletion')
+        const { taskId, workspaceId } = attachment.binding
+        assert.ok(taskId)
+        const lateLifecycle = yield* makeWorkspaceLifecycle({ root: namespace })
+        const lateAttachment = yield* lateLifecycle.attach({
+          conversation,
+          cwd: repository,
+          selection: { taskId, workspaceId },
+        })
+        yield* lateAttachment.close
+        assert.equal(
+          withDisposableConversation(observer, conversation, () => {
+            unlinkSync(late)
+            return 'deleted'
+          }),
+          undefined
         )
         assert.ok(existsSync(late))
       } finally {
@@ -181,7 +208,7 @@ try {
     }).pipe(Effect.scoped, Effect.provide(services))
   )
   console.log(
-    'conversation cleanup: real files, active protection outside quotas, unknown entries, malformed files, links and idempotence passed'
+    'conversation cleanup: independent home/category quotas, active and recovery protection, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })

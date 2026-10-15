@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  readFileSync,
   existsSync,
   symlinkSync,
   linkSync,
@@ -12,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NodeFileSystem } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { cleanPreferenceTemporaries } from '../src/preferences.ts'
+import { cleanPreferenceTemporaries, saveSelection } from '../src/preferences.ts'
 import { acquireExclusiveLock } from '../src/runtime-coordination.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'dev-preference-cleanup-'))
@@ -38,6 +39,13 @@ try {
   const release = acquireExclusiveLock(join(directory, '.publication.sqlite'), 'busy')
   try {
     await assert.rejects(run())
+    await assert.rejects(
+      Effect.runPromise(
+        saveSelection({ cwd: root, dataHome: root, profile: 'published' }).pipe(
+          Effect.provide(NodeFileSystem.layer)
+        )
+      )
+    )
     assert.ok(existsSync(temporary))
   } finally {
     release()
@@ -46,8 +54,20 @@ try {
   assert.equal(existsSync(temporary), false)
   for (const path of [final, malformed, outside, symbolic, hard, join(directory, 'unknown.tmp')])
     assert.ok(existsSync(path))
+  const published = await Effect.runPromise(
+    saveSelection({ cwd: root, dataHome: root, profile: 'published' }).pipe(
+      Effect.provide(NodeFileSystem.layer)
+    )
+  )
+  assert.deepEqual(JSON.parse(readFileSync(published, 'utf8')), {
+    profile: 'published',
+    project: root,
+  })
   assert.equal(await run(), 0)
-  console.log('preference cleanup: writer exclusion, abandoned files, links and retry passed')
+  assert.ok(existsSync(published))
+  console.log(
+    'preference cleanup: real publisher exclusion, abandoned files, links and retry passed'
+  )
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

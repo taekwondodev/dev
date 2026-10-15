@@ -8,13 +8,20 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  readdirSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setTimeout } from 'node:timers/promises'
+import { NodeServices } from '@effect/platform-node'
+import { Clock, Effect, Layer } from 'effect'
+import { WorkStore } from '../../src/work-store.ts'
+import { AttemptId, GenerationId, SessionId, TaskId } from '../../src/work-domain.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { WorkspaceId } from '../../src/workspace-domain.ts'
@@ -24,6 +31,15 @@ const signal = (marker: string) => process.stdout.write(`\nDEV_LAUNCHER_TUI_${ma
 const git = (args: readonly string[], cwd: string) =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim()
 const { claim, passed } = makeClaims()
+const stoppedCleaners = new Set<number>()
+const cleanupMarkers = join(sandbox, 'cleanup-markers')
+mkdirSync(cleanupMarkers)
+let launcher: ReturnType<typeof spawn> | undefined
+const waitFor = async (ready: () => boolean, message: string) => {
+  const deadline = Date.now() + 20000
+  while (!ready() && Date.now() < deadline) await setTimeout(25)
+  assert.ok(ready(), message)
+}
 
 const interruptedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'sigint-after-quit'
 const interruptedDuringSweep = process.env.LAUNCHER_TUI_FAULT === 'sigint-during-sweep'
@@ -185,6 +201,64 @@ try {
     history = { path, text: readFileSync(path, 'utf8') }
   }
 
+  const startupExpired = join(dataHome, 'sessions', 'cleanup-000.jsonl')
+  const exitExpired = join(dataHome, 'sessions', 'cleanup-exit.jsonl')
+  let expiredLog: string | undefined
+  if (process.env.LAUNCHER_TUI_CLEANUP === '1') {
+    mkdirSync(join(dataHome, 'sessions'), { recursive: true })
+    for (let index = 0; index < 101; index++) {
+      const id = `cleanup-${String(index).padStart(3, '0')}`
+      const path = join(dataHome, 'sessions', `${id}.jsonl`)
+      writeFileSync(
+        path,
+        `${JSON.stringify({ type: 'session', id, timestamp: '2026-01-01T00:00:00Z', cwd: repo })}\n`
+      )
+      utimesSync(path, 1000 + index, 1000 + index)
+    }
+    expiredLog = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* WorkStore
+        const clock = yield* Clock.Clock
+        const past = (yield* Clock.currentTimeMillis) - 8 * 24 * 60 * 60 * 1000
+        return yield* Effect.gen(function* () {
+          const record = yield* store.create(
+            AttemptId.make('00000000-0000-0000-0000-000000000001'),
+            {
+              kind: 'process',
+              cwd: repo,
+              controllerPid: process.pid,
+              owner: {
+                sessionId: SessionId.make('cleanup-maintenance'),
+                taskId: TaskId.make('cleanup-maintenance'),
+                generation: GenerationId.make('cleanup-maintenance'),
+              },
+            }
+          )
+          yield* store.save({ ...record, revision: 1, status: 'completed', completedAt: past })
+          return store.logPath(record.id, 'stdout')
+        }).pipe(
+          Effect.provideService(Clock.Clock, {
+            currentTimeMillis: Effect.succeed(past),
+            currentTimeMillisUnsafe: () => past,
+            currentTimeNanos: clock.currentTimeNanos,
+            currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+            monotonicTimeNanos: clock.monotonicTimeNanos,
+            monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+            sleep: duration => clock.sleep(duration),
+          })
+        )
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          WorkStore.layer(dataHome, SessionId.make('cleanup-maintenance')).pipe(
+            Layer.provide(NodeServices.layer)
+          )
+        )
+      )
+    )
+    writeFileSync(expiredLog, 'expired output\n')
+  }
+
   const driverPath = removeInstallation
     ? join(worktree, 'tests', 'workspace', 'workspace-launcher-tui-driver.ts')
     : fileURLToPath(new URL('./workspace-launcher-tui-driver.ts', import.meta.url))
@@ -212,15 +286,75 @@ try {
         PI_OFFLINE: '1',
         PI_TELEMETRY_DISABLED: '1',
         LAUNCHER_TUI_ROOT: root,
+        LAUNCHER_TUI_CLEANUP_MARKERS: cleanupMarkers,
         ...(removeInstallation ? { LAUNCHER_TUI_INSTALLATION: worktree } : {}),
       },
     }
   )
-  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+  launcher = child
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
     resolveExit => {
       child.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }))
     }
   )
+  let exitCleaner: number | undefined
+  if (expiredLog !== undefined) {
+    await waitFor(
+      () => existsSync(join(cleanupMarkers, 'startup.json')),
+      'launcher did not request startup cleanup'
+    )
+    const pid = JSON.parse(readFileSync(join(cleanupMarkers, 'startup.json'), 'utf8')) as number
+    stoppedCleaners.add(pid)
+    await waitFor(
+      () => existsSync(join(cleanupMarkers, 'interactive-ready')),
+      'launcher startup waited for the stopped cleanup process'
+    )
+    process.kill(pid, 0)
+    assert.ok(existsSync(startupExpired))
+    assert.ok(existsSync(expiredLog))
+    process.kill(pid, 'SIGCONT')
+    stoppedCleaners.delete(pid)
+    await waitFor(
+      () => !existsSync(startupExpired) && !existsSync(expiredLog),
+      'startup cleanup did not delete expired history and owner-authorized attempt logs'
+    )
+    writeFileSync(
+      exitExpired,
+      `${JSON.stringify({ type: 'session', id: 'cleanup-exit', timestamp: '2026-01-01T00:00:00Z', cwd: repo })}\n`
+    )
+    utimesSync(exitExpired, 1, 1)
+    signal('CLEANUP_READY_FOR_QUIT')
+    await waitFor(
+      () => existsSync(join(cleanupMarkers, 'graceful-exit.json')),
+      'launcher did not request graceful-exit cleanup'
+    )
+    exitCleaner = JSON.parse(
+      readFileSync(join(cleanupMarkers, 'graceful-exit.json'), 'utf8')
+    ) as number
+    stoppedCleaners.add(exitCleaner)
+    await waitFor(
+      () => child.exitCode !== null || child.signalCode !== null,
+      'launcher exit waited for the stopped cleanup process'
+    )
+  }
+  const exit = await exited
+  if (exitCleaner !== undefined) {
+    process.kill(exitCleaner, 0)
+    assert.ok(existsSync(exitExpired), 'cleanup was still unfinished when the launcher exited')
+    process.kill(exitCleaner, 'SIGCONT')
+    stoppedCleaners.delete(exitCleaner)
+    await waitFor(
+      () => !existsSync(exitExpired),
+      'graceful-exit cleanup did not survive the launcher'
+    )
+    await claim(
+      'real launcher startup and graceful exit do not wait for cleanup, which maintains attempt logs and survives exit',
+      () => {
+        assert.equal(exit.signal, null)
+        assert.equal(exit.code, 0)
+      }
+    )
+  }
   const after = await openLifecycle({ root })
   try {
     const reserved = (await after.check(taskId)).map(assessment => assessment.workspaceId)
@@ -291,5 +425,24 @@ try {
     `\nDEV_LAUNCHER_TUI_PROBE_PASSED ${JSON.stringify({ checks: passed, fixture: sandbox, exitCode: exit.code })}\n`
   )
 } finally {
+  for (const pid of stoppedCleaners) process.kill(pid, 'SIGKILL')
+  const running = launcher
+  if (running?.exitCode === null && running.signalCode === null) {
+    const exited = new Promise<void>(resolveExit => running.once('exit', () => resolveExit()))
+    running.kill('SIGKILL')
+    await exited
+  }
+  for (const name of readdirSync(cleanupMarkers).filter(file => file.endsWith('.json'))) {
+    const pid = JSON.parse(readFileSync(join(cleanupMarkers, name), 'utf8')) as number
+    await waitFor(() => {
+      try {
+        process.kill(pid, 0)
+        return false
+      } catch (error) {
+        assert.match(String(error), /ESRCH/)
+        return true
+      }
+    }, `cleanup process ${pid} did not exit before fixture removal`)
+  }
   rmSync(sandbox, { recursive: true, force: true })
 }
