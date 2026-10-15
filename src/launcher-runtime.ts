@@ -552,6 +552,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
       Effect.andThen(
         sweepIndicator(style, process.stdout),
         lifecycle.sweep({
+          moment: 'quit',
           anchorWorkspaceId: input.anchorWorkspaceId,
           delegatedCwds: input.delegatedCwds,
           occupiedPaths: input.occupiedPaths.map(path => resolve(path)),

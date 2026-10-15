@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join, relative, resolve } from 'node:path'
+import { mock } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
@@ -168,6 +169,7 @@ const openLeadHost = (input: {
   readonly offline: OfflineModel
   readonly lifecycle?: WorkspaceLifecycle
   readonly dataHome?: string
+  readonly cwd?: string
 }) =>
   openHostRuntime({
     coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
@@ -175,7 +177,7 @@ const openLeadHost = (input: {
     packageRoot: packageInfo.root,
     sessionDir,
     agentDir,
-    cwd: lead,
+    cwd: input.cwd ?? lead,
     repositoryRoot,
     attachment: input.attachment,
     manager: input.manager,
@@ -619,6 +621,198 @@ try {
         }
       }
     )
+
+  await claim(
+    'a /new from a conversation holding a clean checkout releases that reservation at the replacement, so the next conversation keeps the checkout on its first write; a checkout modified before the next /new stays reserved and that conversation is isolated as before',
+    async () => {
+      const fresh = join(fixture, 'fresh')
+      mkdirSync(join(fresh, 'scratch'), { recursive: true })
+      git(['init', '--quiet', '-b', 'main'], fresh)
+      git(['config', 'user.email', 'host-session@example.invalid'], fresh)
+      git(['config', 'user.name', 'host session check'], fresh)
+      writeFileSync(join(fresh, 'AGENTS.md'), 'fresh checkout\n')
+      writeFileSync(join(fresh, '.gitignore'), 'scratch/\n')
+      git(['add', 'AGENTS.md', '.gitignore'], fresh)
+      git(['commit', '--quiet', '-m', 'fresh fixture'], fresh)
+      const scratchWrite = (id: string) =>
+        toolCall(id, 'write', { path: join(fresh, 'scratch', `${id}.txt`), content: id })
+      const { offline: freshModel, script: freshScript } = await offlineScript(
+        'host-session-new-clean',
+        [
+          [scratchWrite('first-write')],
+          [{ type: 'text', text: 'done' }],
+          [scratchWrite('next-write')],
+          [{ type: 'text', text: 'done' }],
+          [scratchWrite('modified-write')],
+          [{ type: 'text', text: 'done' }],
+        ]
+      )
+      const freshManager = pi.SessionManager.create(fresh, sessionDir)
+      const freshAttached = await lifecycle.attach({
+        conversation: conversationAt(freshManager),
+        cwd: fresh,
+      })
+      const freshHost = await openLeadHost({
+        attachment: freshAttached.effect,
+        manager: freshManager,
+        offline: freshModel,
+        cwd: fresh,
+      })
+      const checkoutView = async () =>
+        (await lifecycle.inspect({ cwd: fresh })).find(
+          view => resolve(view.path) === resolve(fresh)
+        )
+      const output = mock.method(process.stderr, 'write')
+      const receipts = () =>
+        output.mock.calls
+          .map(call => String(call.arguments[0]))
+          .join('')
+          .split('Workspace sweep at the conversation replacement')
+          .slice(1)
+      const sessionId = () => freshHost.runtime.session.sessionManager.getSessionId()
+      const replace = async (what: string) => {
+        const previous = sessionId()
+        assert.deepEqual(await within(freshHost.runtime.newSession(), 20000, what), {
+          cancelled: false,
+        })
+        await unparked(freshHost.host, `${what} to leave the parked state`)
+        assert.notEqual(sessionId(), previous, `${what} started a new conversation`)
+      }
+      try {
+        await freshHost.runtime.session.prompt('Write a scratch file.')
+        await freshHost.runtime.session.waitForIdle()
+        const first = toolResults(freshHost.runtime)('first-write')
+        assert.equal(first.isError, false, first.text)
+        const firstTask = (await checkoutView())?.taskId
+        assert.ok(firstTask !== undefined, 'the first conversation reserves the checkout')
+
+        await replace('the first /new')
+        assert.equal(receipts().length, 1, 'the replacement shows one receipt before the next turn')
+        assert.ok(receipts()[0]?.includes(freshAttached.binding.workspaceId))
+        assert.match(receipts()[0] ?? '', /released \(automatic\)/)
+        assert.match(receipts()[0] ?? '', /finished \(clean-checkout\)/)
+        await freshHost.runtime.session.prompt('Write another scratch file.')
+        await freshHost.runtime.session.waitForIdle()
+        const next = toolResults(freshHost.runtime)('next-write')
+        assert.equal(next.isError, false, next.text)
+        assert.equal(
+          resolve(freshHost.host.attachment.binding.cwd),
+          resolve(fresh),
+          'the next conversation keeps the checkout'
+        )
+        assert.equal(freshHost.host.attachment.binding.conversation.sessionId, sessionId())
+        const nextTask = (await checkoutView())?.taskId
+        assert.ok(
+          nextTask !== undefined && nextTask !== firstTask,
+          'the next conversation reserves the released checkout under its own task'
+        )
+        assert.equal(freshScript.calls(), 4, 'each prompt reached the model once per turn')
+
+        writeFileSync(join(fresh, 'AGENTS.md'), 'modified before the next /new\n')
+        await replace('the second /new')
+        assert.equal(receipts().length, 2, 'the second replacement shows one more receipt')
+        assert.ok(receipts()[1]?.includes(freshAttached.binding.workspaceId))
+        assert.match(receipts()[1] ?? '', /retained \(checkout-modified\)/)
+        await freshHost.runtime.session.prompt('Write one more scratch file.')
+        await freshHost.runtime.session.waitForIdle()
+        assert.equal(toolResults(freshHost.runtime)('modified-write').isError, true)
+        await unparked(freshHost.host, 'the rebind to finish', { attempts: 80, intervalMs: 100 })
+        assert.notEqual(
+          resolve(freshHost.host.attachment.binding.cwd),
+          resolve(fresh),
+          'the modified checkout stays with its task and the newest conversation is isolated'
+        )
+        assert.equal(
+          (await checkoutView())?.taskId,
+          nextTask,
+          'the modified checkout keeps its reservation'
+        )
+        assert.equal(
+          readFileSync(join(fresh, 'AGENTS.md'), 'utf8'),
+          'modified before the next /new\n'
+        )
+        assert.equal(receipts().length, 2, 'later turns do not replay replacement receipts')
+      } finally {
+        output.mock.restore()
+        await freshHost.close()
+      }
+    }
+  )
+
+  await claim(
+    'a /new whose leaving attachment fails to close reports the failure and starts the next conversation, keeping the reservation and isolating its first write',
+    async () => {
+      const held = join(fixture, 'held')
+      mkdirSync(join(held, 'scratch'), { recursive: true })
+      git(['init', '--quiet', '-b', 'main'], held)
+      git(['config', 'user.email', 'host-session@example.invalid'], held)
+      git(['config', 'user.name', 'host session check'], held)
+      writeFileSync(join(held, 'AGENTS.md'), 'held checkout\n')
+      writeFileSync(join(held, '.gitignore'), 'scratch/\n')
+      git(['add', 'AGENTS.md', '.gitignore'], held)
+      git(['commit', '--quiet', '-m', 'held fixture'], held)
+      const scratchWrite = (id: string) =>
+        toolCall(id, 'write', { path: join(held, 'scratch', `${id}.txt`), content: id })
+      const { offline: heldModel } = await offlineScript('host-session-new-close-failure', [
+        [scratchWrite('held-first')],
+        [{ type: 'text', text: 'done' }],
+        [scratchWrite('held-next')],
+        [{ type: 'text', text: 'done' }],
+      ])
+      const heldManager = pi.SessionManager.create(held, sessionDir)
+      const heldAttached = await lifecycle.attach({
+        conversation: conversationAt(heldManager),
+        cwd: held,
+      })
+      const heldHost = await openLeadHost({
+        attachment: overriding(heldAttached.effect, {
+          close: Effect.fail(
+            new WorkspaceError({ outcome: 'blocked', message: 'close refused by the probe' })
+          ),
+        }),
+        manager: heldManager,
+        offline: heldModel,
+        cwd: held,
+      })
+      const checkoutTask = async () =>
+        (await lifecycle.inspect({ cwd: held })).find(view => resolve(view.path) === resolve(held))
+          ?.taskId
+      const output = mock.method(process.stderr, 'write')
+      try {
+        await heldHost.runtime.session.prompt('Write a scratch file.')
+        await heldHost.runtime.session.waitForIdle()
+        const first = toolResults(heldHost.runtime)('held-first')
+        assert.equal(first.isError, false, first.text)
+        const firstTask = await checkoutTask()
+        assert.ok(firstTask !== undefined)
+        const previous = heldHost.runtime.session.sessionManager.getSessionId()
+        assert.deepEqual(await within(heldHost.runtime.newSession(), 20000, 'the /new'), {
+          cancelled: false,
+        })
+        await unparked(heldHost.host, 'the next conversation to leave the parked state')
+        assert.notEqual(heldHost.runtime.session.sessionManager.getSessionId(), previous)
+        assert.equal(await checkoutTask(), firstTask, 'the reservation is untouched')
+        const receipt = output.mock.calls.map(call => String(call.arguments[0])).join('')
+        assert.match(receipt, /Workspace sweep at the conversation replacement/)
+        assert.match(receipt, /close refused by the probe/)
+        assert.match(receipt, /nothing was swept or released/)
+        await heldHost.runtime.session.prompt('Write another scratch file.')
+        await heldHost.runtime.session.waitForIdle()
+        assert.equal(toolResults(heldHost.runtime)('held-next').isError, true)
+        await unparked(heldHost.host, 'the rebind to finish', { attempts: 80, intervalMs: 100 })
+        assert.notEqual(resolve(heldHost.host.attachment.binding.cwd), resolve(held))
+        assert.equal(
+          await checkoutTask(),
+          firstTask,
+          'the reservation still belongs to the first task'
+        )
+      } finally {
+        output.mock.restore()
+        await heldHost.close()
+        await heldAttached.close()
+      }
+    }
+  )
 
   const quitDuringHandoff = async (
     id: string,

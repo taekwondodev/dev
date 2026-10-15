@@ -952,6 +952,7 @@ try {
   initRepository(installRepo)
   const sweepRow = async (anchor: WorkspaceId, workspaceId: WorkspaceId) => {
     const receipt: SweepReceipt = await lifecycle.sweep({
+      moment: 'quit',
       anchorWorkspaceId: anchor,
       delegatedCwds: [],
       occupiedPaths: [],

@@ -357,6 +357,11 @@ const workspaceConversation = (
     return Effect.succeed({ sessionId: manager.getSessionId(), sessionFile, dataHome })
   })
 
+const replacementSweepFailure = (reason: string): SweepReceipt => ({
+  moment: 'replacement',
+  rows: [{ kind: 'sweep-failure', reason }],
+})
+
 const withdraw = (source: WorkspaceAttachment, handoff: WorkspaceHandoff) =>
   source
     .handoff(handoff, () => Effect.succeed('cancelled' as const))
@@ -473,6 +478,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
   }
   followSweeps(options.attachment)
+
+  let replacementReceipt: SweepReceipt | undefined
+  const showReplacementReceipt = (sessionId: string): void => {
+    const receipt = replacementReceipt
+    if (receipt === undefined || activeConversation.sessionId !== sessionId) return
+    replacementReceipt = undefined
+    if (receipt.rows.length > 0) showSweep(receipt)
+  }
 
   const closeAttachmentOnce = (attachment: WorkspaceAttachment) =>
     Effect.suspend(() => {
@@ -1029,6 +1042,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
     const staged = stagedAttachments.get(key)
     const canReuse = !reopen && !staged && isBoundTo(activeConversation, identity)
+    if (!reopen && !staged && !canReuse && !forkOfActive) yield* sweepLeavingWorkspaces(file)
 
     const resolved = yield* attachForManager(
       manager,
@@ -1044,6 +1058,34 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
   })
 
+  const sweepLeavingWorkspaces = Effect.fnUntraced(function* (arrivingSessionFile: string) {
+    const leaving = activeAttachment
+    const { binding, delegatedCwds } = leaving
+    const closing = yield* Effect.exit(closeAttachmentOnce(leaving))
+    if (Exit.isFailure(closing)) {
+      replacementReceipt = replacementSweepFailure(
+        `The leaving conversation's workspace attachment could not be closed, so nothing was swept or released: ${errorText(Cause.squash(closing.cause))}`
+      )
+      return
+    }
+    replacementReceipt = yield* authority
+      .sweep({
+        moment: 'replacement',
+        anchorWorkspaceId: binding.workspaceId,
+        delegatedCwds,
+        occupiedPaths: [process.cwd(), binding.conversation.sessionFile, arrivingSessionFile],
+      })
+      .pipe(
+        Effect.catch(error =>
+          Effect.succeed(
+            replacementSweepFailure(
+              `The sweep at the conversation replacement failed; nothing was released: ${error.message}`
+            )
+          )
+        )
+      )
+  })
+
   const commitRuntime = Effect.fnUntraced(function* (attachment: WorkspaceAttachment) {
     const previous = activeAttachment
     const nextIdentity = attachment.binding.conversation
@@ -1055,6 +1097,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     activeConversation = nextIdentity
     activeManager = runtime?.session.sessionManager
     if (previous !== attachment && !continuing) yield* closeAttachmentOnce(previous)
+    const startedSessionId = currentContext?.sessionManager.getSessionId()
+    if (startedSessionId === undefined || startedSessionId === nextIdentity.sessionId)
+      showReplacementReceipt(nextIdentity.sessionId)
     if (!pending && parked === 'switch') {
       const expectedId = nextIdentity.sessionId
       runDeferred(
@@ -1366,6 +1411,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           activeAttachment.binding.conversation.sessionId === context.sessionManager.getSessionId()
         ) {
           activeManager = context.sessionManager as SessionManager
+          showReplacementReceipt(context.sessionManager.getSessionId())
         }
       })
 

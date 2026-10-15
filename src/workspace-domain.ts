@@ -295,8 +295,10 @@ export type EvidenceVerdict = typeof EvidenceVerdictSchema.Type
 export const AllocationReasonSchema = Schema.Literals(['delegated-writer', 'checkout-contention'])
 export type AllocationReason = typeof AllocationReasonSchema.Type
 
-export const SweepMomentSchema = Schema.Literals(['quit', 'allocation'])
+export const SweepMomentSchema = Schema.Literals(['quit', 'replacement', 'allocation'])
 export type SweepMoment = typeof SweepMomentSchema.Type
+export const ClosingSweepMomentSchema = Schema.Literals(['quit', 'replacement'])
+export type ClosingSweepMoment = typeof ClosingSweepMomentSchema.Type
 
 export const WorkspaceRoleSchema = Schema.Literals(['pre-existing', 'branch', 'child', 'detached'])
 export type WorkspaceRole = typeof WorkspaceRoleSchema.Type
@@ -358,7 +360,7 @@ export const TargetViewSchema = Schema.Struct({
 })
 export type TargetView = typeof TargetViewSchema.Type
 
-export const ReleaseDeciderSchema = Schema.Literals(['user', 'quit', 'allocation'])
+export const ReleaseDeciderSchema = Schema.Literals(['user', 'quit', 'replacement', 'allocation'])
 export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
 
 export const WorkspaceAssessmentSchema = Schema.Struct({
@@ -440,6 +442,7 @@ export type SweepReceipt = typeof SweepReceiptSchema.Type
 export const WORKER_REQUEST_TIMEOUT_MS = 60_000
 
 export const SweepRequestSchema = Schema.Struct({
+  moment: ClosingSweepMomentSchema,
   anchorWorkspaceId: WorkspaceId,
   delegatedCwds: Schema.Array(AbsolutePath),
   occupiedPaths: Schema.Array(AbsolutePath),

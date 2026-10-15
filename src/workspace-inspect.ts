@@ -120,6 +120,7 @@ export const sampledPaths = (paths: readonly string[]): string =>
 const DECIDER_TEXT: Record<ReleaseDecider, string> = {
   user: 'By dev workspace release',
   quit: 'By the sweep at quit',
+  replacement: 'By the sweep at a conversation replacement',
   allocation: 'By the sweep before a worktree allocation',
 }
 

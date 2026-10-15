@@ -37,7 +37,7 @@ import {
   checkTask,
   releaseTask,
   sweepDeadline,
-  sweepRepositoryAtQuit,
+  sweepRepositoryAtClose,
   sweepRepositoryForAllocation,
   type EvidenceReaders,
 } from './workspace-release.ts'
@@ -132,7 +132,7 @@ const registeredRepositoryOf = (
   }
 }
 
-const sweepAtQuit = async (
+const sweepAtClose = async (
   authority: WorkspaceAuthority,
   request: SweepRequest,
   deadline: number
@@ -149,9 +149,9 @@ const sweepAtQuit = async (
   const rows: SweepRow[] = []
   for (const repositoryId of repositories) {
     try {
-      const receipt = await sweepRepositoryAtQuit(
+      const receipt = await sweepRepositoryAtClose(
         authority,
-        { repositoryId, moment: 'quit', deadline, occupiedPaths: request.occupiedPaths },
+        { repositoryId, moment: request.moment, deadline, occupiedPaths: request.occupiedPaths },
         readers
       )
       rows.push(...receipt.rows)
@@ -162,7 +162,7 @@ const sweepAtQuit = async (
       })
     }
   }
-  return { moment: 'quit', rows }
+  return { moment: request.moment, rows }
 }
 
 if (port !== null && engine !== undefined) {
@@ -320,7 +320,7 @@ if (port !== null && engine !== undefined) {
         return replyTo(
           'sweep',
           await engine.run(authority =>
-            sweepAtQuit(authority, request.request, sweepDeadline('quit', sentAt))
+            sweepAtClose(authority, request.request, sweepDeadline(request.request.moment, sentAt))
           )
         )
       case 'record-target':
