@@ -68,7 +68,7 @@ A gate-close failure returns a warning and keeps the gate held. Dev retries at t
 
 ### Session commands
 
-The same conversation cannot attach in two dev sessions, even across installations.
+The same conversation cannot attach in two dev sessions, even across installations. Lead and child runtimes also hold account-wide conversation-file presence against [history cleanup](launcher.md#automatic-history-cleanup). Creation/navigation and deletion share admission; cleanup rechecks bindings, retained-task reservations and unresolved uses before deleting a conversation. This does not release tasks or worktrees.
 
 | Operation                                                     | Behavior                                                                                                                                                      |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -359,6 +359,9 @@ export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undef
   const row = first(db, `${BINDING_ROW} WHERE conversation_key=?`, key)
   return row === undefined ? undefined : recordedBinding(row)
 }
+export const getAllBindings = (db: DatabaseSync): BindingRecord[] =>
+  rows(db, `${BINDING_ROW} ORDER BY conversation_key`).map(recordedBinding)
+
 export const getBindingRows = (db: DatabaseSync, workspaceIdValue: string): BindingRecord[] =>
   rows(db, `${BINDING_ROW} WHERE workspace_id=? ORDER BY conversation_key`, workspaceIdValue).map(
     recordedBinding

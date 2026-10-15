@@ -11,7 +11,7 @@ import {
   WorkspaceId,
 } from './workspace-domain.ts'
 import type { GitWorkspace } from './workspace-git.ts'
-import { canonicalPathSlot } from './workspace-paths.ts'
+import { canonicalPathSlot, conversationFileSlot } from './workspace-paths.ts'
 import {
   PROTOCOL_SQL,
   GATE_SQL,
@@ -237,6 +237,22 @@ export const acquirePathGates = (
     throw cause
   }
 }
+export const acquireConversationFileGate = (
+  paths: AuthorityPaths,
+  path: string,
+  exclusive: boolean
+): GateRelease => {
+  const info = lstatIfExists(path)
+  const canonical = conversationFileSlot(path, info?.isSymbolicLink() === true ? undefined : info)
+  const key = hash(`conversation-file:${canonical}`)
+  const directory = gateDirectory(paths, 'paths', key)
+  return acquireGate(
+    join(directory, 'use.sqlite'),
+    { kind: 'use', path: canonical, key },
+    exclusive
+  )
+}
+
 export const acquireStructureGate = (
   paths: AuthorityPaths,
   repository: Pick<GitWorkspace, 'commonPath'>,

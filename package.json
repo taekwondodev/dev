@@ -18,6 +18,7 @@
     "start": "node src/launcher.ts",
     "diagnostics": "node src/launcher.ts --diagnostics",
     "smoke": "node tests/launcher-cache-check.ts && node tests/smoke.ts && node tests/upgrade-check.ts",
+    "cleanup:check": "npm run types:pi && node tests/conversation-retention-check.ts && node tests/preference-cleanup-check.ts && node tests/conversation-cleanup-check.ts && node tests/cleanup-process-check.ts && node tests/cleanup-report-check.ts",
     "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/quit-display-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",

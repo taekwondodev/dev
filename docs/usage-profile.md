@@ -71,4 +71,4 @@ Export accepts one period and writes `usage-baseline.json`, `usage.svg` and `too
 
 The export contains numeric aggregates and allowlisted categories only. Session identifiers, paths, models, skills, compaction diagnostics and drilldowns stay private. Private drilldowns can contain session-entry references, read paths/ranges and Git-argument digests, but no prompts, file contents, argument payloads or raw errors. Do not publish the private JSON in place of an export.
 
-Reports are recomputed from session files. Neither a private report nor an export can restore deleted conversations.
+Reports are recomputed from retained session files. [Automatic cleanup](launcher.md#automatic-history-cleanup) reduces historical coverage: deleted conversations do not contribute to regenerated reports. A file removed during enumeration is skipped; malformed content and other I/O failures keep their existing handling. Neither a private report nor an export can restore deleted conversations.

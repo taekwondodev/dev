@@ -138,6 +138,10 @@ try {
           assert.ok(unavailable(yield* Effect.result(store.read(sixDaysOld))))
           assert.equal(existsSync(logDirectory(sixDaysOld)), false)
           assert.equal(existsSync(logDirectory(active)), true)
+          assert.deepEqual(yield* store.maintain, {
+            sessionIds: ['retention-check'],
+            files: [],
+          })
         }).pipe(
           Effect.scoped,
           Effect.provide(

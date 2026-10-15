@@ -30,6 +30,7 @@ import {
 import {
   decodeListValue,
   decodeWorkerMessage,
+  ProtectedConversationsSchema,
   type RpcEnvelope,
   type RpcInput,
   type RpcSuccess,
@@ -480,6 +481,7 @@ export class WorkStore extends Context.Service<
       },
       WorkPersistenceError
     >
+    readonly maintain: Effect.Effect<typeof ProtectedConversationsSchema.Type, WorkPersistenceError>
     readonly plannedLogPath: (id: AttemptId, stream: LogStream) => string
     readonly logPath: (id: AttemptId, stream: LogStream) => string
     readonly saveResult: (id: AttemptId, text: string) => Effect.Effect<void, WorkPersistenceError>
@@ -740,6 +742,11 @@ export class WorkStore extends Context.Service<
           save,
           read,
           list,
+          maintain: Clock.currentTimeMillis.pipe(
+            Effect.flatMap(now => call({ op: 'maintain', sessionId, now })),
+            Effect.flatMap(Schema.decodeUnknownEffect(ProtectedConversationsSchema)),
+            Effect.mapError(persistenceError)
+          ),
           plannedLogPath,
           logPath,
           saveResult,

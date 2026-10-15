@@ -12,6 +12,12 @@ The authority is account-wide because installation-local claims cannot coordinat
 
 A free gate does not prove a dead controller's descendants are gone. Durable use facts, acquisition/binding fences and physical identities remain necessary. Persist volume UUID plus lossless inode, not reboot-unstable `st_dev`. Resolve paths in one bounded Foundation observation and refuse lookup failures or object races rather than falling back to path names. Current validation remains required under the [single-schema rule](../../AGENTS.md#boundaries).
 
+### Conversation retention admission
+
+[#167](https://github.com/taekwondodev/dev/issues/167) adds detached history cleanup, not workspace release. Lead and child runtimes hold shared account-wide file gates; cleanup requires exclusive file admission and conversation presence. A data-home inventory gate spans creation and navigation, closing the gap before a new file receives its claim. Cleanup acquires it only while assessing or deleting a candidate, not for the entire scan. Retained-task reservations, pending transitions and unresolved uses remain separate retention reasons after a runtime ends. The work store supplies active/unresolved attempt references and owns its existing pruning queue.
+
+The one-shot cleanup runtime holds its own installation/source claims and a non-waiting data-home singleton gate. The launcher never awaits it. A thread would die with the parent, while a daemon would introduce an unnecessary long-lived owner. Preference publication shares exclusion with its own temporary cleanup; final preferences and coordination databases are never retention targets. Filesystem checks retain the existing cooperative, same-account external-race limitation below.
+
 ## Scoped workspace operations
 
 A shell is an opaque operation within its conversation's writer grant, occupying only that checkout. Git's own locks govern shell structural commands; dev's structure gate protects dev's structural effects. Scoped operations require an ordinary grant and cannot nest inside scoped operations or process grants. Ordinary reads fence nothing.
