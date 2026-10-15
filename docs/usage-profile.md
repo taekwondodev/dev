@@ -13,7 +13,9 @@ npm run profile -- --period 2026-09-01..2026-10-01
 npm run profile -- --period ..2026-09-01 --period 2026-09-01..
 ```
 
-The default data home is the launcher's [private storage](launcher.md#state). Reports include lead and child sessions, abandoned branches and interrupted work. Copied fork history is not counted again.
+The default data home is the launcher's [private storage](launcher.md#state). Reports include retained lead and child sessions, abandoned branches and interrupted work. Copied fork history is not counted again.
+
+[Automatic cleanup](launcher.md#automatic-history-cleanup) reduces historical coverage: deleted conversations do not contribute to regenerated reports. Files that disappear before they can be opened are skipped.
 
 Periods use UTC dates, with the start included and the end excluded; either end may be omitted. Multiple periods compare later selections with the first. A selection with nothing measurable fails without changing saved reports.
 
@@ -71,4 +73,4 @@ Export accepts one period and writes `usage-baseline.json`, `usage.svg` and `too
 
 The export contains numeric aggregates and allowlisted categories only. Session identifiers, paths, models, skills, compaction diagnostics and drilldowns stay private. Private drilldowns can contain session-entry references, read paths/ranges and Git-argument digests, but no prompts, file contents, argument payloads or raw errors. Do not publish the private JSON in place of an export.
 
-Reports are recomputed from retained session files. [Automatic cleanup](launcher.md#automatic-history-cleanup) reduces historical coverage: deleted conversations do not contribute to regenerated reports. A file removed during enumeration is skipped; malformed content and other I/O failures keep their existing handling. Neither a private report nor an export can restore deleted conversations.
+Neither a private report nor an export can restore deleted conversations.

@@ -98,7 +98,7 @@ Global extensions own presentation, including title activity while a child runs 
 | `<data-home>/work/attempts/<attempt>/` | Temporary full logs                                                               |
 | `<data-home>/child-sessions/`          | Child conversations, excluded from lead `--continue` selection                    |
 
-Retention keeps seven days from completion and the newest 64 completed results within that window. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries. The launcher's [detached cleanup](launcher.md#automatic-history-cleanup) also invokes this owner-controlled retention and log-cleanup queue, and protects conversations referenced by active or unresolved attempts.
+Retention keeps seven days from completion and the newest 64 completed results within that window. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries. Child conversation history follows the separate [history cleanup policy](launcher.md#automatic-history-cleanup).
 
 Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the Node minimum in `package.json` and an embedded SQLite with the [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug); the Node number alone does not establish safety.
 
