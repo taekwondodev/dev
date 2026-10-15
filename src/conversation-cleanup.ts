@@ -4,7 +4,7 @@ import {
   closeSync,
   fstatSync,
   lstatSync,
-  readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   unlinkSync,
@@ -14,8 +14,18 @@ import { join } from 'node:path'
 import { Effect, Schema } from 'effect'
 import { WorkspaceAuthority } from './workspace-authority.ts'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
-import { withDisposableConversation } from './workspace-retention.ts'
-import { expiredConversations } from './conversation-retention.ts'
+import { conversationRecord } from './workspace-attachment.ts'
+import {
+  type ConversationIdentity,
+  conversationInUse,
+  retentionFacts,
+  withDisposableConversation,
+} from './workspace-retention.ts'
+import {
+  RETAINED_CONVERSATIONS,
+  expiredConversations,
+  newestFirst,
+} from './conversation-retention.ts'
 import { WorkStore } from './work-store.ts'
 import { errorText } from './error-text.ts'
 import { canonicalPath } from './workspace-paths.ts'
@@ -26,26 +36,8 @@ const Header = Schema.Struct({
   timestamp: Schema.NonEmptyString,
   cwd: Schema.NonEmptyString,
 })
-const Entry = Schema.Struct({
-  type: Schema.Literals([
-    'message',
-    'thinking_level_change',
-    'model_change',
-    'usage',
-    'compaction',
-    'branch_summary',
-    'custom',
-    'label',
-    'session_info',
-    'custom_message',
-    'context_edit',
-  ]),
-  id: Schema.NonEmptyString,
-  parentId: Schema.NullOr(Schema.String),
-  timestamp: Schema.NonEmptyString,
-})
 const decodeHeader = Schema.decodeUnknownSync(Schema.fromJsonString(Header))
-const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(Entry))
+const HEADER_BYTES = 64 * 1024
 
 export class CleanupError extends Schema.TaggedError<CleanupError>()('CleanupError', {
   message: Schema.String,
@@ -59,14 +51,20 @@ interface Candidate {
   readonly identity: BigIntStats
   eligible: boolean
 }
-const sameFile = (left: BigIntStats, right: BigIntStats): boolean =>
+const sameIdentity = (left: BigIntStats, right: BigIntStats): boolean =>
   right.isFile() &&
   right.nlink === 1n &&
   left.dev === right.dev &&
   left.ino === right.ino &&
-  left.mtimeNs === right.mtimeNs &&
-  left.ctimeNs === right.ctimeNs &&
-  left.size === right.size
+  left.mtimeNs === right.mtimeNs
+
+const readHeader = (fd: number): string | undefined => {
+  const buffer = Buffer.alloc(HEADER_BYTES)
+  const read = readSync(fd, buffer, 0, HEADER_BYTES, 0)
+  const newline = buffer.indexOf('\n')
+  if (newline !== -1 && newline < read) return buffer.toString('utf8', 0, newline)
+  return read < HEADER_BYTES ? buffer.toString('utf8', 0, read) : undefined
+}
 
 const inventory = (directory: string): readonly Candidate[] => {
   const info = lstatSync(directory)
@@ -80,20 +78,16 @@ const inventory = (directory: string): readonly Candidate[] => {
       const before = lstatSync(path, { bigint: true })
       if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(info.uid)) return []
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
-      if (!sameFile(before, fstatSync(fd, { bigint: true }))) return []
-      const lines = readFileSync(fd, 'utf8')
-        .split('\n')
-        .filter(line => line.trim() !== '')
-      const header = decodeHeader(lines[0])
-      for (const line of lines.slice(1)) decodeEntry(line)
-      if (!sameFile(before, fstatSync(fd, { bigint: true }))) return []
+      if (!sameIdentity(before, fstatSync(fd, { bigint: true }))) return []
+      const line = readHeader(fd)
+      if (line === undefined) return []
       return [
         {
           path,
-          sessionId: header.id,
+          sessionId: decodeHeader(line).id,
           modifiedAt: before.mtimeNs,
           identity: before,
-          eligible: true,
+          eligible: false,
         },
       ]
     } catch {
@@ -126,6 +120,21 @@ export const cleanConversations = Effect.fnUntraced(function* (
       const home = realpathSync(dataHome)
       if (!lstatSync(dataHome).isDirectory() || lstatSync(home).uid !== process.getuid?.())
         throw new Error('Cleanup requires an owned data home without a symlink')
+      authority.initialize()
+      const facts = retentionFacts(authority)
+      const identify = (candidate: Candidate): ConversationIdentity | undefined => {
+        if (sessions.has(candidate.sessionId) || files.has(candidate.path)) return undefined
+        try {
+          const identity = conversationRecord({
+            sessionId: candidate.sessionId,
+            sessionFile: candidate.path,
+            dataHome: home,
+          })
+          return facts.retains(identity) ? undefined : identity
+        } catch {
+          return undefined
+        }
+      }
       let removed = 0
       for (const category of ['sessions', 'child-sessions']) {
         const directory = join(home, category)
@@ -135,37 +144,25 @@ export const cleanConversations = Effect.fnUntraced(function* (
         } catch {
           continue
         }
-        for (const candidate of candidates) {
-          candidate.eligible = false
-          if (sessions.has(candidate.sessionId) || files.has(candidate.path)) continue
-          try {
-            candidate.eligible =
-              withDisposableConversation(
-                authority,
-                {
-                  sessionId: candidate.sessionId,
-                  sessionFile: candidate.path,
-                  dataHome: home,
-                },
-                () => true
-              ) === true
-          } catch {
-            continue
+        let kept = 0
+        for (const candidate of candidates.toSorted(newestFirst)) {
+          const identity = identify(candidate)
+          if (identity === undefined) continue
+          if (kept < RETAINED_CONVERSATIONS) {
+            if (conversationInUse(authority, identity)) continue
+            kept += 1
           }
+          candidate.eligible = true
         }
         for (const candidate of expiredConversations(candidates)) {
           try {
             withDisposableConversation(
               authority,
-              {
-                sessionId: candidate.sessionId,
-                sessionFile: candidate.path,
-                dataHome: home,
-              },
+              { sessionId: candidate.sessionId, sessionFile: candidate.path, dataHome: home },
               () => {
                 if (realpathSync(directory) !== directory || !lstatSync(directory).isDirectory())
                   return
-                if (!sameFile(candidate.identity, lstatSync(candidate.path, { bigint: true })))
+                if (!sameIdentity(candidate.identity, lstatSync(candidate.path, { bigint: true })))
                   return
                 unlinkSync(candidate.path)
                 removed += 1

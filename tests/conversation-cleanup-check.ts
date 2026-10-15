@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  appendFileSync,
   existsSync,
   readdirSync,
   utimesSync,
@@ -49,7 +50,14 @@ for (const category of ['sessions', 'child-sessions']) {
     makeSession(directory, String(index).padStart(3, '0'), 1000 + index)
 }
 const leads = join(home, 'sessions')
+const futureEntry = join(leads, '000.jsonl')
+appendFileSync(
+  futureEntry,
+  `${JSON.stringify({ type: 'entry_kind_from_a_newer_pi', id: 'x', parentId: null, timestamp: 'now' })}\n`
+)
+utimesSync(futureEntry, 1000, 1000)
 const live = makeSession(leads, 'live', 1)
+const active = makeSession(leads, 'active', 5000)
 const retained = makeSession(leads, 'retained', 2)
 const recovery = makeSession(join(home, 'child-sessions'), 'recovery', 1)
 const repository = join(root, 'repository')
@@ -126,8 +134,11 @@ try {
         })),
         0
       )
+      yield* lease.protect({ path: active, sessionId: 'active' })
       assert.equal(yield* cleanConversations(home, namespace), 2)
       assert.ok(existsSync(live))
+      assert.ok(existsSync(active))
+      assert.equal(existsSync(futureEntry), false)
       assert.ok(existsSync(retained))
       assert.ok(existsSync(recovery))
       assert.ok(existsSync(malformed))
@@ -144,7 +155,7 @@ try {
       assert.equal(yield* cleanConversations(home, namespace), 0)
       const { api, packageInfo } = yield* loadPi
       const recent = yield* findRecentSession(packageInfo.root, root, leads)
-      assert.equal(recent, join(leads, '100.jsonl'))
+      assert.equal(recent, active)
       const resumed = api.SessionManager.open(join(leads, '001.jsonl'), leads, root)
       assert.equal(resumed.getSessionId(), '001')
       const late = makeSession(leads, 'late', 3)
@@ -170,7 +181,7 @@ try {
     }).pipe(Effect.scoped, Effect.provide(services))
   )
   console.log(
-    'conversation cleanup: real files, active protection, independent quotas, malformed files, links and idempotence passed'
+    'conversation cleanup: real files, active protection outside quotas, unknown entries, malformed files, links and idempotence passed'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })

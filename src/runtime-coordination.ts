@@ -235,26 +235,19 @@ const prepareCoordination = (options: CoordinationOptions): string => {
 }
 
 export const holdConversationInventory = (
+  authority: WorkspaceAuthority,
   dataHome: string,
-  mode: 'reader' | 'removal',
-  options: CoordinationOptions = {}
+  mode: 'reader' | 'removal'
 ): GateRelease => {
-  const authority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
-  try {
-    authority.initialize()
-    const gates = acquirePathGates(
-      authority.paths,
-      join(realpathSync(dataHome), '.conversation-inventory'),
-      mode
-    )
-    return () => {
-      gates.writer?.()
-      gates.use()
-      authority.close()
-    }
-  } catch (cause) {
-    authority.close()
-    throw cause
+  authority.initialize()
+  const gates = acquirePathGates(
+    authority.paths,
+    join(realpathSync(dataHome), '.conversation-inventory'),
+    mode
+  )
+  return () => {
+    gates.writer?.()
+    gates.use()
   }
 }
 
@@ -299,7 +292,7 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
   }
   const creating = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
     Effect.acquireUseRelease(
-      native(() => holdConversationInventory(home, 'reader', options)),
+      native(() => holdConversationInventory(fileAuthority, home, 'reader')),
       () => operation,
       release => Effect.sync(release)
     )
