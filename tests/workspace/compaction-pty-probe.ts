@@ -104,6 +104,7 @@ const attachment = await fixture.lifecycle.attach({
   conversation: { sessionId: manager.getSessionId(), sessionFile, dataHome: fixture.dataHome },
 })
 const opened = await openHostRuntime({
+  mode: 'tui',
   coordination: { installationPath: fixture.root, namespacePath: join(fixture.root, 'authority') },
   pi,
   packageRoot: packageInfo.root,

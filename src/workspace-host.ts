@@ -380,6 +380,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let activeManager: SessionManager | undefined
   let runtime: AgentSessionRuntime | undefined
   let currentContext: ExtensionContext | undefined
+  let startedSessionId: string | undefined
   let currentApi: ExtensionAPI | undefined
 
   let parked: false | 'switch' = false
@@ -1097,7 +1098,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     activeConversation = nextIdentity
     activeManager = runtime?.session.sessionManager
     if (previous !== attachment && !continuing) yield* closeAttachmentOnce(previous)
-    const startedSessionId = currentContext?.sessionManager.getSessionId()
     if (startedSessionId === undefined || startedSessionId === nextIdentity.sessionId)
       showReplacementReceipt(nextIdentity.sessionId)
     if (!pending && parked === 'switch') {
@@ -1407,11 +1407,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       currentApi = api
       api.on('session_start', (_event, context) => {
         currentContext = context
-        if (
-          activeAttachment.binding.conversation.sessionId === context.sessionManager.getSessionId()
-        ) {
+        startedSessionId = context.sessionManager.getSessionId()
+        if (activeAttachment.binding.conversation.sessionId === startedSessionId) {
           activeManager = context.sessionManager as SessionManager
-          showReplacementReceipt(context.sessionManager.getSessionId())
+          showReplacementReceipt(startedSessionId)
         }
       })
 
@@ -1485,7 +1484,17 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return { action: 'handled' }
       })
 
-      api.on('session_shutdown', event => runPromise(sessionShutdown(event.reason)))
+      api.on('session_shutdown', event =>
+        runPromise(
+          sessionShutdown(event.reason).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                currentContext = undefined
+              })
+            )
+          )
+        )
+      )
 
       api.registerCommand('workspace', {
         description: 'List, inspect, check, release, or resume an exact workspace task',

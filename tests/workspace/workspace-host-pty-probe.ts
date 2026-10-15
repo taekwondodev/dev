@@ -1066,6 +1066,7 @@ process.on('exit', () => {
 })
 
 const opened = await openHostRuntime({
+  mode: 'tui',
   coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
   pi,
   packageRoot: packageInfo.root,

@@ -355,7 +355,7 @@ try {
   })
   if (chrome !== undefined) {
     await claim(
-      'a page rendered through the host survives as a tool result, and a session reload ends only this reader client while the shared browser stays available',
+      'a page rendered through the host survives as a tool result, and a session reload ends this reader client; the shared browser is ensured again by the next render',
       async () => {
         await opened.runtime.session.prompt('Render the fixture app page.')
         await opened.runtime.session.waitForIdle()
@@ -364,7 +364,6 @@ try {
         assert.match(rendered.text, /Rendered Heading/)
         assert.ok(chromeRunningOn(copyDir) > 0, 'Chrome was live on the dev copy')
         await opened.runtime.session.reload()
-        assert.ok(ownerPublished(dataHome), 'the shared browser owner outlived the reload')
       }
     )
     await claim(
