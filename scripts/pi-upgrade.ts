@@ -569,17 +569,23 @@ const updateUnderGate = Effect.gen(function* () {
   yield* acquireMaintenance()
   const version = yield* pinnedPi
   yield* refuseSelectedRelease('update')
+  const previous = yield* resolvePiPackage
+  if (previous.version === version) {
+    yield* Effect.sync(() => {
+      process.stdout.write(`Pi ${version} is already active.\n`)
+    })
+    return
+  }
   const verified = yield* Effect.option(resolveCandidate)
   if (Option.isNone(verified) || verified.value.version !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing update: no verified candidate for Pi ${version} in ${candidateRelease}. Merge an upgrade pull request that verified it, or run npm run upgrade.`,
+      message: `Refusing update: no verified candidate for Pi ${version} in ${candidateRelease}. Merge an upgrade pull request that verified it, or run npm run pi:update.`,
     })
   const latest = yield* latestVersion
   if (latest !== version)
     return yield* new PiUpgradeError({
-      message: `Refusing update: pi update would install Pi ${latest}, not the pinned ${version}. Run npm run upgrade and merge its pull request first.`,
+      message: `Refusing update: pi update would install Pi ${latest}, not the pinned ${version}. Run npm run pi:update and merge its pull request first.`,
     })
-  const previous = yield* resolvePiPackage
   const update = yield* streamed('pi', ['update'])
   if (!update.passed)
     return yield* new PiUpgradeError({
@@ -613,6 +619,7 @@ const updateUnderGate = Effect.gen(function* () {
 
 export const updatePi = Effect.gen(function* () {
   const version = yield* updateUnderGate
+  if (version === undefined) return
   const diagnostics = yield* run('dev', ['--diagnostics']).pipe(
     Effect.mapError(
       error =>

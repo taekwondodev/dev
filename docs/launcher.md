@@ -30,11 +30,11 @@ Run from the installation checkout:
 ```bash
 npm ci && npm run setup && npm link --ignore-scripts    # install dependencies, initialize state, link dev
 npm run setup -- --data-home PATH                       # initialize an explicit data home
-npm run update -- --remote origin --branch main         # fast-forward the checkout
+npm run update -- --remote origin --branch main         # fast-forward dev and activate the pinned Pi
+npm run upgrade                                        # alias for update, with the same options
 npm run rollback -- --ref REVISION                      # detach at a revision
 npm run profile [-- --data-home PATH]                   # private usage report
-npm run upgrade                                         # upgrade Pi and dependencies; publish one PR, red or green
-npm run pi:update                                       # activate the verified, pinned Pi release
+npm run pi:update                                      # upgrade Pi and dependencies; publish one PR
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
@@ -42,7 +42,7 @@ Maintenance commands take options as `--flag value`. An unknown option or a stra
 
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
-Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update reinstalls dependencies when the merged `package-lock.json` changed. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
+Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update (also named `upgrade`) reinstalls dependencies when the merged `package-lock.json` changed, then activates Pi if its pinned version is not already active. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 

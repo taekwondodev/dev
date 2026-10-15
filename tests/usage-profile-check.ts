@@ -1978,7 +1978,8 @@ try {
         [['update', '--bogus', 'x'], /^Unknown update option "--bogus"/],
         [['update', 'stray'], /^Unknown update option "stray"/],
         [['setup', '--data-home'], /^--data-home requires a value\n$/],
-        [['upgrade', 'x'], /^upgrade takes no arguments, got: x\n$/],
+        [['upgrade', 'x'], /^Unknown maintenance command "upgrade"/],
+        [['pi-update', 'x'], /^pi:update takes no arguments, got: x\n$/],
       ] as const) {
         const refused = maintenance(...args)
         assert.equal(refused.status, 1, args.join(' '))

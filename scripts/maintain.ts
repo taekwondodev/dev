@@ -254,10 +254,11 @@ const dispatch = Effect.fnUntraced(function* (command: string, args: readonly st
     case 'update': {
       const options = yield* parseOptions('update', args)
       const remote = yield* single('--remote', options('--remote'))
-      return yield* update({
+      yield* update({
         remote: Option.getOrElse(remote, () => 'origin'),
         branch: yield* single('--branch', options('--branch')),
       })
+      return yield* Effect.mapError(updatePi, reported)
     }
     case 'rollback': {
       const options = yield* parseOptions('rollback', args)
@@ -265,15 +266,12 @@ const dispatch = Effect.fnUntraced(function* (command: string, args: readonly st
     }
     case 'profile':
       return yield* profile(args)
-    case 'upgrade':
-      yield* withoutArguments('upgrade', args)
-      return yield* Effect.mapError(runUpgrade, reported)
     case 'pi-update':
       yield* withoutArguments('pi:update', args)
-      return yield* Effect.mapError(updatePi, reported)
+      return yield* Effect.mapError(runUpgrade, reported)
     default:
       return yield* new MaintenanceError({
-        message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, upgrade, or pi-update.`,
+        message: `Unknown maintenance command "${command}". Use setup, update, rollback, profile, or pi-update.`,
       })
   }
 })
