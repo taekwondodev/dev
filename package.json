@@ -18,7 +18,7 @@
     "start": "node src/launcher.ts",
     "diagnostics": "node src/launcher.ts --diagnostics",
     "smoke": "node tests/launcher-cache-check.ts && node tests/smoke.ts && node tests/upgrade-check.ts && node tests/upgrade-checks-check.ts",
-    "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/quit-display-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
+    "workspace:check": "npm run types:pi && node tests/run-checks.ts tests/workspace/workspace-completion-check.ts tests/workspace/quit-display-check.ts tests/workspace/workspace-authority-check.ts tests/workspace/workspace-release-check.ts tests/workspace/workspace-sweep-check.ts tests/workspace/workspace-process-check.ts tests/workspace/workspace-host-contract-check.ts tests/workspace/workspace-host-session-check.ts tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",
     "web:check": "npm run types:pi && node tests/web/web-read-check.ts && node tests/web/web-owner-check.ts && node tests/web/web-host-check.ts",
