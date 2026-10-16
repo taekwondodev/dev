@@ -78,16 +78,25 @@ const git = (cwd: string, args: readonly string[], input?: string): string => {
   return result.stdout.replace(/\n$/, '')
 }
 
+const DESCRIBE_CHECKOUT = [
+  'rev-parse',
+  '--show-toplevel',
+  '--path-format=absolute',
+  '--git-common-dir',
+  '--git-dir',
+  '--show-object-format',
+] as const
+
+const describeCheckout = (cwd: string): { readonly lines: string[]; readonly head: string } => {
+  const described = gitResult(cwd, [...DESCRIBE_CHECKOUT, '--verify', 'HEAD^{commit}'])
+  if (described.status !== 0) return { lines: git(cwd, DESCRIBE_CHECKOUT).split('\n'), head: '' }
+  const lines = described.stdout.replace(/\n$/, '').split('\n')
+  return { lines: lines.slice(0, -1), head: lines.at(-1) ?? '' }
+}
+
 export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   if (!isAbsolute(cwd)) throw gitBlocked(`Workspace cwd must be absolute: ${cwd}`)
-  const described = git(cwd, [
-    'rev-parse',
-    '--show-toplevel',
-    '--path-format=absolute',
-    '--git-common-dir',
-    '--git-dir',
-    '--show-object-format',
-  ]).split('\n')
+  const { lines: described, head } = describeCheckout(cwd)
   const [toplevel, commonValue, adminValue, objectFormat] = described
   if (
     described.length !== 4 ||
@@ -105,12 +114,6 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   }
   const common = realpathSync(commonValue)
   const admin = realpathSync(isAbsolute(adminValue) ? adminValue : resolve(checkout, adminValue))
-  let head: string
-  try {
-    head = git(checkout, ['rev-parse', '--verify', 'HEAD^{commit}'])
-  } catch {
-    head = ''
-  }
   const [physical, commonPhysical, adminPhysical] = observePhysicalIdentities([
     checkout,
     common,
