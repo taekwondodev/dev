@@ -65,6 +65,7 @@ import {
 import {
   parseWorkspaceCommand,
   runReadOnlyWorkspaceCommand,
+  existingTaskArtifacts,
   formatReleaseResults,
   releaseExitCode,
   releasePlan,
@@ -472,8 +473,12 @@ const releaseAtQuit = Effect.fnUntraced(function* (
       }
       const views = reservedViews(listed.value)
       const reason = exclusion(receipt, views)
-      if (reason === undefined) plans.push({ taskId, views })
-      else excluded.set(taskId, reason)
+      if (reason !== undefined) {
+        excluded.set(taskId, reason)
+        continue
+      }
+      const artifacts = existingTaskArtifacts(lifecycle.root, taskId)
+      plans.push({ taskId, views, ...(artifacts === undefined ? {} : { artifacts }) })
     }
     return plans
   })
@@ -706,7 +711,7 @@ const terminalRelease = Effect.fnUntraced(function* (
     )
     return 1
   }
-  yield* write(releasePlan(taskId, views))
+  yield* write(releasePlan(taskId, views, existingTaskArtifacts(lifecycle.root, taskId)))
   const confirmation = yield* askConfirmation('Type y to release, anything else to cancel: ')
   if (confirmation !== 'confirmed') {
     yield* write('Release cancelled; nothing was changed.')

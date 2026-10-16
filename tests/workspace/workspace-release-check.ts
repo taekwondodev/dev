@@ -48,6 +48,7 @@ import {
 import { type JsonObject, type Tool, validateToolArguments } from '@earendil-works/pi-ai'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import {
+  existingTaskArtifacts,
   formatReleaseResults,
   releaseExitCode,
   releasePlan,
@@ -125,17 +126,23 @@ const only = (assessments: readonly WorkspaceAssessment[], workspaceId: string) 
   if (found === undefined) throw new Error(`no assessment for ${workspaceId}`)
   return found
 }
+type WorkspaceReleaseRow = Extract<WorkspaceReleaseResult, { readonly kind: 'workspace' }>
+const workspaceResults = (results: readonly WorkspaceReleaseResult[]): WorkspaceReleaseRow[] =>
+  results.filter((result): result is WorkspaceReleaseRow => result.kind === 'workspace')
 const outcomes = (results: readonly WorkspaceReleaseResult[]) =>
-  results.map(result => [result.workspaceId, result.outcome])
+  workspaceResults(results).map(result => [result.workspaceId, result.outcome])
 const resultOf = (results: readonly WorkspaceReleaseResult[], workspaceId: string) => {
-  const found = results.find(item => item.workspaceId === workspaceId)
+  const found = workspaceResults(results).find(item => item.workspaceId === workspaceId)
   if (found === undefined) throw new Error(`no release result for ${workspaceId}`)
   return found
 }
 const reply = (text: string) =>
   JSON.parse(text) as {
-    readonly recorded: string
+    readonly recorded?: string
     readonly reference?: PublicationReference
+    readonly artifacts?: string
+    readonly taskId?: string
+    readonly path?: string
   }
 const localMain: TaskTarget = { kind: 'local', ref: 'refs/heads/main' }
 const MERGED_AT = '2026-09-28T20:08:49Z'
@@ -155,6 +162,7 @@ const publication = (
   id: newId(),
   taskId,
   workspaceId,
+  root: 'workspace',
   relativePath,
   byteLength: bytes.byteLength,
   sha256: sha256(bytes),
@@ -358,7 +366,11 @@ try {
     async () => {
       writeFileSync(join(m1.checkout, 'tracked.txt'), 'undelivered edit\n')
       writeFileSync(join(m1.checkout, 'scratch.txt'), 'untracked scratch\n')
-      const plan = releasePlan(taskB, reservedViews(await lifecycle.inspect({ taskId: taskB })))
+      const plan = releasePlan(
+        taskB,
+        reservedViews(await lifecycle.inspect({ taskId: taskB })),
+        undefined
+      )
       assert.ok(plan.includes(m1.checkout), plan)
       assert.ok(plan.includes('the worktree and everything in it are deleted'), plan)
       const adminPath = git(['rev-parse', '--path-format=absolute', '--git-dir'], m1.checkout)
@@ -1950,6 +1962,7 @@ try {
           arguments: input,
         })
       const accepted: JsonObject[] = [
+        { action: 'artifacts' },
         { action: 'resume', taskId: 'task', workspaceId: 'workspace' },
         { action: 'set-target', target: { kind: 'local', ref: 'refs/heads/main' } },
         {
@@ -1988,6 +2001,69 @@ try {
         String(properties.target?.description).includes('refs/heads/'),
         'the target description shows the full-ref form the decoder enforces'
       )
+    }
+  )
+
+  await claim(
+    'the artifacts action admits a taskless writer, creates and reuses its absolute directory, and requests a rebind before returning a path for a contended checkout',
+    async () => {
+      const checkout = userCheckout()
+      const owner = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      let active = owner
+      const requested: WorkspaceHandoff[] = []
+      const tool = makeWorkspaceTool({
+        lifecycle: lifecycle.effect,
+        attachment: () => active.effect,
+        runPromise: effect =>
+          Effect.runPromise(
+            Effect.provideService(effect, PublicationDestinations, {
+              body: () => Effect.die('artifact discovery must not read a publication'),
+              attachment: () => Effect.die('artifact discovery must not read an attachment'),
+            })
+          ),
+        requestResume: handoff => {
+          requested.push(handoff)
+        },
+      })
+      const call = () =>
+        tool.execute('artifacts', { action: 'artifacts' }, undefined, undefined, {
+          cwd: active.binding.cwd,
+          hasUI: true,
+        } as unknown as Parameters<ToolDefinition['execute']>[4])
+      const value = (result: Awaited<ReturnType<typeof call>>) =>
+        reply(result.content.map(part => (part.type === 'text' ? part.text : '')).join(''))
+      assert.equal(owner.binding.taskId, undefined, 'the action must perform the first admission')
+      const announced = await call()
+      const taskId = requireTask(owner.binding.taskId)
+      const directory = join(root, 'artifacts', taskId)
+      assert.deepEqual(
+        [value(announced).artifacts, value(announced).taskId, value(announced).path],
+        ['ready', taskId, directory]
+      )
+      assert.ok(statSync(directory).isDirectory(), 'the action creates the directory')
+      assert.equal(value(await call()).path, directory, 'repeat calls reuse the task directory')
+      assert.equal(requested.length, 0)
+
+      active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      const contended = await call()
+      assert.equal(contended.terminate, true, 'the refused call ends the turn for a rebind')
+      assert.equal(value(contended).artifacts, 'rebind-requested')
+      assert.equal(value(contended).path, undefined, 'no directory is announced before rebinding')
+      assert.equal(requested.length, 1)
+      const handoff = requested[0]!
+      const targetTask = requireTask(handoff.target.taskId)
+      const targetDirectory = join(root, 'artifacts', targetTask)
+      assert.notEqual(targetTask, taskId)
+      assert.equal(existsSync(targetDirectory), false, 'a refused call creates no task directory')
+      await active.handoff(handoff, async () => 'confirmed')
+      const retried = value(await call())
+      assert.deepEqual(
+        [retried.artifacts, retried.taskId, retried.path],
+        ['ready', targetTask, targetDirectory]
+      )
+      assert.ok(statSync(targetDirectory).isDirectory())
+      await active.close()
+      await owner.close()
     }
   )
 
@@ -2125,6 +2201,31 @@ try {
       })
       assert.ok(!sensitive.ok)
       assert.ok(sensitive.text.includes('sensitive name'), sensitive.text)
+
+      const artifactsDirectory = join(root, 'artifacts', allocated.taskId)
+      mkdirSync(artifactsDirectory, { recursive: true })
+      writeFileSync(join(artifactsDirectory, 'pr-body.md'), 'published body\n')
+      writeFileSync(join(checkout, 'pr-body.md'), 'unpublished checkout body\n')
+      bodies.set('owner/repo#38/body', 'published body\n')
+      const outside = await call({
+        action: 'record-publication',
+        path: join(sandbox, 'pr-body.md'),
+        destination: { repository: 'owner/repo', number: 38 },
+      })
+      assert.ok(!outside.ok && outside.text.includes(artifactsDirectory), outside.text)
+      const artifactPublication = await call({
+        action: 'record-publication',
+        path: join(artifactsDirectory, 'pr-body.md'),
+        destination: { repository: 'owner/repo', number: 38 },
+      })
+      assert.ok(artifactPublication.ok, artifactPublication.text)
+      assert.deepEqual(
+        [
+          reply(artifactPublication.text).reference?.root,
+          reply(artifactPublication.text).reference?.relativePath,
+        ],
+        ['artifacts', 'pr-body.md']
+      )
       const selectedSecret = await call({
         action: 'record-publication',
         path: 'credentials-provider.js',
@@ -2177,8 +2278,16 @@ try {
       const managed = only(await lifecycle.check(allocated.taskId), allocated.managed.workspaceId)
       assert.equal(managed.completion.kind, 'finished', managed.reasons.join(' '))
       assert.equal(managed.evidence?.verdict, 'valid', managed.reasons.join(' '))
-      assert.equal(managed.inventory?.published, 2)
-      assert.equal(managed.inventory?.disposable, 2)
+      assert.equal(
+        managed.inventory?.published,
+        2,
+        'an artifact-root publication never enters the workspace inventory'
+      )
+      assert.equal(
+        managed.inventory?.disposable,
+        3,
+        'the same-path checkout file remains unselected despite the artifact publication'
+      )
 
       const resumed = await resumeTool.execute(
         'resume',
@@ -2195,6 +2304,47 @@ try {
       )
       await elsewhere.handoff(requested[0]!, async () => 'cancelled')
       await elsewhere.close()
+    }
+  )
+
+  await claim(
+    'dev workspace release names the task artifact directory as a consequence, deletes it with the last reservation and reports it',
+    async () => {
+      const artifactsRepo = join(sandbox, 'artifacts-repo')
+      initRepository(artifactsRepo)
+      const owner = await lifecycle.attach({ conversation: conversation(), cwd: artifactsRepo })
+      const write = ready(await owner.authorize({ kind: 'write' }))
+      const taskId = requireTask(write.taskId)
+      const directory = join(root, 'artifacts', taskId)
+      assert.equal(
+        existingTaskArtifacts(root, taskId),
+        undefined,
+        'absent directories are not advertised'
+      )
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, 'handoff.md'), 'handoff\n')
+      assert.equal(existingTaskArtifacts(root, taskId), directory)
+      await owner.close()
+      const views = reservedViews(await lifecycle.inspect({ taskId }))
+      const plan = releasePlan(taskId, views, existingTaskArtifacts(root, taskId))
+      assert.ok(
+        plan.includes(
+          `task artifacts at ${directory}: the directory and everything in it are deleted`
+        ),
+        plan
+      )
+      const results = await lifecycle.release(taskId)
+      assert.deepEqual(outcomes(results), [[write.workspaceId, 'released']])
+      const artifacts = results.find(result => result.kind === 'task-artifacts')
+      assert.deepEqual(
+        [artifacts?.taskId, artifacts?.path, artifacts?.outcome],
+        [taskId, directory, 'removed'],
+        JSON.stringify(results)
+      )
+      assert.equal(existsSync(directory), false)
+      assert.equal(releaseExitCode(results), 0)
+      assert.ok(formatReleaseResults(taskId, results).includes(`task artifacts at ${directory}`))
+      assert.deepEqual(await lifecycle.release(taskId), [], 'a repeated release finds nothing')
     }
   )
 

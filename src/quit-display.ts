@@ -186,12 +186,22 @@ const commandStatus = (style: TerminalStyle, command: string, status: string): s
 
 const count = (value: number, noun: string): string => `${value} ${noun}${value === 1 ? '' : 's'}`
 
-const successes = (rows: readonly { readonly outcome: string }[], style: TerminalStyle): string => {
-  const removed = rows.filter(row => row.outcome === 'removed').length
-  const released = rows.filter(row => row.outcome === 'released').length
+const successes = (
+  rows: readonly { readonly kind: string; readonly outcome?: string }[],
+  style: TerminalStyle
+): string => {
+  const workspaces = rows.filter(row => row.kind === 'workspace')
+  const removed = workspaces.filter(row => row.outcome === 'removed').length
+  const released = workspaces.filter(row => row.outcome === 'released').length
+  const artifacts = rows.filter(
+    row => row.kind === 'task-artifacts' && row.outcome === 'removed'
+  ).length
   return [
     ...(removed === 0 ? [] : [paint(style, 'ok', `✓ ${count(removed, 'worktree')} removed`)]),
     ...(released === 0 ? [] : [paint(style, 'ok', `✓ ${count(released, 'reservation')} released`)]),
+    ...(artifacts === 0
+      ? []
+      : [paint(style, 'ok', `✓ ${count(artifacts, 'task artifact directory')} removed`)]),
   ].join(' · ')
 }
 
@@ -201,7 +211,6 @@ export const formatQuitReceipt = (
   style: TerminalStyle,
   excluded: ReadonlyMap<WorkspaceId, string> = new Map()
 ): string => {
-  const rows = workspaceRows(receipt)
   const offered = new Set(tasksToRelease(receipt).filter(taskId => !excluded.has(taskId)))
   const remaining = remainingRows(receipt)
   const blocks = (selected: readonly WorkspaceRow[]): readonly string[] =>
@@ -239,12 +248,16 @@ export const formatQuitReceipt = (
             'The sweep failed before every task could be assessed.'
           ),
         ]
+      case 'task-artifacts':
+        return row.outcome === 'removed'
+          ? []
+          : [commandStatus(style, `dev workspace inspect ${row.taskId}`, row.reason)]
       case 'workspace':
         return []
     }
   })
   const summary =
-    successes(rows, style) ||
+    successes(receipt.rows, style) ||
     (receipt.rows.length === 0 ? 'No reserved workspaces' : 'No workspaces removed')
   return [
     `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`,
@@ -279,11 +292,13 @@ export const quitReleaseExclusion = (
 export interface TaskReleasePlan {
   readonly taskId: WorkspaceId
   readonly views: readonly WorkspaceView[]
+  readonly artifacts?: string
 }
 
 const releaseConsequences = (
   title: (scope: string) => string,
   views: readonly WorkspaceView[],
+  artifacts: number,
   style: TerminalStyle,
   status: readonly string[] = []
 ): string => {
@@ -292,6 +307,7 @@ const releaseConsequences = (
   const scope = [
     ...(managed === 0 ? [] : [count(managed, 'managed worktree')]),
     ...(existing === 0 ? [] : [count(existing, 'checkout reservation')]),
+    ...(artifacts === 0 ? [] : [count(artifacts, 'task artifact directory')]),
   ].join(', ')
   return [
     '',
@@ -309,8 +325,14 @@ const releaseConsequences = (
     ...(existing === 0
       ? []
       : ['Pre-existing checkouts keep their files and commits; only their reservations end.']),
+    ...(artifacts === 0
+      ? []
+      : [paint(style, 'fail', 'Task artifact directories are deleted with everything in them.')]),
   ].join('\n')
 }
+
+const artifactsOf = (plans: readonly TaskReleasePlan[]): number =>
+  plans.filter(plan => plan.artifacts !== undefined).length
 
 export const formatQuitReleasePlan = (
   plans: readonly TaskReleasePlan[],
@@ -319,6 +341,7 @@ export const formatQuitReleasePlan = (
   releaseConsequences(
     scope => `Release ${count(plans.length, 'task')} (${scope})?`,
     plans.flatMap(plan => plan.views),
+    artifactsOf(plans),
     style
   )
 
@@ -327,13 +350,19 @@ export const formatQuitTaskReleasePlan = (
   plan: TaskReleasePlan,
   style: TerminalStyle
 ): string =>
-  releaseConsequences(scope => `Release task ${plan.taskId} (${scope})?`, plan.views, style, [
-    ...new Set(
-      remainingRows(receipt)
-        .filter(row => row.taskId === plan.taskId)
-        .map(statusOf)
-    ),
-  ])
+  releaseConsequences(
+    scope => `Release task ${plan.taskId} (${scope})?`,
+    plan.views,
+    artifactsOf([plan]),
+    style,
+    [
+      ...new Set(
+        remainingRows(receipt)
+          .filter(row => row.taskId === plan.taskId)
+          .map(statusOf)
+      ),
+    ]
+  )
 
 export const formatQuitReleasePrompt = (style: TerminalStyle): string =>
   paint(style, 'warn', '[y = release, Enter = keep] ')
@@ -366,7 +395,7 @@ export const formatQuitReleaseResults = (
   [
     successes(results, style),
     ...results
-      .filter(result => result.outcome === 'failed')
+      .filter(result => result.outcome === 'failed' || result.outcome === 'review-required')
       .map(() => formatQuitReleaseFailure(taskId, 'failed', style)),
   ]
     .filter(text => text.length > 0)

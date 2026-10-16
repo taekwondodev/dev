@@ -15,13 +15,14 @@ dev workspace release <task>  # interactively confirm clearing every workspace o
 
 In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing.
 
-The lead's `workspace` tool has three actions:
+The lead's `workspace` tool supports these operations:
 
 | Action               | Effect                                                                                                                                                                                           |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `artifacts`          | Create and return the [task artifact directory](#task-artifacts)                                                                                                                                 |
 | `resume`             | End the turn and switch to a retained workspace without moving files; refused while the conversation has live shells or work. A refusal reports each workspace's outcome, reason and next action |
 | `set-target`         | Override the conversation task's inferred integration target                                                                                                                                     |
-| `record-publication` | Verify exact readback of an already published issue/PR artifact and record the evidence                                                                                                          |
+| `record-publication` | Verify exact readback of an already published issue/PR artifact, in the workspace or in the task artifact directory, and record the evidence                                                     |
 
 The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 
@@ -50,13 +51,22 @@ Selection refuses a directory outside any Git checkout, inside authority storage
 Lead and writing-child write/edit classify destinations before writer admission:
 
 - Current-workspace files use scoped admission.
+- Files inside the bound task's [artifact directory](#task-artifacts) first admit the conversation as writer of its checkout, like a workspace write, then proceed as an external write. Another task's directory, the artifacts root and the rest of the authority stay refused.
 - Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or rebind.
 - Another checkout, including nested or linked checkouts, must be selected and admitted through delegation or a conversation bound there.
 - Git administration and dev authority/coordination metadata remain protected, including canonical aliases.
 
 Use literal paths without raw `..` or Pi shorthand. Final symlinks, hard links, changed destinations and unreadable ancestry are refused. Missing parent directories are allowed only when their existing ancestor can be checked. Duplicate in-flight destinations in one host are refused; distinct destinations can proceed together.
 
-External permits provide neither cross-session file locking nor cleanup ownership. Disposal never removes external files. Read-only children gain no write capability; writing children still require their live controller.
+External permits provide neither cross-session file locking nor cleanup ownership. Ordinary external files remain outside disposal; [task artifacts](#task-artifacts) have authority-owned cleanup. Read-only children gain no write capability; writing children still require their live controller.
+
+### Task artifacts
+
+Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoffs. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [rebind](#admission-and-isolation) instead. A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task>` show the path while the directory exists.
+
+The directory is retained while the task reserves any workspace across repositories. A [sweep](#sweep) removes it after the attempt ending the last reservation; quit and replacement sweeps also remove orphan directories within their budget. Explicit [task release](#release) lists the directory in its confirmation and removes it once no reservations remain.
+
+Removal outcomes appear in receipts and release results. Failed or interrupted artifact deletion can be retried by a later quit or replacement sweep. A link or non-directory entry is left for review with an inspect command; entries not named after a task are left untouched.
 
 ### Process uses and gates
 
@@ -94,7 +104,7 @@ The same conversation cannot attach in two dev sessions, even across installatio
 
 These are assessment labels, not manual deletion predicates. Ignored files alone do not block completion, but unsafe filesystem structure can. Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, open conversation bindings and `release-review`.
 
-Use `record-publication` for selected reports or artifacts already published in an issue or PR: it checks the exact bytes before recording them. A local copy is not a publication. Source-history inclusion proves neither semantic equivalence nor delivery of dirty edits. [ADR 0005](adr/0005-scoped-runtime-coordination.md#completion-and-evidence) preserves the constraints behind these assessments.
+Use `record-publication` for selected reports or artifacts already published in an issue or PR: it checks the exact bytes before recording them. A local copy is not a publication. A file in the task artifact directory is recorded under its own root and never counts as workspace residue or evidence for a workspace file. Source-history inclusion proves neither semantic equivalence nor delivery of dirty edits. [ADR 0005](adr/0005-scoped-runtime-coordination.md#completion-and-evidence) preserves the constraints behind these assessments.
 
 ### Sweep
 
@@ -102,7 +112,7 @@ Automatic sweeps run at quit, at a conversation replacement by `/new` or a copie
 
 The replacement sweep runs after the leaving conversation's attachment closes and before the new conversation attaches. Releasing a clean pre-existing checkout lets the new conversation's first write keep it; a modified checkout stays reserved and that write isolates. A sweep failure appears in the receipt without failing the replacement.
 
-Each finished workspace gets one fenced removal attempt after reassessment. A pre-existing checkout loses only its reservation and settled use records; a managed worktree is removed. Live gates, occupied worktrees, active installation coordination or changed evidence retain it. Incomplete removal becomes `release-review`, refuses resume and is never retried automatically.
+Each finished workspace gets one fenced removal attempt after reassessment. A pre-existing checkout loses only its reservation and settled use records; a managed worktree is removed. Live gates, occupied worktrees, active installation coordination or changed evidence retain it. Incomplete removal becomes `release-review`, refuses resume and is never retried automatically. Task artifact cleanup follows its [reservation-based lifecycle](#task-artifacts).
 
 The budget runs from the request, including queue time; [the sweep implementation](../src/workspace-release.ts) owns its limits. Unstarted tasks become `task-deferred`. Quit and replacement also sweep repositories resolved from other checkouts selected for delegation during the leaving session, including refused delegations, within the same budget. A repository assessment failure is reported without preventing the others from proceeding; a later sweep can assess it again.
 
@@ -110,7 +120,7 @@ Allocation and replacement receipts appear in the conversation when there are ro
 
 ### Release
 
-**`dev workspace release <task>` discards everything left in all of the task's managed worktrees, including uncommitted changes and undelivered commits.** Pre-existing checkout files and commits stay; their reservations and use records end.
+**`dev workspace release <task>` discards everything left in all of the task's managed worktrees and in its [artifact directory](#task-artifacts), including uncommitted changes and undelivered commits.** Pre-existing checkout files and commits stay; their reservations and use records end.
 
 The command requires an interactive terminal, lists each workspace and its consequence, then asks for one `y`. There is no `--yes`. It checks no completion, evidence or live use: run it only when nothing still works in those workspaces. It neither waits for uses nor acquires path or installation gates; this is an [explicit user override](adr/0005-scoped-runtime-coordination.md#release), not a guarded sweep. The session command and agent tool cannot release them.
 
@@ -143,7 +153,7 @@ Declining quit's release offer keeps the sweep's code. A successful `check` can 
 
 ## State
 
-The account-wide location is in the launcher's [state map](launcher.md#state). All installations share that authority, independently of `HOME` and data-home overrides; managed worktrees live inside it.
+The account-wide location is in the launcher's [state map](launcher.md#state). All installations share that authority, independently of `HOME` and data-home overrides; managed worktrees and task artifact directories live inside it.
 
 First use creates an absent authority. Missing parts of a known authority, invalid layout and damaged storage are refused, not reset. Each process validates a database's schema and integrity on first opening that file identity. In-place overwrites are not rechecked until another process starts: stop every dev session before restoring or copying over a database. Keep coordination databases on disk during normal operation; use [Development](DEVELOPMENT.md#discard-obsolete-state) for obsolete-state removal.
 

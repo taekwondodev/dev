@@ -56,6 +56,8 @@ Workspace writes are scoped operations whose start is reported inside the filesy
 
 Preserve exact operand matching before re-resolution, raw-parent-traversal and shorthand refusals, regular-file/no-hardlink checks and boundary revalidation. A changed alias cannot borrow another in-flight permit. Final links are never followed; Git administration and authority/coordination metadata stay protected. Managed worktrees inside authority storage are writable only in their own scope. Pathname checks retain a race with external link or ancestor changes; stronger descriptor-based integration would be needed to narrow it.
 
+[Issue #175](https://github.com/taekwondodev/dev/issues/175) places task artifact directories in the authority because it owns task reservations and disposal. Checkout-local storage would depend on each project's ignore rules to stay outside commit scope; data-home storage would split task ownership. Ordinary writer admission precedes creation and writes, establishing a reservation so retention needs no separate liveness predicate. Dev exposes directory discovery through the `workspace` tool rather than duplicating it in system prompts, `work` tool fields or automatic child briefs; storage discovery belongs to the owning integration.
+
 ## Release
 
 Managed worktrees are disposable after delivery; pre-existing checkouts lose only reservations. The [disposal decision](https://github.com/taekwondodev/dev/issues/42) rejects exhaustive per-file certification. The workflow owns integrating wanted work and publishing selected artifacts, including failed-publication checkpoints. Runtime evidence is not a parallel workflow authority, and source-history inclusion proves neither semantic equivalence nor delivery of dirty edits.
@@ -66,6 +68,8 @@ There are two distinct authorities:
 - **Task release:** interactive user confirmation overrides completion, evidence and uses for the whole task. It therefore takes no path or installation gate; the user is responsible for stopping work first. It still respects explicit Git locks and the repository structure gate. Agent tools have no release path.
 
 Git's single force flag implements bounded disposal, not an authorization bypass. Never double-force, add unattended release flags or prune broadly. [Release operations](../workspace.md#release) own confirmation, consequences and retry guidance.
+
+Task artifact deletion changes no Git state, so it is retryable without a fenced Git-removal record. [Task artifacts](../workspace.md#task-artifacts) owns retention, removal outcomes and recovery.
 
 ### Completion and evidence
 

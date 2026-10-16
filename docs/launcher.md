@@ -112,7 +112,7 @@ The same pass applies [attempt retention](work.md#state) and removes recognized 
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
 | `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
 | Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |
-| `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates and managed worktrees                                                                   |
+| `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates, managed worktrees and [task artifact directories](workspace.md#task-artifacts)         |
 
 `--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, profiles, authentication, installation coordination and workspace authority keep their own locations. `/login` updates the shared Pi credential store. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
 
