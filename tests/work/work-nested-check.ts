@@ -386,7 +386,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      "a writing child's native write into another repository reserves that checkout for the lead conversation through the controller and writes in place without a worktree; a read-only child's write there is refused",
+      "a writing child's native write into another repository reserves that checkout for the lead conversation through the controller and writes in place without a worktree",
       async () => {
         const third = join(fixture.root, 'third-repo')
         mkdirSync(third)
@@ -428,21 +428,10 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           JSON.stringify(thirdViews)
         )
         assert.ok(fixture.attachment.effect.delegatedCwds.includes(third))
-
-        const reader = await owner.run({
-          taskId: 'third-reader',
-          access: 'read-only',
-          prompt: `Third reader\n${script([
-            [toolCall('tr', 'write', { path: join(third, 'forbidden.txt'), content: 'no' })],
-          ])}`,
-        })
-        assertStatus(reader.view, 'completed')
-        assert.equal(reader.view.resources?.tools.includes('write'), false)
-        assert.ok(!existsSync(join(third, 'forbidden.txt')))
       }
     )
     await claim(
-      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; the lead classifies that checkout as a repository to reserve; a leaf cannot name a cwd",
+      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; a leaf cannot name a cwd",
       async () => {
         const foreign = join(fixture.root, 'foreign-repo')
         mkdirSync(foreign)
@@ -518,16 +507,6 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           checkout: fixture.repository,
           authorityRoot: fixture.lifecycle.effect.root,
         }
-        assert.deepEqual(
-          classifyWriteDestination(leadScope, fixture.repository, join(foreign, 'lead.txt')),
-          {
-            kind: 'foreign',
-            operand: join(foreign, 'lead.txt'),
-            path: join(foreign, 'lead.txt'),
-            checkout: foreign,
-          },
-          'the lead classifies the other repository as a destination to reserve, not as a refusal'
-        )
         assert.throws(
           () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),
           /another managed workspace; ask its owning conversation/

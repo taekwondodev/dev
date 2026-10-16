@@ -528,7 +528,7 @@ try {
   )
 
   await claim(
-    'quit sweeps a repository the conversation wrote into natively: the clean pre-existing checkout loses its reservation and keeps its files',
+    'a quit-mode sweep releases a clean foreign native-write reservation and preserves the pre-existing checkout files',
     async () => {
       const written = join(sandbox, 'foreign-written-repo')
       mkdirSync(written)
