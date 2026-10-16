@@ -50,7 +50,7 @@ Workspace writes are scoped operations whose start is reported inside the filesy
 
 Preserve exact operand matching before re-resolution, raw-parent-traversal and shorthand refusals, regular-file/no-hardlink checks and boundary revalidation. A changed alias cannot borrow another in-flight permit. Final links are never followed; Git administration and authority/coordination metadata stay protected. Managed worktrees inside authority storage are writable only in their own scope. Pathname checks retain a race with external link or ancestor changes; stronger descriptor-based integration would be needed to narrow it.
 
-[Issue #175](https://github.com/taekwondodev/dev/issues/175) adds one more destination inside authority storage: the bound task's artifact directory. It was placed in the authority rather than the checkout because `.dev/` is ignored only in dev's own checkout and would pollute other projects, and rather than the data home because tasks, reservations and disposal already live in the authority. An artifact write first takes the ordinary writer admission, so the directory can only exist while the task reserves a workspace; this makes the reservation the single retention predicate and avoids a separate liveness check. The `workspace` tool is the only model-facing announcement: shared skills stay harness-neutral and the harness supplies the directory. System prompt lines, `work` tool fields and child briefs were rejected as duplicate announcements.
+[Issue #175](https://github.com/taekwondodev/dev/issues/175) places task artifact directories in the authority because it owns task reservations and disposal. Checkout-local storage would depend on each project's ignore rules to stay outside commit scope; data-home storage would split task ownership. Ordinary writer admission precedes creation and writes, establishing a reservation so retention needs no separate liveness predicate. Dev exposes directory discovery through the `workspace` tool rather than duplicating it in system prompts, `work` tool fields or automatic child briefs; storage discovery belongs to the owning integration.
 
 ## Release
 
@@ -63,7 +63,7 @@ There are two distinct authorities:
 
 Git's single force flag implements bounded disposal, not an authorization bypass. Never double-force, add unattended release flags or prune broadly. [Release operations](../workspace.md#release) own confirmation, consequences and retry guidance.
 
-A task's [artifact directory](../workspace.md#task-artifacts) is disposed by the same two authorities once the task reserves nothing anywhere: the sweep after the attempt that ended the last reservation, or at a closing sweep for orphans, and task release after confirmation. It has no Git state, so its removal is reported in receipts rather than recorded as a fenced operation; an interrupted deletion leaves a directory a later closing sweep removes again. Links and non-directories are never deleted and are named for review.
+Task artifact deletion changes no Git state, so it is retryable without a fenced Git-removal record. [Task artifacts](../workspace.md#task-artifacts) owns retention, removal outcomes and recovery.
 
 ### Completion and evidence
 

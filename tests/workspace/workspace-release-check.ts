@@ -56,7 +56,7 @@ import {
 } from '../../src/workspace-command.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { acquireMaintenance, acquireRuntime } from '../../src/runtime-coordination.ts'
-import { authorityPaths, taskArtifactsPath } from '../../src/workspace-authority-root.ts'
+import { authorityPaths } from '../../src/workspace-authority-root.ts'
 import { acquirePathGates, releaseGates } from '../../src/workspace-gates.ts'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Clock, Effect, Exit, Scope } from 'effect'
@@ -1962,6 +1962,7 @@ try {
           arguments: input,
         })
       const accepted: JsonObject[] = [
+        { action: 'artifacts' },
         { action: 'resume', taskId: 'task', workspaceId: 'workspace' },
         { action: 'set-target', target: { kind: 'local', ref: 'refs/heads/main' } },
         {
@@ -2000,6 +2001,69 @@ try {
         String(properties.target?.description).includes('refs/heads/'),
         'the target description shows the full-ref form the decoder enforces'
       )
+    }
+  )
+
+  await claim(
+    'the artifacts action admits a taskless writer, creates and reuses its absolute directory, and requests a rebind before returning a path for a contended checkout',
+    async () => {
+      const checkout = userCheckout()
+      const owner = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      let active = owner
+      const requested: WorkspaceHandoff[] = []
+      const tool = makeWorkspaceTool({
+        lifecycle: lifecycle.effect,
+        attachment: () => active.effect,
+        runPromise: effect =>
+          Effect.runPromise(
+            Effect.provideService(effect, PublicationDestinations, {
+              body: () => Effect.die('artifact discovery must not read a publication'),
+              attachment: () => Effect.die('artifact discovery must not read an attachment'),
+            })
+          ),
+        requestResume: handoff => {
+          requested.push(handoff)
+        },
+      })
+      const call = () =>
+        tool.execute('artifacts', { action: 'artifacts' }, undefined, undefined, {
+          cwd: active.binding.cwd,
+          hasUI: true,
+        } as unknown as Parameters<ToolDefinition['execute']>[4])
+      const value = (result: Awaited<ReturnType<typeof call>>) =>
+        reply(result.content.map(part => (part.type === 'text' ? part.text : '')).join(''))
+      assert.equal(owner.binding.taskId, undefined, 'the action must perform the first admission')
+      const announced = await call()
+      const taskId = requireTask(owner.binding.taskId)
+      const directory = join(root, 'artifacts', taskId)
+      assert.deepEqual(
+        [value(announced).artifacts, value(announced).taskId, value(announced).path],
+        ['ready', taskId, directory]
+      )
+      assert.ok(statSync(directory).isDirectory(), 'the action creates the directory')
+      assert.equal(value(await call()).path, directory, 'repeat calls reuse the task directory')
+      assert.equal(requested.length, 0)
+
+      active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      const contended = await call()
+      assert.equal(contended.terminate, true, 'the refused call ends the turn for a rebind')
+      assert.equal(value(contended).artifacts, 'rebind-requested')
+      assert.equal(value(contended).path, undefined, 'no directory is announced before rebinding')
+      assert.equal(requested.length, 1)
+      const handoff = requested[0]!
+      const targetTask = requireTask(handoff.target.taskId)
+      const targetDirectory = join(root, 'artifacts', targetTask)
+      assert.notEqual(targetTask, taskId)
+      assert.equal(existsSync(targetDirectory), false, 'a refused call creates no task directory')
+      await active.handoff(handoff, async () => 'confirmed')
+      const retried = value(await call())
+      assert.deepEqual(
+        [retried.artifacts, retried.taskId, retried.path],
+        ['ready', targetTask, targetDirectory]
+      )
+      assert.ok(statSync(targetDirectory).isDirectory())
+      await active.close()
+      await owner.close()
     }
   )
 
@@ -2138,19 +2202,10 @@ try {
       assert.ok(!sensitive.ok)
       assert.ok(sensitive.text.includes('sensitive name'), sensitive.text)
 
-      const artifactsDirectory = taskArtifactsPath(authorityPaths(root), allocated.taskId)
-      assert.equal(existsSync(artifactsDirectory), false)
-      const announced = await call({ action: 'artifacts' })
-      assert.ok(announced.ok, announced.text)
-      assert.deepEqual(
-        [reply(announced.text).artifacts, reply(announced.text).taskId, reply(announced.text).path],
-        ['ready', allocated.taskId, artifactsDirectory],
-        'the action names the task directory under the authority'
-      )
-      assert.ok(statSync(artifactsDirectory).isDirectory(), 'the action creates the directory')
-      const again = await call({ action: 'artifacts' })
-      assert.ok(again.ok && reply(again.text).path === artifactsDirectory, 'repeat calls reuse it')
+      const artifactsDirectory = join(root, 'artifacts', allocated.taskId)
+      mkdirSync(artifactsDirectory, { recursive: true })
       writeFileSync(join(artifactsDirectory, 'pr-body.md'), 'published body\n')
+      writeFileSync(join(checkout, 'pr-body.md'), 'unpublished checkout body\n')
       bodies.set('owner/repo#38/body', 'published body\n')
       const outside = await call({
         action: 'record-publication',
@@ -2228,7 +2283,11 @@ try {
         2,
         'an artifact-root publication never enters the workspace inventory'
       )
-      assert.equal(managed.inventory?.disposable, 2)
+      assert.equal(
+        managed.inventory?.disposable,
+        3,
+        'the same-path checkout file remains unselected despite the artifact publication'
+      )
 
       const resumed = await resumeTool.execute(
         'resume',
@@ -2256,7 +2315,7 @@ try {
       const owner = await lifecycle.attach({ conversation: conversation(), cwd: artifactsRepo })
       const write = ready(await owner.authorize({ kind: 'write' }))
       const taskId = requireTask(write.taskId)
-      const directory = taskArtifactsPath(authorityPaths(root), taskId)
+      const directory = join(root, 'artifacts', taskId)
       assert.equal(
         existingTaskArtifacts(root, taskId),
         undefined,

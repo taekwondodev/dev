@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Effect } from 'effect'
@@ -64,6 +72,10 @@ try {
   ]
   await owner.close()
   if (taskId === undefined) throw new Error('The fixture worktree carries no task')
+  const artifacts = join(root, 'artifacts', taskId)
+  const handoff = join(artifacts, 'handoff.md')
+  mkdirSync(artifacts, { recursive: true })
+  writeFileSync(handoff, 'keep until confirmation\n')
   for (const worktree of worktrees) rmSync(worktree, { recursive: true, force: true })
   await lifecycle.close()
 
@@ -75,7 +87,9 @@ try {
     return code
   }
 
-  process.stdout.write(`\nDEV_RELEASE_INPUTS ${JSON.stringify({ TASK: taskId })}\n`)
+  process.stdout.write(
+    `\nDEV_RELEASE_INPUTS ${JSON.stringify({ TASK: taskId, ARTIFACTS: artifacts })}\n`
+  )
   const reservations = async (task: string): Promise<number> => {
     const still = await openLifecycle({ root })
     try {
@@ -100,6 +114,7 @@ try {
     async () => {
       assert.equal(await run(['--cwd', repo, 'workspace', 'release', taskId]), 130)
       assert.equal(await reservations(taskId), 3, 'every reservation remains')
+      assert.equal(readFileSync(handoff, 'utf8'), 'keep until confirmation\n')
     },
     60_000
   )
@@ -110,6 +125,7 @@ try {
       async () => {
         assert.equal(await run(['--cwd', repo, 'workspace', 'release', taskId]), 130)
         assert.equal(await reservations(taskId), 3, 'every reservation remains')
+        assert.equal(readFileSync(handoff, 'utf8'), 'keep until confirmation\n')
       },
       60_000
     )
@@ -126,10 +142,11 @@ try {
   )
   signal('READY_FOR_CONFIRM')
   await claim(
-    'answering y releases the pre-existing checkout, which keeps its files, resolves the absent managed worktrees, and exits 0 with the receipt on the terminal',
+    'answering y releases the pre-existing checkout, resolves the absent managed worktrees, deletes task artifacts and exits 0 with the receipt on the terminal',
     async () => {
       assert.equal(await run(['--cwd', repo, 'workspace', 'release', taskId]), 0)
       assert.ok(existsSync(join(repo, 'tracked.txt')), 'the pre-existing checkout keeps its files')
+      assert.equal(existsSync(artifacts), false, 'confirmed release deletes task artifacts')
       assert.deepEqual(
         git(['worktree', 'list', '--porcelain'], repo)
           .split('\n')

@@ -33,7 +33,6 @@ import { formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.t
 import { makeGitHubReader, type GitHubReader } from '../../src/workspace-evidence.ts'
 import {
   checkTask,
-  removeOrphanArtifacts,
   sweepDeadline,
   sweepRepositoryAtClose,
   type EvidenceReaders,
@@ -1191,6 +1190,10 @@ try {
       git(['merge', '--quiet', '--ff-only', 'main'], second.managed.checkout)
       deliverBranch(second.managed.checkout)
       const firstInSweep = first.owner.taskId < second.owner.taskId ? first : second
+      const paths = authorityPaths(root)
+      const orphanTask = newId()
+      const orphan = taskArtifactsPath(paths, orphanTask)
+      mkdirSync(orphan, { recursive: true })
       const late = await openLifecycle({
         root,
         startWorker: faultyWorker('clock-after-git-remove', firstInSweep.managed.checkout),
@@ -1226,6 +1229,7 @@ try {
       assert.ok(existsSync(kept.managed.checkout))
       assert.ok(formatSweepReceipt(receipt).includes('deferred to the next sweep'))
       assert.equal(sweepExitCode(receipt), 0, 'a deferred task is not a failed attempt')
+      assert.ok(existsSync(orphan), 'an expired budget leaves orphan artifacts for a later sweep')
 
       const next = await sweepAtQuit(kept.owner.write.workspaceId)
       const cleanDelivered = rowOf(next, kept.managed.workspaceId)
@@ -1235,6 +1239,8 @@ try {
         'a clean branch whose commits reached the target is removed as delivered'
       )
       assert.equal(existsSync(kept.managed.checkout), false)
+      assert.equal(artifactsRowOf(next, orphanTask)?.outcome, 'removed')
+      assert.equal(existsSync(orphan), false, 'a later closing sweep removes the orphan')
     }
   )
 
@@ -1318,7 +1324,7 @@ try {
   )
 
   await claim(
-    'a task artifact directory is writable only for the bound task, survives while the task reserves a workspace, goes when the last reservation ends, and orphan directories are removed at a closing sweep while links and foreign entries are left for review',
+    'task artifact directories are classified only for the bound task, survive while reserved, and orphan directories are removed at a closing sweep while links and foreign entries are left for review',
     async () => {
       const owner = await reserve(userCheckout('artifacts'))
       const paths = authorityPaths(root)
@@ -1358,15 +1364,27 @@ try {
         'a reserved task keeps its artifacts unreported'
       )
       assert.ok(existsSync(join(artifacts, 'pr-body.md')))
-
+      const sibling = ready(await owner.owner.authorize({ kind: 'delegated-write' }))
+      assert.equal(sibling.taskId, owner.taskId)
       await owner.owner.close()
-      const released = await sweepAtQuit(owner.write.workspaceId)
+      const attached = await lifecycle.attach({
+        conversation: conversation(),
+        cwd: sibling.checkout,
+        selection: { taskId: owner.taskId, workspaceId: sibling.workspaceId },
+      })
+      const firstReservationEnds = await sweepAtQuit(owner.write.workspaceId)
+      assert.equal(rowOf(firstReservationEnds, owner.write.workspaceId).outcome, 'released')
+      assert.equal(rowOf(firstReservationEnds, sibling.workspaceId).outcome, 'retained')
+      assert.ok(existsSync(artifacts), 'a remaining reservation retains task artifacts')
+      assert.equal(artifactsRowOf(firstReservationEnds, owner.taskId), undefined)
+      await attached.close()
+      const released = await sweepAtQuit(sibling.workspaceId)
       assert.deepEqual(
         [
-          rowOf(released, owner.write.workspaceId).outcome,
-          verdictName(rowOf(released, owner.write.workspaceId).verdict),
+          rowOf(released, sibling.workspaceId).outcome,
+          verdictName(rowOf(released, sibling.workspaceId).verdict),
         ],
-        ['released', 'clean-checkout']
+        ['removed', 'no-residue']
       )
       const artifactsRow = artifactsRowOf(released, owner.taskId)
       assert.equal(artifactsRow?.outcome, 'removed', JSON.stringify(released.rows))
@@ -1384,12 +1402,6 @@ try {
       mkdirSync(elsewhere)
       writeFileSync(join(elsewhere, 'keep.txt'), 'keep\n')
       symlinkSync(elsewhere, taskArtifactsPath(paths, linkedTask))
-      const authority = new WorkspaceAuthority(root)
-      assert.deepEqual(
-        removeOrphanArtifacts(authority, () => true),
-        [],
-        'an expired budget removes nothing and reports nothing'
-      )
       assert.ok(existsSync(orphan), 'the orphan waits for a later closing sweep')
       const orphans = await sweepAtQuit(owner.write.workspaceId)
       const orphanRow = artifactsRowOf(orphans, orphanTask)

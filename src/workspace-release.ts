@@ -1158,7 +1158,7 @@ const reportTaskArtifacts = (
 
 const decodeTaskId = Schema.decodeUnknownOption(WorkspaceId)
 
-export const removeOrphanArtifacts = (
+const removeOrphanArtifacts = (
   authority: WorkspaceAuthority,
   expired: () => boolean = () => false
 ): readonly TaskArtifactsResult[] => {

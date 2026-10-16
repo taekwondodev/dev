@@ -235,17 +235,23 @@ await claim(
       'The task has workspaces that this sweep did not assess.'
     )
     assert.equal(
-      formatQuitTaskReleasePlan(receipt, { taskId: abandoned.taskId, views: [unsettled] }, plain),
+      formatQuitTaskReleasePlan(
+        receipt,
+        { taskId: abandoned.taskId, views: [unsettled], artifacts: '/authority/artifacts/task' },
+        plain
+      ),
       [
         '',
-        `Release task ${abandoned.taskId} (1 managed worktree)?`,
+        `Release task ${abandoned.taskId} (1 managed worktree, 1 task artifact directory)?`,
         'Status: A previous session ended without settling its workspace use.',
         'This deletes the managed worktrees, including uncommitted changes and undelivered commits.',
+        'Task artifact directories are deleted with everything in them.',
       ].join('\n')
     )
     const plans = [
       {
         taskId: undelivered.taskId,
+        artifacts: '/authority/artifacts/task',
         views: [
           view,
           {
@@ -259,7 +265,13 @@ await claim(
       },
     ]
     const text = formatQuitReleasePlan(plans, plain)
-    assert.ok(text.includes('Release 1 task (2 managed worktrees, 1 checkout reservation)?'), text)
+    assert.ok(
+      text.includes(
+        'Release 1 task (2 managed worktrees, 1 checkout reservation, 1 task artifact directory)?'
+      ),
+      text
+    )
+    assert.ok(text.includes('Task artifact directories are deleted with everything in them.'), text)
     assert.ok(text.includes('including uncommitted changes and undelivered commits'), text)
     assert.ok(
       text.includes(
