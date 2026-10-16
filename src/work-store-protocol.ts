@@ -32,6 +32,18 @@ const ListRequestSchema = Schema.Struct({
   now: Timestamp,
 })
 
+const MaintainRequestSchema = Schema.Struct({
+  id: RpcId,
+  op: Schema.Literal('maintain'),
+  ...SessionRequestFields,
+  now: Timestamp,
+})
+
+export const ProtectedConversationsSchema = Schema.Struct({
+  sessionIds: Schema.Array(SessionId),
+  files: Schema.Array(Schema.String),
+})
+
 const ReadRequestSchema = Schema.Struct({
   id: RpcId,
   op: Schema.Literal('read'),
@@ -57,6 +69,7 @@ export const RpcRequestSchema = Schema.Union([
   CreateRequestSchema,
   SaveRequestSchema,
   ListRequestSchema,
+  MaintainRequestSchema,
   ReadRequestSchema,
   AckRequestSchema,
   CloseRequestSchema,

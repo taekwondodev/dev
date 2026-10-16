@@ -612,7 +612,7 @@ export const readSessions = Effect.fn('readSessions')(function* <A>(
       Stream.decodeText(),
       Stream.splitLines,
       Stream.runFold(noLines, decodeLine),
-      Effect.map(({ entries, undecodable }) =>
+      Effect.map(({ entries, undecodable }) => [
         project({
           ref: `${directory}/${name}`,
           name,
@@ -620,8 +620,12 @@ export const readSessions = Effect.fn('readSessions')(function* <A>(
           entries,
           byId: new Map(entries.map(entry => [entry.id, entry])),
           undecodable,
-        })
+        }),
+      ]),
+      Effect.catchIf(
+        error => error.reason._tag === 'NotFound',
+        () => Effect.succeed([])
       )
     )
-  )
+  ).pipe(Effect.map(results => results.flat()))
 })

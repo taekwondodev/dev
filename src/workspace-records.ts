@@ -359,6 +359,9 @@ export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undef
   const row = first(db, `${BINDING_ROW} WHERE conversation_key=?`, key)
   return row === undefined ? undefined : recordedBinding(row)
 }
+export const getAllBindings = (db: DatabaseSync): BindingRecord[] =>
+  rows(db, `${BINDING_ROW} ORDER BY conversation_key`).map(recordedBinding)
+
 export const getBindingRows = (db: DatabaseSync, workspaceIdValue: string): BindingRecord[] =>
   rows(db, `${BINDING_ROW} WHERE workspace_id=? ORDER BY conversation_key`, workspaceIdValue).map(
     recordedBinding
@@ -607,7 +610,10 @@ export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace):
   record.commonPath === git.commonPath &&
   sameIdentity(record.common, git.commonIdentity) &&
   record.objectFormat === git.objectFormat
-export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
+export const validateWorkspacePath = (
+  record: WorkspaceRecord,
+  observed?: GitWorkspace
+): GitWorkspace => {
   if (record.status === 'removed')
     return requireReview(
       `Workspace was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
@@ -616,7 +622,7 @@ export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => 
     return requireReview(`Workspace allocation is unresolved: ${record.path}`)
   let actual: GitWorkspace
   try {
-    actual = canonicalGitWorkspace(record.path)
+    actual = observed ?? canonicalGitWorkspace(record.path)
   } catch (cause) {
     return requireReview(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
   }

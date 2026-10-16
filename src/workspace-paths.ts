@@ -4,7 +4,7 @@ import { Option, Schema } from 'effect'
 import { blocked, invalid, requireReview } from './workspace-domain.ts'
 import { lstatIfExists } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
-import { authorityPaths } from './workspace-authority-root.ts'
+import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import { gitResult } from './workspace-git.ts'
 
 export const isWithin = (root: string, path: string): boolean => {
@@ -67,11 +67,12 @@ const assertLiteralOperand = (requested: string): void => {
 export interface WriteScope {
   readonly checkout: string
   readonly authorityRoot: string
+  readonly taskId?: string
 }
 
 export type WriteDestination =
   | {
-      readonly kind: 'workspace' | 'external'
+      readonly kind: 'workspace' | 'external' | 'artifact'
       readonly operand: string
       readonly path: string
     }
@@ -138,7 +139,14 @@ export const classifyWriteDestination = (
   const checkout = realpathSync.native(scope.checkout)
   const workspace = isWithin(checkout, path)
   const authority = authorityPaths(canonicalPath(resolve(scope.authorityRoot)).path)
-  if (isWithin(authority.root, path) && !(workspace && isWithin(authority.worktrees, checkout))) {
+  const artifacts =
+    scope.taskId === undefined ? undefined : taskArtifactsPath(authority, scope.taskId)
+  const artifact = artifacts !== undefined && path !== artifacts && isWithin(artifacts, path)
+  if (
+    isWithin(authority.root, path) &&
+    !artifact &&
+    !(workspace && isWithin(authority.worktrees, checkout))
+  ) {
     if (isWithin(authority.worktrees, path))
       invalid(
         'The destination belongs to another managed workspace; ask its owning conversation to make the change'
@@ -170,7 +178,10 @@ export const classifyWriteDestination = (
     }
     if (dirname(directory) === directory) break
   }
-  return { kind: workspace ? 'workspace' : 'external', operand: absolute, path }
+  let kind: WriteDestination['kind'] = 'external'
+  if (artifact) kind = 'artifact'
+  else if (workspace) kind = 'workspace'
+  return { kind, operand: absolute, path }
 }
 
 export const assertDestinationUnchanged = (scope: WriteScope, recorded: WriteDestination): void => {

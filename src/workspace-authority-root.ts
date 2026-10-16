@@ -11,6 +11,7 @@ export interface AuthorityPaths {
   readonly repos: string
   readonly gates: string
   readonly worktrees: string
+  readonly artifacts: string
 }
 export const authorityPaths = (root: string): AuthorityPaths => ({
   root,
@@ -19,4 +20,10 @@ export const authorityPaths = (root: string): AuthorityPaths => ({
   repos: join(root, 'repos'),
   gates: join(root, 'gates'),
   worktrees: join(root, 'worktrees'),
+  artifacts: join(root, 'artifacts'),
 })
+
+export const taskArtifactsPath = (
+  paths: Pick<AuthorityPaths, 'artifacts'>,
+  taskId: string
+): string => join(paths.artifacts, taskId)

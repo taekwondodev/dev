@@ -113,6 +113,16 @@ PROBES = {
     ),
 
 
+    'cleanup': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(Action('quit', 'DEV_LAUNCHER_TUI_CLEANUP_READY_FOR_QUIT', '\x15/quit\r', delay=0.5),),
+        expect=('✓ 1 reservation released', '✓ 1 worktree removed', 'Exit 0: done.'),
+        env=(('LAUNCHER_TUI_CLEANUP', '1'),),
+    ),
+
     'quit': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
@@ -269,7 +279,12 @@ PROBES = {
             Action('unfinished-confirm', 'DEV_RELEASE_READY_FOR_UNFINISHED', 'y\r', delay=1.0),
             Action('confirm', 'DEV_RELEASE_READY_FOR_CONFIRM', 'y\r', delay=1.0),
         ),
-        expect=('the worktree and everything in it are deleted', ': removed', ': released'),
+        expect=(
+            'the worktree and everything in it are deleted',
+            'task artifacts at {ARTIFACTS}: the directory and everything in it are deleted',
+            'task artifacts at {ARTIFACTS}, task {TASK}: removed',
+            ': removed', ': released',
+        ),
     ),
 }
 

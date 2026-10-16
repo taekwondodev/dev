@@ -280,12 +280,15 @@ export const PublicationDestinationSchema = Schema.Struct({
   readBack: Schema.Literals(['text-in-body', 'attachment-sha256']),
   url: Schema.NonEmptyString,
 })
+export const PublicationRootSchema = Schema.Literals(['workspace', 'artifacts'])
+export type PublicationRoot = typeof PublicationRootSchema.Type
 export const PublicationReferenceSchema = Schema.Struct({
   id: WorkspaceId,
   taskId: WorkspaceId,
   workspaceId: Schema.optional(WorkspaceId),
 
   commit: Schema.optional(CommitSha),
+  root: PublicationRootSchema,
   relativePath: RelativeFilePath,
   byteLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sha256: Sha256Hex,
@@ -395,15 +398,31 @@ export const WorkspaceAssessmentSchema = Schema.Struct({
 })
 export type WorkspaceAssessment = typeof WorkspaceAssessmentSchema.Type
 
-export const WorkspaceReleaseResultSchema = Schema.Struct({
-  repositoryId: WorkspaceId,
-  workspaceId: WorkspaceId,
+export const TaskArtifactsOutcomeSchema = Schema.Literals(['removed', 'review-required'])
+export type TaskArtifactsOutcome = typeof TaskArtifactsOutcomeSchema.Type
+export const TaskArtifactsResultSchema = Schema.Struct({
+  kind: Schema.Literal('task-artifacts'),
+  taskId: WorkspaceId,
   path: Schema.NonEmptyString,
-  origin: WorkspaceOriginSchema,
-  outcome: Schema.Literals(['released', 'removed', 'failed']),
+  outcome: TaskArtifactsOutcomeSchema,
   reason: Schema.NonEmptyString,
 })
+export type TaskArtifactsResult = typeof TaskArtifactsResultSchema.Type
+
+export const WorkspaceReleaseResultSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('workspace'),
+    repositoryId: WorkspaceId,
+    workspaceId: WorkspaceId,
+    path: Schema.NonEmptyString,
+    origin: WorkspaceOriginSchema,
+    outcome: Schema.Literals(['released', 'removed', 'failed']),
+    reason: Schema.NonEmptyString,
+  }),
+  TaskArtifactsResultSchema,
+])
 export type WorkspaceReleaseResult = typeof WorkspaceReleaseResultSchema.Type
+export type WorkspaceReleaseRow = Extract<WorkspaceReleaseResult, { readonly kind: 'workspace' }>
 
 export const SweepOutcomeSchema = Schema.Literals([
   'removed',
@@ -436,6 +455,7 @@ export const SweepRowSchema = Schema.Union([
     reason: Schema.NonEmptyString,
   }),
   Schema.Struct({ kind: Schema.Literal('sweep-failure'), reason: Schema.NonEmptyString }),
+  TaskArtifactsResultSchema,
 ])
 export type SweepRow = typeof SweepRowSchema.Type
 export const SweepReceiptSchema = Schema.Struct({

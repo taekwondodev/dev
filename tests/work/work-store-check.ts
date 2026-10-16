@@ -138,6 +138,61 @@ try {
           assert.ok(unavailable(yield* Effect.result(store.read(sixDaysOld))))
           assert.equal(existsSync(logDirectory(sixDaysOld)), false)
           assert.equal(existsSync(logDirectory(active)), true)
+          const recoveryFile = join(home, 'child-sessions', 'recovery.jsonl')
+          const recoveryId = yield* Effect.gen(function* () {
+            const recoveryStore = yield* WorkStore
+            const recovery = yield* recoveryStore.create(
+              asAttemptId('00000000-0000-0000-0000-000000000005'),
+              {
+                kind: 'agent',
+                cwd: home,
+                controllerPid: process.pid,
+                owner: {
+                  sessionId: asSessionId('recovery-check'),
+                  taskId: asTaskId('recovery'),
+                  generation: asGenerationId('retention-check'),
+                },
+              }
+            )
+            yield* recoveryStore.save({
+              ...recovery,
+              revision: 1,
+              status: 'unknown',
+              completedAt: undefined,
+              sessionFile: recoveryFile,
+            })
+            return recovery.id
+          }).pipe(
+            Effect.provide(
+              WorkStore.layer(home, asSessionId('recovery-check')).pipe(
+                Layer.provide(NodeFileSystem.layer)
+              )
+            )
+          )
+          yield* store.save({
+            ...unresolved,
+            revision: 2,
+            status: 'completed',
+            completedAt: now,
+          })
+          const clock = yield* Clock.Clock
+          const references = yield* store.maintain.pipe(
+            Effect.provideService(Clock.Clock, {
+              currentTimeMillis: Effect.succeed(now + 8 * day),
+              currentTimeMillisUnsafe: () => now + 8 * day,
+              currentTimeNanos: clock.currentTimeNanos,
+              currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+              monotonicTimeNanos: clock.monotonicTimeNanos,
+              monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+              sleep: duration => clock.sleep(duration),
+            })
+          )
+          assert.deepEqual(references.sessionIds.toSorted(), ['recovery-check', 'retention-check'])
+          assert.deepEqual(references.files, [recoveryFile])
+          for (const id of [...newest, unresolved.id])
+            assert.equal(existsSync(logDirectory(id)), false)
+          for (const id of [active, recoveryId]) assert.ok(existsSync(logDirectory(id)))
+          assert.deepEqual(yield* listedIds, [active])
         }).pipe(
           Effect.scoped,
           Effect.provide(

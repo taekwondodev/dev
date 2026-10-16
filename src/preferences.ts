@@ -1,10 +1,21 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  openSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
 import { errorText } from './error-text.ts'
+import { acquireExclusiveLock } from './runtime-coordination.ts'
 
 export class PreferencesError extends Schema.TaggedError<PreferencesError>()('PreferencesError', {
   message: Schema.String,
@@ -123,6 +134,76 @@ export const resolveSelection: (
   Effect.mapError(error => toPreferencesError(error, 'Cannot resolve profile selection'))
 )
 
+const withPreferencePublication = <A, E, R>(
+  directory: string,
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, E | PreferencesError, R> =>
+  Effect.acquireUseRelease(
+    Effect.try({
+      try: () => {
+        if (!lstatSync(directory).isDirectory())
+          throw new Error(`Preference directory must not be a symlink: ${directory}`)
+        return acquireExclusiveLock(
+          join(directory, '.publication.sqlite'),
+          'Preference publication is in progress'
+        )
+      },
+      catch: cause => toPreferencesError(cause, 'Cannot acquire preference publication'),
+    }),
+    () => effect,
+    release => Effect.sync(release)
+  )
+
+export const cleanPreferenceTemporaries = Effect.fnUntraced(function* (dataHome: string) {
+  const fs = yield* FileSystem.FileSystem
+  const directory = join(dataHome, 'preferences')
+  if (!(yield* fs.exists(directory))) return 0
+  return yield* withPreferencePublication(
+    directory,
+    Effect.try({
+      try: () => {
+        let removed = 0
+        for (const name of readdirSync(directory)) {
+          if (!/^[a-f0-9]{32}\.json\.[1-9][0-9]*\.tmp$/.test(name)) continue
+          const path = join(directory, name)
+          const info = lstatSync(path)
+          if (!info.isFile() || info.nlink !== 1) continue
+          const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+          try {
+            const opened = fstatSync(descriptor)
+            if (
+              !opened.isFile() ||
+              opened.nlink !== 1 ||
+              opened.ino !== info.ino ||
+              opened.dev !== info.dev
+            )
+              continue
+            const decoded = Schema.decodeOption(Schema.fromJsonString(PreferenceSchema))(
+              readFileSync(descriptor, 'utf8')
+            )
+            if (decoded._tag === 'None') continue
+          } finally {
+            closeSync(descriptor)
+          }
+          const current = lstatSync(path)
+          if (
+            !current.isFile() ||
+            current.nlink !== 1 ||
+            current.ino !== info.ino ||
+            current.dev !== info.dev ||
+            current.mtimeMs !== info.mtimeMs
+          )
+            continue
+          unlinkSync(path)
+          removed += 1
+        }
+        return removed
+      },
+      catch: cause => toPreferencesError(cause, 'Cannot clean preference temporaries'),
+    })
+  )
+})
+
 export const saveSelection: (
   options: SaveSelectionOptions
 ) => Effect.Effect<string, PreferencesError, FileSystem.FileSystem> = Effect.fnUntraced(
@@ -131,13 +212,18 @@ export const saveSelection: (
     const identity = yield* projectIdentity(options.cwd)
     const path = preferencePath(options.dataHome, identity)
     yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 })
-    const temporary = `${path}.${process.pid}.tmp`
-    yield* fs.writeFileString(
-      temporary,
-      `${JSON.stringify({ profile: options.profile, project: identity }, null, 2)}\n`,
-      { mode: 0o600 }
+    yield* withPreferencePublication(
+      dirname(path),
+      Effect.gen(function* () {
+        const temporary = `${path}.${process.pid}.tmp`
+        yield* fs.writeFileString(
+          temporary,
+          `${JSON.stringify({ profile: options.profile, project: identity }, null, 2)}\n`,
+          { mode: 0o600 }
+        )
+        yield* fs.rename(temporary, path)
+      })
     )
-    yield* fs.rename(temporary, path)
     return path
   },
   Effect.mapError(error => toPreferencesError(error, 'Cannot save profile selection'))

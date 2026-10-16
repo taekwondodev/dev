@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process'
 import { lstatSync, realpathSync, type BigIntStats } from 'node:fs'
+import { MessageChannel, receiveMessageOnPort, Worker, type MessagePort } from 'node:worker_threads'
 import { Result, Schema } from 'effect'
 import { unavailable, requireReview, WorkspaceError } from './workspace-domain.ts'
 import { errorText } from './error-text.ts'
@@ -17,11 +17,74 @@ export interface PhysicalObservation {
   readonly device: string
 }
 
-const decodeVolumeUuids = Schema.decodeUnknownResult(
-  Schema.fromJsonString(Schema.Array(VolumeUuidSchema))
+const VolumeLookupReplySchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('answered'), line: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal('failed'), reason: Schema.String }),
+])
+export type VolumeLookupReply = typeof VolumeLookupReplySchema.Type
+export interface VolumeHelperData {
+  readonly signal: Int32Array
+  readonly port: MessagePort
+  readonly timeoutMs: number
+}
+
+const decodeLookupReply = Schema.decodeUnknownResult(VolumeLookupReplySchema)
+const decodeVolumeAnswer = Schema.decodeUnknownResult(
+  Schema.fromJsonString(
+    Schema.Union([
+      Schema.Struct({ uuids: Schema.Array(VolumeUuidSchema) }),
+      Schema.Struct({ error: Schema.String }),
+    ])
+  )
 )
-const VOLUME_UUID_SCRIPT =
-  'ObjC.import("Foundation"); function run(paths) { return JSON.stringify(paths.map(function(path) { var value = Ref(); var error = Ref(); if (!$.NSURL.fileURLWithPath(path).getResourceValueForKeyError(value, $.NSURLVolumeUUIDStringKey, error)) throw Error(ObjC.unwrap(error[0].localizedDescription)); return ObjC.unwrap(value[0]); })); }'
+const LOOKUP_TIMEOUT_MS = 5000
+const HELPER_TIMEOUT_MS = 4500
+
+interface VolumeHelper {
+  readonly worker: Worker
+  readonly port: MessagePort
+  readonly signal: Int32Array
+}
+let helper: VolumeHelper | undefined
+
+const startHelper = (): VolumeHelper => {
+  const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+  const { port1, port2 } = new MessageChannel()
+  const data: VolumeHelperData = { signal, port: port2, timeoutMs: HELPER_TIMEOUT_MS }
+  const worker = new Worker(new URL('./workspace-volume-helper.ts', import.meta.url), {
+    workerData: data,
+    transferList: [port2],
+  })
+  const forget = () => {
+    if (helper?.worker === worker) helper = undefined
+  }
+  worker.on('error', forget)
+  worker.on('exit', forget)
+  worker.unref()
+  port1.unref()
+  return { worker, port: port1, signal }
+}
+
+const askHelper = (paths: readonly string[]): VolumeLookupReply => {
+  try {
+    helper ??= startHelper()
+  } catch (cause) {
+    return {
+      kind: 'failed',
+      reason: `The volume identity helper did not start: ${errorText(cause)}`,
+    }
+  }
+  const current = helper
+  Atomics.store(current.signal, 0, 0)
+  current.port.postMessage(paths, [])
+  const waited = Atomics.wait(current.signal, 0, 0, LOOKUP_TIMEOUT_MS)
+  const received = receiveMessageOnPort(current.port)
+  const reply = received === undefined ? undefined : decodeLookupReply(received.message)
+  if (waited !== 'timed-out' && reply !== undefined && Result.isSuccess(reply)) return reply.success
+  if (helper === current) helper = undefined
+  void current.worker.terminate()
+  return { kind: 'failed', reason: 'The volume identity helper did not answer' }
+}
 
 const physicalError = (path: string, cause: unknown): WorkspaceError =>
   new WorkspaceError({
@@ -50,27 +113,15 @@ const resolvedPath = (path: string): string => {
 }
 
 const volumeUuids = (paths: readonly string[]): readonly string[] => {
-  let output: string
-  try {
-    output = execFileSync(
-      '/usr/bin/osascript',
-      ['-l', 'JavaScript', '-e', VOLUME_UUID_SCRIPT, ...paths],
-      {
-        encoding: 'utf8',
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }
-    )
-  } catch (cause) {
-    throw physicalError(paths.join(', '), cause)
-  }
-  const decoded = decodeVolumeUuids(output)
+  const reply = askHelper(paths)
+  if (reply.kind === 'failed') throw physicalError(paths.join(', '), reply.reason)
+  const decoded = decodeVolumeAnswer(reply.line)
   if (Result.isFailure(decoded)) throw physicalError(paths.join(', '), decoded.failure)
-  if (decoded.success.length !== paths.length)
+  if ('error' in decoded.success) throw physicalError(paths.join(', '), decoded.success.error)
+  const { uuids } = decoded.success
+  if (uuids.length !== paths.length)
     unavailable(`macOS returned an incomplete volume identity for ${paths.join(', ')}`)
-  return decoded.success.map(value => value.toUpperCase())
+  return uuids.map(value => value.toUpperCase())
 }
 
 export const observePhysicalIdentities = (
@@ -119,6 +170,13 @@ export const observePhysicalIdentities = (
     })
     return { identity, device: String(current.dev) }
   })
+}
+
+export const observeDevice = (path: string): string => {
+  const stat = directoryStat(path)
+  if (resolvedPath(path) !== path)
+    requireReview(`Filesystem identity path is no longer canonical: ${path}`)
+  return String(stat.dev)
 }
 
 export const observePhysicalIdentity = (path: string): PhysicalObservation => {

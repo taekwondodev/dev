@@ -106,7 +106,11 @@ export const childWorkspaceExtension =
     channel: ControllerChannel = process
   ): Pi.ExtensionFactory =>
   pi => {
-    const scope = { checkout: grant.checkout, authorityRoot }
+    const scope = {
+      checkout: grant.checkout,
+      authorityRoot,
+      ...(grant.taskId === undefined ? {} : { taskId: grant.taskId }),
+    }
     pi.on('tool_result', event => Effect.runPromise(nativeWrites.finish(event.toolCallId)))
     pi.on('session_shutdown', () => Effect.runPromise(nativeWrites.settle))
     pi.on('tool_call', event =>

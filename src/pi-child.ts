@@ -16,6 +16,7 @@ import {
 } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
+import { acquireRuntime } from './runtime-coordination.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, loadCatalog } from './profiles.ts'
@@ -711,6 +712,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   options: ChildServeOptions,
   link: CoordinatorLink | undefined
 ) {
+  const lease = yield* acquireRuntime(request.dataHome, {
+    namespacePath: request.authorityRoot,
+  }).pipe(Effect.mapError(toChildError))
   if (request.access === 'read-only')
     yield* Effect.sync(() => {
       process.env.PI_OFFLINE = '1'
@@ -812,10 +816,21 @@ const acquireSession = Effect.fn('acquireSession')(function* (
           try: () => resolveExplicitModel(requestedModel, services.modelRuntime),
           catch: toChildError,
         })
-  const sessionManager = yield* Effect.try({
-    try: () => loaded.api.SessionManager.create(request.cwd, request.sessionDir),
-    catch: toChildError,
-  })
+  const sessionManager = yield* lease
+    .creating(
+      Effect.gen(function* () {
+        const manager = yield* Effect.try({
+          try: () => loaded.api.SessionManager.create(request.cwd, request.sessionDir),
+          catch: toChildError,
+        })
+        const path = manager.getSessionFile()
+        if (path === undefined)
+          return yield* new ChildError({ message: 'Pi did not assign a child session file' })
+        yield* lease.protect({ path, sessionId: manager.getSessionId() })
+        return manager
+      })
+    )
+    .pipe(Effect.mapError(toChildError))
   const customTools = [
     ...(request.access === 'read-only'
       ? [createReviewGitTool(request.cwd)]

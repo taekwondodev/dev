@@ -494,6 +494,7 @@ const initializeDatabase = async (
 
 const prepareStatements = (db: DatabaseSync) => ({
   selectById: db.prepare('SELECT * FROM attempts WHERE id = ?'),
+  retentionReferences: db.prepare('SELECT * FROM attempts'),
   retentionStats: db.prepare(
     'SELECT COUNT(*) AS count, MIN(completed_at) AS oldest FROM attempts WHERE completed_at IS NOT NULL AND retention_blocked = 0'
   ),
@@ -617,6 +618,20 @@ const list = (request: Extract<RpcRequest, { readonly op: 'list' }>): ListValue 
     return { records, unavailable }
   })
 
+const maintain = (request: Extract<RpcRequest, { readonly op: 'maintain' }>) =>
+  transaction(() => {
+    prune(request.now)
+    const sessionIds = new Set<string>()
+    const files = new Set<string>()
+    for (const row of attemptRows(statements().retentionReferences.all())) {
+      const record = decodePayload(row)
+      if (record.completedAt !== undefined) continue
+      sessionIds.add(record.owner.sessionId)
+      if (record.sessionFile !== undefined) files.add(record.sessionFile)
+    }
+    return { sessionIds: [...sessionIds], files: [...files] }
+  })
+
 const read = (request: Extract<RpcRequest, { readonly op: 'read' }>): AttemptRecord =>
   transaction(() => {
     prune(request.now)
@@ -714,6 +729,7 @@ const execute = (request: RpcRequest): unknown => {
   if (request.op === 'create') return create(request)
   if (request.op === 'save') return save(request)
   if (request.op === 'list') return list(request)
+  if (request.op === 'maintain') return maintain(request)
   if (request.op === 'read') return read(request)
   if (request.op === 'ack') return acknowledge(request)
   if (request.op === 'close') {

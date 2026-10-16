@@ -1,4 +1,8 @@
-import { dirname } from 'node:path'
+import assert from 'node:assert/strict'
+import childProcess from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import { Effect } from 'effect'
@@ -61,6 +65,34 @@ const lifecycleFor = (fault: string | undefined) => {
       return interruptedDuringSweep
     default:
       return makeWorkspaceLifecycle({ root })
+  }
+}
+
+const cleanupMarkers = process.env.LAUNCHER_TUI_CLEANUP_MARKERS
+if (cleanupMarkers !== undefined) {
+  const { spawn } = childProcess
+  childProcess.spawn = new Proxy(spawn, {
+    apply(target, _receiver, args: Parameters<typeof spawn>) {
+      const child = target(...args)
+      if (args[1]?.[0]?.endsWith('/cleanup-runtime.ts')) {
+        const request = JSON.parse(args[1][1] ?? '') as { trigger: string }
+        assert.ok(child.pid)
+        writeFileSync(join(cleanupMarkers, `${request.trigger}.json`), JSON.stringify(child.pid))
+        if (process.env.LAUNCHER_TUI_CLEANUP === '1') assert.ok(child.kill('SIGSTOP'))
+      }
+      return child
+    },
+  })
+  syncBuiltinESMExports()
+  if (process.env.LAUNCHER_TUI_CLEANUP === '1') {
+    const {
+      pi: { InteractiveMode },
+    } = await loadInstalledPi()
+    const { run } = InteractiveMode.prototype
+    InteractiveMode.prototype.run = async function (this: InstanceType<typeof InteractiveMode>) {
+      writeFileSync(join(cleanupMarkers, 'interactive-ready'), '')
+      await run.call(this)
+    }
   }
 }
 

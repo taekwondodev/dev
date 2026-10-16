@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
-import { lstatSync } from 'node:fs'
+import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import {
   Cause,
@@ -18,18 +18,22 @@ import {
 import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'
+import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import {
+  AbsolutePath,
   GitHubRepositorySchema,
   RelativeFilePath,
   TaskTargetSchema,
   WorkspaceId,
   type PublicationReference,
+  type PublicationRoot,
   type WorkspaceAttachment,
   type WorkspaceHandoff,
   type WorkspaceLifecycle,
   type WorkspaceView,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
+import { isWithin } from './workspace-paths.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
 
@@ -37,7 +41,7 @@ const InputFields = {
   taskId: WorkspaceId,
   workspaceId: WorkspaceId,
   target: TaskTargetSchema,
-  path: RelativeFilePath,
+  path: Schema.Union([RelativeFilePath, AbsolutePath]),
   destination: Schema.Struct({
     repository: GitHubRepositorySchema,
     number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
@@ -62,11 +66,12 @@ export const WorkspaceToolInputSchema = Schema.Union([
     path: InputFields.path,
     destination: InputFields.destination,
   }),
+  Schema.Struct({ action: Schema.Literal('artifacts') }),
 ])
 type WorkspaceToolInput = typeof WorkspaceToolInputSchema.Type
 
 const ToolParametersSchema = Schema.Struct({
-  action: Schema.Literals(['resume', 'set-target', 'record-publication']),
+  action: Schema.Literals(['resume', 'set-target', 'record-publication', 'artifacts']),
   taskId: Schema.optionalKey(InputFields.taskId),
   workspaceId: Schema.optionalKey(InputFields.workspaceId),
   target: Schema.optionalKey(InputFields.target),
@@ -80,7 +85,7 @@ const fieldDescriptions: { readonly [Field in keyof typeof InputFields]: string 
   workspaceId: 'resume only: exact workspace id, required when the task retains several.',
   target:
     'set-target only, required: a full ref such as refs/heads/main (a bare branch name is refused) under a local, remote or github authority; github may name the source repository and a pull request number.',
-  path: 'record-publication only, required: workspace-relative path of the published file.',
+  path: "record-publication only, required: the published file, as a workspace-relative path or as the absolute path of a file inside this task's artifact directory.",
   destination:
     'record-publication only, required: the issue or pull request holding the artifact, with commentId when it is in a comment.',
 }
@@ -313,6 +318,41 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
   })
 
+  const artifacts = Effect.fnUntraced(function* (context: ExtensionContext) {
+    const attachment = options.attachment()
+    const admitted = yield* attachment
+      .authorize({ kind: 'write', cwd: attachment.binding.cwd })
+      .pipe(Effect.mapError(error => refuse(`Workspace admission was refused: ${error.message}`)))
+    if (admitted.kind === 'rebind') {
+      options.requestResume(admitted.handoff, context)
+      return {
+        value: {
+          artifacts: 'rebind-requested',
+          reason: admitted.handoff.reason,
+          note: 'The conversation switches workspace when the current turn ends; call artifacts again afterwards.',
+        },
+        terminate: true,
+      }
+    }
+    const { taskId } = admitted.grant
+    if (taskId === undefined)
+      return yield* refuse('Workspace admission returned a write grant without a task')
+    const path = taskArtifactsPath(authorityPaths(options.lifecycle.root), taskId)
+    yield* Effect.try({
+      try: () => mkdirSync(path, { recursive: true, mode: 0o700 }),
+      catch: cause => refuse(`Task artifact directory could not be created: ${errorText(cause)}`),
+    })
+    return {
+      value: {
+        artifacts: 'ready',
+        taskId,
+        path,
+        note: "Keep files that stay outside the commit scope here; dev deletes the directory when the task's last workspace reservation ends or the task is released.",
+      },
+      terminate: false,
+    }
+  })
+
   const setTarget = Effect.fnUntraced(function* (
     input: Extract<WorkspaceToolInput, { readonly action: 'set-target' }>
   ) {
@@ -331,7 +371,28 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       return yield* refuse(
         `The current workspace ${binding.workspaceId} holds no reservation of task ${taskId}; a publication is recorded from a workspace of its task.`
       )
-    const absolute = join(view.path, input.path)
+    let root: PublicationRoot = 'workspace'
+    let relativePath = input.path
+    let absolute = join(view.path, input.path)
+    if (isAbsolute(input.path)) {
+      const artifactsDirectory = taskArtifactsPath(authorityPaths(options.lifecycle.root), taskId)
+      absolute = resolve(input.path)
+      if (absolute === artifactsDirectory || !isWithin(artifactsDirectory, absolute))
+        return yield* refuse(
+          `An absolute path must name a file inside the task artifact directory ${artifactsDirectory}: ${input.path}`
+        )
+      const canonical = yield* Effect.try({
+        try: () => realpathSync.native(absolute),
+        catch: cause =>
+          refuse(`Selected artifact is unreadable: ${input.path} (${errorText(cause)})`),
+      })
+      if (canonical !== absolute)
+        return yield* refuse(
+          `Selected artifact must be reached without links inside the task artifact directory: ${input.path}`
+        )
+      root = 'artifacts'
+      relativePath = relative(artifactsDirectory, absolute)
+    }
     const info = yield* Effect.try({
       try: () => lstatSync(absolute),
       catch: cause =>
@@ -339,7 +400,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     })
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
       return yield* refuse(`Selected artifact must be a regular file without links: ${input.path}`)
-    if (sensitiveName(input.path))
+    if (sensitiveName(relativePath))
       return yield* refuse(
         `Selected artifact has a sensitive name and is never certified for disposal: ${input.path}`
       )
@@ -377,7 +438,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       taskId,
       workspaceId: binding.workspaceId,
       ...(head.length === 0 ? {} : { commit: head }),
-      relativePath: input.path,
+      root,
+      relativePath,
       byteLength: bytes.byteLength,
       sha256: digest,
       destination: {
@@ -401,7 +463,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     name: 'workspace',
     label: 'Workspace',
     description:
-      "Operate this conversation's workspace task in the workspace authority. resume switches the conversation onto a workspace retained for a task; the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote. record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree. Each field states which action uses it.",
+      "Operate this conversation's workspace task in the workspace authority. artifacts returns this task's artifact directory, the place for files that must stay outside the commit scope (PR bodies, reports, logs, handoffs); it admits this conversation as the writer of its checkout first, and dev deletes the directory when the task's last workspace reservation ends or the task is released. resume switches the conversation onto a workspace retained for a task; the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote. record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree. Each field states which action uses it.",
     parameters: workspaceToolParameters,
     async execute(_toolCallId, input, _signal, _onUpdate, context) {
       const run: Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> =
@@ -418,6 +480,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
                   return setTarget(decoded)
                 case 'record-publication':
                   return recordPublication(decoded)
+                case 'artifacts':
+                  return artifacts(context)
               }
             }
           )

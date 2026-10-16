@@ -10,7 +10,13 @@ Use separate SQLite rollback-journal lock databases rather than a global mutex o
 
 The authority is account-wide because installation-local claims cannot coordinate one repository across data homes. Readers and writers share checkout presence; writers additionally hold the writer gate. Dev's structural Git effects take a repository gate, but ordinary commands must not fence every linked worktree. Acquire structure, canonical path slots, then short record transactions; duplicate slot requests coalesce to writer access if any request writes.
 
-A free gate does not prove a dead controller's descendants are gone. Durable use facts, acquisition/binding fences and physical identities remain necessary. Persist volume UUID plus lossless inode, not reboot-unstable `st_dev`. Resolve paths in one bounded Foundation observation and refuse lookup failures or object races rather than falling back to path names. Current validation remains required under the [single-schema rule](../../AGENTS.md#boundaries).
+A free gate does not prove a dead controller's descendants are gone. Durable use facts, acquisition/binding fences and physical identities remain necessary. Persist volume UUID plus lossless inode, not reboot-unstable `st_dev`. Resolve paths afresh in one bounded Foundation observation, reusing a helper to avoid repeated process startup. Refuse lookup failures or object races rather than falling back to path names. A device-to-volume cache was rejected because a remounted volume can reuse a device number ([#64](https://github.com/taekwondodev/dev/issues/64), [#177](https://github.com/taekwondodev/dev/issues/177)). Current validation remains required under the [single-schema rule](../../AGENTS.md#boundaries).
+
+### Conversation retention admission
+
+[The retention decision](https://github.com/taekwondodev/dev/issues/167) keeps conversation deletion under the existing coordination and workspace authority, separate from workspace release. File and conversation gates exclude attached runtimes; shared admission with creation and navigation closes the gap before a new file receives its claim. A free gate alone is insufficient: durable recovery dependencies must be reassessed before deletion. Inventory stays outside deletion admission so a history scan does not block navigation.
+
+Cleanup runs in a one-shot process with its own installation/source claims, rather than inheriting the launcher's authority. A thread could not outlive the launcher; a daemon would add an unnecessary long-lived owner. Preference publication and temporary-file deletion share exclusion because age or a filename cannot prove abandonment. [Launcher](../launcher.md#automatic-history-cleanup) owns cleanup behavior and limits; the [external-process race boundary](#accepted-external-process-race-boundary) still applies.
 
 ## Scoped workspace operations
 
@@ -26,7 +32,7 @@ A read-only leaf inherits access to its coordinator's admitted workspace through
 
 ### Process observation
 
-End a process use only after its group and every tracked descendant are observed gone. Capture identity before releasing user code and match fresh birth identities before signalling; a root group remains attributable while a member lives. Observe exit rather than stdio closure because surviving children can keep pipes open. An unacknowledged identity report may already be durable, so observe the stopped family rather than assuming launch never happened.
+End a process use only after its group and every tracked descendant are observed gone. Capture identity before releasing user code and match fresh birth identities before signalling; a root group remains attributable while a member lives. Observe exit rather than stdio closure because surviving children can keep pipes open. An unacknowledged identity report may already be durable, so observe the stopped family rather than assuming launch never happened. Confirm checkout identity only for facts that release user code or settle a use; recording facts must remain possible after checkout replacement so identity validation cannot interrupt process-family tracking. [#177](https://github.com/taekwondodev/dev/issues/177) records the decision; [Workspace](../workspace.md#process-uses-and-gates) owns replacement outcomes.
 
 Detachment before observation can escape tracking, including Pi shells starting new sessions. This risk is accepted instead of marking every shell unknown. Once observation is lost, `unknown` is absorbing: later reports or host transitions cannot settle it, and a grant cannot settle while a dependent operation is live. The [command contract](https://github.com/taekwondodev/dev/issues/34#issuecomment-5799183185) supplies no repair operation; explicit recovery must be designed before blocked checkouts can be reused.
 
@@ -52,6 +58,8 @@ Workspace writes are scoped operations whose start is reported inside the filesy
 
 Preserve exact operand matching before re-resolution, raw-parent-traversal and shorthand refusals, regular-file/no-hardlink checks and boundary revalidation. A changed alias cannot borrow another in-flight permit. Final links are never followed; Git administration and authority/coordination metadata stay protected. Managed worktrees inside authority storage are writable only in their own scope. Pathname checks retain a race with external link or ancestor changes; stronger descriptor-based integration would be needed to narrow it.
 
+[Issue #175](https://github.com/taekwondodev/dev/issues/175) places task artifact directories in the authority because it owns task reservations and disposal. Checkout-local storage would depend on each project's ignore rules to stay outside commit scope; data-home storage would split task ownership. Ordinary writer admission precedes creation and writes, establishing a reservation so retention needs no separate liveness predicate. Dev exposes directory discovery through the `workspace` tool rather than duplicating it in system prompts, `work` tool fields or automatic child briefs; storage discovery belongs to the owning integration.
+
 ## Release
 
 Managed worktrees are disposable after delivery; pre-existing checkouts lose only reservations. The [disposal decision](https://github.com/taekwondodev/dev/issues/42) rejects exhaustive per-file certification. The workflow owns integrating wanted work and publishing selected artifacts, including failed-publication checkpoints. Runtime evidence is not a parallel workflow authority, and source-history inclusion proves neither semantic equivalence nor delivery of dirty edits.
@@ -62,6 +70,8 @@ There are two distinct authorities:
 - **Task release:** interactive user confirmation overrides completion, evidence and uses for the whole task. It therefore takes no path or installation gate; the user is responsible for stopping work first. It still respects explicit Git locks and the repository structure gate. Agent tools have no release path.
 
 Git's single force flag implements bounded disposal, not an authorization bypass. Never double-force, add unattended release flags or prune broadly. [Release operations](../workspace.md#release) own confirmation, consequences and retry guidance.
+
+Task artifact deletion changes no Git state, so it is retryable without a fenced Git-removal record. [Task artifacts](../workspace.md#task-artifacts) owns retention, removal outcomes and recovery.
 
 ### Completion and evidence
 
@@ -105,6 +115,7 @@ Deliberate departures from the Effect guide:
 - `runGit` in `src/pi-child.ts` and `readHead` in `src/workspace-tool.ts` use `node:child_process` because the Effect spawner hides the terminating signal, changing model-visible errors.
 - Startup's `git rev-parse` in `src/preferences.ts` and `which pi` in `src/pi-runtime.ts` also stay there: they are short, uninterrupted commands for which the spawner added measurable startup time.
 - The URL reader's `src/web-network.ts` issues requests through `node:http` and `node:https` directly, because its network policy pins each connection to a validated address through the request's `lookup` option and revalidates every redirect itself; a generic HTTP client would resolve names again. `src/web-browser.ts` spawns Chrome with `node:child_process` because the DevTools pipe needs file descriptors 3 and 4, which the Effect spawner does not expose.
+- `src/workspace-identity.ts` and `src/workspace-volume-helper.ts` use `node:worker_threads` and `node:child_process` directly: synchronous authority code blocks on the helper through `Atomics.wait`, so no Effect runtime can run on that thread during the lookup.
 - `allowedUnstableApis` admits only the modules needed from the pinned release, not all Effect APIs; no stable alternatives exist for the admitted integrations.
 - The authority client is a lazily opened scoped Effect passed by argument, not a layer-provided service that would start the worker for help or diagnostics.
 

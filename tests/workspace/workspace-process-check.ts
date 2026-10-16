@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { cpSync, existsSync, renameSync } from 'node:fs'
 import {
   chmod,
   link,
@@ -27,6 +27,7 @@ import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import {
   WorkspaceError,
   type WorkspaceAttachment,
+  type WorkspaceExecutionFact,
   type WorkspaceView,
 } from '../../src/workspace-domain.ts'
 import type { AttemptView } from '../../src/work-domain.ts'
@@ -52,19 +53,14 @@ const withReport = (
 })
 const lost = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
 const unexpectedRebind = (): never => assert.fail('no process check expects a workspace rebind')
-const root = await realpath(await mkdtemp(join(tmpdir(), 'dev-workspace-process-')))
-const { claim, passed } = makeClaims()
-try {
-  const cwd = join(root, 'repository')
-  const dataHome = join(root, 'runtime')
-  await mkdir(cwd, { mode: 0o700 })
-  await mkdir(dataHome, { mode: 0o700 })
-  await exec('git', ['init', '--quiet', cwd])
-  await writeFile(join(cwd, 'tracked.txt'), 'preserve this file\n')
-  await exec('git', ['-C', cwd, 'add', 'tracked.txt'])
+const initCheckout = async (path: string): Promise<void> => {
+  await mkdir(path, { mode: 0o700 })
+  await exec('git', ['init', '--quiet', path])
+  await writeFile(join(path, 'tracked.txt'), 'preserve this file\n')
+  await exec('git', ['-C', path, 'add', 'tracked.txt'])
   await exec('git', [
     '-C',
-    cwd,
+    path,
     '-c',
     'user.name=Workspace Fixture',
     '-c',
@@ -76,6 +72,18 @@ try {
     '-m',
     'Fixture',
   ])
+}
+const replaceCheckout = (path: string): void => {
+  renameSync(path, `${path}.replaced`)
+  cpSync(`${path}.replaced`, path, { recursive: true })
+}
+const root = await realpath(await mkdtemp(join(tmpdir(), 'dev-workspace-process-')))
+const { claim, passed } = makeClaims()
+try {
+  const cwd = join(root, 'repository')
+  const dataHome = join(root, 'runtime')
+  await initCheckout(cwd)
+  await mkdir(dataHome, { mode: 0o700 })
   const authority = await openLifecycle({ root: join(root, 'authority') })
   const sessionId = randomUUID()
   const sessionFile = join(dataHome, 'conversation.jsonl')
@@ -869,6 +877,107 @@ try {
         } finally {
           for (const directory of lockedDirectories) await chmod(directory, 0o700)
           await lockedRuntime.dispose()
+        }
+      }
+    )
+
+    const replacedShell = async (name: string, replaceAfter?: WorkspaceExecutionFact['kind']) => {
+      const checkout = join(root, name)
+      await initCheckout(checkout)
+      const conversationFile = join(dataHome, `${name}.jsonl`)
+      await writeFile(conversationFile, '', { mode: 0o600 })
+      const owner = await authority.attach({
+        cwd: checkout,
+        conversation: { sessionId: randomUUID(), sessionFile: conversationFile, dataHome },
+      })
+      const observedPids = new Set<number>()
+      const replacing = withReport(owner.effect, (reported, fact) =>
+        owner.effect.reportExecution(reported, fact).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (fact.kind === replaceAfter) replaceCheckout(checkout)
+              if (fact.kind === 'observed')
+                for (const process of fact.processes) observedPids.add(process.pid)
+            })
+          )
+        )
+      )
+      const replacedHost = await openShell(async shellCwd => {
+        const writer = await owner.authorize({ kind: 'write', cwd: shellCwd })
+        if (writer.kind !== 'ready') throw new Error('Unexpected shell handoff')
+        return { attachment: replacing, grant: writer.grant }
+      })
+      const ended = () =>
+        waitUntil(
+          `the ${name} shell use to end`,
+          async () =>
+            (await authority.inspect({ taskId: owner.binding.taskId }))
+              .flatMap(view => view.uses)
+              .find(use => use.execution?.taskKey === 'lead-shell'),
+          (use): use is WorkspaceView['uses'][number] =>
+            use?.stage === 'quiescent' || use?.stage === 'unknown',
+          { attempts: 60 }
+        )
+      return { checkout, owner, shell: replacedHost, ended, observedPids }
+    }
+
+    await claim(
+      'a checkout replaced after its shell is spawned and before user code is released stops the command, which never runs, and leaves its use unknown for review',
+      async () => {
+        const replaced = await replacedShell('replaced-before-start', 'spawned')
+        const marker = join(root, 'replaced-before-start-ran')
+        try {
+          await assert.rejects(
+            replaced.shell.operations.exec(
+              `printf ran > ${JSON.stringify(marker)}`,
+              replaced.checkout,
+              silent
+            ),
+            /replaced/
+          )
+          const use = await replaced.ended()
+          assert.equal(use.stage, 'unknown', JSON.stringify(use))
+          assert.match(use.reason ?? '', /replaced/)
+          assert.ok(!existsSync(marker), 'user code never ran in the replaced checkout')
+        } finally {
+          await replaced.shell.stop()
+          await replaced.owner.close()
+        }
+      }
+    )
+
+    await claim(
+      'a command that replaces its own checkout stays tracked, so stopping the host shell still kills its descendants, and its use ends unknown instead of quiescent',
+      async () => {
+        const replaced = await replacedShell('replaced-while-running')
+        const pidFile = join(root, 'replaced-while-running-pid')
+        let descendant: number | undefined
+        try {
+          await replaced.shell.operations.exec(
+            `mv "$PWD" "$PWD.replaced" && cp -R "$PWD.replaced" "$PWD" && { sleep 30 & printf "$!" > ${JSON.stringify(pidFile)}; }`,
+            replaced.checkout,
+            silent
+          )
+          descendant = Number(await readFile(pidFile, 'utf8'))
+          await waitUntil(
+            'the descendant to appear in an acknowledged process observation',
+            () => replaced.observedPids.has(descendant ?? 0),
+            observed => observed
+          )
+          assert.doesNotThrow(() => process.kill(descendant ?? 0, 0))
+          assert.equal(replaced.shell.live(), 1, 'the replaced checkout did not end observation')
+          await replaced.shell.stop()
+          assert.throws(() => process.kill(descendant ?? 0, 0), { code: 'ESRCH' })
+          const use = await replaced.ended()
+          assert.equal(use.stage, 'unknown', JSON.stringify(use))
+          assert.match(use.reason ?? '', /replaced/)
+        } finally {
+          if (descendant !== undefined)
+            try {
+              process.kill(descendant, 'SIGKILL')
+            } catch {}
+          await replaced.shell.stop()
+          await replaced.owner.close()
         }
       }
     )

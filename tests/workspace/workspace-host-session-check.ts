@@ -321,6 +321,74 @@ try {
     }
   )
   await claim(
+    'a native artifact write requires writer admission: a bound task with another writer is refused without touching the file, and retry succeeds once that writer closes',
+    async () => {
+      const checkout = join(fixture, 'artifact-checkout')
+      git(['worktree', 'add', '--quiet', '--detach', checkout, 'HEAD'])
+      const seedManager = pi.SessionManager.create(checkout, sessionDir)
+      const seed = await lifecycle.attach({
+        conversation: conversationAt(seedManager),
+        cwd: checkout,
+      })
+      const grant = await seed.authorize({ kind: 'write' })
+      assert.equal(grant.kind, 'ready')
+      if (grant.kind !== 'ready' || grant.grant.taskId === undefined)
+        throw new Error('the fixture requires an admitted task')
+      const { taskId } = grant.grant
+      const selection = { taskId, workspaceId: grant.grant.workspaceId }
+      await seed.close()
+      const manager = pi.SessionManager.create(checkout, sessionDir)
+      const attached = await lifecycle.attach({
+        conversation: conversationAt(manager),
+        cwd: checkout,
+        selection,
+      })
+      const holderManager = pi.SessionManager.create(checkout, sessionDir)
+      const holder = await lifecycle.attach({
+        conversation: conversationAt(holderManager),
+        cwd: checkout,
+        selection,
+      })
+      const path = join(fixture, 'authority', 'artifacts', taskId, 'handoff.md')
+      const steps: ScriptedContent[] = [
+        [toolCall('artifact-blocked', 'write', { path, content: 'blocked bytes' })],
+      ]
+      const { offline, script } = await offlineScript('artifact-native', steps)
+      const opened = await openLeadHost({
+        attachment: attached.effect,
+        manager,
+        offline,
+        cwd: checkout,
+      })
+      try {
+        assert.equal((await holder.authorize({ kind: 'write' })).kind, 'ready')
+        await opened.runtime.session.prompt('Write the task handoff.')
+        await opened.runtime.session.waitForIdle()
+        const blocked = toolResults(opened.runtime)('artifact-blocked')
+        assert.equal(blocked.isError, true, blocked.text)
+        assert.match(blocked.text, /unresolved writer use/)
+        assert.equal(existsSync(path), false, 'refused admission must not write artifact bytes')
+        assert.equal(opened.runtime.cwd, checkout)
+        await holder.close()
+        steps[script.calls()] = [
+          toolCall('artifact-retry', 'write', { path, content: 'admitted bytes' }),
+        ]
+        await opened.runtime.session.prompt(
+          'Retry the task handoff now that its writer has closed.'
+        )
+        await opened.runtime.session.waitForIdle()
+        const retried = toolResults(opened.runtime)('artifact-retry')
+        assert.equal(retried.isError, false, retried.text)
+        assert.equal(readFileSync(path, 'utf8'), 'admitted bytes')
+        assert.equal(attached.binding.taskId, taskId)
+        assert.equal(opened.runtime.cwd, checkout)
+      } finally {
+        await holder.close()
+        await opened.close()
+      }
+    }
+  )
+  await claim(
     'a rebind inside a mixed tool batch ends the run: the admitted sibling read is cancelled unexecuted, Pi spends no request in the old context, and the handoff tells the model which call was refused and which were cancelled',
     async () => {
       const { offline: mixed, script } = await offlineScript('mixed-batch', [

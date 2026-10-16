@@ -1,10 +1,13 @@
+import { existsSync } from 'node:fs'
 import { Effect, Option, Schema } from 'effect'
+import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import {
   WorkspaceId,
   type CompletionVerdict,
   type SweepMoment,
   type SweepReceipt,
   type SweepRow,
+  type TaskArtifactsResult,
   type WorkspaceAssessment,
   type WorkspaceConversation,
   type WorkspaceError,
@@ -31,9 +34,19 @@ interface WorkspaceListScope<R = never> {
   readonly repositoryRoot: Effect.Effect<string | undefined, never, R>
   readonly current?: {
     readonly workspaceId: WorkspaceId
+    readonly taskId?: WorkspaceId
     readonly effectiveCwd: string
     readonly conversation?: WorkspaceConversation
   }
+}
+
+export const existingTaskArtifacts = (
+  authorityRoot: string,
+  taskId: WorkspaceId | undefined
+): string | undefined => {
+  if (taskId === undefined) return undefined
+  const path = taskArtifactsPath(authorityPaths(authorityRoot), taskId)
+  return existsSync(path) ? path : undefined
 }
 
 export interface ResumeCandidate {
@@ -144,7 +157,8 @@ const formatWorkspaceViews = (views: readonly WorkspaceView[]): string => {
 const formatWorkspaceList = (
   views: readonly WorkspaceView[],
   repositoryRoot: string,
-  current: WorkspaceListScope['current']
+  current: WorkspaceListScope['current'],
+  artifacts: string | undefined
 ): string => {
   const rows = sortedViews(views)
   const header = [
@@ -152,6 +166,7 @@ const formatWorkspaceList = (
     ...(current === undefined
       ? []
       : [`Current binding: ${current.workspaceId}`, `Effective cwd: ${current.effectiveCwd}`]),
+    ...(artifacts === undefined ? [] : [`Task artifacts: ${artifacts}`]),
   ]
   if (rows.length === 0) return `${header.join('\n')}\nNo workspace records were found.`
   return [...header, ...rows.flatMap(view => viewText(view, current?.workspaceId))].join('\n')
@@ -217,7 +232,11 @@ export const reservedViews = (views: readonly WorkspaceView[]): readonly Workspa
       view.reservationId !== undefined && view.outcome !== 'released' && view.outcome !== 'removed'
   )
 
-export const releasePlan = (taskId: WorkspaceId, views: readonly WorkspaceView[]): string =>
+export const releasePlan = (
+  taskId: WorkspaceId,
+  views: readonly WorkspaceView[],
+  artifacts: string | undefined
+): string =>
   [
     `dev workspace release clears every workspace of task ${taskId}, whatever the sweep verdict:`,
     ...views.map(
@@ -228,10 +247,22 @@ export const releasePlan = (taskId: WorkspaceId, views: readonly WorkspaceView[]
             : 'only the reservation ends; files and commits stay'
         }`
     ),
+    ...(artifacts === undefined
+      ? []
+      : [`- task artifacts at ${artifacts}: the directory and everything in it are deleted`]),
   ].join('\n')
 
+const RELEASE_FAILURES: ReadonlySet<WorkspaceReleaseResult['outcome']> = new Set([
+  'failed',
+  'review-required',
+])
 export const releaseExitCode = (results: readonly WorkspaceReleaseResult[]): 0 | 1 =>
-  results.length > 0 && results.every(result => result.outcome !== 'failed') ? 0 : 1
+  results.length > 0 && results.every(result => !RELEASE_FAILURES.has(result.outcome)) ? 0 : 1
+
+const artifactsText = (row: TaskArtifactsResult): string[] => [
+  `task artifacts at ${row.path}, task ${row.taskId}: ${row.outcome}`,
+  `  ${row.reason}`,
+]
 
 export const formatReleaseResults = (
   taskId: WorkspaceId,
@@ -239,10 +270,14 @@ export const formatReleaseResults = (
 ): string =>
   [
     `Release of task ${taskId}:`,
-    ...results.flatMap(result => [
-      `workspace ${result.workspaceId} (${result.origin}) at ${result.path}: ${result.outcome}`,
-      `  ${result.reason}`,
-    ]),
+    ...results.flatMap(result =>
+      result.kind === 'task-artifacts'
+        ? artifactsText(result)
+        : [
+            `workspace ${result.workspaceId} (${result.origin}) at ${result.path}: ${result.outcome}`,
+            `  ${result.reason}`,
+          ]
+    ),
   ].join('\n')
 
 type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
@@ -255,6 +290,8 @@ const sweepRowText = (row: SweepRow): string[] => {
       return [`task ${row.taskId}: review-required`, `  ${row.reason}`]
     case 'task-deferred':
       return [`task ${row.taskId}: deferred`, `  ${row.reason}`]
+    case 'task-artifacts':
+      return artifactsText(row)
     case 'workspace': {
       const attempted = row.verdict.kind === 'finished'
       return [
@@ -277,7 +314,10 @@ const TERMINAL_SWEEP_OUTCOMES: ReadonlySet<WorkspaceRow['outcome']> = new Set([
   'released',
 ])
 export const sweepExitCode = (receipt: SweepReceipt): 0 | 1 =>
-  attemptedRows(receipt).every(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)) ? 0 : 1
+  attemptedRows(receipt).every(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)) &&
+  receipt.rows.every(row => row.kind !== 'task-artifacts' || row.outcome === 'removed')
+    ? 0
+    : 1
 
 const SWEEP_MOMENT_TEXT: Record<SweepMoment, string> = {
   quit: 'at quit',
@@ -291,10 +331,11 @@ export const formatSweepReceipt = (receipt: SweepReceipt): string => {
   const attempted = attemptedRows(receipt)
   const terminal = attempted.filter(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)).length
   const deferred = receipt.rows.filter(row => row.kind === 'task-deferred').length
+  const artifacts = receipt.rows.filter(row => row.kind === 'task-artifacts').length
   return [
     `Workspace sweep ${moment} (automatic; decided by observable completion):`,
     ...receipt.rows.flatMap(sweepRowText),
-    `Summary: ${terminal}/${attempted.length} finished workspace(s) reached a terminal outcome; ${receipt.rows.length - attempted.length - deferred} retained or skipped${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next sweep`}.`,
+    `Summary: ${terminal}/${attempted.length} finished workspace(s) reached a terminal outcome; ${receipt.rows.length - attempted.length - deferred - artifacts} retained or skipped${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next sweep`}${artifacts === 0 ? '' : `; ${artifacts} task artifact director${artifacts === 1 ? 'y' : 'ies'} reported`}.`,
   ].join('\n')
 }
 
@@ -318,12 +359,16 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
     if (command.kind === 'inspect') {
       const lifecycle = yield* openLifecycle
       const views = yield* lifecycle.inspect({ taskId: command.taskId })
+      const artifacts = existingTaskArtifacts(lifecycle.root, command.taskId)
       return {
         exitCode: 0,
         text:
           views.length === 0
             ? noTaskRecords(command.taskId)
-            : `Workspace records for exact task ${command.taskId}: ${formatWorkspaceViews(views)}`,
+            : [
+                `Workspace records for exact task ${command.taskId}: ${formatWorkspaceViews(views)}`,
+                ...(artifacts === undefined ? [] : [`task artifacts: ${artifacts}`]),
+              ].join('\n'),
       }
     }
     const repositoryRoot = yield* scope.repositoryRoot
@@ -334,7 +379,15 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
       }
     const lifecycle = yield* openLifecycle
     const views = yield* lifecycle.inspect({ cwd: repositoryRoot })
-    return { exitCode: 0, text: formatWorkspaceList(views, repositoryRoot, scope.current) }
+    return {
+      exitCode: 0,
+      text: formatWorkspaceList(
+        views,
+        repositoryRoot,
+        scope.current,
+        existingTaskArtifacts(lifecycle.root, scope.current?.taskId)
+      ),
+    }
   },
   Effect.catch(cause =>
     Effect.succeed<WorkspaceCommandResult>({
