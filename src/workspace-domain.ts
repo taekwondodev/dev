@@ -6,7 +6,10 @@ export const WorkspaceId = Schema.String.check(
 ).pipe(Schema.brand('WorkspaceId'))
 export type WorkspaceId = typeof WorkspaceId.Type
 
-export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()('WorkspaceError', {
+export class WorkspaceError extends Schema.TaggedError<
+  WorkspaceError,
+  { readonly brand: unique symbol }
+>()('WorkspaceError', {
   outcome: Schema.Literals([
     'blocked',
     'review-required',

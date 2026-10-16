@@ -3,7 +3,10 @@ import { fileURLToPath } from 'node:url'
 import { Config, Effect, FileSystem, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 
-export class ProfileError extends Schema.TaggedError<ProfileError>()('ProfileError', {
+export class ProfileError extends Schema.TaggedError<
+  ProfileError,
+  { readonly brand: unique symbol }
+>()('ProfileError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

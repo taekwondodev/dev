@@ -464,45 +464,51 @@ export type StartRequest =
   | ({ readonly kind: 'process' } & ProcessStartRequest)
   | ({ readonly kind: 'agent' } & AgentStartRequest)
 
-export class WorkError extends Schema.TaggedError<WorkError>()('WorkError', {
+export class WorkError extends Schema.TaggedError<WorkError, { readonly brand: unique symbol }>()(
+  'WorkError',
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {}
+
+export class WorkSetupError extends Schema.TaggedError<
+  WorkSetupError,
+  { readonly brand: unique symbol }
+>()('WorkSetupError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class WorkSetupError extends Schema.TaggedError<WorkSetupError>()('WorkSetupError', {
+export class WorkPersistenceError extends Schema.TaggedError<
+  WorkPersistenceError,
+  { readonly brand: unique symbol }
+>()('WorkPersistenceError', {
+  code: Schema.String,
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class WorkPersistenceError extends Schema.TaggedError<WorkPersistenceError>()(
-  'WorkPersistenceError',
-  {
-    code: Schema.String,
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }
-) {}
+export class WorkProtocolError extends Schema.TaggedError<
+  WorkProtocolError,
+  { readonly brand: unique symbol }
+>()('WorkProtocolError', {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
 
-export class WorkProtocolError extends Schema.TaggedError<WorkProtocolError>()(
-  'WorkProtocolError',
-  {
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }
-) {}
+export class WorkDispatchError extends Schema.TaggedError<
+  WorkDispatchError,
+  { readonly brand: unique symbol }
+>()('WorkDispatchError', {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
 
-export class WorkDispatchError extends Schema.TaggedError<WorkDispatchError>()(
-  'WorkDispatchError',
-  {
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }
-) {}
-
-export class WorkRebindRequired extends Schema.TaggedError<WorkRebindRequired>()(
-  'WorkRebindRequired',
-  { message: Schema.String }
-) {}
+export class WorkRebindRequired extends Schema.TaggedError<
+  WorkRebindRequired,
+  { readonly brand: unique symbol }
+>()('WorkRebindRequired', { message: Schema.String }) {}
 
 export type WorkFailure =
   | WorkError

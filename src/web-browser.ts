@@ -8,7 +8,10 @@ import { errorText } from './error-text.ts'
 import { processObserver, type ObservedProcess } from './process-family.ts'
 import type { WebNetworkError } from './web-network.ts'
 
-export class BrowserError extends Schema.TaggedError<BrowserError>()('BrowserError', {
+export class BrowserError extends Schema.TaggedError<
+  BrowserError,
+  { readonly brand: unique symbol }
+>()('BrowserError', {
   reason: Schema.Literals(['launch', 'protocol', 'navigation', 'timeout', 'shutdown']),
   message: Schema.String,
 }) {}

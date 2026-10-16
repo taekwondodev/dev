@@ -37,10 +37,13 @@ import {
   type CoordinatorLink,
 } from './work-child-coordination.ts'
 
-export class ChildError extends Schema.TaggedError<ChildError>()('ChildError', {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-}) {}
+export class ChildError extends Schema.TaggedError<ChildError, { readonly brand: unique symbol }>()(
+  'ChildError',
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {}
 
 const ACCESS_MODES = ['read-only', 'write'] as const
 type AccessMode = (typeof ACCESS_MODES)[number]

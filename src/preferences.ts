@@ -17,7 +17,10 @@ import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 import { acquireExclusiveLock } from './runtime-coordination.ts'
 
-export class PreferencesError extends Schema.TaggedError<PreferencesError>()('PreferencesError', {
+export class PreferencesError extends Schema.TaggedError<
+  PreferencesError,
+  { readonly brand: unique symbol }
+>()('PreferencesError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

@@ -9,10 +9,13 @@ import { errorText } from './error-text.ts'
 
 export type PiApi = typeof Pi
 
-export class PiError extends Schema.TaggedError<PiError>()('PiError', {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-}) {}
+export class PiError extends Schema.TaggedError<PiError, { readonly brand: unique symbol }>()(
+  'PiError',
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {}
 
 const piFailure = (what: string) => (cause: unknown) =>
   new PiError({ message: `${what}: ${errorText(cause)}`, cause })

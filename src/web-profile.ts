@@ -21,13 +21,13 @@ import { errorText } from './error-text.ts'
 import { acquireExclusiveLock } from './runtime-coordination.ts'
 import type { GateRelease } from './workspace-gates.ts'
 
-export class BrowserProfileError extends Schema.TaggedError<BrowserProfileError>()(
-  'BrowserProfileError',
-  {
-    reason: Schema.Literals(['chrome-missing', 'disabled', 'source', 'copy', 'in-use', 'storage']),
-    message: Schema.String,
-  }
-) {}
+export class BrowserProfileError extends Schema.TaggedError<
+  BrowserProfileError,
+  { readonly brand: unique symbol }
+>()('BrowserProfileError', {
+  reason: Schema.Literals(['chrome-missing', 'disabled', 'source', 'copy', 'in-use', 'storage']),
+  message: Schema.String,
+}) {}
 
 const fail = (reason: BrowserProfileError['reason'], message: string) =>
   new BrowserProfileError({ reason, message })

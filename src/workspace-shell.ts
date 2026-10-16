@@ -34,10 +34,10 @@ export interface WorkspaceShell {
   readonly stop: Effect.Effect<void>
 }
 
-export class ShellCommandError extends Schema.TaggedError<ShellCommandError>()(
-  'ShellCommandError',
-  { message: Schema.String }
-) {}
+export class ShellCommandError extends Schema.TaggedError<
+  ShellCommandError,
+  { readonly brand: unique symbol }
+>()('ShellCommandError', { message: Schema.String }) {}
 
 interface ShellExit {
   readonly code: number | null

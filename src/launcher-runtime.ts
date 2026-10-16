@@ -93,7 +93,10 @@ import {
 } from './quit-display.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 
-export class LauncherError extends Schema.TaggedError<LauncherError>()('LauncherError', {
+export class LauncherError extends Schema.TaggedError<
+  LauncherError,
+  { readonly brand: unique symbol }
+>()('LauncherError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

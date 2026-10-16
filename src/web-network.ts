@@ -5,7 +5,10 @@ import { BlockList, isIP } from 'node:net'
 import { Duration, Effect, Schema } from 'effect'
 import { errorText } from './error-text.ts'
 
-export class WebNetworkError extends Schema.TaggedError<WebNetworkError>()('WebNetworkError', {
+export class WebNetworkError extends Schema.TaggedError<
+  WebNetworkError,
+  { readonly brand: unique symbol }
+>()('WebNetworkError', {
   reason: Schema.Literals(['url', 'destination', 'dns', 'connection', 'response', 'limit']),
   message: Schema.String,
 }) {}

@@ -11,10 +11,10 @@ import {
 } from './workspace-paths.ts'
 import { errorText } from './error-text.ts'
 
-export class NativeWriteRefused extends Schema.TaggedError<NativeWriteRefused>()(
-  'NativeWriteRefused',
-  { message: Schema.String }
-) {}
+export class NativeWriteRefused extends Schema.TaggedError<
+  NativeWriteRefused,
+  { readonly brand: unique symbol }
+>()('NativeWriteRefused', { message: Schema.String }) {}
 
 export interface NativeWriteAdmission {
   readonly toolCallId: string

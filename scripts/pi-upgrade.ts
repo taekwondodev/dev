@@ -10,7 +10,10 @@ import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
 import { PiVersion, readPiPin } from './pi-pin.ts'
 import { cell, collapsed, counted, fence, lastLines, listed } from './report.ts'
 
-export class PiUpgradeError extends Schema.TaggedError<PiUpgradeError>()('PiUpgradeError', {
+export class PiUpgradeError extends Schema.TaggedError<
+  PiUpgradeError,
+  { readonly brand: unique symbol }
+>()('PiUpgradeError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

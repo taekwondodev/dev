@@ -43,10 +43,10 @@ export const rootIdentityReused = (
     item => item.pid === root.pid && (root.birth === undefined ? exited : item.birth !== root.birth)
   )
 
-export class ProcessObservationLost extends Schema.TaggedError<ProcessObservationLost>()(
-  'ProcessObservationLost',
-  { message: Schema.String }
-) {}
+export class ProcessObservationLost extends Schema.TaggedError<
+  ProcessObservationLost,
+  { readonly brand: unique symbol }
+>()('ProcessObservationLost', { message: Schema.String }) {}
 
 export const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 

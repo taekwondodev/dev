@@ -27,13 +27,13 @@ import { getWorkspace } from './workspace-records.ts'
 import { observePhysicalIdentity } from './workspace-identity.ts'
 import { errorText } from './error-text.ts'
 
-export class CoordinationError extends Schema.TaggedError<CoordinationError>()(
-  'CoordinationError',
-  {
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }
-) {}
+export class CoordinationError extends Schema.TaggedError<
+  CoordinationError,
+  { readonly brand: unique symbol }
+>()('CoordinationError', {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
 
 export interface ConversationClaim {
   readonly path: string

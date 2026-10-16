@@ -22,13 +22,13 @@ import {
 import { readSessions, type SessionRecord } from './usage-sessions.ts'
 import { compactionReport, type CompactionReport, compactionSession } from './usage-compaction.ts'
 
-export class UsageProfileError extends Schema.TaggedError<UsageProfileError>()(
-  'UsageProfileError',
-  {
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }
-) {}
+export class UsageProfileError extends Schema.TaggedError<
+  UsageProfileError,
+  { readonly brand: unique symbol }
+>()('UsageProfileError', {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
 
 export const ALL_TIME: Period = { label: 'all', start: undefined, end: undefined }
 

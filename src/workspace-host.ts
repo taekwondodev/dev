@@ -57,10 +57,10 @@ import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
 import { isIntegratedCodemode, isIntegratedReader } from './integrated-tools.ts'
 
-export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()(
-  'WorkspaceHostError',
-  { message: Schema.String }
-) {}
+export class WorkspaceHostError extends Schema.TaggedError<
+  WorkspaceHostError,
+  { readonly brand: unique symbol }
+>()('WorkspaceHostError', { message: Schema.String }) {}
 
 export interface WorkspaceHostOptions {
   readonly lifecycle: WorkspaceLifecycle

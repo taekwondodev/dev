@@ -65,20 +65,20 @@ import {
   type AddressResolver,
 } from './web-network.ts'
 
-export class BrowserOwnerError extends Schema.TaggedError<BrowserOwnerError>()(
-  'BrowserOwnerError',
-  {
-    reason: Schema.Literals([
-      'bootstrap',
-      'conflict',
-      'unavailable',
-      'capacity',
-      'retiring',
-      'protocol',
-    ]),
-    message: Schema.String,
-  }
-) {}
+export class BrowserOwnerError extends Schema.TaggedError<
+  BrowserOwnerError,
+  { readonly brand: unique symbol }
+>()('BrowserOwnerError', {
+  reason: Schema.Literals([
+    'bootstrap',
+    'conflict',
+    'unavailable',
+    'capacity',
+    'retiring',
+    'protocol',
+  ]),
+  message: Schema.String,
+}) {}
 
 const ownerFailure = (reason: BrowserOwnerError['reason'], message: string) =>
   new BrowserOwnerError({ reason, message })

@@ -1,7 +1,10 @@
 import { Duration, Effect, Result, Schema, Stream } from 'effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 
-export class CommandFailure extends Schema.TaggedError<CommandFailure>()('CommandFailure', {
+export class CommandFailure extends Schema.TaggedError<
+  CommandFailure,
+  { readonly brand: unique symbol }
+>()('CommandFailure', {
   reason: Schema.Literals(['spawn', 'exit', 'signal', 'timeout', 'output']),
   message: Schema.String,
   stdout: Schema.String,
