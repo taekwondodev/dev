@@ -148,6 +148,7 @@ writeFileSync(
   deviceObserver,
   `import fs from 'node:fs'
 import childProcess from 'node:child_process'
+import workerThreads from 'node:worker_threads'
 import { syncBuiltinESMExports } from 'node:module'
 import { resolve, sep } from 'node:path'
 const observe = original => (path, options) => {
@@ -171,6 +172,14 @@ const behavior = () => {
   const control = process.env.DEV_IDENTITY_CONTROL
   if (control !== undefined && fs.existsSync(control)) return fs.readFileSync(control, 'utf8')
   return process.env.DEV_IDENTITY_BEHAVIOR ?? ''
+}
+const OriginalWorker = workerThreads.Worker
+workerThreads.Worker = class extends OriginalWorker {
+  constructor(url, options) {
+    if (behavior() === 'no-helper' && String(url).endsWith('/workspace-volume-helper.ts'))
+      throw Object.assign(new Error('fixture helper start failure'), { code: 'ERR_WORKER_INIT_FAILED' })
+    super(url, options)
+  }
 }
 const originalSpawn = childProcess.spawn
 childProcess.spawn = (file, args, options) => {
@@ -335,9 +344,9 @@ try {
   )
 
   await claim(
-    'volume UUID lookup failures refuse without fallback and path replacement during lookup is detected',
+    'volume UUID lookup failures, including a helper that cannot start, refuse without fallback and path replacement during lookup is detected',
     async () => {
-      for (const behavior of ['fail', 'replace'] as const) {
+      for (const behavior of ['fail', 'no-helper', 'replace'] as const) {
         const path = join(sandbox, `resolver-${behavior}-repo`)
         const authorityRoot = join(sandbox, `resolver-${behavior}-authority`)
         initRepository(path, 'tracked.txt', `resolver ${behavior} fixture\\n`)
@@ -364,17 +373,19 @@ try {
         ) as { outcome: string; message?: string }
         assert.equal(
           outcome.outcome,
-          behavior === 'fail' ? 'unavailable' : 'review-required',
+          behavior === 'replace' ? 'review-required' : 'unavailable',
           JSON.stringify(outcome)
         )
+        if (behavior !== 'replace')
+          assert.match(outcome.message ?? '', /Cannot observe persistent filesystem identity/)
       }
     }
   )
 
   await claim(
-    'one process looks up volume identity afresh for every observation: a lookup that starts failing or hangs refuses admission within its bound, and a recovered lookup admits again',
+    'one process looks up volume identity afresh for every observation, also under a non-ASCII path: a lookup that starts failing or hangs refuses admission within its bound, and a recovered lookup admits again',
     async () => {
-      const path = join(sandbox, 'resolver-fresh-repo')
+      const path = join(sandbox, 'resolver-fresh-répertoire')
       const authorityRoot = join(sandbox, 'resolver-fresh-authority')
       const control = join(sandbox, 'resolver-fresh-control')
       initRepository(path, 'tracked.txt', 'resolver fresh fixture\n')
@@ -414,7 +425,10 @@ try {
         JSON.stringify(outcomes)
       )
       const hung = outcomes[2]?.ms ?? 0
-      assert.ok(hung >= 4500 && hung < 7000, `a hung lookup is refused at its bound: ${hung} ms`)
+      assert.ok(
+        hung >= 4000 && hung < 5200,
+        `a hung lookup is refused within its bound: ${hung} ms`
+      )
     }
   )
 

@@ -38,7 +38,7 @@ const decodeVolumeAnswer = Schema.decodeUnknownResult(
   )
 )
 const LOOKUP_TIMEOUT_MS = 5000
-const HELPER_GRACE_MS = 1000
+const HELPER_TIMEOUT_MS = 4500
 
 interface VolumeHelper {
   readonly worker: Worker
@@ -50,7 +50,7 @@ let helper: VolumeHelper | undefined
 const startHelper = (): VolumeHelper => {
   const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
   const { port1, port2 } = new MessageChannel()
-  const data: VolumeHelperData = { signal, port: port2, timeoutMs: LOOKUP_TIMEOUT_MS }
+  const data: VolumeHelperData = { signal, port: port2, timeoutMs: HELPER_TIMEOUT_MS }
   const worker = new Worker(new URL('./workspace-volume-helper.ts', import.meta.url), {
     workerData: data,
     transferList: [port2],
@@ -66,11 +66,18 @@ const startHelper = (): VolumeHelper => {
 }
 
 const askHelper = (paths: readonly string[]): VolumeLookupReply => {
-  helper ??= startHelper()
+  try {
+    helper ??= startHelper()
+  } catch (cause) {
+    return {
+      kind: 'failed',
+      reason: `The volume identity helper did not start: ${errorText(cause)}`,
+    }
+  }
   const current = helper
   Atomics.store(current.signal, 0, 0)
   current.port.postMessage(paths, [])
-  const waited = Atomics.wait(current.signal, 0, 0, LOOKUP_TIMEOUT_MS + HELPER_GRACE_MS)
+  const waited = Atomics.wait(current.signal, 0, 0, LOOKUP_TIMEOUT_MS)
   const received = receiveMessageOnPort(current.port)
   const reply = received === undefined ? undefined : decodeLookupReply(received.message)
   if (waited !== 'timed-out' && reply !== undefined && Result.isSuccess(reply)) return reply.success
