@@ -91,6 +91,16 @@ A refused existing regular session file and its history remain unchanged. An abs
 
 Independent repositories can share a data home. See [workspace session commands](workspace.md#session-commands) for replacements and [quit and interruption](workspace.md#quit-and-interruption) for cleanup, the release offer and exit status.
 
+### Automatic history cleanup
+
+Interactive startup and graceful exit request a detached, one-shot cleanup process. Dev does not wait for its readiness or completion, and the process can finish after dev exits. Help, diagnostics, runtime probes and save-only commands do not request cleanup. There is no periodic timer. Concurrent requests or installation maintenance can cause a pass to be skipped; a later lifecycle trigger retries.
+
+Each data home retains the newest 100 eligible inactive lead conversations and 100 eligible inactive child conversations, ordered by modification time with a filename tie-break. Live conversations, retained-task recovery, pending switches and unresolved work are protected outside those quotas. Unrecognized files, symbolic or hard links, and files whose deletion safety cannot be established remain untouched. Deleted history cannot be resumed; these are count limits, not byte ceilings.
+
+The same pass applies [attempt retention](work.md#state) and removes recognized abandoned preference-write temporaries. No other data is a cleanup target, including workspaces and their reservations. Errors do not fail startup or exit. Non-blocking cleanup still consumes system resources.
+
+[ADR 0005](adr/0005-scoped-runtime-coordination.md#conversation-retention-admission) explains deletion admission; [usage profile](usage-profile.md#run-a-report) describes the effect on report coverage.
+
 ## State
 
 | Location                                                 | Content                                                                                                                       |

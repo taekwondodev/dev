@@ -1,6 +1,7 @@
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { resolve } from 'node:path'
+import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
 import {
@@ -895,13 +896,18 @@ const run = Effect.fnUntraced(function* (
     (options.continueSession
       ? yield* findRecentSession(packageInfo.root, launchCwd, sessionsPath)
       : undefined)
-  if (resumedPath !== undefined) yield* lease.protect({ path: resumedPath })
-  let sessions = yield* fromSync('Cannot create Pi session manager', () =>
-    resumedPath === undefined
-      ? api.SessionManager.create(launchCwd, sessionsPath)
-      : api.SessionManager.open(resumedPath, sessionsPath, launchCwd)
-  )
-  if (!options.diagnostics) yield* guard.protect(sessions)
+  const openSessions = Effect.gen(function* () {
+    if (resumedPath !== undefined && !options.diagnostics)
+      yield* lease.protect({ path: resumedPath })
+    const opened = yield* fromSync('Cannot create Pi session manager', () =>
+      resumedPath === undefined
+        ? api.SessionManager.create(launchCwd, sessionsPath)
+        : api.SessionManager.open(resumedPath, sessionsPath, launchCwd)
+    )
+    if (!options.diagnostics) yield* guard.protect(opened)
+    return opened
+  })
+  let sessions = yield* options.diagnostics ? openSessions : lease.creating(openSessions)
   const recorded =
     options.resume !== undefined || options.continueSession
       ? profileFromSession(sessions)
@@ -938,6 +944,7 @@ const run = Effect.fnUntraced(function* (
     })
     return
   }
+  if (!options.probeRuntime) requestCleanup(dataHome, 'startup', dependencies.coordination)
   const workspaceLifecycle = yield* prepareLifecycle
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
@@ -1116,6 +1123,7 @@ const run = Effect.fnUntraced(function* (
         )
       )
     )
+    requestCleanup(dataHome, 'graceful-exit', dependencies.coordination)
     return true
   }).pipe(
     Effect.onExit(exit =>

@@ -12,6 +12,12 @@ The authority is account-wide because installation-local claims cannot coordinat
 
 A free gate does not prove a dead controller's descendants are gone. Durable use facts, acquisition/binding fences and physical identities remain necessary. Persist volume UUID plus lossless inode, not reboot-unstable `st_dev`. Resolve paths in one bounded Foundation observation and refuse lookup failures or object races rather than falling back to path names. Current validation remains required under the [single-schema rule](../../AGENTS.md#boundaries).
 
+### Conversation retention admission
+
+[The retention decision](https://github.com/taekwondodev/dev/issues/167) keeps conversation deletion under the existing coordination and workspace authority, separate from workspace release. File and conversation gates exclude attached runtimes; shared admission with creation and navigation closes the gap before a new file receives its claim. A free gate alone is insufficient: durable recovery dependencies must be reassessed before deletion. Inventory stays outside deletion admission so a history scan does not block navigation.
+
+Cleanup runs in a one-shot process with its own installation/source claims, rather than inheriting the launcher's authority. A thread could not outlive the launcher; a daemon would add an unnecessary long-lived owner. Preference publication and temporary-file deletion share exclusion because age or a filename cannot prove abandonment. [Launcher](../launcher.md#automatic-history-cleanup) owns cleanup behavior and limits; the [external-process race boundary](#accepted-external-process-race-boundary) still applies.
+
 ## Scoped workspace operations
 
 A shell is an opaque operation within its conversation's writer grant, occupying only that checkout. Git's own locks govern shell structural commands; dev's structure gate protects dev's structural effects. Scoped operations require an ordinary grant and cannot nest inside scoped operations or process grants. Ordinary reads fence nothing.

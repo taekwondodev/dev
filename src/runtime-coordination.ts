@@ -17,7 +17,11 @@ import { Effect, Predicate, Schema, Semaphore, type Scope } from 'effect'
 import { canonicalConversationFile, conversationFileSlot, isWithin } from './workspace-paths.ts'
 import { WorkspaceAuthority } from './workspace-authority.ts'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
-import { acquirePathGates, type GateRelease } from './workspace-gates.ts'
+import {
+  acquireConversationFileGate,
+  acquirePathGates,
+  type GateRelease,
+} from './workspace-gates.ts'
 import { WorkspaceId } from './workspace-domain.ts'
 import { getWorkspace } from './workspace-records.ts'
 import { observePhysicalIdentity } from './workspace-identity.ts'
@@ -38,6 +42,9 @@ export interface ConversationClaim {
 
 export interface RuntimeLease {
   readonly release: Effect.Effect<void, CoordinationError>
+  readonly creating: <A, E, R>(
+    operation: Effect.Effect<A, E, R>
+  ) => Effect.Effect<A, E | CoordinationError, R>
   readonly protect: (conversation: ConversationClaim) => Effect.Effect<void, CoordinationError>
   readonly navigate: <A, E, R>(
     operation: Effect.Effect<A, E, R>,
@@ -227,6 +234,23 @@ const prepareCoordination = (options: CoordinationOptions): string => {
   return root
 }
 
+export const holdConversationInventory = (
+  authority: WorkspaceAuthority,
+  dataHome: string,
+  mode: 'reader' | 'removal'
+): GateRelease => {
+  authority.initialize()
+  const gates = acquirePathGates(
+    authority.paths,
+    join(realpathSync(dataHome), '.conversation-inventory'),
+    mode
+  )
+  return () => {
+    gates.writer?.()
+    gates.use()
+  }
+}
+
 const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): RuntimeLease => {
   const releaseSource = sourcePresence(options)
   let root: string
@@ -245,6 +269,7 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
     releaseSource()
     throw cause
   }
+  const fileAuthority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
   const claims = new Map<string, () => void>()
   const navigation = Semaphore.makeUnsafe(1)
   let closed = false
@@ -265,7 +290,14 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
     }
     if (failures.length > 0) throw new AggregateError(failures, 'Cannot release conversation locks')
   }
+  const creating = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      native(() => holdConversationInventory(fileAuthority, home, 'reader')),
+      () => operation,
+      release => Effect.sync(release)
+    )
   return {
+    creating,
     protect: conversation =>
       native(() => {
         if (closed) throw new Error('Dev runtime ownership has closed')
@@ -274,14 +306,28 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
           for (const key of keys(conversation)) {
             if (claims.has(key)) continue
             const name = createHash('sha256').update(key).digest('hex')
-            claims.set(
-              key,
-              lockDatabase(
-                join(root, 'conversations', `${name}.sqlite`),
-                false,
-                `This conversation is already open in another dev session: ${conversation.path}`
-              )
+            const releaseLocal = lockDatabase(
+              join(root, 'conversations', `${name}.sqlite`),
+              false,
+              `This conversation is already open in another dev session: ${conversation.path}`
             )
+            try {
+              fileAuthority.initialize()
+              const releaseFile = key.startsWith('file:')
+                ? acquireConversationFileGate(
+                    fileAuthority.paths,
+                    canonicalConversation(conversation.path),
+                    false
+                  )
+                : undefined
+              claims.set(key, () => {
+                releaseFile?.()
+                releaseLocal()
+              })
+            } catch (cause) {
+              releaseLocal()
+              throw cause
+            }
           }
         } catch (cause) {
           releaseExcept(retained)
@@ -290,13 +336,18 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
       }),
     navigate: (operation, current) =>
       navigation.withPermit(
-        operation.pipe(
-          Effect.ensuring(native(() => releaseExcept(new Set(keys(current())))).pipe(Effect.orDie))
+        creating(
+          operation.pipe(
+            Effect.ensuring(
+              native(() => releaseExcept(new Set(keys(current())))).pipe(Effect.orDie)
+            )
+          )
         )
       ),
     release: native(() => {
       if (closed) return
       releaseExcept(new Set())
+      fileAuthority.close()
       releaseInstallation()
       releaseSource()
       closed = true
@@ -312,6 +363,46 @@ export const acquireRuntime = (
     native(() => makeRuntimeLease(dataHome, options)),
     lease => lease.release.pipe(Effect.orDie)
   )
+
+export const acquireCleanupRuntime = (
+  dataHome: string,
+  options: CoordinationOptions = {}
+): Effect.Effect<void, CoordinationError, Scope.Scope> =>
+  Effect.acquireRelease(
+    native(() => {
+      const releaseSource = sourcePresence(options)
+      const authority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
+      let releaseInstallation: GateRelease | undefined
+      try {
+        const root = prepareCoordination(options)
+        releaseInstallation = lockDatabase(
+          join(root, 'installation.sqlite'),
+          true,
+          'Installation maintenance is active'
+        )
+        authority.initialize()
+        const gates = acquirePathGates(
+          authority.paths,
+          join(realpathSync(dataHome), '.cleanup'),
+          'removal'
+        )
+        const installation = releaseInstallation
+        return () => {
+          gates.writer?.()
+          gates.use()
+          authority.close()
+          installation()
+          releaseSource()
+        }
+      } catch (cause) {
+        authority.close()
+        releaseInstallation?.()
+        releaseSource()
+        throw cause
+      }
+    }),
+    release => Effect.sync(release)
+  ).pipe(Effect.asVoid)
 
 export const acquireMaintenance = (
   options: CoordinationOptions = {}
