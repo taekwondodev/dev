@@ -725,9 +725,10 @@ export const findBinding = (
 
 export const validateWorkspace = (
   authority: WorkspaceAuthority,
-  workspace: WorkspaceRecord
+  workspace: WorkspaceRecord,
+  observed?: GitWorkspace
 ): GitWorkspace => {
-  const actual = validateWorkspacePath(workspace)
+  const actual = validateWorkspacePath(workspace, observed)
   if (workspace.origin === 'managed') {
     const base = resolve(authority.paths.worktrees, workspace.repositoryId)
     if (!isWithin(base, workspace.path) || workspace.path === base)

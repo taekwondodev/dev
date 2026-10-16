@@ -610,7 +610,10 @@ export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace):
   record.commonPath === git.commonPath &&
   sameIdentity(record.common, git.commonIdentity) &&
   record.objectFormat === git.objectFormat
-export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => {
+export const validateWorkspacePath = (
+  record: WorkspaceRecord,
+  observed?: GitWorkspace
+): GitWorkspace => {
   if (record.status === 'removed')
     return requireReview(
       `Workspace was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
@@ -619,7 +622,7 @@ export const validateWorkspacePath = (record: WorkspaceRecord): GitWorkspace => 
     return requireReview(`Workspace allocation is unresolved: ${record.path}`)
   let actual: GitWorkspace
   try {
-    actual = canonicalGitWorkspace(record.path)
+    actual = observed ?? canonicalGitWorkspace(record.path)
   } catch (cause) {
     return requireReview(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
   }

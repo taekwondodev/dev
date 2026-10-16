@@ -179,7 +179,7 @@ const admit = (
     existing.workspaceId === source.workspace.id &&
     existing.taskId === source.binding.taskId
   ) {
-    const lease = validateGrant(authority, state, existing)
+    const lease = validateGrant(authority, state, existing, source.git)
     return operation.execution === undefined
       ? { kind: 'ready', grant: lease.grant }
       : executionUse(authority, state, lease, operation.execution)
@@ -647,11 +647,11 @@ const holdsCurrentAcquisition = (db: DatabaseSync, grant: WorkspaceGrant): boole
   )
 }
 
-export const validateGrant = (
+const grantRecords = (
   authority: WorkspaceAuthority,
   state: ConversationState,
   grant: WorkspaceGrant
-): GrantLease => {
+): { readonly lease: GrantLease; readonly workspace: WorkspaceRecord } => {
   if (grant.namespaceId !== authority.initialize())
     requireReview('Workspace grant belongs to another namespace')
   const lease = state.leases.get(grant.useId)
@@ -670,8 +670,34 @@ export const validateGrant = (
       requireReview('Workspace grant is not the current reservation acquisition')
     return fenced.workspace
   })
-  validateWorkspace(authority, workspace)
+  return { lease, workspace }
+}
+
+export const validateGrant = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  grant: WorkspaceGrant,
+  observed?: GitWorkspace
+): GrantLease => {
+  const { lease, workspace } = grantRecords(authority, state, grant)
+  validateWorkspace(authority, workspace, observed)
   return lease
+}
+
+const confirmsCheckout = (fact: WorkspaceExecutionFact): boolean => {
+  switch (fact.kind) {
+    case 'started':
+    case 'operation-started':
+    case 'quiescent':
+    case 'launch-failed':
+    case 'operation-completed':
+      return true
+    case 'launch-intent':
+    case 'spawned':
+    case 'observed':
+    case 'unknown':
+      return false
+  }
 }
 
 export const validateDurableGrant = (
@@ -745,7 +771,8 @@ const recordExecutionFact = (
     ['launch-intent', 'spawned', 'started', 'operation-started'].includes(fact.kind)
   )
     blocked('Starting an operation is fenced during a host transition')
-  const lease = validateGrant(authority, state, grant)
+  const { lease, workspace } = grantRecords(authority, state, grant)
+  if (confirmsCheckout(fact)) validateWorkspace(authority, workspace)
   if (isScoped(lease)) {
     const owners = state.leaseAttachments.get(lease.useId)
     if (owners === undefined || !owners.has(attachment.token))

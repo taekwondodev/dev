@@ -148,6 +148,7 @@ writeFileSync(
   deviceObserver,
   `import fs from 'node:fs'
 import childProcess from 'node:child_process'
+import workerThreads from 'node:worker_threads'
 import { syncBuiltinESMExports } from 'node:module'
 import { resolve, sep } from 'node:path'
 const observe = original => (path, options) => {
@@ -167,28 +168,45 @@ const observe = original => (path, options) => {
 }
 fs.statSync = observe(fs.statSync)
 fs.lstatSync = observe(fs.lstatSync)
-const originalExecFileSync = childProcess.execFileSync
-childProcess.execFileSync = (file, args, options) => {
-  if (file === '/usr/bin/osascript' && process.env.DEV_IDENTITY_BEHAVIOR === 'fail')
-    throw Object.assign(new Error('fixture volume lookup failure'), { code: 'ENOENT' })
-  const output = originalExecFileSync(file, args, options)
-  if (file === '/usr/bin/osascript' && process.env.DEV_IDENTITY_BEHAVIOR === 'replace') {
-    const base = process.env.DEV_IDENTITY_PATH
-    if (base !== undefined) {
-      fs.renameSync(base, base + '.identity-original')
-      fs.cpSync(base + '.identity-original', base, { recursive: true })
-    }
+const behavior = () => {
+  const control = process.env.DEV_IDENTITY_CONTROL
+  if (control !== undefined && fs.existsSync(control)) return fs.readFileSync(control, 'utf8')
+  return process.env.DEV_IDENTITY_BEHAVIOR ?? ''
+}
+const OriginalWorker = workerThreads.Worker
+workerThreads.Worker = class extends OriginalWorker {
+  constructor(url, options) {
+    if (behavior() === 'no-helper' && String(url).endsWith('/workspace-volume-helper.ts'))
+      throw Object.assign(new Error('fixture helper start failure'), { code: 'ERR_WORKER_INIT_FAILED' })
+    super(url, options)
   }
-  return output
+}
+const originalSpawn = childProcess.spawn
+childProcess.spawn = (file, args, options) => {
+  const child = originalSpawn(file, args, options)
+  if (file !== '/usr/bin/osascript') return child
+  const write = child.stdin.write.bind(child.stdin)
+  child.stdin.write = (...request) => {
+    const current = behavior()
+    if (current === 'fail') child.kill('SIGKILL')
+    return current === 'fail' || current === 'hang' ? true : write(...request)
+  }
+  child.stdout.prependListener('data', () => {
+    const base = process.env.DEV_IDENTITY_PATH
+    if (behavior() !== 'replace' || base === undefined) return
+    fs.renameSync(base, base + '.identity-original')
+    fs.cpSync(base + '.identity-original', base, { recursive: true })
+  })
+  return child
 }
 syncBuiltinESMExports()
 `
 )
-const simulatedDevice = (path: string, device: string, behavior = ''): string => `
+const simulatedDevice = (path: string, device: string, behavior = '', control = ''): string => `
   import { Worker } from 'node:worker_threads'
   const startWorker = (url, options) => new Worker(url, {
     ...options,
-    env: { ...process.env, DEV_IDENTITY_PATH: ${JSON.stringify(path)}, DEV_IDENTITY_DEVICE: ${JSON.stringify(device)}, DEV_IDENTITY_BEHAVIOR: ${JSON.stringify(behavior)} },
+    env: { ...process.env, DEV_IDENTITY_PATH: ${JSON.stringify(path)}, DEV_IDENTITY_DEVICE: ${JSON.stringify(device)}, DEV_IDENTITY_BEHAVIOR: ${JSON.stringify(behavior)}, DEV_IDENTITY_CONTROL: ${JSON.stringify(control)} },
     execArgv: [...(options.execArgv ?? []), '--import', ${JSON.stringify(pathToFileURL(deviceObserver).href)}]
   })
 `
@@ -326,9 +344,9 @@ try {
   )
 
   await claim(
-    'volume UUID lookup failures refuse without fallback and path replacement during lookup is detected',
+    'volume UUID lookup failures, including a helper that cannot start, refuse without fallback and path replacement during lookup is detected',
     async () => {
-      for (const behavior of ['fail', 'replace'] as const) {
+      for (const behavior of ['fail', 'no-helper', 'replace'] as const) {
         const path = join(sandbox, `resolver-${behavior}-repo`)
         const authorityRoot = join(sandbox, `resolver-${behavior}-authority`)
         initRepository(path, 'tracked.txt', `resolver ${behavior} fixture\\n`)
@@ -355,10 +373,62 @@ try {
         ) as { outcome: string; message?: string }
         assert.equal(
           outcome.outcome,
-          behavior === 'fail' ? 'unavailable' : 'review-required',
+          behavior === 'replace' ? 'review-required' : 'unavailable',
           JSON.stringify(outcome)
         )
+        if (behavior !== 'replace')
+          assert.match(outcome.message ?? '', /Cannot observe persistent filesystem identity/)
       }
+    }
+  )
+
+  await claim(
+    'one process looks up volume identity afresh for every observation, also under a non-ASCII path: a lookup that starts failing or hangs refuses admission within its bound, and a recovered lookup admits again',
+    async () => {
+      const path = join(sandbox, 'resolver-fresh-répertoire')
+      const authorityRoot = join(sandbox, 'resolver-fresh-authority')
+      const control = join(sandbox, 'resolver-fresh-control')
+      initRepository(path, 'tracked.txt', 'resolver fresh fixture\n')
+      const outcomes = JSON.parse(
+        await runChild(`
+          ${simulatedDevice(path, '16777232', '', control)}
+          import { writeFileSync } from 'node:fs'
+          const { openLifecycle } = await import(${JSON.stringify(moduleUrl)})
+          const lifecycle = await openLifecycle({ root: ${JSON.stringify(authorityRoot)}, startWorker })
+          const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation('resolver-fresh'))}, cwd: ${JSON.stringify(path)} })
+          const outcomes = []
+          try {
+            for (const behavior of ['', 'fail', 'hang', '']) {
+              writeFileSync(${JSON.stringify(control)}, behavior)
+              const started = performance.now()
+              try {
+                outcomes.push({ behavior, outcome: (await attachment.authorize({ kind: 'read' })).kind, ms: performance.now() - started })
+              } catch (error) {
+                outcomes.push({ behavior, outcome: error.outcome ?? 'error', ms: performance.now() - started })
+              }
+            }
+          } finally {
+            await attachment.close()
+            await lifecycle.close()
+          }
+          console.log(JSON.stringify(outcomes))
+        `)
+      ) as { behavior: string; outcome: string; ms: number }[]
+      assert.deepEqual(
+        outcomes.map(({ behavior, outcome }) => ({ behavior, outcome })),
+        [
+          { behavior: '', outcome: 'ready' },
+          { behavior: 'fail', outcome: 'review-required' },
+          { behavior: 'hang', outcome: 'review-required' },
+          { behavior: '', outcome: 'ready' },
+        ],
+        JSON.stringify(outcomes)
+      )
+      const hung = outcomes[2]?.ms ?? 0
+      assert.ok(
+        hung < 6000,
+        `a hung lookup is refused within the 5 s budget plus 1 s scheduling allowance: ${hung} ms`
+      )
     }
   )
 
