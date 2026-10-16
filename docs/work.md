@@ -102,6 +102,8 @@ Retention keeps seven days from completion and the newest 64 completed results w
 
 Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the Node minimum in `package.json` and an embedded SQLite with the [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug); the Node number alone does not establish safety.
 
-Invalid or corrupt storage is refused, not rebuilt from logs. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
+Invalid or corrupt storage is refused, not rebuilt from logs. If the database is corrupt at session startup, work stays unavailable and a notification provides manual reset instructions for the active data home instead of an extension stack trace.
+
+Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 
 After a crash, an absent PID supplies no exit code and a present PID proves no identity. Reopening neither restarts work nor kills a recovered PID. An unresolved [workspace use](workspace.md#process-uses-and-gates) can keep the checkout blocked independently of attempt retention.
