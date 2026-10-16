@@ -269,7 +269,12 @@ PROBES = {
             Action('unfinished-confirm', 'DEV_RELEASE_READY_FOR_UNFINISHED', 'y\r', delay=1.0),
             Action('confirm', 'DEV_RELEASE_READY_FOR_CONFIRM', 'y\r', delay=1.0),
         ),
-        expect=('the worktree and everything in it are deleted', ': removed', ': released'),
+        expect=(
+            'the worktree and everything in it are deleted',
+            'task artifacts at {ARTIFACTS}: the directory and everything in it are deleted',
+            'task artifacts at {ARTIFACTS}, task {TASK}: removed',
+            ': removed', ': released',
+        ),
     ),
 }
 

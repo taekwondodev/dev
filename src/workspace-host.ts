@@ -875,7 +875,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const { binding } = attachment
       const checkout = yield* repositoryRoot.resolve(binding.cwd)
       if (checkout === undefined) return yield* hostFailure('Cannot identify the current checkout')
-      const scope = { checkout, authorityRoot: authority.root }
+      const scope = {
+        checkout,
+        authorityRoot: authority.root,
+        ...(binding.taskId === undefined ? {} : { taskId: binding.taskId }),
+      }
       const path = yield* Effect.try({
         try: () => decodeWriteOperand(event.input),
         catch: cause => hostFailure(errorText(cause)),
@@ -913,6 +917,17 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       }
       const writer = yield* admitWriter(context)
       if (writer.kind === 'refused') return writer.refusal
+      if (destination.kind === 'artifact') {
+        if (writer.grant.taskId !== scope.taskId)
+          return yield* hostFailure('the task changed before the artifact write was admitted')
+        yield* nativeWrites.admit({
+          toolCallId: event.toolCallId,
+          scope,
+          destination,
+          lifecycle: { kind: 'local', validate },
+        })
+        return undefined
+      }
       const operation = yield* attachment.authorize({
         kind: 'native-file-write',
         within: writer.grant,
@@ -1340,6 +1355,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         repositoryRoot: repositoryRoot.resolve(context.cwd),
         current: {
           workspaceId: activeAttachment.binding.workspaceId,
+          ...(activeAttachment.binding.taskId === undefined
+            ? {}
+            : { taskId: activeAttachment.binding.taskId }),
           effectiveCwd: context.cwd,
           conversation: activeAttachment.binding.conversation,
         },
