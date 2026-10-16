@@ -41,7 +41,7 @@ import {
   type TrackedChange,
 } from './workspace-git.ts'
 import { hasErrorCode, regularFileDigest } from './workspace-platform.ts'
-import { observePhysicalIdentity } from './workspace-identity.ts'
+import { observeDevice } from './workspace-identity.ts'
 
 export const sha256Hex = (bytes: Uint8Array | string): string =>
   createHash('sha256').update(bytes).digest('hex')
@@ -573,11 +573,11 @@ const inventoryFileOf = (
 }
 
 export const readInventory = (checkout: string, head: string | undefined): Inventory => {
-  const root = observePhysicalIdentity(checkout)
+  const device = observeDevice(checkout)
   const index = indexPaths(checkout)
   const canonicalParents = new Map<string, boolean>()
   const trackedFiles = index.flatMap(entry => {
-    const file = inventoryFileOf(checkout, root.device, entry, canonicalParents)
+    const file = inventoryFileOf(checkout, device, entry, canonicalParents)
     if (file.kind === 'absent') return []
     if (file.kind !== 'file' && file.kind !== 'symlink')
       return blocked(`Cannot inspect tracked entry ${file.path}: ${file.kind}`)
@@ -585,7 +585,7 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
   })
   const others = untrackedPaths(checkout)
   const files = [...others.untracked, ...others.ignored].map(entry =>
-    inventoryFileOf(checkout, root.device, entry, canonicalParents)
+    inventoryFileOf(checkout, device, entry, canonicalParents)
   )
   assertUnfilteredIndex(checkout, index)
   return {

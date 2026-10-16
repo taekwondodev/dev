@@ -121,6 +121,13 @@ export const observePhysicalIdentities = (
   })
 }
 
+export const observeDevice = (path: string): string => {
+  const stat = directoryStat(path)
+  if (resolvedPath(path) !== path)
+    requireReview(`Filesystem identity path is no longer canonical: ${path}`)
+  return String(stat.dev)
+}
+
 export const observePhysicalIdentity = (path: string): PhysicalObservation => {
   const [observation] = observePhysicalIdentities([path])
   if (observation === undefined)
