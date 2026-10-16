@@ -151,9 +151,10 @@ const admit = (
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
   if (operation.kind === 'foreign-write') {
-    if (isWithin(source.workspace.path, cwd))
+    const foreign = foreignSource(authority, cwd)
+    if (foreign.workspace.id === source.workspace.id)
       invalid(`A foreign write cannot target the bound workspace: ${cwd}`)
-    return authorizeForeign(authority, state, operation, source.binding.revision, cwd, sweep)
+    return reserveForeignWriter(authority, state, foreign, cwd)
   }
   if (!isWithin(source.workspace.path, cwd))
     return authorizeForeign(authority, state, operation, source.binding.revision, cwd, sweep)
@@ -430,16 +431,11 @@ const reserveForeignWriter = (
 const authorizeForeign = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  operation: Extract<
-    WorkspaceOperation,
-    { readonly kind: 'read' | 'write' | 'delegated-write' | 'foreign-write' }
-  >,
+  operation: Extract<WorkspaceOperation, { readonly kind: 'read' | 'write' | 'delegated-write' }>,
   bindingRevision: number,
   cwd: string,
   sweep: AllocationSweep
 ): WorkspaceAuthorization => {
-  if (operation.kind === 'foreign-write')
-    return reserveForeignWriter(authority, state, foreignSource(authority, cwd), cwd)
   if (
     operation.kind === 'write' ||
     (operation.kind === 'read' && operation.execution === undefined)
