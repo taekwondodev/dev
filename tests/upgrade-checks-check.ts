@@ -38,8 +38,8 @@ if (name === 'types:pi') {
   throw new Error('suite started before preparation')
 }
 appendFileSync('events', JSON.stringify({ name, start: true }) + '\n')
-console.log('output:' + name)
-console.error('error-output:' + name)
+console.log('fixture:stdout:' + name)
+console.error('fixture:stderr:' + name)
 const end = () => {
   appendFileSync('events', JSON.stringify({ name, start: false }) + '\n')
   process.exit(name === 'lint' ? 1 : 0)
@@ -82,8 +82,13 @@ if (['lint', 'format:check', 'smoke'].includes(name)) {
   assert.equal(peak, 3)
   assert.equal(active, 0)
   for (const result of results) {
-    assert.ok(result.output.includes(`output:${result.step}`))
-    assert.ok(result.output.includes(`error-output:${result.step}`))
+    assert.deepEqual(
+      result.output
+        .split(/\r?\n/)
+        .filter(line => line.startsWith('fixture:'))
+        .toSorted(),
+      [`fixture:stderr:${result.step}`, `fixture:stdout:${result.step}`]
+    )
   }
   const events = readFileSync(join(cwd, 'events'), 'utf8')
   const failed = await run({ FAIL_PREPARATION: 'yes' })
@@ -93,7 +98,7 @@ if (['lint', 'format:check', 'smoke'].includes(name)) {
   )
   assert.equal(readFileSync(join(cwd, 'events'), 'utf8'), events)
   console.log(
-    'upgrade checks: serial preparation, three concurrent suites, ordered failures and isolated output passed'
+    'upgrade checks: serial preparation, three concurrent suites, ordered failures and per-suite stdout/stderr capture passed'
   )
 } finally {
   rmSync(cwd, { recursive: true, force: true })
