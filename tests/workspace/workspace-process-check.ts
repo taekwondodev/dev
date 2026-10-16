@@ -863,11 +863,14 @@ try {
         cwd: checkout,
         conversation: { sessionId: randomUUID(), sessionFile: conversationFile, dataHome },
       })
+      const observedPids = new Set<number>()
       const replacing = withReport(owner.effect, (reported, fact) =>
         owner.effect.reportExecution(reported, fact).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               if (fact.kind === replaceAfter) replaceCheckout(checkout)
+              if (fact.kind === 'observed')
+                for (const process of fact.processes) observedPids.add(process.pid)
             })
           )
         )
@@ -888,7 +891,7 @@ try {
             use?.stage === 'quiescent' || use?.stage === 'unknown',
           { attempts: 60 }
         )
-      return { checkout, owner, shell: replacedHost, ended }
+      return { checkout, owner, shell: replacedHost, ended, observedPids }
     }
 
     await claim(
@@ -924,12 +927,17 @@ try {
         let descendant: number | undefined
         try {
           await replaced.shell.operations.exec(
-            `mv "$PWD" "$PWD.replaced" && cp -R "$PWD.replaced" "$PWD" && sleep 0.6 && { sleep 30 & printf "$!" > ${JSON.stringify(pidFile)}; }`,
+            `mv "$PWD" "$PWD.replaced" && cp -R "$PWD.replaced" "$PWD" && { sleep 30 & printf "$!" > ${JSON.stringify(pidFile)}; }`,
             replaced.checkout,
             silent
           )
           descendant = Number(await readFile(pidFile, 'utf8'))
-          await new Promise(resolveWait => setTimeout(resolveWait, 1200))
+          await waitUntil(
+            'the descendant to appear in an acknowledged process observation',
+            () => replaced.observedPids.has(descendant ?? 0),
+            observed => observed
+          )
+          assert.doesNotThrow(() => process.kill(descendant ?? 0, 0))
           assert.equal(replaced.shell.live(), 1, 'the replaced checkout did not end observation')
           await replaced.shell.stop()
           assert.throws(() => process.kill(descendant ?? 0, 0), { code: 'ESRCH' })
