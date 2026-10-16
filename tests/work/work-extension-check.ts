@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { join } from 'node:path'
 import { Effect, Schema } from 'effect'
@@ -200,6 +201,60 @@ const assertWorkGuidance = (
 }
 
 try {
+  await claim('a corrupt store shows a safe reset command without extension errors', async () => {
+    const dataHome = join(fixture.root, "corrupt data's $home")
+    const workRoot = join(dataHome, 'work')
+    mkdirSync(workRoot, { recursive: true })
+    const database = join(workRoot, 'attempts.sqlite')
+    const garbage = Buffer.from('not a database '.repeat(512))
+    writeFileSync(database, garbage)
+    const lead = await openLead(installed, { ...fixture, dataHome })
+    try {
+      assert.deepEqual(lead.handlerErrors, [])
+      assert.equal(lead.notices.length, 1)
+      const [notice] = lead.notices
+      assert.equal(notice?.level, 'error')
+      const message = notice?.message ?? ''
+      assert.match(message, /^Work store database is corrupt\. Work is unavailable\./)
+      assert.match(message, /Stop all dev sessions and maintenance operations/)
+      assert.match(message, /Restart dev/)
+      assert.match(message, /deletes stored work attempts and their logs and results/)
+      assert.doesNotMatch(message, /\n\s+at |file:\/\//)
+      const command = message
+        .split('\n')
+        .find(line => line.startsWith('2. Run: '))
+        ?.slice(8)
+      assert.ok(command)
+      const argumentsReadBack = execFileSync('bash', [
+        '-c',
+        `rm() { printf '%s\\0' "$@"; }; ${command}`,
+      ])
+        .toString()
+        .split('\0')
+        .slice(0, -1)
+      assert.deepEqual(argumentsReadBack, [
+        '-rf',
+        '--',
+        database,
+        `${database}-wal`,
+        `${database}-shm`,
+        `${database}-journal`,
+        join(workRoot, 'attempts'),
+      ])
+      const run = lead.session.prompt('list background work')
+      const request = await lead.request(0)
+      request.reply([toolCall('unavailable-work', 'work', { action: 'list' })])
+      const next = await lead.request(1)
+      assert.ok(toolResults(next).some(result => result.includes(message)))
+      next.reply(text('work unavailable'))
+      await run
+      assert.deepEqual(lead.handlerErrors, [])
+      assert.deepEqual(readFileSync(database), garbage)
+    } finally {
+      await lead.close()
+    }
+    assert.deepEqual(lead.handlerErrors, [])
+  })
   await claim(
     'the lead and coordinator work tools state access limits in the access parameter and non-polling wait guidance in a bounded description',
     () =>

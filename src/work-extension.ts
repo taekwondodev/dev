@@ -1,3 +1,4 @@
+import { join, resolve as resolvePath } from 'node:path'
 import { Cause, Effect, FiberSet, Latch, Layer, ManagedRuntime, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { executeWork, factsOf, outcomeView } from './work-actions.ts'
@@ -5,6 +6,7 @@ import { WorkOwner } from './work-controller.ts'
 import {
   asSessionId,
   WorkError,
+  WorkPersistenceError,
   workResultOutputSchema,
   type AttemptId,
   type AttemptView,
@@ -55,7 +57,10 @@ interface SessionOwner {
   readonly wake: Latch.Latch
 }
 
-type OwnerState = SessionOwner | { readonly _tag: 'closed'; readonly shutdown: Promise<void> }
+type OwnerState =
+  | SessionOwner
+  | { readonly _tag: 'unavailable'; readonly message: string }
+  | { readonly _tag: 'closed'; readonly shutdown: Promise<void> }
 
 interface PendingOutcome {
   attempt: AttemptView
@@ -170,6 +175,8 @@ export const createWorkExtension = ({
       try: () => {
         if (sessionOwner?._tag === 'closed')
           throw new WorkError({ message: 'This work owner has shut down' })
+        if (sessionOwner?._tag === 'unavailable')
+          throw new WorkError({ message: sessionOwner.message })
         const sessionId = asSessionId(ctx.sessionManager.getSessionId())
         if (sessionOwner === undefined) {
           const wake = Latch.makeUnsafe()
@@ -229,7 +236,7 @@ export const createWorkExtension = ({
   ): Promise<A> => Effect.runPromise(runOwned(ctx, effect))
 
   const updateStatus = (ctx: Pi.ExtensionContext): Effect.Effect<void, WorkFailure> =>
-    ctx.hasUI
+    ctx.hasUI && sessionOwner?._tag !== 'unavailable'
       ? runOwned(
           ctx,
           withOwner(owner => owner.snapshot)
@@ -523,7 +530,7 @@ export const createWorkExtension = ({
     const current = sessionOwner
     context = undefined
     const shutdown =
-      current === undefined
+      current === undefined || current._tag !== 'active'
         ? Promise.resolve()
         : Effect.runPromise(
             ownedBy(current, work => work.close(reason)).pipe(
@@ -568,10 +575,49 @@ export const createWorkExtension = ({
           reactivation = 'awaiting-success'
         }
       }
-      const ownerSnapshot = await run(
-        ctx,
-        withOwner(owner => owner.snapshot)
+      if (sessionOwner?._tag === 'unavailable') return
+      const ownerSnapshot = await Effect.runPromise(
+        runOwned(
+          ctx,
+          withOwner(owner => owner.snapshot)
+        ).pipe(
+          Effect.catchTag('WorkSetupError', error => {
+            if (
+              !(error.cause instanceof WorkPersistenceError) ||
+              error.cause.code !== 'corrupt-database'
+            )
+              return Effect.fail(error)
+            const database = join(resolvePath(dataHome), 'work', 'attempts.sqlite')
+            const paths = [
+              database,
+              `${database}-wal`,
+              `${database}-shm`,
+              `${database}-journal`,
+              join(resolvePath(dataHome), 'work', 'attempts'),
+            ]
+            const command = `rm -rf -- ${paths.map(path => `'${path.replaceAll("'", String.raw`'\''`)}'`).join(' ')}`
+            const message = [
+              'Work store database is corrupt. Work is unavailable.',
+              'To reset the store:',
+              '1. Stop all dev sessions and maintenance operations using this data home.',
+              `2. Run: ${command}`,
+              '3. Restart dev.',
+              'Warning: this deletes stored work attempts and their logs and results.',
+            ].join('\n')
+            const current = sessionOwner
+            return (current?._tag === 'active' ? current.runtime.disposeEffect : Effect.void).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  sessionOwner = { _tag: 'unavailable', message }
+                  context = undefined
+                  if (ctx.hasUI) ctx.ui.notify(message, 'error')
+                })
+              )
+            )
+          })
+        )
       )
+      if (ownerSnapshot === undefined) return
       if (session !== undefined && removeSessionListener === undefined) bindSession(session)
       removeInputListener?.()
       if (ctx.hasUI) {
@@ -644,7 +690,9 @@ export const createWorkExtension = ({
         scheduleDelivery()
       }
     })
-    pi.on('session_tree', (_event, ctx) => interrupt(ctx, 'session navigation'))
+    pi.on('session_tree', (_event, ctx) =>
+      sessionOwner?._tag === 'unavailable' ? undefined : interrupt(ctx, 'session navigation')
+    )
     pi.on('session_shutdown', event => close(event.reason))
 
     pi.registerTool({
