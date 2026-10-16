@@ -179,7 +179,7 @@ const admit = (
     existing.workspaceId === source.workspace.id &&
     existing.taskId === source.binding.taskId
   ) {
-    const lease = validateGrant(authority, state, existing)
+    const lease = validateGrant(authority, state, existing, source.git)
     return operation.execution === undefined
       ? { kind: 'ready', grant: lease.grant }
       : executionUse(authority, state, lease, operation.execution)
@@ -650,7 +650,8 @@ const holdsCurrentAcquisition = (db: DatabaseSync, grant: WorkspaceGrant): boole
 export const validateGrant = (
   authority: WorkspaceAuthority,
   state: ConversationState,
-  grant: WorkspaceGrant
+  grant: WorkspaceGrant,
+  observed?: GitWorkspace
 ): GrantLease => {
   if (grant.namespaceId !== authority.initialize())
     requireReview('Workspace grant belongs to another namespace')
@@ -670,7 +671,7 @@ export const validateGrant = (
       requireReview('Workspace grant is not the current reservation acquisition')
     return fenced.workspace
   })
-  validateWorkspace(authority, workspace)
+  validateWorkspace(authority, workspace, observed)
   return lease
 }
 
