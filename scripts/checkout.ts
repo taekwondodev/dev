@@ -56,12 +56,15 @@ export const streamed = Effect.fnUntraced(function* (
   file: string,
   args: readonly string[],
   env: Record<string, string> = {},
-  cwd = checkout
+  cwd = checkout,
+  label?: string
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const started = yield* Clock.currentTimeMillis
   yield* Effect.sync(() => {
-    process.stderr.write(`\n$ ${[file, ...args].join(' ')}\n`)
+    process.stderr.write(
+      `\n${label === undefined ? '' : `[${label}] `}$ ${[file, ...args].join(' ')}\n`
+    )
   })
   const [output, exitCode] = yield* spawner
     .spawn(ChildProcess.make(file, args, { cwd, env, extendEnv: true, stdin: 'ignore' }))
@@ -71,7 +74,7 @@ export const streamed = Effect.fnUntraced(function* (
           handle.all.pipe(
             Stream.tap(chunk =>
               Effect.sync(() => {
-                process.stderr.write(chunk)
+                if (label === undefined) process.stderr.write(chunk)
               })
             ),
             Stream.decodeText(),
@@ -86,7 +89,14 @@ export const streamed = Effect.fnUntraced(function* (
       Effect.scoped,
       Effect.mapError(cannotRun(file, args))
     )
-  return { passed: exitCode === 0, ms: (yield* Clock.currentTimeMillis) - started, output }
+  const ms = (yield* Clock.currentTimeMillis) - started
+  if (label !== undefined)
+    yield* Effect.sync(() => {
+      process.stderr.write(
+        `\n[${label}] ${exitCode === 0 ? 'passed' : 'failed'} (${Math.round(ms / 1000)} s)\n${output}\n`
+      )
+    })
+  return { passed: exitCode === 0, ms, output }
 })
 
 export const checkoutIsClean = git(['status', '--porcelain']).pipe(

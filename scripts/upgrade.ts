@@ -17,6 +17,7 @@ import {
   piSections,
 } from './pi-upgrade.ts'
 import { cell, collapsed, counted, fence, lastLines, listed, withoutFinalPeriod } from './report.ts'
+import { runUpgradeChecks, suites, type StepResult } from './upgrade-checks.ts'
 
 export class UpgradeError extends Schema.TaggedError<UpgradeError>()('UpgradeError', {
   message: Schema.String,
@@ -28,18 +29,6 @@ const reportPath = join(upgradeHome, 'report.md')
 const bodyPath = join(upgradeHome, 'pull-request.md')
 const branchPrefix = 'chore/upgrade-'
 const manifestFiles = ['package.json', 'package-lock.json']
-const suites = [
-  'lint',
-  'format:check',
-  'smoke',
-  'profile:check',
-  'workspace:check',
-  'workspace:tui',
-  'workspace:github',
-  'work:check',
-  'web:check',
-] as const
-type Step = 'install' | (typeof suites)[number]
 const pullRequestBodyLimit = 65_536
 const nodeMajor = Number(process.versions.node.split('.')[0])
 const candidateFromWorktree = `DEV_PI_RELEASE="$PWD/${relative(worktree, candidateRelease)}" `
@@ -96,14 +85,6 @@ interface Change {
   readonly name: string
   readonly from: string | undefined
   readonly to: string | undefined
-}
-
-interface StepResult {
-  readonly step: Step
-  readonly command: string
-  readonly passed: boolean
-  readonly ms: number
-  readonly output: string
 }
 
 interface Verification {
@@ -445,11 +426,7 @@ const verify = Effect.fnUntraced(function* (base: Manifest, head: Manifest, refr
       audit: Option.none(),
       installScripts: Option.none(),
     } satisfies Verification
-  const ran = yield* Effect.forEach(suites, suite =>
-    streamed('npm', ['run', suite], env, worktree).pipe(
-      Effect.map((result): StepResult => ({ step: suite, command: `npm run ${suite}`, ...result }))
-    )
-  )
+  const ran = yield* runUpgradeChecks(worktree, env)
   return {
     install: installed,
     suites: ran,

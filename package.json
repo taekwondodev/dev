@@ -17,9 +17,9 @@
     "dev:help": "node src/launcher.ts --help",
     "start": "node src/launcher.ts",
     "diagnostics": "node src/launcher.ts --diagnostics",
-    "smoke": "node tests/launcher-cache-check.ts && node tests/smoke.ts && node tests/upgrade-check.ts",
+    "smoke": "node tests/launcher-cache-check.ts && node tests/smoke.ts && node tests/upgrade-check.ts && node tests/upgrade-checks-check.ts",
     "cleanup:check": "npm run types:pi && node tests/conversation-retention-check.ts && node tests/preference-cleanup-check.ts && node tests/conversation-cleanup-check.ts && node tests/cleanup-process-check.ts && node tests/cleanup-report-check.ts",
-    "workspace:check": "npm run types:pi && node tests/workspace/workspace-completion-check.ts && node tests/workspace/quit-display-check.ts && node tests/workspace/workspace-authority-check.ts && node tests/workspace/workspace-release-check.ts && node tests/workspace/workspace-sweep-check.ts && node tests/workspace/workspace-process-check.ts && node tests/workspace/workspace-host-contract-check.ts && node tests/workspace/workspace-host-session-check.ts && node tests/workspace/workspace-launcher-check.ts",
+    "workspace:check": "npm run types:pi && node tests/run-checks.ts tests/workspace/workspace-completion-check.ts tests/workspace/quit-display-check.ts tests/workspace/workspace-authority-check.ts tests/workspace/workspace-release-check.ts tests/workspace/workspace-sweep-check.ts tests/workspace/workspace-process-check.ts tests/workspace/workspace-host-contract-check.ts tests/workspace/workspace-host-session-check.ts tests/workspace/workspace-launcher-check.ts",
     "workspace:tui": "npm run types:pi && python3 tests/workspace/run-workspace-pty-probes.py",
     "workspace:github": "npm run types:pi && node tests/workspace/workspace-github-reader-check.ts",
     "web:check": "npm run types:pi && node tests/web/web-read-check.ts && node tests/web/web-owner-check.ts && node tests/web/web-host-check.ts",
@@ -41,26 +41,26 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.3",
-    "@effect/platform-node-shared": "4.0.3",
+    "@effect/platform-node": "4.0.5",
+    "@effect/platform-node-shared": "4.0.5",
     "@mozilla/readability": "0.6.0",
-    "effect": "4.0.3",
+    "effect": "4.0.5",
     "linkedom": "0.18.13"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.51.1",
+    "@effect/tsgo": "0.53.1",
     "@types/node": "26.6.5",
     "oxc-standard": "^1.4.2",
-    "oxfmt": "^0.72.0",
-    "oxlint": "^1.87.0",
+    "oxfmt": "^0.73.0",
+    "oxlint": "^1.88.0",
     "oxlint-tsgolint": "7.0.2004",
     "typescript": "7.0.2"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.3"
+    "@effect/platform-node-shared": "4.0.5"
   },
   "config": {
-    "pi": "1.2.0"
+    "pi": "1.3.0"
   },
   "engines": {
     "node": ">=26.0.0"

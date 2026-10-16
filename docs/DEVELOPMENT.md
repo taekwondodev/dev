@@ -67,7 +67,7 @@ When addressing lint diagnostics, preserve the [Effect boundary decisions](adr/0
 
 For the command procedure and its publication effects, use [Upgrade](upgrade.md). This section is for investigating or changing the integration.
 
-`scripts/upgrade.ts` owns targets, the worktree, checks, the report and publication; `scripts/pi-upgrade.ts` owns the Pi candidate, its comparison and activation. Keep the check composition aligned with the [upgrade contract](upgrade.md#1-upgrade-and-verify) and the [verification table](#verification).
+`scripts/upgrade.ts` owns targets, the worktree, the report and publication; `scripts/pi-upgrade.ts` owns the Pi candidate, its comparison and activation. For suite selection and concurrency, see [the check scheduler](../scripts/upgrade-checks.ts); for output capture, see [the command adapter](../scripts/checkout.ts).
 
 Use the installed Pi contracts below and the integration tests when an API changes. Session replacement and tool termination are exercised in `tests/workspace/workspace-host-session-check.ts`; native skill invocation and coordinator delivery in `tests/work/`; compaction in `tests/compaction-check.ts`, child checks and TUI probes. Profiler decoding depends on recorded message shapes and error/continuation text, so type checking alone cannot verify it: run `profile:check` and retain the upgrade guide's live-session check.
 
