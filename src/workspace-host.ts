@@ -51,6 +51,7 @@ import {
   canonicalConversationFile,
   classifyWriteDestination,
   decodeWriteOperand,
+  isWithin,
 } from './workspace-paths.ts'
 import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
@@ -916,9 +917,16 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       let admitted = destination
       let scopedCwd = context.cwd
       if (destination.kind === 'foreign') {
+        let caller: WorkspaceGrant | undefined
+        if (isWithin(authority.root, destination.checkout)) {
+          const writer = yield* admitWriter(context)
+          if (writer.kind === 'refused') return writer.refusal
+          caller = writer.grant
+        }
         const foreign = yield* attachment.authorize({
           kind: 'foreign-write',
           cwd: destination.checkout,
+          ...(caller === undefined ? {} : { caller }),
         })
         if (foreign.kind !== 'ready')
           return yield* hostFailure('the other checkout was not reserved for this conversation')

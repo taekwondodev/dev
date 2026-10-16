@@ -342,6 +342,50 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
+      'a writing child writes and edits a repository nested in its own managed workspace through its controller, without rebinding or allocating another workspace',
+      async () => {
+        const writer = await owner.run({
+          taskId: 'managed-nested-writer',
+          access: 'write',
+          prompt: phase(
+            'nested native writes',
+            [
+              toolCall('nested-init', 'bash', {
+                command:
+                  'git init --quiet -b main nested-repo && git -C nested-repo -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet --allow-empty -m fixture',
+              }),
+            ],
+            [
+              toolCall('nested-write', 'write', {
+                path: 'nested-repo/from-child.txt',
+                content: 'one',
+              }),
+            ],
+            [
+              toolCall('nested-edit', 'edit', {
+                path: 'nested-repo/from-child.txt',
+                oldText: 'one',
+                newText: 'two',
+              }),
+            ]
+          ),
+        })
+        assertStatus(writer.view, 'completed')
+        const checkout = writer.view.worktree?.path
+        assert.ok(checkout, writer.text)
+        const nested = join(checkout, 'nested-repo')
+        assert.equal(readFileSync(join(nested, 'from-child.txt'), 'utf8'), 'two')
+        const views = await fixture.lifecycle.inspect({ cwd: nested })
+        assert.equal(views.length, 1, JSON.stringify(views))
+        assert.equal(views[0]?.origin, 'pre-existing')
+        assert.equal(views[0]?.path, nested)
+        assert.ok(views[0]?.reservationId !== undefined)
+        assert.ok(fixture.attachment.effect.delegatedCwds.includes(nested))
+        assert.equal(fixture.attachment.binding.cwd, fixture.repository)
+        assert.ok(!existsSync(join(fixture.repository, 'nested-repo')))
+      }
+    )
+    await claim(
       "a writing child's native write into another repository reserves that checkout for the lead conversation through the controller and writes in place without a worktree; a read-only child's write there is refused",
       async () => {
         const third = join(fixture.root, 'third-repo')
@@ -486,7 +530,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         )
         assert.throws(
           () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),
-          /authority metadata or another managed workspace/
+          /another managed workspace; ask its owning conversation/
         )
 
         const tree = await owner.run({

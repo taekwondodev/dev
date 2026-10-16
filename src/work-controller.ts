@@ -1342,7 +1342,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
                   message: 'A foreign write check names the checkout to reserve',
                 })
               const reserved = yield* workspace.attachment
-                .authorize({ kind: 'foreign-write', cwd: message.checkout })
+                .authorize({ kind: 'foreign-write', cwd: message.checkout, caller: job.workspace })
                 .pipe(Effect.mapError(toFailure))
               if (reserved.kind !== 'ready')
                 return yield* new WorkError({

@@ -44,6 +44,7 @@ import { acquirePathGates, releaseGates, type PathGates } from './workspace-gate
 import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
 import {
   assertDestinationUnchanged,
+  assertNonAdministrativePath,
   classifyWriteDestination,
   isWithin,
 } from './workspace-paths.ts'
@@ -151,9 +152,12 @@ const admit = (
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
   if (operation.kind === 'foreign-write') {
+    assertForeignWriteScope(authority, attachment, cwd, operation.caller)
     const foreign = foreignSource(authority, cwd)
-    if (foreign.workspace.id === source.workspace.id)
-      invalid(`A foreign write cannot target the bound workspace: ${cwd}`)
+    if (foreign.repo === (operation.caller?.repositoryId ?? source.repo))
+      invalid(
+        `The destination is in the caller's repository; write the file in its current workspace instead: ${operation.caller?.checkout ?? source.workspace.path}`
+      )
     return reserveForeignWriter(authority, state, foreign, cwd)
   }
   if (!isWithin(source.workspace.path, cwd))
@@ -318,11 +322,49 @@ const assertLocalCoordinator = (
     )
 }
 
-const foreignSource = (authority: WorkspaceAuthority, cwd: string): WorkspaceSource => {
-  if (isWithin(authority.root, cwd))
-    invalid(
-      `A delegated child cannot start inside dev authority storage or a managed workspace: ${cwd}`
+const assertForeignWriteScope = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  cwd: string,
+  caller: WorkspaceGrant | undefined
+): void => {
+  assertNonAdministrativePath(cwd)
+  if (caller !== undefined) {
+    const owners = attachment.state.leaseAttachments.get(caller.useId)
+    if (owners === undefined || !owners.has(attachment.token))
+      requireReview(
+        'The caller grant belongs to another attachment; retry from the current workspace'
+      )
+    const lease = validateGrant(authority, attachment.state, caller)
+    if (caller.access !== 'write' || isScoped(lease))
+      blocked(
+        'The caller has no workspace writer grant; request the change through a writing lead or child'
+      )
+    const stage = inDb(
+      authority,
+      caller.repositoryId,
+      db => fencedUse(db, caller, 'Caller workspace use is missing').use.stage
     )
+    if (stage !== (lease.kind === 'execution' ? 'started' : 'authorized'))
+      blocked(
+        'The caller workspace use is no longer active; retry from the current authorized workspace'
+      )
+  }
+  if (isWithin(authority.root, cwd) && !isWithin(authority.paths.worktrees, cwd))
+    invalid(`The destination is dev authority metadata: ${cwd}; select a project checkout instead`)
+  if (
+    isWithin(authority.root, cwd) &&
+    (caller === undefined ||
+      caller.origin !== 'managed' ||
+      !isWithin(authority.paths.worktrees, caller.checkout) ||
+      !isWithin(caller.checkout, cwd))
+  )
+    invalid(
+      `The destination is in dev-managed storage outside the caller's authorized workspace: ${cwd}; ask the conversation owning that workspace to make the change`
+    )
+}
+
+const foreignSource = (authority: WorkspaceAuthority, cwd: string): WorkspaceSource => {
   let git: GitWorkspace
   try {
     git = canonicalGitWorkspace(cwd)
@@ -441,6 +483,10 @@ const authorizeForeign = (
     (operation.kind === 'read' && operation.execution === undefined)
   )
     invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
+  if (isWithin(authority.root, cwd))
+    invalid(
+      `The selected checkout is inside dev authority storage or a managed workspace: ${cwd}; select a source checkout outside dev-managed storage for delegation`
+    )
   const source = foreignSource(authority, cwd)
   const taskId = state.foreignTasks.get(source.workspace.id)
   if (operation.kind === 'read') {

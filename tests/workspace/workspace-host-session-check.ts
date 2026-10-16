@@ -258,9 +258,18 @@ try {
     }
   )
   await claim(
-    'native write/edit into a sibling or nested repository reserves that checkout for the conversation and writes in place, without a worktree, a rebind or a change to the lead binding',
+    'native write/edit into a sibling or nested repository, including inside the lead managed workspace, reserves that checkout and writes in place without another worktree or rebind',
     async () => {
-      for (const other of [join(fixture, 'other-repo'), join(lead, 'nested-repo')]) {
+      for (const placement of ['sibling', 'nested', 'managed-nested']) {
+        const { manager, attached } = await attachLeadConversation()
+        if (placement === 'managed-nested') {
+          const decision = await attached.authorize({ kind: 'write' })
+          assert.equal(decision.kind, 'rebind')
+          if (decision.kind !== 'rebind') throw new Error('Expected managed isolation')
+          await attached.handoff(decision.handoff, async () => 'confirmed')
+        }
+        const { cwd } = attached.binding
+        const other = join(placement === 'sibling' ? fixture : cwd, `${placement}-repo`)
         mkdirSync(other)
         git(['init', '--quiet', '-b', 'main'], other)
         git(['config', 'user.email', 'host-session@example.invalid'], other)
@@ -273,9 +282,12 @@ try {
           [toolCall('foreign-write', 'write', { path: target, content: 'one' })],
           [toolCall('foreign-edit', 'edit', { path: target, oldText: 'one', newText: 'two' })],
         ])
-        const { manager, attached } = await attachLeadConversation()
-        const before = await lifecycle.inspect({ cwd: lead })
-        const opened = await openLeadHost({ attachment: attached.effect, manager, offline })
+        if (placement === 'managed-nested')
+          manager.appendMessage(
+            offline.assistantMessage([{ type: 'text', text: 'isolated' }], 'stop')
+          )
+        const before = await lifecycle.inspect({ cwd })
+        const opened = await openLeadHost({ attachment: attached.effect, manager, offline, cwd })
         try {
           await opened.runtime.session.prompt('Write and edit the file in the other repository.')
           await opened.runtime.session.waitForIdle()
@@ -285,10 +297,10 @@ try {
           }
           assert.equal(readFileSync(target, 'utf8'), 'two')
           assert.equal(script.calls(), 3)
-          assert.equal(opened.runtime.cwd, lead)
+          assert.equal(opened.runtime.cwd, cwd)
           assert.equal(opened.host.isParked(), false)
-          assert.deepEqual(attached.binding.cwd, lead)
-          assert.deepEqual(await lifecycle.inspect({ cwd: lead }), before)
+          assert.deepEqual(attached.binding.cwd, cwd)
+          assert.deepEqual(await lifecycle.inspect({ cwd }), before)
           const views = await lifecycle.inspect({ cwd: other })
           assert.ok(
             views.every(view => view.origin === 'pre-existing'),

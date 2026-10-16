@@ -154,6 +154,7 @@ export const WorkspaceOperationSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal('foreign-write'),
     cwd: AbsolutePath,
+    caller: Schema.optional(WorkspaceGrantSchema),
   }),
   Schema.Struct({
     kind: Schema.Literal('native-file-write'),

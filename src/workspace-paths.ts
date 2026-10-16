@@ -110,11 +110,12 @@ const refuseSameRepository = (checkout: string, foreignRoot: string, path: strin
       )
 }
 
-const assertNonAdministrativePath = (path: string): void => {
+export const assertNonAdministrativePath = (path: string): void => {
   const parts = path.split(sep).map(part => part.toLowerCase())
-  if (parts.includes('.git')) invalid('Writes cannot target Git administrative paths')
+  if (parts.includes('.git'))
+    invalid('Write destination targets Git administrative paths; select a project file instead')
   if (parts.some((part, index) => part === '.dev' && parts[index + 1] === 'coordination'))
-    invalid('Writes cannot target dev coordination metadata')
+    invalid('Write destination targets dev coordination metadata; select a project file instead')
 }
 
 export const classifyWriteDestination = (
@@ -137,8 +138,13 @@ export const classifyWriteDestination = (
   const checkout = realpathSync.native(scope.checkout)
   const workspace = isWithin(checkout, path)
   const authority = authorityPaths(canonicalPath(resolve(scope.authorityRoot)).path)
-  if (isWithin(authority.root, path) && !(workspace && isWithin(authority.worktrees, checkout)))
-    invalid('Writes cannot target dev authority metadata or another managed workspace')
+  if (isWithin(authority.root, path) && !(workspace && isWithin(authority.worktrees, checkout))) {
+    if (isWithin(authority.worktrees, path))
+      invalid(
+        'The destination belongs to another managed workspace; ask its owning conversation to make the change'
+      )
+    invalid('Write destination targets dev authority metadata; select a project file instead')
+  }
   const device = workspace ? lstatSync(checkout).dev : undefined
   for (
     let directory = missing.length > 0 ? ancestor : dirname(path);
@@ -154,7 +160,8 @@ export const classifyWriteDestination = (
     ) {
       const git = gitResult(directory, ['rev-parse', '--is-inside-git-dir'])
       if (git.status !== 0) invalid(`Cannot inspect Git administrative identity: ${directory}`)
-      if (git.stdout.trim() === 'true') invalid('Writes cannot target Git administrative paths')
+      if (git.stdout.trim() === 'true')
+        invalid('Write destination targets Git administrative paths; select a project file instead')
     }
     if (directory === checkout) break
     if (lstatIfExists(join(directory, '.git')) !== undefined) {

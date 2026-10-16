@@ -52,10 +52,10 @@ Lead and writing-child write/edit classify destinations before writer admission:
 - Current-workspace files use scoped admission.
 - Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or rebind.
 - Another worktree of the bound repository, including its original checkout, is refused with the same file's path in the current workspace, or with a statement that the file does not exist there. The destination is never rewritten.
-- Another repository, including a checkout nested in the workspace, is reserved for the conversation's foreign workflow task through that repository's authority and written in place: no managed worktree, no rebind, and none of that repository's instructions enter the lead. A checkout reserved or being written by another task is refused with the delegation remedy. The reservation is listed by `dev workspace` in that repository and a clean checkout loses it at quit like any pre-existing reservation.
+- Another repository, including a checkout nested in the caller's own managed workspace, is reserved for the conversation's foreign workflow task through that repository's authority and written in place: no managed worktree, no rebind, and none of that repository's instructions enter the lead. A checkout reserved or being written by another task is refused with the delegation remedy. The reservation is listed by `dev workspace` in that repository and a clean checkout loses it at quit like any pre-existing reservation.
 - Git administration, dev authority/coordination metadata and other conversations' managed worktrees remain protected, including canonical aliases.
 
-A writing child follows the same policy: its controller reserves the other repository for the lead conversation and the child writes in place under its usual controller liveness checks.
+A writing child follows the same policy: its controller reserves the other repository for the lead conversation and the child writes in place under its usual controller liveness checks. Native admission inside managed storage requires the caller's live writer grant: the lead's for a lead write, the child's for a child write. It grants no access to another caller's managed workspace and does not widen checkout selection for delegation. Refusals state the reason and the next action at the failed call.
 
 Use literal paths without raw `..` or Pi shorthand. Final symlinks, hard links, changed destinations and unreadable ancestry are refused. Missing parent directories are allowed only when their existing ancestor can be checked. Duplicate in-flight destinations in one host are refused; distinct destinations can proceed together.
 
@@ -95,7 +95,7 @@ The same conversation cannot attach in two dev sessions, even across installatio
 | `branch-in-target` | The workspace HEAD is included in its target                                      |
 | `child-delivered`  | Task PR evidence establishes a child's delivery; its own commits need not survive |
 
-These are assessment labels, not manual deletion predicates. Ignored files alone do not block completion, but unsafe filesystem structure can. Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, open conversation bindings and `release-review`.
+These are assessment labels, not manual deletion predicates. Ignored files alone do not block completion, but unsafe filesystem structure can. Nested repositories block automatic removal of the containing managed workspace even when ignored; permission to write them does not change cleanup ownership. Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, open conversation bindings and `release-review`.
 
 Use `record-publication` for selected reports or artifacts already published in an issue or PR: it checks the exact bytes before recording them. A local copy is not a publication. Source-history inclusion proves neither semantic equivalence nor delivery of dirty edits. [ADR 0005](adr/0005-scoped-runtime-coordination.md#completion-and-evidence) preserves the constraints behind these assessments.
 
