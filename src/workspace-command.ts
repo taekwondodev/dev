@@ -54,10 +54,10 @@ export interface ResumeCandidate {
   readonly view: WorkspaceView
 }
 
-export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandError>()(
-  'WorkspaceCommandError',
-  { message: Schema.String, exitCode: Schema.Literals([1, 2]) }
-) {}
+export class WorkspaceCommandError extends Schema.TaggedError<
+  WorkspaceCommandError,
+  { readonly brand: unique symbol }
+>()('WorkspaceCommandError', { message: Schema.String, exitCode: Schema.Literals([1, 2]) }) {}
 
 const usage = (message: string): WorkspaceCommandError =>
   new WorkspaceCommandError({ message, exitCode: 2 })

@@ -85,12 +85,15 @@ type AttemptRecordCreateFields = Pick<AttemptRecord, 'kind' | 'cwd' | 'controlle
 export const compactText = (text: string, limit = 6000): string =>
   text.length <= limit ? text : `${text.slice(0, limit)}\n[truncated; full output is retained]`
 
-class StorePreparationError extends Schema.TaggedError<StorePreparationError>()(
-  'StorePreparationError',
-  { code: Schema.String }
-) {}
+class StorePreparationError extends Schema.TaggedError<
+  StorePreparationError,
+  { readonly brand: unique symbol }
+>()('StorePreparationError', { code: Schema.String }) {}
 
-class WorkerRpcError extends Schema.TaggedError<WorkerRpcError>()('WorkerRpcError', {
+class WorkerRpcError extends Schema.TaggedError<
+  WorkerRpcError,
+  { readonly brand: unique symbol }
+>()('WorkerRpcError', {
   code: Schema.String,
 }) {}
 

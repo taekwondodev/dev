@@ -39,7 +39,10 @@ const Header = Schema.Struct({
 const decodeHeader = Schema.decodeUnknownSync(Schema.fromJsonString(Header))
 const HEADER_BYTES = 64 * 1024
 
-export class CleanupError extends Schema.TaggedError<CleanupError>()('CleanupError', {
+export class CleanupError extends Schema.TaggedError<
+  CleanupError,
+  { readonly brand: unique symbol }
+>()('CleanupError', {
   message: Schema.String,
 }) {}
 const cleanupError = (cause: unknown) => new CleanupError({ message: errorText(cause) })

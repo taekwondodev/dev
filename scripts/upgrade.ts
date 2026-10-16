@@ -19,7 +19,10 @@ import {
 import { cell, collapsed, counted, fence, lastLines, listed, withoutFinalPeriod } from './report.ts'
 import { runUpgradeChecks, suites, type StepResult } from './upgrade-checks.ts'
 
-export class UpgradeError extends Schema.TaggedError<UpgradeError>()('UpgradeError', {
+export class UpgradeError extends Schema.TaggedError<
+  UpgradeError,
+  { readonly brand: unique symbol }
+>()('UpgradeError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

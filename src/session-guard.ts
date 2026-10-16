@@ -9,7 +9,10 @@ import { errorText } from './error-text.ts'
 
 type SessionManager = Pick<Pi.SessionManager, 'getSessionFile' | 'getSessionId'>
 
-class NavigationFailure extends Schema.TaggedError<NavigationFailure>()('NavigationFailure', {
+class NavigationFailure extends Schema.TaggedError<
+  NavigationFailure,
+  { readonly brand: unique symbol }
+>()('NavigationFailure', {
   cause: Schema.Defect(),
 }) {}
 

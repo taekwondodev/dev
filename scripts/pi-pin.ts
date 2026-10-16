@@ -2,10 +2,13 @@ import { fileURLToPath } from 'node:url'
 import { Effect, FileSystem, Schema } from 'effect'
 import { errorText } from '../src/error-text.ts'
 
-export class PiPinError extends Schema.TaggedError<PiPinError>()('PiPinError', {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-}) {}
+export class PiPinError extends Schema.TaggedError<PiPinError, { readonly brand: unique symbol }>()(
+  'PiPinError',
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {}
 
 export const PiVersion = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/)).pipe(
   Schema.brand('dev/PiVersion')

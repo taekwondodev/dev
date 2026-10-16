@@ -5,7 +5,10 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import { runCommand } from '../src/command.ts'
 import { errorText } from '../src/error-text.ts'
 
-export class CommandError extends Schema.TaggedError<CommandError>()('CommandError', {
+export class CommandError extends Schema.TaggedError<
+  CommandError,
+  { readonly brand: unique symbol }
+>()('CommandError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

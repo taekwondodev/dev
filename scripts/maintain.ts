@@ -15,7 +15,10 @@ import { lastLines } from './report.ts'
 import { runUpgrade } from './upgrade.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from './usage-profile.ts'
 
-export class MaintenanceError extends Schema.TaggedError<MaintenanceError>()('MaintenanceError', {
+export class MaintenanceError extends Schema.TaggedError<
+  MaintenanceError,
+  { readonly brand: unique symbol }
+>()('MaintenanceError', {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

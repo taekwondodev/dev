@@ -112,10 +112,10 @@ export const workspaceToolParameters = describeFields(
 )
 const decodeInput = Schema.decodeUnknownEffect(WorkspaceToolInputSchema)
 
-export class WorkspaceToolError extends Schema.TaggedError<WorkspaceToolError>()(
-  'WorkspaceToolError',
-  { message: Schema.String }
-) {}
+export class WorkspaceToolError extends Schema.TaggedError<
+  WorkspaceToolError,
+  { readonly brand: unique symbol }
+>()('WorkspaceToolError', { message: Schema.String }) {}
 const refuse = (message: string) => new WorkspaceToolError({ message })
 
 const BodyPayload = Schema.Struct({ body: Schema.NullOr(Schema.String), html_url: Schema.String })

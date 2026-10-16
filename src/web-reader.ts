@@ -42,9 +42,12 @@ export type ReadOutcome =
   | { readonly kind: 'document'; readonly slice: DocumentSlice }
   | { readonly kind: 'failed'; readonly error: string; readonly limitations: readonly string[] }
 
-class ReadCancelled extends Schema.TaggedError<ReadCancelled>()('ReadCancelled', {
-  message: Schema.String,
-}) {}
+class ReadCancelled extends Schema.TaggedError<ReadCancelled, { readonly brand: unique symbol }>()(
+  'ReadCancelled',
+  {
+    message: Schema.String,
+  }
+) {}
 
 type BrowserFailure = BrowserError | BrowserProfileError | BrowserOwnerError
 type ReadFailure = WebNetworkError | BrowserFailure | ReadCancelled
