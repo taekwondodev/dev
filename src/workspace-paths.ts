@@ -70,17 +70,53 @@ export interface WriteScope {
   readonly taskId?: string
 }
 
-export interface WriteDestination {
-  readonly kind: 'workspace' | 'external' | 'artifact'
-  readonly operand: string
-  readonly path: string
+export type WriteDestination =
+  | {
+      readonly kind: 'workspace' | 'external' | 'artifact'
+      readonly operand: string
+      readonly path: string
+    }
+  | {
+      readonly kind: 'foreign'
+      readonly operand: string
+      readonly path: string
+      readonly checkout: string
+    }
+
+const gitCommonIdentity = (checkout: string): { readonly dev: number; readonly ino: number } => {
+  const git = gitResult(checkout, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (git.status !== 0) invalid(`Cannot inspect Git repository identity: ${checkout}`)
+  const info = statSync(realpathSync.native(git.stdout.trim()))
+  return { dev: info.dev, ino: info.ino }
 }
 
-const assertNonAdministrativePath = (path: string): void => {
+const sameRepository = (checkout: string, other: string): boolean => {
+  const bound = gitCommonIdentity(checkout)
+  const foreign = gitCommonIdentity(other)
+  return bound.dev === foreign.dev && bound.ino === foreign.ino
+}
+
+const refuseSameRepository = (checkout: string, foreignRoot: string, path: string): never => {
+  if (isWithin(checkout, foreignRoot))
+    return invalid(`Write destination is under an unrecognized .git entry: ${foreignRoot}`)
+  const relativePath = relative(foreignRoot, path)
+  const equivalent = join(checkout, relativePath)
+  const existing = lstatIfExists(equivalent)
+  return existing !== undefined && existing.isFile()
+    ? invalid(
+        `Write destination is in another worktree of this repository; write the same file in the current workspace instead: ${equivalent}`
+      )
+    : invalid(
+        `Write destination is in another worktree of this repository, and ${relativePath} does not exist in the current workspace; to create it there, write ${equivalent}`
+      )
+}
+
+export const assertNonAdministrativePath = (path: string): void => {
   const parts = path.split(sep).map(part => part.toLowerCase())
-  if (parts.includes('.git')) invalid('Writes cannot target Git administrative paths')
+  if (parts.includes('.git'))
+    invalid('Write destination targets Git administrative paths; select a project file instead')
   if (parts.some((part, index) => part === '.dev' && parts[index + 1] === 'coordination'))
-    invalid('Writes cannot target dev coordination metadata')
+    invalid('Write destination targets dev coordination metadata; select a project file instead')
 }
 
 export const classifyWriteDestination = (
@@ -110,8 +146,13 @@ export const classifyWriteDestination = (
     isWithin(authority.root, path) &&
     !artifact &&
     !(workspace && isWithin(authority.worktrees, checkout))
-  )
-    invalid('Writes cannot target dev authority metadata or another managed workspace')
+  ) {
+    if (isWithin(authority.worktrees, path))
+      invalid(
+        'The destination belongs to another managed workspace; ask its owning conversation to make the change'
+      )
+    invalid('Write destination targets dev authority metadata; select a project file instead')
+  }
   const device = workspace ? lstatSync(checkout).dev : undefined
   for (
     let directory = missing.length > 0 ? ancestor : dirname(path);
@@ -127,13 +168,14 @@ export const classifyWriteDestination = (
     ) {
       const git = gitResult(directory, ['rev-parse', '--is-inside-git-dir'])
       if (git.status !== 0) invalid(`Cannot inspect Git administrative identity: ${directory}`)
-      if (git.stdout.trim() === 'true') invalid('Writes cannot target Git administrative paths')
+      if (git.stdout.trim() === 'true')
+        invalid('Write destination targets Git administrative paths; select a project file instead')
     }
     if (directory === checkout) break
-    if (lstatIfExists(join(directory, '.git')) !== undefined)
-      invalid(
-        'Write destination belongs to another checkout or nested repository; select it explicitly'
-      )
+    if (lstatIfExists(join(directory, '.git')) !== undefined) {
+      if (sameRepository(checkout, directory)) refuseSameRepository(checkout, directory, path)
+      return { kind: 'foreign', operand: absolute, path, checkout: directory }
+    }
     if (dirname(directory) === directory) break
   }
   let kind: WriteDestination['kind'] = 'external'
@@ -149,7 +191,13 @@ export const assertDestinationUnchanged = (scope: WriteScope, recorded: WriteDes
   } catch (cause) {
     return blocked(`Write destination changed after authorization: ${errorText(cause)}`)
   }
-  if (actual.path !== recorded.path || actual.kind !== recorded.kind)
+  if (
+    actual.path !== recorded.path ||
+    actual.kind !== recorded.kind ||
+    (actual.kind === 'foreign' &&
+      recorded.kind === 'foreign' &&
+      actual.checkout !== recorded.checkout)
+  )
     blocked(`Write destination now resolves elsewhere: ${recorded.path} -> ${actual.path}`)
 }
 

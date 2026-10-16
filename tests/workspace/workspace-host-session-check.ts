@@ -258,6 +258,69 @@ try {
     }
   )
   await claim(
+    'native write/edit into a sibling or nested repository, including inside the lead managed workspace, reserves that checkout and writes in place without another worktree or rebind',
+    async () => {
+      for (const placement of ['sibling', 'nested', 'managed-nested']) {
+        const { manager, attached } = await attachLeadConversation()
+        if (placement === 'managed-nested') {
+          const decision = await attached.authorize({ kind: 'write' })
+          assert.equal(decision.kind, 'rebind')
+          if (decision.kind !== 'rebind') throw new Error('Expected managed isolation')
+          await attached.handoff(decision.handoff, async () => 'confirmed')
+        }
+        const { cwd } = attached.binding
+        const other = join(placement === 'sibling' ? fixture : cwd, `${placement}-repo`)
+        mkdirSync(other)
+        git(['init', '--quiet', '-b', 'main'], other)
+        git(['config', 'user.email', 'host-session@example.invalid'], other)
+        git(['config', 'user.name', 'host session check'], other)
+        writeFileSync(join(other, 'README.md'), 'other repository\n')
+        git(['add', 'README.md'], other)
+        git(['commit', '--quiet', '-m', 'other fixture'], other)
+        const target = join(other, 'notes', 'lead.txt')
+        const { offline, script } = await offlineScript('foreign-native', [
+          [toolCall('foreign-write', 'write', { path: target, content: 'one' })],
+          [toolCall('foreign-edit', 'edit', { path: target, oldText: 'one', newText: 'two' })],
+        ])
+        if (placement === 'managed-nested')
+          manager.appendMessage(
+            offline.assistantMessage([{ type: 'text', text: 'isolated' }], 'stop')
+          )
+        const before = await lifecycle.inspect({ cwd })
+        const opened = await openLeadHost({ attachment: attached.effect, manager, offline, cwd })
+        try {
+          await opened.runtime.session.prompt('Write and edit the file in the other repository.')
+          await opened.runtime.session.waitForIdle()
+          for (const id of ['foreign-write', 'foreign-edit']) {
+            const result = toolResults(opened.runtime)(id)
+            assert.equal(result.isError, false, result.text)
+          }
+          assert.equal(readFileSync(target, 'utf8'), 'two')
+          assert.equal(script.calls(), 3)
+          assert.equal(opened.runtime.cwd, cwd)
+          assert.equal(opened.host.isParked(), false)
+          assert.deepEqual(attached.binding.cwd, cwd)
+          assert.deepEqual(await lifecycle.inspect({ cwd }), before)
+          const views = await lifecycle.inspect({ cwd: other })
+          assert.ok(
+            views.every(view => view.origin === 'pre-existing'),
+            `no worktree was allocated: ${JSON.stringify(views)}`
+          )
+          assert.ok(
+            views.some(
+              view =>
+                view.path === other && view.reservationId !== undefined && view.taskId !== undefined
+            ),
+            JSON.stringify(views)
+          )
+          assert.deepEqual(attached.effect.delegatedCwds, [other])
+        } finally {
+          await opened.close()
+        }
+      }
+    }
+  )
+  await claim(
     'a native artifact write requires writer admission: a bound task with another writer is refused without touching the file, and retry succeeds once that writer closes',
     async () => {
       const checkout = join(fixture, 'artifact-checkout')

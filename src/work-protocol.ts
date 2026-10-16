@@ -141,7 +141,7 @@ export const LeadWorkInputSchema = Schema.Struct({
   }),
   command: text('Shell command for process.'),
   cwd: text(
-    'Working directory. For delegate it may lie in another Git checkout, which the child then works in under its own instructions and delivery policy; your native writes there stay refused.'
+    'Working directory. For delegate it may lie in another Git checkout, which the child then works in under its own instructions and delivery policy; your native writes into a checkout another task reserves are refused.'
   ),
   coordinate: Schema.optionalKey(
     Schema.Boolean.annotate({
@@ -179,7 +179,8 @@ export const ChildMessageSchema = Schema.Union([
     type: Schema.Literal('workspace-check'),
     requestId: WorkspaceId,
     useId: WorkspaceId,
-    operation: Schema.Literals(['read', 'write']),
+    operation: Schema.Literals(['read', 'write', 'foreign-write']),
+    checkout: Schema.optional(Schema.NonEmptyString),
   }),
   strictMessage({ type: Schema.Literal('browser-ensure'), requestId: RequestId }, [
     'type',

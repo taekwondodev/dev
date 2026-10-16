@@ -51,6 +51,7 @@ import {
   canonicalConversationFile,
   classifyWriteDestination,
   decodeWriteOperand,
+  isWithin,
 } from './workspace-paths.ts'
 import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
@@ -915,32 +916,60 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         })
         return undefined
       }
-      const writer = yield* admitWriter(context)
-      if (writer.kind === 'refused') return writer.refusal
-      if (destination.kind === 'artifact') {
-        if (writer.grant.taskId !== scope.taskId)
-          return yield* hostFailure('the task changed before the artifact write was admitted')
-        yield* nativeWrites.admit({
-          toolCallId: event.toolCallId,
-          scope,
-          destination,
-          lifecycle: { kind: 'local', validate },
+      let within: WorkspaceGrant
+      let writeScope = scope
+      let admitted = destination
+      let scopedCwd = context.cwd
+      if (destination.kind === 'foreign') {
+        let caller: WorkspaceGrant | undefined
+        if (isWithin(authority.root, destination.checkout)) {
+          const writer = yield* admitWriter(context)
+          if (writer.kind === 'refused') return writer.refusal
+          caller = writer.grant
+        }
+        const foreign = yield* attachment.authorize({
+          kind: 'foreign-write',
+          cwd: destination.checkout,
+          ...(caller === undefined ? {} : { caller }),
         })
-        return undefined
+        if (foreign.kind !== 'ready')
+          return yield* hostFailure('the other checkout was not reserved for this conversation')
+        within = foreign.grant
+        writeScope = { checkout: foreign.grant.checkout, authorityRoot: authority.root }
+        scopedCwd = foreign.grant.checkout
+        admitted = yield* Effect.try({
+          try: () => classifyWriteDestination(writeScope, scopedCwd, destination.operand),
+          catch: cause => hostFailure(errorText(cause)),
+        })
+      } else {
+        const writer = yield* admitWriter(context)
+        if (writer.kind === 'refused') return writer.refusal
+        if (destination.kind === 'artifact') {
+          if (writer.grant.taskId !== scope.taskId)
+            return yield* hostFailure('the task changed before the artifact write was admitted')
+          yield* nativeWrites.admit({
+            toolCallId: event.toolCallId,
+            scope,
+            destination,
+            lifecycle: { kind: 'local', validate },
+          })
+          return undefined
+        }
+        within = writer.grant
       }
       const operation = yield* attachment.authorize({
         kind: 'native-file-write',
-        within: writer.grant,
-        path,
-        cwd: context.cwd,
+        within,
+        path: destination.kind === 'foreign' ? destination.operand : path,
+        cwd: scopedCwd,
       })
       if (operation.kind !== 'ready')
         return yield* hostFailure('the workspace changed before the native write was admitted')
       yield* nativeWrites
         .admit({
           toolCallId: event.toolCallId,
-          scope,
-          destination,
+          scope: writeScope,
+          destination: admitted,
           lifecycle: { kind: 'workspace', attachment, grant: operation.grant },
         })
         .pipe(

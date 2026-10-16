@@ -48,9 +48,11 @@ Cross-repository conversation publication is recoverable, not atomic. Preserve u
 
 ### Native file destinations
 
-Classify native writes before writer admission. The [external-write decision](https://github.com/taekwondodev/dev/issues/67) permits ordinary external files without reserving unrelated checkouts; temp-only exceptions would miss configuration edits. One classifier serves lead, authority and child guards, pinning the original operand, canonical destination and workspace/external classification. Unreadable ancestry is not proof of external access.
+Classify native writes before writer admission. The [external-write decision](https://github.com/taekwondodev/dev/issues/67) permits ordinary external files without reserving unrelated checkouts; temp-only exceptions would miss configuration edits. One classifier serves lead, authority and child guards, pinning the original operand and canonical destination. Unreadable ancestry is not proof of external access.
 
 [Foreign delegation](https://github.com/taekwondodev/dev/issues/134) selects another checkout only for a child. A managed worktree lets it receive that repository's guidance and writer scope while the lead keeps its binding. Lead rebind and multiple bindings were rejected: they would put foreign guidance and ownership into the lead's context. Admission and selection limits live in [Workspace](../workspace.md#delegation-into-another-checkout).
+
+The [other-checkout decision](https://github.com/taekwondodev/dev/issues/172) distinguishes repository identity from checkout location. Same-repository destinations require an explicit retry: a silent rewrite would let the model reason about a file it did not change. For another repository, in-place reservation avoids a child and managed worktree for a small edit while preserving per-checkout ownership. This amends the refusal of other checkouts in #67; [Workspace](../workspace.md#native-writes) owns destination routing and refusals.
 
 Workspace writes are scoped operations whose start is reported inside the filesystem adapter and whose completion follows the Pi call or session end. External writes instead use session-local permits with no persistent registry, cross-session ownership or cleanup permission. Children retain controller admission and liveness checks at the operation boundary. Abrupt child interruption cannot identify the file being written; revisit if that recovery need becomes frequent.
 

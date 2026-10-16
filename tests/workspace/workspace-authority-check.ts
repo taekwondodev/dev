@@ -794,6 +794,150 @@ try {
   )
 
   await claim(
+    "a lead native write into another repository reserves that checkout for the conversation's foreign task without a worktree or rebind, reuses its grant, admits a scoped write within it, and is refused with the delegation remedy while another task reserves the checkout",
+    async () => {
+      await assert.rejects(
+        delegated.authorize({ kind: 'foreign-write', cwd: foreignRepo }),
+        error =>
+          error instanceof WorkspaceError &&
+          error.outcome === 'blocked' &&
+          /reserved by another task; delegate the change with work delegate/.test(error.message)
+      )
+      const leadRepo = join(sandbox, 'lead-write-repo')
+      initRepository(leadRepo, 'lead.txt', 'lead fixture\n')
+      const boundBefore = delegated.binding
+      const grant = ready(await delegated.authorize({ kind: 'foreign-write', cwd: leadRepo }))
+      assert.deepEqual(
+        [grant.origin, grant.access, grant.checkout, grant.cwd],
+        ['pre-existing', 'write', leadRepo, leadRepo]
+      )
+      assert.notEqual(grant.repositoryId, delegatedGrant.repositoryId)
+      assert.ok(grant.reservationId !== undefined && grant.taskId !== undefined)
+      assert.deepEqual(delegated.binding, boundBefore, 'the lead stays bound to its own checkout')
+      const again = ready(
+        await delegated.authorize({ kind: 'foreign-write', cwd: join(leadRepo, '.') })
+      )
+      assert.equal(again.useId, grant.useId, 'one foreign write grant per checkout')
+      const scoped = ready(
+        await delegated.authorize({
+          kind: 'native-file-write',
+          within: grant,
+          path: join(leadRepo, 'lead.txt'),
+          cwd: leadRepo,
+        })
+      )
+      assert.equal(scoped.path, join(leadRepo, 'lead.txt'))
+      await delegated.reportExecution(scoped, { kind: 'operation-started' })
+      await delegated.reportExecution(scoped, { kind: 'operation-completed' })
+      const views = await lifecycle.inspect({ cwd: leadRepo })
+      assert.ok(
+        views.every(view => view.origin === 'pre-existing'),
+        `no worktree was allocated: ${JSON.stringify(views)}`
+      )
+      assert.ok(
+        views.some(
+          view =>
+            view.path === leadRepo &&
+            view.taskId === grant.taskId &&
+            view.reservationId === grant.reservationId
+        ),
+        JSON.stringify(views)
+      )
+      await expectWorkspaceError(
+        delegated.authorize({ kind: 'foreign-write', cwd: delegated.binding.cwd }),
+        'invalid'
+      )
+    }
+  )
+
+  await claim(
+    'managed nested native admission requires the caller attachment and a live writer grant; metadata, another managed workspace, forged and read-only callers stay refused with a next step',
+    async () => {
+      const scoped = await openLifecycle({ root: join(sandbox, 'native-scope-authority') })
+      const owner = await scoped.attach({ conversation: conversation('native-scope'), cwd: repo })
+      const stranger = await scoped.attach({
+        conversation: conversation('native-stranger'),
+        cwd: repo,
+      })
+      try {
+        const caller = ready(await owner.authorize({ kind: 'delegated-write' }))
+        const other = ready(await owner.authorize({ kind: 'delegated-write' }))
+        const reader = ready(await owner.authorize({ kind: 'read' }))
+        const nested = join(caller.checkout, 'nested')
+        const otherNested = join(other.checkout, 'nested')
+        initRepository(nested, 'file.txt', 'nested\n')
+        initRepository(otherNested, 'file.txt', 'other nested\n')
+        for (const [cwd, grant, reason] of [
+          [nested, undefined, /outside the caller's authorized workspace.*ask the conversation/],
+          [otherNested, caller, /outside the caller's authorized workspace.*ask the conversation/],
+          [nested, reader, /no workspace writer grant.*writing lead or child/],
+          [caller.checkout, caller, /destination is in the caller's repository.*write the file/],
+          [scoped.effect.root, caller, /authority metadata.*select a project checkout/],
+        ] as const)
+          await assert.rejects(
+            owner.authorize({
+              kind: 'foreign-write',
+              cwd,
+              ...(grant === undefined ? {} : { caller: grant }),
+            }),
+            reason
+          )
+        await assert.rejects(
+          stranger.authorize({ kind: 'foreign-write', cwd: nested, caller }),
+          /belongs to another attachment.*retry from the current workspace/
+        )
+        await assert.rejects(
+          owner.authorize({
+            kind: 'foreign-write',
+            cwd: otherNested,
+            caller: { ...caller, checkout: other.checkout },
+          }),
+          /stale or was not issued/
+        )
+        const metadata = join(caller.checkout, '.dev', 'coordination')
+        mkdirSync(metadata, { recursive: true })
+        await assert.rejects(
+          owner.authorize({ kind: 'foreign-write', cwd: metadata, caller }),
+          /coordination metadata.*select a project file/
+        )
+        await assert.rejects(
+          owner.authorize({ kind: 'delegated-write', cwd: nested }),
+          /inside dev authority storage.*select a source checkout outside/
+        )
+        const execution = processExecution('native-scope-child')
+        const unstarted = ready(await owner.authorize({ kind: 'delegated-write', execution }))
+        const childNested = join(unstarted.checkout, 'nested')
+        initRepository(childNested, 'file.txt', 'child nested\n')
+        await assert.rejects(
+          owner.authorize({ kind: 'foreign-write', cwd: childNested, caller: unstarted }),
+          /no longer active.*retry from the current authorized workspace/
+        )
+        await startProcessUse(owner, unstarted, execution)
+        const childGrant = ready(
+          await owner.authorize({ kind: 'foreign-write', cwd: childNested, caller: unstarted })
+        )
+        assert.equal(childGrant.checkout, childNested)
+        await endProcessUse(owner, unstarted)
+        await assert.rejects(
+          owner.authorize({ kind: 'foreign-write', cwd: childNested, caller: unstarted }),
+          /no longer active|stale/
+        )
+        const admitted = ready(
+          await owner.authorize({ kind: 'foreign-write', cwd: nested, caller })
+        )
+        assert.equal(admitted.checkout, nested)
+        assert.equal(admitted.origin, 'pre-existing')
+        assert.notEqual(admitted.taskId, caller.taskId)
+        assert.equal((await scoped.inspect({ cwd: nested })).length, 1)
+      } finally {
+        await stranger.close()
+        await owner.close()
+        await scoped.close()
+      }
+    }
+  )
+
+  await claim(
     'workspace switch refusals distinguish lead-shell recovery from work cancellation, even when a work task is named lead-shell',
     async () => {
       const guidanceRoot = await openLifecycle({ root: join(sandbox, 'guidance-authority') })

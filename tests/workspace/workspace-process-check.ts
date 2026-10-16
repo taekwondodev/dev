@@ -101,7 +101,7 @@ try {
     const checkoutScope = { checkout: cwd, authorityRoot: authority.effect.root }
     const validatePath = async (path: string) => classifyWriteDestination(checkoutScope, cwd, path)
     await claim(
-      'native writes classify external aliases and refuse traversal, foreign checkouts, metadata and hard links',
+      'native writes classify external aliases and other repositories, redirect other worktrees of the bound repository, and refuse traversal, metadata and hard links',
       async () => {
         await validatePath('new/directory/file.txt')
         await assert.rejects(validatePath('../escape.txt'), /traverse/)
@@ -136,10 +136,29 @@ try {
         )
         const foreign = join(root, 'foreign')
         await exec('git', ['init', '--quiet', foreign])
-        await assert.rejects(validatePath(join(foreign, 'missing', 'file.txt')), /another checkout/)
+        assert.deepEqual(await validatePath(join(foreign, 'missing', 'file.txt')), {
+          kind: 'foreign',
+          operand: join(foreign, 'missing', 'file.txt'),
+          path: join(foreign, 'missing', 'file.txt'),
+          checkout: foreign,
+        })
         const linked = join(root, 'linked')
         await exec('git', ['-C', cwd, 'worktree', 'add', '--quiet', '--detach', linked, 'HEAD'])
-        await assert.rejects(validatePath(join(linked, 'file.txt')), /another checkout/)
+        await assert.rejects(validatePath(join(linked, 'tracked.txt')), error => {
+          const message = String((error as Error).message)
+          return (
+            /another worktree of this repository/.test(message) &&
+            message.includes(`instead: ${join(cwd, 'tracked.txt')}`)
+          )
+        })
+        await assert.rejects(validatePath(join(linked, 'new', 'file.txt')), error => {
+          const message = String((error as Error).message)
+          return (
+            /another worktree of this repository/.test(message) &&
+            message.includes('new/file.txt does not exist in the current workspace') &&
+            message.includes(`write ${join(cwd, 'new', 'file.txt')}`)
+          )
+        })
         await writeFile(join(outside, 'HEAD'), 'ordinary configuration')
         await mkdir(join(outside, 'refs'))
         assert.equal((await validatePath(join(outside, 'file.txt'))).kind, 'external')
@@ -151,9 +170,9 @@ try {
         await exec('git', ['init', '--bare', '--quiet', bare])
         await assert.rejects(validatePath(join(bare, 'config')), /administrative/)
         await symlink(foreign, join(outside, 'foreign-alias'))
-        await assert.rejects(
-          validatePath(join(outside, 'foreign-alias', 'file.txt')),
-          /another checkout/
+        assert.equal(
+          (await validatePath(join(outside, 'foreign-alias', 'file.txt'))).kind,
+          'foreign'
         )
         await writeFile(join(outside, 'file-parent'), 'sentinel')
         await assert.rejects(
@@ -173,7 +192,15 @@ try {
         assert.ok(!existsSync(join(outside, 'file.txt')))
         await link(join(cwd, 'tracked.txt'), join(cwd, 'hardlink.txt'))
         await mkdir(join(cwd, 'nested', '.git'), { recursive: true })
-        await assert.rejects(validatePath('nested/file.txt'), /nested repository/)
+        await assert.rejects(validatePath('nested/file.txt'), /unrecognized \.git entry/)
+        const nestedClone = join(cwd, 'nested-clone')
+        await exec('git', ['init', '--quiet', nestedClone])
+        assert.deepEqual(await validatePath('nested-clone/file.txt'), {
+          kind: 'foreign',
+          operand: join(nestedClone, 'file.txt'),
+          path: join(nestedClone, 'file.txt'),
+          checkout: nestedClone,
+        })
         await assert.rejects(validatePath('hardlink.txt'), /hard links/)
       }
     )

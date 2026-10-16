@@ -342,7 +342,96 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; the lead's native writes there stay refused; a leaf cannot name a cwd",
+      'a writing child writes and edits a repository nested in its own managed workspace through its controller, without rebinding or allocating another workspace',
+      async () => {
+        const writer = await owner.run({
+          taskId: 'managed-nested-writer',
+          access: 'write',
+          prompt: phase(
+            'nested native writes',
+            [
+              toolCall('nested-init', 'bash', {
+                command:
+                  'git init --quiet -b main nested-repo && git -C nested-repo -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet --allow-empty -m fixture',
+              }),
+            ],
+            [
+              toolCall('nested-write', 'write', {
+                path: 'nested-repo/from-child.txt',
+                content: 'one',
+              }),
+            ],
+            [
+              toolCall('nested-edit', 'edit', {
+                path: 'nested-repo/from-child.txt',
+                oldText: 'one',
+                newText: 'two',
+              }),
+            ]
+          ),
+        })
+        assertStatus(writer.view, 'completed')
+        const checkout = writer.view.worktree?.path
+        assert.ok(checkout, writer.text)
+        const nested = join(checkout, 'nested-repo')
+        assert.equal(readFileSync(join(nested, 'from-child.txt'), 'utf8'), 'two')
+        const views = await fixture.lifecycle.inspect({ cwd: nested })
+        assert.equal(views.length, 1, JSON.stringify(views))
+        assert.equal(views[0]?.origin, 'pre-existing')
+        assert.equal(views[0]?.path, nested)
+        assert.ok(views[0]?.reservationId !== undefined)
+        assert.ok(fixture.attachment.effect.delegatedCwds.includes(nested))
+        assert.equal(fixture.attachment.binding.cwd, fixture.repository)
+        assert.ok(!existsSync(join(fixture.repository, 'nested-repo')))
+      }
+    )
+    await claim(
+      "a writing child's native write into another repository reserves that checkout for the lead conversation through the controller and writes in place without a worktree",
+      async () => {
+        const third = join(fixture.root, 'third-repo')
+        mkdirSync(third)
+        fixture.git(['init', '--quiet', '-b', 'main'], third)
+        fixture.git(['config', 'user.email', 'work-check@example.invalid'], third)
+        fixture.git(['config', 'user.name', 'work check'], third)
+        fixture.git(['config', 'commit.gpgsign', 'false'], third)
+        writeFileSync(join(third, 'tracked.txt'), 'third committed\n')
+        fixture.git(['add', '.'], third)
+        fixture.git(['commit', '--quiet', '-m', 'third fixture'], third)
+        const target = join(third, 'from-child.txt')
+        assert.deepEqual(
+          await fixture.lifecycle.inspect({ cwd: third }),
+          [],
+          'the third repository is unknown to the authority before the child writes'
+        )
+        assert.ok(!fixture.attachment.effect.delegatedCwds.includes(third))
+
+        const writer = await owner.run({
+          taskId: 'third-writer',
+          access: 'write',
+          prompt: `Third writer\n${script([
+            [toolCall('tw', 'write', { path: target, content: 'reserved by child\n' })],
+            [toolCall('te', 'edit', { path: target, oldText: 'child', newText: 'the child' })],
+          ])}`,
+        })
+        assertStatus(writer.view, 'completed')
+        assert.equal(readFileSync(target, 'utf8'), 'reserved by the child\n')
+        const thirdViews = await fixture.lifecycle.inspect({ cwd: third })
+        assert.ok(
+          thirdViews.every(view => view.origin === 'pre-existing'),
+          `no worktree was allocated: ${JSON.stringify(thirdViews)}`
+        )
+        assert.ok(
+          thirdViews.some(
+            view =>
+              view.path === third && view.reservationId !== undefined && view.taskId !== undefined
+          ),
+          JSON.stringify(thirdViews)
+        )
+        assert.ok(fixture.attachment.effect.delegatedCwds.includes(third))
+      }
+    )
+    await claim(
+      "a child delegated into another checkout writes in a managed worktree of that checkout, loads that repository's project instructions and delivers with the foreign worktree path; a read-only child reads that checkout directly; a leaf cannot name a cwd",
       async () => {
         const foreign = join(fixture.root, 'foreign-repo')
         mkdirSync(foreign)
@@ -419,12 +508,8 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           authorityRoot: fixture.lifecycle.effect.root,
         }
         assert.throws(
-          () => classifyWriteDestination(leadScope, fixture.repository, join(foreign, 'lead.txt')),
-          /another checkout/
-        )
-        assert.throws(
           () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),
-          /authority metadata or another managed workspace/
+          /another managed workspace; ask its owning conversation/
         )
 
         const tree = await owner.run({
