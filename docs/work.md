@@ -102,7 +102,7 @@ Retention keeps seven days from completion and the newest 64 completed results w
 
 Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the Node minimum in `package.json` and an embedded SQLite with the [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug); the Node number alone does not establish safety.
 
-Invalid or corrupt storage is refused, not rebuilt from logs. If the database is corrupt at session startup, work stays unavailable and the interface shows reset instructions instead of an extension stack trace. The command uses the active data home and deletes the attempt database, its sidecars and the attempt logs and results. Stop all dev sessions and maintenance operations using that data home before running it, then restart dev. Nothing is deleted automatically; resetting attempts does not release workspace reservations or resolve workspace uses.
+Invalid or corrupt storage is refused, not rebuilt from logs. If the database is corrupt at session startup, work stays unavailable and a notification provides manual reset instructions for the active data home instead of an extension stack trace.
 
 Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
 
