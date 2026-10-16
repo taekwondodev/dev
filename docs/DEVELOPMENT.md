@@ -35,7 +35,7 @@ Forking before the first user message can fail after a workspace rebind. [Issue 
 
 Choose checks for the affected boundary. The commands and their full composition are in `package.json`; these are their purposes and non-obvious limits.
 
-Tests follow integration boundaries and use disposable storage. `workspace:check` runs its files concurrently through `tests/run-checks.ts`, which prints each file's buffered output and fails when any file fails; a file there must not share storage, processes or ports with another. Profile fixtures come from `tests/profile-fixture.ts` through `DEV_PROFILES`, so checks also run in worktrees without personal profiles. Keep scripted models, injected resolvers and fault controls in test composition roots; production must not load test entries or test-selection variables.
+Tests follow integration boundaries and use disposable storage. Profile fixtures come from `tests/profile-fixture.ts` through `DEV_PROFILES`, so checks also run in worktrees without personal profiles. Keep scripted models, injected resolvers and fault controls in test composition roots; production must not load test entries or test-selection variables.
 
 | Check                      | Evidence                                                                                                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
