@@ -62,7 +62,7 @@ External permits provide neither cross-session file locking nor cleanup ownershi
 
 A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; no explicit recovery command exists yet.
 
-Dev confirms the checkout's identity before it releases user code and before it settles a use. A command whose checkout was replaced before release never runs. A checkout replaced while a command runs, including by the command itself, does not end observation: stopping the shell still kills its family, and the use ends `unknown` instead of `quiescent`.
+A command whose checkout was replaced before user code is released never runs. A checkout replaced while a command runs, including by the command itself, does not end observation: stopping the shell still kills its family, and the use ends `unknown` instead of `quiescent`.
 
 A child's use becomes `quiescent` after observed termination or failure before process launch. It stops blocking once no other use, binding or pending switch needs access; its reservation and files remain until release.
 
