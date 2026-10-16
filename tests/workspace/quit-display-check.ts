@@ -277,6 +277,7 @@ await claim(
   'release results count success without paths and leave full task commands for failures',
   () => {
     const result = {
+      kind: 'workspace' as const,
       repositoryId: id('1000'),
       workspaceId: id('1001'),
       path: '/worktrees/one',
@@ -287,6 +288,40 @@ await claim(
     assert.equal(
       formatQuitReleaseResults(undelivered.taskId, [result], plain),
       '✓ 1 worktree removed'
+    )
+    const artifacts = {
+      kind: 'task-artifacts' as const,
+      taskId: undelivered.taskId,
+      path: '/authority/artifacts/task',
+      outcome: 'removed' as const,
+      reason: 'The task reserves no workspace, so its artifact directory was removed.',
+    }
+    assert.equal(
+      formatQuitReleaseResults(undelivered.taskId, [result, artifacts], plain),
+      '✓ 1 worktree removed · ✓ 1 task artifact directory removed'
+    )
+    const unreviewed = formatQuitReleaseResults(
+      undelivered.taskId,
+      [{ ...artifacts, outcome: 'review-required', reason: 'not a plain directory' }],
+      plain
+    )
+    assert.ok(unreviewed.includes(`dev workspace release ${undelivered.taskId}`), unreviewed)
+    assert.equal(
+      formatQuitReceipt({ moment: 'quit', rows: [artifacts] }, 100, plain),
+      '✓ 1 task artifact directory removed · 0.1s',
+      'a removed artifact directory is counted and needs no follow-up'
+    )
+    const review = formatQuitReceipt(
+      {
+        moment: 'quit',
+        rows: [{ ...artifacts, outcome: 'review-required', reason: 'The entry is a link.' }],
+      },
+      100,
+      plain
+    )
+    assert.ok(
+      review.includes(`dev workspace inspect ${undelivered.taskId}\nStatus: The entry is a link.`),
+      review
     )
     const failed = formatQuitReleaseResults(
       undelivered.taskId,

@@ -93,16 +93,16 @@ Independent repositories can share a data home. See [workspace session commands]
 
 ## State
 
-| Location                                                 | Content                                                                                                                       |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Installation checkout                                    | Code, version-controlled `config/crew-dispatch.json` and the ignored personal `profiles/` directory                           |
-| Working project                                          | Project files and native project instructions                                                                                 |
-| `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
-| `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
-| `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
-| `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
-| Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |
-| `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates and managed worktrees                                                                   |
+| Location                                                 | Content                                                                                                                                   |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Installation checkout                                    | Code, version-controlled `config/crew-dispatch.json` and the ignored personal `profiles/` directory                                       |
+| Working project                                          | Project files and native project instructions                                                                                             |
+| `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation             |
+| `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                                     |
+| `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                                          |
+| `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                                          |
+| Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                                         |
+| `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates, managed worktrees and `artifacts/<task>/` [task artifact directories](workspace.md#task-artifacts) |
 
 `--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, profiles, authentication, installation coordination and workspace authority keep their own locations. `/login` updates the shared Pi credential store. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
 

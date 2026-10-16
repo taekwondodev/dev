@@ -10,6 +10,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,10 +28,12 @@ import {
   type WorkspaceId,
 } from '../../src/workspace-domain.ts'
 import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
+import { authorityPaths, taskArtifactsPath } from '../../src/workspace-authority-root.ts'
 import { formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
 import { makeGitHubReader, type GitHubReader } from '../../src/workspace-evidence.ts'
 import {
   checkTask,
+  removeOrphanArtifacts,
   sweepDeadline,
   sweepRepositoryAtClose,
   type EvidenceReaders,
@@ -79,6 +82,11 @@ const taskOf = (grant: WorkspaceGrant): WorkspaceId => {
   return grant.taskId
 }
 type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
+type ArtifactsRow = Extract<SweepRow, { readonly kind: 'task-artifacts' }>
+const artifactsRowOf = (receipt: SweepReceipt, taskId: WorkspaceId): ArtifactsRow | undefined =>
+  receipt.rows.find(
+    (entry): entry is ArtifactsRow => entry.kind === 'task-artifacts' && entry.taskId === taskId
+  )
 const rowOf = (receipt: SweepReceipt, workspaceId: WorkspaceId): WorkspaceRow => {
   const row = receipt.rows.find(
     (entry): entry is WorkspaceRow =>
@@ -1109,7 +1117,9 @@ try {
           row.reason
         )
         const released = await lifecycle.release(interrupted.owner.taskId)
-        const removal = released.find(item => item.workspaceId === interrupted.managed.workspaceId)
+        const removal = released.find(
+          item => item.kind === 'workspace' && item.workspaceId === interrupted.managed.workspaceId
+        )
         assert.equal(removal?.outcome, 'removed', JSON.stringify(removal))
         assert.equal(existsSync(interrupted.managed.checkout), false)
       }
@@ -1138,7 +1148,11 @@ try {
         ['retained', 'retained:directory-missing']
       )
       const released = await lifecycle.release(goneOwner.taskId)
-      assert.equal(released.find(item => item.workspaceId === gone.workspaceId)?.outcome, 'removed')
+      assert.equal(
+        released.find(item => item.kind === 'workspace' && item.workspaceId === gone.workspaceId)
+          ?.outcome,
+        'removed'
+      )
       assert.ok(!existsSync(adminPath), 'the targeted registration is gone')
       assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(gone.checkout))
       assert.equal(
@@ -1295,9 +1309,104 @@ try {
       assert.equal(sweepExitCode(later), 0, 'a retained workspace is not an attempt')
 
       const settled = await lifecycle.release(owner.taskId)
-      const removal = settled.find(item => item.workspaceId === managed.workspaceId)
+      const removal = settled.find(
+        item => item.kind === 'workspace' && item.workspaceId === managed.workspaceId
+      )
       assert.equal(removal?.outcome, 'removed', JSON.stringify(removal))
       assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(managed.checkout))
+    }
+  )
+
+  await claim(
+    'a task artifact directory is writable only for the bound task, survives while the task reserves a workspace, goes when the last reservation ends, and orphan directories are removed at a closing sweep while links and foreign entries are left for review',
+    async () => {
+      const owner = await reserve(userCheckout('artifacts'))
+      const paths = authorityPaths(root)
+      const artifacts = taskArtifactsPath(paths, owner.taskId)
+      const scoped = { checkout: owner.write.checkout, authorityRoot: root, taskId: owner.taskId }
+      const classify = (writeScope: typeof scoped | Omit<typeof scoped, 'taskId'>, path: string) =>
+        classifyWriteDestination(writeScope, owner.write.cwd, path)
+      assert.equal(classify(scoped, join(artifacts, 'pr-body.md')).kind, 'artifact')
+      assert.equal(classify(scoped, join(artifacts, 'logs', 'audit.log')).kind, 'artifact')
+      assert.equal(
+        classify(scoped, join(owner.write.checkout, 'tracked.txt')).kind,
+        'workspace',
+        'checkout writes keep their classification'
+      )
+      const { taskId: _omitted, ...withoutTask } = scoped
+      for (const [writeScope, path, reason] of [
+        [withoutTask, join(artifacts, 'pr-body.md'), 'a scope without a task'],
+        [scoped, join(taskArtifactsPath(paths, newId()), 'pr-body.md'), "another task's directory"],
+        [scoped, artifacts, 'the directory itself'],
+        [scoped, join(paths.artifacts, 'notes.md'), 'the artifacts root'],
+        [scoped, join(root, 'catalog.sqlite'), 'authority metadata'],
+      ] as const) {
+        assert.throws(
+          () => classify(writeScope, path),
+          (cause: unknown) =>
+            cause instanceof WorkspaceError && cause.message.includes('dev authority metadata'),
+          `${reason} is refused`
+        )
+      }
+
+      mkdirSync(artifacts, { recursive: true })
+      writeFileSync(join(artifacts, 'pr-body.md'), 'body\n')
+      const live = await sweepAtQuit(owner.write.workspaceId)
+      assert.equal(rowOf(live, owner.write.workspaceId).outcome, 'retained')
+      assert.ok(
+        !live.rows.some(row => row.kind === 'task-artifacts' && row.taskId === owner.taskId),
+        'a reserved task keeps its artifacts unreported'
+      )
+      assert.ok(existsSync(join(artifacts, 'pr-body.md')))
+
+      await owner.owner.close()
+      const released = await sweepAtQuit(owner.write.workspaceId)
+      assert.deepEqual(
+        [
+          rowOf(released, owner.write.workspaceId).outcome,
+          verdictName(rowOf(released, owner.write.workspaceId).verdict),
+        ],
+        ['released', 'clean-checkout']
+      )
+      const artifactsRow = artifactsRowOf(released, owner.taskId)
+      assert.equal(artifactsRow?.outcome, 'removed', JSON.stringify(released.rows))
+      assert.equal(existsSync(artifacts), false, 'the directory left with the reservation')
+      assert.equal(sweepExitCode(released), 0)
+      assert.ok(formatSweepReceipt(released).includes(`task artifacts at ${artifacts}`))
+
+      const orphanTask = newId()
+      const orphan = taskArtifactsPath(paths, orphanTask)
+      mkdirSync(orphan, { recursive: true })
+      writeFileSync(join(orphan, 'junk.txt'), 'junk\n')
+      writeFileSync(join(paths.artifacts, 'notes.txt'), 'not a task\n')
+      const linkedTask = newId()
+      const elsewhere = join(sandbox, 'linked-artifacts')
+      mkdirSync(elsewhere)
+      writeFileSync(join(elsewhere, 'keep.txt'), 'keep\n')
+      symlinkSync(elsewhere, taskArtifactsPath(paths, linkedTask))
+      const authority = new WorkspaceAuthority(root)
+      assert.deepEqual(
+        removeOrphanArtifacts(authority, () => true),
+        [],
+        'an expired budget removes nothing and reports nothing'
+      )
+      assert.ok(existsSync(orphan), 'the orphan waits for a later closing sweep')
+      const orphans = await sweepAtQuit(owner.write.workspaceId)
+      const orphanRow = artifactsRowOf(orphans, orphanTask)
+      assert.equal(orphanRow?.outcome, 'removed', JSON.stringify(orphans.rows))
+      assert.equal(existsSync(orphan), false)
+      const linkedRow = artifactsRowOf(orphans, linkedTask)
+      assert.equal(linkedRow?.outcome, 'review-required', JSON.stringify(orphans.rows))
+      assert.ok(existsSync(join(elsewhere, 'keep.txt')), 'a link target is never deleted')
+      assert.ok(existsSync(join(paths.artifacts, 'notes.txt')), 'a foreign entry stays untouched')
+      assert.equal(sweepExitCode(orphans), 1, 'an entry left for review is not a terminal outcome')
+      rmSync(taskArtifactsPath(paths, linkedTask))
+      const settled = await sweepAtQuit(owner.write.workspaceId)
+      assert.ok(
+        !settled.rows.some(row => row.kind === 'task-artifacts'),
+        JSON.stringify(settled.rows)
+      )
+      assert.equal(sweepExitCode(settled), 0)
     }
   )
 

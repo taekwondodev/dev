@@ -1,6 +1,7 @@
-import { lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { dirname, join, resolve } from 'node:path'
+import { Option, Schema } from 'effect'
 import {
   inDb,
   taskWorkspaces,
@@ -31,11 +32,13 @@ import {
   type SweepReceipt,
   type SweepRow,
   type TargetView,
+  type TaskArtifactsResult,
   type TaskTarget,
   type WorkspaceAssessment,
   type WorkspaceReleaseResult,
   WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
+import { taskArtifactsPath } from './workspace-authority-root.ts'
 import {
   deriveTarget,
   describeTarget,
@@ -92,7 +95,7 @@ import {
 import { errorText } from './error-text.ts'
 import { holdExistingInstallationForRemoval } from './runtime-coordination.ts'
 import { rows, textField, transaction } from './workspace-sqlite.ts'
-import { hasErrorCode, newId, now } from './workspace-platform.ts'
+import { hasErrorCode, lstatIfExists, newId, now } from './workspace-platform.ts'
 
 export interface EvidenceReaders {
   readonly github: GitHubReader
@@ -472,7 +475,13 @@ const stageWorkspace = (
       ...(inventory === undefined ? {} : { residue: residueOf(inventory) }),
     })
     const residual = residualOf(inventory, head)
-    if (uses.inUse) return shape({ reasons, nextActions: uses.nextActions, residual, completion })
+    if (uses.inUse)
+      return shape({
+        reasons,
+        nextActions: uses.nextActions,
+        residual,
+        completion,
+      })
     return shape({
       reasons: [
         ...reasons,
@@ -491,7 +500,9 @@ const stageWorkspace = (
   let branch: string | undefined
   let ownCommits: boolean | undefined
   const publications = getPublications(db, reservation.taskId).filter(
-    reference => reference.workspaceId === undefined || reference.workspaceId === workspace.id
+    reference =>
+      reference.root === 'workspace' &&
+      (reference.workspaceId === undefined || reference.workspaceId === workspace.id)
   )
   const override = getTask(db, reservation.taskId)?.target
   try {
@@ -555,7 +566,11 @@ const stageWorkspace = (
       target,
     }
     if (uses.inUse)
-      return shape({ ...common, reasons: uses.reasons, nextActions: uses.nextActions })
+      return shape({
+        ...common,
+        reasons: uses.reasons,
+        nextActions: uses.nextActions,
+      })
     if (evidence.verdict !== 'valid')
       return shape(
         {
@@ -938,7 +953,10 @@ const attemptUnderGates = (
     return assessWorkspace(authority, db, repo, reservation, workspace, readers, context, siblings)
   })
   if (fresh === undefined)
-    return { outcome: 'retained', reason: 'The workspace is no longer reserved; nothing changed.' }
+    return {
+      outcome: 'retained',
+      reason: 'The workspace is no longer reserved; nothing changed.',
+    }
   const { completion } = fresh.assessment
   if (completion.kind !== 'finished')
     return {
@@ -946,7 +964,10 @@ const attemptUnderGates = (
       reason: `It is no longer finished (${completion.reason}); nothing changed.`,
     }
   if (fresh.blockers.length > 0)
-    return { outcome: 'retained', reason: `${fresh.blockers.join(' ')} Nothing changed.` }
+    return {
+      outcome: 'retained',
+      reason: `${fresh.blockers.join(' ')} Nothing changed.`,
+    }
   if (fresh.workspace.origin === 'pre-existing')
     return releaseFinishedReservation(authority, repo, fresh, input.moment)
   const inside = input.occupiedPaths.filter(path => isWithin(fresh.workspace.path, path))
@@ -1065,9 +1086,10 @@ const disposeWorktree = (authority: WorkspaceAuthority, workspace: WorkspaceReco
 const releaseResult = (
   repo: WorkspaceId,
   workspace: WorkspaceRecord,
-  outcome: WorkspaceReleaseResult['outcome'],
+  outcome: Extract<WorkspaceReleaseResult, { readonly kind: 'workspace' }>['outcome'],
   reason: string
 ): WorkspaceReleaseResult => ({
+  kind: 'workspace',
   repositoryId: repo,
   workspaceId: workspace.id,
   path: workspace.path,
@@ -1075,6 +1097,88 @@ const releaseResult = (
   outcome,
   reason,
 })
+
+export const removeTaskArtifacts = (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId
+): TaskArtifactsResult | undefined => {
+  const path = taskArtifactsPath(authority.paths, taskId)
+  const info = lstatIfExists(path)
+  if (info === undefined) return undefined
+  if (taskWorkspaces(authority, taskId).length > 0) return undefined
+  const row = (outcome: TaskArtifactsResult['outcome'], reason: string): TaskArtifactsResult => ({
+    kind: 'task-artifacts',
+    taskId,
+    path,
+    outcome,
+    reason,
+  })
+  if (info.isSymbolicLink() || !info.isDirectory())
+    return row(
+      'review-required',
+      'The task artifact entry is not a plain directory, so dev did not delete it; inspect and remove it by hand.'
+    )
+  try {
+    if (realpathSync(authority.paths.artifacts) !== authority.paths.artifacts)
+      return row(
+        'review-required',
+        'The artifacts root is reached through a symbolic link, so dev did not delete inside it.'
+      )
+    rmSync(path, { recursive: true, force: true })
+  } catch (cause) {
+    return row(
+      'review-required',
+      `The task artifact directory was not deleted: ${errorText(cause)}`
+    )
+  }
+  if (lstatIfExists(path) !== undefined)
+    return row(
+      'review-required',
+      'The task artifact directory still exists after deletion; the next sweep at quit tries again.'
+    )
+  return row('removed', 'The task reserves no workspace, so its artifact directory was removed.')
+}
+
+const reportTaskArtifacts = (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId
+): TaskArtifactsResult | undefined => {
+  try {
+    return removeTaskArtifacts(authority, taskId)
+  } catch (cause) {
+    return {
+      kind: 'task-artifacts',
+      taskId,
+      path: taskArtifactsPath(authority.paths, taskId),
+      outcome: 'review-required',
+      reason: `The task artifact directory could not be assessed: ${errorText(cause)}`,
+    }
+  }
+}
+
+const decodeTaskId = Schema.decodeUnknownOption(WorkspaceId)
+
+export const removeOrphanArtifacts = (
+  authority: WorkspaceAuthority,
+  expired: () => boolean = () => false
+): readonly TaskArtifactsResult[] => {
+  let entries: string[]
+  try {
+    entries = readdirSync(authority.paths.artifacts)
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT')) return []
+    throw cause
+  }
+  const results: TaskArtifactsResult[] = []
+  for (const entry of entries.toSorted()) {
+    if (expired()) break
+    const taskId = decodeTaskId(entry)
+    if (Option.isNone(taskId)) continue
+    const result = reportTaskArtifacts(authority, taskId.value)
+    if (result !== undefined) results.push(result)
+  }
+  return results
+}
 
 const removeForUser = (
   authority: WorkspaceAuthority,
@@ -1162,7 +1266,7 @@ export const releaseTask = (
   taskId: WorkspaceId
 ): readonly WorkspaceReleaseResult[] => {
   if (authority.inspectExisting() === undefined) return []
-  return taskWorkspaces(authority, taskId).map(({ repo, reservation, workspace }) => {
+  const results = taskWorkspaces(authority, taskId).map(({ repo, reservation, workspace }) => {
     let structure: GateRelease | undefined
     try {
       if (workspace.origin === 'pre-existing')
@@ -1180,6 +1284,9 @@ export const releaseTask = (
       structure?.()
     }
   })
+  if (results.length === 0) return results
+  const artifacts = reportTaskArtifacts(authority, taskId)
+  return artifacts === undefined ? results : [...results, artifacts]
 }
 
 export interface SweepInput {
@@ -1205,6 +1312,7 @@ interface SweepRun {
   readonly fail: (taskId: WorkspaceId, cause: unknown) => void
   readonly abort: (cause: unknown) => void
   readonly settle: (index: number, taskId: WorkspaceId, assessed: readonly Assessed[]) => boolean
+  readonly orphans: () => void
   readonly receipt: () => SweepReceipt
 }
 
@@ -1289,7 +1397,11 @@ const startSweep = (
           continue
         }
         if (entry.blockers.length > 0) {
-          receipt.push({ ...row, outcome: 'retained', reason: entry.blockers.join(' ') })
+          receipt.push({
+            ...row,
+            outcome: 'retained',
+            reason: entry.blockers.join(' '),
+          })
           continue
         }
         if (now() >= input.deadline) {
@@ -1311,6 +1423,10 @@ const startSweep = (
             reason: result.reason,
             ...(result.operationId === undefined ? {} : { operationId: result.operationId }),
           })
+          if (result.outcome === 'released' || result.outcome === 'removed') {
+            const artifacts = reportTaskArtifacts(authority, taskId)
+            if (artifacts !== undefined) receipt.push(artifacts)
+          }
         } catch (cause) {
           receipt.push({
             ...row,
@@ -1323,6 +1439,16 @@ const startSweep = (
         }
       }
       return false
+    },
+    orphans: () => {
+      const reported = new Set(
+        receipt.flatMap(row => (row.kind === 'task-artifacts' ? [row.taskId] : []))
+      )
+      receipt.push(
+        ...removeOrphanArtifacts(authority, () => now() >= input.deadline).filter(
+          row => !reported.has(row.taskId)
+        )
+      )
     },
     receipt: () => ({ moment: input.moment, rows: receipt }),
   }
@@ -1371,6 +1497,7 @@ export const sweepRepositoryAtClose = async (
       }
       if (sweep.settle(index, taskId, assessed)) break
     }
+    sweep.orphans()
   } catch (cause) {
     sweep.abort(cause)
   }
