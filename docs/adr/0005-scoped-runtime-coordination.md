@@ -10,7 +10,7 @@ Use separate SQLite rollback-journal lock databases rather than a global mutex o
 
 The authority is account-wide because installation-local claims cannot coordinate one repository across data homes. Readers and writers share checkout presence; writers additionally hold the writer gate. Dev's structural Git effects take a repository gate, but ordinary commands must not fence every linked worktree. Acquire structure, canonical path slots, then short record transactions; duplicate slot requests coalesce to writer access if any request writes.
 
-A free gate does not prove a dead controller's descendants are gone. Durable use facts, acquisition/binding fences and physical identities remain necessary. Persist volume UUID plus lossless inode, not reboot-unstable `st_dev`. Resolve paths in one bounded Foundation observation and refuse lookup failures or object races rather than falling back to path names. Current validation remains required under the [single-schema rule](../../AGENTS.md#boundaries).
+A free gate does not prove a dead controller's descendants are gone. Durable use facts, acquisition/binding fences and physical identities remain necessary. Persist volume UUID plus lossless inode, not reboot-unstable `st_dev`. Resolve paths in one bounded Foundation observation and refuse lookup failures or object races rather than falling back to path names. Each observing thread keeps one long-lived Foundation helper and asks it afresh for every observation; a failed or late answer refuses and replaces the helper. No device-to-volume cache: a remounted volume can reuse a device number ([#64](https://github.com/taekwondodev/dev/issues/64), [#177](https://github.com/taekwondodev/dev/issues/177)). Current validation remains required under the [single-schema rule](../../AGENTS.md#boundaries).
 
 ## Scoped workspace operations
 
@@ -103,6 +103,7 @@ Deliberate departures from the Effect guide:
 - `runGit` in `src/pi-child.ts` and `readHead` in `src/workspace-tool.ts` use `node:child_process` because the Effect spawner hides the terminating signal, changing model-visible errors.
 - Startup's `git rev-parse` in `src/preferences.ts` and `which pi` in `src/pi-runtime.ts` also stay there: they are short, uninterrupted commands for which the spawner added measurable startup time.
 - The URL reader's `src/web-network.ts` issues requests through `node:http` and `node:https` directly, because its network policy pins each connection to a validated address through the request's `lookup` option and revalidates every redirect itself; a generic HTTP client would resolve names again. `src/web-browser.ts` spawns Chrome with `node:child_process` because the DevTools pipe needs file descriptors 3 and 4, which the Effect spawner does not expose.
+- `src/workspace-identity.ts` and `src/workspace-volume-helper.ts` use `node:worker_threads` and `node:child_process` directly: synchronous authority code blocks on the helper through `Atomics.wait`, so no Effect runtime can run on that thread during the lookup.
 - `allowedUnstableApis` admits only the modules needed from the pinned release, not all Effect APIs; no stable alternatives exist for the admitted integrations.
 - The authority client is a lazily opened scoped Effect passed by argument, not a layer-provided service that would start the worker for help or diagnostics.
 
