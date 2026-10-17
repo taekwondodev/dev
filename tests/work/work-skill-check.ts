@@ -8,6 +8,11 @@ import { assertStatus, openWorkFixture, script } from './work-check-support.ts'
 const count = (text: string, part: string): number => text.split(part).length - 1
 
 const fixture = await openWorkFixture('work-skill')
+const catalogOf = (attemptId: string): readonly string[] =>
+  fixture
+    .modelCalls()
+    .filter(line => line.startsWith(`catalog:${attemptId}:`))
+    .map(line => line.slice(`catalog:${attemptId}:`.length).split(',').filter(Boolean))[0] ?? []
 const { claim, passed } = makeClaims()
 try {
   const alpha = fixture.writeSkill('alpha', 'ALPHA-BODY follow the alpha procedure.')
@@ -102,7 +107,20 @@ try {
         assert.match(text, /^MODEL-SAW\nPlain PLAIN-ASSIGNMENT without a skill\.\n/)
         assert.equal(count(text, '<skill name='), 0)
         assert.equal(view.resources?.invokedSkill, undefined)
+        assert.deepEqual(catalogOf(view.id), [])
       }),
+      claim(
+        "the child's catalog lists only the invoked skill and the skills the assignment names",
+        async () => {
+          const { view } = await base.run({
+            taskId: 'catalog',
+            skill: 'alpha',
+            prompt: 'Then apply the beta skill; collider and alphabet are not skills.',
+          })
+          assertStatus(view, 'completed')
+          assert.deepEqual(catalogOf(view.id).toSorted(), ['alpha', 'beta'])
+        }
+      ),
       claim(
         'an invocation inside a sentence stays text, and with the skill field set a leading invocation in the prompt stays text too',
         async () => {

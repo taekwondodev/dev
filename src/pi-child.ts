@@ -291,6 +291,17 @@ const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
   }
 })
 
+const escapeRegExp = (text: string): string =>
+  text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
+
+function assignedSkills(request: ChildRequest, skills: readonly Pi.Skill[]): Pi.Skill[] {
+  return skills.filter(
+    skill =>
+      skill.name === request.skill ||
+      new RegExp(`(^|[^\\w-])${escapeRegExp(skill.name)}(?![\\w-])`).test(request.prompt)
+  )
+}
+
 function childBrief(request: ChildRequest, resources: Resources): string {
   const inspection = [
     ...READ_ONLY_CHILD_TOOLS,
@@ -783,6 +794,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
           appendSystemPrompt: [resources.guidance, childBrief(request, resources)].filter(Boolean),
+          skillsOverride: base => ({ ...base, skills: assignedSkills(request, base.skills) }),
           extensionFactories: [
             { name: 'dev:background-compaction', factory: compaction.factory },
             {

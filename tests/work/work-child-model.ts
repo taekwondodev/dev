@@ -98,6 +98,11 @@ const scriptedStream = (calls: string, attemptId: string) => {
         )
       }
       appendFileSync(calls, `${attemptId}\n`)
+      const catalog = /<available_skills>([\s\S]*?)<\/available_skills>/.exec(system)?.[1] ?? ''
+      appendFileSync(
+        calls,
+        `catalog:${attemptId}:${[...catalog.matchAll(/<name>(.*?)<\/name>/g)].map(match => match[1]).join(',')}\n`
+      )
       assignment ??= first
       const script = directive(assignment, SCRIPT_MARKER)
       const step = (script === undefined ? [] : decodeScript(script))[turn++]
