@@ -494,7 +494,7 @@ const initializeDatabase = async (
 
 const prepareStatements = (db: DatabaseSync) => ({
   selectById: db.prepare('SELECT * FROM attempts WHERE id = ?'),
-  retentionReferences: db.prepare('SELECT * FROM attempts'),
+  activeReferences: db.prepare('SELECT * FROM attempts WHERE completed_at IS NULL'),
   retentionStats: db.prepare(
     'SELECT COUNT(*) AS count, MIN(completed_at) AS oldest FROM attempts WHERE completed_at IS NOT NULL AND retention_blocked = 0'
   ),
@@ -623,9 +623,8 @@ const maintain = (request: Extract<RpcRequest, { readonly op: 'maintain' }>) =>
     prune(request.now)
     const sessionIds = new Set<string>()
     const files = new Set<string>()
-    for (const row of attemptRows(statements().retentionReferences.all())) {
+    for (const row of attemptRows(statements().activeReferences.all())) {
       const record = decodePayload(row)
-      if (record.completedAt !== undefined) continue
       sessionIds.add(record.owner.sessionId)
       if (record.sessionFile !== undefined) files.add(record.sessionFile)
     }
