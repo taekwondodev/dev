@@ -67,15 +67,16 @@ const KILL_RETRY = Duration.millis(100)
 
 const failure = (message: string) => new ShellCommandError({ message })
 
+const processIdentity = (item: ProcessObservation): string => `${item.pid}:${item.birth ?? ''}`
+
 const terminate = Effect.fnUntraced(
   function* (processTable: ProcessObserver['processTable'], shell: LiveShell) {
     for (;;) {
       const table = yield* Effect.option(processTable)
       if (Option.isNone(table)) return
       const grouped = table.value.some(item => item.group === shell.root.pid)
-      const tracked = table.value.filter(item =>
-        shell.known.some(known => known.pid === item.pid && known.birth === item.birth)
-      )
+      const identities = new Set(shell.known.map(processIdentity))
+      const tracked = table.value.filter(item => identities.has(processIdentity(item)))
       if (!grouped && tracked.length === 0) return
       yield* Effect.sync(() => {
         if (grouped)

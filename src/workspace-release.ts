@@ -212,7 +212,8 @@ const assessUses = (
       isActiveUse(use) &&
       use.stage !== 'unknown'
   )
-  const live = uses.filter(use => isActiveUse(use) && !ownUses.includes(use))
+  const owned = new Set(ownUses)
+  const live = uses.filter(use => isActiveUse(use) && !owned.has(use))
   const bindings = getBindingRows(db, workspaceId).filter(binding => binding.superseded !== true)
   const ownBound = bindings.some(binding => binding.key === own?.conversationKey)
   const conversations = bindings.filter(

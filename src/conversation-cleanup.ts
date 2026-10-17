@@ -21,11 +21,7 @@ import {
   retentionFacts,
   withDisposableConversation,
 } from './workspace-retention.ts'
-import {
-  RETAINED_CONVERSATIONS,
-  expiredConversations,
-  newestFirst,
-} from './conversation-retention.ts'
+import { RETAINED_CONVERSATIONS, newestFirst } from './conversation-retention.ts'
 import { WorkStore } from './work-store.ts'
 import { errorText } from './error-text.ts'
 import { canonicalPath } from './workspace-paths.ts'
@@ -147,8 +143,9 @@ export const cleanConversations = Effect.fnUntraced(function* (
         } catch {
           continue
         }
+        const ordered = candidates.toSorted(newestFirst)
         let kept = 0
-        for (const candidate of candidates.toSorted(newestFirst)) {
+        for (const candidate of ordered) {
           const identity = identify(candidate)
           if (identity === undefined) continue
           if (kept < RETAINED_CONVERSATIONS) {
@@ -157,7 +154,10 @@ export const cleanConversations = Effect.fnUntraced(function* (
           }
           candidate.eligible = true
         }
-        for (const candidate of expiredConversations(candidates)) {
+        const expired = ordered
+          .filter(candidate => candidate.eligible)
+          .slice(RETAINED_CONVERSATIONS)
+        for (const candidate of expired) {
           try {
             withDisposableConversation(
               authority,

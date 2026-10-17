@@ -12,11 +12,3 @@ export const newestFirst = (left: ConversationCandidate, right: ConversationCand
   if (left.path < right.path) return -1
   return left.path > right.path ? 1 : 0
 }
-
-export const expiredConversations = <Candidate extends ConversationCandidate>(
-  candidates: readonly Candidate[]
-): readonly Candidate[] =>
-  candidates
-    .filter(candidate => candidate.eligible)
-    .toSorted(newestFirst)
-    .slice(RETAINED_CONVERSATIONS)

@@ -561,9 +561,9 @@ function telemetry(session: Pi.AgentSession): Telemetry {
 }
 
 function finalAssistantOutcome(session: Pi.AgentSession): SessionOutcome {
-  const assistant = session.messages
-    .toReversed()
-    .find((message): message is AssistantMessage => message.role === 'assistant')
+  const assistant = session.messages.findLast(
+    (message): message is AssistantMessage => message.role === 'assistant'
+  )
   if (!assistant)
     return {
       text: '',
