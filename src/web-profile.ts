@@ -1,6 +1,8 @@
 import {
   chmodSync,
   closeSync,
+  constants,
+  copyFileSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -127,15 +129,25 @@ const regularSource = (path: string): boolean => {
   }
 }
 
-const snapshotDatabase = (source: string, destination: string): void => {
+const removeDatabase = (destination: string): void => {
   for (const sidecar of ['', '-journal', '-wal', '-shm'])
     rmSync(`${destination}${sidecar}`, { force: true })
+}
+
+const snapshotDatabase = (source: string, destination: string): void => {
+  removeDatabase(destination)
   const db = new DatabaseSync(source, { readOnly: true, timeout: 2000 })
   try {
     db.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`)
   } finally {
     db.close()
   }
+  chmodSync(destination, 0o600)
+}
+
+const duplicateSnapshot = (snapshot: string, destination: string): void => {
+  removeDatabase(destination)
+  copyFileSync(snapshot, destination, constants.COPYFILE_FICLONE)
   chmodSync(destination, 0o600)
 }
 
@@ -147,6 +159,7 @@ const copyDirectorySnapshot = (source: string, destination: string): void => {
     dereference: false,
     errorOnExist: false,
     force: true,
+    mode: constants.COPYFILE_FICLONE,
     filter: candidate => {
       const name = candidate.split('/').at(-1)
       if (name === LEVELDB_LOCK) return false
@@ -291,8 +304,9 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
     writeFileSync(join(paths.userDataDir, 'Local State'), readFileSync(localState), { mode: 0o600 })
     try {
       privateDirectory(join(destinationProfile, 'Network'))
-      snapshotDatabase(cookieDatabase, join(destinationProfile, 'Cookies'))
-      snapshotDatabase(cookieDatabase, join(destinationProfile, 'Network', 'Cookies'))
+      const snapshot = join(destinationProfile, 'Cookies')
+      snapshotDatabase(cookieDatabase, snapshot)
+      duplicateSnapshot(snapshot, join(destinationProfile, 'Network', 'Cookies'))
     } catch (cause) {
       throw fail(
         'copy',
