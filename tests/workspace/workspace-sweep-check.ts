@@ -171,7 +171,7 @@ try {
           const observer = await Effect.runPromise(
             processObserver.pipe(Effect.provide(NodeServices.layer))
           )
-          const identity = (await Effect.runPromise(observer.processTable)).find(
+          const identity = (await Effect.runPromise(observer.freshProcessTable)).find(
             entry => entry.pid === child.pid
           )
           try {
@@ -182,6 +182,7 @@ try {
             child.stdin.end('finish\n')
             await exited
           }
+          await Effect.runPromise(observer.freshProcessTable)
           const family = await Effect.runPromise(
             observer.observeFamily(
               { pid: child.pid, root: identity, known: [identity], reported: undefined },
