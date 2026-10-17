@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { NodeServices } from '@effect/platform-node'
-import { Duration, Effect, Exit } from 'effect'
-import { processObserver, SNAPSHOT_FRESHNESS } from '../src/process-family.ts'
+import { Clock, Effect, Exit } from 'effect'
+import { processObserver } from '../src/process-family.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
 
 const fixture = mkdtempSync(join(tmpdir(), 'dev-process-family-'))
@@ -13,6 +13,7 @@ const counter = join(fixture, 'spawns')
 const table = join(fixture, 'table')
 const failing = join(fixture, 'failing')
 const slow = join(fixture, 'slow')
+const blocked = join(fixture, 'blocked')
 const started = join(fixture, 'started')
 writeFileSync(counter, '')
 writeFileSync(
@@ -25,106 +26,153 @@ writeFileSync(
 )
 writeFileSync(
   join(fixture, 'ps'),
-  `#!/bin/sh\nprintf x >> '${counter}'\n[ -e '${failing}' ] && exit 1\ncontent=$(cat '${table}')\n[ -e '${slow}' ] && { : > '${started}'; sleep 0.15; }\nprintf '%s\\n' "$content"\n`
+  `#!/bin/sh\nprintf x >> '${counter}'\n[ -e '${failing}' ] && exit 1\ncontent=$(cat '${table}')\n[ -e '${slow}' ] && { : > '${started}'; while [ -e '${blocked}' ]; do sleep 0.01; done; }\nprintf '%s\\n' "$content"\n`
 )
 chmodSync(join(fixture, 'ps'), 0o755)
-process.env.PATH = `${fixture}:${process.env.PATH ?? ''}`
+const originalPath = process.env.PATH
+process.env.PATH = `${fixture}:${originalPath ?? ''}`
 
 const spawns = (): number => readFileSync(counter, 'utf8').length
-const observer = await Effect.runPromise(processObserver.pipe(Effect.provide(NodeServices.layer)))
-const windowMs = Duration.toMillis(SNAPSHOT_FRESHNESS)
+const observers = await Effect.runPromise(
+  Effect.all(Array.from({ length: 5 }, () => processObserver)).pipe(
+    Effect.provide(NodeServices.layer)
+  )
+)
+const [observer] = observers
+const liveClock = await Effect.runPromise(Clock.Clock)
+let now = 0
+const snapshotClock: Clock.Clock = {
+  currentTimeMillisUnsafe: () => now,
+  currentTimeMillis: Effect.sync(() => now),
+  currentTimeNanosUnsafe: () => BigInt(now) * 1_000_000n,
+  currentTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
+  monotonicTimeNanosUnsafe: () => liveClock.monotonicTimeNanosUnsafe(),
+  monotonicTimeNanos: liveClock.monotonicTimeNanos,
+  sleep: duration => liveClock.sleep(duration),
+}
+const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provideService(Clock.Clock, snapshotClock)))
 const { claim, passed } = makeClaims()
 
 try {
-  await claim('five concurrent shared reads spawn one ps and see the same table', async () => {
-    const tables = await Effect.runPromise(
-      Effect.all(
-        Array.from({ length: 5 }, () => observer.processTable),
-        { concurrency: 'unbounded' }
+  await claim(
+    'five distinct observers sharing a spawner coalesce concurrent reads into one ps',
+    async () => {
+      const tables = await run(
+        Effect.forEach(observers, item => item.processTable, { concurrency: 'unbounded' })
       )
-    )
+      assert.equal(spawns(), 1)
+      for (const read of tables) assert.deepEqual(read, tables[0])
+      assert.deepEqual(
+        tables[0].map(item => item.pid),
+        [101, 202]
+      )
+    }
+  )
+
+  await claim('a shared snapshot is still reusable at 199 ms', async () => {
+    now += 199
+    await run(observer.processTable)
     assert.equal(spawns(), 1)
-    for (const read of tables) assert.deepEqual(read, tables[0])
-    assert.deepEqual(
-      tables[0].map(item => item.pid),
-      [101, 202]
-    )
   })
 
-  await claim('a shared read within the freshness window spawns nothing', async () => {
-    await Effect.runPromise(observer.processTable)
-    assert.equal(spawns(), 1)
-  })
-
-  await claim('a shared read after the window spawns again', async () => {
-    await sleep(windowMs + 100)
-    await Effect.runPromise(observer.processTable)
+  await claim('a shared snapshot expires at 200 ms', async () => {
+    now += 1
+    await run(observer.processTable)
     assert.equal(spawns(), 2)
   })
 
   await claim(
     'a fresh read always spawns, and the next shared read serves its table without spawning',
     async () => {
-      const fresh = await Effect.runPromise(observer.freshProcessTable)
+      writeFileSync(table, '  303     1   303 S    Fri Oct 17 12:00:02 2026\n')
+      const fresh = await run(observer.freshProcessTable)
       assert.equal(spawns(), 3)
-      const next = await Effect.runPromise(observer.processTable)
+      assert.deepEqual(
+        fresh.map(item => item.pid),
+        [303]
+      )
+      const next = await run(observer.processTable)
       assert.equal(spawns(), 3)
-      assert.deepEqual(next, fresh)
+      assert.deepEqual(
+        next.map(item => item.pid),
+        [303]
+      )
     }
   )
 
   await claim(
     'a failed read is not reused: the next read spawns ps again and succeeds',
     async () => {
-      await sleep(windowMs + 100)
+      now += 200
       writeFileSync(failing, '')
       const before = spawns()
-      const failed = await Effect.runPromiseExit(observer.processTable)
+      const failed = await run(Effect.exit(observer.processTable))
       assert.ok(Exit.isFailure(failed))
       assert.ok(spawns() > before)
       rmSync(failing)
       const after = spawns()
-      const read = await Effect.runPromise(observer.processTable)
+      const read = await run(observer.processTable)
       assert.equal(spawns(), after + 1)
-      assert.equal(read.length, 2)
+      assert.deepEqual(
+        read.map(item => item.pid),
+        [303]
+      )
     }
   )
 
   await claim(
-    'a failed fresh read expires the snapshot: the next shared read spawns again',
+    'a failed fresh read invalidates a snapshot that has not aged: the next shared read spawns again',
     async () => {
-      await Effect.runPromise(observer.processTable)
+      await run(observer.processTable)
       writeFileSync(failing, '')
-      const failed = await Effect.runPromiseExit(observer.freshProcessTable)
+      const failed = await run(Effect.exit(observer.freshProcessTable))
       assert.ok(Exit.isFailure(failed))
       rmSync(failing)
+      writeFileSync(table, '  404     1   404 S    Fri Oct 17 12:00:03 2026\n')
       const before = spawns()
-      await Effect.runPromise(observer.processTable)
+      const next = await run(observer.processTable)
       assert.equal(spawns(), before + 1)
+      assert.deepEqual(
+        next.map(item => item.pid),
+        [404]
+      )
     }
   )
 
   await claim(
     'a shared read in flight when a fresh read happens cannot publish its older table afterwards',
     async () => {
-      await sleep(windowMs + 100)
+      now += 200
       writeFileSync(slow, '')
-      const older = Effect.runPromise(observer.processTable)
+      writeFileSync(blocked, '')
+      const older = run(observer.processTable)
       while (!existsSync(started)) await sleep(5)
+      writeFileSync(table, '  505     1   505 S    Fri Oct 17 12:00:04 2026\n')
       rmSync(slow)
-      writeFileSync(table, '  101     1   101 S    Fri Oct 17 12:00:00 2026\n')
-      const fresh = await Effect.runPromise(observer.freshProcessTable)
-      assert.equal(fresh.length, 1)
-      assert.equal((await older).length, 2)
+      const fresh = await run(observer.freshProcessTable)
+      assert.deepEqual(
+        fresh.map(item => item.pid),
+        [505]
+      )
+      rmSync(blocked)
+      assert.deepEqual(
+        (await older).map(item => item.pid),
+        [404]
+      )
       const before = spawns()
-      const next = await Effect.runPromise(observer.processTable)
+      const next = await run(observer.processTable)
       assert.equal(spawns(), before)
-      assert.deepEqual(next, fresh)
-      assert.notDeepEqual(next, await older)
+      assert.deepEqual(
+        next.map(item => item.pid),
+        [505]
+      )
     }
   )
 
   console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))
 } finally {
+  if (originalPath === undefined) delete process.env.PATH
+  else process.env.PATH = originalPath
   rmSync(fixture, { recursive: true, force: true })
 }

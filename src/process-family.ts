@@ -50,7 +50,7 @@ export class ProcessObservationLost extends Schema.TaggedError<
 
 export const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 
-export const SNAPSHOT_FRESHNESS = Duration.millis(200)
+const SNAPSHOT_FRESHNESS = Duration.millis(200)
 
 type ProcessTable = Effect.Effect<ObservedProcess[], ProcessObservationLost>
 
