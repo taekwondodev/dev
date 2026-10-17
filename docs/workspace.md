@@ -73,7 +73,7 @@ Removal outcomes appear in receipts and release results. Failed or interrupted a
 
 ### Process uses and gates
 
-A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; no explicit recovery command exists yet.
+A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Polling observers within one runtime share a process-table snapshot for 200 ms, so observation cost does not grow with the number of attempts and shells; launch identity capture and every signalling decision read a fresh table. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; no explicit recovery command exists yet.
 
 A command whose checkout was replaced before user code is released never runs. A checkout replaced while a command runs, including by the command itself, does not end observation: stopping the shell still kills its family, and the use ends `unknown` instead of `quiescent`.
 

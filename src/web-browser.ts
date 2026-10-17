@@ -286,7 +286,7 @@ export const launchChrome = (
       }
       const { pid } = child
       if (pid === undefined) return yield* fail('launch', 'Chrome reported no process id')
-      const table = yield* observer.processTable.pipe(Effect.orElseSucceed(() => []))
+      const table = yield* observer.freshProcessTable.pipe(Effect.orElseSucceed(() => []))
       const family: ChromeFamily = { root: table.find(item => item.pid === pid), known: [] }
       const cdp = yield* makeCdpClient(fromChrome, toChrome)
       const closing = yield* Semaphore.make(1)

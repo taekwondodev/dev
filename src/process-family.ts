@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { Writable } from 'node:stream'
-import { Duration, Effect, Schedule, Schema } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import { Clock, Deferred, Duration, Effect, Schedule, Schema } from 'effect'
+import { ChildProcessSpawner } from 'effect/process'
 import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { ownedProcesses, type ProcessObservation } from './work-lifecycle.ts'
@@ -50,6 +50,8 @@ export class ProcessObservationLost extends Schema.TaggedError<
 
 export const transientRetry = { times: 4, schedule: Schedule.spaced(Duration.millis(250)) }
 
+export const SNAPSHOT_FRESHNESS = Duration.millis(200)
+
 type ProcessTable = Effect.Effect<ObservedProcess[], ProcessObservationLost>
 
 const readProcessTable = (run: RunCommand): ProcessTable =>
@@ -69,6 +71,71 @@ const readProcessTable = (run: RunCommand): ProcessTable =>
     ),
     Effect.retry(transientRetry)
   )
+
+interface ProcessTables {
+  readonly shared: ProcessTable
+  readonly fresh: ProcessTable
+}
+
+interface Snapshot {
+  readonly at: number
+  readonly table: ObservedProcess[]
+}
+
+interface SharedState {
+  generation: number
+  snapshot: Snapshot | undefined
+  inflight: Deferred.Deferred<ObservedProcess[], ProcessObservationLost> | undefined
+}
+
+const makeProcessTables = (read: ProcessTable): ProcessTables => {
+  const state: SharedState = { generation: 0, snapshot: undefined, inflight: undefined }
+  const freshnessMs = Duration.toMillis(SNAPSHOT_FRESHNESS)
+  const publish = (generation: number, table: ObservedProcess[]) =>
+    Effect.map(Clock.currentTimeMillis, at => {
+      if (state.generation === generation) state.snapshot = { at, table }
+      return table
+    })
+  const shared: ProcessTable = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis
+    const { snapshot, inflight } = state
+    if (snapshot !== undefined && now - snapshot.at < freshnessMs) return snapshot.table
+    if (inflight !== undefined) return yield* Deferred.await(inflight)
+    const pending = yield* Deferred.make<ObservedProcess[], ProcessObservationLost>()
+    state.inflight = pending
+    const { generation } = state
+    yield* Effect.forkDetach(
+      read.pipe(
+        Effect.flatMap(table => publish(generation, table)),
+        Effect.exit,
+        Effect.flatMap(exit => {
+          if (state.inflight === pending) state.inflight = undefined
+          return Deferred.done(pending, exit)
+        })
+      )
+    )
+    return yield* Deferred.await(pending)
+  })
+  const fresh: ProcessTable = Effect.suspend(() => {
+    state.generation += 1
+    state.snapshot = undefined
+    const { generation } = state
+    return read.pipe(Effect.flatMap(table => publish(generation, table)))
+  })
+  return { shared, fresh }
+}
+
+const tablesBySpawner = new WeakMap<object, ProcessTables>()
+
+const processTables: Effect.Effect<ProcessTables, never, ChildProcessSpawner.ChildProcessSpawner> =
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const existing = tablesBySpawner.get(spawner)
+    if (existing !== undefined) return existing
+    const tables = makeProcessTables(readProcessTable(yield* commandRunner))
+    tablesBySpawner.set(spawner, tables)
+    return tables
+  })
 
 const decodeFamily = Schema.decodeUnknownEffect(Schema.Array(WorkspaceProcessSchema))
 
@@ -106,6 +173,7 @@ const observeFamilyIn = Effect.fnUntraced(function* <E>(
 
 export interface ProcessObserver {
   readonly processTable: ProcessTable
+  readonly freshProcessTable: ProcessTable
   readonly observeFamily: <E>(
     family: TrackedFamily,
     options: {
@@ -119,10 +187,8 @@ export const processObserver: Effect.Effect<
   ProcessObserver,
   never,
   ChildProcessSpawner.ChildProcessSpawner
-> = Effect.map(commandRunner, run => {
-  const processTable = readProcessTable(run)
-  return {
-    processTable,
-    observeFamily: (family, options) => observeFamilyIn(processTable, family, options),
-  }
-})
+> = Effect.map(processTables, ({ shared, fresh }) => ({
+  processTable: shared,
+  freshProcessTable: fresh,
+  observeFamily: (family, options) => observeFamilyIn(shared, family, options),
+}))

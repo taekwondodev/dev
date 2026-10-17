@@ -110,7 +110,7 @@ const exitOf = (child: ChildProcess): Deferred.Deferred<ShellExit, ShellCommandE
 export const makeWorkspaceShell = Effect.fnUntraced(function* (
   admit: (cwd: string) => Effect.Effect<WorkspaceAdmission, WorkspaceError>
 ): Effect.fn.Return<WorkspaceShell, never, Scope.Scope | ChildProcessSpawner.ChildProcessSpawner> {
-  const { processTable, observeFamily } = yield* processObserver
+  const { freshProcessTable, observeFamily } = yield* processObserver
   const observers = yield* FiberSet.make<void>()
   const runInBackground = yield* FiberSet.runtime(observers)()
   const live = new Map<number, LiveShell>()
@@ -237,7 +237,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         try: () => processGate(child),
         catch: cause => failure(errorText(cause)),
       })
-      const table = yield* processTable.pipe(Effect.mapError(cause => failure(cause.message)))
+      const table = yield* freshProcessTable.pipe(Effect.mapError(cause => failure(cause.message)))
       const root = table.find(item => item.pid === pid)
       if (root === undefined) return yield* failure('the shell identity could not be captured')
       return { gate, root }
@@ -265,7 +265,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     const onAbort = () => {
       aborted = true
       if (shell === undefined) killGated()
-      else runInBackground(terminate(processTable, shell))
+      else runInBackground(terminate(freshProcessTable, shell))
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     const detach = () => signal?.removeEventListener('abort', onAbort)
@@ -320,7 +320,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         ? undefined
         : setTimeout(() => {
             timedOut = true
-            runInBackground(terminate(processTable, shell))
+            runInBackground(terminate(freshProcessTable, shell))
           }, timeoutMs)
     return yield* Deferred.await(exited).pipe(
       Effect.flatMap(outcome => {
@@ -353,7 +353,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void })
       )
       const shells = [...live.values()]
-      yield* Effect.forEach(shells, shell => terminate(processTable, shell), {
+      yield* Effect.forEach(shells, shell => terminate(freshProcessTable, shell), {
         concurrency: 'unbounded',
         discard: true,
       })
