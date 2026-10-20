@@ -1,4 +1,4 @@
 {
   "rules": {},
-  "default": { "harness": "pi", "model": "openai/gpt-6-luna" }
+  "default": { "harness": "pi", "model": "claude-bridge/claude-sonnet-5-5" }
 }
