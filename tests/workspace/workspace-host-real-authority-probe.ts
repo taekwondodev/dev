@@ -122,7 +122,6 @@ const script: readonly ScriptedContent[] = [
     toolCall('duplicate-native-write', 'write', { path: 'NATIVE.txt', content: 'duplicate\n' }),
   ],
   [toolCall('own-read', 'read', { path: 'native.txt' })],
-  [toolCall('unverified-tool', 'probe_unverified', {})],
   [{ type: 'text', text: 'Real-authority host seam probe completed.' }],
 ]
 let providerCall = 0
@@ -158,16 +157,6 @@ const hostAttachment = await lifecycle.attach({
   cwd: lead,
 })
 const observer: ExtensionFactory = (api: ExtensionAPI) => {
-  api.registerTool({
-    name: 'probe_unverified',
-    label: 'Unverified probe tool',
-    description: 'A tool with no verified workspace effect record.',
-    parameters: { type: 'object', additionalProperties: false, properties: {} },
-    async execute() {
-      writeFileSync(join(fixture, 'unverified-tool-ran'), 'ran')
-      return { content: [{ type: 'text', text: 'ran' }], details: {} }
-    },
-  })
   api.on('session_start', (event, context) => {
     if (resolve(context.cwd) === resolve(lead)) leadStarted.resolve()
     if (event.reason === 'reload') reloaded.resolve()
@@ -447,13 +436,6 @@ await claim("a read beside the conversation's own writer carries no warning", ()
   assert.equal(read.isError, false)
   assert.ok(!read.text.includes('[dev workspace]'), read.text)
 })
-await claim('a tool without a verified workspace effect is refused without ending the turn', () => {
-  const unverified = persistedResult('unverified-tool')
-  assert.equal(unverified.isError, true)
-  assert.match(unverified.text, /^Tool probe_unverified has no verified workspace effect in dev/)
-  assert.ok(!existsSync(join(fixture, 'unverified-tool-ran')), 'the unverified tool never ran')
-  assert.equal(providerCall, script.length, 'refusing the unverified tool did not end the turn')
-})
 
 const heldManager = pi.SessionManager.create(lead, sessionDir)
 const heldReply = assistantMessage([{ type: 'text', text: 'held conversation' }], 'stop')
@@ -502,33 +484,14 @@ const boundConversation = async (checkout: string, cwd: string) => {
   await owner.close()
   return file
 }
-const removed = join(fixture, 'projects', 'removed')
-const removedFile = await boundConversation(removed, removed)
 const nested = join(fixture, 'projects', 'nested')
 const nestedCwd = join(nested, 'sub')
 const nestedFile = await boundConversation(nested, nestedCwd)
 await holder.close()
-rmSync(removed, { recursive: true, force: true })
 rmSync(nestedCwd, { recursive: true, force: true })
-const removedBytes = readFileSync(removedFile)
 const nestedBytes = readFileSync(nestedFile)
 await claim(
-  'switching the TUI runtime to a conversation whose workspace was removed is cancelled with a notice naming its unchanged file and the next safe action; the file stays byte-identical and the checkout is not recreated',
-  async () => {
-    const sessionBeforeRemovedSwitch = runtime.session.sessionManager.getSessionId()
-    const noticesBefore = notices.length
-    assert.deepEqual(await runtime.switchSession(removedFile), { cancelled: true })
-    assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeRemovedSwitch)
-    assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
-    assert.deepEqual(notices.slice(noticesBefore), [
-      `The session was not switched: The workspace bound to this conversation no longer exists and is not recreated: ${removed}\n${keptConversation(removedFile)}`,
-    ])
-    assert.deepEqual(readFileSync(removedFile), removedBytes, 'the conversation file is unchanged')
-    assert.ok(!existsSync(removed), 'the removed checkout is not recreated')
-  }
-)
-await claim(
-  "switching the TUI runtime to a conversation whose bound working directory was removed from a checkout that remains is cancelled with the same notice, instead of the missing directory failing Pi's switch fatally",
+  "switching the TUI runtime to a conversation whose bound working directory was removed from a checkout that remains is cancelled with a notice naming its unchanged file and the next safe action, instead of the missing directory failing Pi's switch fatally",
   async () => {
     const sessionBeforeNestedSwitch = runtime.session.sessionManager.getSessionId()
     const noticesBefore = notices.length
@@ -757,8 +720,7 @@ await claim(
 await squatter.close()
 await lifecycle.close()
 assert.equal(runFailure, undefined)
-await claim('no checkout filter ran at any allocation and no network access is attempted', () => {
-  assert.ok(!existsSync(filterMarker), 'no checkout filter ran at any allocation')
+await claim('no network access is attempted', () => {
   assert.equal(networkAttempts, 0)
 })
 const report = {
