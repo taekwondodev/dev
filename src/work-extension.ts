@@ -18,7 +18,7 @@ import {
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
 import { activeWorkChildren, workStatusText } from './work-status.ts'
-import { waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
+import { leadingLongSleep, sleepRefusal, waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
 import {
   decodeWorkInput,
   LeadWorkInputSchema,
@@ -564,6 +564,19 @@ export const createWorkExtension = ({
     })
   }
 
+  const activeWaitRefusal = async (command: string): Promise<string | undefined> => {
+    if (!waitOnlyCommand(command) || sessionOwner?._tag !== 'active') return undefined
+    const snapshot = await Effect.runPromise(
+      ownedBy(sessionOwner, owner => owner.snapshot).pipe(Effect.option)
+    )
+    if (snapshot._tag === 'None') return undefined
+    const active = snapshot.value.records.filter(
+      record => record.status === 'running' || record.status === 'waiting'
+    )
+    if (active.length === 0) return undefined
+    return waitRefusal(active.map(record => `${record.owner.taskId} ${record.status}`).join(', '))
+  }
+
   const factory: Pi.ExtensionFactory = pi => {
     ;({ events } = pi)
     pi.on('session_start', async (_event, ctx) => {
@@ -728,23 +741,11 @@ export const createWorkExtension = ({
     )
     pi.on('tool_call', async event => {
       const command = 'command' in event.input ? event.input.command : undefined
-      if (
-        event.toolName !== 'bash' ||
-        typeof command !== 'string' ||
-        !waitOnlyCommand(command) ||
-        sessionOwner?._tag !== 'active'
-      )
-        return undefined
-      const snapshot = await Effect.runPromise(
-        ownedBy(sessionOwner, owner => owner.snapshot).pipe(Effect.option)
-      )
-      if (snapshot._tag === 'None') return undefined
-      const active = snapshot.value.records.filter(
-        record => record.status === 'running' || record.status === 'waiting'
-      )
-      if (active.length === 0) return undefined
-      const running = active.map(record => `${record.owner.taskId} ${record.status}`).join(', ')
-      return { block: true, reason: waitRefusal(running) }
+      if (event.toolName !== 'bash' || typeof command !== 'string') return undefined
+      const reason =
+        (await activeWaitRefusal(command)) ??
+        (leadingLongSleep(command) ? sleepRefusal() : undefined)
+      return reason === undefined ? undefined : { block: true, reason }
     })
     pi.registerCommand('work', {
       description:
