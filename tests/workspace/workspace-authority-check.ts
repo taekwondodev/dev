@@ -2626,13 +2626,13 @@ try {
   )
 
   for (const kind of ['catalog', 'shard'] as const) {
-    await claim(`obsolete ${kind} metadata is refused without changing its bytes`, async () => {
-      const invalidRoot = join(sandbox, `obsolete-${kind}-authority`)
-      const invalidRepo = join(sandbox, `obsolete-${kind}-repo`)
-      initRepository(invalidRepo, 'tracked.txt', 'obsolete metadata fixture\n')
+    await claim(`unknown ${kind} metadata is refused without changing its bytes`, async () => {
+      const invalidRoot = join(sandbox, `unknown-${kind}-authority`)
+      const invalidRepo = join(sandbox, `unknown-${kind}-repo`)
+      initRepository(invalidRepo, 'tracked.txt', 'unknown metadata fixture\n')
       const creating = await openLifecycle({ root: invalidRoot })
       const owner = await creating.attach({
-        conversation: conversation(`obsolete-${kind}`),
+        conversation: conversation(`unknown-${kind}`),
         cwd: invalidRepo,
       })
       const { repositoryId } = ready(await owner.authorize({ kind: 'read' }))
@@ -2643,9 +2643,7 @@ try {
           ? join(invalidRoot, 'catalog.sqlite')
           : join(invalidRoot, 'repos', repositoryId, 'records.sqlite')
       const altered = new DatabaseSync(path)
-      altered
-        .prepare(`INSERT INTO ${kind}_meta(key, value) VALUES(?, ?)`)
-        .run('protocol_version', '1')
+      altered.prepare(`INSERT INTO ${kind}_meta(key, value) VALUES(?, ?)`).run('unknown_key', '1')
       altered.close()
       const before = readFileSync(path)
       const refused = openLifecycle({ root: invalidRoot }).then(async reopened => {
