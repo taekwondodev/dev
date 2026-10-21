@@ -21,7 +21,7 @@ import {
   WorkResultSchema,
   type WorkResult,
 } from '../../src/work-domain.ts'
-import { waitOnlyCommand } from '../../src/work-wait-guard.ts'
+import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture } from './work-check-support.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
@@ -440,13 +440,28 @@ return JSON.stringify({
   )
 
   await claim(
-    'a shell command that only waits is refused while owned work runs and allowed otherwise',
+    'a shell command that only waits is refused while owned work runs and allowed otherwise, and a leading long sleep is refused even while idle',
     () =>
       withLead({ tools: ['work', 'bash'] }, async lead => {
         for (const command of ['sleep 240; echo ok', 'sleep 5', 'sleep 1 && sleep 2\n'])
           assert.ok(waitOnlyCommand(command), command)
         for (const command of ['sleep 1; ls', 'echo ok', 'sleep', 'while true; do sleep 1; done'])
           assert.ok(!waitOnlyCommand(command), command)
+        for (const command of [
+          'sleep 240; /tmp/ds.sh',
+          'sleep 30',
+          'sleep 1m && ls',
+          'sleep 20 15; ls',
+        ])
+          assert.ok(leadingLongSleep(command), command)
+        for (const command of [
+          'sleep 29; curl https://example.test',
+          'ls; sleep 240',
+          'for i in 1 2; do sleep 30; done',
+          'node app & pid=$!; sleep 8; kill $pid',
+          'sleep x; ls',
+        ])
+          assert.ok(!leadingLongSleep(command), command)
         const held = gate()
         const { run, next } = await launch(lead, 0, [held.command])
         const started = Date.now()
@@ -467,8 +482,14 @@ return JSON.stringify({
         held.open()
         const continued = await lead.request(5)
         assert.ok(seen(continued).includes('completed'), seen(continued))
-        continued.reply([toolCall('idle', 'bash', { command: 'sleep 0; echo idle-ok' })])
-        const idle = await lead.request(6)
+        continued.reply([toolCall('long', 'bash', { command: 'sleep 240; ls' })])
+        const long = await lead.request(6)
+        assert.ok(seen(long).includes('Refused'), seen(long))
+        assert.ok(seen(long).includes('work process'), seen(long))
+        assert.ok(seen(long).includes('until <check>; do sleep 30; done'), seen(long))
+        assert.ok(!seen(long).includes('task-0-0'), seen(long))
+        long.reply([toolCall('idle', 'bash', { command: 'sleep 0; echo idle-ok' })])
+        const idle = await lead.request(7)
         assert.ok(seen(idle).includes('idle-ok'), seen(idle))
         idle.reply(text('done'))
         await lead.idle()
@@ -491,7 +512,15 @@ return JSON.stringify({
       await lead.idle()
       held.open()
       const continued = await lead.request(3)
-      continued.reply(text('done'))
+      continued.reply([
+        toolCall('long', 'codemode', {
+          code: "return await tools.bash({ command: 'sleep 240; ls' })",
+        }),
+      ])
+      const long = await lead.request(4)
+      assert.ok(seen(long).includes('Script failed'), seen(long))
+      assert.ok(seen(long).includes('work process'), seen(long))
+      long.reply(text('done'))
       await lead.idle()
     })
   )
