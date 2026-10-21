@@ -10,7 +10,6 @@ export interface ProfileFixture {
   readonly skill: string
   readonly skillPath: string
   readonly soulPath: (profile: string) => string
-  readonly guidance: (profile: string) => string
 }
 
 export const FIXTURE_MANIFEST = {
@@ -55,7 +54,6 @@ export const writeProfileFixture = (
     skill: 'stack-only',
     skillPath,
     soulPath: profile => join(root, profile, 'SOUL.md'),
-    guidance,
   }
 }
 

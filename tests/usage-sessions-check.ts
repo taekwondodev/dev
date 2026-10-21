@@ -6,7 +6,7 @@ import { Effect } from 'effect'
 import { NodeFileSystem } from '@effect/platform-node'
 import { readSessions } from '../scripts/usage-sessions.ts'
 
-const root = mkdtempSync(join(tmpdir(), 'dev-cleanup-report-'))
+const root = mkdtempSync(join(tmpdir(), 'dev-usage-sessions-'))
 const directory = join(root, 'sessions')
 mkdirSync(directory)
 const first = join(directory, 'a.jsonl')
@@ -30,7 +30,7 @@ try {
     )
   )
   console.log(
-    'cleanup reporting: disappearing files skipped, malformed coverage and other I/O errors preserved'
+    'usage session reading: files removed by cleanup are skipped, malformed coverage and other I/O errors preserved'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })

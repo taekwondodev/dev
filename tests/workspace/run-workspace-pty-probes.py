@@ -21,7 +21,6 @@ class Action:
     name: str
     trigger: str
     keys: str
-    required: bool = True
     delay: float = 0.0
 
     occurrence: int = 1
@@ -376,7 +375,7 @@ def run(name: str, probe: Probe) -> bool:
         if probe.fixture_marker else None
     )
     missing = sorted(action.name for action in probe.actions
-                     if action.required and action.name not in sent)
+                     if action.name not in sent)
     missing_output = []
     plain = ESCAPES.sub('', text)
     for needles, haystack in ((probe.expect, plain), (probe.expect_raw, text)):
