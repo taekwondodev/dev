@@ -605,7 +605,7 @@ const unknownProof = (reason: string): Proof => ({ kind: 'unknown', reason })
 
 const GITHUB_REMOTE =
   /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/|git:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
-export const githubRepositoryOf = (url: string): string | undefined => GITHUB_REMOTE.exec(url)?.[1]
+const githubRepositoryOf = (url: string): string | undefined => GITHUB_REMOTE.exec(url)?.[1]
 
 export type DerivedTarget = (
   | {

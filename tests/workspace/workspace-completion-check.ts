@@ -14,7 +14,6 @@ import {
 import type { CompletionVerdict, TaskTarget } from '../../src/workspace-domain.ts'
 import {
   deriveTarget,
-  githubRepositoryOf,
   integrationFacts,
   recordedTarget,
   type GitHubReader,
@@ -728,6 +727,13 @@ try {
     }
   )
   await claim('GitHub origin URLs in their usual forms name the repository slug', () => {
+    const forms = repository('forms')
+    git(['config', 'protocol.allow', 'never'], forms)
+    git(['remote', 'add', 'origin', 'git@github.com:owner/project.git'], forms)
+    const derived = (url: string) => {
+      git(['remote', 'set-url', 'origin', url], forms)
+      return deriveTarget(reader('main'), forms, undefined, 'refs/heads/feature')
+    }
     for (const url of [
       'git@github.com:owner/project.git',
       'git@github.com:owner/project',
@@ -735,13 +741,20 @@ try {
       'https://github.com/owner/project',
       'ssh://git@github.com/owner/project.git',
     ])
-      assert.equal(githubRepositoryOf(url), 'owner/project', url)
+      assert.deepEqual(
+        derived(url),
+        {
+          source: 'origin-github',
+          target: { kind: 'github', repository: 'owner/project', ref: 'refs/heads/main' },
+        },
+        url
+      )
     for (const url of [
       'https://gitlab.com/owner/project.git',
       '/srv/git/project.git',
       'https://github.com/owner',
     ])
-      assert.equal(githubRepositoryOf(url), undefined, url)
+      assert.notEqual(derived(url).source, 'origin-github', url)
   })
 } finally {
   rmSync(sandbox, { recursive: true, force: true })

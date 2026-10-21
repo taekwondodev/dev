@@ -493,14 +493,14 @@ try {
   )
 
   await claim(
-    'static reads are bounded by the configured concurrency even when a script fans out many parallel calls',
+    'static reads are bounded to four in flight even when a script fans out many parallel calls',
     async () => {
-      const bounded = await openReader({ staticConcurrency: 2 })
+      const bounded = await openReader()
       const outcomes = await Promise.all(
-        Array.from({ length: 6 }, () => read(bounded, { url: `${origin}/slow-doc.md` }))
+        Array.from({ length: 8 }, () => read(bounded, { url: `${origin}/slow-doc.md` }))
       )
       for (const outcome of outcomes) documentOf(outcome)
-      assert.equal(maxInFlight, 2, 'never more than two static fetches in flight')
+      assert.equal(maxInFlight, 4, 'never more than four static fetches in flight')
     }
   )
   const reader = await openReader()
@@ -920,21 +920,32 @@ try {
       'ending the session while a read is still fetching statically stops it before any rendering starts',
       async () => {
         const ending = await openReader()
+        seen.length = 0
         const pending = read(ending, { url: `${origin}/slow-app.html` })
         await sleep(200)
         await Effect.runPromise(ending.endSession('shutdown during static fetch'))
         assert.match(failureOf(await pending), /session ended/)
         await sleep(1500)
+        assert.deepEqual(
+          seen.map(item => item.url),
+          ['/slow-app.html'],
+          'only the static fetch reached the server; Chrome never loaded the page'
+        )
       }
     )
     await claim(
-      'a 403 static answer escalates to the browser once and returns the authenticated rendering of that page',
+      'a 403 static answer escalates to the browser once and returns its rendering, named as made with the authenticated profile copy',
       async () => {
+        seen.length = 0
         const slice = documentOf(await read(reader, { url: `${origin}/forbidden.html` }))
+        assert.equal(slice.document.method, 'browser')
         assert.equal(slice.document.status, 403)
-        assert.match(
-          slice.document.limitations.join('\n'),
-          /Static retrieval failed first|Static HTML extraction yielded too little readable text|browser rendering was unavailable/
+        assert.match(slice.text, /Forbidden/)
+        assert.match(slice.document.limitations.join('\n'), /authenticated profile/)
+        assert.equal(
+          seen.filter(item => item.url === '/forbidden.html').length,
+          2,
+          'one static fetch and one browser load'
         )
       }
     )

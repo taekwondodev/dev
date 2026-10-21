@@ -61,7 +61,6 @@ export interface WebReaderOptions {
   readonly renderer: SessionRenderer
   readonly fetchLimits?: FetchLimits
   readonly resolveAddress?: AddressResolver
-  readonly staticConcurrency?: number
 }
 
 const INDEX_CANDIDATES = ['/llms.txt', '/llms-full.txt']
@@ -118,7 +117,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
   const limits = options.fetchLimits ?? defaultFetchLimits
   const resolve = options.resolveAddress ?? resolvePublicAddress
   const readerScope = yield* Effect.scope
-  const staticSemaphore = yield* Semaphore.make(options.staticConcurrency ?? STATIC_CONCURRENCY)
+  const staticSemaphore = yield* Semaphore.make(STATIC_CONCURRENCY)
   const reads = yield* FiberSet.make<ReadOutcome, never>()
   const stopReads = FiberSet.clear(reads)
 
