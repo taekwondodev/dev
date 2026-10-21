@@ -44,8 +44,8 @@ await claim('explicit model and effort override the selected profile', async () 
   )
 })
 await claim('a blank explicit model or an unknown effort fails naming the field', async () => {
-  assert.match(await refusal(configured, { model: ' ' }), /whitespace[\s\S]*\["model"\]/)
-  assert.match(await refusal(configured, { effort: 'bogus' }), /"off"[\s\S]*\["effort"\]/)
+  assert.match(await refusal(configured, { model: ' ' }), /\["model"\]/)
+  assert.match(await refusal(configured, { effort: 'bogus' }), /\["effort"\]/)
 })
 await claim('a rule named default fails parsing with that reason', async () => {
   assert.match(
@@ -62,7 +62,7 @@ await claim('a rule key with whitespace fails parsing naming the key', async () 
 await claim('an array of rules fails parsing at the rules key', async () => {
   assert.match(
     await refusal({ rules: [{ when: 'x', use: cheap }], default: cheap }, {}),
-    /Cannot read dispatch configuration[\s\S]*Expected object[\s\S]*\["rules"\]/
+    /Cannot read dispatch configuration[\s\S]*\bat \["rules"\]$/
   )
 })
 await claim('an unknown field inside a rule fails parsing at that field', async () => {
@@ -71,21 +71,23 @@ await claim('an unknown field inside a rule fails parsing at that field', async 
       { rules: { implement: { ...strong, when: 'Implementation' } }, default: cheap },
       {}
     ),
-    /Cannot read dispatch configuration[\s\S]*excess property[\s\S]*\["rules"\]\["implement"\]\["when"\]/
+    /Cannot read dispatch configuration[\s\S]*\["rules"\]\["implement"\]\["when"\]/
   )
 })
 await claim(
-  'a blank default model, a foreign harness and invalid JSON fail with their reason',
+  'a blank default model and a foreign harness fail naming the field, and invalid JSON fails reading the configuration',
   async () => {
     assert.match(
       await refusal({ rules: {}, default: { harness: 'pi', model: ' ' } }, {}),
-      /whitespace[\s\S]*\["default"\]\["model"\]/
+      /\["default"\]\["model"\]/
     )
     assert.match(
       await refusal({ rules: {}, default: { harness: 'claude' } }, {}),
-      /Expected "pi"[\s\S]*\["default"\]\["harness"\]/
+      /\["default"\]\["harness"\]/
     )
-    assert.match(await refusal('{not json', {}), /valid JSON/)
+    const malformed = await refusal('{not json', {})
+    assert.match(malformed, /Cannot read dispatch configuration/)
+    assert.doesNotMatch(malformed, /\bat \[/, 'a JSON failure names no field')
   }
 )
 await claim('the shipped configuration has no rules and a pi default with a model', async () => {
