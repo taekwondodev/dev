@@ -7,7 +7,7 @@ import { readPiPin } from '../scripts/pi-pin.ts'
 import { errorText } from '../src/error-text.ts'
 import { writeProfileFixture } from './profile-fixture.ts'
 
-export class SmokeError extends Schema.TaggedError<SmokeError, { readonly brand: unique symbol }>()(
+class SmokeError extends Schema.TaggedError<SmokeError, { readonly brand: unique symbol }>()(
   'SmokeError',
   {
     message: Schema.String,

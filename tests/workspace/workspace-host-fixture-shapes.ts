@@ -3,7 +3,6 @@ import { Schema } from 'effect'
 import {
   CanonicalSessionFile,
   SweepReceiptSchema,
-  WorkspaceAssessmentSchema,
   WorkspaceBindingSchema,
   WorkspaceGrantSchema,
   WorkspaceHandoffSchema,
@@ -12,7 +11,6 @@ import {
   type CompletionVerdict,
   type SweepReceipt,
   type SweepRow,
-  type WorkspaceAssessment,
   type WorkspaceBinding,
   type WorkspaceConversation,
   type WorkspaceGrant,
@@ -116,27 +114,6 @@ export const makeFixtureHandoff = (input: {
     target: input.target,
     reason: input.reason,
   } satisfies WorkspaceHandoff)
-
-export const makeFixtureAssessment = (input: {
-  readonly descriptor: FixtureDescriptor
-  readonly completion: CompletionVerdict
-  readonly reservationId: WorkspaceId
-}) =>
-  conforming(WorkspaceAssessmentSchema)({
-    repositoryId: input.descriptor.repoId,
-    taskId: input.descriptor.taskId,
-    workspaceId: input.descriptor.workspaceId,
-    reservationId: input.reservationId,
-    path: input.descriptor.path,
-    origin: input.descriptor.origin,
-    reasons: [input.completion.reason],
-    nextActions: ['fixture next action'],
-    evidence: { verdict: 'valid', reasons: [] },
-    inventory: { trackedChanges: 0, files: 0, published: 0, disposable: 0, blocking: 0 },
-    residual: [],
-    target: { source: 'override', description: 'local refs/heads/main, recorded for the task' },
-    completion: input.completion,
-  } satisfies WorkspaceAssessment)
 
 export const makeFixtureReceipt = (input: {
   readonly moment: SweepReceipt['moment']

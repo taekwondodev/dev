@@ -85,7 +85,6 @@ const sessionDir = join(fixture, 'sessions')
 const agentDir = join(fixture, 'agent')
 const dataHome = join(fixture, 'data')
 const extensionMarker = join(fixture, 'untrusted-project-extension-ran')
-const reportPath = join(fixture, 'report.json')
 
 const mkdir = (path: string): void => {
   mkdirSync(path, { recursive: true })
@@ -1195,18 +1194,17 @@ const cancelledWork = async (attemptId: string) => {
   const spawned = use.facts.find(fact => fact.kind === 'spawned')
   assert.ok(spawned?.kind === 'spawned')
   assert.throws(() => process.kill(spawned.process.pid, 0), /ESRCH/)
-  return { attemptId, terminal }
 }
 await within(backgroundTurnDone.promise, 90000, 'background-work follow-up response')
 marker('DEV36_READY_FOR_AGENT_ABORT')
 await within(abortedWithoutEscape.promise, 90000, 'agent_end(aborted) cancellation')
-const abortObservation = await cancelledWork(firstProcess.id)
+await cancelledWork(firstProcess.id)
 marker('DEV36_AGENT_ABORTED_WITHOUT_ESCAPE_CANCELLED_WORK')
 await within(terminalEscape.promise, 90000, 'real PTY Escape input')
 const escapeProcess = processResults.get('work-owner-escape')
 assert.ok(escapeProcess)
 assert.equal(escapeProcess.status, 'running')
-const escapeObservation = await cancelledWork(escapeProcess.id)
+await cancelledWork(escapeProcess.id)
 
 await activeRuntime.session.waitForIdle()
 marker('DEV36_READY_FOR_RETAINED_WORK')
@@ -1256,7 +1254,7 @@ await within(liveTurnDone.promise, 90000, 'workspace tool resume refused while w
 assert.equal(handoffs.length, handoffsBeforeResume, 'a refused resume started no handoff')
 refusedSelections.delete(WS_RESUME_A)
 marker('DEV36_READY_FOR_WORK_STOP')
-const stoppedRetained = await cancelledWork(retainedProcess.id)
+await cancelledWork(retainedProcess.id)
 const descendantPid = Number(readFileSync(join(targetB, 'lead-bash.pid'), 'utf8').trim())
 const descendant = leadShellUse.facts
   .flatMap(fact => (fact.kind === 'observed' ? fact.processes : []))
@@ -1440,7 +1438,6 @@ const toolResults = new Map(
         : []
     )
 )
-const toolResultIds = [...toolResults.keys()]
 for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
   assert.equal(
     toolResults.has(toolCallId),
@@ -1834,59 +1831,10 @@ assert.deepEqual(
   'a read-only child refuses a shadowed read tool before asking its controller'
 )
 
-const report = {
-  status: 'passed',
-  piVersion: pi.VERSION,
-  mode: 'actual InteractiveMode.run() under PTY',
-  fixture,
-  sessionIdentityPreserved: {
-    sessionId: initialSessionId,
-    sessionFile: initialSessionFile,
-    runtimeCwds: runtimeSnapshots.map(item => item.cwd),
-  },
-  providerCalls: providerCalls.map(({ step, cwd, parked }) => ({ step, cwd, parked })),
-  parkedContinuationCalls: staleCalls.length,
-  abortedRuns,
-  hostBlocks,
-  staleToolResultsPersisted: toolResultIds,
-  nativeFileWrites: nativeWrites.map(use => ({ grant: use.grant, facts: use.facts })),
-  shellUses: allShellUses.map(use => ({
-    attemptId: executionOf(use.operation)?.attemptId,
-    facts: factKinds(use),
-  })),
-  resumeRefusedWhileWorkRan: toolResults.get('resume-live')?.text,
-  refusedSwitchNotice: refusalNotice.message,
-  workStoppedBeforeResume: stoppedRetained,
-  userBash: bashHistory(),
-  workOwnerCancellationObservations: [abortObservation, escapeObservation],
-  retainedWorkStoppedBeforeResume: retainedUse.facts.at(-1),
-  pendingInputRestored: true,
-  repeatedSameFileHandoffs: handoffs.length,
-  failedRuntimeCreationStayedParked: workspaceHost.isParked(),
-  tuiWorkspaceMessages: hostMessages,
-  workspaceCommands,
-  projectTrustContexts,
-  untrustedProjectExtensionNotLoaded: !existsSync(extensionMarker),
-  childBuiltinRead,
-  childShadowedRead,
-  networkAttempts,
-  observations: [
-    `Pi ends a tool batch early only when every result sets terminate, so the host ends the run itself at the refused call's execution end: ${staleCalls.length} provider request(s) ran in a parked context, ${abortedRuns.length} runs ended with stop reason aborted, and sibling calls prepared after the rebind were left unanswered for Pi to answer synthetically.`,
-  ],
-  limits: [
-    'WorkspaceLifecycle is a typed stub that issues grants and records the reported facts without judging them; admission rules, the execution stage machine, fencing, live-execution refusals, persistence and writer-grant restoration after a cancelled switch are covered by the real-authority probe and workspace-authority-check.ts, not here.',
-    'The refused switch is fault-injected in the stub; the real triggers (a live execution appearing between select and handoff, an invalidated target) are not produced here.',
-    "The stub's refusal to select while an attempt of this conversation is live mirrors the authority's check; the real refusal is covered by workspace-authority-check.ts.",
-    'The backgrounded lead-shell descendant is ended by the probe itself, as a user ending it would, so the shell observation settles its use before the resume.',
-    'Shell quiescence is observed through the process group and tracked descendants; a descendant that leaves the group and is not a tracked child escapes observation and is not exercised here.',
-    'Project extensions are gated only by Pi folder trust; their executable side effects are not bounded by tool-call instrumentation.',
-  ],
-}
 mode.stop('transcript')
 await opened.close()
 void runPromise
 assert.equal(runFailure, undefined)
-writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`)
 process.stdout.write(
-  `\nDEV36_TUI_HOST_PROBE_PASSED ${JSON.stringify({ fixture, report: reportPath, sessionId: initialSessionId, providerCalls: providerCalls.length, parkedContinuationCalls: staleCalls.length, shellUses: allShellUses.length, networkAttempts })}\n`
+  `\nDEV36_TUI_HOST_PROBE_PASSED ${JSON.stringify({ fixture, sessionId: initialSessionId, providerCalls: providerCalls.length, parkedContinuationCalls: staleCalls.length, shellUses: allShellUses.length, networkAttempts })}\n`
 )
