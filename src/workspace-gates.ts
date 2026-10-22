@@ -25,7 +25,7 @@ import {
 import { errorText } from './error-text.ts'
 import { hash, lstatIfExists, newId, privateDirectory, privateFile } from './workspace-platform.ts'
 
-const SHARED_GATE_WAIT_MS = 250
+export const MOMENTARY_HOLD_WAIT_MS = 250
 
 export type GateRelease = () => void
 
@@ -178,7 +178,12 @@ const verifyGateMarker = (db: DatabaseSync, path: string, identity: GateIdentity
     )
 }
 
-const acquireGate = (path: string, identity: GateIdentity, exclusive: boolean): GateRelease => {
+const acquireGate = (
+  path: string,
+  identity: GateIdentity,
+  exclusive: boolean,
+  waitMs = exclusive ? 0 : MOMENTARY_HOLD_WAIT_MS
+): GateRelease => {
   privateDirectory(dirname(path), false)
   if (lstatIfExists(path) === undefined)
     createPublishedDatabase(path, 'gate', db => {
@@ -192,7 +197,7 @@ const acquireGate = (path: string, identity: GateIdentity, exclusive: boolean): 
     path,
     ddl: GATE_SQL,
     name: 'Workspace gate',
-    waitMs: exclusive ? 0 : SHARED_GATE_WAIT_MS,
+    waitMs,
     exclusive,
     verifyMarker: db => verifyGateMarker(db, path, identity),
     verifyHeld: db => {
@@ -291,7 +296,8 @@ export interface ConversationPresence {
 
 export const acquireConversationPresence = (
   paths: AuthorityPaths,
-  identity: string
+  identity: string,
+  waitMs: number
 ): ConversationPresence => {
   const gate = conversationGate(paths, identity)
   gateDirectory(paths, 'conversations', gate.key)
@@ -300,7 +306,8 @@ export const acquireConversationPresence = (
     releaseConversation = acquireGate(
       gate.path,
       { kind: 'conversation', path: identity, key: gate.key },
-      true
+      true,
+      waitMs
     )
   } catch (cause) {
     if (cause instanceof WorkspaceError && cause.outcome === 'blocked')

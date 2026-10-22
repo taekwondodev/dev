@@ -68,7 +68,7 @@ const holdConversationGates = <A>(
     true
   )
   try {
-    const presence = acquireConversationPresence(authority.paths, conversation.identity)
+    const presence = acquireConversationPresence(authority.paths, conversation.identity, 0)
     try {
       return held()
     } finally {
