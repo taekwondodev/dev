@@ -21,6 +21,7 @@ import {
 import {
   acquirePathGates,
   acquireConversationPresence,
+  MOMENTARY_HOLD_WAIT_MS,
   conversationIdentity,
   releaseGates,
 } from './workspace-gates.ts'
@@ -108,7 +109,11 @@ export const attachConversation = (
     return { state: live }
   }
 
-  const presence = acquireConversationPresence(authority.paths, normalized.identity)
+  const presence = acquireConversationPresence(
+    authority.paths,
+    normalized.identity,
+    MOMENTARY_HOLD_WAIT_MS
+  )
   try {
     let previous = findBinding(authority, normalized.key)
     const pendingOperationId = previous?.binding.pendingOperationId

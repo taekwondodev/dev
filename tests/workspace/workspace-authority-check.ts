@@ -26,6 +26,9 @@ import {
   type WorkspaceOperation,
 } from '../../src/workspace-domain.ts'
 import { unsupportedAuthorityStorage } from '../../src/workspace-authority.ts'
+import { authorityPaths } from '../../src/workspace-authority-root.ts'
+import { conversationRecord } from '../../src/workspace-attachment.ts'
+import { acquireConversationPresence } from '../../src/workspace-gates.ts'
 import { deferred, equalWith, makeClaims } from './workspace-check-support.ts'
 import {
   faultInjector,
@@ -2146,6 +2149,30 @@ try {
         }
       }
     )
+  await claim(
+    "an attach waits out another connection's momentary hold of its conversation, such as cleanup's in-use probe, instead of reporting the conversation open in another dev session",
+    async () => {
+      const briefRoot = join(sandbox, 'brief-hold-authority')
+      const briefConversation = conversation('brief-hold')
+      const briefLifecycle = await openLifecycle({ root: briefRoot })
+      try {
+        await (
+          await briefLifecycle.attach({ conversation: briefConversation, cwd: fenceRepo })
+        ).close()
+        const probe = acquireConversationPresence(
+          authorityPaths(briefRoot),
+          conversationRecord(briefConversation).identity,
+          0
+        )
+        setTimeout(probe.release, 50)
+        await (
+          await briefLifecycle.attach({ conversation: briefConversation, cwd: fenceRepo })
+        ).close()
+      } finally {
+        await briefLifecycle.close()
+      }
+    }
+  )
   await claim(
     'while a conversation is live, an attach from another lifecycle on the same authority is refused, with or without a selection, under another data home, and after its host closed its last attachment with the switch pending, and its switch stays with the live host; once the host is gone, any attach withdraws the switch that never reached it, keeping the last confirmed workspace or binding the selected one, and frees the unused target',
     async () => {
