@@ -118,6 +118,10 @@ const observeAbsence = (path: string, anchor: string = dirname(path)): Absence =
     if (!lstatSync(anchor).isDirectory()) return { inaccessible: `${anchor} is not a directory` }
     return 'absent'
   } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT') && dirname(anchor) !== anchor) {
+      const parent = observeAbsence(anchor)
+      if (parent === 'absent') return parent
+    }
     return { inaccessible: `anchor directory ${anchor}: ${errorText(cause)}` }
   }
 }

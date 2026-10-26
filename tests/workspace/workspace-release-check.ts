@@ -2477,6 +2477,35 @@ try {
   )
 
   await claim(
+    'dev workspace release removes a managed worktree deleted outside dev after another release removed their emptied repository directory',
+    async () => {
+      const emptiedRoot = join(sandbox, 'emptied-parent-authority')
+      const emptiedRepo = join(sandbox, 'emptied-parent-repo')
+      const linked = join(sandbox, 'emptied-parent-linked')
+      initRepository(emptiedRepo)
+      git(['worktree', 'add', '--quiet', '-b', 'emptied-parent', linked, 'main'], emptiedRepo)
+      const emptied = await openLifecycle({ root: emptiedRoot })
+      const managedFrom = async (cwd: string) => {
+        const owner = await emptied.attach({ conversation: conversation(), cwd })
+        const taskId = requireTask(ready(await owner.authorize({ kind: 'write' })).taskId)
+        const managed = ready(await owner.authorize({ kind: 'delegated-write' }))
+        await owner.close()
+        return { taskId, worktree: managed }
+      }
+      const deleted = await managedFrom(emptiedRepo)
+      writeFileSync(join(deleted.worktree.checkout, 'pending.txt'), 'keeps it from the sweep\n')
+      const other = await managedFrom(linked)
+      rmSync(deleted.worktree.checkout, { recursive: true, force: true })
+      const otherReleased = await emptied.release(other.taskId)
+      assert.equal(resultOf(otherReleased, other.worktree.workspaceId).outcome, 'removed')
+      assert.ok(!existsSync(dirname(deleted.worktree.checkout)), 'the emptied directory is gone')
+      const released = await emptied.release(deleted.taskId)
+      assert.equal(resultOf(released, deleted.worktree.workspaceId).outcome, 'removed')
+      await emptied.close()
+    }
+  )
+
+  await claim(
     'dev workspace release pre-existing deletes the uses ended sessions left on an unreserved checkout, keeps those of a running session, and refuses a checkout a task reserved meanwhile',
     async () => {
       const unreservedRoot = join(sandbox, 'unreserved-checkout-authority')
