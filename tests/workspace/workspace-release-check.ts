@@ -377,6 +377,7 @@ try {
       const results = await lifecycle.release(taskB)
       assert.deepEqual(outcomes(results), [[m1.workspaceId, 'removed']])
       assert.ok(!existsSync(m1.checkout), 'the worktree directory is gone')
+      assert.ok(!existsSync(dirname(m1.checkout)), 'the emptied repository directory is gone')
       assert.ok(!existsSync(adminPath), 'the Git registration is gone')
       assert.ok(!registered(repo).includes(m1.checkout))
       assert.equal(readFileSync(join(repo, 'tracked.txt'), 'utf8'), 'tracked\n')
@@ -1086,7 +1087,7 @@ try {
       await assert.rejects(Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))))
       await assert.rejects(Effect.runPromise(Effect.scoped(acquireMaintenance(options))))
       assert.equal(existsSync(source.managed.checkout), false)
-      mkdirSync(source.managed.checkout)
+      mkdirSync(source.managed.checkout, { recursive: true })
       await assert.rejects(
         Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))),
         /authority record/
