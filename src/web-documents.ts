@@ -58,11 +58,14 @@ const parseContinuation = (
   return { documentId: match[1] ?? '', offset: Number(match[2]) }
 }
 
+const HIGH_SURROGATE = /[\uD800-\uDBFF]/
+
 const cutAt = (text: string, offset: number, maxChars: number): number => {
   if (text.length - offset <= maxChars) return text.length
   const hardEnd = offset + maxChars
   const newline = text.lastIndexOf('\n', hardEnd)
-  return newline > offset + Math.floor(maxChars / 2) ? newline + 1 : hardEnd
+  if (newline > offset + Math.floor(maxChars / 2)) return newline + 1
+  return HIGH_SURROGATE.test(text.charAt(hardEnd - 1)) ? hardEnd - 1 : hardEnd
 }
 
 export const sliceDocument = (
