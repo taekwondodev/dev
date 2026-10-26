@@ -56,6 +56,7 @@ import {
   acquireStructureGate,
   conversationIdentity,
   conversationPresent,
+  incarnationHeld,
   releaseGates,
   type GateRelease,
   type PathGates,
@@ -72,6 +73,7 @@ import { isWithin } from './workspace-paths.ts'
 import {
   confirmedReleases,
   deleteReservation,
+  deleteUses,
   forgetReservation,
   getBindingRows,
   getOperation,
@@ -116,6 +118,10 @@ const observeAbsence = (path: string, anchor: string = dirname(path)): Absence =
     if (!lstatSync(anchor).isDirectory()) return { inaccessible: `${anchor} is not a directory` }
     return 'absent'
   } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT') && dirname(anchor) !== anchor) {
+      const parent = observeAbsence(anchor)
+      if (parent === 'absent') return parent
+    }
     return { inaccessible: `anchor directory ${anchor}: ${errorText(cause)}` }
   }
 }
@@ -288,7 +294,6 @@ const residualOf = (inventory: Inventory | undefined, head: string | undefined):
 const residueOf = (inventory: Inventory): Residue => ({
   tracked: inventory.tracked.length,
   untracked: inventory.untracked,
-  ignored: inventory.ignored,
 })
 
 interface Assessed {
@@ -1297,6 +1302,57 @@ export const releaseTask = (
   const artifacts = reportTaskArtifacts(authority, taskId)
   return artifacts === undefined ? results : [...results, artifacts]
 }
+
+const clearEndedUses = (
+  authority: WorkspaceAuthority,
+  repo: WorkspaceId,
+  workspaceId: WorkspaceId
+): WorkspaceReleaseResult =>
+  inDb(authority, repo, db =>
+    transaction(db, () => {
+      const workspace = getWorkspace(db, workspaceId)
+      if (workspace?.origin !== 'pre-existing')
+        throw new WorkspaceError({
+          outcome: 'invalid',
+          message: `Workspace ${workspaceId} is not a pre-existing checkout of repository ${repo}.`,
+        })
+      const reservation = getReservation(db, workspace.id)
+      if (reservation !== undefined)
+        return releaseResult(
+          repo,
+          workspace,
+          'failed',
+          `Task ${reservation.taskId} reserved this checkout; run dev workspace release ${reservation.taskId} instead.`
+        )
+      const uses = getUseRows(db, workspace.id)
+      const live = uses.filter(
+        use => isActiveUse(use) && incarnationHeld(authority.paths, use.incarnation)
+      )
+      const kept = new Set(live.flatMap(use => [use.id, use.withinUseId ?? use.id]))
+      const ended = uses.filter(use => !kept.has(use.id))
+      deleteUses(
+        db,
+        ended.map(use => use.id)
+      )
+      return releaseResult(
+        repo,
+        workspace,
+        'released',
+        `${ended.length} use record(s) of ended dev sessions were deleted${
+          kept.size === 0 ? '' : `; ${kept.size} use(s) of running dev sessions stay`
+        }; files and commits are unchanged.`
+      )
+    })
+  )
+
+export const releasePreExisting = (
+  authority: WorkspaceAuthority,
+  repo: WorkspaceId,
+  workspaceIds: readonly WorkspaceId[]
+): readonly WorkspaceReleaseResult[] =>
+  authority.inspectExisting() === undefined
+    ? []
+    : workspaceIds.map(workspaceId => clearEndedUses(authority, repo, workspaceId))
 
 export interface SweepInput {
   readonly repositoryId: WorkspaceId

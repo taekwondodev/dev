@@ -661,7 +661,7 @@ try {
   )
 
   await claim(
-    'recording the same publication twice keeps one fact whose columns and payload agree, and an option-shaped remote name is refused at the authority boundary before any Git call',
+    'recording the same publication twice counts one matched publication, and an option-shaped remote name is refused as invalid without replacing the recorded target',
     async () => {
       const allocated = await allocateManaged(lifecycle, userCheckout())
       await lifecycle.recordTarget(allocated.taskId, localMain)
@@ -1153,7 +1153,7 @@ try {
       managedFacts({
         allocation: 'checkout-contention',
         branch: 'refs/heads/feature',
-        residue: { tracked: 1, untracked: 0, ignored: 0 },
+        residue: { tracked: 1, untracked: 0 },
         ownCommits: true,
         integration: integrationFacts(provider, worktree, {
           target: targetOverride,
@@ -1518,7 +1518,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/feature',
-          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          residue: { tracked: 1, untracked: 0 },
           ownCommits: true,
           integration: unavailableIntegration,
         })
@@ -1641,7 +1641,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/feature',
-          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          residue: { tracked: 1, untracked: 0 },
           ownCommits: true,
           integration: deletedForkIntegration,
         })
@@ -1706,7 +1706,7 @@ try {
       ) =>
         decideCompletion(
           managedFacts({
-            residue: { tracked: 2, untracked: 0, ignored: 0 },
+            residue: { tracked: 2, untracked: 0 },
             ownCommits: input.head !== undefined && input.head !== input.base,
             integration: integrationFacts(provider, worktree, {
               target: targetOverride,
@@ -1911,7 +1911,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/main',
-          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          residue: { tracked: 1, untracked: 0 },
           ownCommits: true,
           integration: integrationFacts(noGitHub, shallow, {
             target: { kind: 'local', ref: 'refs/remotes/origin/main' },
@@ -2473,6 +2473,106 @@ try {
         'the sweep release prunes the settled read recorded before the reservation'
       )
       await readLifecycle.close()
+    }
+  )
+
+  await claim(
+    'dev workspace release removes a managed worktree deleted outside dev after another release removed their emptied repository directory',
+    async () => {
+      const emptiedRoot = join(sandbox, 'emptied-parent-authority')
+      const emptiedRepo = join(sandbox, 'emptied-parent-repo')
+      const linked = join(sandbox, 'emptied-parent-linked')
+      initRepository(emptiedRepo)
+      git(['worktree', 'add', '--quiet', '-b', 'emptied-parent', linked, 'main'], emptiedRepo)
+      const emptied = await openLifecycle({ root: emptiedRoot })
+      const managedFrom = async (cwd: string) => {
+        const owner = await emptied.attach({ conversation: conversation(), cwd })
+        const taskId = requireTask(ready(await owner.authorize({ kind: 'write' })).taskId)
+        const managed = ready(await owner.authorize({ kind: 'delegated-write' }))
+        await owner.close()
+        return { taskId, worktree: managed }
+      }
+      const deleted = await managedFrom(emptiedRepo)
+      writeFileSync(join(deleted.worktree.checkout, 'pending.txt'), 'keeps it from the sweep\n')
+      const other = await managedFrom(linked)
+      rmSync(deleted.worktree.checkout, { recursive: true, force: true })
+      const otherReleased = await emptied.release(other.taskId)
+      assert.equal(resultOf(otherReleased, other.worktree.workspaceId).outcome, 'removed')
+      assert.ok(!existsSync(dirname(deleted.worktree.checkout)), 'the emptied directory is gone')
+      const released = await emptied.release(deleted.taskId)
+      assert.equal(resultOf(released, deleted.worktree.workspaceId).outcome, 'removed')
+      await emptied.close()
+    }
+  )
+
+  await claim(
+    'dev workspace release pre-existing deletes the uses ended sessions left on an unreserved checkout, keeps those of a running session, and refuses a checkout a task reserved meanwhile',
+    async () => {
+      const unreservedRoot = join(sandbox, 'unreserved-checkout-authority')
+      const unreservedRepo = join(sandbox, 'unreserved-checkout-repo')
+      initRepository(unreservedRepo)
+      const killed = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            import { openLifecycle } from ${JSON.stringify(new URL('./workspace-test-lifecycle.ts', import.meta.url).href)}
+            const lifecycle = await openLifecycle({ root: ${JSON.stringify(unreservedRoot)} })
+            const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation())}, cwd: ${JSON.stringify(unreservedRepo)} })
+            await attachment.authorize({ kind: 'read' })
+            process.kill(process.pid, 'SIGKILL')
+          `,
+        ],
+        { encoding: 'utf8' }
+      )
+      assert.equal(killed.signal, 'SIGKILL', killed.stderr)
+      const unreserved = await openLifecycle({ root: unreservedRoot })
+      const settledReader = await unreserved.attach({
+        conversation: conversation(),
+        cwd: unreservedRepo,
+      })
+      ready(await settledReader.authorize({ kind: 'read' }))
+      await settledReader.close()
+      const liveReader = await unreserved.attach({
+        conversation: conversation(),
+        cwd: unreservedRepo,
+      })
+      const live = ready(await liveReader.authorize({ kind: 'read' }))
+      const [before] = await unreserved.inspect({ cwd: unreservedRepo })
+      assert.equal(before?.outcome, 'blocked', 'the abandoned read blocks the checkout')
+      assert.equal(before.taskId, undefined, 'no task reserves the checkout')
+      assert.equal(before.uses.length, 3)
+
+      const released = await unreserved.releasePreExisting(live.repositoryId, [live.workspaceId])
+      assert.deepEqual(outcomes(released), [[live.workspaceId, 'released']])
+      const { reason } = resultOf(released, live.workspaceId)
+      assert.ok(reason.includes('2 use record(s)') && reason.includes('1 use(s)'), reason)
+      const [after] = await unreserved.inspect({ cwd: unreservedRepo })
+      assert.deepEqual(
+        after?.uses.map(use => use.id),
+        [live.useId],
+        'only the running session keeps its use'
+      )
+      assert.equal(after.outcome, 'active')
+
+      await liveReader.close()
+      const writer = await unreserved.attach({ conversation: conversation(), cwd: unreservedRepo })
+      const written = ready(await writer.authorize({ kind: 'write' }))
+      await writer.close()
+      const refused = await unreserved.releasePreExisting(live.repositoryId, [live.workspaceId])
+      assert.deepEqual(outcomes(refused), [[live.workspaceId, 'failed']])
+      assert.ok(
+        resultOf(refused, live.workspaceId).reason.includes(
+          `dev workspace release ${requireTask(written.taskId)}`
+        )
+      )
+      assert.equal(
+        (await unreserved.inspect({ taskId: requireTask(written.taskId) }))[0]?.reservationId,
+        written.reservationId,
+        'the reservation stays'
+      )
+      await unreserved.close()
     }
   )
 

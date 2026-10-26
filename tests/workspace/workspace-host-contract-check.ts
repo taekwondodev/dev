@@ -153,6 +153,7 @@ const lifecycle: WorkspaceLifecycle = {
   validate: () => Effect.void,
   check: () => Effect.fail(refused),
   release: () => Effect.fail(refused),
+  releasePreExisting: () => Effect.fail(refused),
   sweep: () => Effect.fail(refused),
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
@@ -256,7 +257,14 @@ try {
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')
     assert.deepEqual(displayed(), [
-      'Unknown workspace command "switch". Use list, inspect <task>, check <task> or release <task>.',
+      'Unknown workspace command "switch". Use list, inspect <task>, check <task>, release <task> or release pre-existing.',
+    ])
+  })
+  await claim('/workspace release pre-existing only names its terminal command', async () => {
+    const before = displayed().length
+    await runtime.session.prompt('/workspace release pre-existing')
+    assert.deepEqual(displayed().slice(before), [
+      'Release runs only from a terminal: dev workspace release pre-existing. The task of this conversation is swept when dev quits.',
     ])
   })
   await claim(

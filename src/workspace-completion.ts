@@ -81,7 +81,6 @@ export const integrationUnknown = (reason: string): IntegrationFacts => ({
 export interface Residue {
   readonly tracked: number
   readonly untracked: number
-  readonly ignored: number
 }
 
 export interface CompletionFacts {

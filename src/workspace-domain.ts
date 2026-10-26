@@ -518,6 +518,10 @@ export interface WorkspaceLifecycle {
   release(input: {
     readonly taskId: WorkspaceId
   }): Effect.Effect<readonly WorkspaceReleaseResult[], WorkspaceError>
+  releasePreExisting(input: {
+    readonly repositoryId: WorkspaceId
+    readonly workspaceIds: readonly WorkspaceId[]
+  }): Effect.Effect<readonly WorkspaceReleaseResult[], WorkspaceError>
   sweep(input: SweepRequest): Effect.Effect<SweepReceipt, WorkspaceError>
   recordTarget(input: {
     readonly taskId: WorkspaceId

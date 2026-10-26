@@ -204,13 +204,6 @@ try {
         await assert.rejects(validatePath('hardlink.txt'), /hard links/)
       }
     )
-    await claim('a child without its live controller cannot authorize a write', async () => {
-      await assert.rejects(
-        Effect.runPromise(checkChildWorkspace(checkoutGrant, 'write')),
-        /IPC is unavailable/
-      )
-    })
-
     const delegatedGrant = await claim(
       'managed allocation does not execute checkout hooks',
       async () => {

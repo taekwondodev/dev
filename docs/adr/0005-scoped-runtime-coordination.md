@@ -69,6 +69,8 @@ There are two distinct authorities:
 - **Sweep:** automatic disposal requires completion evidence, valid identity and structural checks, and no blocking use. Reassessment under gates authorizes the effect.
 - **Task release:** interactive user confirmation overrides completion, evidence and uses for the whole task. It therefore takes no path or installation gate; the user is responsible for stopping work first. It still respects explicit Git locks and the repository structure gate. Agent tools have no release path.
 
+A pre-existing checkout no task reserves has no task to release, so the same confirmed override also clears the use records ended sessions left there; uses of running sessions stay because no confirmation stands in for their owner.
+
 Git's single force flag implements bounded disposal, not an authorization bypass. Never double-force, add unattended release flags or prune broadly. [Release operations](../workspace.md#release) own confirmation, consequences and retry guidance.
 
 Task artifact deletion changes no Git state, so it is retryable without a fenced Git-removal record. [Task artifacts](../workspace.md#task-artifacts) owns retention, removal outcomes and recovery.

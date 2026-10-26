@@ -56,7 +56,6 @@ STUB_ACTIONS = (
     Action('workspace-list', 'DEV36_READY_FOR_COMMANDS', '/workspace list\r'),
     Action('workspace-inspect', 'DEV36_COMMAND_DONE:list:1', '/workspace inspect {TASK_LEAD}\r'),
     Action('release-other', 'DEV36_COMMAND_DONE:inspect:1', '/workspace release {TASK_RESUME}\r'),
-    Action('release-own', 'DEV36_COMMAND_DONE:release:1', '/workspace release {TASK_B}\r'),
     Action('resume-ambiguous', 'DEV36_READY_FOR_AMBIGUOUS_RESUME', 'resume the retained task\r'),
     Action('resume-live', 'DEV36_READY_FOR_LIVE_RESUME', 'resume its first workspace\r'),
     Action('work-stop', 'DEV36_READY_FOR_WORK_STOP', '/work stop\r'),

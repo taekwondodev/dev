@@ -65,7 +65,7 @@ const rows: readonly Row[] = [
     facts: managed({
       allocation: 'checkout-contention',
       branch: 'refs/heads/feat/42-disposable-worktrees',
-      residue: { tracked: 0, untracked: 0, ignored: 6680 },
+      residue: { tracked: 0, untracked: 0 },
       ownCommits: true,
       integration: integration({
         pullRequests: [
@@ -80,7 +80,7 @@ const rows: readonly Row[] = [
   {
     name: 'the dirty child at a6013cb under task b1c50ea0, through the sibling-seeded PR #43',
     facts: managed({
-      residue: { tracked: 2, untracked: 0, ignored: 6448 },
+      residue: { tracked: 2, untracked: 0 },
       integration: integration({
         headInTip: yes('a6013cb is an ancestor of the current main tip 497c73e'),
         pullRequests: [
@@ -98,7 +98,7 @@ const rows: readonly Row[] = [
   {
     name: 'the dirty child at 50a26f3 under task b1c50ea0, through the sibling-seeded PR #43',
     facts: managed({
-      residue: { tracked: 16, untracked: 0, ignored: 6572 },
+      residue: { tracked: 16, untracked: 0 },
       integration: integration({
         headInTip: yes('50a26f3 is an ancestor of the current main tip 497c73e'),
         pullRequests: [
@@ -116,7 +116,7 @@ const rows: readonly Row[] = [
   {
     name: 'a child at a6013cb under task d9fdcf2d, through its base seed and PR #41',
     facts: managed({
-      residue: { tracked: 1, untracked: 0, ignored: 6448 },
+      residue: { tracked: 1, untracked: 0 },
       integration: integration({
         headInTip: yes('a6013cb is an ancestor of the current main tip 497c73e'),
         pullRequests: [
@@ -134,7 +134,7 @@ const rows: readonly Row[] = [
   {
     name: 'a dirty child with a proven descending PR finishes despite unknown HEAD proofs and an unpushed commit lookup',
     facts: managed({
-      residue: { tracked: 1, untracked: 0, ignored: 0 },
+      residue: { tracked: 1, untracked: 0 },
       ownCommits: true,
       integration: integration({
         headInTip: unknown(
@@ -178,7 +178,7 @@ const rows: readonly Row[] = [
   },
   {
     name: 'the clean main checkout at quit',
-    facts: checkout({ residue: { tracked: 0, untracked: 0, ignored: 4 } }),
+    facts: checkout({ residue: { tracked: 0, untracked: 0 } }),
     expected: 'clean-checkout',
     role: 'pre-existing',
   },
@@ -196,7 +196,7 @@ const rows: readonly Row[] = [
   },
   {
     name: 'the modified main checkout at a conversation replacement',
-    facts: checkout({ moment: 'replacement', residue: { tracked: 1, untracked: 0, ignored: 0 } }),
+    facts: checkout({ moment: 'replacement', residue: { tracked: 1, untracked: 0 } }),
     expected: 'retained:checkout-modified',
     role: 'pre-existing',
   },
@@ -211,7 +211,7 @@ const rows: readonly Row[] = [
     facts: managed({
       allocation: 'checkout-contention',
       branch: 'refs/heads/paused',
-      residue: { tracked: 3, untracked: 1, ignored: 0 },
+      residue: { tracked: 3, untracked: 1 },
       integration: integration({
         headInTip: yes('the base is an ancestor of the current main tip'),
       }),
@@ -222,7 +222,7 @@ const rows: readonly Row[] = [
   {
     name: 'a child at its base whose task has no descending merged pull request',
     facts: managed({
-      residue: { tracked: 2, untracked: 0, ignored: 0 },
+      residue: { tracked: 2, untracked: 0 },
       integration: integration({
         headInTip: yes('the base is an ancestor of the current main tip'),
         rejected: ['GitHub lists no merged pull request for these commits'],
@@ -234,7 +234,7 @@ const rows: readonly Row[] = [
   {
     name: 'a child whose provider is unavailable',
     facts: managed({
-      residue: { tracked: 2, untracked: 0, ignored: 0 },
+      residue: { tracked: 2, untracked: 0 },
       integration: integration({
         headInTip: unknown('GitHub ref taekwondodev/dev refs/heads/main: rate limited'),
         unknown: ['GitHub ref taekwondodev/dev refs/heads/main: rate limited'],
@@ -246,13 +246,13 @@ const rows: readonly Row[] = [
   },
   {
     name: 'a dirty pre-existing checkout at quit',
-    facts: checkout({ residue: { tracked: 1, untracked: 0, ignored: 0 } }),
+    facts: checkout({ residue: { tracked: 1, untracked: 0 } }),
     expected: 'retained:checkout-modified',
     role: 'pre-existing',
   },
   {
     name: 'a pre-existing checkout with an untracked non-ignored file',
-    facts: checkout({ residue: { tracked: 0, untracked: 1, ignored: 0 } }),
+    facts: checkout({ residue: { tracked: 0, untracked: 1 } }),
     expected: 'retained:checkout-modified',
     role: 'pre-existing',
   },
@@ -261,7 +261,7 @@ const rows: readonly Row[] = [
     facts: managed({
       allocation: 'checkout-contention',
       branch: 'refs/heads/feature',
-      residue: { tracked: 0, untracked: 0, ignored: 12 },
+      residue: { tracked: 0, untracked: 0 },
       ownCommits: true,
       integration: integration({
         headInTip: yes('HEAD is an ancestor of the current main tip'),
@@ -274,7 +274,7 @@ const rows: readonly Row[] = [
     name: 'a branch worktree whose pull request source cannot be read locally',
     facts: managed({
       branch: 'refs/heads/feature',
-      residue: { tracked: 1, untracked: 0, ignored: 0 },
+      residue: { tracked: 1, untracked: 0 },
       ownCommits: true,
       integration: integration({
         pullRequests: [
@@ -324,7 +324,7 @@ const rows: readonly Row[] = [
     name: 'a dirty detached worktree that is not a delegated child',
     facts: managed({
       allocation: 'checkout-contention',
-      residue: { tracked: 1, untracked: 0, ignored: 0 },
+      residue: { tracked: 1, untracked: 0 },
       integration: integration({
         headInTip: yes('HEAD is an ancestor of the current main tip'),
       }),
@@ -336,7 +336,7 @@ const rows: readonly Row[] = [
     name: 'a detached worktree with a non-ignored untracked file',
     facts: managed({
       allocation: 'checkout-contention',
-      residue: { tracked: 0, untracked: 1, ignored: 0 },
+      residue: { tracked: 0, untracked: 1 },
       integration: integration({
         headInTip: yes('HEAD is an ancestor of the current main tip'),
       }),
@@ -442,20 +442,6 @@ await claim(
       assert.equal(verdict.role, row.role, row.name)
       for (const mention of row.mentions ?? [])
         assert.ok(verdict.reason.includes(mention), `${row.name}: ${verdict.reason}`)
-    }
-  }
-)
-await claim(
-  'Git-ignored files do not change completion verdicts or weaken retention safeguards',
-  () => {
-    for (const row of [...rows, ...precedence]) {
-      if (row.facts.residue === undefined) continue
-      const verdict = decideCompletion({
-        ...row.facts,
-        residue: { ...row.facts.residue, ignored: 6447 },
-      })
-      assert.equal(verdictName(verdict), row.expected, `${row.name}: ${verdict.reason}`)
-      assert.equal(verdict.role, row.role, row.name)
     }
   }
 )
@@ -707,7 +693,7 @@ try {
               managed({
                 branch: 'refs/heads/feature',
                 ownCommits: true,
-                residue: { tracked: 1, untracked: 0, ignored: 0 },
+                residue: { tracked: 1, untracked: 0 },
                 integration: facts,
               })
             )

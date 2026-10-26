@@ -35,6 +35,7 @@ import { makeGitHubReader, PROVIDER_BUDGET_MS } from './workspace-evidence.ts'
 import { recordPublication, recordTarget } from './workspace-evidence-records.ts'
 import {
   checkTask,
+  releasePreExisting,
   releaseTask,
   sweepDeadline,
   sweepRepositoryAtClose,
@@ -315,6 +316,13 @@ if (port !== null && engine !== undefined) {
         return replyTo(
           'release',
           await engine.run(authority => releaseTask(authority, request.taskId))
+        )
+      case 'release-pre-existing':
+        return replyTo(
+          'release-pre-existing',
+          await engine.run(authority =>
+            releasePreExisting(authority, request.repositoryId, request.workspaceIds)
+          )
         )
       case 'sweep':
         return replyTo(

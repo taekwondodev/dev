@@ -19,7 +19,11 @@ import type {
   ExtensionFactory,
 } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import { sweepAtQuit } from '../../src/launcher-runtime.ts'
-import { parseWorkspaceCommand, runReadOnlyWorkspaceCommand } from '../../src/workspace-command.ts'
+import {
+  isReleaseCommand,
+  parseWorkspaceCommand,
+  runReadOnlyWorkspaceCommand,
+} from '../../src/workspace-command.ts'
 import { WorkspaceError, type WorkspaceView } from '../../src/workspace-domain.ts'
 import {
   deferred,
@@ -278,7 +282,7 @@ const { claim, passed } = makeClaims()
 
 const readOnly = (args: readonly string[]) => {
   const command = Effect.runSync(parseWorkspaceCommand(args))
-  if (command.kind === 'release') throw new Error('Expected a read-only workspace command')
+  if (isReleaseCommand(command)) throw new Error('Expected a read-only workspace command')
   return Effect.runPromise(
     runReadOnlyWorkspaceCommand(Effect.succeed(lifecycle.effect), command, {
       repositoryRoot: Effect.succeed(lead),
