@@ -225,14 +225,7 @@ const allocateWorktree = (
   const reservationId = newId()
   const acquisitionId = newId()
   const destinationParent = join(authority.paths.worktrees, source.repo)
-  privateDirectory(authority.paths.worktrees, true)
-  privateDirectory(destinationParent, true)
   const destination = join(destinationParent, workspaceIdValue)
-  if (lstatIfExists(destination) !== undefined)
-    requireReview(`Managed worktree destination already exists: ${destination}`)
-  const targetSlot = canonicalPathSlot(destination)
-  if (targetSlot !== destination)
-    requireReview(`Managed worktree destination is not canonical: ${destination}`)
 
   const structure = acquireStructureGate(authority.paths, source.git, source.repo)
   state.parked = true
@@ -246,6 +239,12 @@ const allocateWorktree = (
     | undefined
   let operation: TransitionOperationRecord | undefined
   try {
+    privateDirectory(authority.paths.worktrees, true)
+    privateDirectory(destinationParent, true)
+    if (lstatIfExists(destination) !== undefined)
+      requireReview(`Managed worktree destination already exists: ${destination}`)
+    if (canonicalPathSlot(destination) !== destination)
+      requireReview(`Managed worktree destination is not canonical: ${destination}`)
     gateIntents = releaseLocalGates(state)
     pathGates = orderedAllocationGates(
       authority,

@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { dirname, join, resolve } from 'node:path'
 import { Option, Schema } from 'effect'
@@ -884,6 +884,7 @@ const removeFinishedWorktree = (
     }
   }
   if (!after.complete) return unfinished(`The removal did not complete (${detail}): ${after.text}`)
+  removeEmptyRepositoryDirectory(authority, workspace.repositoryId)
   try {
     inDb(authority, repo, db =>
       transaction(db, () => {
@@ -1042,6 +1043,12 @@ const headOf = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): stri
   } catch {
     return undefined
   }
+}
+
+const removeEmptyRepositoryDirectory = (authority: WorkspaceAuthority, repo: WorkspaceId): void => {
+  try {
+    rmdirSync(join(authority.paths.worktrees, repo))
+  } catch {}
 }
 
 const deleteBelow = (root: string, path: string): string | undefined => {
@@ -1212,6 +1219,7 @@ const removeForUser = (
     save(authority, repo, { ...started, phase: 'review-required', result })
     return releaseResult(repo, workspace, 'failed', `${result}. Fix the cause and release again.`)
   }
+  removeEmptyRepositoryDirectory(authority, workspace.repositoryId)
   inDb(authority, repo, db =>
     transaction(db, () => {
       forgetReservation(db, reservation)

@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { NodeServices } from '@effect/platform-node'
 import { Effect, Stream } from 'effect'
@@ -218,6 +218,11 @@ try {
           assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'no-residue'])
           assert.equal(existsSync(grant.checkout), false)
           assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(grant.checkout))
+          assert.equal(
+            existsSync(dirname(grant.checkout)),
+            false,
+            'the emptied repository directory is gone'
+          )
         }
         assert.equal(sweepExitCode(receipt), 0)
         assert.equal(rowOf(receipt, owner.write.workspaceId).outcome, 'retained')
