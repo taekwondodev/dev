@@ -57,6 +57,7 @@ const LONG = Array.from(
   { length: 400 },
   (_, index) => `## Section ${index}\n\nParagraph ${index} ${'lorem ipsum '.repeat(12)}\n`
 ).join('\n')
+const ASTRAL = `${'a'.repeat(999)}😀`.repeat(3)
 const server = createServer((request, response) => {
   seen.push({ url: request.url ?? '', headers: request.headers })
   const url = new URL(request.url ?? '/', 'http://fixture')
@@ -78,6 +79,8 @@ const server = createServer((request, response) => {
       )
     case '/long.md':
       return reply(200, 'text/markdown', LONG)
+    case '/astral.txt':
+      return reply(200, 'text/plain; charset=utf-8', ASTRAL)
     case '/page.html':
       return reply(
         200,
@@ -596,6 +599,24 @@ try {
         ),
         /no longer held in session memory/
       )
+    }
+  )
+  await claim(
+    'a cut without a nearby newline keeps a surrogate pair whole, so every slice is well-formed',
+    async () => {
+      let outcome = await read(reader, { url: `${origin}/astral.txt`, maxChars: 1000 })
+      const slices = [documentOf(outcome)]
+      for (
+        let token = continuationOf(outcome);
+        token !== undefined;
+        token = continuationOf(outcome)
+      ) {
+        outcome = await read(reader, { continuation: token, maxChars: 1000 })
+        slices.push(documentOf(outcome))
+      }
+      assert.equal(slices[0]?.end, 999)
+      assert.ok(slices.every(slice => !/\p{Surrogate}/u.test(slice.text)))
+      assert.equal(slices.map(slice => slice.text).join(''), ASTRAL)
     }
   )
   await claim(
