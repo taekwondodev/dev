@@ -304,11 +304,13 @@ export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): v
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Reservation changed before its release was recorded: ${value.id}`)
-  statement(db, "DELETE FROM uses WHERE reservation_id=? AND stage='quiescent'").run(value.id)
+  statement(db, "DELETE FROM uses WHERE workspace_id=? AND stage='quiescent'").run(
+    value.workspaceId
+  )
 }
 export const forgetReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   statement(db, 'DELETE FROM reservations WHERE id=?').run(value.id)
-  statement(db, 'DELETE FROM uses WHERE reservation_id=?').run(value.id)
+  statement(db, 'DELETE FROM uses WHERE workspace_id=?').run(value.workspaceId)
 }
 export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
   statement(
