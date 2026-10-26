@@ -12,7 +12,7 @@ export const managedFacts = (overrides: Partial<CompletionFacts> = {}): Completi
   uses: { unknown: 0, abandoned: 0, live: 0, conversations: 0 },
   attemptsQuiescent: true,
   branch: undefined,
-  residue: { tracked: 0, untracked: 0, ignored: 0 },
+  residue: { tracked: 0, untracked: 0 },
   ownCommits: false,
   integration: integrationUnknown('Integration is not needed here.'),
   ...overrides,

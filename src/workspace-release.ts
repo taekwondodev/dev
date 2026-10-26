@@ -294,7 +294,6 @@ const residualOf = (inventory: Inventory | undefined, head: string | undefined):
 const residueOf = (inventory: Inventory): Residue => ({
   tracked: inventory.tracked.length,
   untracked: inventory.untracked,
-  ignored: inventory.ignored,
 })
 
 interface Assessed {

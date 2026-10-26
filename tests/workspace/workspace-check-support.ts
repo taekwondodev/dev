@@ -89,7 +89,7 @@ export const loadInstalledPi = async () => {
   return { pi: api, packageInfo, importFromPi }
 }
 
-export const loadImportPathResolver = (packageRoot: string): Promise<(input: string) => string> =>
+const loadImportPathResolver = (packageRoot: string): Promise<(input: string) => string> =>
   Effect.runPromise(loadPiPathResolver(packageRoot))
 
 export const deferred = <A>() => {

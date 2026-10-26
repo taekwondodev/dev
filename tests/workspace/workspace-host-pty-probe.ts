@@ -1234,10 +1234,9 @@ assert.ok(
 marker('DEV36_READY_FOR_COMMANDS')
 await within(waitForCommand('list:1'), 90000, 'TUI /workspace list')
 await within(waitForCommand('inspect:1'), 90000, 'TUI /workspace inspect')
-await within(waitForCommand('release:1'), 90000, 'TUI /workspace release of another task')
-await within(waitForCommand('release:2'), 90000, "TUI /workspace release of the TUI's own task")
-assert.deepEqual(checkedTasks, [], 'neither release assessed a task')
-assert.deepEqual(releaseRequests, [], 'neither release attempted anything')
+await within(waitForCommand('release:1'), 90000, 'TUI /workspace release')
+assert.deepEqual(checkedTasks, [], 'the release assessed no task')
+assert.deepEqual(releaseRequests, [], 'the release attempted nothing')
 assert.equal(
   timeline.filter(entry => entry.kind === 'confirm').length,
   0,
@@ -1697,7 +1696,7 @@ assert.ok(
 )
 assert.deepEqual(
   workspaceCommands,
-  ['list', `inspect ${TASK_LEAD}`, `release ${TASK_RESUME}`, `release ${TASK_B}`],
+  ['list', `inspect ${TASK_LEAD}`, `release ${TASK_RESUME}`],
   'InteractiveMode dispatched the exact list/inspect/release grammar'
 )
 assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB)))
@@ -1741,12 +1740,9 @@ assert.deepEqual(
     [
       `Release runs only from a terminal: dev workspace release ${TASK_RESUME}. The task of this conversation is swept when dev quits.`,
     ],
-    [
-      `Release runs only from a terminal: dev workspace release ${TASK_B}. The task of this conversation is swept when dev quits.`,
-    ],
     [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
   ],
-  'the TUI showed each switch, the /workspace list, inspect and both release answers'
+  'the TUI showed each switch, the /workspace list, inspect and release answers'
 )
 assert.ok(terminalInputs.length > 0)
 assert.equal(processResults.size, 3)

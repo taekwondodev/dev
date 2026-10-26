@@ -661,7 +661,7 @@ try {
   )
 
   await claim(
-    'recording the same publication twice keeps one fact whose columns and payload agree, and an option-shaped remote name is refused at the authority boundary before any Git call',
+    'recording the same publication twice counts one matched publication, and an option-shaped remote name is refused as invalid without replacing the recorded target',
     async () => {
       const allocated = await allocateManaged(lifecycle, userCheckout())
       await lifecycle.recordTarget(allocated.taskId, localMain)
@@ -1153,7 +1153,7 @@ try {
       managedFacts({
         allocation: 'checkout-contention',
         branch: 'refs/heads/feature',
-        residue: { tracked: 1, untracked: 0, ignored: 0 },
+        residue: { tracked: 1, untracked: 0 },
         ownCommits: true,
         integration: integrationFacts(provider, worktree, {
           target: targetOverride,
@@ -1518,7 +1518,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/feature',
-          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          residue: { tracked: 1, untracked: 0 },
           ownCommits: true,
           integration: unavailableIntegration,
         })
@@ -1641,7 +1641,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/feature',
-          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          residue: { tracked: 1, untracked: 0 },
           ownCommits: true,
           integration: deletedForkIntegration,
         })
@@ -1706,7 +1706,7 @@ try {
       ) =>
         decideCompletion(
           managedFacts({
-            residue: { tracked: 2, untracked: 0, ignored: 0 },
+            residue: { tracked: 2, untracked: 0 },
             ownCommits: input.head !== undefined && input.head !== input.base,
             integration: integrationFacts(provider, worktree, {
               target: targetOverride,
@@ -1911,7 +1911,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/main',
-          residue: { tracked: 1, untracked: 0, ignored: 0 },
+          residue: { tracked: 1, untracked: 0 },
           ownCommits: true,
           integration: integrationFacts(noGitHub, shallow, {
             target: { kind: 'local', ref: 'refs/remotes/origin/main' },
