@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
@@ -2397,6 +2397,82 @@ try {
       assert.equal(traveller.binding.workspaceId, managed.workspaceId)
       ready(await traveller.authorize({ kind: 'write' }))
       await traveller.close()
+    }
+  )
+
+  await claim(
+    'dev workspace release of a pre-existing checkout also deletes read uses recorded before its reservation, including one an ended session left unsettled, and its sweep release prunes settled ones',
+    async () => {
+      const readRoot = join(sandbox, 'read-before-reservation-authority')
+      const readRepo = join(sandbox, 'read-before-reservation-repo')
+      initRepository(readRepo)
+      const killed = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            import { openLifecycle } from ${JSON.stringify(new URL('./workspace-test-lifecycle.ts', import.meta.url).href)}
+            const lifecycle = await openLifecycle({ root: ${JSON.stringify(readRoot)} })
+            const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation())}, cwd: ${JSON.stringify(readRepo)} })
+            await attachment.authorize({ kind: 'read' })
+            process.kill(process.pid, 'SIGKILL')
+          `,
+        ],
+        { encoding: 'utf8' }
+      )
+      assert.equal(killed.signal, 'SIGKILL', killed.stderr)
+      const readLifecycle = await openLifecycle({ root: readRoot })
+      const settledReader = await readLifecycle.attach({
+        conversation: conversation(),
+        cwd: readRepo,
+      })
+      const read = ready(await settledReader.authorize({ kind: 'read' }))
+      await settledReader.close()
+      const writer = await readLifecycle.attach({ conversation: conversation(), cwd: readRepo })
+      const written = ready(await writer.authorize({ kind: 'write' }))
+      await writer.close()
+      const before = await readLifecycle.inspect({ cwd: readRepo })
+      assert.equal(before[0]?.outcome, 'blocked', 'the abandoned read blocks the checkout')
+      assert.ok(
+        before[0]?.uses.some(use => use.id === read.useId),
+        'the settled read is recorded'
+      )
+      const released = await readLifecycle.release(requireTask(written.taskId))
+      assert.deepEqual(outcomes(released), [[written.workspaceId, 'released']])
+      const after = await readLifecycle.inspect({ cwd: readRepo })
+      assert.deepEqual(after[0]?.uses, [], 'no use of the released checkout remains')
+      assert.notEqual(after[0]?.outcome, 'blocked')
+
+      const sweptReader = await readLifecycle.attach({
+        conversation: conversation(),
+        cwd: readRepo,
+      })
+      const sweptRead = ready(await sweptReader.authorize({ kind: 'read' }))
+      await sweptReader.close()
+      const sweptWriter = await readLifecycle.attach({
+        conversation: conversation(),
+        cwd: readRepo,
+      })
+      const sweptWrite = ready(await sweptWriter.authorize({ kind: 'write' }))
+      await sweptWriter.close()
+      const receipt = await readLifecycle.sweep({
+        moment: 'quit',
+        anchorWorkspaceId: sweptWrite.workspaceId,
+        delegatedCwds: [],
+        occupiedPaths: [],
+      })
+      assert.ok(
+        receipt.rows.some(row => row.kind === 'workspace' && row.outcome === 'released'),
+        JSON.stringify(receipt.rows)
+      )
+      assert.ok(
+        (await readLifecycle.inspect({ cwd: readRepo }))
+          .flatMap(view => view.uses)
+          .every(use => use.id !== sweptRead.useId),
+        'the sweep release prunes the settled read recorded before the reservation'
+      )
+      await readLifecycle.close()
     }
   )
 
