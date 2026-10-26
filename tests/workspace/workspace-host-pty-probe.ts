@@ -550,6 +550,7 @@ const lifecycle: WorkspaceLifecycle = {
     releaseRequests.push(input)
     return unsupported()
   },
+  releasePreExisting: unsupported,
   sweep: unsupported,
   recordTarget: unsupported,
   recordPublication: unsupported,

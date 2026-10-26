@@ -30,7 +30,9 @@ import type { ReplacedSessionContext } from '../node_modules/@earendil-works/pi-
 import { errorText } from './error-text.ts'
 import {
   formatSweepReceipt,
+  isReleaseCommand,
   parseWorkspaceCommand,
+  terminalReleaseCommand,
   runReadOnlyWorkspaceCommand,
 } from './workspace-command.ts'
 import {
@@ -1372,11 +1374,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const workspaceCommand = Effect.fnUntraced(
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
-      if (command.kind === 'release') {
+      if (isReleaseCommand(command)) {
         display(
           api,
           context,
-          `Release runs only from a terminal: dev workspace release ${command.taskId}. The task of this conversation is swept when dev quits.`
+          `Release runs only from a terminal: ${terminalReleaseCommand(command)}. The task of this conversation is swept when dev quits.`
         )
         return
       }

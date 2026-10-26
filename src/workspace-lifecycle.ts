@@ -440,6 +440,12 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
         ...(input.ownConversation === undefined ? {} : { ownConversation: input.ownConversation }),
       }),
     release: input => request({ op: 'release', taskId: input.taskId }),
+    releasePreExisting: input =>
+      request({
+        op: 'release-pre-existing',
+        repositoryId: input.repositoryId,
+        workspaceIds: input.workspaceIds,
+      }),
     sweep: input => request({ op: 'sweep', request: input }),
     recordTarget: input =>
       request({ op: 'record-target', taskId: input.taskId, target: input.target }).pipe(

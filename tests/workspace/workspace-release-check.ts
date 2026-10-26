@@ -2476,6 +2476,77 @@ try {
     }
   )
 
+  await claim(
+    'dev workspace release pre-existing deletes the uses ended sessions left on an unreserved checkout, keeps those of a running session, and refuses a checkout a task reserved meanwhile',
+    async () => {
+      const unreservedRoot = join(sandbox, 'unreserved-checkout-authority')
+      const unreservedRepo = join(sandbox, 'unreserved-checkout-repo')
+      initRepository(unreservedRepo)
+      const killed = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            import { openLifecycle } from ${JSON.stringify(new URL('./workspace-test-lifecycle.ts', import.meta.url).href)}
+            const lifecycle = await openLifecycle({ root: ${JSON.stringify(unreservedRoot)} })
+            const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation())}, cwd: ${JSON.stringify(unreservedRepo)} })
+            await attachment.authorize({ kind: 'read' })
+            process.kill(process.pid, 'SIGKILL')
+          `,
+        ],
+        { encoding: 'utf8' }
+      )
+      assert.equal(killed.signal, 'SIGKILL', killed.stderr)
+      const unreserved = await openLifecycle({ root: unreservedRoot })
+      const settledReader = await unreserved.attach({
+        conversation: conversation(),
+        cwd: unreservedRepo,
+      })
+      ready(await settledReader.authorize({ kind: 'read' }))
+      await settledReader.close()
+      const liveReader = await unreserved.attach({
+        conversation: conversation(),
+        cwd: unreservedRepo,
+      })
+      const live = ready(await liveReader.authorize({ kind: 'read' }))
+      const [before] = await unreserved.inspect({ cwd: unreservedRepo })
+      assert.equal(before?.outcome, 'blocked', 'the abandoned read blocks the checkout')
+      assert.equal(before.taskId, undefined, 'no task reserves the checkout')
+      assert.equal(before.uses.length, 3)
+
+      const released = await unreserved.releasePreExisting(live.repositoryId, [live.workspaceId])
+      assert.deepEqual(outcomes(released), [[live.workspaceId, 'released']])
+      const { reason } = resultOf(released, live.workspaceId)
+      assert.ok(reason.includes('2 use record(s)') && reason.includes('1 use(s)'), reason)
+      const [after] = await unreserved.inspect({ cwd: unreservedRepo })
+      assert.deepEqual(
+        after?.uses.map(use => use.id),
+        [live.useId],
+        'only the running session keeps its use'
+      )
+      assert.equal(after.outcome, 'active')
+
+      await liveReader.close()
+      const writer = await unreserved.attach({ conversation: conversation(), cwd: unreservedRepo })
+      const written = ready(await writer.authorize({ kind: 'write' }))
+      await writer.close()
+      const refused = await unreserved.releasePreExisting(live.repositoryId, [live.workspaceId])
+      assert.deepEqual(outcomes(refused), [[live.workspaceId, 'failed']])
+      assert.ok(
+        resultOf(refused, live.workspaceId).reason.includes(
+          `dev workspace release ${requireTask(written.taskId)}`
+        )
+      )
+      assert.equal(
+        (await unreserved.inspect({ taskId: requireTask(written.taskId) }))[0]?.reservationId,
+        written.reservationId,
+        'the reservation stays'
+      )
+      await unreserved.close()
+    }
+  )
+
   await lifecycle.close()
   process.stdout.write(
     `${JSON.stringify(

@@ -312,6 +312,9 @@ export const forgetReservation = (db: DatabaseSync, value: ReservationRecord): v
   statement(db, 'DELETE FROM reservations WHERE id=?').run(value.id)
   statement(db, 'DELETE FROM uses WHERE workspace_id=?').run(value.workspaceId)
 }
+export const deleteUses = (db: DatabaseSync, ids: readonly WorkspaceId[]): void => {
+  for (const id of ids) statement(db, 'DELETE FROM uses WHERE id=?').run(id)
+}
 export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void => {
   statement(
     db,

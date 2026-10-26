@@ -77,6 +77,11 @@ const ReleaseRequestRpcSchema = Schema.Struct({
   op: Schema.Literal('release'),
   taskId: WorkspaceId,
 })
+const ReleasePreExistingRequestSchema = Schema.Struct({
+  op: Schema.Literal('release-pre-existing'),
+  repositoryId: WorkspaceId,
+  workspaceIds: Schema.Array(WorkspaceId),
+})
 const SweepRpcRequestSchema = Schema.Struct({
   op: Schema.Literal('sweep'),
   request: SweepRequestSchema,
@@ -103,6 +108,7 @@ const WorkspaceRpcInputSchema = Schema.Union([
   CloseRequestSchema,
   CheckRequestSchema,
   ReleaseRequestRpcSchema,
+  ReleasePreExistingRequestSchema,
   SweepRpcRequestSchema,
   RecordTargetRequestSchema,
   RecordPublicationRequestSchema,
@@ -123,6 +129,7 @@ const RpcReplySchemas = {
   close: Schema.Null,
   check: Schema.Array(WorkspaceAssessmentSchema),
   release: Schema.Array(WorkspaceReleaseResultSchema),
+  'release-pre-existing': Schema.Array(WorkspaceReleaseResultSchema),
   sweep: SweepReceiptSchema,
   'record-target': Schema.Null,
   'record-publication': Schema.Null,
@@ -145,6 +152,7 @@ export const decodeWorkspaceRpcReply: {
   close: Schema.decodeUnknownOption(RpcReplySchemas.close),
   check: Schema.decodeUnknownOption(RpcReplySchemas.check),
   release: Schema.decodeUnknownOption(RpcReplySchemas.release),
+  'release-pre-existing': Schema.decodeUnknownOption(RpcReplySchemas['release-pre-existing']),
   sweep: Schema.decodeUnknownOption(RpcReplySchemas.sweep),
   'record-target': Schema.decodeUnknownOption(RpcReplySchemas['record-target']),
   'record-publication': Schema.decodeUnknownOption(RpcReplySchemas['record-publication']),
@@ -166,6 +174,7 @@ const SuccessSchema = Schema.Struct({
     'close',
     'check',
     'release',
+    'release-pre-existing',
     'sweep',
     'record-target',
     'record-publication',

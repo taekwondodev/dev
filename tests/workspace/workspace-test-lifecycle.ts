@@ -110,6 +110,10 @@ export interface TestLifecycle {
   validate(grant: WorkspaceGrant): Promise<void>
   check(taskId: WorkspaceId): Promise<readonly WorkspaceAssessment[]>
   release(taskId: WorkspaceId): Promise<readonly WorkspaceReleaseResult[]>
+  releasePreExisting(
+    repositoryId: WorkspaceId,
+    workspaceIds: readonly WorkspaceId[]
+  ): Promise<readonly WorkspaceReleaseResult[]>
   sweep(request: SweepRequest): Promise<SweepReceipt>
   recordTarget(taskId: WorkspaceId, target: TaskTarget): Promise<void>
   recordPublication(reference: PublicationReference): Promise<void>
@@ -144,6 +148,8 @@ export const openLifecycle = async (options: {
     validate: grant => Effect.runPromise(lifecycle.validate(grant)),
     check: taskId => Effect.runPromise(lifecycle.check({ taskId })),
     release: taskId => Effect.runPromise(lifecycle.release({ taskId })),
+    releasePreExisting: (repositoryId, workspaceIds) =>
+      Effect.runPromise(lifecycle.releasePreExisting({ repositoryId, workspaceIds })),
     sweep: request => Effect.runPromise(lifecycle.sweep(request)),
     recordTarget: (taskId, target) => Effect.runPromise(lifecycle.recordTarget({ taskId, target })),
     recordPublication: reference => Effect.runPromise(lifecycle.recordPublication({ reference })),

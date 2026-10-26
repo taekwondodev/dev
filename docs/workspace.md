@@ -11,6 +11,7 @@ dev workspace                 # list this repository's tasks and workspaces
 dev workspace inspect <task>  # inspect the exact task across repositories and its next safe action
 dev workspace check <task>    # assess completion, target, blockers and evidence
 dev workspace release <task>  # interactively confirm clearing every workspace of the task
+dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts
 ```
 
 In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing.
@@ -73,7 +74,7 @@ Removal outcomes appear in receipts and release results. Failed or interrupted a
 
 ### Process uses and gates
 
-A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Polling observers within one runtime share a process-table snapshot for 200 ms, launch identity capture and every signalling decision reads a fresh table. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; no explicit recovery command exists yet.
+A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Polling observers within one runtime share a process-table snapshot for 200 ms, launch identity capture and every signalling decision reads a fresh table. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; once its session has ended, only a [release](#release) clears it.
 
 A command whose checkout was replaced before user code is released never runs. A checkout replaced while a command runs, including by the command itself, does not end observation: stopping the shell still kills its family, and the use ends `unknown` instead of `quiescent`.
 
@@ -129,6 +130,8 @@ Allocation and replacement receipts appear in the conversation when there are ro
 
 The command requires an interactive terminal, lists each workspace and its consequence, then asks for one `y`. There is no `--yes`. It checks no completion, evidence or live use: run it only when nothing still works in those workspaces. It neither waits for uses nor acquires path or installation gates; this is an [explicit user override](adr/0005-scoped-runtime-coordination.md#release), not a guarded sweep. The session command and agent tool cannot release them.
 
+A pre-existing checkout no task reserves is never swept, so uses its ended sessions left unsettled keep it `blocked` and settled ones accumulate. **`dev workspace release pre-existing`** handles the repository at `--cwd`: it lists each unreserved pre-existing checkout with recorded uses, asks for one `y`, then deletes the uses of every ended dev session there. Uses of running sessions stay, as do files and commits; a checkout a task reserves meanwhile fails and names `dev workspace release <task>`. It stops no process those sessions started: run it only when nothing they started still works there.
+
 Release respects explicit Git worktree locks. A failed or interrupted removal stays `release-review`; rerun release to finish it. Leftover directories are deleted only after Git confirms the worktree is no longer registered, and only within dev's managed storage; an admin directory serving a moved worktree is preserved. An unreadable Git worktree list prevents confirmation and leftover deletion. When the directory is already gone, retry retains the interrupted removal's recorded HEAD as sibling delivery evidence.
 
 Stop independently started tools and avoid external edits during removal. The [external-process race](../SECURITY.md#outside-the-protection) remains outside dev's protection.
@@ -150,7 +153,7 @@ Ctrl-C before the sweep or at a confirmation starts no further release. During s
 | Code | Meaning                                                                                                                                                                |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0    | Observation returned; every workspace of a confirmed release ended `released` or `removed`; or quit reached terminal outcomes, counting tasks released at quit as done |
-| 1    | Observation unavailable, failed or unreported release, nothing reserved to release, unknown sweep outcome or unfinished sweep removal                                  |
+| 1    | Observation unavailable, failed or unreported release, nothing reserved or recorded to release, unknown sweep outcome or unfinished sweep removal                      |
 | 2    | Invalid or ambiguous arguments, or missing required interaction                                                                                                        |
 | 130  | Cancelled confirmation, or interrupted quit/sweep/release; an in-flight attempt completes and is reported                                                              |
 

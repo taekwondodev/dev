@@ -22,8 +22,19 @@ export type WorkspaceCommand =
   | { readonly kind: 'inspect'; readonly taskId: WorkspaceId }
   | { readonly kind: 'check'; readonly taskId: WorkspaceId }
   | { readonly kind: 'release'; readonly taskId: WorkspaceId }
+  | { readonly kind: 'release-pre-existing' }
 
-type ReadOnlyWorkspaceCommand = Exclude<WorkspaceCommand, { readonly kind: 'release' }>
+type ReleaseCommand = Extract<
+  WorkspaceCommand,
+  { readonly kind: 'release' | 'release-pre-existing' }
+>
+type ReadOnlyWorkspaceCommand = Exclude<WorkspaceCommand, ReleaseCommand>
+
+export const isReleaseCommand = (command: WorkspaceCommand): command is ReleaseCommand =>
+  command.kind === 'release' || command.kind === 'release-pre-existing'
+
+export const terminalReleaseCommand = (command: ReleaseCommand): string =>
+  `dev workspace release ${command.kind === 'release' ? command.taskId : 'pre-existing'}`
 
 export interface WorkspaceCommandResult {
   readonly exitCode: 0 | 1 | 2
@@ -98,12 +109,13 @@ export const parseWorkspaceCommand = Effect.fnUntraced(function* (
   if (verb === 'release') {
     if (args.length !== 1)
       return yield* usage(
-        'Usage: workspace release <task> (interactive confirmation; no unattended mode exists)'
+        'Usage: workspace release <task> | workspace release pre-existing (interactive confirmation; no unattended mode exists)'
       )
+    if (args[0] === 'pre-existing') return { kind: 'release-pre-existing' }
     return { kind: 'release', taskId: yield* exactId(args[0], 'Task') }
   }
   return yield* usage(
-    `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task>, check <task> or release <task>.`
+    `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task>, check <task>, release <task> or release pre-existing.`
   )
 })
 
@@ -252,6 +264,24 @@ export const releasePlan = (
       : [`- task artifacts at ${artifacts}: the directory and everything in it are deleted`]),
   ].join('\n')
 
+export const unreservedCheckoutViews = (
+  views: readonly WorkspaceView[]
+): readonly WorkspaceView[] =>
+  sortedViews(views).filter(
+    view =>
+      view.origin === 'pre-existing' && view.reservationId === undefined && view.uses.length > 0
+  )
+
+export const preExistingReleasePlan = (views: readonly WorkspaceView[]): string =>
+  [
+    'dev workspace release pre-existing deletes the use records of ended dev sessions in every unreserved pre-existing checkout of this repository:',
+    ...views.map(
+      view =>
+        `- ${view.workspaceId} at ${view.path} (${view.outcome}): ${view.uses.length} use record(s); those of running dev sessions stay, files and commits stay`
+    ),
+    'Processes started by ended sessions are not stopped; run this only when nothing they started still works there.',
+  ].join('\n')
+
 const RELEASE_FAILURES: ReadonlySet<WorkspaceReleaseResult['outcome']> = new Set([
   'failed',
   'review-required',
@@ -265,11 +295,11 @@ const artifactsText = (row: TaskArtifactsResult): string[] => [
 ]
 
 export const formatReleaseResults = (
-  taskId: WorkspaceId,
+  subject: string,
   results: readonly WorkspaceReleaseResult[]
 ): string =>
   [
-    `Release of task ${taskId}:`,
+    `Release of ${subject}:`,
     ...results.flatMap(result =>
       result.kind === 'task-artifacts'
         ? artifactsText(result)

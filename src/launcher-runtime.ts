@@ -54,7 +54,13 @@ import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
 import { makeWorkspaceLifecycle } from './workspace-lifecycle.ts'
-import type { SweepReceipt, WorkspaceId, WorkspaceLifecycle } from './workspace-domain.ts'
+import type {
+  SweepReceipt,
+  WorkspaceError,
+  WorkspaceId,
+  WorkspaceLifecycle,
+  WorkspaceReleaseResult,
+} from './workspace-domain.ts'
 import {
   keptConversationGuidance,
   makeWorkspaceHost,
@@ -67,9 +73,12 @@ import {
   runReadOnlyWorkspaceCommand,
   existingTaskArtifacts,
   formatReleaseResults,
+  isReleaseCommand,
+  preExistingReleasePlan,
   releaseExitCode,
   releasePlan,
   reservedViews,
+  unreservedCheckoutViews,
   sweepExitCode,
 } from './workspace-command.ts'
 import {
@@ -211,7 +220,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task>]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -693,6 +702,30 @@ const write = (text: string, stream: NodeJS.WriteStream = process.stdout): Effec
     stream.write(`${text}\n`)
   })
 
+const confirmRelease = Effect.fnUntraced(function* (
+  plan: string,
+  subject: string,
+  inspectCommand: string,
+  release: Effect.Effect<readonly WorkspaceReleaseResult[], WorkspaceError>
+): Effect.fn.Return<ReleaseExitCode> {
+  yield* write(plan)
+  const confirmation = yield* askConfirmation('Type y to release, anything else to cancel: ')
+  if (confirmation !== 'confirmed') {
+    yield* write('Release cancelled; nothing was changed.')
+    return 130
+  }
+  const released = yield* Effect.exit(release.pipe(Effect.uninterruptible))
+  if (Exit.isFailure(released)) {
+    yield* write(
+      `The release did not report back (${errorText(Cause.squash(released.cause))}); run ${inspectCommand} and release again if anything remains.`,
+      process.stderr
+    )
+    return 1
+  }
+  yield* write(formatReleaseResults(subject, released.value))
+  return releaseExitCode(released.value)
+})
+
 const terminalRelease = Effect.fnUntraced(function* (
   dependencies: LauncherDependencies,
   taskId: WorkspaceId
@@ -714,22 +747,52 @@ const terminalRelease = Effect.fnUntraced(function* (
     )
     return 1
   }
-  yield* write(releasePlan(taskId, views, existingTaskArtifacts(lifecycle.root, taskId)))
-  const confirmation = yield* askConfirmation('Type y to release, anything else to cancel: ')
-  if (confirmation !== 'confirmed') {
-    yield* write('Release cancelled; nothing was changed.')
-    return 130
-  }
-  const released = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
-  if (Exit.isFailure(released)) {
+  return yield* confirmRelease(
+    releasePlan(taskId, views, existingTaskArtifacts(lifecycle.root, taskId)),
+    `task ${taskId}`,
+    `dev workspace inspect ${taskId}`,
+    lifecycle.release({ taskId })
+  )
+})
+
+const terminalPreExistingRelease = Effect.fnUntraced(function* (
+  dependencies: LauncherDependencies,
+  repositoryRoot: string | undefined
+): Effect.fn.Return<ReleaseExitCode, never, Scope.Scope> {
+  if (repositoryRoot === undefined) {
     yield* write(
-      `The release did not report back (${errorText(Cause.squash(released.cause))}); run dev workspace inspect ${taskId} and release again if anything remains.`,
+      'Releasing pre-existing checkouts requires a Git repository; run dev from a Git checkout or pass --cwd PATH.',
       process.stderr
     )
     return 1
   }
-  yield* write(formatReleaseResults(taskId, released.value))
-  return releaseExitCode(released.value)
+  const lifecycle = yield* dependencies.workspaceLifecycle
+  const listed = yield* Effect.exit(lifecycle.inspect({ cwd: repositoryRoot }))
+  if (Exit.isFailure(listed)) {
+    yield* write(
+      `Workspace inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
+      process.stderr
+    )
+    return 1
+  }
+  const views = unreservedCheckoutViews(listed.value)
+  const [first] = views
+  if (first === undefined) {
+    yield* write(
+      `No unreserved pre-existing checkout of ${repositoryRoot} records a use; nothing to release.`,
+      process.stderr
+    )
+    return 1
+  }
+  return yield* confirmRelease(
+    preExistingReleasePlan(views),
+    `the pre-existing checkouts of ${repositoryRoot}`,
+    `dev --cwd ${repositoryRoot} workspace`,
+    lifecycle.releasePreExisting({
+      repositoryId: first.repositoryId,
+      workspaceIds: views.map(view => view.workspaceId),
+    })
+  )
 })
 
 const formatOwner = (owner: BrowserOwnerStatus['owner']): string => {
@@ -824,7 +887,7 @@ const run = Effect.fnUntraced(function* (
       })
       return
     }
-    if (command.kind !== 'release') {
+    if (!isReleaseCommand(command)) {
       const result = yield* runReadOnlyWorkspaceCommand(dependencies.workspaceLifecycle, command, {
         repositoryRoot: gitRoot(options.cwd),
       })
@@ -843,7 +906,10 @@ const run = Effect.fnUntraced(function* (
       })
       return
     }
-    process.exitCode = yield* terminalRelease(dependencies, command.taskId)
+    process.exitCode =
+      command.kind === 'release'
+        ? yield* terminalRelease(dependencies, command.taskId)
+        : yield* terminalPreExistingRelease(dependencies, yield* gitRoot(options.cwd))
     return
   }
 
