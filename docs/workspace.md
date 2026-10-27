@@ -95,6 +95,7 @@ The same conversation cannot attach in two dev sessions, even across installatio
 | Confirmed replacement                                         | Stop the leaving session's shells and work; all replacements are refused while a workspace switch is pending                                                  |
 | `/reload`                                                     | Keep lead shells observed; see [work cancellation](work.md#cancellation-and-session-changes) for attempts                                                     |
 | `!`, `!!`, lead bash                                          | Run dev's shell in the conversation's workspace                                                                                                               |
+| Any replacement or workspace switch under `dev --orb`         | Refused; the session keeps its orb and checkout until quit. See [orb](orb.md#tools)                                                                           |
 
 ### Completion evidence
 

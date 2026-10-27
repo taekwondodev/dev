@@ -52,6 +52,7 @@ import {
   type WorkDeliveryStatus,
   type WorkKind,
   type WorkOwnerService,
+  type WorkRemote,
   type WorkSnapshot,
 } from './work-domain.ts'
 import {
@@ -99,6 +100,7 @@ import {
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { commandRunner, type RunCommand } from './command.ts'
+import { isWithin } from './workspace-paths.ts'
 import { makeOwnerBootstrap } from './web-browser-owner.ts'
 import { errorText } from './error-text.ts'
 
@@ -175,6 +177,7 @@ interface WorkOwnerOptions {
   readonly onOutcome?: (attempt: AttemptView) => void
   readonly childEntry?: URL
   readonly browserOwnerEntry?: URL
+  readonly remote?: WorkRemote
 }
 
 const PI_CHILD_ENTRY = new URL('./pi-child.ts', import.meta.url)
@@ -414,7 +417,16 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const fs = yield* FileSystem.FileSystem
   const scope = yield* Effect.scope
   const store = yield* WorkStore
-  const run = yield* commandRunner
+  const localRun = yield* commandRunner
+  const { remote } = options
+  const run: RunCommand =
+    remote === undefined
+      ? localRun
+      : (file, args, runOptions) => {
+          const wrapped = remote.wrap(file, args, runOptions?.cwd ?? '/', runOptions?.env ?? {})
+          const { cwd: _cwd, ...rest } = runOptions ?? {}
+          return localRun(wrapped.file, wrapped.args, rest)
+        }
   const artifactState = (cwd: string) => readArtifactState(run, cwd)
   const { freshProcessTable: freshTable, observeFamily } = yield* processObserver
   const active = new Map<AttemptId, Job>()
@@ -465,11 +477,23 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const startProcess = (request: ProcessStartRequest): Effect.Effect<AttemptView, WorkFailure> => {
     if (!request.command.trim())
       return Effect.fail(new WorkError({ message: 'command is required' }))
+    if (
+      remote !== undefined &&
+      request.cwd !== undefined &&
+      !isWithin(ownerCwd, resolve(ownerCwd, request.cwd))
+    )
+      return Effect.fail(
+        new WorkError({
+          message: `In orb mode work processes run on the orb inside ${ownerCwd}; the command was not started.`,
+        })
+      )
     return start({ kind: 'process', ...request }, undefined).pipe(Effect.mapError(toFailure))
   }
 
   const startAgent = (request: AgentStartRequest): Effect.Effect<AttemptView, WorkFailure> =>
-    delegate(request, undefined)
+    remote === undefined
+      ? delegate(request, undefined)
+      : Effect.fail(new WorkError({ message: remote.agentRefusal }))
 
   const delegate = Effect.fnUntraced(function* (
     request: AgentStartRequest,
@@ -1133,7 +1157,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
                   })
                 : spawn(
                     '/bin/bash',
-                    ['-c', processGateScript, 'dev-work-process', request.command],
+                    [
+                      '-c',
+                      processGateScript,
+                      'dev-work-process',
+                      remote === undefined
+                        ? request.command
+                        : remote.shellCommand(request.command, cwd),
+                    ],
                     {
                       ...spawnOptions,
                       stdio: ['ignore', stdout, stderr, 'pipe'],

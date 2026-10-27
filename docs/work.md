@@ -32,7 +32,7 @@ Writer attempts show their managed-worktree path as `blocked` while use is unres
 
 ### Execution and access
 
-A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission.
+A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission. Under `dev --orb` the command runs on the [orb](orb.md#tools) inside the session's directory, its logs merge standard error into standard output, and delegated agents are refused.
 
 Every child receives its working project's instructions, Pi's base prompt and profile guidance, not the lead's conversation. Its skill catalog lists only the skill named by `skill` and skills named in the assignment prompt. Name any additional skills the child should see in that catalog; this filter does not restrict file access. Read-only children have inspection tools, `read_url`, `codemode` and `work` for coordinators, but no shell, edit or `gh` tool. Put issue, PR or other external text in the prompt or a workspace file. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
 

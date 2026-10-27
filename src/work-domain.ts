@@ -518,6 +518,17 @@ export type WorkFailure =
   | WorkProtocolError
   | WorkDispatchError
 
+export interface WorkRemote {
+  readonly agentRefusal: string
+  shellCommand(command: string, cwd: string): string
+  wrap(
+    file: string,
+    args: readonly string[],
+    cwd: string,
+    env: Readonly<Record<string, string | undefined>>
+  ): { readonly file: string; readonly args: readonly string[] }
+}
+
 export interface WorkOwnerService {
   readonly snapshot: EffectType<WorkSnapshot, WorkFailure>
   readonly startProcess: (request: ProcessStartRequest) => EffectType<AttemptView, WorkFailure>

@@ -18,6 +18,7 @@ import {
   Scope,
 } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
+import type { ChildProcessSpawner } from 'effect/process'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
   defaultDataHome,
@@ -101,6 +102,7 @@ import {
   type TerminalStyle,
 } from './quit-display.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
+import type { OrbOpenInput, OrbSession } from './orb/session.ts'
 
 export class LauncherError extends Schema.TaggedError<
   LauncherError,
@@ -120,6 +122,7 @@ interface LaunchOptions {
   readonly diagnostics: boolean
   readonly probeRuntime: boolean
   readonly help: boolean
+  readonly orb: boolean
   readonly workspaceArgs?: readonly string[]
   readonly browserArgs?: readonly string[]
 }
@@ -179,6 +182,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         diagnostics: boolean
         probeRuntime: boolean
         help: boolean
+        orb: boolean
         workspaceArgs?: readonly string[]
         browserArgs?: readonly string[]
       } = {
@@ -187,6 +191,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         diagnostics: false,
         probeRuntime: false,
         help: false,
+        orb: false,
       }
       for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index]
@@ -199,6 +204,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         else if (arg === '--diagnostics') values.diagnostics = true
         else if (arg === '--probe-runtime') values.probeRuntime = true
         else if (arg === '--help') values.help = true
+        else if (arg === '--orb') values.orb = true
         else if (arg === 'workspace') {
           values.workspaceArgs = argv.slice(index + 1)
           break
@@ -220,7 +226,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (needs openrc's OS_* variables)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -279,9 +285,15 @@ export interface RuntimeParts {
   readonly modelRuntime?: Effect.Effect<ModelRuntime, LauncherError>
   readonly model?: SessionModel
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
+  readonly orb?: OrbRuntime
 }
 
-type RuntimeFactoryServices = FileSystem.FileSystem
+export interface OrbRuntime {
+  open(input: OrbOpenInput): Effect.Effect<OrbSession, LauncherError, RuntimeFactoryServices>
+  bindWork(close: () => Promise<void>): void
+}
+
+type RuntimeFactoryServices = FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
 
 const createRuntime = Effect.fnUntraced(function* (
   parts: RuntimeParts,
@@ -303,14 +315,6 @@ const createRuntime = Effect.fnUntraced(function* (
     gitRoot: yield* gitRoot(cwd),
     profile,
   }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources')))
-  const work = yield* fromSync('Cannot create background-work extension', () =>
-    createWorkExtension({
-      dataHome,
-      profile: profile.name,
-      workspace: { lifecycle, attachment, requestRebind: workspaceHost.requestRebind },
-      isWorkspaceParked: workspaceHost.isParked,
-    })
-  )
   const trustResolver: typeof PiProjectTrust = yield* fromPromise(
     'Cannot load Pi project-trust resolver',
     () => import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href)
@@ -318,6 +322,28 @@ const createRuntime = Effect.fnUntraced(function* (
   const settingsManager = yield* fromSync('Cannot create trust-gated Pi settings', () =>
     api.SettingsManager.create(cwd, runtimeOptions.agentDir, { projectTrusted: false })
   )
+  const commandPrefix = settingsManager.getShellCommandPrefix()
+  const orb =
+    parts.orb === undefined
+      ? undefined
+      : yield* parts.orb.open({
+          attachment,
+          cwd,
+          authorityRoot: lifecycle.root,
+          skillPaths: resources.skillPaths,
+          conversation: sessionManager.getSessionFile() ?? sessionManager.getSessionId(),
+          ...(commandPrefix === undefined ? {} : { commandPrefix }),
+        })
+  const work = yield* fromSync('Cannot create background-work extension', () =>
+    createWorkExtension({
+      dataHome,
+      profile: profile.name,
+      workspace: { lifecycle, attachment, requestRebind: workspaceHost.requestRebind },
+      isWorkspaceParked: workspaceHost.isParked,
+      ...(orb === undefined ? {} : { remote: orb.workRemote }),
+    })
+  )
+  parts.orb?.bindWork(() => work.close('quit'))
   const trustStore = new api.ProjectTrustStore(runtimeOptions.agentDir)
   const projectTrustContext =
     runtimeOptions.projectTrustContext?.cwd === cwd
@@ -339,6 +365,7 @@ const createRuntime = Effect.fnUntraced(function* (
     { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
     { name: 'dev:web', factory: createWebExtension(webReader).factory },
     { name: 'dev:codemode', factory: api.createCodemodeExtension({ mode: 'on' }) },
+    ...(orb === undefined ? [] : [{ name: 'dev:orb', factory: orb.extensionFactory }]),
   ]
   const services = yield* fromPromise('Cannot create Pi session services', () =>
     api.createAgentSessionServices({
@@ -370,20 +397,23 @@ const createRuntime = Effect.fnUntraced(function* (
       sessionStartEvent: runtimeOptions.sessionStartEvent,
       ...(parts.model === undefined ? {} : { model: parts.model }),
       tools: ['+codemode'],
-      customTools: [
-        api.defineTool(
-          api.createBashToolDefinition(cwd, {
-            operations: workspaceHost.shellOperations,
-            commandPrefix: settingsManager.getShellCommandPrefix(),
-          })
-        ),
-        api.defineTool(
-          api.createWriteToolDefinition(cwd, { operations: workspaceHost.writeOperations })
-        ),
-        api.defineTool(
-          api.createEditToolDefinition(cwd, { operations: workspaceHost.editOperations })
-        ),
-      ],
+      customTools:
+        orb === undefined
+          ? [
+              api.defineTool(
+                api.createBashToolDefinition(cwd, {
+                  operations: workspaceHost.shellOperations,
+                  commandPrefix,
+                })
+              ),
+              api.defineTool(
+                api.createWriteToolDefinition(cwd, { operations: workspaceHost.writeOperations })
+              ),
+              api.defineTool(
+                api.createEditToolDefinition(cwd, { operations: workspaceHost.editOperations })
+              ),
+            ]
+          : [],
     })
   )
   yield* workspaceHost
@@ -921,6 +951,10 @@ const run = Effect.fnUntraced(function* (
     return
   }
 
+  if (options.orb && (options.diagnostics || options.probeRuntime))
+    return yield* new LauncherError({
+      message: '--orb cannot be combined with --diagnostics or --probe-runtime.',
+    })
   const launchCwd = options.cwd
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const catalog = yield* loadCatalog.pipe(
@@ -1058,6 +1092,7 @@ const run = Effect.fnUntraced(function* (
     openSessionManager: (file, cwdOverride) =>
       api.SessionManager.open(file, sessionsPath, cwdOverride),
     resolveImportPath,
+    orbMode: options.orb,
   })
   const effectiveSelection =
     resolve(effectiveCwd) === resolve(launchCwd)
@@ -1104,6 +1139,44 @@ const run = Effect.fnUntraced(function* (
       renderer => makeWebReader({ renderer })
     )
   )
+  const orbModule = options.orb
+    ? yield* fromPromise('Cannot load orb mode', () => import('./orb/session.ts'))
+    : undefined
+  let orbSession: OrbSession | undefined
+  let stopWork: (() => Promise<void>) | undefined
+  const orbRuntime: OrbRuntime | undefined =
+    orbModule === undefined
+      ? undefined
+      : {
+          open: input =>
+            orbSession === undefined
+              ? orbModule
+                  .openOrbSession(
+                    {
+                      pi: api,
+                      dataHome,
+                      env: process.env,
+                      print: line => {
+                        process.stdout.write(`${line}\n`)
+                      },
+                    },
+                    input
+                  )
+                  .pipe(
+                    Effect.mapError(error => toLauncherError(error, 'Cannot start the orb')),
+                    Effect.tap(opened =>
+                      Effect.sync(() => {
+                        orbSession = opened
+                      })
+                    )
+                  )
+              : Effect.fail(
+                  new LauncherError({ message: 'Orb mode keeps one conversation per launch' })
+                ),
+          bindWork: close => {
+            stopWork = close
+          },
+        }
   const createRuntimeFactory = yield* makeRuntimeFactory({
     api,
     packageRoot: packageInfo.root,
@@ -1113,6 +1186,7 @@ const run = Effect.fnUntraced(function* (
     workspaceHost,
     lifecycle: workspaceLifecycle,
     webReader,
+    ...(orbRuntime === undefined ? {} : { orb: orbRuntime }),
   })
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
@@ -1131,7 +1205,7 @@ const run = Effect.fnUntraced(function* (
             agentDir: globalPiAgentDir(),
             sessionManager: sessions,
           })
-        ),
+        ).pipe(Effect.onError(() => orbSession?.close ?? Effect.void)),
         disposeRuntime
       )
       yield* Effect.sync(() => {
@@ -1155,13 +1229,25 @@ const run = Effect.fnUntraced(function* (
       )
       if (yield* runInteractive(api, runtime, workspaceHost)) {
         signals.remove()
+        let orbClosing = false
         const { proceed } = yield* Scope.provide(outerScope)(
-          cancellation(() =>
-            sweepStarted
-              ? 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
-              : undefined
-          )
+          cancellation(() => {
+            if (sweepStarted)
+              return 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+            if (orbClosing)
+              return 'Interrupt received: the orb return runs on until it ends, so the checkout is never left half-written; dev exits 130 afterwards.'
+            return undefined
+          })
         )
+        const closing = orbSession
+        if (closing !== undefined) {
+          orbClosing = true
+          const stop = stopWork
+          if (stop !== undefined)
+            yield* Effect.ignore(fromPromise('Cannot stop background work', stop))
+          yield* closing.close
+          orbClosing = false
+        }
         quit = { proceed }
       }
     })

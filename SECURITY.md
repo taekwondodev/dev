@@ -54,9 +54,31 @@ Browser enforcement has accepted limits:
 
 These limits do not authorize private-network access. Treat fetched content as untrusted text.
 
+## Orb execution
+
+Under `dev --orb` the lead's tools, `!` commands and `work process` run on an [orb](docs/orb.md) with the privileges of the orb's SSH user, passwordless `sudo` included. Pi, the model, dev's extensions and every credential stay on the Mac. SSH uses an explicit configuration (`-F /dev/null`): no agent, no X11 or port forwarding, and no environment variable of the Mac reaches the orb. Only the read-only Git probes that `work` runs on the orb set `GIT_OPTIONAL_LOCKS`, `GIT_TERMINAL_PROMPT` and `GIT_NO_LAZY_FETCH` on their own command line.
+
+Orb mode isolates tool execution, not the project's Pi resources. Pi's folder trust decides on the Mac checkout as in plain dev: a trusted folder's `.pi/` extensions, settings and skills load and run on the Mac, and `AGENTS.md` and context files are read on the Mac.
+
+### Returns
+
+The return can do no more than `write` and `edit`. Before writing, it refuses the whole return if an entry:
+
+- has a path component `.git`, in any letter case;
+- is a symlink whose target leaves the checkout;
+- would be written through an existing symlinked directory;
+- replaces an existing file with more than one hard link;
+- has a mode other than 0644 or 0755, such as a submodule.
+
+The return's Git runs on the Mac with hooks disabled, no clean, smudge or process filter, Git's own text merge in place of every configured merge driver, and no attributes from the checkout's files, so a returned `.gitattributes` cannot start a filter or merge driver. Objects received from the orb are checked with `fsck`, and a symlink pointing into `.git` is refused like one leaving the checkout. It reaches the orb only through the orb's key and pinned host keys. Returned files carry the same risk as files the agent writes in plain dev: returned `.pi/` or `.agents/` content is loaded by the next trusted launch.
+
+### Key material
+
+Each orb gets a fresh ed25519 key pair. The private key and `known_hosts` live in the orb record under the data home with mode 0600; the public key is the only key material orbit receives. Host trust rests on the host keys orbit reads from the orb's console, so it is as trustworthy as orbit and the cloud's console log. Everything in the uploaded snapshot reaches the orb, untracked files included; ignored files do not.
+
 ## Credentials
 
-Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's children. Dev never copies it into its data home, prints it in diagnostics or records it in attempt outcomes. Command text is not copied into work records; Pi's tool-call history still records tool inputs, so commands reference credentials through the environment or existing tooling.
+Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's children. Dev never copies it into its data home, prints it in diagnostics or records it in attempt outcomes. Under `dev --orb`, dev reads the `OS_*` variables once, then removes them from its own environment, so no process it starts inherits the OpenStack password. It sends the password only to Keystone and only the issued token to orbit. Command text is not copied into work records; Pi's tool-call history still records tool inputs, so commands reference credentials through the environment or existing tooling.
 
 ## Outside the protection
 

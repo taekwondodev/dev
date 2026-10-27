@@ -57,7 +57,7 @@ import {
 } from './workspace-paths.ts'
 import { hasErrorCode } from './workspace-platform.ts'
 import { makeWorkspaceShell } from './workspace-shell.ts'
-import { isIntegratedCodemode, isIntegratedReader } from './integrated-tools.ts'
+import { isIntegratedCodemode, isIntegratedReader, orbToolAccess } from './integrated-tools.ts'
 
 export class WorkspaceHostError extends Schema.TaggedError<
   WorkspaceHostError,
@@ -70,6 +70,7 @@ export interface WorkspaceHostOptions {
   readonly dataHome: string
   readonly openSessionManager: (sessionFile: string, cwdOverride?: string) => SessionManager
   readonly resolveImportPath: (input: string) => string
+  readonly orbMode?: boolean
 }
 
 export interface RuntimeWorkspace {
@@ -269,6 +270,9 @@ const display = (api: ExtensionAPI, context: ExtensionContext, message: string):
   }
 }
 
+const orbReplacementNotice =
+  'Orb mode keeps this conversation on its orb and checkout: switching workspace, /new, /resume, /fork and conversation import are refused. Quit and relaunch instead.'
+
 const cancelledSiblingsNotice =
   'Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed.'
 
@@ -317,6 +321,7 @@ export const keptConversationGuidance = (
 }
 
 type ToolEffect =
+  | 'orb-remote'
   | 'read'
   | 'native-write'
   | 'workspace-shell'
@@ -325,8 +330,9 @@ type ToolEffect =
   | 'web-read'
   | 'codemode'
 
-function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
+export function toolEffect(tool: HostToolInfo | undefined): ToolEffect | undefined {
   if (!tool) return undefined
+  if (orbToolAccess(tool) !== undefined) return 'orb-remote'
   const { source, path } = tool.sourceInfo
   if (source === 'builtin' && ['read', 'grep', 'find', 'ls'].includes(tool.name)) return 'read'
   if (source === 'sdk' && path === '<sdk:bash>') return 'workspace-shell'
@@ -759,6 +765,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     immediate: boolean,
     source: WorkspaceAttachment = activeAttachment
   ): void => {
+    if (options.orbMode === true) {
+      notify(context, orbReplacementNotice, 'warning')
+      withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
+      return
+    }
     if (pending || parked || replacing || source !== activeAttachment) {
       withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
       return
@@ -1020,6 +1031,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           block: true,
           reason: `Tool ${event.toolName} has no verified workspace effect in dev, so it was not executed. A supported extension must have its project effects reviewed and recorded first (ADR 0005).`,
         })
+      case 'orb-remote':
       case 'work-owner':
       case 'web-read':
       case 'codemode':
@@ -1423,14 +1435,25 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     bindRuntime(nextRuntime) {
       runtime = nextRuntime
       activeManager = nextRuntime.session.sessionManager
-      const rawSwitch = nextRuntime.switchSession.bind(nextRuntime)
-      nextRuntime.switchSession = (sessionFile, switchOptions) =>
-        runPromise(switchSession(rawSwitch, sessionFile, switchOptions))
       const rawDispose = nextRuntime.dispose.bind(nextRuntime)
       nextRuntime.dispose = () => {
         quitting = true
         return quitInterception === 'armed' ? runPromise(interceptQuit(rawDispose)) : rawDispose()
       }
+      if (options.orbMode === true) {
+        const refuse = async () => {
+          notify(currentContext, orbReplacementNotice, 'warning')
+          return { cancelled: true }
+        }
+        nextRuntime.switchSession = refuse
+        nextRuntime.newSession = refuse
+        nextRuntime.fork = refuse
+        nextRuntime.importFromJsonl = refuse
+        return
+      }
+      const rawSwitch = nextRuntime.switchSession.bind(nextRuntime)
+      nextRuntime.switchSession = (sessionFile, switchOptions) =>
+        runPromise(switchSession(rawSwitch, sessionFile, switchOptions))
       const rawNew = nextRuntime.newSession.bind(nextRuntime)
       nextRuntime.newSession = newOptions =>
         runPromise(
@@ -1491,20 +1514,22 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       })
 
       api.on('user_bash', (event, context) =>
-        runPromise(
-          Effect.map(authorization(context, 'write', event.cwd, 'user-bash'), admitted =>
-            admitted.kind === 'admitted'
-              ? { operations: shell.operations }
-              : {
-                  result: {
-                    output: admitted.reason,
-                    exitCode: 1,
-                    cancelled: false,
-                    truncated: false,
-                  },
-                }
-          )
-        )
+        options.orbMode === true
+          ? undefined
+          : runPromise(
+              Effect.map(authorization(context, 'write', event.cwd, 'user-bash'), admitted =>
+                admitted.kind === 'admitted'
+                  ? { operations: shell.operations }
+                  : {
+                      result: {
+                        output: admitted.reason,
+                        exitCode: 1,
+                        cancelled: false,
+                        truncated: false,
+                      },
+                    }
+              )
+            )
       )
 
       api.on('turn_end', (_event, context) => {

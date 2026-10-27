@@ -18,6 +18,7 @@ const names = [
   'workspace:github',
   'work:check',
   'web:check',
+  'orb:check',
 ]
 try {
   writeFileSync(

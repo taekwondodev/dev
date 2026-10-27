@@ -16,6 +16,7 @@ dev --save-profile NAME           # save this repository's profile preference
 dev --continue                    # resume the newest session for this launch directory
 dev --resume PATH.jsonl           # resume a specific Pi session
 dev --data-home PATH              # select private storage, also DEV_DATA_HOME
+dev --orb                         # run this session's tools on a fresh orbit orb; see orb.md
 dev --diagnostics                 # print resolved paths, Pi installation and resources
 dev --probe-runtime               # create a runtime without the TUI or a model call
 dev --help
@@ -109,6 +110,7 @@ The same pass applies [attempt retention](work.md#state) and removes recognized 
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
+| `<data-home>/orbs/`                                      | Orb records of `dev --orb` sessions; layout in [Orb](orb.md#state)                                                            |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
 | `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
 | Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |

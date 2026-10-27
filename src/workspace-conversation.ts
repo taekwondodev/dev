@@ -27,6 +27,7 @@ export type LeaseKind =
   | { readonly kind: 'ordinary' }
   | { readonly kind: 'execution'; readonly execution: WorkspaceExecution }
   | { readonly kind: 'native-file-write'; readonly withinUseId: WorkspaceId }
+  | { readonly kind: 'orb-return'; readonly withinUseId: WorkspaceId }
   | {
       readonly kind: 'opaque'
       readonly withinUseId: WorkspaceId
@@ -41,7 +42,7 @@ export type GrantLease = LeaseKind & {
 }
 export type ScopedLease = Extract<GrantLease, { readonly withinUseId: WorkspaceId }>
 export const isScoped = (lease: GrantLease): lease is ScopedLease =>
-  lease.kind === 'native-file-write' || lease.kind === 'opaque'
+  lease.kind === 'native-file-write' || lease.kind === 'orb-return' || lease.kind === 'opaque'
 export interface WorkspaceSource {
   readonly repo: WorkspaceId
   readonly workspace: WorkspaceRecord
