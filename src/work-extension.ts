@@ -15,6 +15,7 @@ import {
   type WorkOwnerService,
   type WorkResult,
   type WorkSetupError,
+  type WorkRemote,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
 import { activeWorkChildren, workStatusText } from './work-status.ts'
@@ -134,6 +135,7 @@ export const createWorkExtension = ({
   profile,
   workspace,
   isWorkspaceParked,
+  remote,
 }: {
   readonly dataHome: string
   readonly profile: string
@@ -147,6 +149,7 @@ export const createWorkExtension = ({
     ) => void
   }
   readonly isWorkspaceParked: () => boolean
+  readonly remote?: WorkRemote
 }): WorkExtension => {
   let sessionOwner: OwnerState | undefined
   let session: WorkSession | undefined
@@ -194,6 +197,7 @@ export const createWorkExtension = ({
                     requestRebind: handoff =>
                       workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
                   },
+                  ...(remote === undefined ? {} : { remote }),
                   onChange: () => scheduleStatus(),
                   onOutcome: attempt => {
                     if (

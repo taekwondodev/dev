@@ -12,6 +12,7 @@ export const suites = [
   'workspace:github',
   'work:check',
   'web:check',
+  'orb:check',
 ] as const
 
 export interface StepResult {

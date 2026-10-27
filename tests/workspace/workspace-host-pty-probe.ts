@@ -273,11 +273,15 @@ const issue = (
 }
 
 const executionOf = (operation: WorkspaceOperation): WorkspaceExecution | undefined =>
-  operation.kind === 'native-file-write' || operation.kind === 'foreign-write'
+  operation.kind === 'native-file-write' ||
+  operation.kind === 'orb-return' ||
+  operation.kind === 'foreign-write'
     ? undefined
     : operation.execution
 const withinOf = (operation: WorkspaceOperation): WorkspaceGrant | undefined =>
-  operation.kind === 'native-file-write' || operation.kind === 'opaque'
+  operation.kind === 'native-file-write' ||
+  operation.kind === 'orb-return' ||
+  operation.kind === 'opaque'
     ? operation.within
     : undefined
 
@@ -379,6 +383,8 @@ const makeAttachment = (
           throw new Error('the stub lifecycle reserves no other checkout')
         case 'leaf-read':
           throw new Error('the stub lifecycle admits no leaf')
+        case 'orb-return':
+          throw new Error('the stub lifecycle admits no orb return')
       }
     },
     async select(selection: WorkspaceSelection): Promise<WorkspaceHandoff> {

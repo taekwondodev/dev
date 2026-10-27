@@ -7,7 +7,7 @@ import type { NativeWrites } from './workspace-native-write.ts'
 import { newId } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
 import { awaitReply, type ReplyChannel } from './work-child-ipc.ts'
-import { isIntegratedCodemode, isIntegratedReader } from './integrated-tools.ts'
+import { isIntegratedCodemode, isIntegratedReader, orbToolAccess } from './integrated-tools.ts'
 
 const Reply = Schema.Struct({
   type: Schema.Literal('workspace-checked'),
@@ -129,7 +129,11 @@ export const childWorkspaceExtension =
             tool?.sourceInfo.source === 'sdk'
           const coordination = event.toolName === 'work' && tool?.sourceInfo.source === 'sdk'
           if (isIntegratedReader(tool) || isIntegratedCodemode(tool)) return undefined
-          const read = (builtin && readTools.has(event.toolName)) || reviewGit || coordination
+          const read =
+            (builtin && readTools.has(event.toolName)) ||
+            reviewGit ||
+            coordination ||
+            orbToolAccess(tool) === 'read'
           if (!read && grant.access !== 'write')
             return yield* new WorkspaceError({
               outcome: 'blocked',

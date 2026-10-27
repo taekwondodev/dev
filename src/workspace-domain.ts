@@ -88,7 +88,7 @@ export const WorkspaceProcessSchema = Schema.Struct({
 })
 export type WorkspaceProcess = typeof WorkspaceProcessSchema.Type
 
-export const WorkspaceEffectSchema = Schema.Literals(['native-file-write', 'opaque'])
+export const WorkspaceEffectSchema = Schema.Literals(['native-file-write', 'orb-return', 'opaque'])
 export type WorkspaceEffect = typeof WorkspaceEffectSchema.Type
 
 export const WorkspaceAccessSchema = Schema.Literals(['read', 'write'])
@@ -163,6 +163,11 @@ export const WorkspaceOperationSchema = Schema.Union([
     kind: Schema.Literal('native-file-write'),
     within: WorkspaceGrantSchema,
     path: Schema.NonEmptyString,
+    cwd: Schema.optional(AbsolutePath),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('orb-return'),
+    within: WorkspaceGrantSchema,
     cwd: Schema.optional(AbsolutePath),
   }),
   Schema.Struct({

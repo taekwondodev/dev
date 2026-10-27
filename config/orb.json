@@ -1,0 +1,5 @@
+{
+  "size": { "vcpus": 2, "memory_mb": 2048, "disk_gb": 10 },
+  "image": "ubuntu-24.04-arm64-dev",
+  "ssh_allowed_cidr": "192.168.249.1/32"
+}

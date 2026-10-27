@@ -142,7 +142,11 @@ const admit = (
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
   retryDeferredGateReleases(authority, state)
-  if (operation.kind === 'native-file-write' || operation.kind === 'opaque')
+  if (
+    operation.kind === 'native-file-write' ||
+    operation.kind === 'orb-return' ||
+    operation.kind === 'opaque'
+  )
     return authorizeScoped(authority, attachment, operation)
   if (operation.kind === 'leaf-read')
     return authorizeLeafRead(authority, attachment, operation.coordinator, operation.execution)
@@ -535,9 +539,9 @@ const authorizeScoped = (
   const cwd = realpathSync(resolve(operation.cwd ?? within.cwd))
   if (!isWithin(workspace.path, cwd)) invalid(`Scoped operation cwd escapes its workspace: ${cwd}`)
   const kind: LeaseKind =
-    operation.kind === 'native-file-write'
-      ? { kind: operation.kind, withinUseId: withinUse.id }
-      : { kind: operation.kind, withinUseId: withinUse.id, execution: operation.execution }
+    operation.kind === 'opaque'
+      ? { kind: operation.kind, withinUseId: withinUse.id, execution: operation.execution }
+      : { kind: operation.kind, withinUseId: withinUse.id }
   const destination =
     operation.kind === 'native-file-write'
       ? classifyWriteDestination(
@@ -925,7 +929,7 @@ const recordExecutionFact = (
   }
   if (lease.kind === 'ordinary')
     invalid('Legacy workspace grants do not carry scoped operation authority')
-  if (lease.kind === 'native-file-write') {
+  if (lease.kind === 'native-file-write' || lease.kind === 'orb-return') {
     reportScopedOperation(authority, lease, fact)
     return {}
   }
@@ -1030,7 +1034,7 @@ const recordExecutionFact = (
 
 const reportScopedOperation = (
   authority: WorkspaceAuthority,
-  lease: Extract<GrantLease, { readonly kind: 'native-file-write' }>,
+  lease: Extract<GrantLease, { readonly kind: 'native-file-write' | 'orb-return' }>,
   fact: WorkspaceExecutionFact
 ): void => {
   if (

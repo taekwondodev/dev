@@ -17,6 +17,7 @@ Dev serves one person on one macOS account, primarily working on code, UI protot
 | Workspace authority     | Durable reservations, workspace uses, write admission, isolation and release                        |
 | URL reader              | Session-local retrieval, extraction and document snapshots                                          |
 | Browser owner           | Shared Chrome, authenticated profile copy and render isolation for one data home                    |
+| Orb session             | Under `dev --orb`: the orb's lifecycle, SSH execution of the lead's tools and the return            |
 
 A workflow verifies the artifact. The work controller observes execution; the workspace authority decides admission and release from its recorded and observed facts. These responsibilities do not substitute for one another.
 
@@ -32,6 +33,7 @@ Only rendering crosses from a URL reader to the shared browser owner. The owner 
 | `src/work-*.ts`, `src/pi-child.ts`                                                                                                | Background execution and child coordination | [Work](work.md)                                                                 |
 | `src/workspace-*.ts`                                                                                                              | Authority and host adapters                 | [Workspace](workspace.md)                                                       |
 | `src/web-*.ts`                                                                                                                    | URL reading, network policy and Chrome      | [Read URL](web-read.md)                                                         |
+| `src/orb/*.ts`, `config/orb.json`                                                                                                 | Orb sessions, orbit client and return       | [Orb](orb.md)                                                                   |
 | `src/process-family.ts`, `src/runtime-coordination.ts`, `src/session-guard.ts`                                                    | Process observation and runtime claims      | [Workspace](workspace.md)                                                       |
 | `scripts/maintain.ts`, `scripts/upgrade.ts`, `scripts/pi-upgrade.ts`                                                              | Installation maintenance and upgrades       | [Launcher](launcher.md#maintenance), [Upgrade](upgrade.md)                      |
 | `scripts/usage-*.ts`                                                                                                              | Offline reports and exports                 | [Usage profile](usage-profile.md)                                               |
@@ -59,4 +61,5 @@ Read the relevant record before changing the boundary it governs. This index lin
 | Shell wait guard rules, threshold or scope         | [ADR 0007](adr/0007-observed-usage-wait-guard.md)                                                                                                              |
 | URL reading, network policy, browser profile copy  | [#88](https://github.com/taekwondodev/dev/issues/88)                                                                                                           |
 | Shared browser ownership and child reader access   | [#144](https://github.com/taekwondodev/dev/issues/144)                                                                                                         |
+| Orb mode, its backend placement and return         | [#191](https://github.com/taekwondodev/dev/issues/191), [backend placement](https://github.com/taekwondodev/dev/issues/198#issuecomment-6437339336)            |
 | Background compaction and diagnostic observations  | [#62](https://github.com/taekwondodev/dev/issues/62), [profiling decision](https://github.com/taekwondodev/dev/issues/62#issuecomment-5954797030)              |
