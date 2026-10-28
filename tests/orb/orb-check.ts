@@ -20,7 +20,13 @@ import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Stream } from 'effect'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
 import { orbFailure } from '../../src/orb/domain.ts'
-import { macHomes, openOrbSession, withReturnAdmission } from '../../src/orb/session.ts'
+import {
+  branchingReturn,
+  macHomes,
+  openOrbSession,
+  returnAtQuit,
+  withReturnAdmission,
+} from '../../src/orb/session.ts'
 import { masterOptions, sshOptions } from '../../src/orb/ssh.ts'
 import { orbToolAccess } from '../../src/integrated-tools.ts'
 import {
@@ -31,7 +37,9 @@ import {
   type OrbRepository,
 } from '../../src/orb/transfer.ts'
 import { toolEffect } from '../../src/workspace-host.ts'
+import { orbQuit } from '../../src/launcher-runtime.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { writeProfileFixture } from '../profile-fixture.ts'
 import type { PiApi } from '../../src/pi-runtime.ts'
 import type { WorkspaceAttachment, WorkspaceGrant } from '../../src/workspace-domain.ts'
@@ -187,23 +195,303 @@ await claim(
   }
 )
 
+const lifecycle = await openLifecycle({ root: join(sandbox, 'authority') })
+
+const branchingFrom = (mac: string, orb: string, record: string) => {
+  const attempt = branchingReturn(
+    Effect.provide(
+      returnWork({
+        root: mac,
+        branch: 'main',
+        orbPath: orb,
+        repository: repository(orb),
+        baseRef: `refs/dev/orb/${record}/base`,
+        endRef: `refs/dev/orb/${record}/end`,
+        beforeWrite: Effect.void,
+      }),
+      NodeServices.layer
+    ),
+    lifecycle.effect,
+    mac,
+    `dev/orb-return/${record}`
+  )
+  return () => Effect.runPromise(attempt)
+}
+
+const checkoutState = (mac: string) => ({
+  head: git(mac, 'rev-parse', 'HEAD'),
+  branch: git(mac, 'symbolic-ref', 'HEAD'),
+  index: git(mac, 'ls-files', '-s'),
+  status: git(mac, 'status', '--porcelain', '--untracked-files=all'),
+  files: tree(mac),
+})
+
+const RECORD = '0b9e2c1a-5d4f-4e6a-9c3b-7f8e1d2a3b4c'
+
 await claim(
-  'a moved branch or an overlap stops the return and leaves the branch, index and files untouched',
+  'a moved branch or an overlap leaves the local branch, index and files untouched and writes dev/orb-return/<record-id> with the orb commits topped by a snapshot of its uncommitted changes',
   async () => {
-    const { mac, orb } = newCheckout('stops')
-    await startOrb(mac, orb, 'stops')
+    const { mac, orb } = newCheckout('diverged')
+    await startOrb(mac, orb, RECORD)
+    writeFileSync(join(orb, 'calc.py'), 'print(4 * 4)\n')
+    git(orb, 'commit', '-q', '-am', 'orb commit')
     writeFileSync(join(orb, 'notes.md'), 'first\nchanged on the orb\nthird\n')
+    writeFileSync(join(orb, 'untracked.txt'), 'new on the orb\n')
     writeFileSync(join(mac, 'notes.md'), 'first\nchanged on the Mac\nthird\n')
     git(mac, 'add', 'notes.md')
-    const before = { head: git(mac, 'rev-parse', 'HEAD'), index: git(mac, 'diff', '--cached') }
-    const overlap = await returnFrom(mac, orb, 'stops')
-    assert.equal(overlap.kind === 'stopped' ? overlap.reason : overlap.kind, 'overlap')
-    assert.equal(git(mac, 'rev-parse', 'HEAD'), before.head)
-    assert.equal(git(mac, 'diff', '--cached'), before.index)
-    assert.equal(readFileSync(join(mac, 'notes.md'), 'utf8'), 'first\nchanged on the Mac\nthird\n')
+    writeFileSync(join(mac, 'local.txt'), 'local only\n')
+    const sync = branchingFrom(mac, orb, RECORD)
+    const branch = `dev/orb-return/${RECORD}`
+    const before = checkoutState(mac)
+    assert.deepEqual(await sync(), { kind: 'diverged', reason: 'overlap', branch })
+    assert.deepEqual(checkoutState(mac), before, 'an overlap leaves the checkout untouched')
+    assert.equal(git(mac, 'rev-parse', `${branch}^1`), git(orb, 'rev-parse', 'HEAD'))
+    git(orb, 'add', '-A')
+    assert.equal(
+      git(mac, 'rev-parse', `${branch}^{tree}`),
+      git(orb, 'write-tree'),
+      "the snapshot on top holds the orb's uncommitted and untracked changes"
+    )
+    git(orb, 'reset', '-q')
+
     git(mac, 'commit', '-q', '-m', 'mac moves on')
-    const moved = await returnFrom(mac, orb, 'stops')
-    assert.equal(moved.kind === 'stopped' ? moved.reason : moved.kind, 'branch-moved')
+    const moved = checkoutState(mac)
+    const first = git(mac, 'rev-parse', branch)
+    assert.deepEqual(await sync(), { kind: 'diverged', reason: 'branch-moved', branch })
+    assert.deepEqual(checkoutState(mac), moved, 'a moved branch leaves the checkout untouched')
+    assert.notEqual(git(mac, 'rev-parse', branch), first, 'dev moved the branch it left')
+    git(orb, 'add', '-A')
+    assert.equal(git(mac, 'rev-parse', `${branch}^{tree}`), git(orb, 'write-tree'))
+    git(orb, 'reset', '-q')
+  }
+)
+
+await claim(
+  'an orb that rewrote the uploaded commit is reported as such, and a branch without uncommitted orb changes ends at the orb commit itself',
+  async () => {
+    const { mac, orb } = newCheckout('rewritten')
+    await startOrb(mac, orb, 'aaaa0000-0000-4000-8000-000000000001')
+    writeFileSync(join(orb, 'calc.py'), 'print(5 * 5)\n')
+    git(orb, 'commit', '-q', '-a', '--amend', '-m', 'orb amends the upload')
+    const outcome = await branchingFrom(mac, orb, 'aaaa0000-0000-4000-8000-000000000001')()
+    assert.equal(outcome.kind === 'diverged' ? outcome.reason : outcome.kind, 'history-rewritten')
+    assert.equal(
+      git(mac, 'rev-parse', 'dev/orb-return/aaaa0000-0000-4000-8000-000000000001'),
+      git(orb, 'rev-parse', 'HEAD')
+    )
+  }
+)
+
+await claim(
+  'a second divergence moves the branch only while it points where dev left it; a commit on it or a checkout of it makes dev write a suffixed branch',
+  async () => {
+    const record = 'bbbb0000-0000-4000-8000-000000000002'
+    const branch = `dev/orb-return/${record}`
+    const { mac, orb } = newCheckout('second')
+    await startOrb(mac, orb, record)
+    writeFileSync(join(orb, 'calc.py'), 'print(6 * 6)\n')
+    git(orb, 'commit', '-q', '-am', 'orb one')
+    writeFileSync(join(mac, 'notes.md'), 'mac\n')
+    git(mac, 'commit', '-q', '-am', 'mac moves on')
+    const sync = branchingFrom(mac, orb, record)
+    assert.equal((await sync()).kind, 'diverged')
+    writeFileSync(join(orb, 'calc.py'), 'print(7 * 7)\n')
+    git(orb, 'commit', '-q', '-am', 'orb two')
+    assert.deepEqual(await sync(), { kind: 'diverged', reason: 'branch-moved', branch })
+    assert.equal(git(mac, 'rev-parse', branch), git(orb, 'rev-parse', 'HEAD'))
+
+    const userCommit = git(
+      mac,
+      'commit-tree',
+      '-p',
+      branch,
+      '-m',
+      'user on the branch',
+      `${branch}^{tree}`
+    )
+    git(mac, 'update-ref', `refs/heads/${branch}`, userCommit)
+    writeFileSync(join(orb, 'calc.py'), 'print(8 * 8)\n')
+    git(orb, 'commit', '-q', '-am', 'orb three')
+    assert.deepEqual(await sync(), {
+      kind: 'diverged',
+      reason: 'branch-moved',
+      branch: `${branch}-2`,
+    })
+    assert.equal(git(mac, 'rev-parse', branch), userCommit, "the user's commit stays")
+    assert.equal(git(mac, 'rev-parse', `${branch}-2`), git(orb, 'rev-parse', 'HEAD'))
+
+    const worktree = join(sandbox, 'second', 'worktree')
+    git(mac, 'worktree', 'add', '-q', worktree, `${branch}-2`)
+    writeFileSync(join(orb, 'calc.py'), 'print(9 * 9)\n')
+    git(orb, 'commit', '-q', '-am', 'orb four')
+    const checkedOut = git(mac, 'rev-parse', `${branch}-2`)
+    assert.deepEqual(await sync(), {
+      kind: 'diverged',
+      reason: 'branch-moved',
+      branch: `${branch}-3`,
+    })
+    assert.equal(
+      git(mac, 'rev-parse', `${branch}-2`),
+      checkedOut,
+      'a checked-out branch never moves'
+    )
+  }
+)
+
+const writeBranch = (request: Parameters<typeof lifecycle.effect.writeBranch>[0]) =>
+  Effect.runPromise(lifecycle.effect.writeBranch(request))
+
+await claim(
+  'the authority writes only dev/orb-return/ branches, moves only that branch or its suffixes, takes only full commit ids, and rewriting the same commit creates no duplicate',
+  async () => {
+    const { mac } = newCheckout('branch-rules')
+    const head = git(mac, 'rev-parse', 'HEAD')
+    const name = 'dev/orb-return/dddd0000-0000-4000-8000-000000000004'
+    await assert.rejects(writeBranch({ cwd: mac, name: 'main', commit: head }), /Not a dev-owned/)
+    await assert.rejects(
+      writeBranch({ cwd: mac, name: 'dev/orb-recovery/dddd0000', commit: head }),
+      /Not a dev-owned/
+    )
+    await assert.rejects(
+      writeBranch({ cwd: mac, name, commit: head, replacing: { name: 'main', commit: head } }),
+      /is not dev\/orb-return/
+    )
+    for (const replaced of [`${name}-0`, `${name}-02`, `${name}-1`, `${name}-101`, `${name}x`])
+      await assert.rejects(
+        writeBranch({ cwd: mac, name, commit: head, replacing: { name: replaced, commit: head } }),
+        /is not dev\/orb-return/,
+        replaced
+      )
+    await assert.rejects(
+      writeBranch({
+        cwd: mac,
+        name,
+        commit: head,
+        replacing: { name: 'dev/orb-return/eeee0000-0000-4000-8000-000000000005', commit: head },
+      }),
+      /is not dev\/orb-return/,
+      "another record's branch"
+    )
+    await assert.rejects(
+      writeBranch({ cwd: mac, name: `${name}-2`, commit: head }),
+      /Not a dev-owned/,
+      'a suffix is not a request name'
+    )
+    await assert.rejects(writeBranch({ cwd: mac, name, commit: 'HEAD' }), /Not a full commit id/)
+    await assert.rejects(
+      writeBranch({ cwd: mac, name, commit: head, replacing: { name, commit: 'main' } }),
+      /Not a full commit id/
+    )
+    assert.equal(git(mac, 'rev-parse', 'main'), head, 'main never moved')
+    assert.deepEqual(await writeBranch({ cwd: mac, name, commit: head }), { name })
+    assert.deepEqual(await writeBranch({ cwd: mac, name, commit: head }), { name })
+    assert.equal(git(mac, 'branch', '--list', `${name}*`).split('\n').length, 1)
+  }
+)
+
+await claim(
+  'a later return that is no longer divergent completes normally and leaves the return branch alone',
+  async () => {
+    const record = 'cccc0000-0000-4000-8000-000000000003'
+    const { mac, orb } = newCheckout('cleared')
+    await startOrb(mac, orb, record)
+    writeFileSync(join(orb, 'notes.md'), 'first\nchanged on the orb\nthird\n')
+    writeFileSync(join(mac, 'notes.md'), 'first\nchanged on the Mac\nthird\n')
+    const sync = branchingFrom(mac, orb, record)
+    assert.equal((await sync()).kind, 'diverged')
+    const left = git(mac, 'rev-parse', `dev/orb-return/${record}`)
+    git(mac, 'checkout', '-q', '--', 'notes.md')
+    const outcome = await sync()
+    assert.equal(outcome.kind, 'returned')
+    assert.equal(readFileSync(join(mac, 'notes.md'), 'utf8'), 'first\nchanged on the orb\nthird\n')
+    assert.equal(git(mac, 'rev-parse', `dev/orb-return/${record}`), left)
+    assert.deepEqual(await sync(), { kind: 'unchanged' })
+  }
+)
+
+const quitScenario = async (input: {
+  readonly failures: number
+  readonly answers?: readonly boolean[]
+  readonly interrupted?: boolean
+}) => {
+  let attempts = 0
+  let asked = 0
+  const attempt = Effect.suspend(() => {
+    attempts += 1
+    return attempts <= input.failures
+      ? Effect.fail(orbFailure('orb unreachable'))
+      : Effect.succeed('returned')
+  })
+  const { answers } = input
+  const outcome = await Effect.runPromise(
+    returnAtQuit(
+      attempt,
+      {
+        proceed: () => input.interrupted !== true,
+        ...(answers === undefined
+          ? {}
+          : { askRetry: Effect.sync(() => answers[asked++] ?? false) }),
+      },
+      () => undefined
+    )
+  )
+  return { kind: outcome.kind, attempts, asked }
+}
+
+await claim(
+  'a failed quit-time return asks Retry or Quit only with an interactive terminal; declining, Ctrl-C at the prompt (a false answer) or an interrupt during the return keeps the orb',
+  async () => {
+    assert.deepEqual(await quitScenario({ failures: 1 }), { kind: 'kept', attempts: 1, asked: 0 })
+    assert.deepEqual(await quitScenario({ failures: 2, answers: [true, true] }), {
+      kind: 'returned',
+      attempts: 3,
+      asked: 2,
+    })
+    assert.deepEqual(await quitScenario({ failures: 1, answers: [false] }), {
+      kind: 'kept',
+      attempts: 1,
+      asked: 1,
+    })
+    assert.deepEqual(await quitScenario({ failures: 1, answers: [true], interrupted: true }), {
+      kind: 'kept',
+      attempts: 1,
+      asked: 0,
+    })
+    assert.deepEqual(await quitScenario({ failures: 0, answers: [] }), {
+      kind: 'returned',
+      attempts: 1,
+      asked: 0,
+    })
+  }
+)
+
+const offered = (stdin: boolean | undefined, stdout: boolean | undefined) =>
+  orbQuit(() => true, { stdin: { isTTY: stdin }, stdout: { isTTY: stdout } }).askRetry !== undefined
+
+await claim(
+  'the quit-time return offers Retry only when both stdin and stdout are terminals, and only y retries',
+  async () => {
+    const answers: Record<string, 'confirmed' | 'declined' | 'interrupted'> = {
+      y: 'confirmed',
+      n: 'declined',
+      ctrlC: 'interrupted',
+    }
+    assert.equal(offered(true, true), true)
+    assert.equal(offered(true, false), false)
+    assert.equal(offered(false, true), false)
+    assert.equal(offered(undefined, undefined), false)
+    for (const [answer, retries] of [
+      ['y', true],
+      ['n', false],
+      ['ctrlC', false],
+    ] as const) {
+      const quit = orbQuit(
+        () => true,
+        { stdin: { isTTY: true }, stdout: { isTTY: true } },
+        () => Effect.succeed(answers[answer] ?? 'declined')
+      )
+      assert.equal(await Effect.runPromise(quit.askRetry ?? Effect.succeed(undefined)), retries)
+    }
   }
 )
 
@@ -546,8 +834,8 @@ await claim(
           },
           {
             attachment,
+            lifecycle: lifecycle.effect,
             cwd: mac,
-            authorityRoot: join(sandbox, 'authority'),
             skillPaths: [],
             conversation: join(dataHome, 'session.jsonl'),
           }
@@ -636,6 +924,8 @@ await claim('plain dev loads no orb module and reads no OS_* variable', async ()
   assert.doesNotMatch(recorded, /^module /m, recorded)
   assert.doesNotMatch(recorded, /^env /m, recorded)
 })
+
+await lifecycle.close()
 
 process.stdout.write(
   `orb check: ${passed.length} claims passed\n${passed.map(text => `- ${text}`).join('\n')}\n`

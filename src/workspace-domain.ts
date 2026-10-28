@@ -482,6 +482,16 @@ export const SweepRequestSchema = Schema.Struct({
 })
 export type SweepRequest = typeof SweepRequestSchema.Type
 
+export const DevBranchRequestSchema = Schema.Struct({
+  cwd: AbsolutePath,
+  name: Schema.NonEmptyString,
+  commit: Schema.NonEmptyString,
+  replacing: Schema.optional(
+    Schema.Struct({ name: Schema.NonEmptyString, commit: Schema.NonEmptyString })
+  ),
+})
+export type DevBranchRequest = typeof DevBranchRequestSchema.Type
+
 export type HostReplace = (
   target: WorkspaceGrant
 ) => Effect.Effect<'confirmed' | 'cancelled', unknown>
@@ -535,4 +545,5 @@ export interface WorkspaceLifecycle {
   recordPublication(input: {
     readonly reference: PublicationReference
   }): Effect.Effect<void, WorkspaceError>
+  writeBranch(input: DevBranchRequest): Effect.Effect<{ readonly name: string }, WorkspaceError>
 }

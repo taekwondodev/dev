@@ -102,7 +102,7 @@ import {
   type TerminalStyle,
 } from './quit-display.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
-import type { OrbOpenInput, OrbSession } from './orb/session.ts'
+import type { OrbOpenInput, OrbQuit, OrbSession } from './orb/session.ts'
 
 export class LauncherError extends Schema.TaggedError<
   LauncherError,
@@ -328,8 +328,8 @@ const createRuntime = Effect.fnUntraced(function* (
       ? undefined
       : yield* parts.orb.open({
           attachment,
+          lifecycle,
           cwd,
-          authorityRoot: lifecycle.root,
           skillPaths: resources.skillPaths,
           conversation: sessionManager.getSessionFile() ?? sessionManager.getSessionId(),
           ...(commandPrefix === undefined ? {} : { commandPrefix }),
@@ -706,6 +706,24 @@ const askConfirmation = (prompt: string): Effect.Effect<Confirmation> =>
     reader.question(prompt, line => answer(line.trim() === 'y' ? 'confirmed' : 'declined'))
     return Effect.sync(() => reader.close())
   })
+
+export const orbQuit = (
+  proceed: () => boolean,
+  terminal: {
+    readonly stdin: { readonly isTTY?: boolean }
+    readonly stdout: { readonly isTTY?: boolean }
+  },
+  ask: (prompt: string) => Effect.Effect<Confirmation> = askConfirmation
+): OrbQuit =>
+  terminal.stdin.isTTY === true && terminal.stdout.isTTY === true
+    ? {
+        proceed,
+        askRetry: Effect.map(
+          ask('Type y to retry the return, anything else to quit and keep the orb: '),
+          answer => answer === 'confirmed'
+        ),
+      }
+    : { proceed }
 
 const cancellation = (notice: () => string | undefined) =>
   Effect.acquireRelease(
@@ -1205,7 +1223,7 @@ const run = Effect.fnUntraced(function* (
             agentDir: globalPiAgentDir(),
             sessionManager: sessions,
           })
-        ).pipe(Effect.onError(() => orbSession?.close ?? Effect.void)),
+        ).pipe(Effect.onError(() => orbSession?.close({ proceed: () => true }) ?? Effect.void)),
         disposeRuntime
       )
       yield* Effect.sync(() => {
@@ -1235,7 +1253,7 @@ const run = Effect.fnUntraced(function* (
             if (sweepStarted)
               return 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
             if (orbClosing)
-              return 'Interrupt received: the orb return runs on until it ends, so the checkout is never left half-written; dev exits 130 afterwards.'
+              return 'Interrupt received: the started orb step runs on until it ends, so the checkout is never left half-written; an orb whose work has not returned is kept, and dev exits 130 afterwards.'
             return undefined
           })
         )
@@ -1245,7 +1263,7 @@ const run = Effect.fnUntraced(function* (
           const stop = stopWork
           if (stop !== undefined)
             yield* Effect.ignore(fromPromise('Cannot stop background work', stop))
-          yield* closing.close
+          yield* closing.close(orbQuit(proceed, process))
           orbClosing = false
         }
         quit = { proceed }

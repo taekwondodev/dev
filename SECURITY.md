@@ -72,6 +72,8 @@ The return can do no more than `write` and `edit`. Before writing, it refuses th
 
 The return's Git runs on the Mac with hooks disabled, no clean, smudge or process filter, Git's own text merge in place of every configured merge driver, and no attributes from the checkout's files, so a returned `.gitattributes` cannot start a filter or merge driver. Objects received from the orb are checked with `fsck`, and a symlink pointing into `.git` is refused like one leaving the checkout. It reaches the orb only through the orb's key and pinned host keys. Returned files carry the same risk as files the agent writes in plain dev: returned `.pi/` or `.agents/` content is loaded by the next trusted launch.
 
+A divergent return writes no file. dev only creates or moves a `dev/orb-return/` branch, under the repository structure gate, never one that is checked out, and the authority accepts no other branch name, no other branch to move than that name or its numeric suffixes, and only full commit ids for this operation. The applier never inspects that branch: merging it runs the user's own Git, with the checkout's hooks, filters and attributes, so review it as content from the orb before merging.
+
 ### Key material
 
 Each orb gets a fresh ed25519 key pair. The private key and `known_hosts` live in the orb record under the data home with mode 0600; the public key is the only key material orbit receives. Host trust rests on the host keys orbit reads from the orb's console, so it is as trustworthy as orbit and the cloud's console log. Everything in the uploaded snapshot reaches the orb, untracked files included; ignored files do not.

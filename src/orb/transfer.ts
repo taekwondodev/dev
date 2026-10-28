@@ -30,11 +30,9 @@ export type ReturnOutcome =
       readonly commits: number
       readonly files: number
     }
-  | {
-      readonly kind: 'stopped'
-      readonly reason: 'branch-moved' | 'branch-switched' | 'overlap'
-      readonly message: string
-    }
+  | { readonly kind: 'diverged'; readonly reason: Divergence; readonly commit: string }
+
+export type Divergence = 'branch-moved' | 'history-rewritten' | 'branch-switched' | 'overlap'
 
 export interface Change {
   readonly mode: string
@@ -331,26 +329,20 @@ export const returnWork = Effect.fnUntraced(function* (input: {
   const end = yield* git.text(['rev-parse', '--verify', `${input.endRef}^{commit}`])
   const orbHead = yield* git.text(['rev-parse', '--verify', `${end}^1`])
   const base = yield* git.text(['rev-parse', '--verify', `${input.baseRef}^{commit}`])
-  const symbolic = yield* git.run(['symbolic-ref', '-q', 'HEAD'], { exitCodes: [0, 1] })
-  if (symbolic.stdout.trim() !== `refs/heads/${input.branch}`)
-    return {
-      kind: 'stopped',
-      reason: 'branch-switched',
-      message: `The checkout is no longer on ${input.branch}; the orb's work stays on the orb.`,
-    } as const
-  const head = yield* git.text(['rev-parse', '--verify', 'HEAD^{commit}'])
+  const synced = yield* git.text(['rev-parse', '--verify', `${base}^1`])
   const endTree = yield* git.text(['rev-parse', `${end}^{tree}`])
   const baseTree = yield* git.text(['rev-parse', `${base}^{tree}`])
-  if (orbHead === head && endTree === baseTree) return { kind: 'unchanged' } as const
+  if (orbHead === synced && endTree === baseTree) return { kind: 'unchanged' } as const
+  const orbWork = endTree === (yield* git.text(['rev-parse', `${orbHead}^{tree}`])) ? orbHead : end
+  const diverged = (reason: Divergence) => ({ kind: 'diverged', reason, commit: orbWork }) as const
+  const symbolic = yield* git.run(['symbolic-ref', '-q', 'HEAD'], { exitCodes: [0, 1] })
+  if (symbolic.stdout.trim() !== `refs/heads/${input.branch}`) return diverged('branch-switched')
+  const head = yield* git.text(['rev-parse', '--verify', 'HEAD^{commit}'])
   const ancestor = yield* git.run(['merge-base', '--is-ancestor', head, orbHead], {
     exitCodes: [0, 1],
   })
   if (ancestor.exitCode !== 0)
-    return {
-      kind: 'stopped',
-      reason: 'branch-moved',
-      message: `${input.branch} moved on the Mac, so the orb's commits cannot fast-forward it; the orb's work stays on the orb.`,
-    } as const
+    return diverged(head === synced ? 'history-rewritten' : 'branch-moved')
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const local = yield* snapshot(git)
@@ -358,12 +350,7 @@ export const returnWork = Effect.fnUntraced(function* (input: {
         ['merge-tree', '--write-tree', '--no-messages', `--merge-base=${base}`, local.commit, end],
         { exitCodes: [0, 1] }
       )
-      if (merged.exitCode !== 0)
-        return {
-          kind: 'stopped',
-          reason: 'overlap',
-          message: "Local edits overlap the orb's changes; the orb's work stays on the orb.",
-        } as const
+      if (merged.exitCode !== 0) return diverged('overlap')
       const tree = merged.stdout.split('\n')[0]?.trim() ?? ''
       const changes = parseRawDiff(
         (yield* git.run(['diff-tree', '-r', '-z', '--raw', '--no-renames', local.commit, tree]))

@@ -46,11 +46,11 @@ See [Workspace](docs/workspace.md) for admission, completion and release behavio
 
 ## Orb
 
-| Term           | Meaning                                                                                                          |
-| -------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Orb**        | An ephemeral machine orbit creates in an OpenStack project, on which a `dev --orb` session's tools run over SSH. |
-| **Orb record** | Dev's registry entry for one orb in the data home: its state, key, pinned host keys and owner lock.              |
-| **Return**     | The admitted write that brings an orb's commits and working-tree changes back into the Mac checkout.             |
+| Term           | Meaning                                                                                                                                                   |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Orb**        | An ephemeral machine orbit creates in an OpenStack project, on which a `dev --orb` session's tools run over SSH.                                          |
+| **Orb record** | Dev's registry entry for one orb in the data home: its state, key, pinned host keys and owner lock.                                                       |
+| **Return**     | The admitted write that brings an orb's commits and working-tree changes back into the Mac checkout, or onto a `dev/orb-return/` branch when it diverges. |
 
 [Orb](docs/orb.md) owns startup, tools, return and quit behavior.
 

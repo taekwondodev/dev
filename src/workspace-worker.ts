@@ -33,6 +33,7 @@ import {
 import { performHandoff, selectWorkspace } from './workspace-transitions.ts'
 import { makeGitHubReader, PROVIDER_BUDGET_MS } from './workspace-evidence.ts'
 import { recordPublication, recordTarget } from './workspace-evidence-records.ts'
+import { writeDevBranch } from './workspace-branch.ts'
 import {
   checkTask,
   releasePreExisting,
@@ -337,6 +338,11 @@ if (port !== null && engine !== undefined) {
       case 'record-publication':
         await engine.run(authority => recordPublication(authority, request.reference))
         return replyTo('record-publication', null)
+      case 'write-branch':
+        return replyTo(
+          'write-branch',
+          await engine.run(authority => writeDevBranch(authority, request.request))
+        )
       case 'close': {
         if (closing) return replyTo('close', null)
         closing = true
