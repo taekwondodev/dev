@@ -376,7 +376,13 @@ export const TargetViewSchema = Schema.Struct({
 })
 export type TargetView = typeof TargetViewSchema.Type
 
-export const ReleaseDeciderSchema = Schema.Literals(['user', 'quit', 'replacement', 'allocation'])
+export const ReleaseDeciderSchema = Schema.Literals([
+  'user',
+  'quit',
+  'replacement',
+  'allocation',
+  'orb-recovery',
+])
 export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
 
 export const WorkspaceAssessmentSchema = Schema.Struct({
@@ -492,6 +498,14 @@ export const DevBranchRequestSchema = Schema.Struct({
 })
 export type DevBranchRequest = typeof DevBranchRequestSchema.Type
 
+export const OrbPresenceRequestSchema = Schema.Struct({ cwd: AbsolutePath, useId: WorkspaceId })
+export type OrbPresenceRequest = typeof OrbPresenceRequestSchema.Type
+export const OrbPresenceSettlementSchema = Schema.Struct({
+  outcome: Schema.Literals(['settled', 'absent']),
+  reason: Schema.NonEmptyString,
+})
+export type OrbPresenceSettlement = typeof OrbPresenceSettlementSchema.Type
+
 export type HostReplace = (
   target: WorkspaceGrant
 ) => Effect.Effect<'confirmed' | 'cancelled', unknown>
@@ -546,4 +560,5 @@ export interface WorkspaceLifecycle {
     readonly reference: PublicationReference
   }): Effect.Effect<void, WorkspaceError>
   writeBranch(input: DevBranchRequest): Effect.Effect<{ readonly name: string }, WorkspaceError>
+  settleOrbPresence(input: OrbPresenceRequest): Effect.Effect<OrbPresenceSettlement, WorkspaceError>
 }

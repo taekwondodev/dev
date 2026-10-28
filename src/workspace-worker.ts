@@ -37,6 +37,7 @@ import { writeDevBranch } from './workspace-branch.ts'
 import {
   checkTask,
   releasePreExisting,
+  settleOrbPresence,
   releaseTask,
   sweepDeadline,
   sweepRepositoryAtClose,
@@ -342,6 +343,11 @@ if (port !== null && engine !== undefined) {
         return replyTo(
           'write-branch',
           await engine.run(authority => writeDevBranch(authority, request.request))
+        )
+      case 'settle-orb-presence':
+        return replyTo(
+          'settle-orb-presence',
+          await engine.run(authority => settleOrbPresence(authority, request.request))
         )
       case 'close': {
         if (closing) return replyTo('close', null)

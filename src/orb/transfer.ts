@@ -7,7 +7,7 @@ import type { ChildProcessSpawner } from 'effect/process'
 import { runCommand, type CommandResult } from '../command.ts'
 import { isWithin } from '../workspace-paths.ts'
 import { orbFailure, type OrbError } from './domain.ts'
-import { shq } from './ssh.ts'
+import { shq, type OrbSsh } from './ssh.ts'
 
 export interface OrbRepository {
   readonly url: string
@@ -70,6 +70,13 @@ const plainGit = (root: string, args: readonly string[], exitCodes: readonly num
     timeout: GIT_TIMEOUT,
     exitCodes,
   }).pipe(Effect.mapError(cause => orbFailure(cause.message.trim(), cause)))
+
+export const orbRepository = (ssh: OrbSsh, root: string): OrbRepository => ({
+  url: `${ssh.destination}:${root}`,
+  protocol: 'ssh',
+  gitSshCommand: ssh.gitSshCommand,
+  run: script => Effect.map(ssh.checked(script), stdout => stdout.toString('utf8')),
+})
 
 export const hardenedGit = Effect.fnUntraced(function* (
   root: string,
@@ -306,17 +313,27 @@ export const refusals = (
     return reasons
   })
 
-export const returnWork = Effect.fnUntraced(function* (input: {
-  readonly root: string
-  readonly branch: string
-  readonly orbPath: string
-  readonly repository: OrbRepository
-  readonly baseRef: string
-  readonly endRef: string
-  readonly beforeWrite: Effect.Effect<void, OrbError>
-}): Effect.fn.Return<ReturnOutcome, OrbError, GitServices> {
+export type FetchedWork =
+  | { readonly kind: 'unchanged' }
+  | {
+      readonly kind: 'changed'
+      readonly end: string
+      readonly orbHead: string
+      readonly base: string
+      readonly synced: string
+      readonly work: string
+    }
+
+export const fetchWork = Effect.fnUntraced(function* (
+  git: Git,
+  input: {
+    readonly orbPath: string
+    readonly repository: OrbRepository
+    readonly baseRef: string
+    readonly endRef: string
+  }
+): Effect.fn.Return<FetchedWork, OrbError, GitServices> {
   const { repository } = input
-  const git = yield* hardenedGit(input.root, repository.protocol, repository.gitSshCommand)
   yield* repository.run(orbEndScript(input.orbPath))
   yield* git.run([
     'fetch',
@@ -333,7 +350,24 @@ export const returnWork = Effect.fnUntraced(function* (input: {
   const endTree = yield* git.text(['rev-parse', `${end}^{tree}`])
   const baseTree = yield* git.text(['rev-parse', `${base}^{tree}`])
   if (orbHead === synced && endTree === baseTree) return { kind: 'unchanged' } as const
-  const orbWork = endTree === (yield* git.text(['rev-parse', `${orbHead}^{tree}`])) ? orbHead : end
+  const work = endTree === (yield* git.text(['rev-parse', `${orbHead}^{tree}`])) ? orbHead : end
+  return { kind: 'changed', end, orbHead, base, synced, work } as const
+})
+
+export const returnWork = Effect.fnUntraced(function* (input: {
+  readonly root: string
+  readonly branch: string
+  readonly orbPath: string
+  readonly repository: OrbRepository
+  readonly baseRef: string
+  readonly endRef: string
+  readonly beforeWrite: Effect.Effect<void, OrbError>
+}): Effect.fn.Return<ReturnOutcome, OrbError, GitServices> {
+  const { repository } = input
+  const git = yield* hardenedGit(input.root, repository.protocol, repository.gitSshCommand)
+  const fetched = yield* fetchWork(git, input)
+  if (fetched.kind === 'unchanged') return fetched
+  const { end, orbHead, base, synced, work: orbWork } = fetched
   const diverged = (reason: Divergence) => ({ kind: 'diverged', reason, commit: orbWork }) as const
   const symbolic = yield* git.run(['symbolic-ref', '-q', 'HEAD'], { exitCodes: [0, 1] })
   if (symbolic.stdout.trim() !== `refs/heads/${input.branch}`) return diverged('branch-switched')

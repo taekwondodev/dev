@@ -123,6 +123,7 @@ const DECIDER_TEXT: Record<ReleaseDecider, string> = {
   quit: 'By the sweep at quit',
   replacement: 'By the sweep at a conversation replacement',
   allocation: 'By the sweep before a worktree allocation',
+  'orb-recovery': 'By the orb recovery at dev --orb startup',
 }
 
 const receiptView = (

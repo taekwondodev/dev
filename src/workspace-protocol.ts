@@ -2,6 +2,8 @@ import { type Option, Schema } from 'effect'
 import {
   AbsolutePath,
   DevBranchRequestSchema,
+  OrbPresenceRequestSchema,
+  OrbPresenceSettlementSchema,
   PublicationReferenceSchema,
   SweepReceiptSchema,
   SweepRequestSchema,
@@ -100,6 +102,10 @@ const WriteBranchRequestSchema = Schema.Struct({
   op: Schema.Literal('write-branch'),
   request: DevBranchRequestSchema,
 })
+const SettleOrbPresenceRequestSchema = Schema.Struct({
+  op: Schema.Literal('settle-orb-presence'),
+  request: OrbPresenceRequestSchema,
+})
 
 const WorkspaceRpcInputSchema = Schema.Union([
   AttachRequestSchema,
@@ -118,6 +124,7 @@ const WorkspaceRpcInputSchema = Schema.Union([
   RecordTargetRequestSchema,
   RecordPublicationRequestSchema,
   WriteBranchRequestSchema,
+  SettleOrbPresenceRequestSchema,
 ])
 
 export type WorkspaceRpcInput = typeof WorkspaceRpcInputSchema.Type
@@ -140,6 +147,7 @@ const RpcReplySchemas = {
   'record-target': Schema.Null,
   'record-publication': Schema.Null,
   'write-branch': Schema.Struct({ name: Schema.NonEmptyString }),
+  'settle-orb-presence': OrbPresenceSettlementSchema,
 } as const satisfies Record<WorkspaceRpcOperation, Schema.Top>
 
 export type WorkspaceRpcResults = {
@@ -164,6 +172,7 @@ export const decodeWorkspaceRpcReply: {
   'record-target': Schema.decodeUnknownOption(RpcReplySchemas['record-target']),
   'record-publication': Schema.decodeUnknownOption(RpcReplySchemas['record-publication']),
   'write-branch': Schema.decodeUnknownOption(RpcReplySchemas['write-branch']),
+  'settle-orb-presence': Schema.decodeUnknownOption(RpcReplySchemas['settle-orb-presence']),
 }
 
 const EnvelopeSchema = Schema.Struct({ id: RpcId, sentAt: Schema.Finite, request: Schema.Unknown })
@@ -187,6 +196,7 @@ const SuccessSchema = Schema.Struct({
     'record-target',
     'record-publication',
     'write-branch',
+    'settle-orb-presence',
   ]),
   value: Schema.Unknown,
 })

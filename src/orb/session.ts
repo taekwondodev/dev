@@ -33,11 +33,14 @@ import {
   type OrbStatus,
   type OrbView,
 } from './domain.ts'
-import { createRecord, type OrbRecordHandle } from './registry.ts'
-import { makeOrbSsh, shq, sshOptions, ttyScript, type OrbSsh } from './ssh.ts'
+import { clock, deleteRecorded } from './deletion.ts'
+import { recoverOrbs } from './recovery.ts'
+import { createRecord } from './registry.ts'
+import { makeOrbSsh, shq, sshOptions, ttyScript } from './ssh.ts'
 import { createOrbExtension, type MacHomes } from './tools.ts'
 import {
   inspectCheckout,
+  orbRepository,
   returnWork,
   upload,
   type Divergence,
@@ -49,12 +52,16 @@ export interface OrbSessionOptions {
   readonly dataHome: string
   readonly env: NodeJS.ProcessEnv
   readonly print: (line: string) => void
+  readonly confirm?: (prompt: string) => Effect.Effect<boolean>
   readonly cloud?: (openrc: Openrc) => { readonly keystone: Keystone; readonly orbit: Orbit }
 }
 
 export interface OrbOpenInput {
   readonly attachment: WorkspaceAttachment
-  readonly lifecycle: Pick<WorkspaceLifecycle, 'root' | 'writeBranch'>
+  readonly lifecycle: Pick<
+    WorkspaceLifecycle,
+    'root' | 'inspect' | 'writeBranch' | 'settleOrbPresence'
+  >
   readonly cwd: string
   readonly skillPaths: readonly string[]
   readonly conversation: string
@@ -82,14 +89,8 @@ type Services = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 const POLL_INTERVAL = Duration.seconds(5)
 const ACTIVE_LIMIT = Duration.minutes(15)
 const SSH_LIMIT_TRIES = 24
-const DELETE_WAIT_MS = 60_000
 const REQUIRED_TOOLS = ['bash', 'git', 'rg', 'grep'] as const
 const FORWARDED_GIT_SETTINGS = ['GIT_OPTIONAL_LOCKS', 'GIT_TERMINAL_PROMPT', 'GIT_NO_LAZY_FETCH']
-
-const clock = (ms: number): string => {
-  const seconds = Math.max(0, Math.round(ms / 1000))
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
-}
 
 const divergenceText = (reason: Divergence, branch: string): string => {
   switch (reason) {
@@ -204,6 +205,29 @@ export const openOrbSession = Effect.fnUntraced(function* (
 
   const config = yield* readOrbConfig()
   const checkout = yield* inspectCheckout(input.cwd)
+  const openrc = yield* readOpenrc(options.env)
+  yield* Effect.sync(() => {
+    for (const name of Object.keys(options.env))
+      if (name.startsWith('OS_')) Reflect.deleteProperty(options.env, name)
+  })
+  const ca = yield* readCa(openrc)
+  const { keystone, orbit } =
+    options.cloud?.(openrc) ??
+    (() => {
+      const issued = makeKeystone(openrc, ca)
+      return { keystone: issued, orbit: makeOrbit(issued, ca) }
+    })()
+  yield* phase(`authenticating as ${openrc.OS_USERNAME} with Keystone at ${openrc.OS_AUTH_URL}`)
+  const token = yield* keystone.token
+  yield* recoverOrbs({
+    dataHome: options.dataHome,
+    authUrl: openrc.OS_AUTH_URL,
+    token,
+    orbit,
+    lifecycle: input.lifecycle,
+    print,
+    ...(options.confirm === undefined ? {} : { confirm: options.confirm }),
+  })
   const presence = yield* input.attachment
     .authorize({ kind: 'write', cwd: input.cwd })
     .pipe(
@@ -221,20 +245,6 @@ export const openOrbSession = Effect.fnUntraced(function* (
   }
   const writer: WorkspaceGrant = presence.grant
 
-  const openrc = yield* readOpenrc(options.env)
-  yield* Effect.sync(() => {
-    for (const name of Object.keys(options.env))
-      if (name.startsWith('OS_')) Reflect.deleteProperty(options.env, name)
-  })
-  const ca = yield* readCa(openrc)
-  const { keystone, orbit } =
-    options.cloud?.(openrc) ??
-    (() => {
-      const issued = makeKeystone(openrc, ca)
-      return { keystone: issued, orbit: makeOrbit(issued, ca) }
-    })()
-  yield* phase(`authenticating as ${openrc.OS_USERNAME} with Keystone at ${openrc.OS_AUTH_URL}`)
-  const token = yield* keystone.token
   const record = yield* createRecord(options.dataHome, {
     keystone: {
       authUrl: openrc.OS_AUTH_URL,
@@ -256,7 +266,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
         yield* Effect.ignore(record.remove)
         return
       }
-      const deleted = yield* Effect.exit(deleteAndWait(orbit, record, orbId, print))
+      const deleted = yield* Effect.exit(deleteRecorded(orbit, record, orbId, print))
       if (Exit.isFailure(deleted)) {
         yield* record.release
         print(
@@ -315,7 +325,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
     yield* upload({
       checkout,
       orbPath: checkout.root,
-      repository: repositoryOf(ssh, checkout.root),
+      repository: orbRepository(ssh, checkout.root),
       baseRef: record.current().baseRef,
     })
     yield* record.update({ phase: 'active', uploadedHead: checkout.head })
@@ -351,7 +361,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
         root: checkout.root,
         branch: checkout.branch,
         orbPath: checkout.root,
-        repository: repositoryOf(ssh, checkout.root),
+        repository: orbRepository(ssh, checkout.root),
         baseRef: record.current().baseRef,
         endRef,
         beforeWrite: record.update({ phase: 'returning' }),
@@ -385,13 +395,13 @@ export const openOrbSession = Effect.fnUntraced(function* (
         yield* Scope.close(sessionScope, Exit.void)
         yield* record.release
         print(
-          `Orb ${orbId} was kept: ${returned.reason}\nIts work is still on the orb at ${checkout.root} (${host}); the next dev --orb retries the return.\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
+          `Orb ${orbId} was kept: ${returned.reason}\nIts work is still on the orb at ${checkout.root} (${host}); the next dev --orb returns it to the branch dev/orb-recovery/${record.id} and deletes the orb.\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
         )
         return
       }
       print(outcomeText(label, checkout.branch, returned.value))
       yield* Scope.close(sessionScope, Exit.void)
-      const deleted = yield* Effect.exit(deleteAndWait(orbit, record, orbId, print))
+      const deleted = yield* Effect.exit(deleteRecorded(orbit, record, orbId, print))
       if (Exit.isFailure(deleted)) {
         yield* record.release
         print(
@@ -483,13 +493,6 @@ export const withReturnAdmission = <A, E, R>(
   )
 }
 
-const repositoryOf = (ssh: OrbSsh, root: string) => ({
-  url: `${ssh.destination}:${root}`,
-  protocol: 'ssh' as const,
-  gitSshCommand: ssh.gitSshCommand,
-  run: (script: string) => Effect.map(ssh.checked(script), stdout => stdout.toString('utf8')),
-})
-
 const awaitActive = Effect.fnUntraced(function* (
   orbit: Orbit,
   created: OrbView,
@@ -515,31 +518,4 @@ const awaitActive = Effect.fnUntraced(function* (
       )
     yield* Effect.sleep(POLL_INTERVAL)
   }
-})
-
-const deleteAndWait = Effect.fnUntraced(function* (
-  orbit: Orbit,
-  record: OrbRecordHandle,
-  orbId: string,
-  print: (line: string) => void
-): Effect.fn.Return<void, OrbError> {
-  const label = shortId(orbId)
-  yield* record.update({ phase: 'deleting' })
-  const started = yield* Clock.currentTimeMillis
-  let last = (yield* orbit.remove(orbId)).status
-  print(`Deleting orb ${label} (${last} 0:00)`)
-  for (;;) {
-    const view = yield* orbit.get(orbId)
-    const spent = (yield* Clock.currentTimeMillis) - started
-    if (view.status !== last) {
-      last = view.status
-      print(`Deleting orb ${label} (${view.status} ${clock(spent)})`)
-    }
-    if (view.status === 'DELETED') break
-    if (spent > DELETE_WAIT_MS)
-      return yield* orbFailure(`orb ${label} still reads ${view.status} after ${clock(spent)}`)
-    yield* Effect.sleep(Duration.seconds(2))
-  }
-  yield* record.remove
-  print(`orb ${label} deleted`)
 })

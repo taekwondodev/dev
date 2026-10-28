@@ -20,11 +20,15 @@ import {
   type Residue,
 } from './workspace-completion.ts'
 import {
+  blocked,
+  invalid,
   requireReview,
   WorkspaceError,
   WorkspaceId,
   type AllocationReason,
   type CompletionVerdict,
+  type OrbPresenceRequest,
+  type OrbPresenceSettlement,
   type ReleaseDecider,
   type ClosingSweepMoment,
   type SweepMoment,
@@ -63,6 +67,7 @@ import {
 } from './workspace-gates.ts'
 import {
   ancestry,
+  canonicalGitWorkspace,
   registeredWorktrees,
   removeWorktree,
   symbolicBranch,
@@ -80,6 +85,7 @@ import {
   getPublications,
   getReservation,
   getTask,
+  getUse,
   getUseRows,
   getWorkspace,
   isUnresolvedRelease,
@@ -1353,6 +1359,69 @@ export const releasePreExisting = (
   authority.inspectExisting() === undefined
     ? []
     : workspaceIds.map(workspaceId => clearEndedUses(authority, repo, workspaceId))
+
+export const settleOrbPresence = (
+  authority: WorkspaceAuthority,
+  request: OrbPresenceRequest
+): OrbPresenceSettlement => {
+  const absent: OrbPresenceSettlement = {
+    outcome: 'absent',
+    reason: `Use ${request.useId} is settled or no longer recorded; nothing changed.`,
+  }
+  if (authority.inspectExisting() === undefined) return absent
+  const git = canonicalGitWorkspace(request.cwd)
+  const repo = authority.findRepository(git)
+  if (repo === undefined) return absent
+  return inDb(authority, repo, db =>
+    transaction(db, () => {
+      const presence = getUse(db, request.useId)
+      if (presence === undefined || presence.stage === 'quiescent') return absent
+      if (
+        presence.access !== 'write' ||
+        presence.withinUseId !== undefined ||
+        presence.execution !== undefined
+      )
+        invalid(`Use ${presence.id} is not the writer presence of a dev --orb session`)
+      const workspace = getWorkspace(db, presence.workspaceId)
+      if (workspace?.path !== git.path) invalid(`Use ${presence.id} is not a use of ${git.path}`)
+      if (incarnationHeld(authority.paths, presence.incarnation))
+        blocked(`Use ${presence.id} belongs to a dev session that is still running`)
+      const settled = getUseRows(db, workspace.id).filter(
+        use => use.incarnation === presence.incarnation
+      )
+      deleteUses(
+        db,
+        settled.map(use => use.id)
+      )
+      const reservation = getReservation(db, workspace.id)
+      if (
+        workspace.origin !== 'pre-existing' ||
+        reservation === undefined ||
+        reservation.taskId !== presence.taskId ||
+        getUseRows(db, workspace.id).some(use => use.taskId === reservation.taskId)
+      )
+        return {
+          outcome: 'settled',
+          reason: `${settled.length} use record(s) of the ended dev --orb session were deleted; files and commits are unchanged.`,
+        }
+      const result = `${settled.length} use record(s) of the ended dev --orb session were deleted and reservation ${reservation.id} was released; files and commits are unchanged.`
+      putOperation(db, {
+        ...startedRelease(
+          repo,
+          reservation,
+          workspace,
+          'orb-recovery',
+          'release-reservation',
+          headOf(authority, workspace)
+        ),
+        phase: 'confirmed',
+        result,
+      })
+      deleteReservation(db, reservation)
+      return { outcome: 'settled', reason: result }
+    })
+  )
+}
 
 export interface SweepInput {
   readonly repositoryId: WorkspaceId

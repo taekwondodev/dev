@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
@@ -19,7 +19,9 @@ import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Stream } from 'effect'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
-import { orbFailure } from '../../src/orb/domain.ts'
+import { orbFailure, type OrbRecord, type OrbView } from '../../src/orb/domain.ts'
+import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/recovery.ts'
+import { claimRecord, createRecord } from '../../src/orb/registry.ts'
 import {
   branchingReturn,
   macHomes,
@@ -342,7 +344,7 @@ const writeBranch = (request: Parameters<typeof lifecycle.effect.writeBranch>[0]
   Effect.runPromise(lifecycle.effect.writeBranch(request))
 
 await claim(
-  'the authority writes only dev/orb-return/ branches, moves only that branch or its suffixes, takes only full commit ids, and rewriting the same commit creates no duplicate',
+  'the authority writes only dev/orb-return/ and dev/orb-recovery/ branches, moves only that branch or its suffixes, takes only full commit ids, and rewriting the same commit creates no duplicate',
   async () => {
     const { mac } = newCheckout('branch-rules')
     const head = git(mac, 'rev-parse', 'HEAD')
@@ -386,6 +388,16 @@ await claim(
     assert.deepEqual(await writeBranch({ cwd: mac, name, commit: head }), { name })
     assert.deepEqual(await writeBranch({ cwd: mac, name, commit: head }), { name })
     assert.equal(git(mac, 'branch', '--list', `${name}*`).split('\n').length, 1)
+    const recovery = 'dev/orb-recovery/dddd0000-0000-4000-8000-000000000004'
+    await assert.rejects(
+      writeBranch({ cwd: mac, name: recovery, commit: head, replacing: { name, commit: head } }),
+      /is not dev\/orb-recovery/,
+      'a recovery never moves a return branch'
+    )
+    assert.deepEqual(await writeBranch({ cwd: mac, name: recovery, commit: head }), {
+      name: recovery,
+    })
+    assert.equal(git(mac, 'rev-parse', recovery), head)
   }
 )
 
@@ -490,7 +502,7 @@ await claim(
         { stdin: { isTTY: true }, stdout: { isTTY: true } },
         () => Effect.succeed(answers[answer] ?? 'declined')
       )
-      assert.equal(await Effect.runPromise(quit.askRetry ?? Effect.succeed(undefined)), retries)
+      assert.equal(await Effect.runPromise(quit.askRetry ?? Effect.void), retries)
     }
   }
 )
@@ -856,6 +868,489 @@ await claim(
       'a launch that created no orb leaves no record'
     )
     assert.deepEqual(env, { KEEP: 'kept' }, 'the OS_* variables are removed after reading them')
+  }
+)
+
+const KEYSTONE = {
+  authUrl: 'http://192.0.2.1/identity',
+  projectId: 'p1',
+  projectName: 'demo',
+} as const
+
+const recordFields = (checkout: string, presenceUseId?: string) => ({
+  keystone: KEYSTONE,
+  checkout,
+  branch: 'main',
+  orbPath: checkout,
+  ...(presenceUseId === undefined ? {} : { presenceUseId }),
+  conversation: join(checkout, 'session.jsonl'),
+})
+
+const exited = (child: ChildProcess): Promise<NodeJS.Signals | null> =>
+  new Promise(resolveExit => child.once('exit', (_code, signal) => resolveExit(signal)))
+
+await claim(
+  "a record lock held by a live dev --orb process blocks recovery, and the lock of an owner that died is taken with the record's fields intact",
+  async () => {
+    const dataHome = join(sandbox, 'lock-data')
+    mkdirSync(dataHome, { mode: 0o700 })
+    const checkout = join(sandbox, 'lock-checkout')
+    const owner = spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+          import * as NodeServices from '@effect/platform-node/NodeServices'
+          import { Effect } from 'effect'
+          import { createRecord } from ${JSON.stringify(new URL('../../src/orb/registry.ts', import.meta.url).href)}
+          const record = await Effect.runPromise(Effect.provide(createRecord(${JSON.stringify(dataHome)}, ${JSON.stringify(recordFields(checkout, 'presence-use'))}), NodeServices.layer))
+          process.stdout.write(record.directory + '\\n')
+          setInterval(() => {}, 1000)
+        `,
+      ],
+      { cwd: new URL('../..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'inherit'] }
+    )
+    const directory = await new Promise<string>((resolveLine, rejectLine) => {
+      let text = ''
+      owner.stdout.on('data', (chunk: Buffer) => {
+        text += chunk.toString('utf8')
+        if (text.includes('\n')) resolveLine(text.trim())
+      })
+      owner.once('exit', code => rejectLine(new Error(`the owner exited with ${code}`)))
+    })
+    try {
+      assert.deepEqual(await run(claimRecord(directory)), { kind: 'owned' })
+      assert.deepEqual(
+        await run(claimRecord(directory)),
+        { kind: 'owned' },
+        'a refused claim leaves the lock to its owner'
+      )
+    } finally {
+      owner.kill('SIGKILL')
+    }
+    assert.equal(await exited(owner), 'SIGKILL')
+    const claimed = await run(claimRecord(directory))
+    assert.equal(claimed.kind, 'claimed')
+    if (claimed.kind !== 'claimed') return
+    assert.equal(claimed.record.current().presenceUseId, 'presence-use')
+    assert.equal(claimed.record.current().phase, 'requested')
+    assert.deepEqual(
+      await run(claimRecord(directory)),
+      { kind: 'owned' },
+      'the recovering process is now the only writer of the record'
+    )
+    await run(claimed.record.release)
+    assert.equal((await run(claimRecord(directory))).kind, 'claimed')
+  }
+)
+
+await claim(
+  "recovery settles a crashed dev --orb session's presence so the next writer keeps the same checkout, keeps it when the session was returning, and touches no live or already settled use",
+  async () => {
+    const root = join(sandbox, 'settle-authority')
+    const settling = await openLifecycle({ root })
+    let conversations = 0
+    const conversation = () => {
+      conversations += 1
+      const dataHome = join(sandbox, `settle-data-${conversations}`)
+      mkdirSync(dataHome, { recursive: true })
+      const sessionFile = join(dataHome, 'session.jsonl')
+      writeFileSync(sessionFile, '{}\n', { mode: 0o600 })
+      return { sessionId: `settle-${conversations}`, sessionFile, dataHome }
+    }
+    const crashWriter = (
+      session: ReturnType<typeof conversation>,
+      checkout: string
+    ): { readonly writer: WorkspaceGrant; readonly reader: WorkspaceGrant } => {
+      const crashed = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            import { openLifecycle } from ${JSON.stringify(new URL('../workspace/workspace-test-lifecycle.ts', import.meta.url).href)}
+            const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
+            const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(session)}, cwd: ${JSON.stringify(checkout)} })
+            const writer = await attachment.authorize({ kind: 'write', cwd: ${JSON.stringify(checkout)} })
+            const reader = await attachment.authorize({ kind: 'read', cwd: ${JSON.stringify(checkout)} })
+            process.stdout.write(JSON.stringify({ writer: writer.grant, reader: reader.grant }))
+            process.kill(process.pid, 'SIGKILL')
+          `,
+        ],
+        { cwd: new URL('../..', import.meta.url).pathname, encoding: 'utf8' }
+      )
+      assert.equal(crashed.signal, 'SIGKILL', crashed.stderr)
+      return JSON.parse(crashed.stdout) as { writer: WorkspaceGrant; reader: WorkspaceGrant }
+    }
+    const { mac } = newCheckout('settle')
+    const { writer: dead, reader } = crashWriter(conversation(), mac)
+    const lines: string[] = []
+    const settle = (phase: OrbRecord['phase'], checkout: string, useId: string) =>
+      run(
+        settlePresence(
+          { lifecycle: settling.effect, print: line => lines.push(line) },
+          {
+            ...recordFields(checkout, useId),
+            id: RECORD,
+            phase,
+            baseRef: `refs/dev/orb/${RECORD}/base`,
+            createdAt: '2026-10-28T10:00:00.000Z',
+            updatedAt: '2026-10-28T10:00:00.000Z',
+          }
+        )
+      )
+    const [blocked] = await settling.inspect({ cwd: mac })
+    assert.equal(blocked?.outcome, 'blocked')
+    assert.equal(blocked.reservationId, dead.reservationId, 'the dead task still reserves it')
+
+    const { mac: other } = newCheckout('settle-other')
+    assert.equal(
+      (await run(settling.effect.settleOrbPresence({ cwd: other, useId: dead.useId }))).outcome,
+      'absent',
+      "another checkout's settlement cannot reach this use"
+    )
+    await assert.rejects(
+      run(settling.effect.settleOrbPresence({ cwd: mac, useId: reader.useId })),
+      /not the writer presence/,
+      'only the writer presence of a session is settled'
+    )
+
+    await settle('returning', mac, dead.useId)
+    assert.match(lines.join('\n'), new RegExp(`dev workspace release ${dead.taskId}`))
+    const [kept] = await settling.inspect({ cwd: mac })
+    assert.deepEqual(
+      kept?.uses.map(use => use.id).toSorted(),
+      [dead.useId, reader.useId].toSorted(),
+      'a returning session keeps its uses'
+    )
+
+    lines.length = 0
+    await settle('active', mac, dead.useId)
+    assert.match(lines.join('\n'), /reservation .* was released; files and commits are unchanged/)
+    const [settled] = await settling.inspect({ cwd: mac })
+    assert.deepEqual(settled?.uses, [])
+    assert.equal(settled.reservationId, undefined)
+    const [receipt] = await settling.inspect({ taskId: dead.taskId })
+    assert.equal(receipt?.outcome, 'released')
+    assert.match(receipt.reason, /^By the orb recovery at dev --orb startup: /)
+    const next = await settling.attach({ conversation: conversation(), cwd: mac })
+    const written = await next.authorize({ kind: 'write', cwd: mac })
+    assert.equal(written.kind, 'ready', 'the next writer is not isolated')
+    if (written.kind === 'ready') assert.equal(written.grant.checkout, mac)
+
+    lines.length = 0
+    await settle('active', mac, dead.useId)
+    assert.deepEqual(lines, [], 'settling again changes nothing')
+    if (written.kind === 'ready') {
+      await assert.rejects(
+        run(settling.effect.settleOrbPresence({ cwd: mac, useId: written.grant.useId })),
+        /still running/,
+        "a live session's presence is never settled"
+      )
+      await next.close()
+      const [closed] = await settling.inspect({ cwd: mac })
+      assert.equal(closed?.reservationId, written.grant.reservationId)
+      assert.deepEqual(
+        await run(settling.effect.settleOrbPresence({ cwd: mac, useId: written.grant.useId })),
+        {
+          outcome: 'absent',
+          reason: `Use ${written.grant.useId} is settled or no longer recorded; nothing changed.`,
+        },
+        'a session that quit settled its own presence'
+      )
+      const [after] = await settling.inspect({ cwd: mac })
+      assert.equal(
+        after?.reservationId,
+        written.grant.reservationId,
+        'the reservation its quit kept stays'
+      )
+    }
+
+    const { mac: resumed } = newCheckout('settle-resumed')
+    const session = conversation()
+    const earlier = await settling.attach({ conversation: session, cwd: resumed })
+    const before = await earlier.authorize({ kind: 'write', cwd: resumed })
+    assert.equal(before.kind, 'ready')
+    await earlier.close()
+    const { writer: continued } = crashWriter(session, resumed)
+    assert.equal(continued.taskId, before.grant.taskId, 'the continued conversation keeps its task')
+    lines.length = 0
+    await settle('active', resumed, continued.useId)
+    assert.doesNotMatch(lines.join('\n'), /was released/)
+    const [retained] = await settling.inspect({ cwd: resumed })
+    assert.deepEqual(
+      retained?.uses.map(use => [use.id, use.stage]),
+      [[before.grant.useId, 'quiescent']],
+      "the crashed session's uses are gone and the earlier session's settled use keeps the task's claim"
+    )
+    assert.equal(
+      retained.reservationId,
+      before.grant.reservationId,
+      'a reservation the task held before the crashed session stays'
+    )
+    await settling.close()
+  }
+)
+
+const orbView = (id: string, created: string, status: OrbView['status'] = 'ACTIVE'): OrbView => ({
+  id,
+  status,
+  image: 'ubuntu-24.04-arm64-dev',
+  ssh_host: null,
+  ssh_user: null,
+  ssh_host_keys: null,
+  fault: null,
+  created_at: created,
+})
+
+await claim(
+  'unregistered orbs are those of the project created since the earliest unanswered request, read as UTC, allowing one minute of clock skew, and named by no record; an unreadable creation time excludes an orb',
+  () => {
+    const found = unregisteredOrbs(
+      [
+        orbView('after', '2026-10-28T10:00:30'),
+        orbView('skew', '2026-10-28T09:59:30'),
+        orbView('before', '2026-10-28T09:58:00'),
+        orbView('local-hour', '2026-10-28T09:30:00'),
+        orbView('registered', '2026-10-28T10:01:00'),
+        orbView('deleting', '2026-10-28T10:01:00', 'DELETING'),
+        orbView('deleted', '2026-10-28T10:01:00', 'DELETED'),
+        orbView('error', '2026-10-28T10:02:00+00:00', 'ERROR'),
+        orbView('undated', 'soon'),
+      ],
+      new Set(['registered']),
+      '2026-10-28T10:00:00.000Z'
+    )
+    assert.deepEqual(
+      found.map(orb => orb.id),
+      ['after', 'skew', 'error']
+    )
+  }
+)
+
+const TOKEN = {
+  id: 'token',
+  expiresAt: undefined,
+  orbitUrl: 'http://192.0.2.1/orbit',
+  project: { id: KEYSTONE.projectId, name: KEYSTONE.projectName },
+}
+
+await claim(
+  "recovery removes the records of orbs orbit no longer has or is deleting, deletes an orb that holds no work, and keeps an orb whose work it cannot return, one it cannot read and another project's",
+  async () => {
+    const dataHome = join(sandbox, 'recover-states')
+    mkdirSync(dataHome, { mode: 0o700 })
+    const checkout = join(sandbox, 'recover-states-checkout')
+    const gone = join(sandbox, 'recover-states-missing')
+    const recorded = async (
+      orbId: string,
+      phase: OrbRecord['phase'],
+      fields: Parameters<typeof createRecord>[1] = recordFields(checkout)
+    ) => {
+      const record = await run(createRecord(dataHome, fields))
+      await run(record.update({ phase, orbId }))
+      await run(record.writeKnownHosts('192.0.2.9', ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA']))
+      await run(record.release)
+      return record.id
+    }
+    const ids = {
+      gone: await recorded('orb-gone', 'active'),
+      deleting: await recorded('orb-deleting', 'active'),
+      error: await recorded('orb-error', 'active'),
+      unreadable: await recorded('orb-unreadable', 'active'),
+      created: await recorded('orb-created', 'created'),
+      moved: await recorded('orb-moved', 'active', recordFields(gone)),
+      baseless: await recorded(
+        'orb-baseless',
+        'active',
+        recordFields(newCheckout('recover-baseless').mac)
+      ),
+      foreign: await recorded('orb-foreign', 'active', {
+        ...recordFields(checkout),
+        keystone: { ...KEYSTONE, projectId: 'another-project', projectName: 'another' },
+      }),
+    }
+    const statuses = new Map<string, OrbView['status']>([
+      ['orb-deleting', 'DELETING'],
+      ['orb-error', 'ERROR'],
+      ['orb-created', 'ACTIVE'],
+      ['orb-moved', 'ACTIVE'],
+      ['orb-baseless', 'ACTIVE'],
+    ])
+    const read: string[] = []
+    const removed: string[] = []
+    const orbit: Orbit = {
+      url: Effect.succeed(TOKEN.orbitUrl),
+      create: () => Effect.die('recovery creates no orb'),
+      get: id =>
+        Effect.suspend(() => {
+          read.push(id)
+          if (id === 'orb-unreadable')
+            return Effect.fail(orbFailure('orbit is down', undefined, 503))
+          const status = statuses.get(id)
+          return status === undefined
+            ? Effect.fail(orbFailure('not found', undefined, 404))
+            : Effect.succeed({
+                ...orbView(id, '2026-10-28T10:00:00', status),
+                ssh_host: '192.0.2.9',
+                ssh_user: 'ubuntu',
+                fault: 'boom',
+              })
+        }),
+      remove: id =>
+        Effect.sync(() => {
+          removed.push(id)
+          statuses.set(id, 'DELETED')
+          return orbView(id, '2026-10-28T10:00:00', 'DELETING')
+        }),
+      list: Effect.die('no record is waiting for an orb id'),
+    }
+    const lines: string[] = []
+    await run(
+      recoverOrbs({
+        dataHome,
+        authUrl: KEYSTONE.authUrl,
+        token: TOKEN,
+        orbit,
+        lifecycle: lifecycle.effect,
+        print: line => lines.push(line),
+      })
+    )
+    const remaining = new Set(readdirSync(join(dataHome, 'orbs')))
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, remaining.has(id)])),
+      {
+        gone: false,
+        deleting: false,
+        error: true,
+        unreadable: true,
+        created: false,
+        moved: true,
+        baseless: true,
+        foreign: true,
+      }
+    )
+    assert.deepEqual(removed, ['orb-created'], 'only the orb without work is deleted')
+    assert.ok(!read.includes('orb-foreign'), "another project's orb is not read")
+    const text = lines.join('\n')
+    assert.match(text, /orb orb-erro is ERROR \(boom\), so its work cannot be returned/)
+    assert.match(text, /the checkout .*recover-states-missing no longer exists/)
+    assert.match(text, /lacks refs\/dev\/orb\/[0-9a-f-]+\/base, the upload this orb started from/)
+    assert.match(text, /belongs to project another/)
+    assert.ok(
+      text.includes(`${TOKEN.orbitUrl}/v1/orbs/orb-error`),
+      'a kept orb comes with its delete command'
+    )
+  }
+)
+
+const requestedScenario = async (name: string, confirm?: boolean, corrupt = false) => {
+  const dataHome = join(sandbox, `requested-${name}`)
+  mkdirSync(dataHome, { mode: 0o700 })
+  if (corrupt) {
+    const damaged = join(dataHome, 'orbs', '5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f')
+    mkdirSync(damaged, { recursive: true, mode: 0o700 })
+    writeFileSync(join(damaged, 'record.json'), '{', { mode: 0o600 })
+  }
+  const checkout = join(sandbox, `requested-${name}-checkout`)
+  const dead = await run(createRecord(dataHome, recordFields(checkout)))
+  await run(dead.release)
+  const live = await run(createRecord(dataHome, recordFields(checkout)))
+  await run(live.update({ phase: 'created', orbId: 'orb-registered' }))
+  const requesting = await run(createRecord(dataHome, recordFields(checkout)))
+  const recent = new Date(Date.now() + 5_000).toISOString().slice(0, 19)
+  const old = new Date(Date.now() - 3_600_000).toISOString().slice(0, 19)
+  const views: OrbView[] = [
+    orbView('orb-unregistered', recent),
+    orbView('orb-old', old),
+    orbView('orb-undated', 'yesterday'),
+    orbView('orb-registered', recent),
+    orbView('orb-late', recent),
+  ]
+  const removed: string[] = []
+  const unused = Effect.die('recovery reads only the list and deletes')
+  const orbit: Orbit = {
+    url: Effect.succeed('http://192.0.2.1/orbit'),
+    create: () => unused,
+    get: id =>
+      Effect.succeed({ ...views.find(view => view.id === id), status: 'DELETED' } as OrbView),
+    remove: id =>
+      Effect.sync(() => {
+        removed.push(id)
+        return { ...views.find(view => view.id === id), status: 'DELETING' } as OrbView
+      }),
+    list: Effect.succeed(views),
+  }
+  const prompts: string[] = []
+  const lines: string[] = []
+  await run(
+    recoverOrbs({
+      dataHome,
+      authUrl: KEYSTONE.authUrl,
+      token: TOKEN,
+      orbit,
+      lifecycle: lifecycle.effect,
+      print: line => lines.push(line),
+      ...(confirm === undefined
+        ? {}
+        : {
+            confirm: prompt =>
+              Effect.gen(function* () {
+                prompts.push(prompt)
+                yield* Effect.orDie(requesting.update({ phase: 'created', orbId: 'orb-late' }))
+                return confirm
+              }),
+          }),
+    })
+  )
+  const remaining = readdirSync(join(dataHome, 'orbs')).toSorted()
+  await run(live.release)
+  await run(requesting.release)
+  const text = lines.join('\n')
+  return {
+    removed,
+    prompts: prompts.length,
+    deadKept: remaining.includes(dead.id),
+    liveKept: remaining.includes(live.id) && remaining.includes(requesting.id),
+    listed:
+      text.includes('orb-unregistered') &&
+      !text.includes('orb-old') &&
+      !text.includes('orb-undated'),
+  }
+}
+
+await claim(
+  'orbs a session that ended while requesting may have created are deleted only after y at an interactive terminal, except one a running session recorded meanwhile, and never while a record cannot be read; otherwise they and the record are kept',
+  async () => {
+    assert.deepEqual(await requestedScenario('no-terminal'), {
+      removed: [],
+      prompts: 0,
+      deadKept: true,
+      liveKept: true,
+      listed: true,
+    })
+    assert.deepEqual(await requestedScenario('declined', false), {
+      removed: [],
+      prompts: 1,
+      deadKept: true,
+      liveKept: true,
+      listed: true,
+    })
+    assert.deepEqual(await requestedScenario('confirmed', true), {
+      removed: ['orb-unregistered'],
+      prompts: 1,
+      deadKept: false,
+      liveKept: true,
+      listed: true,
+    })
+    assert.deepEqual(await requestedScenario('corrupt', true, true), {
+      removed: [],
+      prompts: 0,
+      deadKept: true,
+      liveKept: true,
+      listed: false,
+    })
   }
 )
 

@@ -561,6 +561,7 @@ const lifecycle: WorkspaceLifecycle = {
   recordTarget: unsupported,
   recordPublication: unsupported,
   writeBranch: unsupported,
+  settleOrbPresence: unsupported,
 }
 
 const headings = (text: string): readonly string[] =>

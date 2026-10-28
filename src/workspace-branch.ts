@@ -3,7 +3,7 @@ import { blocked, invalid, type DevBranchRequest } from './workspace-domain.ts'
 import { acquireStructureGate } from './workspace-gates.ts'
 import { canonicalGitWorkspace, gitResult, hasCommit } from './workspace-git.ts'
 
-const DEV_BRANCH = /^dev\/orb-return\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
+const DEV_BRANCH = /^dev\/orb-(return|recovery)\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const SUFFIX_LIMIT = 100
 
