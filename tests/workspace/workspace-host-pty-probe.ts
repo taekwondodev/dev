@@ -560,6 +560,7 @@ const lifecycle: WorkspaceLifecycle = {
   sweep: unsupported,
   recordTarget: unsupported,
   recordPublication: unsupported,
+  writeBranch: unsupported,
 }
 
 const headings = (text: string): readonly string[] =>

@@ -59,7 +59,23 @@ Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspac
 - The orb's uncommitted changes and local edits are merged three ways against the last synchronized state; local edits that do not overlap are kept.
 - The index is reset to the new `HEAD`, so staged and unstaged changes are no longer distinguished.
 
-The return stops without writing anything when the local branch moved, the checkout switched branch, or local edits overlap the orb's changes. It refuses entries the [applier rules](../SECURITY.md#returns) forbid. Interrupting dev during the quit-time return lets the return finish, so the checkout is never half-written. On `/orb sync` the orb keeps its work; at quit dev keeps the orb and prints its id and a `curl` delete command. A kept orb is never deleted by dev; delete it with that command once its work is no longer needed.
+An orb with no new commits or changes since the last return returns nothing, whatever happened on the Mac. The return refuses entries the [applier rules](../SECURITY.md#returns) forbid and then writes nothing.
+
+#### Divergence
+
+The return diverges when the orb's commits cannot fast-forward the local branch, because it moved on the Mac or the orb rewrote the uploaded commit (`--amend`, rebase), when the checkout switched branch, or when local edits overlap the orb's changes. The checkout, its branch and its index stay untouched. Instead, dev writes the orb's commits, topped by a snapshot commit of its uncommitted changes when it has any, to the local branch `dev/orb-return/<record-id>`, under the repository structure gate and without writer admission. The message names the case, the branch and the command to merge it, `git merge dev/orb-return/<record-id>`.
+
+Every later `/orb sync`, and the quit-time return, first retries the normal return; an overlap clears once the local edits are set aside, while committing them moves the branch, which stays diverged for the session. If the return diverges again, dev moves the branch to the orb's new state while it still points where dev left it and is not checked out. Otherwise, dev writes a branch with the next numeric suffix, `dev/orb-return/<record-id>-2` and so on.
+
+#### At quit
+
+dev deletes the orb once the return completed or its work is on a `dev/orb-return/` branch. A failed return (orb unreachable or in `ERROR`, a local Git error, a refused admission or entry) never deletes the orb:
+
+- With an interactive terminal, dev asks whether to retry: `y` retries the return; anything else, or Ctrl-C at the prompt, quits and keeps the orb.
+- Without one, dev keeps the orb.
+- Ctrl-C during the return lets the started step finish, so the checkout is never half-written. If the return then failed, dev keeps the orb without asking.
+
+For a kept orb dev prints its id, where its work is, a `curl` delete command and that the next `dev --orb` retries the return. That retry is the recovery sweep of [#215](https://github.com/taekwondodev/dev/issues/215), not built yet; until then, delete the orb with the printed command once its work is no longer needed.
 
 ## State
 
@@ -67,5 +83,6 @@ The return stops without writing anything when the local branch moved, the check
 | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `<data-home>/orbs/<record-id>/`         | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite` |
 | `refs/dev/orb/<record-id>/base`, `/end` | The last synchronized snapshot and the orb's latest snapshot, in the local repository          |
+| `dev/orb-return/<record-id>[-<n>]`      | The orb's work after a [divergent return](#divergence), a local branch dev never deletes       |
 
 The record exists from before the creation request until orbit reports `DELETED`, and the owning `dev --orb` holds its lock for the whole session.

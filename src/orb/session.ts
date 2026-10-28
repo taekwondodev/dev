@@ -8,7 +8,11 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type { PiApi } from '../pi-runtime.ts'
 import { errorText } from '../error-text.ts'
 import type { WorkRemote } from '../work-domain.ts'
-import type { WorkspaceAttachment, WorkspaceGrant } from '../workspace-domain.ts'
+import type {
+  WorkspaceAttachment,
+  WorkspaceGrant,
+  WorkspaceLifecycle,
+} from '../workspace-domain.ts'
 import { taskArtifactsPath, authorityPaths } from '../workspace-authority-root.ts'
 import { isWithin } from '../workspace-paths.ts'
 import {
@@ -32,7 +36,13 @@ import {
 import { createRecord, type OrbRecordHandle } from './registry.ts'
 import { makeOrbSsh, shq, sshOptions, ttyScript, type OrbSsh } from './ssh.ts'
 import { createOrbExtension, type MacHomes } from './tools.ts'
-import { inspectCheckout, returnWork, upload, type ReturnOutcome } from './transfer.ts'
+import {
+  inspectCheckout,
+  returnWork,
+  upload,
+  type Divergence,
+  type ReturnOutcome,
+} from './transfer.ts'
 
 export interface OrbSessionOptions {
   readonly pi: PiApi
@@ -44,8 +54,8 @@ export interface OrbSessionOptions {
 
 export interface OrbOpenInput {
   readonly attachment: WorkspaceAttachment
+  readonly lifecycle: Pick<WorkspaceLifecycle, 'root' | 'writeBranch'>
   readonly cwd: string
-  readonly authorityRoot: string
   readonly skillPaths: readonly string[]
   readonly conversation: string
   readonly commandPrefix?: string
@@ -55,8 +65,17 @@ export interface OrbSession {
   readonly extensionFactory: (api: ExtensionAPI) => void
   readonly workRemote: WorkRemote
   readonly sync: Effect.Effect<string, OrbError>
-  readonly close: Effect.Effect<void>
+  close(quit: OrbQuit): Effect.Effect<void>
 }
+
+export interface OrbQuit {
+  readonly proceed: () => boolean
+  readonly askRetry?: Effect.Effect<boolean>
+}
+
+export type SettledReturn =
+  | Exclude<ReturnOutcome, { readonly kind: 'diverged' }>
+  | { readonly kind: 'diverged'; readonly reason: Divergence; readonly branch: string }
 
 type Services = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 
@@ -72,16 +91,76 @@ const clock = (ms: number): string => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-const outcomeText = (orb: string, branch: string, outcome: ReturnOutcome): string => {
+const divergenceText = (reason: Divergence, branch: string): string => {
+  switch (reason) {
+    case 'branch-moved':
+      return `${branch} moved on the Mac, so the orb's commits cannot fast-forward it.`
+    case 'history-rewritten':
+      return `The orb rewrote the commit it was given (an amend or a rebase), so its commits cannot fast-forward ${branch}.`
+    case 'branch-switched':
+      return `The checkout is no longer on ${branch}.`
+    case 'overlap':
+      return "Local edits overlap the orb's changes."
+  }
+}
+
+const outcomeText = (orb: string, branch: string, outcome: SettledReturn): string => {
   switch (outcome.kind) {
     case 'unchanged':
       return `Nothing to return: orb ${orb} has no new commits or changes.`
     case 'returned':
       return `Returned ${outcome.commits} commit(s) and ${outcome.files} changed file(s) from orb ${orb}; ${branch} is at ${outcome.head.slice(0, 7)}.`
-    case 'stopped':
-      return `${outcome.message} Orb ${orb} keeps its work.`
+    case 'diverged':
+      return `${divergenceText(outcome.reason, branch)} The work of orb ${orb} is on the branch ${outcome.branch}; the checkout, its branch and its index are untouched.\nMerge it with: git merge ${outcome.branch}`
   }
 }
+
+export const branchingReturn = (
+  attempt: Effect.Effect<ReturnOutcome, OrbError>,
+  lifecycle: Pick<WorkspaceLifecycle, 'writeBranch'>,
+  cwd: string,
+  name: string
+): Effect.Effect<SettledReturn, OrbError> => {
+  let left: { readonly name: string; readonly commit: string } | undefined
+  return Effect.gen(function* () {
+    const outcome = yield* attempt
+    if (outcome.kind !== 'diverged') return outcome
+    const written = yield* lifecycle
+      .writeBranch({
+        cwd,
+        name,
+        commit: outcome.commit,
+        ...(left === undefined ? {} : { replacing: left }),
+      })
+      .pipe(
+        Effect.mapError(error =>
+          orbFailure(`The orb's work could not be written to a branch: ${error.message}`, error)
+        )
+      )
+    left = { name: written.name, commit: outcome.commit }
+    return { kind: 'diverged', reason: outcome.reason, branch: written.name } as const
+  })
+}
+
+export const returnAtQuit = <A>(
+  attempt: Effect.Effect<A, OrbError>,
+  quit: OrbQuit,
+  print: (line: string) => void
+): Effect.Effect<
+  | { readonly kind: 'returned'; readonly value: A }
+  | { readonly kind: 'kept'; readonly reason: string }
+> =>
+  Effect.gen(function* () {
+    for (;;) {
+      const returned = yield* Effect.exit(attempt)
+      if (Exit.isSuccess(returned)) return { kind: 'returned', value: returned.value } as const
+      const reason = errorText(Cause.squash(returned.cause))
+      if (!quit.proceed() || quit.askRetry === undefined) return { kind: 'kept', reason } as const
+      print(`The return failed: ${reason}`)
+      if (!(yield* quit.askRetry)) return { kind: 'kept', reason } as const
+      print('Retrying the return…')
+    }
+  })
 
 const insideAny = (roots: readonly string[], path: string): boolean =>
   roots.some(root => isWithin(root, path))
@@ -257,7 +336,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       const { taskId } = input.attachment.binding
       return taskId === undefined
         ? []
-        : [taskArtifactsPath(authorityPaths(input.authorityRoot), taskId)]
+        : [taskArtifactsPath(authorityPaths(input.lifecycle.root), taskId)]
     },
   })
 
@@ -289,33 +368,37 @@ export const openOrbSession = Effect.fnUntraced(function* (
     print
   )
 
-  const sync = Effect.map(returnOnce, outcome => outcomeText(label, checkout.branch, outcome)).pipe(
-    Effect.provideContext(services)
+  const settled = branchingReturn(
+    returnOnce.pipe(Effect.provideContext(services)),
+    input.lifecycle,
+    checkout.root,
+    `dev/orb-return/${record.id}`
   )
 
-  const close = Effect.gen(function* () {
-    print(`Returning work from orb ${label}…`)
-    const returned = yield* Effect.exit(returnOnce)
-    const kept = (reason: string) =>
-      Effect.gen(function* () {
+  const sync = Effect.map(settled, outcome => outcomeText(label, checkout.branch, outcome))
+
+  const close = (quit: OrbQuit) =>
+    Effect.gen(function* () {
+      print(`Returning work from orb ${label}…`)
+      const returned = yield* returnAtQuit(settled, quit, print)
+      if (returned.kind === 'kept') {
         yield* Scope.close(sessionScope, Exit.void)
         yield* record.release
         print(
-          `Orb ${label} was kept: ${reason}\nIts work is still on the orb at ${checkout.root} (${host}).\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
+          `Orb ${orbId} was kept: ${returned.reason}\nIts work is still on the orb at ${checkout.root} (${host}); the next dev --orb retries the return.\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
         )
-      })
-    if (Exit.isFailure(returned)) return yield* kept(errorText(Cause.squash(returned.cause)))
-    print(outcomeText(label, checkout.branch, returned.value))
-    if (returned.value.kind === 'stopped') return yield* kept(returned.value.message)
-    yield* Scope.close(sessionScope, Exit.void)
-    const deleted = yield* Effect.exit(deleteAndWait(orbit, record, orbId, print))
-    if (Exit.isFailure(deleted)) {
-      yield* record.release
-      print(
-        `Orb ${label} could not be confirmed deleted: ${errorText(Cause.squash(deleted.cause))}\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
-      )
-    }
-  }).pipe(Effect.provideContext(services))
+        return
+      }
+      print(outcomeText(label, checkout.branch, returned.value))
+      yield* Scope.close(sessionScope, Exit.void)
+      const deleted = yield* Effect.exit(deleteAndWait(orbit, record, orbId, print))
+      if (Exit.isFailure(deleted)) {
+        yield* record.release
+        print(
+          `Orb ${label} could not be confirmed deleted: ${errorText(Cause.squash(deleted.cause))}\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
+        )
+      }
+    }).pipe(Effect.provideContext(services))
 
   const workRemote: WorkRemote = {
     agentRefusal:

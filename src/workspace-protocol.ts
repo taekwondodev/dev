@@ -1,6 +1,7 @@
 import { type Option, Schema } from 'effect'
 import {
   AbsolutePath,
+  DevBranchRequestSchema,
   PublicationReferenceSchema,
   SweepReceiptSchema,
   SweepRequestSchema,
@@ -95,6 +96,10 @@ const RecordPublicationRequestSchema = Schema.Struct({
   op: Schema.Literal('record-publication'),
   reference: PublicationReferenceSchema,
 })
+const WriteBranchRequestSchema = Schema.Struct({
+  op: Schema.Literal('write-branch'),
+  request: DevBranchRequestSchema,
+})
 
 const WorkspaceRpcInputSchema = Schema.Union([
   AttachRequestSchema,
@@ -112,6 +117,7 @@ const WorkspaceRpcInputSchema = Schema.Union([
   SweepRpcRequestSchema,
   RecordTargetRequestSchema,
   RecordPublicationRequestSchema,
+  WriteBranchRequestSchema,
 ])
 
 export type WorkspaceRpcInput = typeof WorkspaceRpcInputSchema.Type
@@ -133,6 +139,7 @@ const RpcReplySchemas = {
   sweep: SweepReceiptSchema,
   'record-target': Schema.Null,
   'record-publication': Schema.Null,
+  'write-branch': Schema.Struct({ name: Schema.NonEmptyString }),
 } as const satisfies Record<WorkspaceRpcOperation, Schema.Top>
 
 export type WorkspaceRpcResults = {
@@ -156,6 +163,7 @@ export const decodeWorkspaceRpcReply: {
   sweep: Schema.decodeUnknownOption(RpcReplySchemas.sweep),
   'record-target': Schema.decodeUnknownOption(RpcReplySchemas['record-target']),
   'record-publication': Schema.decodeUnknownOption(RpcReplySchemas['record-publication']),
+  'write-branch': Schema.decodeUnknownOption(RpcReplySchemas['write-branch']),
 }
 
 const EnvelopeSchema = Schema.Struct({ id: RpcId, sentAt: Schema.Finite, request: Schema.Unknown })
@@ -178,6 +186,7 @@ const SuccessSchema = Schema.Struct({
     'sweep',
     'record-target',
     'record-publication',
+    'write-branch',
   ]),
   value: Schema.Unknown,
 })
