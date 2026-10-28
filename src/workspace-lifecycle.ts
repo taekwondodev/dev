@@ -454,5 +454,6 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     recordPublication: input =>
       request({ op: 'record-publication', reference: input.reference }).pipe(Effect.asVoid),
     writeBranch: input => request({ op: 'write-branch', request: input }),
+    settleOrbPresence: input => request({ op: 'settle-orb-presence', request: input }),
   }
 })

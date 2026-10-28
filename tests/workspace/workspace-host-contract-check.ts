@@ -158,6 +158,7 @@ const lifecycle: WorkspaceLifecycle = {
   recordTarget: () => Effect.fail(refused),
   recordPublication: () => Effect.fail(refused),
   writeBranch: () => Effect.fail(refused),
+  settleOrbPresence: () => Effect.fail(refused),
 }
 execFileSync('git', ['init', '--quiet', current.path])
 execFileSync('git', [

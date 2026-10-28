@@ -31,11 +31,12 @@ The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH 
 
 Before the TUI opens, dev prints one line per phase with the elapsed time:
 
-1. It admits the session as writer of the checkout, so another dev task that wants to write it gets an isolated worktree.
-2. It authenticates to Keystone with the `OS_*` variables and finds orbit as the public endpoint of catalog type `orbit`.
-3. It writes the [orb record](#state), with a fresh key, then creates the orb and shows orbit's status (`RESERVING`, `BUILDING`, `ACTIVE`).
-4. It connects with strict host key checking against the host keys orbit read from the orb's console, then checks the image's tools.
-5. It uploads a snapshot of the checkout to the same absolute path on the orb: `HEAD` as a commit and the uncommitted changes, untracked files included, as uncommitted changes. Ignored files stay on the Mac.
+1. It authenticates to Keystone with the `OS_*` variables and finds orbit as the public endpoint of catalog type `orbit`.
+2. It [recovers](#recovery) the orbs that ended sessions left behind.
+3. It admits the session as writer of the checkout, so another dev task that wants to write it gets an isolated worktree.
+4. It writes the [orb record](#state), with a fresh key, then creates the orb and shows orbit's status (`RESERVING`, `BUILDING`, `ACTIVE`).
+5. It connects with strict host key checking against the host keys orbit read from the orb's console, then checks the image's tools.
+6. It uploads a snapshot of the checkout to the same absolute path on the orb: `HEAD` as a commit and the uncommitted changes, untracked files included, as uncommitted changes. Ignored files stay on the Mac.
 
 The checkout must be on a branch with at least one commit. If a step fails, dev deletes the orb it created and exits with code 1. The footer shows the orb's id and state for the whole session.
 
@@ -75,7 +76,24 @@ dev deletes the orb once the return completed or its work is on a `dev/orb-retur
 - Without one, dev keeps the orb.
 - Ctrl-C during the return lets the started step finish, so the checkout is never half-written. If the return then failed, dev keeps the orb without asking.
 
-For a kept orb dev prints its id, where its work is, a `curl` delete command and that the next `dev --orb` retries the return. That retry is the recovery sweep of [#215](https://github.com/taekwondodev/dev/issues/215), not built yet; until then, delete the orb with the printed command once its work is no longer needed.
+For a kept orb dev prints its id, where its work is, a `curl` delete command and that the next `dev --orb` [recovers](#recovery) it.
+
+### Recovery
+
+A session that crashed, was killed or kept its orb at quit leaves its orb record behind. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project is reported and kept: source that project's openrc and run `dev --orb` again.
+
+| Record                                                                  | Recovery                                                                                                                                                |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Its orb is gone from orbit, `DELETING` or `DELETED`                     | The record is removed                                                                                                                                   |
+| Created or being deleted, before any upload                             | dev deletes the orb and waits for `DELETED`                                                                                                             |
+| Uploaded, its orb `ACTIVE`                                              | dev fetches the orb's work and writes it to the local branch `dev/orb-recovery/<record-id>` when it changed since its last return, then deletes the orb |
+| Uploaded, its orb in another state or unreachable, or its checkout gone | The orb and its record are kept and dev prints the delete command; the next `dev --orb` tries again                                                     |
+
+The recovery branch holds the orb's commits, topped by a snapshot commit of its uncommitted changes when it has any. dev writes it like a [divergent return](#divergence), never touching the checkout's files, branch or index; merge it with `git merge dev/orb-recovery/<record-id>`. An orbit read error keeps the orb and its record.
+
+A session that ended between the creation request and orbit's answer recorded no orb id, and orbit cannot tell which orb answered it. dev lists the project's orbs that are not being deleted, that no record of the data home names, and that orbit created since the earliest such request, allowing one minute of clock skew; an orb whose creation time dev cannot read is left out. While any orb record of the data home cannot be read, dev deletes none of them and keeps the records. Without such orbs the records are removed. Otherwise dev prints them, warning that another data home or client may own them. At an interactive terminal, `y` deletes them, except one a running `dev --orb` recorded while dev was asking, and removes the records; anything else, or no terminal, keeps everything and the next `dev --orb` asks again.
+
+The ended session's writer use then no longer holds the checkout: dev [settles it](workspace.md#release), so the new session starts in the same checkout. A session that ended while returning work may have left the checkout half-written, so its use stays and dev prints the command that clears it, `dev workspace release <task>` while the session's task reserves the checkout, otherwise `dev workspace release pre-existing`. Check the checkout before running it.
 
 ## State
 
@@ -84,5 +102,6 @@ For a kept orb dev prints its id, where its work is, a `curl` delete command and
 | `<data-home>/orbs/<record-id>/`         | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite` |
 | `refs/dev/orb/<record-id>/base`, `/end` | The last synchronized snapshot and the orb's latest snapshot, in the local repository          |
 | `dev/orb-return/<record-id>[-<n>]`      | The orb's work after a [divergent return](#divergence), a local branch dev never deletes       |
+| `dev/orb-recovery/<record-id>`          | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted   |
 
-The record exists from before the creation request until orbit reports `DELETED`, and the owning `dev --orb` holds its lock for the whole session.
+The record exists from before the creation request until orbit reports `DELETED`. The owning `dev --orb` holds its lock for the whole session, and a recovering `dev --orb` while it recovers the record.

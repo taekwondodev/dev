@@ -1177,6 +1177,12 @@ const run = Effect.fnUntraced(function* (
                       print: line => {
                         process.stdout.write(`${line}\n`)
                       },
+                      ...(process.stdin.isTTY && process.stdout.isTTY
+                        ? {
+                            confirm: (prompt: string) =>
+                              Effect.map(askConfirmation(prompt), answer => answer === 'confirmed'),
+                          }
+                        : {}),
                     },
                     input
                   )

@@ -71,6 +71,8 @@ There are two distinct authorities:
 
 A pre-existing checkout no task reserves has no task to release, so the same confirmed override also clears the use records ended sessions left there; uses of running sessions stay because no confirmation stands in for their owner.
 
+[Orb recovery](https://github.com/taekwondodev/dev/issues/215) settles one crashed `dev --orb` session's writer presence without confirmation, because its evidence replaces the user's: the orb record's owner lock proves the session dead, a free incarnation gate is rechecked in the authority, and orb tools run on the orb, so no local descendant can still write the checkout. A session that ended while returning is excluded, since its write into the checkout may be half done. Settlement deletes that incarnation's use records in the checkout and, on a pre-existing checkout, releases the reservation of the presence's task when no other use of that task remains; a reservation the task held before that session is untouched, because its earlier sessions' settled uses stay recorded while the task reserves the checkout. Managed worktrees are not released this way.
+
 Git's single force flag implements bounded disposal, not an authorization bypass. Never double-force, add unattended release flags or prune broadly. [Release operations](../workspace.md#release) own confirmation, consequences and retry guidance.
 
 Task artifact deletion changes no Git state, so it is retryable without a fenced Git-removal record. [Task artifacts](../workspace.md#task-artifacts) owns retention, removal outcomes and recovery.
