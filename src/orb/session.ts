@@ -23,7 +23,7 @@ import {
 import { readOrbConfig } from './config.ts'
 import { deleteCommand, orbFailure, shortId, type OrbError } from './domain.ts'
 import { clock, deleteRecorded } from './deletion.ts'
-import { activeOrbs, awaitActive, checkTools, connect, sshAddress } from './provision.ts'
+import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { makeChildOrbs } from './children.ts'
 import { recoverOrbs } from './recovery.ts'
 import { createRecord } from './registry.ts'
@@ -312,7 +312,6 @@ export const openOrbSession = Effect.fnUntraced(function* (
     yield* Scope.provide(sessionScope)(ssh.master).pipe(
       Effect.catch(error => phase(`continuing without a shared SSH connection: ${error.message}`))
     )
-    yield* checkTools(ssh, config.image)
     yield* phase(
       `uploading ${checkout.branch} at ${checkout.head.slice(0, 7)} with its uncommitted changes to ${checkout.root}`
     )

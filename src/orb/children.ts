@@ -20,7 +20,7 @@ import {
   type OrbError,
   type OrbRecord,
 } from './domain.ts'
-import { activeOrbs, awaitActive, checkTools, connect, sshAddress } from './provision.ts'
+import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { createRecord, type OrbRecordHandle } from './registry.ts'
 import { makeOrbSsh, type OrbSsh } from './ssh.ts'
 import {
@@ -218,7 +218,6 @@ export const makeChildOrbs = (
           })
           yield* connect(ssh)
           yield* Scope.provide(scope)(ssh.master).pipe(Effect.ignore)
-          yield* checkTools(ssh, input.config.image)
           yield* upload({
             checkout,
             orbPath: checkout.root,

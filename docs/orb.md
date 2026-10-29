@@ -35,7 +35,7 @@ Before the TUI opens, dev prints one line per phase with the elapsed time:
 2. It [recovers](#recovery) the orbs that ended sessions left behind.
 3. It admits the session as writer of the checkout, so another dev task that wants to write it gets an isolated worktree.
 4. It writes the [orb record](#state), with a fresh key, then creates the orb and shows orbit's status (`RESERVING`, `BUILDING`, `ACTIVE`).
-5. It connects with strict host key checking against the host keys orbit read from the orb's console, then checks the image's tools.
+5. It connects with strict host key checking against the host keys orbit read from the orb's console.
 6. It uploads a snapshot of the checkout to the same absolute path on the orb: `HEAD` as a commit and the uncommitted changes, untracked files included, as uncommitted changes. Ignored files stay on the Mac.
 
 The checkout must be on a branch with at least one commit. The footer shows the orb's id and state for the whole session.

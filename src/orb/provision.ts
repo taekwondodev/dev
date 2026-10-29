@@ -6,7 +6,6 @@ import type { OrbSsh } from './ssh.ts'
 const POLL_INTERVAL = Duration.seconds(5)
 const ACTIVE_LIMIT = Duration.minutes(15)
 const SSH_LIMIT_TRIES = 24
-const REQUIRED_TOOLS = ['bash', 'git', 'rg', 'grep'] as const
 
 export const awaitActive = Effect.fnUntraced(function* (
   orbit: Orbit,
@@ -59,22 +58,6 @@ export const connect = (ssh: OrbSsh): Effect.Effect<void, OrbError> =>
       Effect.retry({ schedule: Schedule.spaced(POLL_INTERVAL), times: SSH_LIMIT_TRIES }),
       Effect.asVoid
     )
-
-export const checkTools = Effect.fnUntraced(function* (
-  ssh: OrbSsh,
-  image: string
-): Effect.fn.Return<void, OrbError> {
-  const missing = (yield* ssh.checked(
-    `for t in ${REQUIRED_TOOLS.join(' ')}; do command -v "$t" >/dev/null 2>&1 || echo "$t"; done`
-  ))
-    .toString('utf8')
-    .split('\n')
-    .filter(line => line.trim().length > 0)
-  if (missing.length > 0)
-    return yield* orbFailure(
-      `the image ${image} lacks ${missing.join(', ')}; dev --orb needs ${REQUIRED_TOOLS.join(', ')}`
-    )
-})
 
 export const activeOrbs = (views: readonly OrbView[]): readonly OrbView[] =>
   views.filter(view => view.status !== 'DELETING' && view.status !== 'DELETED')
