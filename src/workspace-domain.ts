@@ -142,6 +142,12 @@ export const WorkspaceAuthorizationSchema = Schema.Union([
 ])
 export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
+export const StartCommitSchema = Schema.Struct({
+  ref: Schema.String.check(Schema.isPattern(/^refs\/\S+$/)),
+  commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}([0-9a-f]{24})?$/)),
+})
+export type StartCommit = typeof StartCommitSchema.Type
+
 export const WorkspaceOperationSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literals(['read', 'write']),
@@ -153,6 +159,7 @@ export const WorkspaceOperationSchema = Schema.Union([
     cwd: Schema.optional(AbsolutePath),
     execution: Schema.optional(WorkspaceExecutionSchema),
     coordinator: Schema.optional(WorkspaceGrantSchema),
+    startCommit: Schema.optional(StartCommitSchema),
   }),
   Schema.Struct({
     kind: Schema.Literal('foreign-write'),

@@ -36,6 +36,7 @@ export const INTEGRATED_CHILD_TOOLS = ['read_url', 'codemode'] as const
 export const READ_ONLY_CHILD_CAPABILITIES = `A read-only child has only ${[...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].join(', ')}: no shell, no edits and no gh. Put issue, PR or other external text in the prompt or a workspace file.`
 
 export const WorkStatusSchema = Schema.Literals([
+  'provisioning',
   'running',
   'waiting',
   'completed',
@@ -171,6 +172,14 @@ export const ChildResourcesSchema = Schema.Struct({
 })
 export type ChildResources = typeof ChildResourcesSchema.Type
 
+export const AttemptOrbSchema = Schema.Struct({
+  record: Schema.optional(Schema.NonEmptyString),
+  id: Schema.optional(Schema.NonEmptyString),
+  status: Schema.NonEmptyString,
+  report: Schema.optional(Schema.NonEmptyString),
+})
+export type AttemptOrb = typeof AttemptOrbSchema.Type
+
 const SignalSchema = Schema.NullOr(Schema.String)
 const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
 const NoCompletionTime = Schema.optional(Schema.Never)
@@ -213,6 +222,7 @@ const AttemptRecordFactFields = {
   resources: Schema.optional(ChildResourcesSchema),
   context: Schema.optional(ContextUsageSchema),
   usage: Schema.optional(UsageSchema),
+  orb: Schema.optional(AttemptOrbSchema),
 } as const
 
 const attemptRecordInvariants = Schema.makeFilter(
@@ -242,6 +252,7 @@ const attemptRecord = <
 ) => Schema.Struct({ ...AttemptRecordFactFields, status, completedAt })
 
 export const AttemptRecordSchema = Schema.Union([
+  attemptRecord(Schema.Literal('provisioning'), NoCompletionTime),
   attemptRecord(Schema.Literal('running'), NoCompletionTime),
   attemptRecord(Schema.Literal('waiting'), NoCompletionTime),
   attemptRecord(Schema.Literal('completed'), Schema.Finite),
@@ -262,7 +273,7 @@ export const decodeAttemptRecord: (value: unknown) => AttemptRecord = Schema.dec
 
 export interface ActiveAttemptState {
   readonly _tag: 'active'
-  readonly status: Extract<WorkStatus, 'running' | 'waiting'>
+  readonly status: Extract<WorkStatus, 'provisioning' | 'running' | 'waiting'>
 }
 
 export interface TerminalAttemptState {
@@ -344,7 +355,8 @@ export const AttemptSummarySchema = Schema.Struct({
   cwd: Schema.String,
   kind: WorkKindSchema,
   status: WorkStatusSchema.annotate({
-    description: 'completed: any exit code; failed: could not run or report; unknown: unobserved.',
+    description:
+      'provisioning: its orb is being created; completed: any exit code; failed: could not run or report; unknown: unobserved.',
   }),
   access: Schema.optionalKey(WorkAccessSchema),
   model: OptionalText,
@@ -365,6 +377,13 @@ export const AttemptSummarySchema = Schema.Struct({
   gateReleaseWarning: OptionalText,
   processObservation: OptionalText,
   recovery: OptionalText,
+  orb: Schema.optionalKey(
+    Schema.Struct({
+      id: Schema.optionalKey(Schema.String),
+      status: Schema.String.annotate({ description: "orbit's state of the child's orb." }),
+      report: optionalText("Where the orb's work went, and whether the orb was deleted."),
+    })
+  ),
 })
 export type AttemptSummary = typeof AttemptSummarySchema.Type
 
@@ -526,12 +545,50 @@ export const OrbReaderSchema = Schema.Struct({
   keyPath: AbsolutePath,
   knownHostsPath: AbsolutePath,
   controlPath: AbsolutePath,
+  record: Schema.optional(Schema.NonEmptyString),
 })
 export type OrbReader = typeof OrbReaderSchema.Type
+
+export const OrbReturnSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('unchanged') }),
+  Schema.Struct({
+    kind: Schema.Literal('returned'),
+    commits: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    files: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+  Schema.Struct({ kind: Schema.Literal('diverged'), reason: Schema.NonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal('failed'), reason: Schema.NonEmptyString }),
+])
+export type OrbReturn = typeof OrbReturnSchema.Type
+
+export interface PinnedStart {
+  readonly ref: string
+  readonly commit: string
+  readonly unpin: EffectType<void>
+}
+
+export interface ChildOrb {
+  readonly handle: OrbReader
+  end(input: {
+    readonly returned: OrbReturn | undefined
+    readonly into: ChildOrb | undefined
+  }): EffectType<{ readonly status: string; readonly report: string }>
+}
+
+export interface ChildOrbs {
+  fork(attempt: AttemptId): EffectType<PinnedStart, Error>
+  provision(input: {
+    readonly attempt: AttemptId
+    readonly worktree: string
+    readonly report: (orb: AttemptOrb) => EffectType<void>
+    readonly adopt: (orb: ChildOrb) => void
+  }): EffectType<ChildOrb, Error>
+}
 
 export interface WorkRemote {
   readonly checkout: string
   readonly reader: OrbReader
+  readonly children: ChildOrbs
   shellCommand(command: string, cwd: string): string
   wrap(
     file: string,

@@ -14,6 +14,7 @@ import {
   SKILL_COMMAND,
   SessionId,
   TaskId,
+  type OrbReturn,
 } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
@@ -168,6 +169,7 @@ interface ChildState {
   sessionFile?: string
   shutdownError?: ChildError
   abortPromise?: Promise<void>
+  orbReturn?: OrbReturn
 }
 
 interface GitCapture {
@@ -236,8 +238,14 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
     request.workspace.access !== (request.access === 'write' ? 'write' : 'read')
   )
     return yield* new ChildError({ message: 'Child request does not match its workspace grant' })
-  if (request.orb !== undefined && request.access !== 'read-only')
-    return yield* new ChildError({ message: 'Only a read-only child reads the orb' })
+  if (
+    request.orb !== undefined &&
+    (request.access === 'write') !== (request.orb.record !== undefined)
+  )
+    return yield* new ChildError({
+      message:
+        "A writing child works on its own orb record; a read-only child reads another agent's orb",
+    })
   yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
@@ -739,6 +747,43 @@ function registerAbortSignal(
   })
 }
 
+const openChildOrb = Effect.fnUntraced(function* (
+  pi: LoadedPi['api'],
+  request: ChildRequest,
+  handle: NonNullable<ChildRequest['orb']>,
+  options: { readonly skillPaths: readonly string[]; readonly commandPrefix: string | undefined }
+) {
+  const { openOrbReader, openOrbWriter } = yield* Effect.tryPromise({
+    try: () => import('./orb/child.ts'),
+    catch: toChildError,
+  })
+  const input = {
+    pi,
+    reader: handle,
+    cwd: request.cwd,
+    checkout: request.workspace.checkout,
+    skillPaths: options.skillPaths,
+    artifacts:
+      request.workspace.taskId === undefined
+        ? []
+        : [taskArtifactsPath(authorityPaths(request.authorityRoot), request.workspace.taskId)],
+  }
+  if (handle.record === undefined) {
+    const reader = openOrbReader(input)
+    return { extensionFactory: reader.extensionFactory, git: reader.git, returnWork: undefined }
+  }
+  const writer = openOrbWriter({
+    ...input,
+    record: handle.record,
+    ...(options.commandPrefix === undefined ? {} : { commandPrefix: options.commandPrefix }),
+  })
+  return {
+    extensionFactory: writer.extensionFactory,
+    git: undefined,
+    returnWork: writer.returnWork,
+  }
+})
+
 const acquireSession = Effect.fn('acquireSession')(function* (
   state: ChildState,
   request: ChildRequest,
@@ -798,24 +843,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const orb =
     request.orb === undefined
       ? undefined
-      : (yield* Effect.tryPromise({
-          try: () => import('./orb/child.ts'),
-          catch: toChildError,
-        })).openOrbReader({
-          pi: loaded.api,
-          reader: request.orb,
-          cwd: request.cwd,
-          checkout: request.workspace.checkout,
+      : yield* openChildOrb(loaded.api, request, request.orb, {
           skillPaths: resources.skillPaths,
-          artifacts:
-            request.workspace.taskId === undefined
-              ? []
-              : [
-                  taskArtifactsPath(
-                    authorityPaths(request.authorityRoot),
-                    request.workspace.taskId
-                  ),
-                ],
+          commandPrefix: settingsManager.getShellCommandPrefix(),
         })
   const webReader = yield* Effect.flatMap(
     makeSessionRenderer({ dataHome: request.dataHome, ensureOwner: requestBrowserOwner() }),
@@ -888,9 +918,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
       })
     )
     .pipe(Effect.mapError(toChildError))
-  const customTools = [
-    ...(request.access === 'read-only'
-      ? [createReviewGitTool(request.cwd, orb?.git ?? localGit)]
+  const nativeEditTools =
+    request.access === 'read-only' || orb !== undefined
+      ? []
       : [
           loaded.api.defineTool(
             loaded.api.createWriteToolDefinition(request.cwd, {
@@ -902,7 +932,11 @@ const acquireSession = Effect.fn('acquireSession')(function* (
               operations: nativeWrites.editOperations,
             })
           ),
-        ]),
+        ]
+  const customTools = [
+    ...(request.access === 'read-only'
+      ? [createReviewGitTool(request.cwd, orb?.git ?? localGit)]
+      : nativeEditTools),
     ...(link === undefined ? [] : [createCoordinatorWorkTool(link)]),
   ]
   const tools =
@@ -976,6 +1010,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     modelText,
     initialEffort,
     sessionFile,
+    returnWork: orb?.returnWork,
   }
 })
 
@@ -1061,7 +1096,17 @@ const runSession = Effect.fnUntraced(
     const current = telemetry(resource.session)
     state.telemetry = current
     yield* send({ type: 'progress', usage: current.usage, context: current.context })
-    return outcome
+    if (resource.returnWork === undefined) return outcome
+    const returned = yield* checkChildWorkspace(request.workspace, 'write').pipe(
+      Effect.andThen(resource.returnWork),
+      Effect.catch(error =>
+        Effect.succeed<OrbReturn>({ kind: 'failed', reason: errorMessage(error) })
+      )
+    )
+    state.orbReturn = returned
+    return returned.kind === 'failed' && outcome.error === undefined
+      ? { ...outcome, error: `The return from the orb failed: ${returned.reason}` }
+      : outcome
   },
   (effect, state) =>
     Effect.tapError(effect, () =>
@@ -1082,6 +1127,7 @@ function childResult(state: ChildState, text: string, error?: string): ChildResu
     ...(state.model === undefined ? {} : { model: state.model }),
     ...(state.effort === undefined ? {} : { effort: state.effort }),
     ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),
+    ...(state.orbReturn === undefined ? {} : { orbReturn: state.orbReturn }),
   }
 }
 

@@ -144,6 +144,18 @@ export const currentCommit = (workspace: GitWorkspace): string => {
   return workspace.head
 }
 
+export const pinnedCommit = (
+  workspace: GitWorkspace,
+  start: { readonly ref: string; readonly commit: string }
+): string => {
+  const pinned = gitResult(workspace.path, ['rev-parse', '--verify', '-q', `${start.ref}^{commit}`])
+  if (pinned.status !== 0 || pinned.stdout.trim() !== start.commit)
+    throw gitBlocked(
+      `The start commit ${start.commit} is not the commit ${start.ref} pins in ${workspace.path}`
+    )
+  return start.commit
+}
+
 export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: string): void => {
   const trackedPaths = git(source.path, ['ls-tree', '-r', '--name-only', '-z', commit])
   const attributes = git(

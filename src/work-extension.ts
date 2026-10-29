@@ -575,7 +575,10 @@ export const createWorkExtension = ({
     )
     if (snapshot._tag === 'None') return undefined
     const active = snapshot.value.records.filter(
-      record => record.status === 'running' || record.status === 'waiting'
+      record =>
+        record.status === 'provisioning' ||
+        record.status === 'running' ||
+        record.status === 'waiting'
     )
     if (active.length === 0) return undefined
     return waitRefusal(active.map(record => `${record.owner.taskId} ${record.status}`).join(', '))

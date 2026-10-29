@@ -32,9 +32,9 @@ Writer attempts show their managed-worktree path as `blocked` while use is unres
 
 ### Execution and access
 
-A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission. Under `dev --orb` the command runs on the [orb](orb.md#tools) inside the session's directory, and its logs merge standard error into standard output. Delegated agents must be read-only and stay inside the orb's checkout; they read the lead's orb over SSH.
+A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission. Under `dev --orb` the command runs on the [orb](orb.md#tools) inside the session's directory, and its logs merge standard error into standard output. Delegated agents stay inside the orb's checkout: a writing child runs on [its own orb](orb.md#writing-children), and a read-only agent reads over SSH the orb that holds its workspace.
 
-Every child receives its working project's instructions, Pi's base prompt and profile guidance, not the lead's conversation. Its skill catalog lists only the skill named by `skill` and skills named in the assignment prompt. Name any additional skills the child should see in that catalog; this filter does not restrict file access. Read-only children have inspection tools, `read_url`, `codemode` and `work` for coordinators, but no shell, edit or `gh` tool. Put issue, PR or other external text in the prompt or a workspace file. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool; under `dev --orb` the orb's own readers are the exception. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
+Every child receives its working project's instructions, Pi's base prompt and profile guidance, not the lead's conversation. Its skill catalog lists only the skill named by `skill` and skills named in the assignment prompt. Name any additional skills the child should see in that catalog; this filter does not restrict file access. Read-only children have inspection tools, `read_url`, `codemode` and `work` for coordinators, but no shell, edit or `gh` tool. Put issue, PR or other external text in the prompt or a workspace file. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool; under `dev --orb` the orb's own tools are the exception. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
 
 Children can [read URLs](web-read.md) directly or through codemode, including authenticated pages. Scripts retain the child's tool permissions and have no model catalog; see [codemode's trust boundary](../SECURITY.md#trusted-base).
 
@@ -48,7 +48,7 @@ Command text must follow the [credential rule](../SECURITY.md#credentials). Proc
 
 ### Delegation scope
 
-A delegated writer receives a distinct managed worktree from the source checkout's exact current commit. Modified, untracked and ignored files are not copied. `worktree.path` records the allocation, whose reservation outlives the attempt.
+A delegated writer receives a distinct managed worktree from the source checkout's exact current commit, under `dev --orb` from the lead orb's committed `HEAD`. Modified, untracked and ignored files are not copied. `worktree.path` records the allocation, whose reservation outlives the attempt.
 
 For `delegate`, `cwd` can select another Git checkout. The child uses that repository's [guidance and trusted resources](../SECURITY.md#trusted-base) and delivery policy; a read-only child reads the selected checkout directly. The lead stays bound to its original repository and can read and inspect the result; its own native writes follow the [native destination policy](workspace.md#native-writes). See [workspace selection](workspace.md#delegation-into-another-checkout) for admission and task identity.
 
@@ -86,7 +86,7 @@ Subscription exhaustion from any attempt, including a leaf, blocks new agents an
 
 ### Status and inspection
 
-The `dev/work` status shows attempt states, active children and usage. Children are titled by invoked skill or by role (`coordinator`, `reader`, `writer`); leaves show `coordinator>leaf`, and repeated titles add the task key. Each shows its model and context pressure. Inspection includes the complete record with parent, skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+The `dev/work` status shows attempt states, active children and usage. A writing child under `dev --orb` is `provisioning` until its orb is ready, and shows orbit's state of that orb instead of its model and context pressure; its outcome carries the orb's final state and where its work went in `orb`. Children are titled by invoked skill or by role (`coordinator`, `reader`, `writer`); leaves show `coordinator>leaf`, and repeated titles add the task key. Each shows its model and context pressure. Inspection includes the complete record with parent, skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
 
 Global extensions own presentation, including title activity while a child runs and the lead is idle. See [ADR 0006](adr/0006-global-visual-layer.md) for the presentation boundary and status-text contract. A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
 

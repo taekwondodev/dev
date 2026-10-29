@@ -446,20 +446,37 @@ export const createOrbReaderExtension =
     )
   }
 
+type OrbWritersInput = OrbReadersInput & Pick<OrbToolsInput, 'commandPrefix'>
+
+const registerWriters = (api: ExtensionAPI, input: OrbWritersInput): BashOperations => {
+  const { pi, ssh, cwd, homes } = input
+  const bash = orbBashOperations(ssh)
+  api.registerTool(
+    pi.createBashToolDefinition(cwd, {
+      operations: bash,
+      ...(input.commandPrefix === undefined ? {} : { commandPrefix: input.commandPrefix }),
+    })
+  )
+  registerReaders(api, input)
+  api.registerTool(pi.createWriteToolDefinition(cwd, { operations: writeOperations(ssh, homes) }))
+  api.registerTool(pi.createEditToolDefinition(cwd, { operations: editOperations(ssh, homes) }))
+  return bash
+}
+
+export const createOrbWriterExtension =
+  (input: OrbWritersInput & { readonly label: string }) =>
+  (api: ExtensionAPI): void => {
+    registerWriters(api, input)
+    describeTools(
+      api,
+      `The bash, read, write, edit, grep, find and ls tools run on ${input.label}, your own orb, over SSH, at the same absolute paths as on the Mac. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. When you finish, your commits and uncommitted changes return to your worktree on the Mac.`
+    )
+  }
+
 export const createOrbExtension =
   (input: OrbToolsInput) =>
   (api: ExtensionAPI): void => {
-    const { pi, ssh, cwd, homes } = input
-    const bash = orbBashOperations(ssh)
-    api.registerTool(
-      pi.createBashToolDefinition(cwd, {
-        operations: bash,
-        ...(input.commandPrefix === undefined ? {} : { commandPrefix: input.commandPrefix }),
-      })
-    )
-    registerReaders(api, input)
-    api.registerTool(pi.createWriteToolDefinition(cwd, { operations: writeOperations(ssh, homes) }))
-    api.registerTool(pi.createEditToolDefinition(cwd, { operations: editOperations(ssh, homes) }))
+    const bash = registerWriters(api, input)
 
     const showStatus = (context: ExtensionContext): void => {
       if (context.hasUI) context.ui.setStatus(STATUS_KEY, input.status())
@@ -474,7 +491,7 @@ export const createOrbExtension =
     }))
     describeTools(
       api,
-      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout when the user runs /orb sync and at quit.`
+      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents. A delegated agent that can write gets its own orb; its worktree appears at the same path on this orb once it ends. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout when the user runs /orb sync and at quit.`
     )
     api.registerCommand('orb', {
       description: 'Show the orb of this session, or return its work with /orb sync',

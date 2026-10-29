@@ -65,6 +65,14 @@ export const summarize = (record: AttemptView): AttemptSummary =>
     gateReleaseWarning: record.gateReleaseWarning,
     processObservation: record.processObservation,
     recovery: record.recovery,
+    orb:
+      record.orb === undefined
+        ? undefined
+        : defined<NonNullable<AttemptSummary['orb']>>({
+            id: record.orb.id,
+            status: record.orb.status,
+            report: record.orb.report,
+          }),
   })
 
 export const factsOf = (record: AttemptView): AttemptFacts =>

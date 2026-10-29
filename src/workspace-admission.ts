@@ -185,6 +185,7 @@ const admit = (
       source,
       source.binding.taskId ?? newId(),
       operation.execution,
+      operation.startCommit,
       sweep
     )
   const existing = state.writeGrant
@@ -503,6 +504,7 @@ const authorizeForeign = (
     source,
     taskId ?? newId(),
     operation.execution,
+    operation.kind === 'delegated-write' ? operation.startCommit : undefined,
     sweep
   )
   if (allocated.kind === 'ready' && allocated.grant.taskId !== undefined)
