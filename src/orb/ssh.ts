@@ -29,6 +29,7 @@ export interface OrbSsh {
   readonly gitSshCommand: string
   run(script: string, options?: RunOptions): Effect.Effect<SshReply, OrbError>
   checked(script: string, options?: RunOptions): Effect.Effect<Buffer, OrbError>
+  viaGit<A, E, R>(operation: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>
   ttyArgs(script: string): readonly string[]
   spawnTty(script: string): ChildProcessWithoutNullStreams
   spawnPlain(script: string): ChildProcessWithoutNullStreams
@@ -88,7 +89,7 @@ export const masterOptions = (target: SshTarget): readonly string[] => [
 ]
 
 export const ttyScript = (cwd: string, command: string): string =>
-  `stty -onlcr -echo 2>/dev/null; cd ${shq(cwd)} || exit 1; exec bash -c ${shq(command)} </dev/null`
+  `stty -onlcr -echo 2>/dev/null; cd ${shq(cwd)} || exit 1; export GIT_PAGER=cat PAGER=cat; exec bash -c ${shq(command)} </dev/null`
 
 export const sshEnvironment = (): NodeJS.ProcessEnv => {
   const { SSH_AUTH_SOCK: _agent, ...rest } = process.env
@@ -110,18 +111,26 @@ export const makeOrbSsh = (
       child.stderr.on('data', () => {
         clientError = true
       })
+    let failedToStart = false
+    child.once('error', () => {
+      failedToStart = true
+      observe(false)
+    })
     child.once('close', code => {
-      if (code !== null) observe(code !== SSH_FAILED || (tty && !clientError))
+      if (!failedToStart && code !== null) observe(code !== SSH_FAILED || (tty && !clientError))
     })
     return child
   }
   const run = (script: string, runOptions: RunOptions = {}): Effect.Effect<SshReply, OrbError> =>
     Effect.callback<SshReply, OrbError>(resume => {
-      const child = spawn('ssh', [...options, destination, script], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: sshEnvironment(),
-        detached: true,
-      })
+      const child = observed(
+        spawn('ssh', [...options, destination, script], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: sshEnvironment(),
+          detached: true,
+        }),
+        false
+      )
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
       child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
@@ -131,7 +140,6 @@ export const makeOrbSsh = (
         resume(Effect.fail(orbFailure(`Cannot run ssh: ${errorText(cause)}`, cause)))
       )
       child.once('close', (code, signal) => {
-        if (code !== null) observe(code !== SSH_FAILED)
         resume(
           Effect.succeed({
             stdout: Buffer.concat(stdout),
@@ -147,7 +155,11 @@ export const makeOrbSsh = (
     }).pipe(
       Effect.timeoutOrElse({
         duration: runOptions.timeout ?? DEFAULT_TIMEOUT,
-        orElse: () => Effect.fail(orbFailure(`ssh ${destination} timed out`)),
+        orElse: () =>
+          Effect.andThen(
+            Effect.sync(() => observe(false)),
+            Effect.fail(orbFailure(`ssh ${destination} timed out`))
+          ),
       })
     )
   const checked = (script: string, runOptions?: RunOptions): Effect.Effect<Buffer, OrbError> =>
@@ -205,6 +217,11 @@ export const makeOrbSsh = (
     gitSshCommand: ['ssh', ...options].map(shq).join(' '),
     run,
     checked,
+    viaGit: operation =>
+      operation.pipe(
+        Effect.tap(() => Effect.sync(() => observe(true))),
+        Effect.tapError(() => Effect.ignore(run('true', { timeout: Duration.seconds(15) })))
+      ),
     ttyArgs: script => [...options, '-tt', destination, script],
     spawnPlain: script =>
       observed(

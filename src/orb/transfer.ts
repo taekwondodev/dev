@@ -13,6 +13,7 @@ export interface OrbRepository {
   readonly url: string
   readonly protocol: 'ssh' | 'file'
   readonly gitSshCommand?: string
+  transfer<A, E, R>(operation: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>
   run(script: string): Effect.Effect<string, OrbError>
 }
 
@@ -76,6 +77,7 @@ export const orbRepository = (ssh: OrbSsh, root: string): OrbRepository => ({
   url: `${ssh.destination}:${root}`,
   protocol: 'ssh',
   gitSshCommand: ssh.gitSshCommand,
+  transfer: ssh.viaGit,
   run: script => Effect.map(ssh.checked(script), stdout => stdout.toString('utf8')),
 })
 
@@ -286,12 +288,14 @@ export const upload = Effect.fnUntraced(function* (input: {
       ...(email === undefined ? {} : { email }),
     })
   )
-  yield* git.run([
-    'push',
-    '-q',
-    repository.url,
-    `${taken.commit}:${checkout.branch === undefined ? UPLOAD_REF : `refs/heads/${checkout.branch}`}`,
-  ])
+  yield* repository.transfer(
+    git.run([
+      'push',
+      '-q',
+      repository.url,
+      `${taken.commit}:${checkout.branch === undefined ? UPLOAD_REF : `refs/heads/${checkout.branch}`}`,
+    ])
+  )
   yield* repository.run(orbCheckoutScript(input.orbPath, checkout, taken.commit))
   yield* git.run(['update-ref', input.baseRef, taken.commit])
   return { snapshot: taken.commit }
@@ -372,14 +376,16 @@ export const fetchWork = Effect.fnUntraced(function* (
 ): Effect.fn.Return<FetchedWork, OrbError, GitServices> {
   const { repository } = input
   yield* repository.run(orbEndScript(input.orbPath))
-  yield* git.run([
-    'fetch',
-    '-q',
-    '--no-tags',
-    '--no-write-fetch-head',
-    repository.url,
-    `+refs/dev/end:${input.endRef}`,
-  ])
+  yield* repository.transfer(
+    git.run([
+      'fetch',
+      '-q',
+      '--no-tags',
+      '--no-write-fetch-head',
+      repository.url,
+      `+refs/dev/end:${input.endRef}`,
+    ])
+  )
   const end = yield* git.text(['rev-parse', '--verify', `${input.endRef}^{commit}`])
   const orbHead = yield* git.text(['rev-parse', '--verify', `${end}^1`])
   const base = yield* git.text(['rev-parse', '--verify', `${input.baseRef}^{commit}`])
@@ -494,13 +500,15 @@ export const mirrorWorktree = Effect.fnUntraced(function* (input: {
   const taken = yield* Effect.scoped(snapshot(git))
   const head = yield* git.text(['rev-parse', '--verify', 'HEAD^{commit}'])
   const ref = `refs/dev/mirror/${randomUUID()}`
-  yield* git.run([
-    'push',
-    '-q',
-    repository.url,
-    `${taken.commit}:${ref}`,
-    ...input.branches.map(branch => `+${branch.commit}:refs/heads/${branch.name}`),
-  ])
+  yield* repository.transfer(
+    git.run([
+      'push',
+      '-q',
+      repository.url,
+      `${taken.commit}:${ref}`,
+      ...input.branches.map(branch => `+${branch.commit}:refs/heads/${branch.name}`),
+    ])
+  )
   yield* repository.run(
     mirrorScript({
       root: input.root,
