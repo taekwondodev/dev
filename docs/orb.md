@@ -21,7 +21,13 @@ In the session:
 
 ### Configuration
 
-`config/orb.json` in the installation sets the orb's `size` (default 2 vCPU, 2048 MB, 10 GB), its `image` (default `ubuntu-24.04-arm64-dev`) and `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH. The Mac must route to orbit's floating IPs; on DevStack, run orbit's `tools/reach-orbs.sh <devstack-host>` after either machine restarts.
+`<data-home>/orb.json` sets the orb's `size` (default 2 vCPU, 2048 MB, 10 GB), its `image` (default `ubuntu-24.04-arm64-dev`) and the required `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH. The file is private to the machine and its network, so it is not version-controlled; without it `dev --orb` refuses to start and names the path.
+
+```json
+{ "ssh_allowed_cidr": "192.0.2.1/32" }
+```
+
+The Mac must route to orbit's floating IPs; on DevStack, run orbit's `tools/reach-orbs.sh <devstack-host>` after either machine restarts.
 
 The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH user, and an entry in orbit's `[orbs] ssh_users`. Orbs have no Internet access.
 
@@ -126,6 +132,7 @@ The ended session's writer use then no longer holds the checkout: dev [settles i
 
 | Location                                  | Content                                                                                           |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `<data-home>/orb.json`                    | The [configuration](#configuration) of new orbs                                                   |
 | `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`    |
 | `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository             |
 | `refs/dev/orb/<record-id>/fork/<attempt>` | The lead orb's commit a [writing child](#writing-children) starts from, until its worktree exists |

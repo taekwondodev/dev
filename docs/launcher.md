@@ -110,7 +110,7 @@ The same pass applies [attempt retention](work.md#state) and removes recognized 
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
-| `<data-home>/orbs/`                                      | Orb records of `dev --orb` sessions; layout in [Orb](orb.md#state)                                                            |
+| `<data-home>/orb.json`, `<data-home>/orbs/`              | Orb configuration and orb records of `dev --orb` sessions; see [Orb](orb.md#configuration)                                    |
 | `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
 | `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
 | Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |

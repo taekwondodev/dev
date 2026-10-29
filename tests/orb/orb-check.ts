@@ -23,6 +23,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Stream } from 'effect'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
 import { orbFailure, type OrbError, type OrbRecord, type OrbView } from '../../src/orb/domain.ts'
 import { errorText } from '../../src/error-text.ts'
+import { readOrbConfig } from '../../src/orb/config.ts'
 import { deleteRecorded } from '../../src/orb/deletion.ts'
 import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/recovery.ts'
 import { claimRecord, createRecord } from '../../src/orb/registry.ts'
@@ -69,6 +70,13 @@ const { claim, passed } = makeClaims()
 
 const run = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>): Promise<A> =>
   Effect.runPromise(Effect.provide(effect, NodeServices.layer))
+
+const orbDataHome = (name: string): string => {
+  const dataHome = join(sandbox, name)
+  mkdirSync(dataHome, { mode: 0o700 })
+  writeFileSync(join(dataHome, 'orb.json'), JSON.stringify({ ssh_allowed_cidr: '192.0.2.1/32' }))
+  return dataHome
+}
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', ['-C', cwd, ...args], {
@@ -157,6 +165,27 @@ const returnFrom = (mac: string, orb: string, record: string) =>
       beforeWrite: Effect.void,
     })
   )
+
+await claim(
+  'the orb configuration lives in the data home, defaults size and image, and its absence names the file to create',
+  async () => {
+    const dataHome = orbDataHome('config-data')
+    assert.deepEqual(await run(readOrbConfig(dataHome)), {
+      path: join(dataHome, 'orb.json'),
+      size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
+      image: 'ubuntu-24.04-arm64-dev',
+      sshAllowedCidr: '192.0.2.1/32',
+    })
+    const empty = join(sandbox, 'config-missing')
+    mkdirSync(empty, { mode: 0o700 })
+    await assert.rejects(
+      run(readOrbConfig(empty)),
+      (error: OrbError) =>
+        error.message.startsWith(`No orb configuration at ${join(empty, 'orb.json')}.`) &&
+        error.message.includes('ssh_allowed_cidr')
+    )
+  }
+)
 
 await claim(
   'a clean return fast-forwards the branch with the orb SHAs, leaves a byte-identical tree including uncommitted, untracked, binary and executable files, and needs nothing on a second sync',
@@ -1127,8 +1156,7 @@ await claim(
   'the orb record exists in phase requested, with its private key, before the orbit request is sent',
   async () => {
     const { mac } = newCheckout('record')
-    const dataHome = join(sandbox, 'record-data')
-    mkdirSync(dataHome, { mode: 0o700 })
+    const dataHome = orbDataHome('record-data')
     const grant = { useId: 'presence-use' } as unknown as WorkspaceGrant
     const attachment = {
       binding: { taskId: undefined },
@@ -1480,8 +1508,7 @@ const startScenario = async (
   } = {}
 ) => {
   const { mac } = newCheckout(`start-${name}`)
-  const dataHome = join(sandbox, `start-${name}-data`)
-  mkdirSync(dataHome, { mode: 0o700 })
+  const dataHome = orbDataHome(`start-${name}-data`)
   const attachment = {
     binding: { taskId: undefined },
     authorize: () =>

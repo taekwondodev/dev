@@ -195,7 +195,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
   const phase = (text: string) =>
     Effect.flatMap(elapsed, time => Effect.sync(() => print(`orb: ${text} (${time})`)))
 
-  const config = yield* readOrbConfig()
+  const config = yield* readOrbConfig(options.dataHome)
   const checkout = yield* inspectCheckout(input.cwd)
   const openrc = yield* readOpenrc(options.env)
   yield* Effect.sync(() => {
