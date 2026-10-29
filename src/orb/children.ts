@@ -132,14 +132,16 @@ export const makeChildOrbs = (
         leadRepository.gitSshCommand
       )
       const ref = `refs/dev/orb/${input.lead.record}/fork/${attempt}`
-      yield* git.run([
-        'fetch',
-        '-q',
-        '--no-tags',
-        '--no-write-fetch-head',
-        leadRepository.url,
-        `+HEAD:${ref}`,
-      ])
+      yield* leadRepository.transfer(
+        git.run([
+          'fetch',
+          '-q',
+          '--no-tags',
+          '--no-write-fetch-head',
+          leadRepository.url,
+          `+HEAD:${ref}`,
+        ])
+      )
       const commit = yield* git.text(['rev-parse', '--verify', `${ref}^{commit}`])
       return {
         ref,

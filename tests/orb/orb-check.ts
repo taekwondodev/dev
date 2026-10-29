@@ -85,6 +85,7 @@ const git = (cwd: string, ...args: string[]): string =>
 const repository = (orbPath: string): OrbRepository => ({
   url: orbPath,
   protocol: 'file',
+  transfer: operation => operation,
   run: script =>
     Effect.try({
       try: () => execFileSync('/bin/bash', ['-c', script], { encoding: 'utf8' }),
