@@ -19,6 +19,7 @@ export interface CommandOptions {
   readonly timeout?: Duration.Input
   readonly maxOutputLength?: number
   readonly exitCodes?: readonly number[]
+  readonly detached?: boolean
 }
 
 export interface CommandResult {
@@ -62,7 +63,7 @@ const runWith = Effect.fnUntraced(function* (
         cwd: options.cwd,
         env: options.env,
         stdin: 'ignore',
-        detached: false,
+        detached: options.detached ?? false,
         forceKillAfter: Duration.seconds(2),
       })
     )

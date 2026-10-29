@@ -38,7 +38,11 @@ Before the TUI opens, dev prints one line per phase with the elapsed time:
 5. It connects with strict host key checking against the host keys orbit read from the orb's console, then checks the image's tools.
 6. It uploads a snapshot of the checkout to the same absolute path on the orb: `HEAD` as a commit and the uncommitted changes, untracked files included, as uncommitted changes. Ignored files stay on the Mac.
 
-The checkout must be on a branch with at least one commit. If a step fails, dev deletes the orb it created and exits with code 1. The footer shows the orb's id and state for the whole session.
+The checkout must be on a branch with at least one commit. The footer shows the orb's id and state for the whole session.
+
+A failed step refuses the launch without retrying it: orbit's refusal (`401`, `403`, `409`, `502`, `503`), an orb that reaches `ERROR` (orbit's fault is printed; this includes orbit's ready timeout) or a failed upload. dev deletes the orb it created, waits for `DELETED`, removes the record, prints the cause and exits with code 1. For a `409`, the message also lists the project's orbs that are not being deleted and the command that deletes one. Only the SSH connection after `ACTIVE` is retried, up to 24 times 5 s apart, because the orb's SSH server may not be listening yet.
+
+Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request finish, so the orb it created is known, then deletes the orb, waits for `DELETED`, removes the record and exits with code 130. A second Ctrl-C stops the wait for `DELETED`, once a pending orbit request has answered or timed out after 30 s: dev prints the orb's id and delete command and leaves the record to the next `dev --orb`, which [recovers](#recovery) it.
 
 ### Tools
 
@@ -48,7 +52,9 @@ The checkout must be on a branch with at least one commit. If a step fails, dev 
 - Skill files outside the checkout are read on the Mac.
 - The [task artifact directory](workspace.md#task-artifacts) is read and written on the Mac.
 
-Tool calls are not admitted one by one: none can change the Mac checkout. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. Stopping a command ends its SSH client, which hangs up the orb's terminal.
+Tool calls are not admitted one by one: none can change the Mac checkout.
+
+When the orb cannot be reached, a tool call fails with SSH's error, which reaches the model, and the footer reads `orb <id>: unreachable` until a call reaches the orb again. `/orb sync` fails with the reason. The session stays usable, and dev never recreates the orb. The Keystone token serves only orbit's API, so a token that can no longer be renewed fails only the deletion at quit, which then keeps the orb as below. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. Stopping a command ends its SSH client, which hangs up the orb's terminal.
 
 Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, delegated agents, and `work process` outside the session's directory. Quit and relaunch instead.
 
@@ -72,11 +78,13 @@ Every later `/orb sync`, and the quit-time return, first retries the normal retu
 
 dev deletes the orb once the return completed or its work is on a `dev/orb-return/` branch. A failed return (orb unreachable or in `ERROR`, a local Git error, a refused admission or entry) never deletes the orb:
 
-- With an interactive terminal, dev asks whether to retry: `y` retries the return; anything else, or Ctrl-C at the prompt, quits and keeps the orb.
+- With an interactive terminal, dev asks whether to retry: `y` retries the return; anything else, Ctrl-C at the prompt or a `SIGTERM` while it waits quits and keeps the orb.
 - Without one, dev keeps the orb.
 - Ctrl-C during the return lets the started step finish, so the checkout is never half-written. If the return then failed, dev keeps the orb without asking.
 
 For a kept orb dev prints its id, where its work is, a `curl` delete command and that the next `dev --orb` [recovers](#recovery) it.
+
+Once the work has returned, dev sends `DELETE` and waits about 60 s for orbit to report `DELETED`, printing each state. If the wait ends first, or Ctrl-C stops it, dev exits, printing the orb's id and delete command and leaving the record to the next `dev --orb`, which deletes the orb.
 
 ### Recovery
 

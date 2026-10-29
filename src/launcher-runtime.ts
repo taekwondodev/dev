@@ -12,6 +12,7 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   Schema,
@@ -708,7 +709,7 @@ const askConfirmation = (prompt: string): Effect.Effect<Confirmation> =>
   })
 
 export const orbQuit = (
-  proceed: () => boolean,
+  cancel: Pick<OrbQuit, 'proceed' | 'interrupted'>,
   terminal: {
     readonly stdin: { readonly isTTY?: boolean }
     readonly stdout: { readonly isTTY?: boolean }
@@ -717,26 +718,66 @@ export const orbQuit = (
 ): OrbQuit =>
   terminal.stdin.isTTY === true && terminal.stdout.isTTY === true
     ? {
-        proceed,
-        askRetry: Effect.map(
-          ask('Type y to retry the return, anything else to quit and keep the orb: '),
-          answer => answer === 'confirmed'
+        ...cancel,
+        askRetry: Effect.raceFirst(
+          Effect.map(
+            ask('Type y to retry the return, anything else to quit and keep the orb: '),
+            answer => answer === 'confirmed'
+          ),
+          Effect.as(cancel.interrupted, false)
         ),
       }
-    : { proceed }
+    : cancel
+
+const latchSignal = (signalled: Deferred.Deferred<void>): void => {
+  const onSignal = (): void => {
+    process.removeListener('SIGINT', onSignal)
+    process.removeListener('SIGTERM', onSignal)
+    Deferred.doneUnsafe(signalled, Effect.void)
+  }
+  process.on('SIGINT', onSignal)
+  process.on('SIGTERM', onSignal)
+}
+
+const cancelOnSignal = <A, E, R>(
+  start: Effect.Effect<A, E, R>,
+  secondInterrupt: Deferred.Deferred<void>
+): Effect.Effect<A, E | LauncherError, R> =>
+  Effect.gen(function* () {
+    const starting = yield* Effect.forkDetach(start)
+    const onSignal = (): void => {
+      stopListening()
+      latchSignal(secondInterrupt)
+      Effect.runFork(Fiber.interrupt(starting))
+    }
+    const stopListening = (): void => {
+      process.removeListener('SIGINT', onSignal)
+      process.removeListener('SIGTERM', onSignal)
+    }
+    process.on('SIGINT', onSignal)
+    process.on('SIGTERM', onSignal)
+    const exit = yield* Fiber.await(starting).pipe(Effect.ensuring(Effect.sync(stopListening)))
+    if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause))
+      return yield* new LauncherError({ message: 'The orb start was cancelled.' })
+    return yield* exit
+  })
 
 const cancellation = (notice: () => string | undefined) =>
   Effect.acquireRelease(
     Effect.sync(() => {
-      let cancelled = false
+      const signalled = Deferred.makeUnsafe<void>()
       const onSignal = (): void => {
-        cancelled = true
+        Deferred.doneUnsafe(signalled, Effect.void)
         const text = notice()
         if (text !== undefined) process.stderr.write(`\n${text}\n`)
       }
       process.on('SIGINT', onSignal)
       process.on('SIGTERM', onSignal)
-      return { proceed: () => !cancelled, onSignal }
+      return {
+        proceed: () => !Deferred.isDoneUnsafe(signalled),
+        interrupted: Deferred.await(signalled),
+        onSignal,
+      }
     }),
     ({ onSignal }) =>
       Effect.sync(() => {
@@ -1161,6 +1202,7 @@ const run = Effect.fnUntraced(function* (
     ? yield* fromPromise('Cannot load orb mode', () => import('./orb/session.ts'))
     : undefined
   let orbSession: OrbSession | undefined
+  const secondInterrupt = Deferred.makeUnsafe<void>()
   let stopWork: (() => Promise<void>) | undefined
   const orbRuntime: OrbRuntime | undefined =
     orbModule === undefined
@@ -1168,8 +1210,8 @@ const run = Effect.fnUntraced(function* (
       : {
           open: input =>
             orbSession === undefined
-              ? orbModule
-                  .openOrbSession(
+              ? cancelOnSignal(
+                  orbModule.openOrbSession(
                     {
                       pi: api,
                       dataHome,
@@ -1177,6 +1219,7 @@ const run = Effect.fnUntraced(function* (
                       print: line => {
                         process.stdout.write(`${line}\n`)
                       },
+                      secondInterrupt: Deferred.await(secondInterrupt),
                       ...(process.stdin.isTTY && process.stdout.isTTY
                         ? {
                             confirm: (prompt: string) =>
@@ -1185,15 +1228,16 @@ const run = Effect.fnUntraced(function* (
                         : {}),
                     },
                     input
+                  ),
+                  secondInterrupt
+                ).pipe(
+                  Effect.mapError(error => toLauncherError(error, 'Cannot start the orb')),
+                  Effect.tap(opened =>
+                    Effect.sync(() => {
+                      orbSession = opened
+                    })
                   )
-                  .pipe(
-                    Effect.mapError(error => toLauncherError(error, 'Cannot start the orb')),
-                    Effect.tap(opened =>
-                      Effect.sync(() => {
-                        orbSession = opened
-                      })
-                    )
-                  )
+                )
               : Effect.fail(
                   new LauncherError({ message: 'Orb mode keeps one conversation per launch' })
                 ),
@@ -1229,7 +1273,17 @@ const run = Effect.fnUntraced(function* (
             agentDir: globalPiAgentDir(),
             sessionManager: sessions,
           })
-        ).pipe(Effect.onError(() => orbSession?.close({ proceed: () => true }) ?? Effect.void)),
+        ).pipe(
+          Effect.onError(() => {
+            const opened = orbSession
+            if (opened === undefined) return Effect.void
+            latchSignal(secondInterrupt)
+            return opened.close({
+              proceed: () => true,
+              interrupted: Deferred.await(secondInterrupt),
+            })
+          })
+        ),
         disposeRuntime
       )
       yield* Effect.sync(() => {
@@ -1254,12 +1308,12 @@ const run = Effect.fnUntraced(function* (
       if (yield* runInteractive(api, runtime, workspaceHost)) {
         signals.remove()
         let orbClosing = false
-        const { proceed } = yield* Scope.provide(outerScope)(
+        const cancel = yield* Scope.provide(outerScope)(
           cancellation(() => {
             if (sweepStarted)
               return 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
             if (orbClosing)
-              return 'Interrupt received: the started orb step runs on until it ends, so the checkout is never left half-written; an orb whose work has not returned is kept, and dev exits 130 afterwards.'
+              return 'Interrupt received: the started orb step runs on until it ends, so the checkout is never left half-written; an orb whose work has not returned is kept, a returned orb is deleted without waiting for orbit to confirm it, and dev exits 130 afterwards.'
             return undefined
           })
         )
@@ -1269,10 +1323,10 @@ const run = Effect.fnUntraced(function* (
           const stop = stopWork
           if (stop !== undefined)
             yield* Effect.ignore(fromPromise('Cannot stop background work', stop))
-          yield* closing.close(orbQuit(proceed, process))
+          yield* Effect.uninterruptible(closing.close(orbQuit(cancel, process)))
           orbClosing = false
         }
-        quit = { proceed }
+        quit = { proceed: cancel.proceed }
       }
     })
   )

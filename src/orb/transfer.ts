@@ -69,6 +69,7 @@ const plainGit = (root: string, args: readonly string[], exitCodes: readonly num
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
     timeout: GIT_TIMEOUT,
     exitCodes,
+    detached: true,
   }).pipe(Effect.mapError(cause => orbFailure(cause.message.trim(), cause)))
 
 export const orbRepository = (ssh: OrbSsh, root: string): OrbRepository => ({
@@ -142,6 +143,7 @@ export const hardenedGit = Effect.fnUntraced(function* (
       },
       timeout: GIT_TIMEOUT,
       maxOutputLength: 64 * 1024 * 1024,
+      detached: true,
       ...(runOptions.exitCodes === undefined ? {} : { exitCodes: runOptions.exitCodes }),
     }).pipe(Effect.mapError(cause => orbFailure(cause.message.trim(), cause)))
   return {
