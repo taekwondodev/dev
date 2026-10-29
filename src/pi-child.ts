@@ -9,12 +9,14 @@ import type * as Pi from '@earendil-works/pi-coding-agent'
 
 import {
   GenerationId,
+  OrbReaderSchema,
   READ_ONLY_CHILD_TOOLS,
   SKILL_COMMAND,
   SessionId,
   TaskId,
 } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
+import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import { loadPi } from './pi-runtime.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
 import { createBackgroundCompaction } from './background-compaction.ts'
@@ -91,6 +93,7 @@ export const ChildRequestEnvelope = Schema.Struct({
   }),
   model: Schema.optional(Schema.NonEmptyString),
   effort: Schema.optional(Schema.NonEmptyString),
+  orb: Schema.optional(OrbReaderSchema),
 })
 
 export type ChildRequest = typeof ChildRequestEnvelope.Type
@@ -173,6 +176,17 @@ interface GitCapture {
   truncated: boolean
 }
 
+export interface GitCommand {
+  readonly file: string
+  readonly args: readonly string[]
+  readonly env: NodeJS.ProcessEnv
+}
+
+export type GitRunner = (
+  args: readonly string[],
+  env: Readonly<Record<string, string>>
+) => GitCommand
+
 interface GitResult {
   readonly error?: unknown
   readonly stdout: string
@@ -222,6 +236,8 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
     request.workspace.access !== (request.access === 'write' ? 'write' : 'read')
   )
     return yield* new ChildError({ message: 'Child request does not match its workspace grant' })
+  if (request.orb !== undefined && request.access !== 'read-only')
+    return yield* new ChildError({ message: 'Only a read-only child reads the orb' })
   yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
@@ -331,16 +347,15 @@ function truncateGitOutput(text: string, rawTruncated = false): string {
   return `${bytes.subarray(0, MAX_GIT_OUTPUT).toString('utf8')}\n\n[git output truncated at ${MAX_GIT_OUTPUT} bytes]`
 }
 
-function gitEnvironment(): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_NO_LAZY_FETCH: '1',
-    GIT_OPTIONAL_LOCKS: '0',
-    GIT_TERMINAL_PROMPT: '0',
-  }
+const GIT_ENVIRONMENT = {
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_NO_LAZY_FETCH: '1',
+  GIT_OPTIONAL_LOCKS: '0',
+  GIT_TERMINAL_PROMPT: '0',
 }
+
+const localGit: GitRunner = (args, env) => ({ file: 'git', args, env: { ...process.env, ...env } })
 
 function captureGitChunk(capture: GitCapture, chunk: Buffer | string): void {
   const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
@@ -360,6 +375,7 @@ function capturedGitText(capture: GitCapture): string {
 }
 
 const runGit = (
+  git: GitRunner,
   cwd: string,
   args: readonly string[],
   signal?: AbortSignal
@@ -378,8 +394,9 @@ const runGit = (
     }
 
     try {
-      child = spawn('git', [...SAFE_GIT_OPTIONS, '-C', cwd, ...args], {
-        env: gitEnvironment(),
+      const command = git([...SAFE_GIT_OPTIONS, '-C', cwd, ...args], GIT_ENVIRONMENT)
+      child = spawn(command.file, command.args, {
+        env: command.env,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch (error) {
@@ -493,7 +510,7 @@ function toolResult(text: string): Pi.AgentToolResult<undefined> {
   }
 }
 
-function createReviewGitTool(cwd: string): Pi.ToolDefinition {
+function createReviewGitTool(cwd: string, git: GitRunner): Pi.ToolDefinition {
   const parameters = {
     type: 'object',
     additionalProperties: false,
@@ -531,7 +548,9 @@ function createReviewGitTool(cwd: string): Pi.ToolDefinition {
       const result = await Effect.runPromise(
         Effect.gen(function* () {
           const args = yield* Effect.try({ try: () => gitArguments(params), catch: toChildError })
-          const gitResult = yield* runGit(cwd, args, signal).pipe(Effect.mapError(toChildError))
+          const gitResult = yield* runGit(git, cwd, args, signal).pipe(
+            Effect.mapError(toChildError)
+          )
           const output =
             [
               gitResult.stdout,
@@ -776,6 +795,28 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const compaction = yield* createBackgroundCompaction(loaded.api, loaded.packageInfo.root).pipe(
     Effect.mapError(toChildError)
   )
+  const orb =
+    request.orb === undefined
+      ? undefined
+      : (yield* Effect.tryPromise({
+          try: () => import('./orb/child.ts'),
+          catch: toChildError,
+        })).openOrbReader({
+          pi: loaded.api,
+          reader: request.orb,
+          cwd: request.cwd,
+          checkout: request.workspace.checkout,
+          skillPaths: resources.skillPaths,
+          artifacts:
+            request.workspace.taskId === undefined
+              ? []
+              : [
+                  taskArtifactsPath(
+                    authorityPaths(request.authorityRoot),
+                    request.workspace.taskId
+                  ),
+                ],
+        })
   const webReader = yield* Effect.flatMap(
     makeSessionRenderer({ dataHome: request.dataHome, ensureOwner: requestBrowserOwner() }),
     renderer =>
@@ -813,6 +854,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
             ...(link === undefined
               ? []
               : [{ name: 'dev:coordinator-wait-guard', factory: coordinatorWaitGuard(link) }]),
+            ...(orb === undefined ? [] : [{ name: 'dev:orb', factory: orb.extensionFactory }]),
           ],
         },
       }),
@@ -848,7 +890,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     .pipe(Effect.mapError(toChildError))
   const customTools = [
     ...(request.access === 'read-only'
-      ? [createReviewGitTool(request.cwd)]
+      ? [createReviewGitTool(request.cwd, orb?.git ?? localGit)]
       : [
           loaded.api.defineTool(
             loaded.api.createWriteToolDefinition(request.cwd, {

@@ -14,6 +14,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -26,13 +28,16 @@ import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/rec
 import { claimRecord, createRecord } from '../../src/orb/registry.ts'
 import {
   branchingReturn,
-  macHomes,
   openOrbSession,
   returnAtQuit,
   withReturnAdmission,
 } from '../../src/orb/session.ts'
 import { masterOptions, sshOptions } from '../../src/orb/ssh.ts'
+import { macHomes } from '../../src/orb/tools.ts'
+import { openOrbReader } from '../../src/orb/child.ts'
 import { orbToolAccess } from '../../src/integrated-tools.ts'
+import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
+import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import {
   refusals,
   returnWork,
@@ -45,6 +50,7 @@ import { orbQuit } from '../../src/launcher-runtime.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { writeProfileFixture } from '../profile-fixture.ts'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type { PiApi } from '../../src/pi-runtime.ts'
 import type { WorkspaceAttachment, WorkspaceGrant } from '../../src/workspace-domain.ts'
 
@@ -698,6 +704,120 @@ await claim(
     assert.equal(orbToolAccess(tool('read', 'builtin', '<builtin:read>')), undefined)
     assert.equal(orbToolAccess(tool('bash', 'sdk', '<sdk:bash>')), undefined)
     assert.equal(orbToolAccess(undefined), undefined)
+  }
+)
+
+await claim(
+  'a read-only child gate admits dev:orb readers as reads through its controller and refuses dev:orb writers and same-named readers from any other source without asking it',
+  async () => {
+    const asked: string[] = []
+    const channel = Object.assign(new EventEmitter(), {
+      connected: true,
+      send(
+        message: Parameters<NonNullable<ControllerChannel['send']>>[0],
+        callback: (error: Error | null) => void
+      ): boolean {
+        asked.push(message.operation)
+        setImmediate(() => {
+          channel.emit('message', {
+            type: 'workspace-checked',
+            requestId: message.requestId,
+            useId: message.useId,
+            allowed: true,
+          })
+          callback(null)
+        })
+        return true
+      },
+    })
+    const checkout = join(sandbox, 'gate-checkout')
+    const grant = {
+      useId: randomUUID(),
+      cwd: checkout,
+      checkout,
+      access: 'read',
+    } as unknown as WorkspaceGrant
+    const tools = [
+      tool('read', 'inline', '<inline:dev:orb>'),
+      tool('grep', 'inline', '<inline:dev:orb>'),
+      tool('bash', 'inline', '<inline:dev:orb>'),
+      tool('find', 'inline', '<inline:dev:orbit>'),
+      tool('ls', 'npm', '<inline:dev:orb>'),
+    ]
+    const handlers = new Map<string, (event: unknown) => unknown>()
+    await childWorkspaceExtension(
+      grant,
+      join(sandbox, 'gate-authority'),
+      makeNativeWrites({ runPromise: Effect.runPromise, onError: () => undefined }),
+      channel
+    )({
+      on: (event: string, handler: (event: unknown) => unknown) => handlers.set(event, handler),
+      getAllTools: () => tools,
+    } as unknown as ExtensionAPI)
+    const call = async (toolName: string) =>
+      handlers.get('tool_call')?.({
+        type: 'tool_call',
+        toolCallId: toolName,
+        toolName,
+        input: { path: 'calc.py' },
+      })
+    assert.equal(await call('read'), undefined)
+    assert.equal(await call('grep'), undefined)
+    assert.deepEqual(asked, ['read', 'read'])
+    for (const name of ['bash', 'find', 'ls'])
+      assert.deepEqual(
+        await call(name),
+        { block: true, reason: 'Child workspace is read-only' },
+        name
+      )
+    assert.deepEqual(asked, ['read', 'read'], 'refused tools never reach the controller')
+  }
+)
+
+await claim(
+  "a read-only child's remote git_inspect runs over the pinned SSH options, with Git's isolation variables and every argument quoted for the orb's shell",
+  () => {
+    const repo = join(sandbox, "it's a repo")
+    mkdirSync(repo)
+    git(repo, 'init', '-q', '-b', 'main')
+    writeFileSync(join(repo, 'a $(touch pwned).txt'), 'x\n')
+    const reader = openOrbReader({
+      pi: {} as PiApi,
+      reader: {
+        label: 'orb test (192.0.2.7)',
+        user: 'ubuntu',
+        host: '192.0.2.7',
+        keyPath: '/k',
+        knownHostsPath: '/kh',
+        controlPath: '/mux',
+      },
+      cwd: repo,
+      checkout: repo,
+      skillPaths: [],
+      artifacts: [],
+    })
+    const command = reader.git(['--no-pager', '-C', repo, 'status', '--short'], {
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_TERMINAL_PROMPT: '0',
+    })
+    assert.equal(command.file, 'ssh')
+    assert.deepEqual(
+      command.args.slice(0, -2),
+      sshOptions({
+        user: 'ubuntu',
+        host: '192.0.2.7',
+        keyPath: '/k',
+        knownHostsPath: '/kh',
+        controlPath: '/mux',
+      })
+    )
+    assert.equal(command.args.at(-2), 'ubuntu@192.0.2.7')
+    assert.equal(command.env.SSH_AUTH_SOCK, undefined)
+    const script = command.args.at(-1) ?? ''
+    assert.match(script, /^'env' 'GIT_CONFIG_GLOBAL=\/dev\/null' 'GIT_TERMINAL_PROMPT=0' 'git' /)
+    const output = execFileSync('/bin/bash', ['-c', script], { cwd: sandbox, encoding: 'utf8' })
+    assert.equal(output, '?? "a $(touch pwned).txt"\n')
+    assert.ok(!existsSync(join(sandbox, 'pwned')) && !existsSync(join(repo, 'pwned')))
   }
 )
 

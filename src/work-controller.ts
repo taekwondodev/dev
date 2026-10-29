@@ -491,9 +491,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   }
 
   const startAgent = (request: AgentStartRequest): Effect.Effect<AttemptView, WorkFailure> =>
-    remote === undefined
-      ? delegate(request, undefined)
-      : Effect.fail(new WorkError({ message: remote.agentRefusal }))
+    delegate(request, undefined)
 
   const delegate = Effect.fnUntraced(function* (
     request: AgentStartRequest,
@@ -511,6 +509,17 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       if (parent.access !== 'write' && request.access === 'write')
         return yield* new WorkError({
           message: 'A read-only coordinator can start only read-only leaves',
+        })
+    }
+    if (remote !== undefined) {
+      if (request.access === 'write')
+        return yield* new WorkError({
+          message:
+            'In orb mode delegated agents are read-only: delegate with access read-only, or make the change in the lead.',
+        })
+      if (request.cwd !== undefined && !isWithin(remote.checkout, yield* resolveCwd(request.cwd)))
+        return yield* new WorkError({
+          message: `In orb mode delegated agents read the orb's checkout ${remote.checkout}; another checkout does not exist there.`,
         })
     }
     const selection = yield* resolveDispatch(request).pipe(
@@ -1269,6 +1278,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
                 owner: record.owner,
                 workspace: job.workspace,
                 authorityRoot: workspace.lifecycle.root,
+                ...(remote === undefined ? {} : { orb: remote.reader }),
                 model: request.selection?.model,
                 effort: request.selection?.effort,
               },

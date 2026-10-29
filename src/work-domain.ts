@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path'
 import { Schema } from 'effect'
 import type { Effect as EffectType } from 'effect/Effect'
+import { AbsolutePath } from './workspace-domain.ts'
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/
 export const SessionId = Schema.NonEmptyString.pipe(Schema.brand('dev/work/SessionId'))
@@ -518,8 +519,19 @@ export type WorkFailure =
   | WorkProtocolError
   | WorkDispatchError
 
+export const OrbReaderSchema = Schema.Struct({
+  label: Schema.NonEmptyString,
+  user: Schema.NonEmptyString,
+  host: Schema.NonEmptyString,
+  keyPath: AbsolutePath,
+  knownHostsPath: AbsolutePath,
+  controlPath: AbsolutePath,
+})
+export type OrbReader = typeof OrbReaderSchema.Type
+
 export interface WorkRemote {
-  readonly agentRefusal: string
+  readonly checkout: string
+  readonly reader: OrbReader
   shellCommand(command: string, cwd: string): string
   wrap(
     file: string,
