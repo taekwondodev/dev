@@ -19,6 +19,7 @@ import type {
   AttemptView,
   WorkFailure,
   WorkOwnerService,
+  WorkRemote,
 } from '../../src/work-domain.ts'
 import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
 import { installProfileFixture } from '../profile-fixture.ts'
@@ -118,7 +119,8 @@ export const openWorkFixture = async (name: string) => {
 
   const openOwner = (
     profile = profiles.defaultProfile,
-    wrap: (base: WorkspaceAttachment) => WorkspaceAttachment = base => base
+    wrap: (base: WorkspaceAttachment) => WorkspaceAttachment = base => base,
+    remote?: WorkRemote
   ) => {
     const outcomes = new Map<string, AttemptView>()
     const awaited = new Map<string, ((attempt: AttemptView) => void)[]>()
@@ -137,6 +139,7 @@ export const openWorkFixture = async (name: string) => {
         },
         childEntry: new URL('./work-child-entry.ts', import.meta.url),
         browserOwnerEntry: new URL('../web/browser-owner-entry.ts', import.meta.url),
+        ...(remote === undefined ? {} : { remote }),
         onOutcome: attempt => {
           outcomes.set(attempt.id, attempt)
           for (const deliver of awaited.get(attempt.id) ?? []) deliver(attempt)

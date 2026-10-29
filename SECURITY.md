@@ -56,7 +56,9 @@ These limits do not authorize private-network access. Treat fetched content as u
 
 ## Orb execution
 
-Under `dev --orb` the lead's tools, `!` commands and `work process` run on an [orb](docs/orb.md) with the privileges of the orb's SSH user, passwordless `sudo` included. Pi, the model, dev's extensions and every credential stay on the Mac. SSH uses an explicit configuration (`-F /dev/null`): no agent, no X11 or port forwarding, and no environment variable of the Mac reaches the orb. Only the read-only Git probes that `work` runs on the orb set `GIT_OPTIONAL_LOCKS`, `GIT_TERMINAL_PROMPT` and `GIT_NO_LAZY_FETCH` on their own command line.
+Under `dev --orb` the lead's tools, `!` commands and `work process` run on an [orb](docs/orb.md) with the privileges of the orb's SSH user, passwordless `sudo` included. Pi, the model, dev's extensions and every credential stay on the Mac. SSH uses an explicit configuration (`-F /dev/null`): no agent, no X11 or port forwarding, and no environment variable of the Mac reaches the orb. Only the read-only Git probes that `work` runs on the orb and a read-only child's `git_inspect` set Git variables, on their own command line.
+
+Read-only children run on the Mac and read the lead's orb with the lead's key, pinned host keys and SSH options; the controller gives them the record's paths, not the key itself. On the orb they run only the readers' fixed commands and `git_inspect`'s validated operations, with the same safe Git options and configuration isolation as on the Mac; no shell, edit or caller-supplied command. The orb's repository configuration stays in the lead's trust domain: the lead's `bash` can change it, and Git settings the safe options do not override still apply to the child's Git there. Writing children are refused in orb mode.
 
 Orb mode isolates tool execution, not the project's Pi resources. Pi's folder trust decides on the Mac checkout as in plain dev: a trusted folder's `.pi/` extensions, settings and skills load and run on the Mac, and `AGENTS.md` and context files are read on the Mac.
 

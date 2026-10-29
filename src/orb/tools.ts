@@ -1,7 +1,8 @@
+import { realpathSync } from 'node:fs'
 import { access, constants, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { basename, relative } from 'node:path'
+import { basename, dirname, relative } from 'node:path'
 import { createInterface } from 'node:readline'
-import { constants as osConstants } from 'node:os'
+import { constants as osConstants, tmpdir } from 'node:os'
 import { Effect, Option, Schema } from 'effect'
 import type {
   BashOperations,
@@ -15,12 +16,41 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import type { PiApi } from '../pi-runtime.ts'
 import { errorText } from '../error-text.ts'
+import { isWithin } from '../workspace-paths.ts'
 import { orbFailure } from './domain.ts'
 import { shq, ttyScript, type OrbSsh } from './ssh.ts'
 
 export interface MacHomes {
   readonly read: (path: string) => boolean
   readonly write: (path: string) => boolean
+}
+
+const insideAny = (roots: readonly string[], path: string): boolean =>
+  roots.some(root => isWithin(root, path))
+
+const SPILL_FILE = /^pi-[a-z]+-[0-9a-f]{16}\.[a-z0-9]+$/
+
+export const macHomes = (input: {
+  readonly checkout: string
+  readonly skillPaths: readonly string[]
+  readonly artifacts: () => readonly string[]
+}): MacHomes => {
+  const temporary = new Set([tmpdir(), realOrSelf(tmpdir())])
+  const skills = input.skillPaths.filter(path => !isWithin(input.checkout, path))
+  return {
+    read: path =>
+      (temporary.has(dirname(path)) && SPILL_FILE.test(basename(path))) ||
+      insideAny([...skills, ...input.artifacts()], path),
+    write: path => insideAny(input.artifacts(), path),
+  }
+}
+
+const realOrSelf = (path: string): string => {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
 }
 
 export interface OrbToolsInput {
@@ -367,6 +397,55 @@ const runGrep = (
     })
   })
 
+type OrbReadersInput = Pick<OrbToolsInput, 'pi' | 'ssh' | 'cwd' | 'homes'>
+
+const registerReaders = (api: ExtensionAPI, { pi, ssh, cwd, homes }: OrbReadersInput): void => {
+  api.registerTool(pi.createReadToolDefinition(cwd, { operations: readOperations(ssh, homes) }))
+  api.registerTool({
+    ...pi.createFindToolDefinition(cwd, { operations: findOperations(ssh) }),
+    defaultActive: false,
+  })
+  api.registerTool({
+    ...pi.createLsToolDefinition(cwd, { operations: lsOperations(ssh) }),
+    defaultActive: false,
+  })
+  const grep = pi.createGrepToolDefinition(cwd)
+  api.registerTool({
+    ...grep,
+    defaultActive: false,
+    async execute(_toolCallId, params, signal, _onUpdate, context) {
+      if (signal?.aborted === true) throw new Error('Operation aborted')
+      const base = context?.cwd ?? cwd
+      const target = params.path === undefined || params.path === '' ? '.' : params.path
+      const searchPath = target.startsWith('/') ? target : `${base.replace(/\/+$/, '')}/${target}`
+      const result = await runGrep(pi, ssh, params, searchPath, signal)
+      return { content: [{ type: 'text', text: result.text }], details: result.details }
+    },
+  })
+}
+
+const describeTools = (api: ExtensionAPI, text: string): void => {
+  api.on('before_agent_start', (event, context) => {
+    const line = `Current working directory: ${context.cwd}`
+    if (!event.systemPrompt.includes(line)) return undefined
+    return { systemPrompt: event.systemPrompt.replace(line, `${line}\n${text}`) }
+  })
+}
+
+export interface OrbReaderInput extends OrbReadersInput {
+  readonly label: string
+}
+
+export const createOrbReaderExtension =
+  (input: OrbReaderInput) =>
+  (api: ExtensionAPI): void => {
+    registerReaders(api, input)
+    describeTools(
+      api,
+      `The read, grep, find, ls and git_inspect tools read ${input.label} over SSH, at the same absolute paths as on the Mac: the orb holds the current files, uncommitted ones included. Only tool output spill files, skill files and the task artifact directory are read on the Mac.`
+    )
+  }
+
 export const createOrbExtension =
   (input: OrbToolsInput) =>
   (api: ExtensionAPI): void => {
@@ -378,30 +457,9 @@ export const createOrbExtension =
         ...(input.commandPrefix === undefined ? {} : { commandPrefix: input.commandPrefix }),
       })
     )
-    api.registerTool(pi.createReadToolDefinition(cwd, { operations: readOperations(ssh, homes) }))
+    registerReaders(api, input)
     api.registerTool(pi.createWriteToolDefinition(cwd, { operations: writeOperations(ssh, homes) }))
     api.registerTool(pi.createEditToolDefinition(cwd, { operations: editOperations(ssh, homes) }))
-    api.registerTool({
-      ...pi.createFindToolDefinition(cwd, { operations: findOperations(ssh) }),
-      defaultActive: false,
-    })
-    api.registerTool({
-      ...pi.createLsToolDefinition(cwd, { operations: lsOperations(ssh) }),
-      defaultActive: false,
-    })
-    const grep = pi.createGrepToolDefinition(cwd)
-    api.registerTool({
-      ...grep,
-      defaultActive: false,
-      async execute(_toolCallId, params, signal, _onUpdate, context) {
-        if (signal?.aborted === true) throw new Error('Operation aborted')
-        const base = context?.cwd ?? cwd
-        const target = params.path === undefined || params.path === '' ? '.' : params.path
-        const searchPath = target.startsWith('/') ? target : `${base.replace(/\/+$/, '')}/${target}`
-        const result = await runGrep(pi, ssh, params, searchPath, signal)
-        return { content: [{ type: 'text', text: result.text }], details: result.details }
-      },
-    })
 
     const showStatus = (context: ExtensionContext): void => {
       if (context.hasUI) context.ui.setStatus(STATUS_KEY, input.status())
@@ -414,16 +472,10 @@ export const createOrbExtension =
           bash.exec(command, directory, options).finally(() => showStatus(context)),
       },
     }))
-    api.on('before_agent_start', (event, context) => {
-      const line = `Current working directory: ${context.cwd}`
-      if (!event.systemPrompt.includes(line)) return undefined
-      return {
-        systemPrompt: event.systemPrompt.replace(
-          line,
-          `${line}\nThe bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands and work processes. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout when the user runs /orb sync and at quit.`
-        ),
-      }
-    })
+    describeTools(
+      api,
+      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout when the user runs /orb sync and at quit.`
+    )
     api.registerCommand('orb', {
       description: 'Show the orb of this session, or return its work with /orb sync',
       handler: async (args, context) => {

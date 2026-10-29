@@ -1,6 +1,3 @@
-import { realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, dirname } from 'node:path'
 import { Cause, Clock, Duration, Effect, Exit, Schedule, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { ChildProcessSpawner } from 'effect/process'
@@ -14,7 +11,6 @@ import type {
   WorkspaceLifecycle,
 } from '../workspace-domain.ts'
 import { taskArtifactsPath, authorityPaths } from '../workspace-authority-root.ts'
-import { isWithin } from '../workspace-paths.ts'
 import {
   makeKeystone,
   makeOrbit,
@@ -37,7 +33,7 @@ import { clock, deleteRecorded } from './deletion.ts'
 import { recoverOrbs } from './recovery.ts'
 import { createRecord } from './registry.ts'
 import { makeOrbSsh, shq, sshOptions, ttyScript } from './ssh.ts'
-import { createOrbExtension, type MacHomes } from './tools.ts'
+import { createOrbExtension, macHomes } from './tools.ts'
 import {
   inspectCheckout,
   orbRepository,
@@ -195,34 +191,6 @@ export const capacityFailure = (
 
 const unconfirmed = (orbitUrl: string, orbId: string, reason: string): string =>
   `Orb ${orbId} could not be confirmed deleted: ${reason}\nIts record stays, and the next dev --orb deletes the orb and removes it.\nDelete it now with: ${deleteCommand(orbitUrl, orbId)}`
-
-const insideAny = (roots: readonly string[], path: string): boolean =>
-  roots.some(root => isWithin(root, path))
-
-const SPILL_FILE = /^pi-[a-z]+-[0-9a-f]{16}\.[a-z0-9]+$/
-
-export const macHomes = (input: {
-  readonly checkout: string
-  readonly skillPaths: readonly string[]
-  readonly artifacts: () => readonly string[]
-}): MacHomes => {
-  const temporary = new Set([tmpdir(), realOrSelf(tmpdir())])
-  const skills = input.skillPaths.filter(path => !isWithin(input.checkout, path))
-  return {
-    read: path =>
-      (temporary.has(dirname(path)) && SPILL_FILE.test(basename(path))) ||
-      insideAny([...skills, ...input.artifacts()], path),
-    write: path => insideAny(input.artifacts(), path),
-  }
-}
-
-const realOrSelf = (path: string): string => {
-  try {
-    return realpathSync(path)
-  } catch {
-    return path
-  }
-}
 
 export const openOrbSession = Effect.fnUntraced(function* (
   options: OrbSessionOptions,
@@ -466,8 +434,15 @@ export const openOrbSession = Effect.fnUntraced(function* (
     }).pipe(Effect.provideContext(services))
 
   const workRemote: WorkRemote = {
-    agentRefusal:
-      'Delegated agents are refused in orb mode; run commands with work process or in the lead.',
+    checkout: checkout.root,
+    reader: {
+      label: `orb ${label} (${host})`,
+      user: ssh.target.user,
+      host: ssh.target.host,
+      keyPath: ssh.target.keyPath,
+      knownHostsPath: ssh.target.knownHostsPath,
+      controlPath: ssh.target.controlPath,
+    },
     shellCommand: (command, cwd) =>
       `TERM=dumb exec ${['ssh', ...ssh.ttyArgs(ttyScript(cwd, command))].map(shq).join(' ')}`,
     wrap: (file, args, cwd, env) => {
@@ -495,7 +470,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       ssh,
       cwd: input.cwd,
       homes,
-      label: `orb ${label} (${host})`,
+      label: workRemote.reader.label,
       status: () => `orb ${label}: ${state()}`,
       describe,
       sync: () => runPromise(sync),

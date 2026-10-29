@@ -54,9 +54,11 @@ Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request
 
 Tool calls are not admitted one by one: none can change the Mac checkout.
 
+A delegated agent must be read-only. It gets no orb: its `read`, `grep`, `find`, `ls` and `git_inspect` read the lead's orb over SSH, at the same paths, so it sees the orb's current files, uncommitted ones included. This applies to coordinators and their leaves too. The same three Mac-side homes apply, using the child's own skill files. Its tool calls keep their [workspace check](work.md#execution-and-access) on every call.
+
 When the orb cannot be reached, a tool call fails with SSH's error, which reaches the model, and the footer reads `orb <id>: unreachable` until a call reaches the orb again. `/orb sync` fails with the reason. The session stays usable, and dev never recreates the orb. The Keystone token serves only orbit's API, so a token that can no longer be renewed fails only the deletion at quit, which then keeps the orb as below. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. Stopping a command ends its SSH client, which hangs up the orb's terminal.
 
-Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, delegated agents, and `work process` outside the session's directory. Quit and relaunch instead.
+Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, delegated agents that can write, a delegation whose `cwd` lies outside the orb's checkout, and `work process` outside the session's directory. Quit and relaunch instead.
 
 ### Return
 
