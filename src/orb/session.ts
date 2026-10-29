@@ -53,6 +53,7 @@ export interface OrbSessionOptions {
   readonly env: NodeJS.ProcessEnv
   readonly print: (line: string) => void
   readonly confirm?: (prompt: string) => Effect.Effect<boolean>
+  readonly secondInterrupt?: Effect.Effect<void>
   readonly cloud?: (openrc: Openrc) => { readonly keystone: Keystone; readonly orbit: Orbit }
 }
 
@@ -77,6 +78,7 @@ export interface OrbSession {
 
 export interface OrbQuit {
   readonly proceed: () => boolean
+  readonly interrupted: Effect.Effect<void>
   readonly askRetry?: Effect.Effect<boolean>
 }
 
@@ -162,6 +164,37 @@ export const returnAtQuit = <A>(
       print('Retrying the return…')
     }
   })
+
+export const capacityFailure = (
+  orbit: Pick<Orbit, 'list'>,
+  orbitUrl: string,
+  project: string,
+  refusal: OrbError
+): Effect.Effect<never, OrbError> =>
+  Effect.gen(function* () {
+    const orbs = yield* orbit.list.pipe(
+      Effect.map(views => {
+        const active = views.filter(view => view.status !== 'DELETING' && view.status !== 'DELETED')
+        if (active.length === 0)
+          return `Project ${project} has no active orb now; another project may hold the capacity, or it is still being freed.`
+        return [
+          `Project ${project} has ${active.length} active orb(s):`,
+          ...active.map(view => `  ${view.id} ${view.status} since ${view.created_at}`),
+        ].join('\n')
+      }),
+      Effect.catch(error =>
+        Effect.succeed(`The project's orbs could not be listed: ${error.message}`)
+      )
+    )
+    return yield* orbFailure(
+      `orbit has no capacity for another orb: ${refusal.message}\n${orbs}\nDelete one with: ${deleteCommand(orbitUrl, '<orb-id>')}`,
+      refusal,
+      refusal.status
+    )
+  })
+
+const unconfirmed = (orbitUrl: string, orbId: string, reason: string): string =>
+  `Orb ${orbId} could not be confirmed deleted: ${reason}\nIts record stays, and the next dev --orb deletes the orb and removes it.\nDelete it now with: ${deleteCommand(orbitUrl, orbId)}`
 
 const insideAny = (roots: readonly string[], path: string): boolean =>
   roots.some(root => isWithin(root, path))
@@ -258,6 +291,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
     conversation: input.conversation,
   })
   const sessionScope = yield* Scope.make()
+  let reachable = true
 
   const discard = (orbId: string | undefined, reason: string) =>
     Effect.gen(function* () {
@@ -266,12 +300,13 @@ export const openOrbSession = Effect.fnUntraced(function* (
         yield* Effect.ignore(record.remove)
         return
       }
-      const deleted = yield* Effect.exit(deleteRecorded(orbit, record, orbId, print))
+      print(`Deleting orb ${shortId(orbId)} after ${reason}…`)
+      const deleted = yield* Effect.exit(
+        deleteRecorded(orbit, record, orbId, print, options.secondInterrupt)
+      )
       if (Exit.isFailure(deleted)) {
         yield* record.release
-        print(
-          `orb ${shortId(orbId)} was kept after ${reason}: ${errorText(Cause.squash(deleted.cause))}\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
-        )
+        print(unconfirmed(token.orbitUrl, orbId, errorText(Cause.squash(deleted.cause))))
       }
     })
 
@@ -279,13 +314,21 @@ export const openOrbSession = Effect.fnUntraced(function* (
     yield* phase(
       `requesting an orb (${config.size.vcpus} vCPU, ${config.size.memory_mb} MB, ${config.size.disk_gb} GB, ${config.image}) from ${token.orbitUrl}`
     )
-    const created = yield* orbit.create({
-      size: config.size,
-      publicKey: record.publicKey,
-      sshAllowedCidr: config.sshAllowedCidr,
-      image: config.image,
-    })
-    yield* record.update({ phase: 'created', orbId: created.id })
+    const created = yield* orbit
+      .create({
+        size: config.size,
+        publicKey: record.publicKey,
+        sshAllowedCidr: config.sshAllowedCidr,
+        image: config.image,
+      })
+      .pipe(
+        Effect.catchIf(
+          error => error.status === 409,
+          error => capacityFailure(orbit, token.orbitUrl, token.project.name, error)
+        ),
+        Effect.tap(view => record.update({ phase: 'created', orbId: view.id })),
+        Effect.uninterruptible
+      )
     const label = shortId(created.id)
     yield* phase(`orb ${label} ${created.status}`)
     const active = yield* awaitActive(orbit, created, phase, label)
@@ -295,13 +338,18 @@ export const openOrbSession = Effect.fnUntraced(function* (
     if (host === null || keys === null || keys.length === 0 || user === null)
       return yield* orbFailure(`orb ${label} is ACTIVE without an SSH address, user or host keys`)
     yield* record.writeKnownHosts(host, keys)
-    const ssh = makeOrbSsh({
-      user,
-      host,
-      keyPath: record.keyPath,
-      knownHostsPath: record.knownHostsPath,
-      controlPath: record.controlPath,
-    })
+    const ssh = makeOrbSsh(
+      {
+        user,
+        host,
+        keyPath: record.keyPath,
+        knownHostsPath: record.knownHostsPath,
+        controlPath: record.controlPath,
+      },
+      observed => {
+        reachable = observed
+      }
+    )
     yield* phase(`connecting to ${user}@${host} over SSH`)
     yield* ssh
       .checked('true', { timeout: '30 seconds' })
@@ -333,11 +381,18 @@ export const openOrbSession = Effect.fnUntraced(function* (
     return { ssh, label, host, orbId: created.id }
   }).pipe(
     Effect.onError(cause =>
-      discard(record.current().orbId, `a failed start (${errorText(Cause.squash(cause))})`)
+      discard(
+        record.current().orbId,
+        Cause.hasInterruptsOnly(cause) ? 'the interrupted start' : 'the failed start'
+      )
     )
   )
   const { ssh, label, host, orbId } = prepared
-  let state: 'ACTIVE' | 'returning' | 'unreachable' = 'ACTIVE'
+  let returning = false
+  const state = () => {
+    if (returning) return 'returning'
+    return reachable ? 'ACTIVE' : 'unreachable'
+  }
 
   const homes = macHomes({
     checkout: checkout.root,
@@ -356,7 +411,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
     writer,
     checkout.root,
     Effect.gen(function* () {
-      state = 'returning'
+      returning = true
       const outcome = yield* returnWork({
         root: checkout.root,
         branch: checkout.branch,
@@ -371,7 +426,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
-          state = 'ACTIVE'
+          returning = false
         })
       )
     ),
@@ -401,12 +456,12 @@ export const openOrbSession = Effect.fnUntraced(function* (
       }
       print(outcomeText(label, checkout.branch, returned.value))
       yield* Scope.close(sessionScope, Exit.void)
-      const deleted = yield* Effect.exit(deleteRecorded(orbit, record, orbId, print))
+      const deleted = yield* Effect.exit(
+        deleteRecorded(orbit, record, orbId, print, quit.interrupted)
+      )
       if (Exit.isFailure(deleted)) {
         yield* record.release
-        print(
-          `Orb ${label} could not be confirmed deleted: ${errorText(Cause.squash(deleted.cause))}\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
-        )
+        print(unconfirmed(token.orbitUrl, orbId, errorText(Cause.squash(deleted.cause))))
       }
     }).pipe(Effect.provideContext(services))
 
@@ -432,7 +487,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
   }
 
   const describe = () =>
-    `Orb ${orbId} (${state}) at ${ssh.destination}\nCheckout: ${checkout.root} on ${checkout.branch}, mirrored at the same path on the orb\nRecord: ${record.directory}\nReturn its work with /orb sync; quitting returns it and deletes the orb.`
+    `Orb ${orbId} (${state()}) at ${ssh.destination}\nCheckout: ${checkout.root} on ${checkout.branch}, mirrored at the same path on the orb\nRecord: ${record.directory}\nReturn its work with /orb sync; quitting returns it and deletes the orb.`
 
   return {
     extensionFactory: createOrbExtension({
@@ -441,7 +496,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       cwd: input.cwd,
       homes,
       label: `orb ${label} (${host})`,
-      status: () => `orb ${label}: ${state}`,
+      status: () => `orb ${label}: ${state()}`,
       describe,
       sync: () => runPromise(sync),
       ...(input.commandPrefix === undefined ? {} : { commandPrefix: input.commandPrefix }),

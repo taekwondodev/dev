@@ -17,9 +17,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, Stream } from 'effect'
+import { Cause, Deferred, Effect, Exit, Fiber, Stream } from 'effect'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
-import { orbFailure, type OrbRecord, type OrbView } from '../../src/orb/domain.ts'
+import { orbFailure, type OrbError, type OrbRecord, type OrbView } from '../../src/orb/domain.ts'
+import { errorText } from '../../src/error-text.ts'
+import { deleteRecorded } from '../../src/orb/deletion.ts'
 import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/recovery.ts'
 import { claimRecord, createRecord } from '../../src/orb/registry.ts'
 import {
@@ -257,13 +259,16 @@ await claim(
     git(orb, 'reset', '-q')
 
     git(mac, 'commit', '-q', '-m', 'mac moves on')
+    writeFileSync(join(orb, 'untracked.txt'), 'changed again on the orb\n')
     const moved = checkoutState(mac)
-    const first = git(mac, 'rev-parse', branch)
     assert.deepEqual(await sync(), { kind: 'diverged', reason: 'branch-moved', branch })
     assert.deepEqual(checkoutState(mac), moved, 'a moved branch leaves the checkout untouched')
-    assert.notEqual(git(mac, 'rev-parse', branch), first, 'dev moved the branch it left')
     git(orb, 'add', '-A')
-    assert.equal(git(mac, 'rev-parse', `${branch}^{tree}`), git(orb, 'write-tree'))
+    assert.equal(
+      git(mac, 'rev-parse', `${branch}^{tree}`),
+      git(orb, 'write-tree'),
+      "dev moved the branch it left to the orb's new state"
+    )
     git(orb, 'reset', '-q')
   }
 )
@@ -440,6 +445,7 @@ const quitScenario = async (input: {
       attempt,
       {
         proceed: () => input.interrupted !== true,
+        interrupted: Effect.never,
         ...(answers === undefined
           ? {}
           : { askRetry: Effect.sync(() => answers[asked++] ?? false) }),
@@ -478,10 +484,13 @@ await claim(
 )
 
 const offered = (stdin: boolean | undefined, stdout: boolean | undefined) =>
-  orbQuit(() => true, { stdin: { isTTY: stdin }, stdout: { isTTY: stdout } }).askRetry !== undefined
+  orbQuit(
+    { proceed: () => true, interrupted: Effect.never },
+    { stdin: { isTTY: stdin }, stdout: { isTTY: stdout } }
+  ).askRetry !== undefined
 
 await claim(
-  'the quit-time return offers Retry only when both stdin and stdout are terminals, and only y retries',
+  'the quit-time return offers Retry only when both stdin and stdout are terminals, only y retries, and a signal while the prompt waits quits',
   async () => {
     const answers: Record<string, 'confirmed' | 'declined' | 'interrupted'> = {
       y: 'confirmed',
@@ -498,12 +507,22 @@ await claim(
       ['ctrlC', false],
     ] as const) {
       const quit = orbQuit(
-        () => true,
+        { proceed: () => true, interrupted: Effect.never },
         { stdin: { isTTY: true }, stdout: { isTTY: true } },
         () => Effect.succeed(answers[answer] ?? 'declined')
       )
       assert.equal(await Effect.runPromise(quit.askRetry ?? Effect.void), retries)
     }
+    const terminated = orbQuit(
+      { proceed: () => false, interrupted: Effect.void },
+      { stdin: { isTTY: true }, stdout: { isTTY: true } },
+      () => Effect.never
+    )
+    assert.equal(
+      await Effect.runPromise(terminated.askRetry ?? Effect.void),
+      false,
+      'a signal while the prompt waits quits and keeps the orb'
+    )
   }
 )
 
@@ -1126,6 +1145,283 @@ await claim(
       found.map(orb => orb.id),
       ['after', 'skew', 'error']
     )
+  }
+)
+
+const startScenario = async (
+  name: string,
+  orbit: Orbit,
+  control: {
+    readonly drive?: (fiber: Fiber.Fiber<unknown, unknown>) => Effect.Effect<void>
+    readonly secondInterrupt?: Effect.Effect<void>
+  } = {}
+) => {
+  const { mac } = newCheckout(`start-${name}`)
+  const dataHome = join(sandbox, `start-${name}-data`)
+  mkdirSync(dataHome, { mode: 0o700 })
+  const attachment = {
+    binding: { taskId: undefined },
+    authorize: () =>
+      Effect.succeed({
+        kind: 'ready',
+        grant: { useId: 'presence-use' } as unknown as WorkspaceGrant,
+      }),
+    sweeps: Stream.empty,
+  } as unknown as WorkspaceAttachment
+  const keystone: Keystone = {
+    authUrl: 'http://192.0.2.1/identity',
+    token: Effect.succeed({
+      id: 'token',
+      expiresAt: undefined,
+      orbitUrl: 'http://192.0.2.1/orbit',
+      project: { id: 'p1', name: 'demo' },
+    }),
+    invalidate: Effect.void,
+  }
+  const lines: string[] = []
+  const opening = openOrbSession(
+    {
+      pi: {} as PiApi,
+      dataHome,
+      env: {
+        OS_AUTH_URL: 'http://192.0.2.1/identity',
+        OS_USERNAME: 'demo',
+        OS_PASSWORD: 'secret',
+        OS_PROJECT_NAME: 'demo',
+      },
+      print: line => lines.push(line),
+      cloud: () => ({ keystone, orbit }),
+      ...(control.secondInterrupt === undefined
+        ? {}
+        : { secondInterrupt: control.secondInterrupt }),
+    },
+    {
+      attachment,
+      lifecycle: lifecycle.effect,
+      cwd: mac,
+      skillPaths: [],
+      conversation: join(dataHome, 'session.jsonl'),
+    }
+  ).pipe(Effect.provide(NodeServices.layer))
+  const { drive } = control
+  const exit = await Effect.runPromise(
+    drive === undefined
+      ? Effect.exit(opening)
+      : Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(opening)
+          yield* drive(fiber)
+          return yield* Fiber.await(fiber)
+        })
+  )
+  return {
+    exit,
+    error: Exit.isFailure(exit) ? errorText(Cause.squash(exit.cause)) : undefined,
+    interrupted: Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause),
+    records: readdirSync(join(dataHome, 'orbs')).map(id => join(dataHome, 'orbs', id)),
+    text: lines.join('\n'),
+  }
+}
+
+const fakeOrbit = (input: {
+  readonly create: Effect.Effect<OrbView, OrbError>
+  readonly states?: readonly OrbView['status'][]
+  readonly afterDelete?: OrbView['status']
+  readonly list?: readonly OrbView[]
+}) => {
+  const removed: string[] = []
+  const states = [...(input.states ?? [])]
+  const polled = Deferred.makeUnsafe<void>()
+  const deleteSent = Deferred.makeUnsafe<void>()
+  const orbit: Orbit = {
+    url: Effect.succeed('http://192.0.2.1/orbit'),
+    create: () => input.create,
+    get: id =>
+      Effect.sync(() => {
+        const status = removed.includes(id)
+          ? (input.afterDelete ?? 'DELETED')
+          : (states.shift() ?? 'BUILDING')
+        if (status === 'BUILDING') Deferred.doneUnsafe(polled, Effect.void)
+        return {
+          ...orbView(id, '2026-10-28T10:00:00', status),
+          fault: status === 'ERROR' ? 'No valid host was found' : null,
+        }
+      }),
+    remove: id =>
+      Effect.sync(() => {
+        removed.push(id)
+        Deferred.doneUnsafe(deleteSent, Effect.void)
+        return orbView(id, '2026-10-28T10:00:00', 'DELETING')
+      }),
+    list: Effect.succeed(input.list ?? []),
+  }
+  return {
+    orbit,
+    removed,
+    building: Deferred.await(polled),
+    deleteSent: Deferred.await(deleteSent),
+  }
+}
+
+const createdOrb = (status: OrbView['status'] = 'RESERVING') =>
+  Effect.succeed(orbView('orb-started', '2026-10-28T10:00:00', status))
+
+await claim(
+  "a refused creation ends the launch naming orbit's answer and leaves no record; a 409 also lists the project's active orbs and the delete command",
+  async () => {
+    for (const status of [401, 403, 502, 503]) {
+      const { orbit, removed } = fakeOrbit({
+        create: Effect.fail(
+          orbFailure(
+            `orbit answered POST /v1/orbs with ${status}: refused ${status}`,
+            undefined,
+            status
+          )
+        ),
+      })
+      const started = await startScenario(`refused-${status}`, orbit)
+      assert.match(started.error ?? '', new RegExp(`with ${status}: refused ${status}`))
+      assert.deepEqual(started.records, [], `${status} leaves no record`)
+      assert.deepEqual(removed, [], 'no orb was created, so none is deleted')
+    }
+    const { orbit } = fakeOrbit({
+      create: Effect.fail(
+        orbFailure('orbit answered POST /v1/orbs with 409: no free lease', undefined, 409)
+      ),
+      list: [
+        orbView('orb-lead-0000', '2026-10-28T09:00:00', 'ACTIVE'),
+        orbView('orb-child-000', '2026-10-28T09:10:00', 'BUILDING'),
+        orbView('orb-leaving-0', '2026-10-28T09:20:00', 'DELETING'),
+      ],
+    })
+    const full = await startScenario('refused-409', orbit)
+    const message = full.error ?? ''
+    assert.match(
+      message,
+      /no capacity for another orb: orbit answered POST \/v1\/orbs with 409: no free lease/
+    )
+    assert.match(
+      message,
+      /Project demo has 2 active orb\(s\):\n  orb-lead-0000 ACTIVE since .*\n  orb-child-000 BUILDING since /
+    )
+    assert.doesNotMatch(message, /orb-leaving-0/, 'an orb being deleted is not active')
+    assert.ok(message.includes('curl -X DELETE'), message)
+    assert.ok(message.includes('http://192.0.2.1/orbit/v1/orbs/<orb-id>'), message)
+    assert.deepEqual(full.records, [])
+  }
+)
+
+await claim(
+  "an orb that reaches ERROR is deleted, orbit's fault is named, and its record is removed once orbit reports DELETED",
+  async () => {
+    const { orbit, removed } = fakeOrbit({ create: createdOrb(), states: ['ERROR'] })
+    const started = await startScenario('error', orbit)
+    assert.match(started.error ?? '', /orb orb-star reached ERROR: No valid host was found/)
+    assert.deepEqual(removed, ['orb-started'])
+    assert.match(started.text, /Deleting orb orb-star after the failed start/)
+    assert.match(started.text, /orb orb-star deleted/)
+    assert.deepEqual(started.records, [])
+  }
+)
+
+await claim(
+  'an interrupt while the creation request is in flight waits for its answer, then deletes the orb it created and removes the record once orbit reports DELETED',
+  async () => {
+    const requested = Deferred.makeUnsafe<void>()
+    const answer = Deferred.makeUnsafe<void>()
+    const { orbit, removed } = fakeOrbit({
+      create: Deferred.succeed(requested, undefined).pipe(
+        Effect.andThen(Deferred.await(answer)),
+        Effect.andThen(createdOrb())
+      ),
+    })
+    const started = await startScenario('interrupt-request', orbit, {
+      drive: fiber =>
+        Effect.gen(function* () {
+          yield* Deferred.await(requested)
+          fiber.interruptUnsafe()
+          yield* Deferred.succeed(answer, undefined)
+        }),
+    })
+    assert.equal(started.interrupted, true, started.error ?? 'not interrupted')
+    assert.deepEqual(removed, ['orb-started'], 'the orb the request created is deleted')
+    assert.match(started.text, /Deleting orb orb-star after the interrupted start/)
+    assert.deepEqual(started.records, [])
+  }
+)
+
+await claim(
+  'an interrupt during BUILDING deletes the orb; a second interrupt stops waiting for DELETED and keeps the record, unlocked, for the next recovery',
+  async () => {
+    const building = fakeOrbit({ create: createdOrb('BUILDING'), states: ['BUILDING'] })
+    const cancelled = await startScenario('interrupt-building', building.orbit, {
+      drive: fiber => Effect.andThen(building.building, Effect.forkChild(Fiber.interrupt(fiber))),
+    })
+    assert.equal(cancelled.interrupted, true, cancelled.error ?? 'not interrupted')
+    assert.deepEqual(building.removed, ['orb-started'])
+    assert.deepEqual(cancelled.records, [])
+
+    const second = Deferred.makeUnsafe<void>()
+    const stuck = fakeOrbit({
+      create: createdOrb('BUILDING'),
+      states: ['BUILDING'],
+      afterDelete: 'DELETING',
+    })
+    const kept = await startScenario('interrupt-twice', stuck.orbit, {
+      secondInterrupt: Deferred.await(second),
+      drive: fiber =>
+        Effect.gen(function* () {
+          yield* stuck.building
+          yield* Effect.forkChild(Fiber.interrupt(fiber))
+          yield* stuck.deleteSent
+          yield* Deferred.succeed(second, undefined)
+        }),
+    })
+    assert.equal(kept.interrupted, true, kept.error ?? 'not interrupted')
+    assert.deepEqual(stuck.removed, ['orb-started'], 'DELETE was sent before the wait stopped')
+    assert.equal(kept.records.length, 1, 'the record stays for the recovery sweep')
+    const [directory = ''] = kept.records
+    const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'))
+    assert.deepEqual([record.phase, record.orbId], ['deleting', 'orb-started'])
+    assert.match(kept.text, /the wait for DELETED was interrupted while orb orb-star read DELETING/)
+    assert.match(kept.text, /next dev --orb deletes the orb/)
+    assert.ok(kept.text.includes('http://192.0.2.1/orbit/v1/orbs/orb-started'))
+    const claimed = await run(claimRecord(directory))
+    assert.equal(claimed.kind, 'claimed', 'the interrupted session released the record lock')
+    if (claimed.kind === 'claimed') await run(claimed.record.release)
+  }
+)
+
+await claim(
+  'at quit, an interrupt stops only the wait for DELETED: the DELETE was sent and the record stays in phase deleting',
+  async () => {
+    const dataHome = join(sandbox, 'quit-stop-data')
+    mkdirSync(dataHome, { mode: 0o700 })
+    const record = await run(createRecord(dataHome, recordFields(join(sandbox, 'quit-stop'))))
+    await run(record.update({ phase: 'active', orbId: 'orb-quitting' }))
+    const stuck = fakeOrbit({ create: createdOrb(), afterDelete: 'DELETING' })
+    const lines: string[] = []
+    const stopped = await run(
+      Effect.exit(
+        deleteRecorded(
+          stuck.orbit,
+          record,
+          'orb-quitting',
+          line => lines.push(line),
+          stuck.deleteSent
+        )
+      )
+    )
+    assert.equal(Exit.isFailure(stopped), true)
+    if (Exit.isFailure(stopped))
+      assert.match(
+        errorText(Cause.squash(stopped.cause)),
+        /the wait for DELETED was interrupted while orb orb-quit read DELETING/
+      )
+    assert.deepEqual(stuck.removed, ['orb-quitting'])
+    assert.deepEqual(lines, ['Deleting orb orb-quit (DELETING 0:00)'])
+    assert.equal(record.current().phase, 'deleting', 'the next recovery deletes the orb')
+    assert.ok(existsSync(join(record.directory, 'record.json')))
+    await run(record.release)
   }
 )
 

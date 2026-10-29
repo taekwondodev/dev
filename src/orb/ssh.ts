@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { Duration, Effect, Schedule, type Scope } from 'effect'
 import { errorText } from '../error-text.ts'
@@ -96,15 +96,31 @@ export const sshEnvironment = (): NodeJS.ProcessEnv => {
 }
 
 const DEFAULT_TIMEOUT = Duration.minutes(2)
+const SSH_FAILED = 255
 
-export const makeOrbSsh = (target: SshTarget): OrbSsh => {
+export const makeOrbSsh = (
+  target: SshTarget,
+  observe: (reachable: boolean) => void = () => undefined
+): OrbSsh => {
   const options = sshOptions(target)
   const destination = `${target.user}@${target.host}`
+  const observed = (child: ChildProcessWithoutNullStreams, tty: boolean) => {
+    let clientError = false
+    if (tty)
+      child.stderr.on('data', () => {
+        clientError = true
+      })
+    child.once('close', code => {
+      if (code !== null) observe(code !== SSH_FAILED || (tty && !clientError))
+    })
+    return child
+  }
   const run = (script: string, runOptions: RunOptions = {}): Effect.Effect<SshReply, OrbError> =>
     Effect.callback<SshReply, OrbError>(resume => {
       const child = spawn('ssh', [...options, destination, script], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: sshEnvironment(),
+        detached: true,
       })
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
@@ -114,15 +130,16 @@ export const makeOrbSsh = (target: SshTarget): OrbSsh => {
       child.once('error', cause =>
         resume(Effect.fail(orbFailure(`Cannot run ssh: ${errorText(cause)}`, cause)))
       )
-      child.once('close', (code, signal) =>
+      child.once('close', (code, signal) => {
+        if (code !== null) observe(code !== SSH_FAILED)
         resume(
           Effect.succeed({
             stdout: Buffer.concat(stdout),
             stderr: Buffer.concat(stderr).toString('utf8'),
-            code: code ?? (signal === null ? 255 : 128),
+            code: code ?? (signal === null ? SSH_FAILED : 128),
           })
         )
-      )
+      })
       child.stdin.end(runOptions.input)
       return Effect.sync(() => {
         child.kill('SIGKILL')
@@ -139,7 +156,7 @@ export const makeOrbSsh = (target: SshTarget): OrbSsh => {
         ? Effect.succeed(reply.stdout)
         : Effect.fail(
             orbFailure(
-              reply.code === 255
+              reply.code === SSH_FAILED
                 ? `ssh ${destination} failed: ${reply.stderr.trim() || 'connection error'}`
                 : reply.stderr.trim() || `the orb command exited with ${reply.code}`,
               undefined,
@@ -148,17 +165,25 @@ export const makeOrbSsh = (target: SshTarget): OrbSsh => {
           )
     )
   const master = Effect.acquireRelease(
-    Effect.sync(() =>
-      spawn('ssh', [...masterOptions(target), destination], {
+    Effect.sync(() => {
+      const child = spawn('ssh', [...masterOptions(target), destination], {
         stdio: 'ignore',
         env: sshEnvironment(),
+        detached: true,
       })
-    ),
-    (child: ChildProcess) =>
+      const stop = (): void => {
+        child.kill('SIGTERM')
+      }
+      process.once('exit', stop)
+      return { child, stop }
+    }),
+    ({ child, stop }) =>
       Effect.sync(() => {
+        process.removeListener('exit', stop)
         child.kill('SIGTERM')
       })
   ).pipe(
+    Effect.map(({ child }) => child),
     Effect.flatMap(child =>
       Effect.suspend(() => {
         if (existsSync(target.controlPath)) return Effect.void
@@ -182,15 +207,21 @@ export const makeOrbSsh = (target: SshTarget): OrbSsh => {
     checked,
     ttyArgs: script => [...options, '-tt', destination, script],
     spawnPlain: script =>
-      spawn('ssh', [...options, destination, script], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: sshEnvironment(),
-      }),
+      observed(
+        spawn('ssh', [...options, destination, script], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: sshEnvironment(),
+        }),
+        false
+      ),
     spawnTty: script =>
-      spawn('ssh', [...options, '-tt', destination, script], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: sshEnvironment(),
-      }),
+      observed(
+        spawn('ssh', [...options, '-tt', destination, script], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: sshEnvironment(),
+        }),
+        true
+      ),
     master,
   }
 }

@@ -7,6 +7,7 @@ import type {
   BashOperations,
   EditOperations,
   ExtensionAPI,
+  ExtensionContext,
   FindOperations,
   LsOperations,
   ReadOperations,
@@ -402,10 +403,17 @@ export const createOrbExtension =
       },
     })
 
-    api.on('session_start', (_event, context) => {
+    const showStatus = (context: ExtensionContext): void => {
       if (context.hasUI) context.ui.setStatus(STATUS_KEY, input.status())
-    })
-    api.on('user_bash', () => ({ operations: bash }))
+    }
+    api.on('session_start', (_event, context) => showStatus(context))
+    api.on('tool_execution_end', (_event, context) => showStatus(context))
+    api.on('user_bash', (_event, context) => ({
+      operations: {
+        exec: (command, directory, options) =>
+          bash.exec(command, directory, options).finally(() => showStatus(context)),
+      },
+    }))
     api.on('before_agent_start', (event, context) => {
       const line = `Current working directory: ${context.cwd}`
       if (!event.systemPrompt.includes(line)) return undefined
@@ -427,7 +435,7 @@ export const createOrbExtension =
             .sync()
             .catch((cause: unknown) => `orb sync failed: ${errorText(cause)}`)
         if (context.hasUI) {
-          context.ui.setStatus(STATUS_KEY, input.status())
+          showStatus(context)
           api.sendMessage(
             { customType: 'dev/orb', content: text, display: true },
             { triggerTurn: false }
