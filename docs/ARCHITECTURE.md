@@ -17,7 +17,7 @@ Dev serves one person on one macOS account, primarily working on code, UI protot
 | Workspace authority     | Durable reservations, workspace uses, write admission, isolation and release                        |
 | URL reader              | Session-local retrieval, extraction and document snapshots                                          |
 | Browser owner           | Shared Chrome, authenticated profile copy and render isolation for one data home                    |
-| Orb session             | Under `dev --orb`: the orb's lifecycle, SSH execution of the lead's tools and the return            |
+| Orb session             | Under `dev --orb`: the orbs' lifecycle, SSH execution of the lead's tools and the returns           |
 
 A workflow verifies the artifact. The work controller observes execution; the workspace authority decides admission and release from its recorded and observed facts. These responsibilities do not substitute for one another.
 

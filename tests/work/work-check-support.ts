@@ -38,7 +38,7 @@ const POLL_INTERVAL_MS = 50
 const TIMING = { attempts: WAIT_LIMIT_MS / POLL_INTERVAL_MS, intervalMs: POLL_INTERVAL_MS }
 
 export const settled = (record: AttemptView): boolean =>
-  record.status !== 'running' && record.status !== 'waiting'
+  record.status !== 'provisioning' && record.status !== 'running' && record.status !== 'waiting'
 
 const FAILURE_FACTS = [
   'error',

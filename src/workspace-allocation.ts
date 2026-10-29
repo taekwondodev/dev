@@ -16,6 +16,7 @@ import {
   type WorkspaceExecution,
   type WorkspaceHandoff,
   type AllocationReason,
+  type StartCommit,
   type WorkspaceId,
 } from './workspace-domain.ts'
 import {
@@ -29,6 +30,7 @@ import {
   assertManagedCheckoutSupported,
   canonicalGitWorkspace,
   currentCommit,
+  pinnedCommit,
 } from './workspace-git.ts'
 import { canonicalPathSlot } from './workspace-paths.ts'
 import {
@@ -216,6 +218,7 @@ const allocateWorktree = (
   source: WorkspaceSource,
   taskId: WorkspaceId,
   reason: AllocationReason,
+  start: StartCommit | undefined,
   sweep: AllocationSweep,
   admitWriter: (allocation: Allocation) => WorkspaceAuthorization
 ): WorkspaceAuthorization => {
@@ -255,7 +258,7 @@ const allocateWorktree = (
       gateIntents
     )
     state.extraGates.push(...pathGates.extras)
-    const commit = currentCommit(source.git)
+    const commit = start === undefined ? currentCommit(source.git) : pinnedCommit(source.git, start)
     const intent = {
       id: allocationId,
       kind: 'allocation',
@@ -391,39 +394,49 @@ export const allocateDelegatedWorkspace = (
   source: WorkspaceSource,
   taskId: WorkspaceId,
   execution: WorkspaceExecution | undefined,
+  start: StartCommit | undefined,
   sweep: AllocationSweep
 ): WorkspaceAuthorization =>
-  allocateWorktree(authority, state, source, taskId, 'delegated-writer', sweep, allocation => {
-    const use = allocatedUse(state, allocation, state.binding.revision, execution)
-    const grant = toGrant(
-      authority,
-      source.repo,
-      allocation.workspace,
-      use,
-      allocation.intent.targetPath,
-      'write'
-    )
-    const kind: LeaseKind =
-      execution === undefined ? { kind: 'ordinary' } : { kind: 'execution', execution }
-    state.leases.set(use.id, {
-      ...kind,
-      grant,
-      repositoryId: source.repo,
-      useId: use.id,
-      gates: allocation.gates,
-      released: false,
-    })
-    inDb(authority, source.repo, db =>
-      transaction(db, () => {
-        putWorkspace(db, allocation.workspace)
-        putReservation(db, allocation.reservation)
-        putUse(db, use)
-        saveOperation(db, allocation.confirmed)
+  allocateWorktree(
+    authority,
+    state,
+    source,
+    taskId,
+    'delegated-writer',
+    start,
+    sweep,
+    allocation => {
+      const use = allocatedUse(state, allocation, state.binding.revision, execution)
+      const grant = toGrant(
+        authority,
+        source.repo,
+        allocation.workspace,
+        use,
+        allocation.intent.targetPath,
+        'write'
+      )
+      const kind: LeaseKind =
+        execution === undefined ? { kind: 'ordinary' } : { kind: 'execution', execution }
+      state.leases.set(use.id, {
+        ...kind,
+        grant,
+        repositoryId: source.repo,
+        useId: use.id,
+        gates: allocation.gates,
+        released: false,
       })
-    )
-    state.parked = false
-    return { kind: 'ready', grant }
-  })
+      inDb(authority, source.repo, db =>
+        transaction(db, () => {
+          putWorkspace(db, allocation.workspace)
+          putReservation(db, allocation.reservation)
+          putUse(db, use)
+          saveOperation(db, allocation.confirmed)
+        })
+      )
+      state.parked = false
+      return { kind: 'ready', grant }
+    }
+  )
 
 export const isolateContendedWriter = (
   authority: WorkspaceAuthority,
@@ -445,6 +458,7 @@ export const isolateContendedWriter = (
     source,
     taskId,
     'checkout-contention',
+    undefined,
     sweep,
     allocation => {
       const destination = allocation.intent.targetPath

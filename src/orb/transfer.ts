@@ -18,7 +18,7 @@ export interface OrbRepository {
 
 export interface LocalCheckout {
   readonly root: string
-  readonly branch: string
+  readonly branch?: string
   readonly head: string
 }
 
@@ -156,7 +156,7 @@ export const hardenedGit = Effect.fnUntraced(function* (
 
 export const inspectCheckout = Effect.fnUntraced(function* (
   cwd: string
-): Effect.fn.Return<LocalCheckout, OrbError, GitServices> {
+): Effect.fn.Return<LocalCheckout & { readonly branch: string }, OrbError, GitServices> {
   const root = (yield* plainGit(cwd, ['rev-parse', '--show-toplevel'])).stdout.trim()
   const branch = (yield* plainGit(
     root,
@@ -173,6 +173,17 @@ export const inspectCheckout = Effect.fnUntraced(function* (
       `dev --orb needs at least one commit on ${branch} in ${root}. Commit once, then launch again.`
     )
   return { root, branch, head: head.stdout.trim() }
+})
+
+export const inspectWorktree = Effect.fnUntraced(function* (
+  cwd: string
+): Effect.fn.Return<LocalCheckout, OrbError, GitServices> {
+  const root = (yield* plainGit(cwd, ['rev-parse', '--show-toplevel'])).stdout.trim()
+  if (root !== cwd) return yield* orbFailure(`${cwd} is not the root of its worktree (${root})`)
+  if ((yield* plainGit(root, ['symbolic-ref', '-q', 'HEAD'], [0, 1])).exitCode === 0)
+    return yield* orbFailure(`The managed worktree ${root} is on a branch, not on a detached HEAD`)
+  const head = (yield* plainGit(root, ['rev-parse', '--verify', 'HEAD^{commit}'])).stdout.trim()
+  return { root, head }
 })
 
 const temporaryIndex = Effect.acquireRelease(
@@ -199,24 +210,43 @@ export const snapshot = Effect.fnUntraced(function* (
   return { commit, index }
 })
 
+const ownedDirectory = (variable: string): readonly string[] => [
+  `if [ ! -d "$${variable}" ]; then sudo -n mkdir -p "$${variable}"; fi`,
+  `if [ ! -O "$${variable}" ]; then sudo -n chown "$(id -un):$(id -gn)" "$${variable}"; fi`,
+]
+
+const UPLOAD_REF = 'refs/dev/upload'
+
 const orbInitScript = (
   root: string,
-  branch: string,
+  branch: string | undefined,
   identity: { readonly name?: string; readonly email?: string }
 ): string =>
   [
     'set -e',
     `r=${shq(root)}`,
-    'if [ ! -d "$r" ]; then sudo -n mkdir -p "$r"; fi',
-    'if [ ! -O "$r" ]; then sudo -n chown "$(id -un):$(id -gn)" "$r"; fi',
+    ...ownedDirectory('r'),
     'git init -q "$r"',
     'git -C "$r" config receive.denyCurrentBranch updateInstead',
-    `git -C "$r" symbolic-ref HEAD ${shq(`refs/heads/${branch}`)}`,
+    ...(branch === undefined
+      ? []
+      : [`git -C "$r" symbolic-ref HEAD ${shq(`refs/heads/${branch}`)}`]),
     ...(identity.name === undefined ? [] : [`git -C "$r" config user.name ${shq(identity.name)}`]),
     ...(identity.email === undefined
       ? []
       : [`git -C "$r" config user.email ${shq(identity.email)}`]),
   ].join('\n')
+
+const orbCheckoutScript = (root: string, checkout: LocalCheckout, uploaded: string): string =>
+  checkout.branch === undefined
+    ? [
+        'set -e',
+        `r=${shq(root)}`,
+        `git -C "$r" -c core.hooksPath=/dev/null checkout -q --detach ${uploaded}`,
+        `git -C "$r" update-ref -d ${UPLOAD_REF}`,
+        `git -C "$r" reset -q ${checkout.head}`,
+      ].join('\n')
+    : `git -C ${shq(root)} reset -q ${checkout.head}`
 
 const orbEndScript = (root: string): string =>
   [
@@ -256,8 +286,13 @@ export const upload = Effect.fnUntraced(function* (input: {
       ...(email === undefined ? {} : { email }),
     })
   )
-  yield* git.run(['push', '-q', repository.url, `${taken.commit}:refs/heads/${checkout.branch}`])
-  yield* repository.run(`git -C ${shq(input.orbPath)} reset -q ${checkout.head}`)
+  yield* git.run([
+    'push',
+    '-q',
+    repository.url,
+    `${taken.commit}:${checkout.branch === undefined ? UPLOAD_REF : `refs/heads/${checkout.branch}`}`,
+  ])
+  yield* repository.run(orbCheckoutScript(input.orbPath, checkout, taken.commit))
   yield* git.run(['update-ref', input.baseRef, taken.commit])
   return { snapshot: taken.commit }
 })
@@ -358,7 +393,7 @@ export const fetchWork = Effect.fnUntraced(function* (
 
 export const returnWork = Effect.fnUntraced(function* (input: {
   readonly root: string
-  readonly branch: string
+  readonly branch?: string
   readonly orbPath: string
   readonly repository: OrbRepository
   readonly baseRef: string
@@ -372,7 +407,14 @@ export const returnWork = Effect.fnUntraced(function* (input: {
   const { end, orbHead, base, synced, work: orbWork } = fetched
   const diverged = (reason: Divergence) => ({ kind: 'diverged', reason, commit: orbWork }) as const
   const symbolic = yield* git.run(['symbolic-ref', '-q', 'HEAD'], { exitCodes: [0, 1] })
-  if (symbolic.stdout.trim() !== `refs/heads/${input.branch}`) return diverged('branch-switched')
+  const branchRef = input.branch === undefined ? undefined : `refs/heads/${input.branch}`
+  if (symbolic.stdout.trim() !== (branchRef ?? '')) return diverged('branch-switched')
+  const moveHead = (to: string, from: string) =>
+    git.run(
+      branchRef === undefined
+        ? ['update-ref', '--no-deref', 'HEAD', to, from]
+        : ['update-ref', branchRef, to, from]
+    )
   const head = yield* git.text(['rev-parse', '--verify', 'HEAD^{commit}'])
   const ancestor = yield* git.run(['merge-base', '--is-ancestor', head, orbHead], {
     exitCodes: [0, 1],
@@ -402,21 +444,70 @@ export const returnWork = Effect.fnUntraced(function* (input: {
           `The return was refused and nothing was written:\n${refused.map(reason => `- ${reason}`).join('\n')}`
         )
       yield* input.beforeWrite
-      const branchRef = `refs/heads/${input.branch}`
-      if (orbHead !== head) yield* git.run(['update-ref', branchRef, orbHead, head])
+      if (orbHead !== head) yield* moveHead(orbHead, head)
       yield* git
         .run(['read-tree', '-m', '-u', local.commit, tree], { index: local.index })
         .pipe(
           Effect.tapError(() =>
-            orbHead === head
-              ? Effect.void
-              : Effect.ignore(git.run(['update-ref', branchRef, head, orbHead]))
+            orbHead === head ? Effect.void : Effect.ignore(moveHead(head, orbHead))
           )
         )
       yield* git.run(['reset', '-q'])
       yield* git.run(['update-ref', input.baseRef, end])
       const commits = Number(yield* git.text(['rev-list', '--count', `${head}..${orbHead}`]))
       return { kind: 'returned', head: orbHead, commits, files: changes.length } as const
+    })
+  )
+})
+
+const mirrorScript = (input: {
+  readonly root: string
+  readonly worktree: string
+  readonly head: string
+  readonly snapshot: string
+  readonly ref: string
+}): string =>
+  [
+    'set -e',
+    `r=${shq(input.root)}`,
+    `w=${shq(input.worktree)}`,
+    'p=$(dirname "$w")',
+    'g() { git -c core.hooksPath=/dev/null "$@"; }',
+    'if [ -e "$w" ]; then g -C "$r" worktree remove --force "$w"; fi',
+    'g -C "$r" worktree prune',
+    ...ownedDirectory('p'),
+    `g -C "$r" worktree add -q --detach "$w" ${input.head}`,
+    `g -C "$w" read-tree -m -u HEAD ${input.snapshot}`,
+    'g -C "$w" reset -q',
+    `g -C "$r" update-ref -d ${input.ref}`,
+  ].join('\n')
+
+export const mirrorWorktree = Effect.fnUntraced(function* (input: {
+  readonly worktree: string
+  readonly orbPath: string
+  readonly root: string
+  readonly repository: OrbRepository
+  readonly branches: readonly { readonly name: string; readonly commit: string }[]
+}): Effect.fn.Return<void, OrbError, GitServices> {
+  const { repository } = input
+  const git = yield* hardenedGit(input.worktree, repository.protocol, repository.gitSshCommand)
+  const taken = yield* Effect.scoped(snapshot(git))
+  const head = yield* git.text(['rev-parse', '--verify', 'HEAD^{commit}'])
+  const ref = `refs/dev/mirror/${randomUUID()}`
+  yield* git.run([
+    'push',
+    '-q',
+    repository.url,
+    `${taken.commit}:${ref}`,
+    ...input.branches.map(branch => `+${branch.commit}:refs/heads/${branch.name}`),
+  ])
+  yield* repository.run(
+    mirrorScript({
+      root: input.root,
+      worktree: input.orbPath,
+      head,
+      snapshot: taken.commit,
+      ref,
     })
   )
 })

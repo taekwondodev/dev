@@ -741,6 +741,37 @@ try {
   )
 
   await claim(
+    'a delegated writer with a start commit starts from the commit its pinned ref names, and a commit the ref does not name is refused before any worktree exists',
+    async () => {
+      const owner = await reserve(userCheckout('pinned-start'))
+      const elsewhere = join(sandbox, 'pinned-start-orb')
+      git(['worktree', 'add', '--quiet', '--detach', elsewhere, 'main'], repo)
+      writeFileSync(join(elsewhere, 'orb.txt'), 'committed on the orb\n')
+      git(['add', 'orb.txt'], elsewhere)
+      git(['commit', '--quiet', '-m', 'orb commit'], elsewhere)
+      const commit = git(['rev-parse', 'HEAD'], elsewhere)
+      const ref = `refs/dev/orb/${newId()}/fork/${newId()}`
+      git(['update-ref', ref, commit], repo)
+      const child = ready(
+        await owner.owner.authorize({ kind: 'delegated-write', startCommit: { ref, commit } })
+      )
+      assert.equal(git(['rev-parse', 'HEAD'], child.checkout), commit)
+      assert.notEqual(git(['rev-parse', 'HEAD'], owner.write.checkout), commit)
+      const worktrees = git(['worktree', 'list', '--porcelain'], repo)
+      const stale = git(['rev-parse', 'main'], repo)
+      await assert.rejects(
+        owner.owner.authorize({
+          kind: 'delegated-write',
+          startCommit: { ref, commit: stale },
+        }),
+        (error: Error) => error.message.includes(`is not the commit ${ref} pins`)
+      )
+      assert.equal(git(['worktree', 'list', '--porcelain'], repo), worktrees)
+      await owner.owner.close()
+    }
+  )
+
+  await claim(
     'a child with a GitHub target retains integration-unknown when a sibling directory cannot be read, rather than treating an incomplete PR search as not-integrated',
     async () => {
       const owner = await reserve(userCheckout('unknown-sibling'))

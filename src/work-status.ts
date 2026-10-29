@@ -33,7 +33,10 @@ const agentTitles = (snapshot: WorkSnapshot, agents: readonly AttemptView[]): st
 export const activeWorkChildren = (snapshot: WorkSnapshot): readonly AttemptView[] =>
   snapshot.records.filter(
     record =>
-      record.kind === 'agent' && (record.status === 'running' || record.status === 'waiting')
+      record.kind === 'agent' &&
+      (record.status === 'provisioning' ||
+        record.status === 'running' ||
+        record.status === 'waiting')
   )
 
 export const workStatusText = (
@@ -57,6 +60,8 @@ export const workStatusText = (
   const titles = agentTitles(snapshot, agents)
   const models = agents
     .map((record, index) => {
+      if (record.status === 'provisioning')
+        return `${titles[index]} orb ${record.orb?.status ?? 'requested'}`
       const percentage = record.context?.percent
       const pressure = typeof percentage === 'number' ? `${Math.round(percentage)}%` : 'ctx ?'
       const model = record.model === undefined ? 'model pending' : shortModel(record.model)

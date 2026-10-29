@@ -77,7 +77,7 @@ export const OrbRecordSchema = Schema.Struct({
     projectName: Schema.NonEmptyString,
   }),
   checkout: Schema.NonEmptyString,
-  branch: Schema.NonEmptyString,
+  branch: Schema.optional(Schema.NonEmptyString),
   orbPath: Schema.NonEmptyString,
   baseRef: Schema.NonEmptyString,
   uploadedHead: Schema.optional(Schema.NonEmptyString),

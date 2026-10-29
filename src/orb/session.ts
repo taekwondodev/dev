@@ -1,4 +1,4 @@
-import { Cause, Clock, Duration, Effect, Exit, Schedule, Scope } from 'effect'
+import { Cause, Clock, Effect, Exit, Scope } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { ChildProcessSpawner } from 'effect/process'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -21,15 +21,10 @@ import {
   type Orbit,
 } from './cloud.ts'
 import { readOrbConfig } from './config.ts'
-import {
-  deleteCommand,
-  orbFailure,
-  shortId,
-  type OrbError,
-  type OrbStatus,
-  type OrbView,
-} from './domain.ts'
+import { deleteCommand, orbFailure, shortId, type OrbError } from './domain.ts'
 import { clock, deleteRecorded } from './deletion.ts'
+import { activeOrbs, awaitActive, checkTools, connect, sshAddress } from './provision.ts'
+import { makeChildOrbs } from './children.ts'
 import { recoverOrbs } from './recovery.ts'
 import { createRecord } from './registry.ts'
 import { makeOrbSsh, shq, sshOptions, ttyScript } from './ssh.ts'
@@ -84,10 +79,6 @@ export type SettledReturn =
 
 type Services = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 
-const POLL_INTERVAL = Duration.seconds(5)
-const ACTIVE_LIMIT = Duration.minutes(15)
-const SSH_LIMIT_TRIES = 24
-const REQUIRED_TOOLS = ['bash', 'git', 'rg', 'grep'] as const
 const FORWARDED_GIT_SETTINGS = ['GIT_OPTIONAL_LOCKS', 'GIT_TERMINAL_PROMPT', 'GIT_NO_LAZY_FETCH']
 
 const divergenceText = (reason: Divergence, branch: string): string => {
@@ -170,7 +161,7 @@ export const capacityFailure = (
   Effect.gen(function* () {
     const orbs = yield* orbit.list.pipe(
       Effect.map(views => {
-        const active = views.filter(view => view.status !== 'DELETING' && view.status !== 'DELETED')
+        const active = activeOrbs(views)
         if (active.length === 0)
           return `Project ${project} has no active orb now; another project may hold the capacity, or it is still being freed.`
         return [
@@ -299,12 +290,10 @@ export const openOrbSession = Effect.fnUntraced(function* (
       )
     const label = shortId(created.id)
     yield* phase(`orb ${label} ${created.status}`)
-    const active = yield* awaitActive(orbit, created, phase, label)
-    const host = active.ssh_host
-    const keys = active.ssh_host_keys
-    const user = active.ssh_user
-    if (host === null || keys === null || keys.length === 0 || user === null)
-      return yield* orbFailure(`orb ${label} is ACTIVE without an SSH address, user or host keys`)
+    const active = yield* awaitActive(orbit, created, label, status =>
+      phase(`orb ${label} ${status}`)
+    )
+    const { host, user, keys } = yield* sshAddress(active, label)
     yield* record.writeKnownHosts(host, keys)
     const ssh = makeOrbSsh(
       {
@@ -319,22 +308,11 @@ export const openOrbSession = Effect.fnUntraced(function* (
       }
     )
     yield* phase(`connecting to ${user}@${host} over SSH`)
-    yield* ssh
-      .checked('true', { timeout: '30 seconds' })
-      .pipe(Effect.retry({ schedule: Schedule.spaced(POLL_INTERVAL), times: SSH_LIMIT_TRIES }))
+    yield* connect(ssh)
     yield* Scope.provide(sessionScope)(ssh.master).pipe(
       Effect.catch(error => phase(`continuing without a shared SSH connection: ${error.message}`))
     )
-    const missing = (yield* ssh.checked(
-      `for t in ${REQUIRED_TOOLS.join(' ')}; do command -v "$t" >/dev/null 2>&1 || echo "$t"; done`
-    ))
-      .toString('utf8')
-      .split('\n')
-      .filter(line => line.trim().length > 0)
-    if (missing.length > 0)
-      return yield* orbFailure(
-        `the image ${config.image} lacks ${missing.join(', ')}; dev --orb needs ${REQUIRED_TOOLS.join(', ')}`
-      )
+    yield* checkTools(ssh, config.image)
     yield* phase(
       `uploading ${checkout.branch} at ${checkout.head.slice(0, 7)} with its uncommitted changes to ${checkout.root}`
     )
@@ -433,8 +411,23 @@ export const openOrbSession = Effect.fnUntraced(function* (
       }
     }).pipe(Effect.provideContext(services))
 
+  const children = makeChildOrbs(
+    {
+      dataHome: options.dataHome,
+      keystone: record.current().keystone,
+      token,
+      orbit,
+      config,
+      conversation: input.conversation,
+      lead: { ssh, root: checkout.root, label: "the lead's orb", record: record.id },
+      lifecycle: input.lifecycle,
+    },
+    services
+  )
+
   const workRemote: WorkRemote = {
     checkout: checkout.root,
+    children,
     reader: {
       label: `orb ${label} (${host})`,
       user: ssh.target.user,
@@ -522,30 +515,3 @@ export const withReturnAdmission = <A, E, R>(
       )
   )
 }
-
-const awaitActive = Effect.fnUntraced(function* (
-  orbit: Orbit,
-  created: OrbView,
-  phase: (text: string) => Effect.Effect<void>,
-  label: string
-): Effect.fn.Return<OrbView, OrbError> {
-  let last: OrbStatus = created.status
-  const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(ACTIVE_LIMIT)
-  for (;;) {
-    const view = yield* orbit.get(created.id)
-    if (view.status !== last) {
-      last = view.status
-      yield* phase(`orb ${label} ${view.status}`)
-    }
-    if (view.status === 'ACTIVE') return view
-    if (view.status !== 'RESERVING' && view.status !== 'BUILDING')
-      return yield* orbFailure(
-        `orb ${label} reached ${view.status}: ${view.fault ?? 'no fault reported'}`
-      )
-    if ((yield* Clock.currentTimeMillis) > deadline)
-      return yield* orbFailure(
-        `orb ${label} did not become ACTIVE within ${Duration.format(ACTIVE_LIMIT)}`
-      )
-    yield* Effect.sleep(POLL_INTERVAL)
-  }
-})

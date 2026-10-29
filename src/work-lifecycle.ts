@@ -1,5 +1,6 @@
 import {
   type ArtifactState,
+  type AttemptOrb,
   type AttemptLifecycleToken,
   type AttemptRecord,
   type AttemptState,
@@ -56,7 +57,13 @@ export interface AttemptLifecycle {
   readonly knownProcesses: () => readonly ProcessObservation[]
   readonly rootProcess: () => ProcessObservation | undefined
   readonly transition: {
-    readonly spawn: (token: AttemptLifecycleToken, pid: number) => LifecycleTransition
+    readonly spawn: (
+      token: AttemptLifecycleToken,
+      pid: number,
+      provisioning?: AttemptOrb
+    ) => LifecycleTransition
+    readonly provisioned: (token: AttemptLifecycleToken, orb: AttemptOrb) => LifecycleTransition
+    readonly orb: (token: AttemptLifecycleToken, orb: AttemptOrb) => LifecycleTransition
     readonly progress: (
       token: AttemptLifecycleToken,
       facts: AttemptProgressFacts
@@ -145,6 +152,7 @@ const nextRevision = (revision: number): number => {
 
 const makePhase = (record: AttemptRecord): AttemptState => {
   switch (record.status) {
+    case 'provisioning':
     case 'running':
     case 'waiting':
       return activeAttemptState(record.status)
@@ -232,18 +240,41 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
   }
 
   const transition = {
-    spawn(eventToken: AttemptLifecycleToken, pid: number): LifecycleTransition {
+    spawn(
+      eventToken: AttemptLifecycleToken,
+      pid: number,
+      provisioning?: AttemptOrb
+    ): LifecycleTransition {
       if (!active(eventToken) || state.record.cancelRequestedAt !== undefined) return rejected()
       return changed(() => {
         let didChange = false
         didChange = put('pid', pid) || didChange
         if (state.root === undefined) state.root = { pid, parent: 0, group: pid, birth: undefined }
-        if (state.phase._tag === 'active' && state.phase.status !== 'running') {
-          state.phase = activeAttemptState('running')
+        const status = provisioning === undefined ? 'running' : 'provisioning'
+        if (provisioning !== undefined) didChange = put('orb', provisioning) || didChange
+        if (state.phase._tag === 'active' && state.phase.status !== status) {
+          state.phase = activeAttemptState(status)
           didChange = true
         }
         return didChange
       })
+    },
+    provisioned(eventToken: AttemptLifecycleToken, orb: AttemptOrb): LifecycleTransition {
+      if (
+        !active(eventToken) ||
+        state.phase.status !== 'provisioning' ||
+        state.record.cancelRequestedAt !== undefined
+      )
+        return rejected()
+      return changed(() => {
+        put('orb', orb)
+        state.phase = activeAttemptState('running')
+        return true
+      })
+    },
+    orb(eventToken: AttemptLifecycleToken, orb: AttemptOrb): LifecycleTransition {
+      if (!active(eventToken)) return rejected()
+      return changed(() => put('orb', orb))
     },
     progress(eventToken: AttemptLifecycleToken, facts: AttemptProgressFacts): LifecycleTransition {
       if (

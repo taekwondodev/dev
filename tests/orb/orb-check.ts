@@ -32,9 +32,10 @@ import {
   returnAtQuit,
   withReturnAdmission,
 } from '../../src/orb/session.ts'
-import { masterOptions, sshOptions } from '../../src/orb/ssh.ts'
+import { makeOrbSsh, masterOptions, sshOptions } from '../../src/orb/ssh.ts'
 import { macHomes } from '../../src/orb/tools.ts'
 import { openOrbReader } from '../../src/orb/child.ts'
+import { makeChildOrbs, saveChildWork } from '../../src/orb/children.ts'
 import { orbToolAccess } from '../../src/integrated-tools.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
@@ -43,6 +44,8 @@ import {
   returnWork,
   upload,
   inspectCheckout,
+  inspectWorktree,
+  mirrorWorktree,
   type OrbRepository,
 } from '../../src/orb/transfer.ts'
 import { toolEffect } from '../../src/workspace-host.ts'
@@ -51,8 +54,14 @@ import { makeClaims } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { writeProfileFixture } from '../profile-fixture.ts'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type { ChildProcessSpawner } from 'effect/process'
+import { asAttemptId, type AttemptOrb } from '../../src/work-domain.ts'
 import type { PiApi } from '../../src/pi-runtime.ts'
-import type { WorkspaceAttachment, WorkspaceGrant } from '../../src/workspace-domain.ts'
+import {
+  WorkspaceError,
+  type WorkspaceAttachment,
+  type WorkspaceGrant,
+} from '../../src/workspace-domain.ts'
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-orb-check-')))
 process.on('exit', () => rmSync(sandbox, { recursive: true, force: true }))
@@ -291,6 +300,199 @@ await claim(
     assert.equal(
       git(mac, 'rev-parse', 'dev/orb-return/aaaa0000-0000-4000-8000-000000000001'),
       git(orb, 'rev-parse', 'HEAD')
+    )
+  }
+)
+
+await claim(
+  "a writing child's detached worktree uploads to a detached orb checkout, returns the orb's commits and uncommitted changes onto its detached HEAD, and mirrors into the lead's repository as a worktree carrying them",
+  async () => {
+    const { mac, orb } = newCheckout('child-worktree')
+    const worktree = join(sandbox, 'child-worktree', 'managed')
+    git(mac, 'worktree', 'add', '-q', '--detach', worktree, 'main')
+    const record = 'cccc0000-0000-4000-8000-000000000001'
+    const checkout = await run(inspectWorktree(worktree))
+    assert.equal(checkout.branch, undefined)
+    await run(
+      upload({
+        checkout,
+        orbPath: orb,
+        repository: repository(orb),
+        baseRef: `refs/dev/orb/${record}/base`,
+      })
+    )
+    assert.equal(git(orb, 'rev-parse', 'HEAD'), checkout.head)
+    assert.equal(
+      spawnSync('git', ['-C', orb, 'symbolic-ref', '-q', 'HEAD']).status,
+      1,
+      'the orb checkout is detached like the managed worktree'
+    )
+    assert.equal(git(orb, 'status', '--porcelain'), '')
+    assert.equal(git(orb, 'for-each-ref', 'refs/dev'), '', 'the upload ref is gone')
+    writeFileSync(join(orb, 'calc.py'), 'print(6 * 7)\n')
+    git(orb, 'commit', '-q', '-am', 'child commit')
+    writeFileSync(join(orb, 'notes.md'), 'first\nchild edit\nthird\n')
+    writeFileSync(join(orb, 'fresh.txt'), 'untracked on the orb\n')
+    const orbHead = git(orb, 'rev-parse', 'HEAD')
+    const returned = await run(
+      returnWork({
+        root: worktree,
+        orbPath: orb,
+        repository: repository(orb),
+        baseRef: `refs/dev/orb/${record}/base`,
+        endRef: `refs/dev/orb/${record}/end`,
+        beforeWrite: Effect.void,
+      })
+    )
+    assert.deepEqual(returned, { kind: 'returned', head: orbHead, commits: 1, files: 3 })
+    assert.equal(git(worktree, 'rev-parse', 'HEAD'), orbHead)
+    assert.equal(spawnSync('git', ['-C', worktree, 'symbolic-ref', '-q', 'HEAD']).status, 1)
+    assert.equal(git(mac, 'rev-parse', 'main'), checkout.head, 'the source branch did not move')
+    assert.deepEqual(tree(worktree), tree(orb))
+
+    const lead = join(sandbox, 'child-worktree', 'lead-orb')
+    git(mac, 'clone', '-q', mac, lead)
+    const mirrored = join(sandbox, 'child-worktree', 'lead-orb-copy', 'managed')
+    mkdirSync(join(sandbox, 'child-worktree', 'lead-orb-copy'))
+    const branch = { name: `dev/orb-return/${record}`, commit: orbHead }
+    const mirror = () =>
+      run(
+        mirrorWorktree({
+          worktree,
+          orbPath: mirrored,
+          root: lead,
+          repository: repository(lead),
+          branches: [branch],
+        })
+      )
+    await mirror()
+    assert.equal(git(mirrored, 'rev-parse', 'HEAD'), orbHead)
+    assert.deepEqual(tree(mirrored), tree(worktree), 'the copy carries the uncommitted changes')
+    assert.equal(git(mirrored, 'status', '--porcelain'), git(worktree, 'status', '--porcelain'))
+    assert.equal(git(lead, 'rev-parse', branch.name), orbHead)
+    assert.equal(git(lead, 'for-each-ref', 'refs/dev'), '', 'the mirror ref is gone')
+    writeFileSync(join(worktree, 'notes.md'), 'first\nsecond mirror\nthird\n')
+    await mirror()
+    assert.deepEqual(tree(mirrored), tree(worktree), 'a second mirror replaces the copy')
+
+    git(orb, 'commit', '-q', '-a', '--amend', '-m', 'child rewrites its commit')
+    const before = git(worktree, 'rev-parse', 'HEAD')
+    const diverged = await run(
+      returnWork({
+        root: worktree,
+        orbPath: orb,
+        repository: repository(orb),
+        baseRef: `refs/dev/orb/${record}/base`,
+        endRef: `refs/dev/orb/${record}/end`,
+        beforeWrite: Effect.void,
+      })
+    )
+    assert.equal(
+      diverged.kind === 'diverged' ? diverged.reason : diverged.kind,
+      'history-rewritten'
+    )
+    assert.equal(git(worktree, 'rev-parse', 'HEAD'), before, 'a divergence leaves HEAD')
+  }
+)
+
+const childOrb = async (name: string, record: string) => {
+  const { mac, orb } = newCheckout(name)
+  const worktree = join(sandbox, name, 'managed')
+  git(mac, 'worktree', 'add', '-q', '--detach', worktree, 'main')
+  const refs = { baseRef: `refs/dev/orb/${record}/base`, endRef: `refs/dev/orb/${record}/end` }
+  await run(
+    upload({
+      checkout: await run(inspectWorktree(worktree)),
+      orbPath: orb,
+      repository: repository(orb),
+      baseRef: refs.baseRef,
+    })
+  )
+  return {
+    mac,
+    orb,
+    worktree,
+    childReturn: () =>
+      run(
+        returnWork({
+          root: worktree,
+          orbPath: orb,
+          repository: repository(orb),
+          ...refs,
+          beforeWrite: Effect.void,
+        })
+      ),
+    save: (
+      returned: Parameters<typeof saveChildWork>[0]['returned'],
+      branches: Parameters<typeof saveChildWork>[0]['lifecycle'] = lifecycle.effect
+    ) =>
+      run(
+        saveChildWork({
+          worktree,
+          orbPath: orb,
+          record,
+          baseRef: refs.baseRef,
+          repository: repository(orb),
+          returned,
+          lifecycle: branches,
+        })
+      ),
+  }
+}
+
+await claim(
+  'after a writing child ends, the lead writes no branch for a returned child, dev/orb-return/<record-id> for a divergent return, dev/orb-recovery/<record-id> for a child that never returned, and fails when the branch cannot be written',
+  async () => {
+    const devBranches = (mac: string) =>
+      git(mac, 'for-each-ref', '--format=%(refname)', 'refs/heads/dev')
+
+    const normal = await childOrb('child-normal', 'dddd0000-0000-4000-8000-000000000001')
+    writeFileSync(join(normal.orb, 'calc.py'), 'print(7)\n')
+    git(normal.orb, 'commit', '-q', '-am', 'child commit')
+    writeFileSync(join(normal.orb, 'notes.md'), 'uncommitted\n')
+    assert.equal((await normal.childReturn()).kind, 'returned')
+    assert.equal(await normal.save({ kind: 'returned', commits: 1, files: 2 }), undefined)
+    assert.equal(devBranches(normal.mac), '', 'a returned child leaves no branch')
+
+    const rewritten = 'dddd0000-0000-4000-8000-000000000002'
+    const diverged = await childOrb('child-diverged', rewritten)
+    const start = git(diverged.worktree, 'rev-parse', 'HEAD')
+    writeFileSync(join(diverged.orb, 'calc.py'), 'print(8)\n')
+    git(diverged.orb, 'commit', '-q', '-a', '--amend', '-m', 'child rewrites the start')
+    const outcome = await diverged.childReturn()
+    assert.equal(outcome.kind === 'diverged' ? outcome.reason : outcome.kind, 'history-rewritten')
+    assert.deepEqual(await diverged.save({ kind: 'diverged', reason: 'history-rewritten' }), {
+      name: `dev/orb-return/${rewritten}`,
+      commit: git(diverged.orb, 'rev-parse', 'HEAD'),
+    })
+    assert.equal(git(diverged.worktree, 'rev-parse', 'HEAD'), start, 'the worktree is untouched')
+
+    const stopped = 'dddd0000-0000-4000-8000-000000000003'
+    const crashed = await childOrb('child-stopped', stopped)
+    writeFileSync(join(crashed.orb, 'calc.py'), 'print(9)\n')
+    git(crashed.orb, 'commit', '-q', '-am', 'child commit before the stop')
+    writeFileSync(join(crashed.orb, 'wip.txt'), 'unfinished\n')
+    const saved = await crashed.save(undefined)
+    assert.equal(saved?.name, `dev/orb-recovery/${stopped}`)
+    assert.equal(
+      git(crashed.mac, 'rev-parse', `dev/orb-recovery/${stopped}^1`),
+      git(crashed.orb, 'rev-parse', 'HEAD')
+    )
+    assert.equal(git(crashed.mac, 'show', `dev/orb-recovery/${stopped}:wip.txt`), 'unfinished')
+    assert.equal(
+      git(crashed.worktree, 'rev-parse', 'HEAD'),
+      git(crashed.mac, 'rev-parse', 'main'),
+      'the worktree is untouched'
+    )
+
+    const refused = await childOrb('child-refused', 'dddd0000-0000-4000-8000-000000000004')
+    writeFileSync(join(refused.orb, 'calc.py'), 'print(10)\n')
+    await assert.rejects(
+      refused.save(undefined, {
+        writeBranch: () =>
+          Effect.fail(new WorkspaceError({ outcome: 'blocked', message: 'structure gate busy' })),
+      }),
+      /the work could not be written to a branch: structure gate busy/
     )
   }
 )
@@ -1551,6 +1753,106 @@ const TOKEN = {
   orbitUrl: 'http://192.0.2.1/orbit',
   project: { id: KEYSTONE.projectId, name: KEYSTONE.projectName },
 }
+
+await claim(
+  "a writing child's orb refused with 409 fails provisioning with the project's active orb count and leaves no record; one that reaches ERROR is deleted, its fault named and its record removed, and neither is handed to the controller",
+  async () => {
+    const { mac } = newCheckout('child-provision')
+    const worktree = join(sandbox, 'child-provision', 'managed')
+    git(mac, 'worktree', 'add', '-q', '--detach', worktree, 'main')
+    const dataHome = join(sandbox, 'child-provision-data')
+    mkdirSync(dataHome, { mode: 0o700 })
+    const services = await run(Effect.context<ChildProcessSpawner.ChildProcessSpawner>())
+    const provision = async (orbit: Orbit) => {
+      const reports: AttemptOrb[] = []
+      let adopted = false
+      const children = makeChildOrbs(
+        {
+          dataHome,
+          keystone: KEYSTONE,
+          token: TOKEN,
+          orbit,
+          config: {
+            path: join(dataHome, 'orb.json'),
+            size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
+            image: 'ubuntu-24.04-arm64-dev',
+            sshAllowedCidr: '192.0.2.0/24',
+          },
+          conversation: join(dataHome, 'session.jsonl'),
+          lead: {
+            ssh: makeOrbSsh({
+              user: 'ubuntu',
+              host: 'lead.invalid',
+              keyPath: join(dataHome, 'key'),
+              knownHostsPath: join(dataHome, 'known_hosts'),
+              controlPath: join(dataHome, 'mux'),
+            }),
+            root: mac,
+            label: "the lead's orb",
+            record: 'lead-record',
+          },
+          lifecycle: lifecycle.effect,
+        },
+        services
+      )
+      const exit = await Effect.runPromiseExit(
+        children.provision({
+          attempt: asAttemptId(randomUUID()),
+          worktree,
+          report: orb => Effect.sync(() => reports.push(orb)),
+          adopt: () => {
+            adopted = true
+          },
+        })
+      )
+      return {
+        error: Exit.isFailure(exit) ? errorText(Cause.squash(exit.cause)) : undefined,
+        reports,
+        adopted,
+        records: readdirSync(join(dataHome, 'orbs')),
+      }
+    }
+
+    const full = await provision(
+      fakeOrbit({
+        create: Effect.fail(
+          orbFailure('orbit answered POST /v1/orbs with 409: no free lease', undefined, 409)
+        ),
+        list: [
+          orbView('orb-lead-0000', '2026-10-28T09:00:00', 'ACTIVE'),
+          orbView('orb-child-000', '2026-10-28T09:10:00', 'BUILDING'),
+          orbView('orb-leaving-0', '2026-10-28T09:20:00', 'DELETING'),
+        ],
+      }).orbit
+    )
+    assert.equal(
+      full.error,
+      'orbit capacity exhausted: 2 active orbs in the project; wait for a child to finish'
+    )
+    assert.deepEqual(
+      full.reports.map(report => report.status),
+      ['requested']
+    )
+    assert.deepEqual(full.records, [], 'a refused creation leaves no record')
+    assert.equal(full.adopted, false)
+
+    const failing = fakeOrbit({ create: createdOrb(), states: ['ERROR'] })
+    const failed = await provision(failing.orbit)
+    assert.match(
+      failed.error ?? '',
+      /orb orb-star reached ERROR: No valid host was found Orb orb-star was deleted\./
+    )
+    assert.deepEqual(failing.removed, ['orb-started'])
+    assert.deepEqual(failed.reports.at(-1), {
+      record: failed.reports[0]?.record,
+      id: 'orb-started',
+      status: 'DELETED',
+      report: 'Orb orb-star was deleted.',
+    })
+    assert.deepEqual(failed.records, [], 'the record is removed once orbit reports DELETED')
+    assert.equal(failed.adopted, false)
+  }
+)
 
 await claim(
   "recovery removes the records of orbs orbit no longer has or is deleting, deletes an orb that holds no work, and keeps an orb whose work it cannot return, one it cannot read and another project's",

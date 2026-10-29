@@ -54,11 +54,28 @@ Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request
 
 Tool calls are not admitted one by one: none can change the Mac checkout.
 
-A delegated agent must be read-only. It gets no orb: its `read`, `grep`, `find`, `ls` and `git_inspect` read the lead's orb over SSH, at the same paths, so it sees the orb's current files, uncommitted ones included. This applies to coordinators and their leaves too. The same three Mac-side homes apply, using the child's own skill files. Its tool calls keep their [workspace check](work.md#execution-and-access) on every call.
+A delegated agent that can write gets [its own orb](#writing-children). A read-only agent gets none: its `read`, `grep`, `find`, `ls` and `git_inspect` read over SSH, at the same paths, the orb that holds its workspace, so it sees that orb's current files, uncommitted ones included. That is the lead's orb, or a writing coordinator's orb for that coordinator's read-only leaves. The same three Mac-side homes apply, using the child's own skill files. Its tool calls keep their [workspace check](work.md#execution-and-access) on every call.
 
 When the orb cannot be reached, a tool call fails with SSH's error, which reaches the model, and the footer reads `orb <id>: unreachable` until a call reaches the orb again. `/orb sync` fails with the reason. The session stays usable, and dev never recreates the orb. The Keystone token serves only orbit's API, so a token that can no longer be renewed fails only the deletion at quit, which then keeps the orb as below. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. Stopping a command ends its SSH client, which hangs up the orb's terminal.
 
-Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, delegated agents that can write, a delegation whose `cwd` lies outside the orb's checkout, and `work process` outside the session's directory. Quit and relaunch instead.
+Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, a delegation whose `cwd` lies outside the orb's checkout, and `work process` outside the session's directory. Quit and relaunch instead.
+
+### Writing children
+
+`work delegate` with `access: write` returns as in plain dev, once the child process exists. Before that, dev fetches the lead orb's committed `HEAD` into the pinned ref `refs/dev/orb/<lead-record-id>/fork/<attempt>` and allocates the child's [managed worktree](work.md#delegation-scope) from that commit; uncommitted files on the lead's orb are not copied. If the lead's orb cannot be reached, the delegation is refused and no attempt is recorded. A writing leaf also starts from the lead orb's commit.
+
+The lead then creates the child's orb in the background, with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, `/work` shows the attempt as `provisioning` and the footer shows orbit's state of its orb. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
+
+The child's `bash`, `read`, `write`, `edit`, `grep`, `find` and `ls` run on its orb, with the Mac-side homes of the [tools](#tools) and its tool calls' workspace check. How it ends decides where its work goes:
+
+| End                                                | Work                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Its session finished, even with a provider failure | Before reporting, the child [returns](#return) its orb's commits and uncommitted changes into its worktree. If its orb rewrote the start commit, the worktree stays untouched and dev writes the work to `dev/orb-return/<record-id>`.                                        |
+| It crashed or was stopped, or its return failed    | dev writes the orb's work to `dev/orb-recovery/<record-id>` when it changed since the upload, never touching the worktree; a child stopped while returning can leave its worktree partly written, so compare it with that branch. The attempt fails or is cancelled as usual. |
+
+Then dev copies the worktree, uncommitted changes included, to the same absolute path on the lead's orb, together with any branch it wrote, so the lead reads the result at the attempt's `worktree.path`; a writing leaf's result goes to its coordinator's orb instead. The copy disappears with that orb. Last, dev deletes the child's orb. The attempt's `orb` field records the orb's state, `DELETED` or `kept`, and where the work went. If the work cannot be saved, dev keeps the orb and its record, and the report names its id and delete command; the next `dev --orb` [recovers](#recovery) it like a crashed session's orb. A failed copy is reported and does not keep the orb, whose work is on the Mac.
+
+dev sets no limit on child orbs. orbit's `409` fails the attempt with `orbit capacity exhausted: <n> active orbs in the project; wait for a child to finish`, and running children are unaffected. An orb that reaches `ERROR`, or whose SSH cannot be reached after `ACTIVE`, is deleted and the attempt fails with the fault. Stopping a child during provisioning deletes its orb. A writing coordinator's orb outlives its leaves: dev ends it only after they settle.
 
 ### Return
 
@@ -90,7 +107,7 @@ Once the work has returned, dev sends `DELETE` and waits about 60 s for orbit to
 
 ### Recovery
 
-A session that crashed, was killed or kept its orb at quit leaves its orb record behind. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project is reported and kept: source that project's openrc and run `dev --orb` again.
+A session that crashed, was killed or kept its orb at quit leaves its orb record behind, and so does each of its [writing children](#writing-children) whose orb it had not deleted; the record of a child names the child's worktree as its checkout. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project is reported and kept: source that project's openrc and run `dev --orb` again.
 
 | Record                                                                  | Recovery                                                                                                                                                |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -107,11 +124,12 @@ The ended session's writer use then no longer holds the checkout: dev [settles i
 
 ## State
 
-| Location                                | Content                                                                                        |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `<data-home>/orbs/<record-id>/`         | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite` |
-| `refs/dev/orb/<record-id>/base`, `/end` | The last synchronized snapshot and the orb's latest snapshot, in the local repository          |
-| `dev/orb-return/<record-id>[-<n>]`      | The orb's work after a [divergent return](#divergence), a local branch dev never deletes       |
-| `dev/orb-recovery/<record-id>`          | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted   |
+| Location                                  | Content                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`    |
+| `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository             |
+| `refs/dev/orb/<record-id>/fork/<attempt>` | The lead orb's commit a [writing child](#writing-children) starts from, until its worktree exists |
+| `dev/orb-return/<record-id>[-<n>]`        | The orb's work after a [divergent return](#divergence), a local branch dev never deletes          |
+| `dev/orb-recovery/<record-id>`            | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted      |
 
 The record exists from before the creation request until orbit reports `DELETED`. The owning `dev --orb` holds its lock for the whole session, and a recovering `dev --orb` while it recovers the record.

@@ -9,6 +9,7 @@ import {
   ContextUsageSchema,
   ChildResourcesSchema,
   type ChildResources,
+  OrbReturnSchema,
   READ_ONLY_CHILD_CAPABILITIES,
   UsageSchema,
   WorkAccessSchema,
@@ -29,7 +30,7 @@ const readyKeys = [
   'usage',
 ] as const
 const progressKeys = readyKeys
-const resultKeys = [...readyKeys, 'text', 'error', 'quotaExhausted'] as const
+const resultKeys = [...readyKeys, 'text', 'error', 'quotaExhausted', 'orbReturn'] as const
 
 const noUnexpectedKeys = (keys: readonly string[]) =>
   Schema.makeFilter((value: unknown) => {
@@ -85,6 +86,7 @@ const ResultMessageSchema = strictMessage(
     text: Schema.String,
     error: Schema.optional(NonEmptyText),
     quotaExhausted: Schema.optional(Schema.Boolean),
+    orbReturn: Schema.optional(OrbReturnSchema),
   },
   resultKeys
 ).pipe(

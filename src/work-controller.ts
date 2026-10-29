@@ -7,6 +7,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Fiber,
   FileSystem,
   Layer,
   Option,
@@ -37,11 +38,16 @@ import {
   type AttemptDescription,
   type AttemptId,
   type AttemptRecord,
+  type AttemptOrb,
   type AttemptView,
+  type ChildOrb,
   type DispatchConfig,
   type DispatchProfile,
   type GenerationId,
   type LogPage,
+  type OrbReader,
+  type OrbReturn,
+  type PinnedStart,
   type LogRequest,
   type ProcessStartRequest,
   type SessionId,
@@ -132,6 +138,12 @@ interface Job {
   pendingRequests: number
   readonly undelivered: Map<AttemptId, AttemptView>
   readonly leaves: Set<Job>
+  readonly orbWriter: boolean
+  provisioning?: Fiber.Fiber<void>
+  childOrb?: ChildOrb
+  orbReturn?: OrbReturn
+  orbEnded?: Deferred.Deferred<void>
+  finishing?: Deferred.Deferred<void>
 }
 
 type CoordinationRequest = Exclude<CoordinationMessage, { readonly type: 'work-outcomes-ack' }>
@@ -145,14 +157,20 @@ const admissionOf = (
   request: StartRequest,
   parent: Job | undefined,
   cwd: string | undefined,
-  execution: WorkspaceExecution
+  execution: WorkspaceExecution,
+  pinned: PinnedStart | undefined
 ): WorkspaceOperation => {
   if (request.kind === 'process') return { kind: 'write', cwd }
-  if (parent !== undefined)
-    return request.access === 'read-only'
-      ? { kind: 'leaf-read', coordinator: parent.workspace, execution }
-      : { kind: 'delegated-write', coordinator: parent.workspace, execution }
-  return { kind: request.access === 'read-only' ? 'read' : 'delegated-write', cwd, execution }
+  if (request.access === 'read-only')
+    return parent === undefined
+      ? { kind: 'read', cwd, execution }
+      : { kind: 'leaf-read', coordinator: parent.workspace, execution }
+  return {
+    kind: 'delegated-write',
+    execution,
+    ...(parent === undefined ? { cwd } : { coordinator: parent.workspace }),
+    ...(pinned === undefined ? {} : { startCommit: { ref: pinned.ref, commit: pinned.commit } }),
+  }
 }
 
 const workspaceTaskKey = (parent: Job | undefined, taskId: TaskId): string =>
@@ -427,7 +445,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           const { cwd: _cwd, ...rest } = runOptions ?? {}
           return localRun(wrapped.file, wrapped.args, rest)
         }
-  const artifactState = (cwd: string) => readArtifactState(run, cwd)
+  const artifactState = (cwd: string) =>
+    readArtifactState(remote !== undefined && isWithin(remote.checkout, cwd) ? run : localRun, cwd)
   const { freshProcessTable: freshTable, observeFamily } = yield* processObserver
   const active = new Map<AttemptId, Job>()
   const latest = new Map<string, AttemptId>()
@@ -511,17 +530,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           message: 'A read-only coordinator can start only read-only leaves',
         })
     }
-    if (remote !== undefined) {
-      if (request.access === 'write')
-        return yield* new WorkError({
-          message:
-            'In orb mode delegated agents are read-only: delegate with access read-only, or make the change in the lead.',
-        })
-      if (request.cwd !== undefined && !isWithin(remote.checkout, yield* resolveCwd(request.cwd)))
-        return yield* new WorkError({
-          message: `In orb mode delegated agents read the orb's checkout ${remote.checkout}; another checkout does not exist there.`,
-        })
-    }
+    if (
+      remote !== undefined &&
+      request.cwd !== undefined &&
+      !isWithin(remote.checkout, yield* resolveCwd(request.cwd))
+    )
+      return yield* new WorkError({
+        message: `In orb mode delegated agents work in the orb's checkout ${remote.checkout}; another checkout does not exist there.`,
+      })
     const selection = yield* resolveDispatch(request).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.mapError(toFailure)
@@ -675,9 +691,21 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           generation: reservation.generation,
           logs: store.plannedLogPath(id, 'stdout'),
         }
+        const pinned =
+          remote !== undefined && request.kind === 'agent' && request.access === 'write'
+            ? yield* remote.children.fork(id).pipe(
+                Effect.mapError(
+                  error =>
+                    new WorkError({
+                      message: `The writing child was not started: it starts from the lead orb's committed HEAD, and ${error.message}`,
+                      cause: error,
+                    })
+                )
+              )
+            : undefined
         const admission = yield* Effect.gen(function* () {
           const allocated = yield* workspace.attachment.authorize(
-            admissionOf(request, parent, requestedCwd, execution)
+            admissionOf(request, parent, requestedCwd, execution, pinned)
           )
           if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
           return yield* workspace.attachment.authorize({
@@ -685,7 +713,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             within: allocated.grant,
             execution,
           })
-        }).pipe(Effect.mapError(toFailure))
+        }).pipe(Effect.mapError(toFailure), Effect.ensuring(pinned?.unpin ?? Effect.void))
         if (admission.kind === 'rebind') {
           workspace.requestRebind(admission.handoff)
           return yield* new WorkRebindRequired({
@@ -756,6 +784,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           pendingRequests: 0,
           undelivered: new Map(),
           leaves: new Set(),
+          orbWriter: pinned !== undefined,
         }
         yield* admissionLock.withPermit(
           Effect.try({
@@ -1212,7 +1241,13 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         else message = 'Child exited before PID was available'
         return yield* new WorkError({ message })
       }
-      yield* commit(job, () => job.lifecycle.transition.spawn(token, childPid))
+      yield* commit(job, () =>
+        job.lifecycle.transition.spawn(
+          token,
+          childPid,
+          job.orbWriter ? { status: 'requested' } : undefined
+        )
+      )
       yield* admissionLock.withPermit(
         Effect.gen(function* () {
           yield* Effect.try({
@@ -1255,36 +1290,39 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           }
         })
       )
-      if (request.kind === 'agent')
-        yield* withPreparedPermit(
-          token.sessionId,
-          generation,
-          scopeOf(record),
-          request.kind,
-          record.id,
-          Effect.gen(function* () {
-            job.executionReleased = true
-            yield* sendIpc(child, {
-              type: 'start',
-              request: {
-                dataHome,
-                cwd,
-                profile,
-                sessionDir: join(dataHome, 'child-sessions'),
-                access: request.access,
-                prompt: request.prompt,
-                ...(request.skill === undefined ? {} : { skill: request.skill }),
-                ...(record.coordinator === true ? { coordinate: true } : {}),
-                owner: record.owner,
-                workspace: job.workspace,
-                authorityRoot: workspace.lifecycle.root,
-                ...(remote === undefined ? {} : { orb: remote.reader }),
-                model: request.selection?.model,
-                effort: request.selection?.effort,
-              },
-            })
-          })
-        )
+      const startChild = (orb: OrbReader | undefined): Effect.Effect<void, WorkFailure> =>
+        request.kind === 'agent'
+          ? withPreparedPermit(
+              token.sessionId,
+              generation,
+              scopeOf(record),
+              request.kind,
+              record.id,
+              Effect.gen(function* () {
+                job.executionReleased = true
+                yield* sendIpc(child, {
+                  type: 'start',
+                  request: {
+                    dataHome,
+                    cwd,
+                    profile,
+                    sessionDir: join(dataHome, 'child-sessions'),
+                    access: request.access,
+                    prompt: request.prompt,
+                    ...(request.skill === undefined ? {} : { skill: request.skill }),
+                    ...(record.coordinator === true ? { coordinate: true } : {}),
+                    owner: record.owner,
+                    workspace: job.workspace,
+                    authorityRoot: workspace.lifecycle.root,
+                    ...(orb === undefined ? {} : { orb }),
+                    model: request.selection?.model,
+                    effort: request.selection?.effort,
+                  },
+                })
+              })
+            )
+          : Effect.void
+      if (!job.orbWriter) yield* startChild(readerOf(job))
       yield* withPreparedPermit(
         token.sessionId,
         generation,
@@ -1295,6 +1333,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           yield* store.save(job.lifecycle.snapshot())
           yield* Effect.forkIn(scope)(waitForOwnedExit(job))
           if (job.inbox !== undefined) yield* Effect.forkIn(scope)(serveCoordinator(job, job.inbox))
+          if (job.orbWriter)
+            job.provisioning = yield* Effect.forkIn(scope)(provisionChild(job, startChild))
         })
       )
       onChange()
@@ -1302,6 +1342,89 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     (effect, job) => Effect.catch(effect, error => failLaunch(job, error)),
     Effect.scoped
   )
+
+  const readerOf = (job: Job): OrbReader | undefined => {
+    if (remote === undefined) return undefined
+    const coordinator = job.parent?.childOrb
+    if (coordinator === undefined) return remote.reader
+    const { record: _record, ...reader } = coordinator.handle
+    return reader
+  }
+
+  const provisionChild = (
+    job: Job,
+    startChild: (orb: OrbReader) => Effect.Effect<void, WorkFailure>
+  ): Effect.Effect<void> => {
+    const { token } = job.lifecycle
+    const reportOrb = (orb: AttemptOrb): Effect.Effect<void> =>
+      commitBestEffort(job, () => job.lifecycle.transition.orb(token, orb)).pipe(
+        Effect.andThen(Effect.sync(onChange)),
+        Effect.ignore
+      )
+    return Effect.gen(function* () {
+      if (remote === undefined) return
+      const orb = yield* remote.children.provision({
+        attempt: token.attemptId,
+        worktree: job.cwd,
+        report: reportOrb,
+        adopt: provisioned => {
+          job.childOrb = provisioned
+        },
+      })
+      const provisioned = yield* commitBestEffort(job, () =>
+        job.lifecycle.transition.provisioned(token, {
+          ...job.lifecycle.snapshot().orb,
+          status: 'ACTIVE',
+        })
+      )
+      onChange()
+      if (provisioned.accepted) yield* startChild(orb.handle)
+    }).pipe(
+      Effect.catch(error =>
+        commitBestEffort(job, () =>
+          job.lifecycle.transition.processError(
+            token,
+            `The child's orb could not be provisioned: ${errorText(error)}`
+          )
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              abortChild(job.child, undefined)
+              onChange()
+            })
+          ),
+          Effect.ignore
+        )
+      )
+    )
+  }
+
+  const endOrb = (job: Job): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (!job.orbWriter) return Effect.void
+      if (job.orbEnded !== undefined) return Deferred.await(job.orbEnded)
+      const ended = Deferred.makeUnsafe<void>()
+      job.orbEnded = ended
+      const { token } = job.lifecycle
+      return Effect.gen(function* () {
+        yield* cancelLeaves(job, 'coordinator ended')
+        yield* Effect.forEach([...job.leaves], leaf => Deferred.await(leaf.settled), {
+          discard: true,
+        })
+        if (job.provisioning !== undefined) yield* Fiber.interrupt(job.provisioning)
+        const orb = job.childOrb
+        if (orb === undefined) return
+        const result = yield* orb.end({ returned: job.orbReturn, into: job.parent?.childOrb })
+        yield* commitBestEffort(job, () =>
+          job.lifecycle.transition.orb(token, {
+            ...job.lifecycle.snapshot().orb,
+            status: result.status,
+            report: result.report,
+          })
+        ).pipe(Effect.ignore)
+        onChange()
+      }).pipe(Effect.ensuring(Deferred.succeed(ended, undefined)))
+    })
 
   const failLaunch = Effect.fnUntraced(function* (
     job: Job,
@@ -1470,6 +1593,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           })
         )
         if (outcome === undefined) return
+        if (message.orbReturn !== undefined) job.orbReturn = message.orbReturn
         if (message.error !== undefined)
           yield* Effect.forkIn(scope)(cancelLeaves(job, 'coordinator reported a failure'))
         if (outcome.accepted && (outcome.quotaExhausted || quotaExhausted(message.error)))
@@ -1586,6 +1710,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     cause: unknown
   ): Effect.fn.Return<void, never> {
     const { token } = job.lifecycle
+    yield* endOrb(job)
     yield* reportWorkspace(job, { kind: 'unknown', reason: errorText(cause) }).pipe(
       Effect.catch(error =>
         Effect.sync(() => {
@@ -1617,10 +1742,19 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     onChange()
   })
 
-  const finish = Effect.fnUntraced(function* (job: Job): Effect.fn.Return<void, WorkFailure> {
+  const finish = (job: Job): Effect.Effect<void, WorkFailure> =>
+    Effect.suspend(() => {
+      if (job.finishing !== undefined) return Deferred.await(job.finishing)
+      const finishing = Deferred.makeUnsafe<void>()
+      job.finishing = finishing
+      return finishOnce(job).pipe(Effect.ensuring(Deferred.succeed(finishing, undefined)))
+    })
+
+  const finishOnce = Effect.fnUntraced(function* (job: Job): Effect.fn.Return<void, WorkFailure> {
     const { token } = job.lifecycle
     if (!job.lifecycle.isActive()) return
     const record = job.lifecycle.snapshot()
+    yield* endOrb(job)
     let cleanupError: string | undefined
     const observation = yield* Effect.result(
       reportWorkspace(
