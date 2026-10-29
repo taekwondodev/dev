@@ -129,8 +129,8 @@ PROBES = {
         actions=QUIT_ACTIONS,
         expect=('Sweeping workspaces…', '✓ 1 reservation released', '✓ 1 worktree removed',
                 'Exit 0: done.'),
-        expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07'),
-        env=(('TERM_PROGRAM', 'ghostty'),),
+        expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07', '\x1b[32m'),
+        env=(('TERM_PROGRAM', 'rex'),),
     ),
 
     'quit-release': Probe(
@@ -175,7 +175,7 @@ PROBES = {
                 'Status: Delivery to the integration target could not be verified.',
                 'Release 1 task (1 managed worktree)?', '✓ 1 worktree removed', 'Exit 0: done.'),
         expect_raw=('\x1b[33mdev workspace release ', '\x1b[2mStatus:', '\x1b[31mThis deletes'),
-        env=(('LAUNCHER_TUI_UNDELIVERED_WORKTREE', '1'), ('TERM_PROGRAM', 'ghostty')),
+        env=(('LAUNCHER_TUI_UNDELIVERED_WORKTREE', '1'), ('TERM_PROGRAM', 'other')),
     ),
 
     'quit-abandoned': Probe(
