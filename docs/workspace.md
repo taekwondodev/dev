@@ -147,7 +147,7 @@ An interactive quit offers one confirmation to release eligible remaining tasks,
 
 A task excluded only because a previous session left its use unsettled or unresolved is then offered alone, with its status. Tasks guarded against cleanup, unassessed, or with a reserved workspace outside this sweep are never offered: run their command after checking them. These convenience filters are not a guarantee against concurrent use: the [release warning](#release) still applies.
 
-Each prompt counts managed worktrees and pre-existing reservations and explains their consequences. Only `y` releases them; Enter or any other answer keeps them. Ghostty shows sweep progress in the tab and colored status output; `NO_COLOR` disables colors. Other terminals and non-TTY output use plain text. Without an interactive terminal there is no release prompt.
+Each prompt counts managed worktrees and pre-existing reservations and explains their consequences. Only `y` releases them; Enter or any other answer keeps them. Interactive terminals show a sweep spinner and colored status output; `NO_COLOR` disables colors without stopping progress updates. Dev also emits progress notifications for terminals that support them, without checking the terminal's name. Non-TTY output uses plain text without progress escapes. Without an interactive terminal there is no release prompt.
 
 Ctrl-C before the sweep or at a confirmation starts no further release. During sweep or confirmed release, started attempts reach recorded outcomes; an interrupted Git step stays `release-review`. SIGHUP can end dev without a receipt. If a sweep does not report back, its outcome is unknown and the launcher points to `dev workspace list`.
 

@@ -59,9 +59,9 @@ const removed = row(finished, 'removed')
 const undelivered = row(retained('not-integrated'), 'retained')
 const abandoned = row(retained('use-abandoned'), 'retained')
 const receipt: SweepReceipt = { moment: 'quit', rows: [undelivered, removed, abandoned] }
-const plain = terminalStyle({ isTTY: false }, { TERM_PROGRAM: 'ghostty' })
-const ghostty = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'ghostty' })
-const ghosttyNoColor = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'ghostty', NO_COLOR: '1' })
+const plain = terminalStyle({ isTTY: false }, {})
+const tty = terminalStyle({ isTTY: true }, {})
+const ttyNoColor = terminalStyle({ isTTY: true }, { NO_COLOR: '1' })
 
 await claim(
   'mixed quit output offers undelivered work with a full command and English status, and separates abandoned use without paths or Git diagnostics',
@@ -164,30 +164,52 @@ await claim(
   }
 )
 
-await claim('empty sweep and non-Ghostty terminals stay plain and concise', () => {
+await claim('TTY styling and progress do not depend on the terminal name', () => {
+  for (const env of [
+    {},
+    { TERM_PROGRAM: 'ghostty' },
+    { TERM_PROGRAM: 'rex' },
+    { TERM_PROGRAM: 'other' },
+  ]) {
+    const style = terminalStyle({ isTTY: true }, env)
+    assert.deepEqual(style, { live: true, color: true })
+    assert.equal(formatQuitReceipt(receipt, 12900, style), formatQuitReceipt(receipt, 12900, tty))
+    assert.equal(formatExitLine(style, 0, 'done'), '\x1b[32mExit 0: done.\x1b[0m')
+    assert.equal(progressDone(style, false), '\x1b]9;4;1;100\x07')
+    assert.deepEqual(terminalStyle({ isTTY: true }, { ...env, NO_COLOR: '1' }), {
+      live: true,
+      color: false,
+    })
+    for (const stream of [{}, { isTTY: false }]) {
+      const redirected = terminalStyle(stream, env)
+      assert.deepEqual(redirected, { live: false, color: false })
+      assert.equal(
+        formatQuitReceipt(receipt, 12900, redirected),
+        formatQuitReceipt(receipt, 12900, plain)
+      )
+      assert.equal(progressDone(redirected, true), '')
+    }
+  }
   assert.equal(
     formatQuitReceipt({ moment: 'quit', rows: [] }, 120, plain),
     'No reserved workspaces · 0.1s'
   )
-  const style = terminalStyle({ isTTY: true }, { TERM_PROGRAM: 'other' })
-  assert.deepEqual(style, { live: false, color: false, ghostty: false })
-  assert.equal(formatQuitReceipt(receipt, 12900, style), formatQuitReceipt(receipt, 12900, plain))
-  assert.equal(formatExitLine(style, 0, 'done'), 'Exit 0: done.')
+  assert.equal(formatExitLine(plain, 0, 'done'), 'Exit 0: done.')
 })
 
 await claim(
-  'Ghostty colors success green, commands yellow and status dim without path links; NO_COLOR preserves the same plain content',
+  'TTY output colors success green, commands yellow and status dim without path links; NO_COLOR preserves the same plain content',
   () => {
-    const text = formatQuitReceipt(receipt, 12900, ghostty)
+    const text = formatQuitReceipt(receipt, 12900, tty)
     assert.ok(text.includes('\x1b[32m✓ 1 worktree removed\x1b[0m'), text)
     assert.ok(text.includes(`\x1b[33mdev workspace release ${undelivered.taskId}\x1b[0m`), text)
     assert.ok(text.includes('\x1b[2mStatus:'), text)
     assert.equal(
-      formatQuitReceipt(receipt, 12900, ghosttyNoColor),
+      formatQuitReceipt(receipt, 12900, ttyNoColor),
       formatQuitReceipt(receipt, 12900, plain)
     )
-    assert.equal(progressDone(ghostty, true), '\x1b]9;4;2;100\x07')
-    assert.equal(progressDone(ghostty, false), '\x1b]9;4;1;100\x07')
+    assert.equal(progressDone(tty, true), '\x1b]9;4;2;100\x07')
+    assert.equal(progressDone(tty, false), '\x1b]9;4;1;100\x07')
     assert.equal(progressDone(plain, true), '')
   }
 )
@@ -280,7 +302,7 @@ await claim(
       text
     )
     assert.ok(!text.includes('/worktrees/one') && !text.includes('/repo'), text)
-    const colored = formatQuitReleasePlan(plans, ghostty)
+    const colored = formatQuitReleasePlan(plans, tty)
     assert.ok(colored.includes('\x1b[31m'), colored)
   }
 )

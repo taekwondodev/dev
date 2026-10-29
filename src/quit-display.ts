@@ -11,18 +11,16 @@ import type {
 export interface TerminalStyle {
   readonly live: boolean
   readonly color: boolean
-  readonly ghostty: boolean
 }
 
 export const terminalStyle = (
   stream: { readonly isTTY?: boolean },
   env: NodeJS.ProcessEnv
 ): TerminalStyle => {
-  const live = stream.isTTY === true && env.TERM_PROGRAM === 'ghostty'
+  const live = stream.isTTY === true
   return {
     live,
     color: live && (env.NO_COLOR ?? '') === '',
-    ghostty: live,
   }
 }
 
@@ -35,7 +33,7 @@ const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
 const PROGRESS_FAILED = '\x1b]9;4;2;100\x07'
 const PROGRESS_SUCCEEDED = '\x1b]9;4;1;100\x07'
 export const progressDone = (style: TerminalStyle, failed: boolean): string => {
-  if (!style.ghostty) return ''
+  if (!style.live) return ''
   return failed ? PROGRESS_FAILED : PROGRESS_SUCCEEDED
 }
 
@@ -53,7 +51,7 @@ const spin = Effect.fnUntraced(function* (
 ): Effect.fn.Return<never> {
   for (let frame = 0; ; frame += 1) {
     const now = yield* Clock.currentTimeMillis
-    const progress = style.ghostty && frame % PROGRESS_KEEPALIVE_FRAMES === 0 ? PROGRESS_ACTIVE : ''
+    const progress = frame % PROGRESS_KEEPALIVE_FRAMES === 0 ? PROGRESS_ACTIVE : ''
     yield* Effect.sync(() => {
       out.write(
         `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Sweeping workspaces… ${paint(style, 'dim', seconds(now - started))}`
