@@ -45,6 +45,18 @@ export const OrbViewSchema = Schema.Struct({
 })
 export type OrbView = typeof OrbViewSchema.Type
 
+export const OrbCredentialsSchema = Schema.Struct({
+  auth_url: Schema.NonEmptyString,
+  username: Schema.NonEmptyString,
+  password: Schema.NonEmptyString,
+  project_name: Schema.NonEmptyString,
+  user_domain_id: Schema.optional(Schema.NonEmptyString),
+  project_domain_id: Schema.optional(Schema.NonEmptyString),
+  region_name: Schema.optional(Schema.NonEmptyString),
+  cacert: Schema.optional(Schema.NonEmptyString),
+})
+export type OrbCredentials = typeof OrbCredentialsSchema.Type
+
 export const OrbConfigSchema = Schema.Struct({
   size: Schema.optional(OrbSizeSchema),
   image: Schema.optional(Schema.NonEmptyString),
@@ -88,7 +100,15 @@ export const OrbRecordSchema = Schema.Struct({
 })
 export type OrbRecord = typeof OrbRecordSchema.Type
 
+export const holdsWork = (record: Pick<OrbRecord, 'phase'>): boolean =>
+  record.phase === 'active' || record.phase === 'returning'
+
 export const shortId = (id: string): string => id.slice(0, 8)
 
-export const deleteCommand = (orbitUrl: string, orbId: string): string =>
-  `curl -X DELETE -H "X-Auth-Token: $(openstack token issue -f value -c id)" ${orbitUrl}/v1/orbs/${orbId}`
+export const shq = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
+
+export const setupCommand = (dataHome: string): string =>
+  `dev --data-home ${shq(dataHome)} orb setup`
+
+export const deleteCommand = (dataHome: string, orbId: string): string =>
+  `dev --data-home ${shq(dataHome)} orb delete ${orbId}`

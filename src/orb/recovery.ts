@@ -8,9 +8,11 @@ import type { KeystoneToken, Orbit } from './cloud.ts'
 import { deleteOrb, deleteRecorded } from './deletion.ts'
 import {
   deleteCommand,
+  holdsWork,
   OrbError,
   orbFailure,
   shortId,
+  shq,
   type OrbRecord,
   type OrbView,
 } from './domain.ts'
@@ -88,7 +90,7 @@ export const recoverOrbs = Effect.fnUntraced(function* (
       fields.keystone.projectId !== token.project.id
     ) {
       print(
-        `orb: the orb record ${shortId(fields.id)} belongs to project ${fields.keystone.projectName} at ${fields.keystone.authUrl}; source that project's openrc and run dev --orb to recover it.`
+        `orb: the orb record ${shortId(fields.id)} belongs to project ${fields.keystone.projectName} at ${fields.keystone.authUrl}, not to the project of the OpenStack credentials, so it is kept. If that project no longer exists, remove the record with: rm -r ${shq(directory)}`
       )
       yield* settlePresence(options, fields)
       yield* record.release
@@ -123,7 +125,7 @@ const recoverOrb = Effect.fnUntraced(function* (
   const { orbit, print } = options
   const fields = record.current()
   const label = shortId(orbId)
-  const command = deleteCommand(options.token.orbitUrl, orbId)
+  const command = deleteCommand(options.dataHome, orbId)
   const read = yield* Effect.exit(orbit.get(orbId))
   if (Exit.isFailure(read)) {
     const error = Cause.squash(read.cause)
@@ -145,18 +147,17 @@ const recoverOrb = Effect.fnUntraced(function* (
       print,
       `orb ${label} is ${view.status}; its record was removed`
     )
-  const holdsWork = fields.phase === 'active' || fields.phase === 'returning'
-  if (holdsWork) {
+  if (holdsWork(fields)) {
     if (view.status !== 'ACTIVE') {
       print(
-        `orb: orb ${label} is ${view.status}${view.fault === null ? '' : ` (${view.fault})`}, so its work cannot be returned; the orb is kept and the next dev --orb tries again.\nDelete it with: ${command}`
+        `orb: orb ${label} is ${view.status}${view.fault === null ? '' : ` (${view.fault})`}, so its work cannot be returned; the orb is kept and the next dev --orb tries again.\nTo discard its work and delete it instead: ${command}`
       )
       return 'kept'
     }
     const returned = yield* Effect.exit(returnToBranch(options, record, view))
     if (Exit.isFailure(returned)) {
       print(
-        `orb: the work of orb ${label} could not be returned: ${failureText(returned.cause)}\nThe orb is kept and the next dev --orb tries again. Delete it with: ${command}`
+        `orb: the work of orb ${label} could not be returned: ${failureText(returned.cause)}\nThe orb is kept and the next dev --orb tries again. To discard its work and delete it instead: ${command}`
       )
       return 'kept'
     }
@@ -317,7 +318,7 @@ const recoverRequested = Effect.fnUntraced(function* (
   )
   if (options.confirm === undefined) {
     print(
-      `orb: without an interactive terminal, dev deletes none of them; the next dev --orb in a terminal asks again. Delete one with: ${deleteCommand(options.token.orbitUrl, '<orb-id>')}`
+      `orb: without an interactive terminal, dev deletes none of them; the next dev --orb in a terminal asks again. Delete one with: ${deleteCommand(options.dataHome, '<orb-id>')}`
     )
     return yield* keep
   }
@@ -341,7 +342,7 @@ const recoverRequested = Effect.fnUntraced(function* (
     if (Exit.isFailure(deleted)) {
       failed = true
       print(
-        `orb: orb ${shortId(view.id)} could not be confirmed deleted: ${failureText(deleted.cause)}\nDelete it with: ${deleteCommand(options.token.orbitUrl, view.id)}`
+        `orb: orb ${shortId(view.id)} could not be confirmed deleted: ${failureText(deleted.cause)}\nDelete it with: ${deleteCommand(options.dataHome, view.id)}`
       )
     }
   }

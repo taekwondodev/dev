@@ -11,23 +11,22 @@ import type {
   WorkspaceLifecycle,
 } from '../workspace-domain.ts'
 import { taskArtifactsPath, authorityPaths } from '../workspace-authority-root.ts'
+import { openCloud, type Keystone, type Orbit } from './cloud.ts'
+import { readOrbConfig, readOrbCredentials } from './config.ts'
 import {
-  makeKeystone,
-  makeOrbit,
-  readCa,
-  readOpenrc,
-  type Keystone,
-  type Openrc,
-  type Orbit,
-} from './cloud.ts'
-import { readOrbConfig } from './config.ts'
-import { deleteCommand, orbFailure, shortId, type OrbError } from './domain.ts'
+  deleteCommand,
+  orbFailure,
+  shortId,
+  shq,
+  type OrbCredentials,
+  type OrbError,
+} from './domain.ts'
 import { clock, deleteRecorded } from './deletion.ts'
 import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { makeChildOrbs } from './children.ts'
 import { recoverOrbs } from './recovery.ts'
 import { createRecord } from './registry.ts'
-import { makeOrbSsh, shq, sshOptions, ttyScript } from './ssh.ts'
+import { makeOrbSsh, sshOptions, ttyScript } from './ssh.ts'
 import { createOrbExtension, macHomes } from './tools.ts'
 import {
   inspectCheckout,
@@ -41,11 +40,13 @@ import {
 export interface OrbSessionOptions {
   readonly pi: PiApi
   readonly dataHome: string
-  readonly env: NodeJS.ProcessEnv
   readonly print: (line: string) => void
   readonly confirm?: (prompt: string) => Effect.Effect<boolean>
   readonly secondInterrupt?: Effect.Effect<void>
-  readonly cloud?: (openrc: Openrc) => { readonly keystone: Keystone; readonly orbit: Orbit }
+  readonly cloud?: (credentials: OrbCredentials) => {
+    readonly keystone: Keystone
+    readonly orbit: Orbit
+  }
 }
 
 export interface OrbOpenInput {
@@ -154,7 +155,7 @@ export const returnAtQuit = <A>(
 
 export const capacityFailure = (
   orbit: Pick<Orbit, 'list'>,
-  orbitUrl: string,
+  dataHome: string,
   project: string,
   refusal: OrbError
 ): Effect.Effect<never, OrbError> =>
@@ -174,14 +175,14 @@ export const capacityFailure = (
       )
     )
     return yield* orbFailure(
-      `orbit has no capacity for another orb: ${refusal.message}\n${orbs}\nDelete one with: ${deleteCommand(orbitUrl, '<orb-id>')}`,
+      `orbit has no capacity for another orb: ${refusal.message}\n${orbs}\nDelete one with: ${deleteCommand(dataHome, '<orb-id>')}`,
       refusal,
       refusal.status
     )
   })
 
-const unconfirmed = (orbitUrl: string, orbId: string, reason: string): string =>
-  `Orb ${orbId} could not be confirmed deleted: ${reason}\nIts record stays, and the next dev --orb deletes the orb and removes it.\nDelete it now with: ${deleteCommand(orbitUrl, orbId)}`
+const unconfirmed = (dataHome: string, orbId: string, reason: string): string =>
+  `Orb ${orbId} could not be confirmed deleted: ${reason}\nIts record stays, and the next dev --orb deletes the orb and removes it.\nDelete it now with: ${deleteCommand(dataHome, orbId)}`
 
 export const openOrbSession = Effect.fnUntraced(function* (
   options: OrbSessionOptions,
@@ -197,23 +198,14 @@ export const openOrbSession = Effect.fnUntraced(function* (
 
   const config = yield* readOrbConfig(options.dataHome)
   const checkout = yield* inspectCheckout(input.cwd)
-  const openrc = yield* readOpenrc(options.env)
-  yield* Effect.sync(() => {
-    for (const name of Object.keys(options.env))
-      if (name.startsWith('OS_')) Reflect.deleteProperty(options.env, name)
-  })
-  const ca = yield* readCa(openrc)
+  const credentials = yield* readOrbCredentials(options.dataHome)
   const { keystone, orbit } =
-    options.cloud?.(openrc) ??
-    (() => {
-      const issued = makeKeystone(openrc, ca)
-      return { keystone: issued, orbit: makeOrbit(issued, ca) }
-    })()
-  yield* phase(`authenticating as ${openrc.OS_USERNAME} with Keystone at ${openrc.OS_AUTH_URL}`)
+    options.cloud === undefined ? yield* openCloud(credentials) : options.cloud(credentials)
+  yield* phase(`authenticating as ${credentials.username} with Keystone at ${credentials.auth_url}`)
   const token = yield* keystone.token
   yield* recoverOrbs({
     dataHome: options.dataHome,
-    authUrl: openrc.OS_AUTH_URL,
+    authUrl: credentials.auth_url,
     token,
     orbit,
     lifecycle: input.lifecycle,
@@ -239,7 +231,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
 
   const record = yield* createRecord(options.dataHome, {
     keystone: {
-      authUrl: openrc.OS_AUTH_URL,
+      authUrl: credentials.auth_url,
       projectId: token.project.id,
       projectName: token.project.name,
     },
@@ -265,7 +257,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       )
       if (Exit.isFailure(deleted)) {
         yield* record.release
-        print(unconfirmed(token.orbitUrl, orbId, errorText(Cause.squash(deleted.cause))))
+        print(unconfirmed(options.dataHome, orbId, errorText(Cause.squash(deleted.cause))))
       }
     })
 
@@ -283,7 +275,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       .pipe(
         Effect.catchIf(
           error => error.status === 409,
-          error => capacityFailure(orbit, token.orbitUrl, token.project.name, error)
+          error => capacityFailure(orbit, options.dataHome, token.project.name, error)
         ),
         Effect.tap(view => record.update({ phase: 'created', orbId: view.id })),
         Effect.uninterruptible
@@ -395,7 +387,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
         yield* Scope.close(sessionScope, Exit.void)
         yield* record.release
         print(
-          `Orb ${orbId} was kept: ${returned.reason}\nIts work is still on the orb at ${checkout.root} (${host}); the next dev --orb returns it to the branch dev/orb-recovery/${record.id} and deletes the orb.\nDelete it with: ${deleteCommand(token.orbitUrl, orbId)}`
+          `Orb ${orbId} was kept: ${returned.reason}\nIts work is still on the orb at ${checkout.root} (${host}); the next dev --orb returns it to the branch dev/orb-recovery/${record.id} and deletes the orb.\nTo discard its work and delete it instead: ${deleteCommand(options.dataHome, orbId)}`
         )
         return
       }
@@ -406,7 +398,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       )
       if (Exit.isFailure(deleted)) {
         yield* record.release
-        print(unconfirmed(token.orbitUrl, orbId, errorText(Cause.squash(deleted.cause))))
+        print(unconfirmed(options.dataHome, orbId, errorText(Cause.squash(deleted.cause))))
       }
     }).pipe(Effect.provideContext(services))
 

@@ -1,5 +1,6 @@
-import { appendFileSync } from 'node:fs'
-import { registerHooks } from 'node:module'
+import fs, { appendFileSync } from 'node:fs'
+import { registerHooks, syncBuiltinESMExports } from 'node:module'
+import { basename } from 'node:path'
 
 const report = process.env.ORB_PLAIN_REPORT
 if (report === undefined) throw new Error('ORB_PLAIN_REPORT names the report file')
@@ -13,19 +14,21 @@ registerHooks({
   },
 })
 
-const watched = (key: string | symbol): boolean => typeof key === 'string' && key.startsWith('OS_')
-process.env = new Proxy(process.env, {
-  get(target, key, receiver) {
-    if (watched(key)) record(`env ${String(key)}`)
-    return Reflect.get(target, key, receiver)
-  },
-  has(target, key) {
-    if (watched(key)) record(`env ${String(key)}`)
-    return Reflect.has(target, key)
-  },
-  getOwnPropertyDescriptor(target, key) {
-    if (watched(key)) record(`env ${String(key)}`)
-    return Reflect.getOwnPropertyDescriptor(target, key)
-  },
-})
+const ORB_FILES = new Set(['openstack.json', 'orb.json'])
+const touch = (path: unknown): void => {
+  const name = path instanceof URL ? path.pathname : String(path)
+  if (ORB_FILES.has(basename(name))) record(`file ${name}`)
+}
+const watched = <T extends object>(target: T, names: readonly string[]): void => {
+  for (const name of names) {
+    const original = Reflect.get(target, name) as (...args: unknown[]) => unknown
+    Reflect.set(target, name, (...args: unknown[]) => {
+      touch(args[0])
+      return original.apply(target, args)
+    })
+  }
+}
+watched(fs, ['open', 'openSync', 'readFile', 'readFileSync', 'stat', 'statSync', 'existsSync'])
+watched(fs.promises, ['open', 'readFile', 'stat'])
+syncBuiltinESMExports()
 record('hooks installed')

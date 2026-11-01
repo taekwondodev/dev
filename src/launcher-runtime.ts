@@ -126,6 +126,7 @@ interface LaunchOptions {
   readonly orb: boolean
   readonly workspaceArgs?: readonly string[]
   readonly browserArgs?: readonly string[]
+  readonly orbArgs?: readonly string[]
 }
 
 type RuntimeFactory = Parameters<PiApi['createAgentSessionRuntime']>[0]
@@ -186,6 +187,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         orb: boolean
         workspaceArgs?: readonly string[]
         browserArgs?: readonly string[]
+        orbArgs?: readonly string[]
       } = {
         cwd: process.cwd(),
         continueSession: false,
@@ -212,6 +214,9 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         } else if (arg === 'browser') {
           values.browserArgs = argv.slice(index + 1)
           break
+        } else if (arg === 'orb') {
+          values.orbArgs = argv.slice(index + 1)
+          break
         } else throw new Error(`Unknown option ${arg}. Use --help.`)
       }
       return {
@@ -227,7 +232,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (needs openrc's OS_* variables)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -952,6 +957,48 @@ const browserCommand = Effect.fnUntraced(function* (
   return 0
 })
 
+const ORB_USAGE = 'Use: dev orb setup | dev orb delete <orb-id>.'
+
+const printLine = (line: string): void => {
+  process.stdout.write(`${line}\n`)
+}
+
+const orbCommand = Effect.fnUntraced(function* (
+  args: readonly string[],
+  dataHome: string,
+  dependencies: LauncherDependencies
+): Effect.fn.Return<number, LauncherError, RuntimeFactoryServices | Scope.Scope> {
+  const [command, ...rest] = args
+  const deleting = command === 'delete' && rest.length === 1
+  if (!(command === 'setup' && rest.length === 0) && !deleting) {
+    yield* write(
+      `${args.length === 0 ? 'Missing orb command' : `Unknown orb command: ${args.join(' ')}`}. ${ORB_USAGE}`,
+      process.stderr
+    )
+    return 2
+  }
+  if (!deleting && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) {
+    yield* write(
+      'dev orb setup asks for the password at an interactive terminal; nothing was written.',
+      process.stderr
+    )
+    return 2
+  }
+  const orb = yield* fromPromise('Cannot load orb mode', () => import('./orb/command.ts'))
+  return yield* (
+    deleting
+      ? Effect.flatMap(dependencies.workspaceLifecycle, lifecycle =>
+          orb.deleteOrbById({ dataHome, orbId: rest[0] ?? '', lifecycle, print: printLine })
+        )
+      : orb.setupOrb({ dataHome, prompt: orb.terminalPrompt, print: printLine })
+  ).pipe(
+    Effect.as(0),
+    Effect.catch(error =>
+      Effect.as(write(error.message, process.stderr), error.status === 130 ? 130 : 1)
+    )
+  )
+})
+
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
   dependencies: LauncherDependencies
@@ -1006,6 +1053,31 @@ const run = Effect.fnUntraced(function* (
     process.exitCode = yield* browserCommand(
       options.browserArgs,
       options.dataHome ?? (yield* defaultDataHome)
+    )
+    return
+  }
+
+  if (options.orbArgs !== undefined) {
+    if (
+      options.orb ||
+      options.profile !== undefined ||
+      options.saveProfile !== undefined ||
+      options.resume !== undefined ||
+      options.continueSession ||
+      options.diagnostics ||
+      options.probeRuntime
+    ) {
+      yield* write(
+        'orb commands cannot be combined with --orb, --profile, --save-profile, --resume, --continue, --diagnostics, or --probe-runtime.',
+        process.stderr
+      )
+      process.exitCode = 2
+      return
+    }
+    process.exitCode = yield* orbCommand(
+      options.orbArgs,
+      options.dataHome ?? (yield* defaultDataHome),
+      dependencies
     )
     return
   }
@@ -1215,7 +1287,6 @@ const run = Effect.fnUntraced(function* (
                     {
                       pi: api,
                       dataHome,
-                      env: process.env,
                       print: line => {
                         process.stdout.write(`${line}\n`)
                       },

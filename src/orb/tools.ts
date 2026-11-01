@@ -17,8 +17,8 @@ import type {
 import type { PiApi } from '../pi-runtime.ts'
 import { errorText } from '../error-text.ts'
 import { isWithin } from '../workspace-paths.ts'
-import { orbFailure } from './domain.ts'
-import { shq, ttyScript, type OrbSsh } from './ssh.ts'
+import { orbFailure, shq } from './domain.ts'
+import { ttyScript, type OrbSsh } from './ssh.ts'
 
 export interface MacHomes {
   readonly read: (path: string) => boolean
