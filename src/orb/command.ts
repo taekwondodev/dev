@@ -14,7 +14,14 @@ import {
   writeOrbFiles,
 } from './config.ts'
 import { deleteOrb, deleteRecorded } from './deletion.ts'
-import { holdsWork, orbFailure, shortId, type OrbCredentials, type OrbError } from './domain.ts'
+import {
+  holdsWork,
+  isSpare,
+  orbFailure,
+  shortId,
+  type OrbCredentials,
+  type OrbError,
+} from './domain.ts'
 import { settlePresence } from './recovery.ts'
 import { claimRecord, readRecord, recordDirectories } from './registry.ts'
 
@@ -209,7 +216,7 @@ const findRecord = Effect.fnUntraced(function* (dataHome: string, orbId: string)
         )
       )
     )
-    if (record.orbId === orbId) return directory
+    if (record.orbId === orbId) return { directory, spare: isSpare(record) }
   }
   return undefined
 })
@@ -222,8 +229,8 @@ export const deleteOrbById = Effect.fnUntraced(function* (
   const credentials = yield* readOrbCredentials(options.dataHome)
   const { keystone, orbit } = yield* connect(credentials, options.cloud)
   const token = yield* keystone.token
-  const directory = yield* findRecord(options.dataHome, orbId)
-  if (directory === undefined) {
+  const found = yield* findRecord(options.dataHome, orbId)
+  if (found === undefined) {
     yield* deleteOrb(orbit, orbId, print).pipe(
       Effect.catchIf(gone, () =>
         Effect.fail(
@@ -233,10 +240,12 @@ export const deleteOrbById = Effect.fnUntraced(function* (
     )
     return
   }
-  const claim = yield* claimRecord(directory)
+  const claim = yield* claimRecord(found.directory)
   if (claim.kind === 'owned')
     return yield* orbFailure(
-      `Orb ${label} belongs to a running dev --orb session, which deletes it when it quits; nothing was deleted.`
+      found.spare
+        ? `Orb ${label} is the spare orb of a running dev --orb session, which releases it when it quits; nothing was deleted.`
+        : `Orb ${label} belongs to a running dev --orb session, which deletes it when it quits; nothing was deleted.`
     )
   if (claim.kind === 'incomplete')
     return yield* orbFailure(`The record of orb ${label} vanished meanwhile; nothing was deleted.`)

@@ -16,10 +16,19 @@ import type { ChildProcessSpawner } from 'effect/process'
 import { runCommand } from '../command.ts'
 import { errorText } from '../error-text.ts'
 import { acquireExclusiveLock, CoordinationError } from '../runtime-coordination.ts'
-import { OrbRecordSchema, orbFailure, type OrbError, type OrbRecord } from './domain.ts'
+import {
+  OrbRecordSchema,
+  orbFailure,
+  type AssignedRecord,
+  type Assignment,
+  type OrbError,
+  type OrbRecord,
+  type SpareRecord,
+} from './domain.ts'
 
-export type RecordFields = Omit<OrbRecord, 'id' | 'phase' | 'baseRef' | 'createdAt' | 'updatedAt'>
-export type RecordPatch = Partial<Omit<OrbRecord, 'id' | 'baseRef' | 'createdAt' | 'updatedAt'>>
+type Generated = 'id' | 'phase' | 'baseRef' | 'createdAt' | 'updatedAt'
+export type RecordFields = Omit<AssignedRecord, Generated> | Omit<SpareRecord, Generated>
+export type RecordPatch = Partial<Pick<AssignedRecord, 'phase' | 'orbId' | 'uploadedHead'>>
 
 export interface OrbRecordHandle {
   readonly id: string
@@ -29,6 +38,7 @@ export interface OrbRecordHandle {
   readonly controlPath: string
   readonly current: () => OrbRecord
   update(patch: RecordPatch): Effect.Effect<void, OrbError>
+  assign(assignment: Assignment): Effect.Effect<void, OrbError>
   writeKnownHosts(host: string, keys: readonly string[]): Effect.Effect<void, OrbError>
   readonly remove: Effect.Effect<void, OrbError>
   readonly release: Effect.Effect<void>
@@ -73,6 +83,16 @@ const recordHandle = (
     released = true
     releaseLock()
   })
+  const write = (next: OrbRecord) =>
+    sync('Cannot update the orb record', () =>
+      writePrivate(join(directory, 'record.json'), encodeRecord(next))
+    ).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          record = next
+        })
+      )
+    )
   return {
     id: record.id,
     directory,
@@ -81,12 +101,20 @@ const recordHandle = (
     controlPath: join(directory, 'mux'),
     current: () => record,
     update: patch =>
-      Effect.gen(function* () {
-        const next: OrbRecord = { ...record, ...patch, updatedAt: yield* timestamp }
-        yield* sync('Cannot update the orb record', () =>
-          writePrivate(join(directory, 'record.json'), encodeRecord(next))
-        )
-        record = next
+      Effect.flatMap(timestamp, updatedAt => write({ ...record, ...patch, updatedAt })),
+    assign: assignment =>
+      Effect.flatMap(timestamp, updatedAt => {
+        const { id, phase, orbId, keystone, baseRef, createdAt } = record
+        return write({
+          id,
+          phase,
+          ...(orbId === undefined ? {} : { orbId }),
+          keystone,
+          baseRef,
+          createdAt,
+          updatedAt,
+          ...assignment,
+        })
       }),
     writeKnownHosts: (host, keys) =>
       sync('Cannot write the orb known_hosts', () =>

@@ -79,7 +79,7 @@ export const OrbPhaseSchema = Schema.Literals([
 ])
 export type OrbPhase = typeof OrbPhaseSchema.Type
 
-export const OrbRecordSchema = Schema.Struct({
+const recordIdentity = {
   id: Schema.NonEmptyString,
   phase: OrbPhaseSchema,
   orbId: Schema.optional(Schema.NonEmptyString),
@@ -88,20 +88,44 @@ export const OrbRecordSchema = Schema.Struct({
     projectId: Schema.NonEmptyString,
     projectName: Schema.NonEmptyString,
   }),
+  baseRef: Schema.NonEmptyString,
+  createdAt: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+}
+
+export const AssignedRecordSchema = Schema.Struct({
+  ...recordIdentity,
   checkout: Schema.NonEmptyString,
   branch: Schema.optional(Schema.NonEmptyString),
   orbPath: Schema.NonEmptyString,
-  baseRef: Schema.NonEmptyString,
   uploadedHead: Schema.optional(Schema.NonEmptyString),
   presenceUseId: Schema.optional(Schema.NonEmptyString),
   conversation: Schema.NonEmptyString,
-  createdAt: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
 })
+export type AssignedRecord = typeof AssignedRecordSchema.Type
+
+export const SpareShapeSchema = Schema.Struct({
+  size: OrbSizeSchema,
+  image: Schema.NonEmptyString,
+  sshAllowedCidr: Schema.NonEmptyString,
+})
+export type SpareShape = typeof SpareShapeSchema.Type
+
+export const SpareRecordSchema = Schema.Struct({ ...recordIdentity, spare: SpareShapeSchema })
+export type SpareRecord = typeof SpareRecordSchema.Type
+
+export const OrbRecordSchema = Schema.Union([AssignedRecordSchema, SpareRecordSchema])
 export type OrbRecord = typeof OrbRecordSchema.Type
 
-export const holdsWork = (record: Pick<OrbRecord, 'phase'>): boolean =>
-  record.phase === 'active' || record.phase === 'returning'
+export type Assignment = Pick<AssignedRecord, 'checkout' | 'orbPath' | 'conversation'> &
+  Partial<Pick<AssignedRecord, 'branch' | 'presenceUseId'>>
+
+export const isSpare = (record: OrbRecord): record is SpareRecord => 'spare' in record
+
+export const holdsWork = (
+  record: OrbRecord
+): record is AssignedRecord & { readonly phase: 'active' | 'returning' } =>
+  !isSpare(record) && (record.phase === 'active' || record.phase === 'returning')
 
 export const shortId = (id: string): string => id.slice(0, 8)
 

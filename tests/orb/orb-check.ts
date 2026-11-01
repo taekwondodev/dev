@@ -21,7 +21,13 @@ import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Deferred, Effect, Exit, Fiber, Stream } from 'effect'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
-import { orbFailure, type OrbError, type OrbRecord, type OrbView } from '../../src/orb/domain.ts'
+import {
+  isSpare,
+  orbFailure,
+  type OrbError,
+  type OrbRecord,
+  type OrbView,
+} from '../../src/orb/domain.ts'
 import { errorText } from '../../src/error-text.ts'
 import { readOrbConfig, readOrbCredentials } from '../../src/orb/config.ts'
 import { deleteOrbById, isCidr, setupOrb, type Prompt } from '../../src/orb/command.ts'
@@ -37,7 +43,7 @@ import {
 import { makeOrbSsh, masterOptions, sshOptions } from '../../src/orb/ssh.ts'
 import { macHomes } from '../../src/orb/tools.ts'
 import { openOrbReader } from '../../src/orb/child.ts'
-import { makeChildOrbs, saveChildWork } from '../../src/orb/children.ts'
+import { makeChildOrbs, saveChildWork, type ChildOrbsInput } from '../../src/orb/children.ts'
 import { orbToolAccess } from '../../src/integrated-tools.ts'
 import { childWorkspaceExtension, type ControllerChannel } from '../../src/work-child-workspace.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
@@ -1336,8 +1342,10 @@ await claim(
     const claimed = await run(claimRecord(directory))
     assert.equal(claimed.kind, 'claimed')
     if (claimed.kind !== 'claimed') return
-    assert.equal(claimed.record.current().presenceUseId, 'presence-use')
-    assert.equal(claimed.record.current().phase, 'requested')
+    const current = claimed.record.current()
+    assert.ok(!isSpare(current))
+    assert.equal(current.presenceUseId, 'presence-use')
+    assert.equal(current.phase, 'requested')
     assert.deepEqual(
       await run(claimRecord(directory)),
       { kind: 'owned' },
@@ -1619,10 +1627,12 @@ const startScenario = async (
   control: {
     readonly drive?: (fiber: Fiber.Fiber<unknown, unknown>) => Effect.Effect<void>
     readonly secondInterrupt?: Effect.Effect<void>
+    readonly seed?: (dataHome: string) => Promise<void>
   } = {}
 ) => {
   const { mac } = newCheckout(`start-${name}`)
   const dataHome = orbDataHome(`start-${name}-data`)
+  await control.seed?.(dataHome)
   const withdrawn: string[] = []
   const attachment = {
     binding: { taskId: undefined },
@@ -1776,6 +1786,89 @@ await claim(
   }
 )
 
+const minutesAgo = (minutes: number): string =>
+  new Date(Date.now() - minutes * 60_000).toISOString().slice(0, 19)
+
+const spareLaunch = async (name: string, spareStatus: OrbView['status'], spareAge: number) => {
+  const removed: string[] = []
+  let created = 0
+  const answers: Record<string, OrbView> = {
+    'orb-spare': orbView('orb-spare', minutesAgo(spareAge), spareStatus),
+    'orb-started': orbView('orb-started', minutesAgo(0), 'ERROR'),
+  }
+  const orbit: Orbit = {
+    url: Effect.succeed('http://192.0.2.1/orbit'),
+    create: () =>
+      Effect.sync(() => {
+        created += 1
+        return orbView('orb-started', minutesAgo(0), 'RESERVING')
+      }),
+    get: id =>
+      Effect.sync(() => {
+        const answer = answers[id] ?? orbView(id, minutesAgo(0), 'DELETED')
+        return removed.includes(id)
+          ? { ...answer, status: 'DELETED' as const }
+          : { ...answer, fault: answer.status === 'ERROR' ? 'No valid host was found' : null }
+      }),
+    remove: id =>
+      Effect.sync(() => {
+        removed.push(id)
+        return orbView(id, minutesAgo(0), 'DELETING')
+      }),
+    list: Effect.succeed([]),
+  }
+  const started = await startScenario(name, orbit, {
+    seed: async dataHome => {
+      const spare = await run(
+        createRecord(dataHome, {
+          keystone: KEYSTONE,
+          spare: {
+            size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
+            image: 'ubuntu-24.04-arm64-dev',
+            sshAllowedCidr: '192.0.2.1/32',
+          },
+        })
+      )
+      await run(spare.update({ phase: 'created', orbId: 'orb-spare' }))
+      await run(spare.release)
+    },
+  })
+  return { ...started, removed, created }
+}
+
+await claim(
+  'a launch takes a valid spare instead of requesting an orb, naming its status and age, and a failed start deletes it like the orb it would have created',
+  async () => {
+    const started = await spareLaunch('spare-taken', 'ACTIVE', 3)
+    assert.equal(started.created, 0, 'no creation request')
+    assert.match(started.text, /orb: taking the spare orb orb-spar \(ACTIVE, created 3 min ago\)/)
+    assert.match(started.error ?? '', /orb orb-spar is ACTIVE without an SSH address/)
+    assert.deepEqual(started.removed, ['orb-spare'])
+    assert.match(started.text, /Deleting orb orb-spar after the failed start/)
+    assert.deepEqual(started.records, [])
+    assert.deepEqual(started.withdrawn, ['presence-use'])
+  }
+)
+
+await claim(
+  'a launch deletes an expired spare and awaits DELETED before requesting its own orb',
+  async () => {
+    const started = await spareLaunch('spare-expired', 'ACTIVE', 150)
+    assert.match(
+      started.text,
+      /orb: deleting the spare orb orb-spar: it was created 150 minutes ago/
+    )
+    assert.equal(started.created, 1)
+    assert.deepEqual(started.removed, ['orb-spare', 'orb-started'])
+    const { text } = started
+    assert.ok(
+      text.indexOf('orb orb-spar deleted') < text.indexOf('requesting an orb'),
+      'the spare is DELETED before the creation request'
+    )
+    assert.deepEqual(started.records, [])
+  }
+)
+
 await claim(
   "an orb that reaches ERROR is deleted, orbit's fault is named, and its record is removed once orbit reports DELETED",
   async () => {
@@ -1919,7 +2012,10 @@ await claim(
     const dataHome = join(sandbox, 'child-provision-data')
     mkdirSync(dataHome, { mode: 0o700 })
     const services = await run(Effect.context<ChildProcessSpawner.ChildProcessSpawner>())
-    const provision = async (orbit: Orbit) => {
+    const provision = async (
+      orbit: Orbit,
+      spares: ChildOrbsInput['spares'] = { request: Effect.void, take: Effect.succeed(undefined) }
+    ) => {
       const reports: AttemptOrb[] = []
       let adopted = false
       const children = makeChildOrbs(
@@ -1948,6 +2044,7 @@ await claim(
             record: 'lead-record',
           },
           lifecycle: lifecycle.effect,
+          spares,
         },
         services
       )
@@ -2007,6 +2104,59 @@ await claim(
     })
     assert.deepEqual(failed.records, [], 'the record is removed once orbit reports DELETED')
     assert.equal(failed.adopted, false)
+
+    const spareRecord = await run(
+      createRecord(dataHome, {
+        keystone: KEYSTONE,
+        spare: {
+          size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
+          image: 'ubuntu-24.04-arm64-dev',
+          sshAllowedCidr: '192.0.2.0/24',
+        },
+      })
+    )
+    await run(spareRecord.update({ phase: 'created', orbId: 'orb-spare' }))
+    const assigned: OrbRecord[] = []
+    let requested = 0
+    let created = 0
+    const spared = fakeOrbit({
+      create: Effect.suspend(() => {
+        created += 1
+        return createdOrb()
+      }),
+      states: ['ERROR'],
+    })
+    const withSpare = await provision(
+      {
+        ...spared.orbit,
+        get: id =>
+          Effect.suspend(() => {
+            assigned.push(spareRecord.current())
+            return spared.orbit.get(id)
+          }),
+      },
+      {
+        take: Effect.succeed({
+          record: spareRecord,
+          view: orbView('orb-spare', '2026-10-28T10:00:00', 'BUILDING'),
+        }),
+        request: Effect.sync(() => {
+          requested += 1
+        }),
+      }
+    )
+    assert.equal(created, 0, 'the child starts on the spare without a creation request')
+    assert.equal(assigned[0]?.orbId, 'orb-spare')
+    assert.ok(assigned[0] !== undefined && !isSpare(assigned[0]))
+    assert.equal(
+      assigned[0].checkout,
+      realpathSync(worktree),
+      "the spare's record names the worktree"
+    )
+    assert.match(withSpare.error ?? '', /orb orb-spar reached ERROR/)
+    assert.deepEqual(spared.removed, ['orb-spare'])
+    assert.equal(requested, 1, "the session requests a new spare once the child's orb is deleted")
+    assert.deepEqual(withSpare.records, [])
   }
 )
 
