@@ -1,12 +1,12 @@
 # Orb
 
-`dev --orb` runs a lead session whose tools execute on a fresh [orbit](https://github.com/taekwondodev/orbit) orb, an ephemeral OpenStack machine reached over SSH. Pi, the model and every credential stay on the Mac; the work returns to the local checkout as commits and working-tree changes. Plain `dev` loads no orb code and reads no OpenStack variable. [CONTEXT](../CONTEXT.md#orb) defines the terms; [SECURITY](../SECURITY.md#orb-execution) states the trust boundary.
+`dev --orb` runs a lead session whose tools execute on a fresh [orbit](https://github.com/taekwondodev/orbit) orb, an ephemeral OpenStack machine reached over SSH. Pi, the model and every credential stay on the Mac; the work returns to the local checkout as commits and working-tree changes. Plain `dev` loads no orb code and reads neither [orb file](#configuration). [CONTEXT](../CONTEXT.md#orb) defines the terms; [SECURITY](../SECURITY.md#orb-execution) states the trust boundary.
 
 ## Use
 
 ```bash
-source openrc demo demo   # the OS_* variables of an OpenStack project with orbit
-dev --orb                 # create an orb, upload this checkout, open the TUI
+dev orb setup   # once: the OpenStack credentials and orb settings, verified with Keystone
+dev --orb       # create an orb, upload this checkout, open the TUI
 ```
 
 In the session:
@@ -19,13 +19,25 @@ In the session:
 
 `--orb` cannot be combined with `--diagnostics` or `--probe-runtime`.
 
+Outside a session:
+
+| Command                   | Effect                                                                                                                                             |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev orb setup`           | Ask for the [configuration](#configuration), verify the credentials with Keystone and write both files; needs an interactive terminal              |
+| `dev orb delete <orb-id>` | Delete the orb, wait for `DELETED` and remove the orb record that names it; the command every message prints when an orb is left to delete by hand |
+
+`dev orb delete` refuses an orb whose session still runs, since that session deletes it at quit, an orb whose record belongs to another Keystone URL or project, and any orb while an orb record of the data home cannot be read, since that record may name it. Before deleting an orb whose work has not returned, it warns that the work is discarded; the ended session's writer use is then [settled](#recovery) as at recovery. It is the way out of an orb that recovery keeps on every launch: one in `ERROR` that holds work, one whose work cannot return, or one taking the capacity a `409` reports.
+
 ### Configuration
 
-`<data-home>/orb.json` sets the orb's `size` (default 2 vCPU, 2048 MB, 10 GB), its `image` (default `ubuntu-24.04-arm64-dev`) and the required `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH. The file is private to the machine and its network, so it is not version-controlled; without it `dev --orb` refuses to start and names the path.
+The OpenStack project is the same for OpenStack and for DevStack in a VM; only the Keystone URL differs. Two private, unversioned files in the data home hold the configuration, and `dev orb setup` writes both:
 
-```json
-{ "ssh_allowed_cidr": "192.0.2.1/32" }
-```
+- `<data-home>/openstack.json` holds the credentials: `auth_url`, `username`, `password` and `project_name`, and optionally `user_domain_id` and `project_domain_id` (default `default`), `region_name` (the orbit endpoint's region) and `cacert` (a CA file trusted for HTTPS). dev reads it only with mode `600` and prints the `chmod` that fixes it otherwise.
+- `<data-home>/orb.json` sets the orb's `size` (default 2 vCPU, 2048 MB, 10 GB), its `image` (default `ubuntu-24.04-arm64-dev`) and the required `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH.
+
+Without either file, or with an excess or missing field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home.
+
+`dev orb setup` proposes the stored value of each field, Enter keeps it and `-` clears an optional one. The password is read without echo, and Enter keeps the stored one. dev authenticates with the answers and writes nothing unless Keystone accepts them. For `ssh_allowed_cidr` it proposes the stored value, otherwise the Mac's own address on its route to the Keystone host, as `<address>/32`. Each file is replaced through a temporary file and a rename, with mode `600`.
 
 The Mac must route to orbit's floating IPs; on DevStack, run orbit's `tools/reach-orbs.sh <devstack-host>` after either machine restarts.
 
@@ -37,7 +49,7 @@ The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH 
 
 Before the TUI opens, dev prints one line per phase with the elapsed time:
 
-1. It authenticates to Keystone with the `OS_*` variables and finds orbit as the public endpoint of catalog type `orbit`.
+1. It authenticates to Keystone with `openstack.json` and finds orbit as the public endpoint of catalog type `orbit`.
 2. It [recovers](#recovery) the orbs that ended sessions left behind.
 3. It admits the session as writer of the checkout, so another dev task that wants to write it gets an isolated worktree.
 4. It writes the [orb record](#state), with a fresh key, then creates the orb and shows orbit's status (`RESERVING`, `BUILDING`, `ACTIVE`).
@@ -107,13 +119,13 @@ dev deletes the orb once the return completed or its work is on a `dev/orb-retur
 - Without one, dev keeps the orb.
 - Ctrl-C during the return lets the started step finish, so the checkout is never half-written. If the return then failed, dev keeps the orb without asking.
 
-For a kept orb dev prints its id, where its work is, a `curl` delete command and that the next `dev --orb` [recovers](#recovery) it.
+For a kept orb dev prints its id, where its work is, its `dev orb delete` command and that the next `dev --orb` [recovers](#recovery) it.
 
 Once the work has returned, dev sends `DELETE` and waits about 60 s for orbit to report `DELETED`, printing each state. If the wait ends first, or Ctrl-C stops it, dev exits, printing the orb's id and delete command and leaving the record to the next `dev --orb`, which deletes the orb.
 
 ### Recovery
 
-A session that crashed, was killed or kept its orb at quit leaves its orb record behind, and so does each of its [writing children](#writing-children) whose orb it had not deleted; the record of a child names the child's worktree as its checkout. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project is reported and kept: source that project's openrc and run `dev --orb` again.
+A session that crashed, was killed or kept its orb at quit leaves its orb record behind, and so does each of its [writing children](#writing-children) whose orb it had not deleted; the record of a child names the child's worktree as its checkout. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project, left after `openstack.json` changed or DevStack was rebuilt, is kept, and dev prints the `rm -r` that removes its directory.
 
 | Record                                                                  | Recovery                                                                                                                                                |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -132,6 +144,7 @@ The ended session's writer use then no longer holds the checkout: dev [settles i
 
 | Location                                  | Content                                                                                           |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `<data-home>/openstack.json`              | The OpenStack [credentials](#configuration), mode `600`                                           |
 | `<data-home>/orb.json`                    | The [configuration](#configuration) of new orbs                                                   |
 | `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`    |
 | `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository             |

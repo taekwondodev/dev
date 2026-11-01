@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { Duration, Effect, Schedule, type Scope } from 'effect'
 import { errorText } from '../error-text.ts'
-import { orbFailure, type OrbError } from './domain.ts'
+import { orbFailure, shq, type OrbError } from './domain.ts'
 
 export interface SshTarget {
   readonly user: string
@@ -35,8 +35,6 @@ export interface OrbSsh {
   spawnPlain(script: string): ChildProcessWithoutNullStreams
   readonly master: Effect.Effect<void, OrbError, Scope.Scope>
 }
-
-export const shq = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 const baseOptions = (target: SshTarget): readonly string[] => [
   '-F',

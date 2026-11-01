@@ -6,8 +6,8 @@ import { Effect, type Scope } from 'effect'
 import type { ChildProcessSpawner } from 'effect/process'
 import { runCommand, type CommandResult } from '../command.ts'
 import { isWithin } from '../workspace-paths.ts'
-import { orbFailure, type OrbError } from './domain.ts'
-import { shq, type OrbSsh } from './ssh.ts'
+import { orbFailure, shq, type OrbError } from './domain.ts'
+import type { OrbSsh } from './ssh.ts'
 
 export interface OrbRepository {
   readonly url: string

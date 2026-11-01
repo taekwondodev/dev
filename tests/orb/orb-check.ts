@@ -23,7 +23,8 @@ import { Cause, Deferred, Effect, Exit, Fiber, Stream } from 'effect'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
 import { orbFailure, type OrbError, type OrbRecord, type OrbView } from '../../src/orb/domain.ts'
 import { errorText } from '../../src/error-text.ts'
-import { readOrbConfig } from '../../src/orb/config.ts'
+import { readOrbConfig, readOrbCredentials } from '../../src/orb/config.ts'
+import { deleteOrbById, isCidr, setupOrb, type Prompt } from '../../src/orb/command.ts'
 import { deleteRecorded } from '../../src/orb/deletion.ts'
 import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/recovery.ts'
 import { claimRecord, createRecord } from '../../src/orb/registry.ts'
@@ -71,10 +72,18 @@ const { claim, passed } = makeClaims()
 const run = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>): Promise<A> =>
   Effect.runPromise(Effect.provide(effect, NodeServices.layer))
 
+const CREDENTIALS = {
+  auth_url: 'http://192.0.2.1/identity',
+  username: 'demo',
+  password: 'secret',
+  project_name: 'demo',
+} as const
+
 const orbDataHome = (name: string): string => {
   const dataHome = join(sandbox, name)
   mkdirSync(dataHome, { mode: 0o700 })
   writeFileSync(join(dataHome, 'orb.json'), JSON.stringify({ ssh_allowed_cidr: '192.0.2.1/32' }))
+  writeFileSync(join(dataHome, 'openstack.json'), JSON.stringify(CREDENTIALS), { mode: 0o600 })
   return dataHome
 }
 
@@ -181,8 +190,8 @@ await claim(
     await assert.rejects(
       run(readOrbConfig(empty)),
       (error: OrbError) =>
-        error.message.startsWith(`No orb configuration at ${join(empty, 'orb.json')}.`) &&
-        error.message.includes('ssh_allowed_cidr')
+        error.message ===
+        `No orb configuration at ${join(empty, 'orb.json')}. Create it with: dev --data-home '${empty}' orb setup`
     )
   }
 )
@@ -1196,23 +1205,40 @@ await claim(
       list: unused,
     }
     const lines: string[] = []
-    const env: NodeJS.ProcessEnv = {
-      OS_AUTH_URL: 'http://192.0.2.1/identity',
-      OS_USERNAME: 'demo',
-      OS_PASSWORD: 'secret',
-      OS_PROJECT_NAME: 'demo',
-      OS_CACERT: '',
-      KEEP: 'kept',
+    let authenticated: unknown
+    const environment = process.env
+    const touched: string[] = []
+    const watch = (key: string | symbol): void => {
+      if (typeof key === 'string' && key.startsWith('OS_')) touched.push(key)
     }
+    process.env = new Proxy(
+      Object.fromEntries(Object.entries(environment).filter(([name]) => !name.startsWith('OS_'))),
+      {
+        get: (target, key, receiver) => {
+          watch(key)
+          return Reflect.get(target, key, receiver)
+        },
+        has: (target, key) => {
+          watch(key)
+          return Reflect.has(target, key)
+        },
+        getOwnPropertyDescriptor: (target, key) => {
+          watch(key)
+          return Reflect.getOwnPropertyDescriptor(target, key)
+        },
+      }
+    )
     await assert.rejects(
       run(
         openOrbSession(
           {
             pi: {} as PiApi,
             dataHome,
-            env,
             print: line => lines.push(line),
-            cloud: () => ({ keystone, orbit }),
+            cloud: credentials => {
+              authenticated = credentials
+              return { keystone, orbit }
+            },
           },
           {
             attachment,
@@ -1237,7 +1263,13 @@ await claim(
       [],
       'a launch that created no orb leaves no record'
     )
-    assert.deepEqual(env, { KEEP: 'kept' }, 'the OS_* variables are removed after reading them')
+    process.env = environment
+    assert.deepEqual(
+      authenticated,
+      CREDENTIALS,
+      'the session authenticates with the data home file'
+    )
+    assert.deepEqual(touched, [], 'the session reads no OS_* variable')
   }
 )
 
@@ -1533,12 +1565,6 @@ const startScenario = async (
     {
       pi: {} as PiApi,
       dataHome,
-      env: {
-        OS_AUTH_URL: 'http://192.0.2.1/identity',
-        OS_USERNAME: 'demo',
-        OS_PASSWORD: 'secret',
-        OS_PROJECT_NAME: 'demo',
-      },
       print: line => lines.push(line),
       cloud: () => ({ keystone, orbit }),
       ...(control.secondInterrupt === undefined
@@ -1654,8 +1680,8 @@ await claim(
       /Project demo has 2 active orb\(s\):\n  orb-lead-0000 ACTIVE since .*\n  orb-child-000 BUILDING since /
     )
     assert.doesNotMatch(message, /orb-leaving-0/, 'an orb being deleted is not active')
-    assert.ok(message.includes('curl -X DELETE'), message)
-    assert.ok(message.includes('http://192.0.2.1/orbit/v1/orbs/<orb-id>'), message)
+    assert.ok(message.includes(`Delete one with: dev --data-home '`), message)
+    assert.ok(message.endsWith(`' orb delete <orb-id>`), message)
     assert.deepEqual(full.records, [])
   }
 )
@@ -1734,7 +1760,7 @@ await claim(
     assert.deepEqual([record.phase, record.orbId], ['deleting', 'orb-started'])
     assert.match(kept.text, /the wait for DELETED was interrupted while orb orb-star read DELETING/)
     assert.match(kept.text, /next dev --orb deletes the orb/)
-    assert.ok(kept.text.includes('http://192.0.2.1/orbit/v1/orbs/orb-started'))
+    assert.match(kept.text, /Delete it now with: dev --data-home '.*' orb delete orb-started$/m)
     const claimed = await run(claimRecord(directory))
     assert.equal(claimed.kind, 'claimed', 'the interrupted session released the record lock')
     if (claimed.kind === 'claimed') await run(claimed.record.release)
@@ -1983,9 +2009,17 @@ await claim(
     assert.match(text, /orb orb-erro is ERROR \(boom\), so its work cannot be returned/)
     assert.match(text, /the checkout .*recover-states-missing no longer exists/)
     assert.match(text, /lacks refs\/dev\/orb\/[0-9a-f-]+\/base, the upload this orb started from/)
-    assert.match(text, /belongs to project another/)
     assert.ok(
-      text.includes(`${TOKEN.orbitUrl}/v1/orbs/orb-error`),
+      text.includes(
+        `belongs to project another at ${KEYSTONE.authUrl}, not to the project of the OpenStack credentials, so it is kept. If that project no longer exists, remove the record with: rm -r '${join(dataHome, 'orbs', ids.foreign)}'`
+      ),
+      text
+    )
+    assert.doesNotMatch(text, /openrc|source /)
+    assert.ok(
+      text.includes(
+        `To discard its work and delete it instead: dev --data-home '${dataHome}' orb delete orb-error`
+      ),
       'a kept orb comes with its delete command'
     )
   }
@@ -2100,7 +2134,402 @@ await claim(
   }
 )
 
-await claim('plain dev loads no orb module and reads no OS_* variable', async () => {
+await claim(
+  'the OpenStack credentials are read from openstack.json in the data home only with mode 600; a missing file, a missing or excess field and a wider mode each refuse naming the path and the remedy',
+  async () => {
+    const dataHome = orbDataHome('credentials-data')
+    const path = join(dataHome, 'openstack.json')
+    assert.deepEqual(await run(readOrbCredentials(dataHome)), CREDENTIALS)
+    const refusal = async (contents: string | undefined, mode = 0o600) => {
+      rmSync(path, { force: true })
+      if (contents !== undefined) writeFileSync(path, contents, { mode })
+      chmodSync(dataHome, 0o700)
+      if (contents !== undefined) chmodSync(path, mode)
+      const exit = await run(Effect.exit(readOrbCredentials(dataHome)))
+      assert.equal(Exit.isFailure(exit), true)
+      return Exit.isFailure(exit) ? errorText(Cause.squash(exit.cause)) : ''
+    }
+    assert.equal(
+      await refusal(undefined),
+      `No OpenStack credentials at ${path}. Create it with: dev --data-home '${dataHome}' orb setup`
+    )
+    const { password: _password, ...withoutPassword } = CREDENTIALS
+    const rewrite = `Rewrite them with: dev --data-home '${dataHome}' orb setup`
+    const missingField = await refusal(JSON.stringify(withoutPassword))
+    assert.match(
+      missingField,
+      new RegExp(`^Cannot read the OpenStack credentials at ${path}: .*password`, 's')
+    )
+    assert.ok(missingField.endsWith(`\n${rewrite}`), missingField)
+    const excessField = await refusal(JSON.stringify({ ...CREDENTIALS, OS_PASSWORD: 'x' }))
+    assert.match(
+      excessField,
+      new RegExp(`^Cannot read the OpenStack credentials at ${path}: .*OS_PASSWORD`, 's')
+    )
+    assert.ok(excessField.endsWith(`\n${rewrite}`), excessField)
+    const secret = 'Zq9-distinctive-password'
+    for (const contents of [
+      `{"password": "${secret}", `,
+      JSON.stringify({ ...CREDENTIALS, password: secret, extra: secret }),
+      JSON.stringify({ ...CREDENTIALS, password: [secret] }),
+    ]) {
+      rmSync(path, { force: true })
+      writeFileSync(path, contents, { mode: 0o600 })
+      const exit = await run(Effect.exit(readOrbCredentials(dataHome)))
+      const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+      assert.ok(error instanceof Error, 'a malformed file is refused')
+      assert.ok(!error.message.includes(secret), error.message)
+      assert.equal(
+        error.cause,
+        undefined,
+        'the refusal carries no decode cause holding the file text'
+      )
+    }
+    assert.equal(
+      await refusal(JSON.stringify(CREDENTIALS), 0o644),
+      `The OpenStack credentials at ${path} have mode 644, so other accounts may read the password; dev reads them only with mode 600. Fix it with: chmod 600 ${path}\nor rewrite them with: dev --data-home '${dataHome}' orb setup`
+    )
+  }
+)
+
+const scripted = (answers: string[]) => {
+  const questions: string[] = []
+  const prompt: Prompt = {
+    ask: (question, hidden = false) =>
+      Effect.suspend(() => {
+        questions.push(`${hidden ? 'hidden ' : ''}${question}`)
+        const answer = answers.shift()
+        return answer === undefined
+          ? Effect.die(`no scripted answer for ${question}`)
+          : Effect.succeed(answer)
+      }),
+  }
+  return { prompt, questions, left: answers }
+}
+
+const setupCloud = (accepted: boolean) => {
+  const seen: unknown[] = []
+  return {
+    seen,
+    cloud: (credentials: unknown) => {
+      seen.push(credentials)
+      return {
+        keystone: {
+          authUrl: 'http://192.0.2.1/identity',
+          token: accepted
+            ? Effect.succeed(TOKEN)
+            : Effect.fail(
+                orbFailure('Keystone refused the token request (401): bad password', undefined, 401)
+              ),
+          invalidate: Effect.void,
+        },
+        orbit: {} as Orbit,
+      }
+    },
+  }
+}
+
+const fileState = (path: string) =>
+  existsSync(path)
+    ? { mode: lstatSync(path).mode & 0o777, json: JSON.parse(readFileSync(path, 'utf8')) }
+    : undefined
+
+await claim(
+  'dev orb setup verifies the credentials with Keystone before writing both files with mode 600, writes nothing when Keystone refuses them, and a rerun proposes the stored values, keeps the stored password on Enter and clears an optional value with -',
+  async () => {
+    const dataHome = join(sandbox, 'setup-data', 'nested')
+    const files = {
+      credentials: join(dataHome, 'openstack.json'),
+      config: join(dataHome, 'orb.json'),
+    }
+    const refused = scripted(['http://192.0.2.1/identity', 'demo', 'demo', '', '', '', '', 'wrong'])
+    const rejectedCloud = setupCloud(false)
+    const lines: string[] = []
+    await assert.rejects(
+      run(
+        setupOrb({
+          dataHome,
+          prompt: refused.prompt,
+          print: line => lines.push(line),
+          cloud: rejectedCloud.cloud,
+          sourceAddress: () => Effect.succeed('192.0.2.50'),
+        })
+      ),
+      (error: OrbError) =>
+        error.message ===
+        'The credentials were not accepted: Keystone refused the token request (401): bad password\nNothing was written.'
+    )
+    assert.deepEqual(
+      [fileState(files.credentials), fileState(files.config)],
+      [undefined, undefined]
+    )
+    assert.deepEqual(refused.left, [])
+
+    const first = scripted([
+      'not a url',
+      'http://192.0.2.1/identity',
+      'demo',
+      'demo',
+      '',
+      '',
+      'RegionOne',
+      '',
+      '',
+      'secret',
+      '',
+      '',
+      'two',
+      '4',
+      '',
+      '',
+    ])
+    const accepted = setupCloud(true)
+    await run(
+      setupOrb({
+        dataHome,
+        prompt: first.prompt,
+        print: line => lines.push(line),
+        cloud: accepted.cloud,
+        sourceAddress: () => Effect.succeed('192.0.2.50'),
+      })
+    )
+    const expected = {
+      ...CREDENTIALS,
+      user_domain_id: 'default',
+      project_domain_id: 'default',
+      region_name: 'RegionOne',
+    }
+    assert.deepEqual(accepted.seen, [expected], 'Keystone verifies exactly what is written')
+    assert.deepEqual(fileState(files.credentials), { mode: 0o600, json: expected })
+    assert.deepEqual(fileState(files.config), {
+      mode: 0o600,
+      json: {
+        size: { vcpus: 4, memory_mb: 2048, disk_gb: 10 },
+        image: 'ubuntu-24.04-arm64-dev',
+        ssh_allowed_cidr: '192.0.2.50/32',
+      },
+    })
+    assert.deepEqual(first.questions, [
+      'Keystone URL: ',
+      'Keystone URL: ',
+      'User: ',
+      'Project: ',
+      'User domain id [default]: ',
+      'Project domain id [default]: ',
+      'Region [none]: ',
+      'CA certificate file [none]: ',
+      'hidden Password: ',
+      'hidden Password: ',
+      'Network the orbs admit SSH from [192.0.2.50/32]: ',
+      'Orb image [ubuntu-24.04-arm64-dev]: ',
+      'Orb vCPUs [2]: ',
+      'Orb vCPUs [2]: ',
+      'Orb memory in MB [2048]: ',
+      'Orb disk in GB [10]: ',
+    ])
+    assert.doesNotMatch(lines.join('\n'), /secret/, 'the password is never printed')
+    assert.ok(lines.includes('Enter an absolute URL, such as http://192.0.2.1/identity.'))
+    assert.ok(
+      lines.includes('A value is required.'),
+      'an empty password with none stored is refused'
+    )
+    assert.ok(lines.includes('Enter a whole number greater than 0.'))
+
+    const rerun = scripted(['', '', '', '', '', '-', '', '', '198.51.100.7/32', '', '', '', ''])
+    const again = setupCloud(true)
+    await run(
+      setupOrb({
+        dataHome,
+        prompt: rerun.prompt,
+        print: () => undefined,
+        cloud: again.cloud,
+        sourceAddress: () => Effect.die('the stored network is proposed instead'),
+      })
+    )
+    const { region_name: _region, ...withoutRegion } = expected
+    assert.deepEqual(fileState(files.credentials), { mode: 0o600, json: withoutRegion })
+    assert.equal(fileState(files.config)?.json.ssh_allowed_cidr, '198.51.100.7/32')
+    assert.deepEqual(rerun.questions.slice(0, 9), [
+      'Keystone URL [http://192.0.2.1/identity]: ',
+      'User [demo]: ',
+      'Project [demo]: ',
+      'User domain id [default]: ',
+      'Project domain id [default]: ',
+      'Region [RegionOne, - clears]: ',
+      'CA certificate file [none]: ',
+      'hidden Password [Enter keeps the stored one]: ',
+      'Network the orbs admit SSH from [192.0.2.50/32]: ',
+    ])
+    assert.deepEqual(readdirSync(dataHome).toSorted(), ['openstack.json', 'orb.json'])
+  }
+)
+
+await claim('a network is an IPv4 or IPv6 address with a prefix in range', () => {
+  assert.deepEqual(
+    [
+      '192.0.2.1/32',
+      '10.0.0.0/8',
+      '2001:db8::/64',
+      '192.0.2.1',
+      '192.0.2.1/33',
+      'x/24',
+      '1.2.3.4/2/3',
+    ].map(isCidr),
+    [true, true, true, false, false, false, false]
+  )
+})
+
+await claim(
+  "dev orb delete deletes a recorded orb, waits for DELETED, removes its record and settles its workspace use, warning when its work has not returned; it refuses a running session's orb and deletes an orb no record names",
+  async () => {
+    const dataHome = orbDataHome('delete-data')
+    const checkout = join(sandbox, 'delete-checkout')
+    const useId = randomUUID()
+    const ended = await run(createRecord(dataHome, recordFields(checkout, useId)))
+    await run(ended.update({ phase: 'active', orbId: 'orb-ended-000' }))
+    await run(ended.release)
+    const running = await run(createRecord(dataHome, recordFields(checkout)))
+    await run(running.update({ phase: 'active', orbId: 'orb-running-0' }))
+    const foreign = await run(
+      createRecord(dataHome, {
+        ...recordFields(checkout),
+        keystone: { ...KEYSTONE, projectId: 'another-project', projectName: 'another' },
+      })
+    )
+    await run(foreign.update({ phase: 'active', orbId: 'orb-foreign-0' }))
+    await run(foreign.release)
+    const vanished = await run(createRecord(dataHome, recordFields(checkout)))
+    await run(vanished.update({ phase: 'created', orbId: 'orb-vanished-' }))
+    await run(vanished.release)
+    const fake = fakeOrbit({ create: createdOrb() })
+    const { removed } = fake
+    const orbit: Orbit = {
+      ...fake.orbit,
+      remove: id =>
+        id === 'orb-vanished-' || id === 'orb-nowhere-0'
+          ? Effect.fail(orbFailure('not found', undefined, 404))
+          : fake.orbit.remove(id),
+    }
+    const settled: string[] = []
+    const stubLifecycle = {
+      inspect: () => Effect.succeed([]),
+      writeBranch: () => Effect.die('delete writes no branch'),
+      settleOrbPresence: (input: { readonly useId: string }) =>
+        Effect.sync(() => {
+          settled.push(input.useId)
+          return { outcome: 'settled', reason: 'the ended session no longer writes it' } as const
+        }),
+    } as unknown as Parameters<typeof deleteOrbById>[0]['lifecycle']
+    const keystone: Keystone = {
+      authUrl: KEYSTONE.authUrl,
+      token: Effect.succeed(TOKEN),
+      invalidate: Effect.void,
+    }
+    const remove = (orbId: string) => {
+      const lines: string[] = []
+      return run(
+        Effect.exit(
+          deleteOrbById({
+            dataHome,
+            orbId,
+            lifecycle: stubLifecycle,
+            print: line => lines.push(line),
+            cloud: () => ({ keystone, orbit }),
+          })
+        )
+      ).then(exit => ({
+        error: Exit.isFailure(exit) ? errorText(Cause.squash(exit.cause)) : undefined,
+        text: lines.join('\n'),
+      }))
+    }
+
+    const deleted = await remove('orb-ended-000')
+    assert.equal(deleted.error, undefined)
+    assert.match(
+      deleted.text,
+      /^Orb orb-ende holds work that has not returned to .*delete-checkout; deleting the orb discards it\.$/m
+    )
+    assert.match(deleted.text, /^orb orb-ende deleted$/m)
+    assert.match(deleted.text, /^Removed the record of orb orb-ende\.$/m)
+    assert.ok(!existsSync(ended.directory), 'the record is removed')
+    assert.deepEqual(settled, [useId])
+
+    const refused = await remove('orb-running-0')
+    assert.equal(
+      refused.error,
+      'Orb orb-runn belongs to a running dev --orb session, which deletes it when it quits; nothing was deleted.'
+    )
+    assert.ok(existsSync(join(running.directory, 'record.json')))
+
+    const elsewhere = await remove('orb-foreign-0')
+    assert.equal(
+      elsewhere.error,
+      `Orb orb-fore belongs to project another at ${KEYSTONE.authUrl}, not to the project of the OpenStack credentials; nothing was deleted.`
+    )
+    assert.ok(existsSync(join(foreign.directory, 'record.json')))
+    const reclaimed = await run(claimRecord(foreign.directory))
+    assert.equal(reclaimed.kind, 'claimed', 'the refusal released the owner lock')
+    if (reclaimed.kind === 'claimed') await run(reclaimed.record.release)
+
+    const gone = await remove('orb-vanished-')
+    assert.equal(gone.error, undefined)
+    assert.match(gone.text, /^orb orb-vani no longer exists in orbit$/m)
+    assert.ok(
+      !existsSync(vanished.directory),
+      'the record of an orb orbit no longer has is removed'
+    )
+
+    assert.equal(
+      (await remove('orb-nowhere-0')).error,
+      'orbit has no orb orb-nowhere-0 in project demo'
+    )
+    assert.equal((await remove('orb-unknown-0')).error, undefined)
+
+    const stalled = await run(createRecord(dataHome, recordFields(checkout)))
+    await run(stalled.update({ phase: 'created', orbId: 'orb-stalled-0' }))
+    await run(stalled.release)
+    const failing: Orbit = {
+      ...orbit,
+      get: id =>
+        id === 'orb-stalled-0'
+          ? Effect.fail(orbFailure('orbit is down', undefined, 503))
+          : orbit.get(id),
+    }
+    const waited = await run(
+      Effect.exit(
+        deleteOrbById({
+          dataHome,
+          orbId: 'orb-stalled-0',
+          lifecycle: stubLifecycle,
+          print: () => undefined,
+          cloud: () => ({ keystone, orbit: failing }),
+        })
+      )
+    )
+    assert.equal(Exit.isFailure(waited), true, 'a failed wait for DELETED fails the command')
+    const left = await run(claimRecord(stalled.directory))
+    assert.equal(left.kind, 'claimed', 'the failed wait released the owner lock')
+    if (left.kind === 'claimed') {
+      assert.equal(left.record.current().phase, 'deleting', 'the next recovery deletes the orb')
+      await run(left.record.release)
+    }
+
+    const damaged = join(dataHome, 'orbs', '5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f')
+    mkdirSync(damaged, { mode: 0o700 })
+    writeFileSync(join(damaged, 'record.json'), '{', { mode: 0o600 })
+    const blind = await remove('orb-another-0')
+    assert.match(
+      blind.error ?? '',
+      /It may name orb orb-anot of a running session, so nothing was deleted\.$/
+    )
+    assert.ok(!removed.includes('orb-another-0'), 'no orb is deleted while a record cannot be read')
+    rmSync(damaged, { recursive: true })
+    assert.deepEqual(removed, ['orb-ended-000', 'orb-unknown-0', 'orb-stalled-0'])
+    await run(running.release)
+  }
+)
+
+await claim('plain dev loads no orb module, so it reads neither orb file', async () => {
   const repo = join(sandbox, 'plain-repo')
   mkdirSync(repo)
   git(repo, 'init', '-q', '-b', 'main')
@@ -2109,6 +2538,7 @@ await claim('plain dev loads no orb module and reads no OS_* variable', async ()
   git(repo, 'commit', '-q', '-m', 'initial')
   const home = join(sandbox, 'plain-home')
   mkdirSync(join(home, '.agents', 'skills'), { recursive: true })
+  const plainData = orbDataHome('plain-data')
   const report = join(sandbox, 'plain-report.txt')
   writeFileSync(report, '')
   const profiles = writeProfileFixture(join(sandbox, 'plain-profiles'))
@@ -2138,14 +2568,12 @@ await claim('plain dev loads no orb module and reads no OS_* variable', async ()
           '--cwd',
           repo,
           '--data-home',
-          join(sandbox, 'plain-data'),
+          plainData,
         ],
         {
           cwd: new URL('../..', import.meta.url).pathname,
           env: {
-            ...Object.fromEntries(
-              Object.entries(process.env).filter(([name]) => !name.startsWith('OS_'))
-            ),
+            ...process.env,
             HOME: home,
             PI_OFFLINE: '1',
             DEV_PROFILES: profiles.root,
@@ -2163,7 +2591,7 @@ await claim('plain dev loads no orb module and reads no OS_* variable', async ()
   const recorded = readFileSync(report, 'utf8')
   assert.match(recorded, /^hooks installed$/m, 'the preload observed the launch')
   assert.doesNotMatch(recorded, /^module /m, recorded)
-  assert.doesNotMatch(recorded, /^env /m, recorded)
+  assert.doesNotMatch(recorded, /^file /m, recorded)
 })
 
 await lifecycle.close()

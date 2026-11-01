@@ -167,7 +167,7 @@ export const makeChildOrbs = (
           ? Effect.succeed({ status: 'DELETED', text: `Orb ${shortId(orbId)} was deleted.` })
           : Effect.as(record.release, {
               status: 'kept',
-              text: `Orb ${orbId} could not be confirmed deleted: ${failureText(deleted.cause)}\nIts record stays, and the next dev --orb deletes the orb.\nDelete it now with: ${deleteCommand(input.token.orbitUrl, orbId)}`,
+              text: `Orb ${orbId} could not be confirmed deleted: ${failureText(deleted.cause)}\nIts record stays, and the next dev --orb deletes the orb.\nDelete it now with: ${deleteCommand(input.dataHome, orbId)}`,
             })
       )
     )
@@ -312,7 +312,7 @@ export const makeChildOrbs = (
           ...lines,
           `Orb ${child.orbId} was kept: ${reason}`,
           `Its work is still on the orb at ${worktree} (${child.ssh.target.host}); the next dev --orb returns it to the branch dev/orb-recovery/${record.id} and deletes the orb.`,
-          `Delete it with: ${deleteCommand(input.token.orbitUrl, child.orbId)}`,
+          `To discard its work and delete it instead: ${deleteCommand(input.dataHome, child.orbId)}`,
         ].join('\n'),
       })
     const saved = yield* Effect.exit(

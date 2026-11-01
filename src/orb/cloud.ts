@@ -3,7 +3,14 @@ import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage 
 import { request as httpsRequest } from 'node:https'
 import { Clock, DateTime, Effect, Option, Schema } from 'effect'
 import { errorText } from '../error-text.ts'
-import { OrbViewSchema, orbFailure, type OrbError, type OrbSize, type OrbView } from './domain.ts'
+import {
+  OrbViewSchema,
+  orbFailure,
+  type OrbCredentials,
+  type OrbError,
+  type OrbSize,
+  type OrbView,
+} from './domain.ts'
 
 export interface HttpReply {
   readonly status: number
@@ -73,57 +80,27 @@ export const httpJson = (
     })
   })
 
-const OpenrcSchema = Schema.Struct({
-  OS_AUTH_URL: Schema.NonEmptyString,
-  OS_USERNAME: Schema.NonEmptyString,
-  OS_PASSWORD: Schema.NonEmptyString,
-  OS_PROJECT_NAME: Schema.NonEmptyString,
-  OS_USER_DOMAIN_ID: Schema.optional(Schema.NonEmptyString),
-  OS_PROJECT_DOMAIN_ID: Schema.optional(Schema.NonEmptyString),
-  OS_REGION_NAME: Schema.optional(Schema.NonEmptyString),
-  OS_CACERT: Schema.optional(Schema.NonEmptyString),
-})
-export type Openrc = typeof OpenrcSchema.Type
-
-const REQUIRED_OPENRC = ['OS_AUTH_URL', 'OS_USERNAME', 'OS_PASSWORD', 'OS_PROJECT_NAME'] as const
-
-export const readOpenrc = (env: NodeJS.ProcessEnv): Effect.Effect<Openrc, OrbError> => {
-  const missing = REQUIRED_OPENRC.filter(name => !env[name])
-  if (missing.length > 0)
-    return Effect.fail(
-      orbFailure(
-        `dev --orb needs the OpenStack credentials that openrc exports; missing: ${missing.join(', ')}. Source openrc for the project, then launch again.`
-      )
-    )
-  const present = Object.fromEntries(
-    Object.entries(env).filter(([name, value]) => name.startsWith('OS_') && value !== '')
-  )
-  return Schema.decodeUnknownEffect(OpenrcSchema)(present).pipe(
-    Effect.mapError(cause => orbFailure(`Invalid OpenStack credentials: ${cause.message}`, cause))
-  )
-}
-
 export const identityTokensUrl = (authUrl: string): string => {
   const root = authUrl.replace(/\/+$/, '')
   return `${root.endsWith('/v3') ? root : `${root}/v3`}/auth/tokens`
 }
 
-export const tokenRequestBody = (openrc: Openrc) => ({
+export const tokenRequestBody = (credentials: OrbCredentials) => ({
   auth: {
     identity: {
       methods: ['password'],
       password: {
         user: {
-          name: openrc.OS_USERNAME,
-          domain: { id: openrc.OS_USER_DOMAIN_ID ?? 'default' },
-          password: openrc.OS_PASSWORD,
+          name: credentials.username,
+          domain: { id: credentials.user_domain_id ?? 'default' },
+          password: credentials.password,
         },
       },
     },
     scope: {
       project: {
-        name: openrc.OS_PROJECT_NAME,
-        domain: { id: openrc.OS_PROJECT_DOMAIN_ID ?? 'default' },
+        name: credentials.project_name,
+        domain: { id: credentials.project_domain_id ?? 'default' },
       },
     },
   },
@@ -200,20 +177,24 @@ export interface Keystone {
   readonly invalidate: Effect.Effect<void>
 }
 
-export const readCa = (openrc: Openrc): Effect.Effect<Buffer | undefined, OrbError> =>
+export const readCa = (credentials: OrbCredentials): Effect.Effect<Buffer | undefined, OrbError> =>
   Effect.try({
-    try: () => (openrc.OS_CACERT === undefined ? undefined : readFileSync(openrc.OS_CACERT)),
-    catch: cause => orbFailure(`Cannot read OS_CACERT ${openrc.OS_CACERT}`, cause),
+    try: () => (credentials.cacert === undefined ? undefined : readFileSync(credentials.cacert)),
+    catch: cause => orbFailure(`Cannot read the cacert ${credentials.cacert}`, cause),
   })
 
-export const makeKeystone = (openrc: Openrc, ca: Buffer | undefined): Keystone => {
+export const makeKeystone = (credentials: OrbCredentials, ca: Buffer | undefined): Keystone => {
   let current: KeystoneToken | undefined
   const issue = httpJson(
-    { method: 'POST', url: identityTokensUrl(openrc.OS_AUTH_URL), body: tokenRequestBody(openrc) },
+    {
+      method: 'POST',
+      url: identityTokensUrl(credentials.auth_url),
+      body: tokenRequestBody(credentials),
+    },
     ca
-  ).pipe(Effect.flatMap(reply => parseToken(reply, openrc.OS_REGION_NAME)))
+  ).pipe(Effect.flatMap(reply => parseToken(reply, credentials.region_name)))
   return {
-    authUrl: openrc.OS_AUTH_URL,
+    authUrl: credentials.auth_url,
     token: Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
       const held = current
@@ -231,6 +212,14 @@ export const makeKeystone = (openrc: Openrc, ca: Buffer | undefined): Keystone =
     }),
   }
 }
+
+export const openCloud = (
+  credentials: OrbCredentials
+): Effect.Effect<{ readonly keystone: Keystone; readonly orbit: Orbit }, OrbError> =>
+  Effect.map(readCa(credentials), ca => {
+    const keystone = makeKeystone(credentials, ca)
+    return { keystone, orbit: makeOrbit(keystone, ca) }
+  })
 
 const OrbitErrorSchema = Schema.fromJsonString(
   Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })
