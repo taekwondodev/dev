@@ -389,6 +389,7 @@ export const ReleaseDeciderSchema = Schema.Literals([
   'replacement',
   'allocation',
   'orb-recovery',
+  'orb-start',
 ])
 export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
 
@@ -528,6 +529,7 @@ export interface WorkspaceAttachment {
   ): Effect.Effect<WorkspaceExecutionReport, WorkspaceError>
 
   handoff(transition: WorkspaceHandoff, replace: HostReplace): Effect.Effect<void, WorkspaceError>
+  withdrawOrbPresence(grant: WorkspaceGrant): Effect.Effect<OrbPresenceSettlement, WorkspaceError>
   readonly sweeps: Stream.Stream<SweepReceipt>
   readonly close: Effect.Effect<void, WorkspaceError>
 }

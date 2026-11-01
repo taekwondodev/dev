@@ -143,6 +143,7 @@ const attachment: WorkspaceAttachment = {
   },
   reportExecution: () => Effect.succeed({}),
   handoff: () => Effect.void,
+  withdrawOrbPresence: () => Effect.fail(refused),
   sweeps: Stream.fromQueue(receipts),
   close: Effect.void,
 }

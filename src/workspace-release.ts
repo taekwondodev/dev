@@ -8,6 +8,8 @@ import {
   validateWorkspace,
   type WorkspaceAuthority,
 } from './workspace-authority.ts'
+import { validateGrant } from './workspace-admission.ts'
+import { forgetPrunedLease, type AttachmentHandle } from './workspace-conversation.ts'
 import {
   decideCompletion,
   integrationUnknown,
@@ -39,6 +41,7 @@ import {
   type TaskArtifactsResult,
   type TaskTarget,
   type WorkspaceAssessment,
+  type WorkspaceGrant,
   type WorkspaceReleaseResult,
   WORKER_REQUEST_TIMEOUT_MS,
 } from './workspace-domain.ts'
@@ -1389,38 +1392,99 @@ export const settleOrbPresence = (
       const settled = getUseRows(db, workspace.id).filter(
         use => use.incarnation === presence.incarnation
       )
-      deleteUses(
-        db,
-        settled.map(use => use.id)
-      )
-      const reservation = getReservation(db, workspace.id)
-      if (
-        workspace.origin !== 'pre-existing' ||
-        reservation === undefined ||
-        reservation.taskId !== presence.taskId ||
-        getUseRows(db, workspace.id).some(use => use.taskId === reservation.taskId)
-      )
-        return {
-          outcome: 'settled',
-          reason: `${settled.length} use record(s) of the ended dev --orb session were deleted; files and commits are unchanged.`,
-        }
-      const result = `${settled.length} use record(s) of the ended dev --orb session were deleted and reservation ${reservation.id} was released; files and commits are unchanged.`
-      putOperation(db, {
-        ...startedRelease(
-          repo,
-          reservation,
-          workspace,
-          'orb-recovery',
-          'release-reservation',
-          headOf(authority, workspace)
-        ),
-        phase: 'confirmed',
-        result,
+      return settlePresenceUses(authority, db, repo, workspace, presence.taskId, settled, {
+        decider: 'orb-recovery',
+        session: 'the ended dev --orb session',
       })
-      deleteReservation(db, reservation)
-      return { outcome: 'settled', reason: result }
     })
   )
+}
+
+export const withdrawOrbPresence = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  grant: WorkspaceGrant
+): OrbPresenceSettlement => {
+  attachment.assertOpen()
+  const { state } = attachment
+  const lease = validateGrant(authority, state, grant)
+  if (
+    grant.access !== 'write' ||
+    lease.kind !== 'ordinary' ||
+    state.writeGrant?.useId !== grant.useId
+  )
+    invalid(`Use ${grant.useId} is not the writer presence of this dev --orb session`)
+  const settlement = inDb(authority, grant.repositoryId, db =>
+    transaction(db, () => {
+      const presence = getUse(db, grant.useId)
+      const workspace = getWorkspace(db, grant.workspaceId)
+      if (presence === undefined || workspace === undefined)
+        requireReview(`Use ${grant.useId} lost its records before its withdrawal`)
+      const uses = getUseRows(db, workspace.id)
+      if (presence.stage !== 'authorized' || uses.some(use => use.withinUseId === presence.id))
+        invalid(`Use ${presence.id} was already used, so only the quit sweep can settle it`)
+      return settlePresenceUses(
+        authority,
+        db,
+        grant.repositoryId,
+        workspace,
+        presence.taskId,
+        [presence],
+        {
+          decider: 'orb-start',
+          session: 'the failed dev --orb start',
+        }
+      )
+    })
+  )
+  if (lease.gates !== undefined) {
+    releaseGates(lease.gates)
+    lease.gates = undefined
+  }
+  forgetPrunedLease(state, lease)
+  state.writeGrant = undefined
+  return settlement
+}
+
+const settlePresenceUses = (
+  authority: WorkspaceAuthority,
+  db: DatabaseSync,
+  repo: WorkspaceId,
+  workspace: WorkspaceRecord,
+  taskId: WorkspaceId | undefined,
+  settled: readonly UseRecord[],
+  by: { readonly decider: 'orb-recovery' | 'orb-start'; readonly session: string }
+): OrbPresenceSettlement => {
+  deleteUses(
+    db,
+    settled.map(use => use.id)
+  )
+  const reservation = getReservation(db, workspace.id)
+  if (
+    workspace.origin !== 'pre-existing' ||
+    reservation === undefined ||
+    reservation.taskId !== taskId ||
+    getUseRows(db, workspace.id).some(use => use.taskId === reservation.taskId)
+  )
+    return {
+      outcome: 'settled',
+      reason: `${settled.length} use record(s) of ${by.session} were deleted; files and commits are unchanged.`,
+    }
+  const result = `${settled.length} use record(s) of ${by.session} were deleted and reservation ${reservation.id} was released; files and commits are unchanged.`
+  putOperation(db, {
+    ...startedRelease(
+      repo,
+      reservation,
+      workspace,
+      by.decider,
+      'release-reservation',
+      headOf(authority, workspace)
+    ),
+    phase: 'confirmed',
+    result,
+  })
+  deleteReservation(db, reservation)
+  return { outcome: 'settled', reason: result }
 }
 
 export interface SweepInput {

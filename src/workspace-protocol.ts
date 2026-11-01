@@ -57,6 +57,11 @@ const HandoffRequestSchema = Schema.Struct({
   transition: WorkspaceHandoffSchema,
   callbackId: CallbackId,
 })
+const WithdrawOrbPresenceRequestSchema = Schema.Struct({
+  op: Schema.Literal('withdraw-orb-presence'),
+  attachmentId: AttachmentId,
+  grant: WorkspaceGrantSchema,
+})
 const CloseAttachmentRequestSchema = Schema.Struct({
   op: Schema.Literal('close-attachment'),
   attachmentId: AttachmentId,
@@ -113,6 +118,7 @@ const WorkspaceRpcInputSchema = Schema.Union([
   SelectRequestSchema,
   ReportRequestSchema,
   HandoffRequestSchema,
+  WithdrawOrbPresenceRequestSchema,
   CloseAttachmentRequestSchema,
   InspectRequestSchema,
   ValidateRequestSchema,
@@ -136,6 +142,7 @@ const RpcReplySchemas = {
   select: WorkspaceHandoffSchema,
   'report-execution': WorkspaceExecutionReportSchema,
   handoff: Schema.Null,
+  'withdraw-orb-presence': OrbPresenceSettlementSchema,
   'close-attachment': Schema.Null,
   inspect: Schema.Array(WorkspaceViewSchema),
   validate: Schema.Null,
@@ -161,6 +168,7 @@ export const decodeWorkspaceRpcReply: {
   select: Schema.decodeUnknownOption(RpcReplySchemas.select),
   'report-execution': Schema.decodeUnknownOption(RpcReplySchemas['report-execution']),
   handoff: Schema.decodeUnknownOption(RpcReplySchemas.handoff),
+  'withdraw-orb-presence': Schema.decodeUnknownOption(RpcReplySchemas['withdraw-orb-presence']),
   'close-attachment': Schema.decodeUnknownOption(RpcReplySchemas['close-attachment']),
   inspect: Schema.decodeUnknownOption(RpcReplySchemas.inspect),
   validate: Schema.decodeUnknownOption(RpcReplySchemas.validate),
@@ -185,6 +193,7 @@ const SuccessSchema = Schema.Struct({
     'select',
     'report-execution',
     'handoff',
+    'withdraw-orb-presence',
     'close-attachment',
     'inspect',
     'validate',
