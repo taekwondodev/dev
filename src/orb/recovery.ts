@@ -9,10 +9,12 @@ import { deleteOrb, deleteRecorded } from './deletion.ts'
 import {
   deleteCommand,
   holdsWork,
+  isSpare,
   OrbError,
   orbFailure,
   shortId,
   shq,
+  type AssignedRecord,
   type OrbRecord,
   type OrbView,
 } from './domain.ts'
@@ -36,13 +38,18 @@ const CLOCK_SKEW_MS = 60_000
 
 const failureText = (cause: Cause.Cause<unknown>): string => errorText(Cause.squash(cause))
 
-const orbitMillis = (text: string): number | undefined =>
+export const orbitMillis = (text: string): number | undefined =>
   Option.getOrUndefined(
     Option.map(
       DateTime.make(/(Z|[+-]\d{2}:?\d{2})$/.test(text) ? text : `${text}Z`),
       DateTime.toEpochMillis
     )
   )
+
+const spareOrigin = (fields: OrbRecord): string => {
+  if (!isSpare(fields)) return `on ${fields.checkout}`
+  return fields.orbId === undefined ? 'while requesting a spare orb' : 'as a spare orb'
+}
 
 export const unregisteredOrbs = (
   views: readonly OrbView[],
@@ -82,8 +89,17 @@ export const recoverOrbs = Effect.fnUntraced(function* (
     }
     const { record } = claim.value
     const fields = record.current()
+    if (
+      isSpare(fields) &&
+      fields.orbId !== undefined &&
+      fields.keystone.authUrl === options.authUrl &&
+      fields.keystone.projectId === token.project.id
+    ) {
+      yield* record.release
+      continue
+    }
     print(
-      `orb: recovering the orb record ${shortId(fields.id)} left by an ended session on ${fields.checkout} (${fields.phase})`
+      `orb: recovering the orb record ${shortId(fields.id)} left by an ended session ${spareOrigin(fields)} (${fields.phase})`
     )
     if (
       fields.keystone.authUrl !== options.authUrl ||
@@ -154,7 +170,7 @@ const recoverOrb = Effect.fnUntraced(function* (
       )
       return 'kept'
     }
-    const returned = yield* Effect.exit(returnToBranch(options, record, view))
+    const returned = yield* Effect.exit(returnToBranch(options, record, fields, view))
     if (Exit.isFailure(returned)) {
       print(
         `orb: the work of orb ${label} could not be returned: ${failureText(returned.cause)}\nThe orb is kept and the next dev --orb tries again. To discard its work and delete it instead: ${command}`
@@ -194,9 +210,9 @@ const removeRecord = (
 const returnToBranch = Effect.fnUntraced(function* (
   options: RecoveryOptions,
   record: OrbRecordHandle,
+  fields: AssignedRecord,
   view: OrbView
 ): Effect.fn.Return<string | undefined, OrbError, ChildProcessSpawner.ChildProcessSpawner> {
-  const fields = record.current()
   if (!existsSync(fields.checkout))
     return yield* orbFailure(`the checkout ${fields.checkout} no longer exists`)
   if (view.ssh_host === null || view.ssh_user === null)
@@ -246,6 +262,7 @@ export const settlePresence = Effect.fnUntraced(function* (
   options: Pick<RecoveryOptions, 'lifecycle' | 'print'>,
   record: OrbRecord
 ): Effect.fn.Return<void> {
+  if (isSpare(record)) return
   const useId = record.presenceUseId
   if (useId === undefined) return
   const { print } = options

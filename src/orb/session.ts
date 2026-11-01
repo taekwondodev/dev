@@ -25,7 +25,8 @@ import { clock, deleteRecorded } from './deletion.ts'
 import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { makeChildOrbs } from './children.ts'
 import { recoverOrbs } from './recovery.ts'
-import { createRecord } from './registry.ts'
+import { createRecord, type OrbRecordHandle } from './registry.ts'
+import { makeSpareSlot, spareAge, takeSpare } from './spare.ts'
 import { makeOrbSsh, sshOptions, ttyScript } from './ssh.ts'
 import { createOrbExtension, macHomes } from './tools.ts'
 import {
@@ -239,19 +240,43 @@ export const openOrbSession = Effect.fnUntraced(function* (
     )
   )
 
-  const record = yield* createRecord(options.dataHome, {
-    keystone: {
-      authUrl: credentials.auth_url,
-      projectId: token.project.id,
-      projectName: token.project.name,
-    },
+  const keystoneFields = {
+    authUrl: credentials.auth_url,
+    projectId: token.project.id,
+    projectName: token.project.name,
+  }
+  const spareContext = {
+    dataHome: options.dataHome,
+    keystone: keystoneFields,
+    orbit,
+    config,
+    print,
+  }
+  const assignment = {
     checkout: checkout.root,
     branch: checkout.branch,
     orbPath: checkout.root,
     presenceUseId: writer.useId,
     conversation: input.conversation,
-  }).pipe(Effect.onError(() => withdraw))
+  }
+  const spare = yield* takeSpare(spareContext, assignment)
+  const { record, request } =
+    spare === undefined
+      ? yield* createRecord(options.dataHome, { keystone: keystoneFields, ...assignment }).pipe(
+          Effect.map(created => ({
+            record: created as OrbRecordHandle,
+            request: orbit.create({
+              size: config.size,
+              publicKey: created.publicKey,
+              sshAllowedCidr: config.sshAllowedCidr,
+              image: config.image,
+            }),
+          })),
+          Effect.onError(() => withdraw)
+        )
+      : { record: spare.record, request: Effect.succeed(spare.view) }
   const sessionScope = yield* Scope.make()
+  const spares = makeSpareSlot(spareContext, sessionScope, services)
   let reachable = true
 
   const discard = (orbId: string | undefined, reason: string) =>
@@ -273,23 +298,18 @@ export const openOrbSession = Effect.fnUntraced(function* (
 
   const prepared = yield* Effect.gen(function* () {
     yield* phase(
-      `requesting an orb (${config.size.vcpus} vCPU, ${config.size.memory_mb} MB, ${config.size.disk_gb} GB, ${config.image}) from ${token.orbitUrl}`
+      spare === undefined
+        ? `requesting an orb (${config.size.vcpus} vCPU, ${config.size.memory_mb} MB, ${config.size.disk_gb} GB, ${config.image}) from ${token.orbitUrl}`
+        : `taking the spare orb ${shortId(spare.view.id)} (${spare.view.status}, created ${spareAge(spare.view, yield* Clock.currentTimeMillis)})`
     )
-    const created = yield* orbit
-      .create({
-        size: config.size,
-        publicKey: record.publicKey,
-        sshAllowedCidr: config.sshAllowedCidr,
-        image: config.image,
-      })
-      .pipe(
-        Effect.catchIf(
-          error => error.status === 409,
-          error => capacityFailure(orbit, options.dataHome, token.project.name, error)
-        ),
-        Effect.tap(view => record.update({ phase: 'created', orbId: view.id })),
-        Effect.uninterruptible
-      )
+    const created = yield* request.pipe(
+      Effect.catchIf(
+        error => error.status === 409,
+        error => capacityFailure(orbit, options.dataHome, token.project.name, error)
+      ),
+      Effect.tap(view => record.update({ phase: 'created', orbId: view.id })),
+      Effect.uninterruptible
+    )
     const label = shortId(created.id)
     yield* phase(`orb ${label} ${created.status}`)
     const active = yield* awaitActive(orbit, created, label, status =>
@@ -325,6 +345,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
     })
     yield* record.update({ phase: 'active', uploadedHead: checkout.head })
     yield* phase(`orb ${label} is ready`)
+    yield* spares.request
     return { ssh, label, host, orbId: created.id }
   }).pipe(
     Effect.onError(cause =>
@@ -389,7 +410,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
 
   const sync = Effect.map(settled, outcome => outcomeText(label, checkout.branch, outcome))
 
-  const close = (quit: OrbQuit) =>
+  const closeLead = (quit: OrbQuit) =>
     Effect.gen(function* () {
       print(`Returning work from orb ${label}…`)
       const returned = yield* returnAtQuit(settled, quit, print)
@@ -412,6 +433,17 @@ export const openOrbSession = Effect.fnUntraced(function* (
       }
     }).pipe(Effect.provideContext(services))
 
+  const close = (quit: OrbQuit) =>
+    Effect.flatMap(spares.leave, spareLine =>
+      closeLead(quit).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (spareLine !== undefined) print(spareLine)
+          })
+        )
+      )
+    )
+
   const children = makeChildOrbs(
     {
       dataHome: options.dataHome,
@@ -421,6 +453,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       config,
       conversation: input.conversation,
       lead: { ssh, root: checkout.root, label: "the lead's orb", record: record.id },
+      spares,
       lifecycle: input.lifecycle,
     },
     services

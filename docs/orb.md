@@ -52,13 +52,26 @@ Before the TUI opens, dev prints one line per phase with the elapsed time:
 1. It authenticates to Keystone with `openstack.json` and finds orbit as the public endpoint of catalog type `orbit`.
 2. It [recovers](#recovery) the orbs that ended sessions left behind.
 3. It admits the session as writer of the checkout, so another dev task that wants to write it gets an isolated worktree.
-4. It writes the [orb record](#state), with a fresh key, then creates the orb and shows orbit's status (`RESERVING`, `BUILDING`, `ACTIVE`).
+4. It takes the data home's [spare orb](#spare-orb) when one is valid. Otherwise it writes the [orb record](#state), with a fresh key, and creates the orb. Either way it shows orbit's status (`RESERVING`, `BUILDING`, `ACTIVE`).
 5. It connects with strict host key checking against the host keys orbit read from the orb's console.
 6. It uploads a snapshot of the checkout to the same absolute path on the orb: `HEAD` as a commit and the uncommitted changes, untracked files included, as uncommitted changes. Ignored files stay on the Mac.
+7. It requests a new spare orb in the background.
 
 The checkout must be on a branch with at least one commit. The footer shows the orb's id and state for the whole session.
 
 A failed step refuses the launch without retrying it: orbit's refusal (`401`, `403`, `409`, `502`, `503`), an orb that reaches `ERROR` (orbit's fault is printed; this includes orbit's ready timeout) or a failed upload. dev deletes the orb it created, waits for `DELETED`, removes the record, [withdraws](workspace.md#release) the session's writer use and, on a pre-existing checkout, the reservation the launch took, prints the cause and exits with code 1. The next launch therefore writes the same checkout. For a `409`, the message also lists the project's orbs that are not being deleted and the command that deletes one. Only the SSH connection after `ACTIVE` is retried, up to 24 times 5 s apart, because the orb's SSH server may not be listening yet.
+
+### Spare orb
+
+The boot of a new orb takes minutes on an emulated host, so dev keeps one spare orb per data home, created ahead of the launch that uses it. orbit brings a spare to `ACTIVE` even when no dev reads it during its boot.
+
+Once its own orb is ready, a session requests a spare with the current `orb.json` when no orb record of the data home is a spare. It prints nothing while the TUI is open; a `409` or another refusal leaves the session without one. The check and the request are not atomic: two sessions whose orbs become ready together can each leave a spare, and a later launch takes one and leaves the other until it expires. A [writing child](#writing-children) takes the session's spare, still booting or ready, instead of creating an orb; after a child's orb is deleted, the session requests a spare again if it holds none.
+
+At quit, dev lets an in-flight spare request finish, so its record names the orb, and does not wait for `ACTIVE`. It prints the spare's id, the time until which it stays valid and its `dev orb delete` command, or why no spare was left.
+
+The next launch takes the spare, through the record's owner lock, when its Keystone URL and project match the credentials, its size, image and `ssh_allowed_cidr` equal the current `orb.json`, orbit reports it `RESERVING`, `BUILDING` or `ACTIVE`, and orbit created it less than 2 hours ago. It assigns the spare's record to the checkout in place and prints the spare's id, status and age; a spare still booting is awaited like a new orb. Any other spare is deleted, and `DELETED` awaited before the launch requests its own orb, because the spare would take the capacity it needs: a spare whose machine stopped, as after DevStack restarts, is in `ERROR`. A spare that orbit no longer has loses its record; one orbit cannot read, one of another project and one a running session holds are left as they are.
+
+No dev process runs between sessions, so a spare holds its reservation until a launch takes or deletes it, or `dev orb delete` removes it.
 
 Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request finish, so the orb it created is known, then deletes the orb, waits for `DELETED`, removes the record, withdraws the writer use as above and exits with code 130. A second Ctrl-C stops the wait for `DELETED`, once a pending orbit request has answered or timed out after 30 s: dev prints the orb's id and delete command and leaves the record to the next `dev --orb`, which [recovers](#recovery) it; the writer use is withdrawn all the same, since the orb holds no work.
 
@@ -82,7 +95,7 @@ Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspac
 
 `work delegate` with `access: write` returns as in plain dev, once the child process exists. Before that, dev fetches the lead orb's committed `HEAD` into the pinned ref `refs/dev/orb/<lead-record-id>/fork/<attempt>` and allocates the child's [managed worktree](work.md#delegation-scope) from that commit; uncommitted files on the lead's orb are not copied. If the lead's orb cannot be reached, the delegation is refused and no attempt is recorded. A writing leaf also starts from the lead orb's commit.
 
-The lead then creates the child's orb in the background, with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, `/work` shows the attempt as `provisioning` and the footer shows orbit's state of its orb. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
+The lead then creates the child's orb in the background, or takes the session's [spare](#spare-orb), with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, `/work` shows the attempt as `provisioning` and the footer shows orbit's state of its orb. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
 
 The child's `bash`, `read`, `write`, `edit`, `grep`, `find` and `ls` run on its orb, with the Mac-side homes of the [tools](#tools) and its tool calls' workspace check. How it ends decides where its work goes:
 
@@ -130,6 +143,7 @@ A session that crashed, was killed or kept its orb at quit leaves its orb record
 | Record                                                                  | Recovery                                                                                                                                                |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Its orb is gone from orbit, `DELETING` or `DELETED`                     | The record is removed                                                                                                                                   |
+| A [spare](#spare-orb) that names its orb                                | Left to the launch's spare step                                                                                                                         |
 | Created or being deleted, before any upload                             | dev deletes the orb and waits for `DELETED`                                                                                                             |
 | Uploaded, its orb `ACTIVE`                                              | dev fetches the orb's work and writes it to the local branch `dev/orb-recovery/<record-id>` when it changed since its last return, then deletes the orb |
 | Uploaded, its orb in another state or unreachable, or its checkout gone | The orb and its record are kept and dev prints the delete command; the next `dev --orb` tries again                                                     |
@@ -142,14 +156,14 @@ The ended session's writer use then no longer holds the checkout: dev [settles i
 
 ## State
 
-| Location                                  | Content                                                                                           |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `<data-home>/openstack.json`              | The OpenStack [credentials](#configuration), mode `600`                                           |
-| `<data-home>/orb.json`                    | The [configuration](#configuration) of new orbs                                                   |
-| `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`    |
-| `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository             |
-| `refs/dev/orb/<record-id>/fork/<attempt>` | The lead orb's commit a [writing child](#writing-children) starts from, until its worktree exists |
-| `dev/orb-return/<record-id>[-<n>]`        | The orb's work after a [divergent return](#divergence), a local branch dev never deletes          |
-| `dev/orb-recovery/<record-id>`            | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted      |
+| Location                                  | Content                                                                                                                                                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<data-home>/openstack.json`              | The OpenStack [credentials](#configuration), mode `600`                                                                                                                                                                   |
+| `<data-home>/orb.json`                    | The [configuration](#configuration) of new orbs                                                                                                                                                                           |
+| `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`; a spare's `record.json` holds its size, image and SSH network in place of the checkout until a launch or a child takes it |
+| `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository                                                                                                                                     |
+| `refs/dev/orb/<record-id>/fork/<attempt>` | The lead orb's commit a [writing child](#writing-children) starts from, until its worktree exists                                                                                                                         |
+| `dev/orb-return/<record-id>[-<n>]`        | The orb's work after a [divergent return](#divergence), a local branch dev never deletes                                                                                                                                  |
+| `dev/orb-recovery/<record-id>`            | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted                                                                                                                              |
 
 The record exists from before the creation request until orbit reports `DELETED`. The owning `dev --orb` holds its lock for the whole session, and a recovering `dev --orb` while it recovers the record.

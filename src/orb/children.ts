@@ -22,6 +22,7 @@ import {
 } from './domain.ts'
 import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { createRecord, type OrbRecordHandle } from './registry.ts'
+import type { SpareSlot } from './spare.ts'
 import { makeOrbSsh, type OrbSsh } from './ssh.ts'
 import {
   fetchWork,
@@ -48,6 +49,7 @@ export interface ChildOrbsInput {
   readonly conversation: string
   readonly lead: MirrorTarget & { readonly record: string }
   readonly lifecycle: Pick<WorkspaceLifecycle, 'writeBranch'>
+  readonly spares: Pick<SpareSlot, 'request' | 'take'>
 }
 
 type Services = ChildProcessSpawner.ChildProcessSpawner
@@ -164,7 +166,10 @@ export const makeChildOrbs = (
     Effect.exit(deleteRecorded(input.orbit, record, orbId, quiet)).pipe(
       Effect.flatMap(deleted =>
         Exit.isSuccess(deleted)
-          ? Effect.succeed({ status: 'DELETED', text: `Orb ${shortId(orbId)} was deleted.` })
+          ? Effect.as(input.spares.request, {
+              status: 'DELETED',
+              text: `Orb ${shortId(orbId)} was deleted.`,
+            })
           : Effect.as(record.release, {
               status: 'kept',
               text: `Orb ${orbId} could not be confirmed deleted: ${failureText(deleted.cause)}\nIts record stays, and the next dev --orb deletes the orb.\nDelete it now with: ${deleteCommand(input.dataHome, orbId)}`,
@@ -176,32 +181,41 @@ export const makeChildOrbs = (
     Effect.uninterruptibleMask(restore =>
       Effect.gen(function* () {
         const checkout = yield* inspectWorktree(worktree)
-        const record = yield* createRecord(input.dataHome, {
-          keystone: input.keystone,
+        const assignment = {
           checkout: checkout.root,
           orbPath: checkout.root,
           conversation: `${input.conversation}#${attempt}`,
-        })
+        }
+        const spare = yield* input.spares.take
+        const { record, request } =
+          spare === undefined
+            ? yield* Effect.map(
+                createRecord(input.dataHome, { keystone: input.keystone, ...assignment }),
+                created => ({
+                  record: created as OrbRecordHandle,
+                  request: input.orbit.create({
+                    size: input.config.size,
+                    publicKey: created.publicKey,
+                    sshAllowedCidr: input.config.sshAllowedCidr,
+                    image: input.config.image,
+                  }),
+                })
+              )
+            : { record: spare.record, request: Effect.succeed(spare.view) }
         const scope = yield* Scope.make()
         const state = (patch: Omit<AttemptOrb, 'record'>) => report({ record: record.id, ...patch })
         let cleanup = ''
         const steps = Effect.gen(function* () {
           yield* state({ status: 'requested' })
-          const created = yield* input.orbit
-            .create({
-              size: input.config.size,
-              publicKey: record.publicKey,
-              sshAllowedCidr: input.config.sshAllowedCidr,
-              image: input.config.image,
-            })
-            .pipe(
-              Effect.catchIf(
-                error => error.status === 409,
-                error => capacityExhausted(input.orbit, error)
-              ),
-              Effect.tap(view => record.update({ phase: 'created', orbId: view.id })),
-              Effect.uninterruptible
-            )
+          if (spare !== undefined) yield* record.assign(assignment)
+          const created = yield* request.pipe(
+            Effect.catchIf(
+              error => error.status === 409,
+              error => capacityExhausted(input.orbit, error)
+            ),
+            Effect.tap(view => record.update({ phase: 'created', orbId: view.id })),
+            Effect.uninterruptible
+          )
           const label = shortId(created.id)
           yield* state({ id: created.id, status: created.status })
           const active = yield* awaitActive(input.orbit, created, label, status =>

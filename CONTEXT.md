@@ -50,6 +50,7 @@ See [Workspace](docs/workspace.md) for admission, completion and release behavio
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Orb**        | An ephemeral machine orbit creates in an OpenStack project, on which the tools of a `dev --orb` session or of its writing child run over SSH.                         |
 | **Orb record** | Dev's registry entry for one orb in the data home: its state, key, pinned host keys and owner lock.                                                                   |
+| **Spare orb**  | An orb dev creates ahead of the launch that uses it, one per data home, recorded without a checkout until a launch or a writing child takes it.                       |
 | **Return**     | The admitted write that brings an orb's commits and working-tree changes back into the Mac checkout or worktree, or onto a `dev/orb-return/` branch when it diverges. |
 | **Recovery**   | The startup step of `dev --orb` that brings the work of orbs left by ended sessions to `dev/orb-recovery/` branches and deletes those orbs.                           |
 
