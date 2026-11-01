@@ -108,7 +108,7 @@ const assertPrunedLeaseSettled = (lease: GrantLease): void => {
     requireReview(`Workspace use disappeared while its execution was live: ${lease.useId}`)
 }
 
-const forgetPrunedLease = (state: ConversationState, lease: GrantLease): void => {
+export const forgetPrunedLease = (state: ConversationState, lease: GrantLease): void => {
   lease.released = true
   state.leases.delete(lease.useId)
   state.leaseAttachments.delete(lease.useId)

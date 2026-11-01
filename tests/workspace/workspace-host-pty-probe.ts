@@ -476,6 +476,7 @@ const makeAttachment = (
       fromAsync(() =>
         rules.handoff(transition, target => Effect.runPromise(Effect.orDie(replace(target))))
       ),
+    withdrawOrbPresence: () => Effect.die('the PTY probes start no orb'),
     sweeps: Stream.empty,
     close: Effect.sync(() => {
       timeline.push({ kind: 'attachment-closed', workspaceId: attached.workspaceId })

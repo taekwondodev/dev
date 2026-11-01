@@ -38,6 +38,7 @@ import {
   checkTask,
   releasePreExisting,
   settleOrbPresence,
+  withdrawOrbPresence,
   releaseTask,
   sweepDeadline,
   sweepRepositoryAtClose,
@@ -286,6 +287,13 @@ if (port !== null && engine !== undefined) {
           )
         )
         return replyTo('handoff', null)
+      }
+      case 'withdraw-orb-presence': {
+        const attachment = requireAttachment(request.attachmentId)
+        return replyTo(
+          'withdraw-orb-presence',
+          await engine.run(authority => withdrawOrbPresence(authority, attachment, request.grant))
+        )
       }
       case 'close-attachment': {
         const attachment = attachments.get(request.attachmentId)

@@ -1170,6 +1170,7 @@ await claim(
     const attachment = {
       binding: { taskId: undefined },
       authorize: () => Effect.succeed({ kind: 'ready', grant }),
+      withdrawOrbPresence: () => Effect.succeed({ outcome: 'settled', reason: 'withdrawn' }),
       sweeps: Stream.empty,
     } as unknown as WorkspaceAttachment
     let observed: unknown
@@ -1495,6 +1496,87 @@ await claim(
   }
 )
 
+await claim(
+  'a failed dev --orb start withdraws its unused writer presence, so the next launch writes the same checkout; it refuses another grant or a used presence and keeps a reservation the task held before',
+  async () => {
+    const withdrawing = await openLifecycle({ root: join(sandbox, 'withdraw-authority') })
+    let conversations = 0
+    const conversation = () => {
+      conversations += 1
+      const dataHome = join(sandbox, `withdraw-data-${conversations}`)
+      mkdirSync(dataHome, { recursive: true })
+      const sessionFile = join(dataHome, 'session.jsonl')
+      writeFileSync(sessionFile, '{}\n', { mode: 0o600 })
+      return { sessionId: `withdraw-${conversations}`, sessionFile, dataHome }
+    }
+    const admitted = async (
+      attachment: Awaited<ReturnType<typeof withdrawing.attach>>,
+      kind: 'write' | 'read',
+      cwd: string
+    ) => {
+      const authorized = await attachment.authorize({ kind, cwd })
+      assert.equal(authorized.kind, 'ready')
+      if (authorized.kind !== 'ready') throw new Error(`the ${kind} was not admitted`)
+      return authorized.grant
+    }
+
+    const { mac } = newCheckout('withdraw')
+    const failed = await withdrawing.attach({ conversation: conversation(), cwd: mac })
+    const presence = await admitted(failed, 'write', mac)
+    const withdrawn = await run(failed.effect.withdrawOrbPresence(presence))
+    assert.match(
+      withdrawn.reason,
+      /of the failed dev --orb start were deleted and reservation .* was released/
+    )
+    await failed.close()
+    const [free] = await withdrawing.inspect({ cwd: mac })
+    assert.equal(free?.reservationId, undefined, 'the failed start leaves no reservation')
+    assert.deepEqual(
+      free.uses.filter(use => use.access === 'write'),
+      [],
+      'nor a writer use'
+    )
+    const [receipt] = await withdrawing.inspect({ taskId: presence.taskId })
+    assert.match(receipt?.reason ?? '', /^By the failed dev --orb start that reserved it: /)
+    const next = await withdrawing.attach({ conversation: conversation(), cwd: mac })
+    const relaunched = await admitted(next, 'write', mac)
+    assert.equal(relaunched.checkout, mac, 'the next launch is not isolated')
+    await assert.rejects(
+      run(next.effect.withdrawOrbPresence(await admitted(next, 'read', mac))),
+      /not the writer presence/,
+      'only the writer presence is withdrawn'
+    )
+    await next.authorize({ kind: 'orb-return', within: relaunched, cwd: mac })
+    await assert.rejects(
+      run(next.effect.withdrawOrbPresence(relaunched)),
+      /already used/,
+      'a presence that admitted a return stays for the quit sweep'
+    )
+    await next.close()
+
+    const { mac: resumed } = newCheckout('withdraw-resumed')
+    const session = conversation()
+    const earlier = await withdrawing.attach({ conversation: session, cwd: resumed })
+    const before = await admitted(earlier, 'write', resumed)
+    await earlier.close()
+    const continued = await withdrawing.attach({ conversation: session, cwd: resumed })
+    const again = await admitted(continued, 'write', resumed)
+    assert.equal(again.taskId, before.taskId, 'the continued conversation keeps its task')
+    assert.doesNotMatch(
+      (await run(continued.effect.withdrawOrbPresence(again))).reason,
+      /was released/
+    )
+    await continued.close()
+    const [retained] = await withdrawing.inspect({ cwd: resumed })
+    assert.equal(
+      retained?.reservationId,
+      before.reservationId,
+      'a reservation the task held before the failed start stays'
+    )
+    await withdrawing.close()
+  }
+)
+
 const orbView = (id: string, created: string, status: OrbView['status'] = 'ACTIVE'): OrbView => ({
   id,
   status,
@@ -1541,12 +1623,18 @@ const startScenario = async (
 ) => {
   const { mac } = newCheckout(`start-${name}`)
   const dataHome = orbDataHome(`start-${name}-data`)
+  const withdrawn: string[] = []
   const attachment = {
     binding: { taskId: undefined },
     authorize: () =>
       Effect.succeed({
         kind: 'ready',
         grant: { useId: 'presence-use' } as unknown as WorkspaceGrant,
+      }),
+    withdrawOrbPresence: (grant: WorkspaceGrant) =>
+      Effect.sync(() => {
+        withdrawn.push(grant.useId)
+        return { outcome: 'settled', reason: 'withdrawn' } as const
       }),
     sweeps: Stream.empty,
   } as unknown as WorkspaceAttachment
@@ -1595,6 +1683,7 @@ const startScenario = async (
     interrupted: Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause),
     records: readdirSync(join(dataHome, 'orbs')).map(id => join(dataHome, 'orbs', id)),
     text: lines.join('\n'),
+    withdrawn,
   }
 }
 
@@ -1658,6 +1747,7 @@ await claim(
       assert.match(started.error ?? '', new RegExp(`with ${status}: refused ${status}`))
       assert.deepEqual(started.records, [], `${status} leaves no record`)
       assert.deepEqual(removed, [], 'no orb was created, so none is deleted')
+      assert.deepEqual(started.withdrawn, ['presence-use'], `${status} frees the checkout`)
     }
     const { orbit } = fakeOrbit({
       create: Effect.fail(
@@ -1696,6 +1786,7 @@ await claim(
     assert.match(started.text, /Deleting orb orb-star after the failed start/)
     assert.match(started.text, /orb orb-star deleted/)
     assert.deepEqual(started.records, [])
+    assert.deepEqual(started.withdrawn, ['presence-use'])
   }
 )
 
@@ -1722,6 +1813,7 @@ await claim(
     assert.deepEqual(removed, ['orb-started'], 'the orb the request created is deleted')
     assert.match(started.text, /Deleting orb orb-star after the interrupted start/)
     assert.deepEqual(started.records, [])
+    assert.deepEqual(started.withdrawn, ['presence-use'])
   }
 )
 
@@ -1735,6 +1827,11 @@ await claim(
     assert.equal(cancelled.interrupted, true, cancelled.error ?? 'not interrupted')
     assert.deepEqual(building.removed, ['orb-started'])
     assert.deepEqual(cancelled.records, [])
+    assert.deepEqual(
+      cancelled.withdrawn,
+      ['presence-use'],
+      'the interrupted start frees the checkout'
+    )
 
     const second = Deferred.makeUnsafe<void>()
     const stuck = fakeOrbit({
@@ -1755,6 +1852,11 @@ await claim(
     assert.equal(kept.interrupted, true, kept.error ?? 'not interrupted')
     assert.deepEqual(stuck.removed, ['orb-started'], 'DELETE was sent before the wait stopped')
     assert.equal(kept.records.length, 1, 'the record stays for the recovery sweep')
+    assert.deepEqual(
+      kept.withdrawn,
+      ['presence-use'],
+      'the orb holds no work, so the checkout is freed'
+    )
     const [directory = ''] = kept.records
     const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'))
     assert.deepEqual([record.phase, record.orbId], ['deleting', 'orb-started'])

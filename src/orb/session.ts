@@ -228,6 +228,16 @@ export const openOrbSession = Effect.fnUntraced(function* (
     )
   }
   const writer: WorkspaceGrant = presence.grant
+  const withdraw = input.attachment.withdrawOrbPresence(writer).pipe(
+    Effect.asVoid,
+    Effect.catch(error =>
+      Effect.sync(() =>
+        print(
+          `The launch still reserves ${checkout.root}: ${error.message}\nClear it with: ${writer.taskId === undefined ? 'dev workspace release pre-existing' : `dev workspace release ${writer.taskId}`}`
+        )
+      )
+    )
+  )
 
   const record = yield* createRecord(options.dataHome, {
     keystone: {
@@ -240,7 +250,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
     orbPath: checkout.root,
     presenceUseId: writer.useId,
     conversation: input.conversation,
-  })
+  }).pipe(Effect.onError(() => withdraw))
   const sessionScope = yield* Scope.make()
   let reachable = true
 
@@ -321,7 +331,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       discard(
         record.current().orbId,
         Cause.hasInterruptsOnly(cause) ? 'the interrupted start' : 'the failed start'
-      )
+      ).pipe(Effect.ensuring(withdraw))
     )
   )
   const { ssh, label, host, orbId } = prepared

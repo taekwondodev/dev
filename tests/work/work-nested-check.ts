@@ -1213,6 +1213,7 @@ try {
     },
     select: selection => base.select(selection),
     handoff: (transition, replace) => base.handoff(transition, replace),
+    withdrawOrbPresence: grant => base.withdrawOrbPresence(grant),
     sweeps: base.sweeps,
     close: base.close,
     authorize: operation => {

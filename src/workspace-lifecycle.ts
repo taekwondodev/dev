@@ -382,6 +382,8 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
             )
           })
         ).pipe(Effect.asVoid),
+      withdrawOrbPresence: grant =>
+        open(request({ op: 'withdraw-orb-presence', attachmentId, grant })),
       close: Effect.suspend(() => {
         if (done) return Effect.void
         done = true
