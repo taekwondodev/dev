@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { NodeServices } from '@effect/platform-node'
 import { Clock, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import { StringEnum } from '@earendil-works/pi-ai'
+import { compile, int, obj, opt, str } from '@earendil-works/pi-schema'
 
 import {
   GenerationId,
@@ -52,7 +54,16 @@ const ACCESS_MODES = ['read-only', 'write'] as const
 type AccessMode = (typeof ACCESS_MODES)[number]
 
 const REVIEW_OPERATIONS = ['status', 'diff', 'staged-diff', 'log', 'show', 'files'] as const
-type ReviewOperation = (typeof REVIEW_OPERATIONS)[number]
+
+const gitInspectParameters = obj({
+  operation: StringEnum(REVIEW_OPERATIONS, { description: 'Read-only Git operation to perform' }),
+  path: opt(str({ description: 'Optional repository-relative path without parent traversal' })),
+  ref: opt(
+    str({ description: 'Git ref for show or optional diff base, such as HEAD or a commit hash' })
+  ),
+  limit: opt(int({ minimum: 1, maximum: 50, description: 'Maximum number of log entries' })),
+})
+const gitInspectInput = compile(gitInspectParameters)
 
 const MAX_GIT_OUTPUT = 64 * 1024
 const PROGRESS_INTERVAL_MS = 1000
@@ -451,17 +462,17 @@ const runGit = (
     })
   })
 
-function validateRelativePath(path: unknown): string | undefined {
+function validateRelativePath(path: string | undefined): string | undefined {
   if (path === undefined) return undefined
-  if (typeof path !== 'string' || path.length === 0 || path.includes('\0') || isAbsolute(path))
+  if (path.length === 0 || path.includes('\0') || isAbsolute(path))
     fail('git_inspect path must be a non-empty relative path')
   if (path.split(/[\\/]/).includes('..')) fail('git_inspect path may not contain parent traversal')
   return path
 }
 
-function validateGitRef(ref: unknown): string {
+function validateGitRef(ref: string | undefined): string {
   if (
-    typeof ref !== 'string' ||
+    ref === undefined ||
     ref.length === 0 ||
     ref.startsWith('-') ||
     ref.includes('\0') ||
@@ -472,19 +483,16 @@ function validateGitRef(ref: unknown): string {
   return ref
 }
 
-function reviewOperation(value: unknown): ReviewOperation {
-  if (typeof value !== 'string') fail('git_inspect operation is not allowed')
-  const operation = REVIEW_OPERATIONS.find(candidate => candidate === value)
-  if (operation === undefined) fail('git_inspect operation is not allowed')
-  return operation
-}
-
 function gitArguments(params: unknown): readonly string[] {
-  if (!Predicate.isObject(params) || Array.isArray(params))
-    fail('git_inspect parameters must be an object')
-  const operation = reviewOperation(params.operation)
+  if (!gitInspectInput.check(params))
+    fail(
+      `git_inspect parameters are invalid: ${gitInspectInput
+        .errors(params)
+        .map(error => `${error.path || '/'} ${error.message}`)
+        .join('; ')}`
+    )
   const path = validateRelativePath(params.path)
-  switch (operation) {
+  switch (params.operation) {
     case 'status':
       return ['status', '--short', '--branch']
     case 'diff':
@@ -498,12 +506,8 @@ function gitArguments(params: unknown): readonly string[] {
       ]
     case 'staged-diff':
       return ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--', ...(path ? [path] : [])]
-    case 'log': {
-      const limit = params.limit === undefined ? 20 : params.limit
-      if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50)
-        fail('git_inspect limit must be an integer from 1 to 50')
-      return ['log', '--oneline', '--decorate', `--max-count=${limit}`]
-    }
+    case 'log':
+      return ['log', '--oneline', '--decorate', `--max-count=${params.limit ?? 20}`]
     case 'show':
       return ['show', '--no-ext-diff', '--no-textconv', '--oneline', validateGitRef(params.ref)]
     case 'files':
@@ -519,39 +523,13 @@ function toolResult(text: string): Pi.AgentToolResult<undefined> {
 }
 
 function createReviewGitTool(cwd: string, git: GitRunner): Pi.ToolDefinition {
-  const parameters = {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      operation: {
-        type: 'string',
-        enum: [...REVIEW_OPERATIONS],
-        description: 'Read-only Git operation to perform',
-      },
-      path: {
-        type: 'string',
-        description: 'Optional repository-relative path without parent traversal',
-      },
-      ref: {
-        type: 'string',
-        description: 'Git ref for show or optional diff base, such as HEAD or a commit hash',
-      },
-      limit: {
-        type: 'integer',
-        minimum: 1,
-        maximum: 50,
-        description: 'Maximum number of log entries',
-      },
-    },
-    required: ['operation'],
-  }
   return {
     name: 'git_inspect',
     label: 'git_inspect',
     description:
       "Inspect Git status, diffs, history, refs, or tracked files without changing the repository. Full raw output is retained in this attempt's stdout/stderr logs.",
     promptSnippet: 'Inspect Git state without mutation',
-    parameters,
+    parameters: gitInspectParameters,
     async execute(_toolCallId, params, signal) {
       const result = await Effect.runPromise(
         Effect.gen(function* () {
