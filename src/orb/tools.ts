@@ -425,10 +425,8 @@ const registerReaders = (api: ExtensionAPI, { pi, ssh, cwd, homes }: OrbReadersI
 }
 
 const describeTools = (api: ExtensionAPI, text: string): void => {
-  api.on('before_agent_start', (event, context) => {
-    const line = `Current working directory: ${context.cwd}`
-    if (!event.systemPrompt.includes(line)) return undefined
-    return { systemPrompt: event.systemPrompt.replace(line, `${line}\n${text}`) }
+  api.on('before_agent_start', event => {
+    event.systemPromptOptions.sections.orb = text
   })
 }
 
@@ -491,7 +489,7 @@ export const createOrbExtension =
     }))
     describeTools(
       api,
-      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents. A delegated agent that can write gets its own orb; its worktree appears at the same path on this orb once it ends. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout when the user runs /orb sync and at quit.`
+      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents: the files, commits and Git state they show are the orb's. A delegated agent that can write gets its own orb; its worktree appears at the same path on this orb once it ends. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout only when the user runs /orb sync, which you cannot run, and at quit.`
     )
     api.registerCommand('orb', {
       description: 'Show the orb of this session, or return its work with /orb sync',

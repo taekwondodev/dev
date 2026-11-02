@@ -41,7 +41,12 @@ import {
   withReturnAdmission,
 } from '../../src/orb/session.ts'
 import { makeOrbSsh, masterOptions, sshOptions } from '../../src/orb/ssh.ts'
-import { macHomes } from '../../src/orb/tools.ts'
+import {
+  createOrbExtension,
+  createOrbReaderExtension,
+  createOrbWriterExtension,
+  macHomes,
+} from '../../src/orb/tools.ts'
 import { openOrbReader } from '../../src/orb/child.ts'
 import { makeChildOrbs, saveChildWork, type ChildOrbsInput } from '../../src/orb/children.ts'
 import { orbToolAccess } from '../../src/integrated-tools.ts'
@@ -58,10 +63,14 @@ import {
 } from '../../src/orb/transfer.ts'
 import { toolEffect } from '../../src/workspace-host.ts'
 import { orbQuit } from '../../src/launcher-runtime.ts'
-import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { loadInstalledPi, makeClaims } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { writeProfileFixture } from '../profile-fixture.ts'
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type {
+  BuildSystemPromptOptions,
+  ExtensionAPI,
+  NormalizedBuildSystemPromptOptions,
+} from '@earendil-works/pi-coding-agent'
 import type { ChildProcessSpawner } from 'effect/process'
 import { asAttemptId, type AttemptOrb } from '../../src/work-domain.ts'
 import type { PiApi } from '../../src/pi-runtime.ts'
@@ -1018,6 +1027,79 @@ await claim(
         name
       )
     assert.deepEqual(asked, ['read', 'read'], 'refused tools never reach the controller')
+  }
+)
+
+await claim(
+  'the lead, a read-only child and a writing child each learn from an orb section of the system prompt that their tools run on the orb',
+  async () => {
+    const { pi, importFromPi } = await loadInstalledPi()
+    const prompts = await importFromPi<{
+      normalizeBuildSystemPromptOptions: (
+        input: BuildSystemPromptOptions
+      ) => NormalizedBuildSystemPromptOptions
+      buildSystemPrompt: (input: BuildSystemPromptOptions) => string
+    }>('dist/core/system-prompt.js')
+    const base = {
+      pi,
+      ssh: makeOrbSsh({
+        user: 'ubuntu',
+        host: '192.0.2.7',
+        keyPath: '/k',
+        knownHostsPath: '/kh',
+        controlPath: '/mux',
+      }),
+      cwd: sandbox,
+      homes: macHomes({ checkout: sandbox, skillPaths: [], artifacts: () => [] }),
+      label: 'orb test (192.0.2.7)',
+    }
+    const promptOf = (extension: (api: ExtensionAPI) => void): string => {
+      const handlers: ((event: unknown, context: unknown) => unknown)[] = []
+      extension({
+        on: (name: string, handler: (event: unknown, context: unknown) => unknown) => {
+          if (name === 'before_agent_start') handlers.push(handler)
+        },
+        registerTool: () => undefined,
+        registerCommand: () => undefined,
+      } as unknown as ExtensionAPI)
+      const options = prompts.normalizeBuildSystemPromptOptions({ cwd: sandbox })
+      for (const handler of handlers) {
+        const result = handler(
+          {
+            type: 'before_agent_start',
+            get systemPrompt() {
+              return prompts.buildSystemPrompt(options)
+            },
+            systemPromptOptions: options,
+          },
+          { cwd: sandbox }
+        ) as { systemPrompt?: string } | undefined
+        if (result?.systemPrompt !== undefined) options.forceSystemPrompt = result.systemPrompt
+      }
+      return prompts.buildSystemPrompt(options)
+    }
+    const lead = promptOf(
+      createOrbExtension({
+        ...base,
+        status: () => '',
+        describe: () => '',
+        sync: () => Promise.resolve(''),
+      })
+    )
+    assert.match(
+      lead,
+      /<orb>\nThe bash, read, write, edit, grep, find and ls tools run on orb test \(192\.0\.2\.7\) over SSH/
+    )
+    assert.match(lead, /Git state they show are the orb's/)
+    assert.match(lead, /only when the user runs \/orb sync, which you cannot run/)
+    assert.match(
+      promptOf(createOrbReaderExtension(base)),
+      /<orb>\nThe read, grep, find, ls and git_inspect tools read orb test/
+    )
+    assert.match(
+      promptOf(createOrbWriterExtension(base)),
+      /<orb>\nThe bash, read, write, edit, grep, find and ls tools run on orb test \(192\.0\.2\.7\), your own orb/
+    )
   }
 )
 
