@@ -281,7 +281,7 @@ try {
         ])
         const after = await lead.request(1)
         const [refused] = toolResults(after).slice(-1)
-        assert.match(refused ?? '', /must not have additional properties/)
+        assert.match(refused ?? '', /- rule: unknown field/)
         after.reply(text('refused'))
         await run
         assert.deepEqual((await listing(lead)).records, [])
