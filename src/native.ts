@@ -18,6 +18,7 @@ export interface DevNative {
   readonly observeDirectory: (path: string) => readonly [string, string, string]
   readonly filesystem: (path: string) => readonly [string, boolean, string]
   readonly processTable: () => Float64Array
+  readonly renameExclusive: (from: string, to: string) => boolean
 }
 
 const source = fileURLToPath(new URL('./native/dev-native.c', import.meta.url))

@@ -3,11 +3,14 @@ import { execFileSync } from 'node:child_process'
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -93,6 +96,29 @@ try {
       assert.equal(second, first)
       assert.equal(existsSync(join(checkout, '.dev/native')), true)
       assert.deepEqual(readdirSync(join(checkout, '.dev/native')), [])
+    }
+  )
+  await claim(
+    'an exclusive rename publishes with a single link and never replaces an existing destination',
+    async () => {
+      const { native } = await import('../src/native.ts')
+      const directory = join(root, 'rename')
+      mkdirSync(directory)
+      const [candidate, published, loser] = ['candidate', 'published', 'loser'].map(name =>
+        join(directory, name)
+      )
+      writeFileSync(candidate, 'first')
+      writeFileSync(loser, 'second')
+      assert.equal(native().renameExclusive(candidate, published), true)
+      assert.equal(existsSync(candidate), false)
+      assert.equal(lstatSync(published).nlink, 1)
+      assert.equal(native().renameExclusive(loser, published), false)
+      assert.equal(readFileSync(published, 'utf8'), 'first')
+      assert.equal(readFileSync(loser, 'utf8'), 'second')
+      assert.throws(
+        () => native().renameExclusive(candidate, join(directory, 'absent')),
+        /ENOENT|No such file/
+      )
     }
   )
   console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))
