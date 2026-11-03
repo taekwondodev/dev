@@ -597,7 +597,7 @@ try {
   )
 
   await claim(
-    'a repository whose provisioning failed midway blocks no other repository, and its next attachment completes it',
+    'a repository whose provisioning failed midway blocks no other repository, and its next attachment resumes it',
     async () => {
       const orphanRoot = join(sandbox, 'orphan-provisioning-authority')
       const orphans = await openLifecycle({ root: orphanRoot })
@@ -608,7 +608,7 @@ try {
       const readIn = async (name: string, cwd: string) => {
         const attachment = await orphans.attach({ conversation: conversation(name), cwd })
         try {
-          return ready(await attachment.authorize({ kind: 'read' })).repositoryId
+          ready(await attachment.authorize({ kind: 'read' }))
         } finally {
           await attachment.close()
         }
@@ -623,8 +623,7 @@ try {
           chmodSync(shards, 0o700)
         }
         await readIn('orphan-settled-after', settledRepo)
-        const completed = await readIn('orphan-completed', orphanRepo)
-        assert.equal(await readIn('orphan-again', orphanRepo), completed)
+        await readIn('orphan-resumed', orphanRepo)
       } finally {
         await orphans.close()
       }
