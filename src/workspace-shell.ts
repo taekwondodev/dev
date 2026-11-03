@@ -4,15 +4,14 @@ import { constants as osConstants } from 'node:os'
 import type { Writable } from 'node:stream'
 import type { BashOperations } from '@earendil-works/pi-coding-agent'
 import { Deferred, Duration, Effect, Exit, FiberSet, Option, Schema, type Scope } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
 import { errorText } from './error-text.ts'
 import {
   processGate,
   processGateScript,
-  processObserver,
+  observeFamily,
+  processTable,
   transientRetry,
   type ObservedProcess,
-  type ProcessObserver,
   type TrackedFamily,
 } from './process-family.ts'
 import type { ProcessObservation } from './work-lifecycle.ts'
@@ -70,7 +69,7 @@ const failure = (message: string) => new ShellCommandError({ message })
 const processIdentity = (item: ProcessObservation): string => `${item.pid}:${item.birth ?? ''}`
 
 const terminate = Effect.fnUntraced(
-  function* (processTable: ProcessObserver['processTable'], shell: LiveShell) {
+  function* (shell: LiveShell) {
     for (;;) {
       const table = yield* Effect.option(processTable)
       if (Option.isNone(table)) return
@@ -98,19 +97,24 @@ const exitOf = (child: ChildProcess): Deferred.Deferred<ShellExit, ShellCommandE
   const exited = Deferred.makeUnsafe<ShellExit, ShellCommandError>()
   child.once('error', cause => Deferred.doneUnsafe(exited, Exit.fail(failure(errorText(cause)))))
   child.once('exit', (code, signal) => {
-    setTimeout(() => {
+    let settled = false
+    const settle = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(bound)
       child.stdout?.destroy()
       child.stderr?.destroy()
       Deferred.doneUnsafe(exited, Exit.succeed({ code, signal }))
-    }, EXIT_DRAIN_MS)
+    }
+    const bound = setTimeout(settle, EXIT_DRAIN_MS)
+    child.once('close', settle)
   })
   return exited
 }
 
 export const makeWorkspaceShell = Effect.fnUntraced(function* (
   admit: (cwd: string) => Effect.Effect<WorkspaceAdmission, WorkspaceError>
-): Effect.fn.Return<WorkspaceShell, never, Scope.Scope | ChildProcessSpawner.ChildProcessSpawner> {
-  const { freshProcessTable, observeFamily } = yield* processObserver
+): Effect.fn.Return<WorkspaceShell, never, Scope.Scope> {
   const observers = yield* FiberSet.make<void>()
   const runInBackground = yield* FiberSet.runtime(observers)()
   const live = new Map<number, LiveShell>()
@@ -237,7 +241,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         try: () => processGate(child),
         catch: cause => failure(errorText(cause)),
       })
-      const table = yield* freshProcessTable.pipe(Effect.mapError(cause => failure(cause.message)))
+      const table = yield* processTable.pipe(Effect.mapError(cause => failure(cause.message)))
       const root = table.find(item => item.pid === pid)
       if (root === undefined) return yield* failure('the shell identity could not be captured')
       return { gate, root }
@@ -265,7 +269,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     const onAbort = () => {
       aborted = true
       if (shell === undefined) killGated()
-      else runInBackground(terminate(freshProcessTable, shell))
+      else runInBackground(terminate(shell))
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     const detach = () => signal?.removeEventListener('abort', onAbort)
@@ -320,7 +324,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         ? undefined
         : setTimeout(() => {
             timedOut = true
-            runInBackground(terminate(freshProcessTable, shell))
+            runInBackground(terminate(shell))
           }, timeoutMs)
     return yield* Deferred.await(exited).pipe(
       Effect.flatMap(outcome => {
@@ -353,7 +357,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void })
       )
       const shells = [...live.values()]
-      yield* Effect.forEach(shells, shell => terminate(freshProcessTable, shell), {
+      yield* Effect.forEach(shells, shell => terminate(shell), {
         concurrency: 'unbounded',
         discard: true,
       })

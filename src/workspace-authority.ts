@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { lstatSync, realpathSync, readdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { userInfo } from 'node:os'
@@ -53,6 +52,7 @@ import {
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
+import { native } from './native.ts'
 import {
   newId,
   fsyncPath,
@@ -76,45 +76,44 @@ const SYNCHRONIZED_FOLDERS = [
   ['Library', 'Mobile Documents'],
   ['Library', 'CloudStorage'],
 ] as const
+export interface AuthorityFilesystem {
+  readonly type: string
+  readonly local: boolean
+  readonly mountPoint: string
+}
 export const unsupportedAuthorityStorage = (input: {
   readonly path: string
   readonly home: string
-  readonly mountTable: string
+  readonly filesystem: AuthorityFilesystem
 }): string | undefined => {
   for (const parts of SYNCHRONIZED_FOLDERS) {
     const folder = join(input.home, ...parts)
     if (isWithin(folder, input.path))
       return `Workspace authority cannot live in a synchronized folder: ${folder}`
   }
-  let mount: { point: string; options: string[] } | undefined
-  for (const line of input.mountTable.split('\n')) {
-    const match = /^.+? on (.+) \((.+)\)$/.exec(line)
-    if (match === null) continue
-    const [, point = '', options = ''] = match
-    if (point !== '' && point.length > (mount?.point.length ?? 0) && isWithin(point, input.path))
-      mount = { point, options: options.split(', ') }
-  }
-  if (mount === undefined) return `Cannot identify the filesystem holding ${input.path}`
-  const [type = 'unknown'] = mount.options
-  if (!mount.options.includes('local'))
-    return `Workspace authority requires local storage; ${mount.point} is a ${type} mount`
+  const { type, local, mountPoint } = input.filesystem
+  if (!local) return `Workspace authority requires local storage; ${mountPoint} is a ${type} mount`
   if (!SUPPORTED_FILESYSTEMS.has(type))
-    return `Workspace authority does not support ${type} storage at ${mount.point}`
+    return `Workspace authority does not support ${type} storage at ${mountPoint}`
   return undefined
 }
 const assertSupportedStorage = (root: string): void => {
   if (process.platform !== 'darwin')
     unavailable(`Workspace authority currently supports only macOS, not ${process.platform}`)
-  let mountTable: string
+  let existing = root
+  while (lstatIfExists(existing) === undefined && dirname(existing) !== existing)
+    existing = dirname(existing)
+  let filesystem: AuthorityFilesystem
   try {
-    mountTable = execFileSync('/sbin/mount', { encoding: 'utf8' })
+    const [type, local, mountPoint] = native().filesystem(existing)
+    filesystem = { type, local, mountPoint }
   } catch (cause) {
     return unavailable(`Cannot inspect the storage holding ${root}: ${errorText(cause)}`)
   }
   const reason = unsupportedAuthorityStorage({
     path: root,
     home: realpathSync(userInfo().homedir),
-    mountTable,
+    filesystem,
   })
   if (reason !== undefined) unavailable(reason)
 }

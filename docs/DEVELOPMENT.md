@@ -13,7 +13,7 @@ npm start
 
 `npm start` and `npm run dev` work on this checkout; use `--cwd` to work elsewhere. `npm link --ignore-scripts` links the `dev` command to the checkout, so edits take effect on the next launch.
 
-Sources are strict, erasable TypeScript, run directly through Node type stripping. There is no build step. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
+TypeScript sources are strict and erasable, run directly through Node type stripping. On macOS, setup and update compile the C N-API addon in `src/native/` with the system `clang`; install the Xcode Command Line Tools with `xcode-select --install` and use a Node installation with `include/node/node_api.h` beside its `bin/` directory. The addon is cached under `.dev/native/` by source content and architecture and rebuilt on first use when missing. No TypeScript build is needed. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
 
 Before `npm install` or `npm uninstall` in a checkout that already ran a check, remove the ignored `node_modules/@earendil-works` link: npm prunes through it and deletes the Pi release's packages from the installation. `npm ci` and `npm run types:pi` recreate the link; `npm run pi:update` works in a fresh worktree and is not affected.
 

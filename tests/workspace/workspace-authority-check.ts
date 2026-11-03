@@ -150,16 +150,19 @@ const deviceObserver = join(sandbox, 'simulated-device.mjs')
 writeFileSync(
   deviceObserver,
   `import fs from 'node:fs'
-import childProcess from 'node:child_process'
-import workerThreads from 'node:worker_threads'
 import { syncBuiltinESMExports } from 'node:module'
 import { resolve, sep } from 'node:path'
+import { native } from ${srcSpecifier('native.ts')}
+const addon = native()
+const applies = path => {
+  const base = process.env.DEV_IDENTITY_PATH
+  const resolved = resolve(String(path))
+  return base !== undefined && (resolved === base || resolved.startsWith(base + sep))
+}
 const observe = original => (path, options) => {
   const result = original(path, options)
   if (result === undefined || result === null) return result
-  const base = process.env.DEV_IDENTITY_PATH
-  const resolved = resolve(String(path))
-  if (base === undefined || (resolved !== base && !resolved.startsWith(base + sep))) return result
+  if (!applies(path)) return result
   const device = process.env.DEV_IDENTITY_DEVICE
   return new Proxy(result, {
     get(target, property) {
@@ -176,31 +179,17 @@ const behavior = () => {
   if (control !== undefined && fs.existsSync(control)) return fs.readFileSync(control, 'utf8')
   return process.env.DEV_IDENTITY_BEHAVIOR ?? ''
 }
-const OriginalWorker = workerThreads.Worker
-workerThreads.Worker = class extends OriginalWorker {
-  constructor(url, options) {
-    if (behavior() === 'no-helper' && String(url).endsWith('/workspace-volume-helper.ts'))
-      throw Object.assign(new Error('fixture helper start failure'), { code: 'ERR_WORKER_INIT_FAILED' })
-    super(url, options)
-  }
-}
-const originalSpawn = childProcess.spawn
-childProcess.spawn = (file, args, options) => {
-  const child = originalSpawn(file, args, options)
-  if (file !== '/usr/bin/osascript') return child
-  const write = child.stdin.write.bind(child.stdin)
-  child.stdin.write = (...request) => {
-    const current = behavior()
-    if (current === 'fail') child.kill('SIGKILL')
-    return current === 'fail' || current === 'hang' ? true : write(...request)
-  }
-  child.stdout.prependListener('data', () => {
+const originalObservation = addon.observeDirectory
+addon.observeDirectory = path => {
+  const observed = originalObservation(path)
+  if (!applies(path)) return observed
+  if (behavior() === 'fail') throw new Error('fixture volume UUID lookup failure')
+  if (behavior() === 'replace') {
     const base = process.env.DEV_IDENTITY_PATH
-    if (behavior() !== 'replace' || base === undefined) return
     fs.renameSync(base, base + '.identity-original')
     fs.cpSync(base + '.identity-original', base, { recursive: true })
-  })
-  return child
+  }
+  return [process.env.DEV_IDENTITY_DEVICE ?? observed[0], observed[1], observed[2]]
 }
 syncBuiltinESMExports()
 `
@@ -347,9 +336,9 @@ try {
   )
 
   await claim(
-    'volume UUID lookup failures, including a helper that cannot start, refuse without fallback and path replacement during lookup is detected',
+    'native volume UUID lookup failures refuse without fallback and path replacement during lookup is detected',
     async () => {
-      for (const behavior of ['fail', 'no-helper', 'replace'] as const) {
+      for (const behavior of ['fail', 'replace'] as const) {
         const path = join(sandbox, `resolver-${behavior}-repo`)
         const authorityRoot = join(sandbox, `resolver-${behavior}-authority`)
         initRepository(path, 'tracked.txt', `resolver ${behavior} fixture\\n`)
@@ -386,7 +375,7 @@ try {
   )
 
   await claim(
-    'one process looks up volume identity afresh for every observation, also under a non-ASCII path: a lookup that starts failing or hangs refuses admission within its bound, and a recovered lookup admits again',
+    'one process looks up volume identity afresh under a non-ASCII path: a failing lookup refuses admission and a recovered lookup admits again',
     async () => {
       const path = join(sandbox, 'resolver-fresh-répertoire')
       const authorityRoot = join(sandbox, 'resolver-fresh-authority')
@@ -401,7 +390,7 @@ try {
           const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation('resolver-fresh'))}, cwd: ${JSON.stringify(path)} })
           const outcomes = []
           try {
-            for (const behavior of ['', 'fail', 'hang', '']) {
+            for (const behavior of ['', 'fail', '']) {
               writeFileSync(${JSON.stringify(control)}, behavior)
               const started = performance.now()
               try {
@@ -422,15 +411,9 @@ try {
         [
           { behavior: '', outcome: 'ready' },
           { behavior: 'fail', outcome: 'review-required' },
-          { behavior: 'hang', outcome: 'review-required' },
           { behavior: '', outcome: 'ready' },
         ],
         JSON.stringify(outcomes)
-      )
-      const hung = outcomes[2]?.ms ?? 0
-      assert.ok(
-        hung < 6000,
-        `a hung lookup is refused within the 5 s budget plus 1 s scheduling allowance: ${hung} ms`
       )
     }
   )
@@ -1119,13 +1102,9 @@ try {
     'known unsupported authority storage is refused: synchronized folders, network mounts and non-APFS/HFS volumes',
     () => {
       const home = '/Users/fixture'
-      const mountTable = [
-        '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
-        '/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)',
-        '//fixture@server/share on /Volumes/Shared Work (smbfs, nodev, nosuid, mounted by fixture)',
-        '/dev/disk9s1 on /Volumes/USB (exfat, local, nodev, nosuid, noowners)',
-      ].join('\n')
-      const storage = (path: string) => unsupportedAuthorityStorage({ path, home, mountTable })
+      const localApfs = { type: 'apfs', local: true, mountPoint: '/System/Volumes/Data' }
+      const storage = (path: string, filesystem = localApfs) =>
+        unsupportedAuthorityStorage({ path, home, filesystem })
       assert.equal(
         storage(`${home}/Library/Application Support/dev/workspace-authority`),
         undefined
@@ -1135,11 +1114,25 @@ try {
         /synchronized/
       )
       assert.match(storage(`${home}/Library/CloudStorage/Dropbox/authority`) ?? '', /synchronized/)
-      assert.match(storage('/Volumes/Shared Work/authority') ?? '', /local storage.*smbfs/)
-      assert.match(storage('/Volumes/USB/authority') ?? '', /does not support exfat/)
+      assert.equal(
+        storage('/Volumes/HFS/authority', { type: 'hfs', local: true, mountPoint: '/Volumes/HFS' }),
+        undefined
+      )
       assert.match(
-        unsupportedAuthorityStorage({ path: '/private/tmp/a', home, mountTable: '' }) ?? '',
-        /Cannot identify/
+        storage('/Volumes/Shared Work/authority', {
+          type: 'smbfs',
+          local: false,
+          mountPoint: '/Volumes/Shared Work',
+        }) ?? '',
+        /local storage.*smbfs/
+      )
+      assert.match(
+        storage('/Volumes/USB/authority', {
+          type: 'exfat',
+          local: true,
+          mountPoint: '/Volumes/USB',
+        }) ?? '',
+        /does not support exfat/
       )
     }
   )

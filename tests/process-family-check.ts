@@ -1,178 +1,121 @@
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { NodeServices } from '@effect/platform-node'
-import { Clock, Effect, Exit } from 'effect'
-import { processObserver } from '../src/process-family.ts'
+import { Effect, Exit, Result } from 'effect'
+import { native } from '../src/native.ts'
+import { observeFamily, processTable, type ObservedProcess } from '../src/process-family.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
 
-const fixture = mkdtempSync(join(tmpdir(), 'dev-process-family-'))
-const counter = join(fixture, 'spawns')
-const table = join(fixture, 'table')
-const failing = join(fixture, 'failing')
-const slow = join(fixture, 'slow')
-const blocked = join(fixture, 'blocked')
-const started = join(fixture, 'started')
-writeFileSync(counter, '')
-writeFileSync(
-  table,
-  [
-    '  101     1   101 S    Fri Oct 17 12:00:00 2026',
-    '  202   101   101 S    Fri Oct 17 12:00:01 2026',
-    '',
-  ].join('\n')
-)
-writeFileSync(
-  join(fixture, 'ps'),
-  `#!/bin/sh\nprintf x >> '${counter}'\n[ -e '${failing}' ] && exit 1\ncontent=$(cat '${table}')\n[ -e '${slow}' ] && { : > '${started}'; while [ -e '${blocked}' ]; do sleep 0.01; done; }\nprintf '%s\\n' "$content"\n`
-)
-chmodSync(join(fixture, 'ps'), 0o755)
-const originalPath = process.env.PATH
-process.env.PATH = `${fixture}:${originalPath ?? ''}`
+const read = (): Promise<ObservedProcess[]> => Effect.runPromise(processTable)
+const report = () => Effect.void
+const find = (table: readonly ObservedProcess[], pid: number | undefined) =>
+  table.find(item => item.pid === pid)
+const stateOf = (pid: number): string =>
+  execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim()
 
-const spawns = (): number => readFileSync(counter, 'utf8').length
-const observers = await Effect.runPromise(
-  Effect.all(Array.from({ length: 5 }, () => processObserver)).pipe(
-    Effect.provide(NodeServices.layer)
-  )
-)
-const [observer] = observers
-const liveClock = await Effect.runPromise(Clock.Clock)
-let now = 0
-const snapshotClock: Clock.Clock = {
-  currentTimeMillisUnsafe: () => now,
-  currentTimeMillis: Effect.sync(() => now),
-  currentTimeNanosUnsafe: () => BigInt(now) * 1_000_000n,
-  currentTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
-  monotonicTimeNanosUnsafe: () => liveClock.monotonicTimeNanosUnsafe(),
-  monotonicTimeNanos: liveClock.monotonicTimeNanos,
-  sleep: duration => liveClock.sleep(duration),
-}
-const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
-  Effect.runPromise(effect.pipe(Effect.provideService(Clock.Clock, snapshotClock)))
 const { claim, passed } = makeClaims()
+const children: ChildProcess[] = []
+const start = async (command: string, args: string[], detached: boolean): Promise<ChildProcess> => {
+  const child = spawn(command, args, { detached, stdio: ['ignore', 'pipe', 'ignore'] })
+  children.push(child)
+  await once(child, 'spawn')
+  return child
+}
 
 try {
-  await claim(
-    'five distinct observers sharing a spawner coalesce concurrent reads into one ps',
-    async () => {
-      const tables = await run(
-        Effect.forEach(observers, item => item.processTable, { concurrency: 'unbounded' })
-      )
-      assert.equal(spawns(), 1)
-      for (const read of tables) assert.deepEqual(read, tables[0])
-      assert.deepEqual(
-        tables[0].map(item => item.pid),
-        [101, 202]
-      )
-    }
-  )
-
-  await claim('a shared snapshot is still reusable at 199 ms', async () => {
-    now += 199
-    await run(observer.processTable)
-    assert.equal(spawns(), 1)
+  await claim('the current process appears with its parent and a stable birth', async () => {
+    const first = find(await read(), process.pid)
+    assert.ok(first !== undefined)
+    assert.equal(first.parent, process.ppid)
+    assert.match(first.birth, /^[1-9][0-9]*\.[0-9]{6}$/)
+    await sleep(20)
+    assert.equal(find(await read(), process.pid)?.birth, first.birth)
   })
 
-  await claim('a shared snapshot expires at 200 ms', async () => {
-    now += 1
-    await run(observer.processTable)
-    assert.equal(spawns(), 2)
+  await claim('a detached child appears as its own group led by itself, owned by us', async () => {
+    const child = await start('/bin/sleep', ['30'], true)
+    const entry = find(await read(), child.pid)
+    assert.ok(entry !== undefined)
+    assert.equal(entry.parent, process.pid)
+    assert.equal(entry.group, child.pid)
+    await sleep(20)
+    assert.equal(find(await read(), child.pid)?.birth, entry.birth)
+    child.kill('SIGKILL')
+    await once(child, 'exit')
+  })
+
+  await claim('a zombie is excluded while its parent stays listed', async () => {
+    const parent = await start(
+      '/usr/bin/perl',
+      ['-e', String.raw`$| = 1; $p = fork; exit 0 unless $p; print "$p\n"; sleep 30`],
+      true
+    )
+    const [chunk] = await once(parent.stdout!, 'data')
+    const zombie = Number(String(chunk).trim())
+    for (let attempt = 0; attempt < 100 && !stateOf(zombie).startsWith('Z'); attempt += 1)
+      await sleep(20)
+    assert.ok(stateOf(zombie).startsWith('Z'))
+    const table = await read()
+    assert.equal(find(table, zombie), undefined)
+    assert.equal(find(table, parent.pid)?.pid, parent.pid)
+    parent.kill('SIGKILL')
+    await once(parent, 'exit')
+  })
+
+  await claim('a shell family is observed alive and then observed gone', async () => {
+    const child = await start('/bin/sh', ['-c', 'sleep 30 & wait'], true)
+    await sleep(100)
+    const root = find(await read(), child.pid)
+    assert.ok(root !== undefined)
+    const alive = await Effect.runPromise(
+      observeFamily(
+        { pid: child.pid, root, known: [root], reported: undefined },
+        { rootExited: false, report }
+      )
+    )
+    assert.ok(alive.known.length >= 2)
+    process.kill(-root.pid, 'SIGKILL')
+    await once(child, 'exit')
+    let gone = alive
+    for (let attempt = 0; attempt < 100 && gone.known.length > 0; attempt += 1) {
+      await sleep(20)
+      gone = await Effect.runPromise(observeFamily(gone, { rootExited: true, report }))
+    }
+    assert.deepEqual(gone.known, [])
   })
 
   await claim(
-    'a fresh read always spawns, and the next shared read serves its table without spawning',
+    'a failed native read is reported and the next read observes processes again',
     async () => {
-      writeFileSync(table, '  303     1   303 S    Fri Oct 17 12:00:02 2026\n')
-      const fresh = await run(observer.freshProcessTable)
-      assert.equal(spawns(), 3)
-      assert.deepEqual(
-        fresh.map(item => item.pid),
-        [303]
-      )
-      const next = await run(observer.processTable)
-      assert.equal(spawns(), 3)
-      assert.deepEqual(
-        next.map(item => item.pid),
-        [303]
-      )
+      const addon = native()
+      const original = Object.getOwnPropertyDescriptor(addon, 'processTable')!
+      Object.defineProperty(addon, 'processTable', {
+        ...original,
+        value: () => {
+          throw new Error('fixture process table failure')
+        },
+      })
+      try {
+        const result = await Effect.runPromise(Effect.result(processTable))
+        assert.ok(Result.isFailure(result))
+        assert.equal(result.failure._tag, 'ProcessObservationLost')
+        assert.match(result.failure.message, /fixture process table failure/)
+      } finally {
+        Object.defineProperty(addon, 'processTable', original)
+      }
+      assert.equal(find(await read(), process.pid)?.pid, process.pid)
     }
   )
 
-  await claim(
-    'a failed read is not reused: the next read spawns ps again and succeeds',
-    async () => {
-      now += 200
-      writeFileSync(failing, '')
-      const before = spawns()
-      const failed = await run(Effect.exit(observer.processTable))
-      assert.ok(Exit.isFailure(failed))
-      assert.ok(spawns() > before)
-      rmSync(failing)
-      const after = spawns()
-      const read = await run(observer.processTable)
-      assert.equal(spawns(), after + 1)
-      assert.deepEqual(
-        read.map(item => item.pid),
-        [303]
-      )
-    }
-  )
-
-  await claim(
-    'a failed fresh read invalidates a snapshot that has not aged: the next shared read spawns again',
-    async () => {
-      await run(observer.processTable)
-      writeFileSync(failing, '')
-      const failed = await run(Effect.exit(observer.freshProcessTable))
-      assert.ok(Exit.isFailure(failed))
-      rmSync(failing)
-      writeFileSync(table, '  404     1   404 S    Fri Oct 17 12:00:03 2026\n')
-      const before = spawns()
-      const next = await run(observer.processTable)
-      assert.equal(spawns(), before + 1)
-      assert.deepEqual(
-        next.map(item => item.pid),
-        [404]
-      )
-    }
-  )
-
-  await claim(
-    'a shared read in flight when a fresh read happens cannot publish its older table afterwards',
-    async () => {
-      now += 200
-      writeFileSync(slow, '')
-      writeFileSync(blocked, '')
-      const older = run(observer.processTable)
-      while (!existsSync(started)) await sleep(5)
-      writeFileSync(table, '  505     1   505 S    Fri Oct 17 12:00:04 2026\n')
-      rmSync(slow)
-      const fresh = await run(observer.freshProcessTable)
-      assert.deepEqual(
-        fresh.map(item => item.pid),
-        [505]
-      )
-      rmSync(blocked)
-      assert.deepEqual(
-        (await older).map(item => item.pid),
-        [404]
-      )
-      const before = spawns()
-      const next = await run(observer.processTable)
-      assert.equal(spawns(), before)
-      assert.deepEqual(
-        next.map(item => item.pid),
-        [505]
-      )
-    }
-  )
+  await claim('a read of the table succeeds repeatedly', async () => {
+    const exits = await Promise.all(
+      Array.from({ length: 20 }, () => Effect.runPromiseExit(processTable))
+    )
+    assert.ok(exits.every(Exit.isSuccess))
+  })
 
   console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))
 } finally {
-  if (originalPath === undefined) delete process.env.PATH
-  else process.env.PATH = originalPath
-  rmSync(fixture, { recursive: true, force: true })
+  for (const child of children) child.kill('SIGKILL')
 }
