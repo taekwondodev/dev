@@ -364,17 +364,20 @@ const validatedIdentity = (path: string): string => {
   const info = lstatSync(path, { bigint: true })
   return `${path}\0${info.dev}:${info.ino}`
 }
-const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'shard'): void => {
-  db.exec(
-    `PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA wal_autocheckpoint = 1000;`
-  )
+const requireWal = (db: DatabaseSync, path: string, kind: 'catalog' | 'shard'): void => {
   const journal = textField(first(db, 'PRAGMA journal_mode'), 'journal_mode')
   if (journal.toLowerCase() !== 'wal')
     unavailable(`Workspace ${kind} database is not in WAL mode: ${path}`)
+}
+const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'shard'): string => {
+  db.exec(
+    `PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA fullfsync = ON; PRAGMA wal_autocheckpoint = 1000;`
+  )
+  requireWal(db, path, kind)
   const synchronous = numberField(first(db, 'PRAGMA synchronous'), 'synchronous')
   const fullfsync = numberField(first(db, 'PRAGMA fullfsync'), 'fullfsync')
-  if (synchronous !== 2 || fullfsync !== 1)
-    unavailable(`Workspace ${kind} database has unsafe durability settings: ${path}`)
+  if (synchronous !== 1 || fullfsync !== 1)
+    unavailable(`Workspace ${kind} database has unexpected durability settings: ${path}`)
   const identity = validatedIdentity(path)
   if (!validatedFiles.has(identity)) {
     if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
@@ -386,12 +389,17 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   }
   databaseFile(path)
   validatedFiles.add(identity)
+  return identity
 }
-export const openRecordDb = (
+export interface RecordConnection {
+  readonly db: DatabaseSync
+  readonly identity: string | undefined
+}
+export const openRecordConnection = (
   path: string,
   kind: 'catalog' | 'shard',
   initialize?: (db: DatabaseSync) => void
-): DatabaseSync => {
+): RecordConnection => {
   try {
     const existed = lstatIfExists(path) !== undefined
     if (!existed) {
@@ -399,6 +407,7 @@ export const openRecordDb = (
       createPublishedDatabase(path, kind, initialize)
     }
     databaseFile(path)
+    const opening = validatedIdentity(path)
     const db = new DatabaseSync(path, {
       timeout: BUSY_TIMEOUT_MS,
       allowExtension: false,
@@ -410,8 +419,8 @@ export const openRecordDb = (
         if (mode.toLowerCase() !== 'wal')
           unavailable(`Cannot enable WAL for new workspace database: ${path}`)
       }
-      configureRecordDb(db, path, kind)
-      return db
+      const identity = configureRecordDb(db, path, kind)
+      return { db, identity: identity === opening ? identity : undefined }
     } catch (cause) {
       db.close()
       throw cause
@@ -421,6 +430,17 @@ export const openRecordDb = (
     if (sqliteBusy(cause)) blocked(`Workspace authority database is busy: ${path}`)
     unavailable(`Cannot open workspace authority database ${path}: ${errorText(cause)}`)
   }
+}
+export const recordConnectionCurrent = (
+  connection: RecordConnection,
+  path: string,
+  kind: 'catalog' | 'shard'
+): boolean => {
+  if (connection.identity === undefined || lstatIfExists(path) === undefined) return false
+  if (validatedIdentity(path) !== connection.identity) return false
+  databaseFile(path)
+  requireWal(connection.db, path, kind)
+  return true
 }
 export const transaction = <A>(db: DatabaseSync, operation: () => A): A => {
   db.exec('BEGIN IMMEDIATE')

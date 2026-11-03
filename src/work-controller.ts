@@ -90,7 +90,8 @@ import { globalPiAgentDir } from './preferences.ts'
 import {
   processGate,
   processGateScript,
-  processObserver,
+  observeFamily,
+  processTable,
   rootIdentityReused,
   transientRetry,
 } from './process-family.ts'
@@ -447,7 +448,6 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         }
   const artifactState = (cwd: string) =>
     readArtifactState(remote !== undefined && isWithin(remote.checkout, cwd) ? run : localRun, cwd)
-  const { freshProcessTable: freshTable, observeFamily } = yield* processObserver
   const active = new Map<AttemptId, Job>()
   const latest = new Map<string, AttemptId>()
   const reservations = new Set<string>()
@@ -1261,7 +1261,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               ),
             catch: cause => new WorkError({ message: errorText(cause), cause }),
           })
-          const initialTable = yield* freshTable.pipe(Effect.mapError(toFailure))
+          const initialTable = yield* processTable.pipe(Effect.mapError(toFailure))
           const root = initialTable.find(item => item.pid === childPid)
           const known = ownedProcesses(initialTable, childPid, [])
           if (
@@ -1839,7 +1839,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     let known: readonly ProcessObservation[] = []
     let identityReused = false
     let observationError: string | undefined
-    const initialTable = yield* Effect.result(freshTable)
+    const initialTable = yield* Effect.result(processTable)
     if (Result.isSuccess(initialTable)) {
       const root = job.lifecycle.rootProcess()
       identityReused = rootIdentityReused(initialTable.success, root, hasProcessExitEvidence(job))
@@ -1876,7 +1876,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       yield* Deferred.await(job.settled).pipe(Effect.timeoutOption('2 seconds'))
 
     if (job.lifecycle.isActive()) {
-      const remainingTable = yield* Effect.result(freshTable)
+      const remainingTable = yield* Effect.result(processTable)
       if (Result.isSuccess(remainingTable)) {
         const root = job.lifecycle.rootProcess()
         if (rootIdentityReused(remainingTable.success, root, hasProcessExitEvidence(job))) {
@@ -1916,7 +1916,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     }
 
     if (job.lifecycle.isActive()) {
-      const finalTable = yield* Effect.result(freshTable)
+      const finalTable = yield* Effect.result(processTable)
       if (Result.isSuccess(finalTable)) {
         const root = job.lifecycle.rootProcess()
         if (rootIdentityReused(finalTable.success, root, hasProcessExitEvidence(job))) {

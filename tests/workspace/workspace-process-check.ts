@@ -33,6 +33,8 @@ import {
 import type { AttemptView } from '../../src/work-domain.ts'
 
 const exec = promisify(execFile)
+const median = (samples: readonly number[]) =>
+  samples.toSorted((a, b) => a - b)[Math.floor(samples.length / 2)]!
 
 const withReport = (
   base: WorkspaceAttachment,
@@ -544,6 +546,62 @@ try {
         await running
         await settled(11)
         await observingShell.stop()
+      }
+    )
+
+    await claim(
+      'closed output avoids the exit drain while inherited pipes return bounded with their output',
+      async () => {
+        const drainShell = await openShell(async shellCwd => {
+          const writer = await attachment.authorize({ kind: 'write', cwd: shellCwd })
+          if (writer.kind !== 'ready') throw new Error('Unexpected drain shell handoff')
+          return { attachment: attachment.effect, grant: writer.grant }
+        })
+        const measure = async (inherited: boolean) => {
+          let output = ''
+          let firstOutputAt: number | undefined
+          const started = performance.now()
+          const result = await drainShell.operations.exec(
+            inherited
+              ? 'printf visible; (sleep 0.02; printf late; sleep 2) & exit 3'
+              : 'printf visiblelate; exit 3',
+            grant.cwd,
+            {
+              onData: data => {
+                firstOutputAt ??= performance.now()
+                output += data.toString()
+              },
+            }
+          )
+          const returnedAt = performance.now()
+          const elapsed = returnedAt - started
+          assert.equal(result.exitCode, 3)
+          assert.equal(output, 'visiblelate')
+          assert.ok(firstOutputAt !== undefined)
+          assert.ok(elapsed < 1500, `output drain must not await the 2 s descendant: ${elapsed} ms`)
+          return returnedAt - firstOutputAt
+        }
+        try {
+          await measure(false)
+          await measure(true)
+          const closed: number[] = []
+          const inherited: number[] = []
+          for (let run = 0; run < 5; run += 1) {
+            if (run % 2 === 0) {
+              closed.push(await measure(false))
+              inherited.push(await measure(true))
+            } else {
+              inherited.push(await measure(true))
+              closed.push(await measure(false))
+            }
+          }
+          assert.ok(
+            median(inherited) - median(closed) >= 50,
+            `closed output must return at least 50 ms sooner after first output: ${JSON.stringify({ closed, inherited })}`
+          )
+        } finally {
+          await drainShell.stop()
+        }
       }
     )
 

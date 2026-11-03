@@ -16,7 +16,6 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { NodeServices } from '@effect/platform-node'
 import { Effect, Stream } from 'effect'
 import {
   WorkspaceError,
@@ -41,7 +40,7 @@ import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
-import { processObserver } from '../../src/process-family.ts'
+import { observeFamily, processTable } from '../../src/process-family.ts'
 import { verdictName } from './workspace-completion-fixtures.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -168,10 +167,7 @@ try {
           })
           const exited = once(child, 'exit')
           await once(child, 'spawn')
-          const observer = await Effect.runPromise(
-            processObserver.pipe(Effect.provide(NodeServices.layer))
-          )
-          const identity = (await Effect.runPromise(observer.freshProcessTable)).find(
+          const identity = (await Effect.runPromise(processTable)).find(
             entry => entry.pid === child.pid
           )
           try {
@@ -182,9 +178,8 @@ try {
             child.stdin.end('finish\n')
             await exited
           }
-          await Effect.runPromise(observer.freshProcessTable)
           const family = await Effect.runPromise(
-            observer.observeFamily(
+            observeFamily(
               { pid: child.pid, root: identity, known: [identity], reported: undefined },
               {
                 rootExited: true,

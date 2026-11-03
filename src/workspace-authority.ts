@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { lstatSync, realpathSync, readdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { userInfo } from 'node:os'
@@ -47,12 +46,15 @@ import {
   numberField,
   createPublishedDatabase,
   databaseFile,
-  openRecordDb,
+  openRecordConnection,
+  recordConnectionCurrent,
   transaction,
+  type RecordConnection,
   sqliteCode,
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
+import { native } from './native.ts'
 import {
   newId,
   fsyncPath,
@@ -76,45 +78,44 @@ const SYNCHRONIZED_FOLDERS = [
   ['Library', 'Mobile Documents'],
   ['Library', 'CloudStorage'],
 ] as const
+export interface AuthorityFilesystem {
+  readonly type: string
+  readonly local: boolean
+  readonly mountPoint: string
+}
 export const unsupportedAuthorityStorage = (input: {
   readonly path: string
   readonly home: string
-  readonly mountTable: string
+  readonly filesystem: AuthorityFilesystem
 }): string | undefined => {
   for (const parts of SYNCHRONIZED_FOLDERS) {
     const folder = join(input.home, ...parts)
     if (isWithin(folder, input.path))
       return `Workspace authority cannot live in a synchronized folder: ${folder}`
   }
-  let mount: { point: string; options: string[] } | undefined
-  for (const line of input.mountTable.split('\n')) {
-    const match = /^.+? on (.+) \((.+)\)$/.exec(line)
-    if (match === null) continue
-    const [, point = '', options = ''] = match
-    if (point !== '' && point.length > (mount?.point.length ?? 0) && isWithin(point, input.path))
-      mount = { point, options: options.split(', ') }
-  }
-  if (mount === undefined) return `Cannot identify the filesystem holding ${input.path}`
-  const [type = 'unknown'] = mount.options
-  if (!mount.options.includes('local'))
-    return `Workspace authority requires local storage; ${mount.point} is a ${type} mount`
+  const { type, local, mountPoint } = input.filesystem
+  if (!local) return `Workspace authority requires local storage; ${mountPoint} is a ${type} mount`
   if (!SUPPORTED_FILESYSTEMS.has(type))
-    return `Workspace authority does not support ${type} storage at ${mount.point}`
+    return `Workspace authority does not support ${type} storage at ${mountPoint}`
   return undefined
 }
 const assertSupportedStorage = (root: string): void => {
   if (process.platform !== 'darwin')
     unavailable(`Workspace authority currently supports only macOS, not ${process.platform}`)
-  let mountTable: string
+  let existing = root
+  while (lstatIfExists(existing) === undefined && dirname(existing) !== existing)
+    existing = dirname(existing)
+  let filesystem: AuthorityFilesystem
   try {
-    mountTable = execFileSync('/sbin/mount', { encoding: 'utf8' })
+    const [type, local, mountPoint] = native().filesystem(existing)
+    filesystem = { type, local, mountPoint }
   } catch (cause) {
     return unavailable(`Cannot inspect the storage holding ${root}: ${errorText(cause)}`)
   }
   const reason = unsupportedAuthorityStorage({
     path: root,
     home: realpathSync(userInfo().homedir),
-    mountTable,
+    filesystem,
   })
   if (reason !== undefined) unavailable(reason)
 }
@@ -205,12 +206,20 @@ const validateRepositoryRecord = (
   return value
 }
 
-interface HeldShard {
-  readonly db: DatabaseSync
+const RETAINED_SHARDS = 8
+
+interface ShardConnection extends RecordConnection {
   readonly record: RepositoryCatalogRecord
 }
+interface HeldCatalog extends RecordConnection {
+  region: number
+}
+interface HeldShard extends RecordConnection {
+  record: RepositoryCatalogRecord
+  region: number
+}
 interface HeldHandles {
-  catalog: DatabaseSync | undefined
+  catalog: HeldCatalog | undefined
   readonly shards: Map<WorkspaceId, HeldShard>
 }
 
@@ -218,6 +227,8 @@ export class WorkspaceAuthority {
   readonly paths: AuthorityPaths
   readonly root: string
   private held: HeldHandles | undefined
+  private readonly retained: HeldHandles = { catalog: undefined, shards: new Map() }
+  private region = 0
   private namespaceId: WorkspaceId | undefined
   private protocolRelease: GateRelease | undefined
   private initialized = false
@@ -318,21 +329,90 @@ export class WorkspaceAuthority {
 
   private holding<A>(work: (held: HeldHandles) => A): A {
     if (this.held !== undefined) return work(this.held)
-    const held: HeldHandles = { catalog: undefined, shards: new Map() }
+    const held = this.retained
     this.held = held
+    this.region += 1
+    let completed = false
     try {
-      return work(held)
+      const result = work(held)
+      completed = true
+      return result
     } finally {
       this.held = undefined
-      for (const shard of held.shards.values()) shard.db.close()
-      held.catalog?.close()
+      this.releaseHandles(held, !completed || this.closed)
     }
+  }
+
+  private releaseHandles(held: HeldHandles, all: boolean): void {
+    for (const [id, shard] of held.shards)
+      if (all || shard.db.isTransaction) {
+        held.shards.delete(id)
+        shard.db.close()
+      }
+    const leastRecent = [...held.shards]
+      .toSorted(([, left], [, right]) => right.region - left.region)
+      .slice(RETAINED_SHARDS)
+    for (const [id, shard] of leastRecent) {
+      held.shards.delete(id)
+      shard.db.close()
+    }
+    if (held.catalog !== undefined && (all || held.catalog.db.isTransaction)) {
+      held.catalog.db.close()
+      held.catalog = undefined
+    }
+  }
+
+  private currentCatalog(held: HeldHandles): DatabaseSync {
+    const known = held.catalog
+    if (known !== undefined) {
+      if (known.region === this.region || this.catalogCurrent(known)) {
+        known.region = this.region
+        return known.db
+      }
+      held.catalog = undefined
+      known.db.close()
+    }
+    const opened = this.openCatalogConnection()
+    held.catalog = { ...opened, region: this.region }
+    return opened.db
+  }
+
+  private catalogCurrent(known: HeldCatalog): boolean {
+    if (!recordConnectionCurrent(known, this.paths.catalog, 'catalog')) return false
+    if (catalogNamespace(known.db) !== this.expectedNamespace())
+      requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
+    return true
+  }
+
+  private currentShard(held: HeldHandles, repositoryId: WorkspaceId): HeldShard | undefined {
+    const known = held.shards.get(repositoryId)
+    if (known === undefined) return undefined
+    if (known.region === this.region || this.shardCurrent(known, repositoryId)) {
+      known.region = this.region
+      return known
+    }
+    held.shards.delete(repositoryId)
+    known.db.close()
+    return undefined
+  }
+
+  private shardCurrent(known: HeldShard, repositoryId: WorkspaceId): boolean {
+    const path = this.shardPath(repositoryId)
+    const record = this.readRepository(repositoryId)
+    if (record === undefined)
+      return unavailable(`Repository is not registered in workspace authority: ${repositoryId}`)
+    if (record.state !== 'ready') return false
+    privateDirectory(dirname(path), false)
+    if (!recordConnectionCurrent(known, path, 'shard')) return false
+    this.validateShardMeta(known.db, record)
+    known.record = record
+    return true
   }
 
   private inCatalog<A>(work: (db: DatabaseSync) => A): A {
     return this.holding(held => {
-      held.catalog ??= this.openCatalog()
-      if (!held.catalog.isTransaction) return work(held.catalog)
+      const catalog = this.currentCatalog(held)
+      if (!catalog.isTransaction) return work(catalog)
       const db = this.openCatalog()
       try {
         return work(db)
@@ -349,7 +429,7 @@ export class WorkspaceAuthority {
     repository?: GitWorkspace
   ): A {
     return this.holding(held => {
-      const shared = held.shards.get(repositoryId)
+      const shared = this.currentShard(held, repositoryId)
       if (shared !== undefined && !shared.db.isTransaction) {
         if (repository !== undefined && !matchesRepository(shared.record, repository))
           requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
@@ -357,7 +437,7 @@ export class WorkspaceAuthority {
       }
       const opened = this.openShardRecord(repositoryId, create, repository)
       if (shared === undefined) {
-        held.shards.set(repositoryId, opened)
+        held.shards.set(repositoryId, { ...opened, region: this.region })
         return work(opened.db)
       }
       try {
@@ -368,17 +448,25 @@ export class WorkspaceAuthority {
     })
   }
 
-  private openCatalog(): DatabaseSync {
-    const namespaceId = this.namespaceId ?? validateProtocol(this.paths.protocol)
-    const db = openRecordDb(this.paths.catalog, 'catalog')
+  private expectedNamespace(): WorkspaceId {
+    return this.namespaceId ?? validateProtocol(this.paths.protocol)
+  }
+
+  private openCatalogConnection(): RecordConnection {
+    const namespaceId = this.expectedNamespace()
+    const connection = openRecordConnection(this.paths.catalog, 'catalog')
     try {
-      if (catalogNamespace(db) !== namespaceId)
+      if (catalogNamespace(connection.db) !== namespaceId)
         requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
-      return db
+      return connection
     } catch (cause) {
-      db.close()
+      connection.db.close()
       throw cause
     }
+  }
+
+  private openCatalog(): DatabaseSync {
+    return this.openCatalogConnection().db
   }
 
   private readRepository(repositoryId: WorkspaceId): RepositoryCatalogRecord | undefined {
@@ -400,7 +488,7 @@ export class WorkspaceAuthority {
     repositoryId: WorkspaceId,
     create: boolean,
     repository: GitWorkspace | undefined
-  ): HeldShard {
+  ): ShardConnection {
     if (!this.initialized && create) this.initialize()
     const path = this.shardPath(repositoryId)
     const record = this.readRepository(repositoryId)
@@ -415,7 +503,7 @@ export class WorkspaceAuthority {
       requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
     const provision = create && record.state === 'provisioning'
     privateDirectory(dirname(path), provision)
-    const db = openRecordDb(
+    const { db, identity } = openRecordConnection(
       path,
       'shard',
       provision
@@ -439,7 +527,7 @@ export class WorkspaceAuthority {
     try {
       this.validateShardMeta(db, record)
       if (record.state === 'provisioning') this.markRepositoryReady(repositoryId)
-      return { db, record }
+      return { db, identity, record }
     } catch (cause) {
       db.close()
       throw cause
@@ -611,6 +699,7 @@ export class WorkspaceAuthority {
     const releaseProtocol = this.protocolRelease
     this.protocolRelease = undefined
     this.closed = true
+    if (this.held === undefined) this.releaseHandles(this.retained, true)
     releaseProtocol?.()
   }
 }

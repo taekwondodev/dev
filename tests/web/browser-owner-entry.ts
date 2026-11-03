@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs'
 import { Duration, Effect, Schema } from 'effect'
+import { native } from '../../src/native.ts'
 import { serveBrowserOwner } from '../../src/web-browser-owner.ts'
 import { WebNetworkError, type AddressResolver } from '../../src/web-network.ts'
 import { FIXTURE_VARIABLE } from './chrome-fixture.ts'
@@ -15,6 +17,7 @@ const FixtureSchema = Schema.Struct({
   blockedHosts: Schema.Array(Schema.String),
   slowHosts: Schema.Record(Schema.String, Schema.Finite),
   hang: Schema.optional(Schema.Boolean),
+  processObservationBlock: Schema.optional(Schema.String),
 })
 
 const decodeFixture = Schema.decodeUnknownSync(Schema.fromJsonString(FixtureSchema))
@@ -22,6 +25,17 @@ const decodeFixture = Schema.decodeUnknownSync(Schema.fromJsonString(FixtureSche
 const raw = process.env[FIXTURE_VARIABLE]
 if (raw === undefined) throw new Error(`${FIXTURE_VARIABLE} is required by the fixture owner entry`)
 const fixture = decodeFixture(raw)
+const observationBlock = fixture.processObservationBlock
+if (observationBlock !== undefined) {
+  const addon = native()
+  const read = addon.processTable
+  Object.defineProperty(addon, 'processTable', {
+    value: () => {
+      if (existsSync(observationBlock)) throw new Error('fixture process observation failure')
+      return read()
+    },
+  })
+}
 
 const refused = (host: string) =>
   Effect.fail(
