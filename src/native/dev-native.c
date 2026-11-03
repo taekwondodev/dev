@@ -39,13 +39,10 @@ static napi_value reject(napi_env env, const char *message) {
     if ((call) != napi_ok) return reject(env, "Node-API call failed: " #call); \
   } while (0)
 
-static bool read_path(napi_env env, napi_callback_info info, char *path, napi_value *failure) {
-  size_t argc = 1;
-  napi_value argv[1];
+static bool read_string(napi_env env, napi_value value, char *path, napi_value *failure) {
   size_t length = 0;
   *failure = NULL;
-  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 1 ||
-      napi_get_value_string_utf8(env, argv[0], NULL, 0, &length) != napi_ok) {
+  if (napi_get_value_string_utf8(env, value, NULL, 0, &length) != napi_ok) {
     *failure = reject(env, "A path string is required");
     return false;
   }
@@ -53,7 +50,7 @@ static bool read_path(napi_env env, napi_callback_info info, char *path, napi_va
     *failure = reject(env, "The path is too long");
     return false;
   }
-  if (napi_get_value_string_utf8(env, argv[0], path, PATH_MAX, &length) != napi_ok) {
+  if (napi_get_value_string_utf8(env, value, path, PATH_MAX, &length) != napi_ok) {
     *failure = reject(env, "Cannot read the path string");
     return false;
   }
@@ -62,6 +59,16 @@ static bool read_path(napi_env env, napi_callback_info info, char *path, napi_va
     return false;
   }
   return true;
+}
+
+static bool read_path(napi_env env, napi_callback_info info, char *path, napi_value *failure) {
+  size_t argc = 1;
+  napi_value argv[1];
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 1) {
+    *failure = reject(env, "A path string is required");
+    return false;
+  }
+  return read_string(env, argv[0], path, failure);
 }
 
 static napi_value text(napi_env env, const char *value) {
@@ -121,6 +128,23 @@ static napi_value filesystem(napi_env env, napi_callback_info info) {
   REQUIRE(napi_set_element(env, result, 0, text(env, fs.f_fstypename)));
   REQUIRE(napi_set_element(env, result, 1, local));
   REQUIRE(napi_set_element(env, result, 2, text(env, fs.f_mntonname)));
+  return result;
+}
+
+static napi_value rename_exclusive(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  char from[PATH_MAX];
+  char to[PATH_MAX];
+  napi_value failure;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 2)
+    return reject(env, "Source and destination path strings are required");
+  if (!read_string(env, argv[0], from, &failure) || !read_string(env, argv[1], to, &failure))
+    return failure;
+  bool renamed = renamex_np(from, to, RENAME_EXCL) == 0;
+  if (!renamed && errno != EEXIST) return fail(env, "renamex_np", errno);
+  napi_value result;
+  REQUIRE(napi_get_boolean(env, renamed, &result));
   return result;
 }
 
@@ -191,5 +215,7 @@ NAPI_MODULE_INIT() {
   REQUIRE(napi_set_named_property(env, exports, "filesystem", function));
   REQUIRE(napi_create_function(env, "processTable", NAPI_AUTO_LENGTH, process_table, NULL, &function));
   REQUIRE(napi_set_named_property(env, exports, "processTable", function));
+  REQUIRE(napi_create_function(env, "renameExclusive", NAPI_AUTO_LENGTH, rename_exclusive, NULL, &function));
+  REQUIRE(napi_set_named_property(env, exports, "renameExclusive", function));
   return exports;
 }

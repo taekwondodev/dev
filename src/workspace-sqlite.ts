@@ -5,7 +5,6 @@ import {
   fchmodSync,
   fsyncSync,
   lstatSync,
-  linkSync,
   openSync,
   unlinkSync,
 } from 'node:fs'
@@ -16,12 +15,12 @@ import { blocked, invalid, requireReview, unavailable, WorkspaceError } from './
 import {
   effectiveUid,
   fsyncParent,
-  hasErrorCode,
   lstatIfExists,
   privateDirectory,
   privateFile,
 } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
+import { native } from './native.ts'
 
 export const sqliteCode = (cause: unknown): number | undefined =>
   Predicate.hasProperty(cause, 'errcode') && Predicate.isNumber(cause.errcode)
@@ -324,12 +323,7 @@ export const createPublishedDatabase = (
     db.close()
     db = undefined
     syncNewFile(candidate)
-    try {
-      linkSync(candidate, path)
-    } catch (cause) {
-      if (!hasErrorCode(cause, 'EEXIST')) throw cause
-    }
-    unlinkSync(candidate)
+    native().renameExclusive(candidate, path)
     fsyncParent(path)
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause

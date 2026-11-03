@@ -597,6 +597,41 @@ try {
   )
 
   await claim(
+    'a repository whose provisioning failed midway blocks no other repository, and its next attachment completes it',
+    async () => {
+      const orphanRoot = join(sandbox, 'orphan-provisioning-authority')
+      const orphans = await openLifecycle({ root: orphanRoot })
+      const settledRepo = join(sandbox, 'orphan-settled-repo')
+      const orphanRepo = join(sandbox, 'orphan-repo')
+      initRepository(settledRepo, 'file.txt', 'settled\n')
+      initRepository(orphanRepo, 'file.txt', 'orphan\n')
+      const readIn = async (name: string, cwd: string) => {
+        const attachment = await orphans.attach({ conversation: conversation(name), cwd })
+        try {
+          return ready(await attachment.authorize({ kind: 'read' })).repositoryId
+        } finally {
+          await attachment.close()
+        }
+      }
+      try {
+        await readIn('orphan-settled-first', settledRepo)
+        const shards = join(orphanRoot, 'repos')
+        chmodSync(shards, 0o500)
+        try {
+          await expectWorkspaceError(readIn('orphan-failed', orphanRepo), 'unavailable')
+        } finally {
+          chmodSync(shards, 0o700)
+        }
+        await readIn('orphan-settled-after', settledRepo)
+        const completed = await readIn('orphan-completed', orphanRepo)
+        assert.equal(await readIn('orphan-again', orphanRepo), completed)
+      } finally {
+        await orphans.close()
+      }
+    }
+  )
+
+  await claim(
     'a paused foreign reservation isolates a contender into an exact-HEAD worktree',
     async () => {
       const pausedOwner = await lifecycle.attach({
