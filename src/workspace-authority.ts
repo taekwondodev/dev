@@ -14,6 +14,7 @@ import {
   acquireProtocolGate,
   acquireStructureGate,
   createProtocolDatabase,
+  MOMENTARY_HOLD_WAIT_MS,
   validateProtocol,
   type GateRelease,
 } from './workspace-gates.ts'
@@ -162,15 +163,22 @@ const repositoryRow = (db: DatabaseSync, where: string, ...params: string[]): Sq
 const registrationRows = (
   db: DatabaseSync,
   repository: GitWorkspace
-): { readonly byPath: SqlRow | undefined; readonly byPhysical: SqlRow | undefined } => ({
-  byPath: repositoryRow(db, 'common_path=?', repository.commonPath),
-  byPhysical: repositoryRow(
+): { readonly byPath: SqlRow | undefined; readonly byPhysical: SqlRow | undefined } => {
+  const { volumeUuid, inode } = repository.commonIdentity
+  const matches = rows(
     db,
-    'volume_uuid=? AND inode=?',
-    repository.commonIdentity.volumeUuid,
-    repository.commonIdentity.inode
-  ),
-})
+    `${REPOSITORY_ROW} WHERE common_path=? OR (volume_uuid=? AND inode=?)`,
+    repository.commonPath,
+    volumeUuid,
+    inode
+  )
+  return {
+    byPath: matches.find(row => textField(row, 'common_path') === repository.commonPath),
+    byPhysical: matches.find(
+      row => textField(row, 'volume_uuid') === volumeUuid && textField(row, 'inode') === inode
+    ),
+  }
+}
 
 const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
   const value = parseRecord(
@@ -653,7 +661,12 @@ export class WorkspaceAuthority {
     let structure: GateRelease | undefined
     try {
       if (registered.state === 'provisioning')
-        structure = acquireStructureGate(this.paths, repository, repositoryId)
+        structure = acquireStructureGate(
+          this.paths,
+          repository,
+          repositoryId,
+          MOMENTARY_HOLD_WAIT_MS
+        )
       const current = this.readRepository(repositoryId)
       if (current === undefined)
         requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
@@ -681,15 +694,12 @@ export class WorkspaceAuthority {
 
   listRepositories(): readonly {
     readonly id: WorkspaceId
-    readonly state: string
     readonly commonPath: string
   }[] {
     return this.inCatalog(db =>
-      rows(db, `${REPOSITORY_ROW} ORDER BY id`).map(row => {
+      rows(db, `${REPOSITORY_ROW} ORDER BY id`).flatMap(row => {
         const record = parseRepositoryCatalogRow(row)
-        if (record.state !== 'ready')
-          requireReview(`Repository shard provisioning is unresolved: ${record.id}`)
-        return { id: record.id, state: record.state, commonPath: record.commonPath }
+        return record.state === 'ready' ? [{ id: record.id, commonPath: record.commonPath }] : []
       })
     )
   }

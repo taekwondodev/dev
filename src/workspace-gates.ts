@@ -261,14 +261,16 @@ export const acquireConversationFileGate = (
 export const acquireStructureGate = (
   paths: AuthorityPaths,
   repository: Pick<GitWorkspace, 'commonPath'>,
-  repositoryId: WorkspaceId
+  repositoryId: WorkspaceId,
+  waitMs = 0
 ): GateRelease => {
   const key = repositoryId
   const directory = gateDirectory(paths, 'repos', key)
   return acquireGate(
     join(directory, 'structure.sqlite'),
     { kind: 'structure', path: repository.commonPath, key },
-    true
+    true,
+    waitMs
   )
 }
 const conversationGate = (
