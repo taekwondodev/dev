@@ -1409,7 +1409,7 @@ await claim(
           setInterval(() => {}, 1000)
         `,
       ],
-      { cwd: new URL('../..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'inherit'] }
+      { cwd: new URL('../..', import.meta.url), stdio: ['ignore', 'pipe', 'inherit'] }
     )
     const directory = await new Promise<string>((resolveLine, rejectLine) => {
       let text = ''
@@ -1480,7 +1480,7 @@ await claim(
             process.kill(process.pid, 'SIGKILL')
           `,
         ],
-        { cwd: new URL('../..', import.meta.url).pathname, encoding: 'utf8' }
+        { cwd: new URL('../..', import.meta.url), encoding: 'utf8' }
       )
       assert.equal(crashed.signal, 'SIGKILL', crashed.stderr)
       return JSON.parse(crashed.stdout) as { writer: WorkspaceGrant; reader: WorkspaceGrant }
@@ -2914,7 +2914,7 @@ await claim('plain dev loads no orb module, so it reads neither orb file', async
           plainData,
         ],
         {
-          cwd: new URL('../..', import.meta.url).pathname,
+          cwd: new URL('../..', import.meta.url),
           env: {
             ...process.env,
             HOME: home,
