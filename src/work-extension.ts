@@ -607,15 +607,8 @@ export const createWorkExtension = ({
               error.cause.code !== 'corrupt-database'
             )
               return Effect.fail(error)
-            const database = join(resolvePath(dataHome), 'work', 'attempts.sqlite')
-            const paths = [
-              database,
-              `${database}-wal`,
-              `${database}-shm`,
-              `${database}-journal`,
-              join(resolvePath(dataHome), 'work', 'attempts'),
-            ]
-            const command = `rm -rf -- ${paths.map(path => `'${path.replaceAll("'", String.raw`'\''`)}'`).join(' ')}`
+            const attempts = join(resolvePath(dataHome), 'work', 'attempts')
+            const command = `rm -rf -- '${attempts.replaceAll("'", String.raw`'\''`)}'{.sqlite,.sqlite-wal,.sqlite-shm,.sqlite-journal,}`
             const message = [
               'Work store database is corrupt. Work is unavailable.',
               'To reset the store:',
