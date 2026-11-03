@@ -1337,6 +1337,7 @@ const exhausted = await openWorkFixture('work-nested-quota')
 try {
   const owner = exhausted.openOwner()
   try {
+    const unexhausted = await owner.call(actions => actions.exhaustions)
     await claim(
       'quota exhaustion reported by a leaf stops its coordinator and blocks new agents in the session',
       async () => {
@@ -1363,6 +1364,20 @@ try {
           owner.delegate({ taskId: 'after-quota', prompt: 'After quota' }),
           /Subscription exhausted/
         )
+      }
+    )
+    await claim(
+      'recovery measured from before an exhaustion keeps agents blocked; recovery measured after it admits them again',
+      async () => {
+        assert.equal(await owner.call(actions => actions.recover(unexhausted)), false)
+        await assert.rejects(
+          owner.delegate({ taskId: 'still-blocked', prompt: 'Still blocked' }),
+          /Subscription exhausted/
+        )
+        const exhaustions = await owner.call(actions => actions.exhaustions)
+        assert.equal(await owner.call(actions => actions.recover(exhaustions)), true)
+        const { view } = await owner.run({ taskId: 'recovered', prompt: 'Recovered' })
+        assert.equal(view.status, 'completed')
       }
     )
   } finally {
