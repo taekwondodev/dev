@@ -41,7 +41,15 @@ Without either file, or with an excess or missing field, `dev --orb` refuses to 
 
 The Mac must route to orbit's floating IPs; on DevStack, run orbit's `tools/reach-orbs.sh <devstack-host>` after either machine restarts.
 
-The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH user, and an entry in orbit's `[orbs] ssh_users`. Orbs have no Internet access.
+The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH user, and an entry in orbit's `[orbs] ssh_users`.
+
+### Network access
+
+Outbound connectivity depends on the deployment, not on the Mac's SSH connection to the orb. dev does not enforce egress isolation. The [orb network boundary](../SECURITY.md#orb-network-boundary) distinguishes the current lack of isolation guarantees from the approved policy target, whose infrastructure enforcement is still pending.
+
+Git clone, fetch and push executed inside the orb initiate outbound connections, as do package installation and dependency downloads. Local Git operations need no network. dev keeps credentials on the Mac and does not forward an SSH agent; reaching a repository does not by itself provide authentication for it. Keep the required tools preinstalled in the image rather than relying on a download during startup.
+
+The deployment must provide working DNS and network transport. [Neutron/OVN DNS configuration](https://github.com/taekwondodev/orbit/issues/11) and [guest TLS timeouts](https://github.com/taekwondodev/orbit/issues/17) are separate follow-ups; dev does not repair them. Failed DNS lookups, TLS handshakes or Git commands are not evidence of enforced isolation. The [deployment observations](https://github.com/taekwondodev/dev/issues/252#issuecomment-6599069325) record successful public TCP/SSH and management/metadata access separately from failed DNS/TLS/Git checks; they establish neither generally usable Internet access nor successful remote Git or dependency downloads.
 
 ## Behavior
 
