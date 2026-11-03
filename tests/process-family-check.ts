@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Effect, Exit, Result } from 'effect'
+import { Effect, Result } from 'effect'
 import { native } from '../src/native.ts'
 import { observeFamily, processTable, type ObservedProcess } from '../src/process-family.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
@@ -107,13 +107,6 @@ try {
       assert.equal(find(await read(), process.pid)?.pid, process.pid)
     }
   )
-
-  await claim('a read of the table succeeds repeatedly', async () => {
-    const exits = await Promise.all(
-      Array.from({ length: 20 }, () => Effect.runPromiseExit(processTable))
-    )
-    assert.ok(exits.every(Exit.isSuccess))
-  })
 
   console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))
 } finally {

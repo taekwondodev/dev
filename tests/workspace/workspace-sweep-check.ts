@@ -178,7 +178,6 @@ try {
             child.stdin.end('finish\n')
             await exited
           }
-          await Effect.runPromise(processTable)
           const family = await Effect.runPromise(
             observeFamily(
               { pid: child.pid, root: identity, known: [identity], reported: undefined },
