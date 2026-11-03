@@ -483,7 +483,7 @@ export interface Inventory {
   readonly tracked: readonly TrackedChange[]
   readonly trackedFiles: readonly InventoryFile[]
   readonly files: readonly InventoryFile[]
-  readonly untracked: number
+  readonly untracked: readonly string[]
   readonly ignored: number
 }
 
@@ -593,7 +593,7 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
     tracked: trackedChanges(checkout),
     trackedFiles,
     files,
-    untracked: others.untracked.length,
+    untracked: others.untracked,
     ignored: others.ignored.length,
   }
 }
@@ -1178,6 +1178,7 @@ export interface InventoryVerdict {
   readonly verdict: EvidenceVerdict
   readonly reasons: readonly string[]
   readonly inventory: Inventory
+  readonly unpublished: number
   readonly counts: {
     readonly trackedChanges: number
     readonly files: number
@@ -1203,7 +1204,7 @@ export const verifyInventory = (
     if (references === undefined) publicationsByPath.set(reference.relativePath, [reference])
     else references.push(reference)
   }
-  let published = 0
+  const published = new Set<string>()
   let disposable = 0
   let blocking = 0
   const untracked = new Set(inventory.files.map(file => file.path))
@@ -1243,7 +1244,7 @@ export const verifyInventory = (
         reference => reference.sha256 === digest && reference.byteLength === file.size
       )
       if (match !== undefined) {
-        published += 1
+        published.add(file.path)
         continue
       }
       blocking += 1
@@ -1261,10 +1262,11 @@ export const verifyInventory = (
     verdict,
     reasons: [...invalid, ...unknown],
     inventory,
+    unpublished: inventory.untracked.filter(path => !published.has(path)).length,
     counts: {
       trackedChanges: inventory.tracked.length,
       files: inventory.files.length,
-      published,
+      published: published.size,
       disposable,
       blocking,
     },
