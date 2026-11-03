@@ -64,6 +64,14 @@ A writing child runs its tools on its own orb, in the same trust domain as the l
 
 Orb mode isolates tool execution, not the project's Pi resources. Pi's folder trust decides on the Mac checkout as in plain dev: a trusted folder's `.pi/` extensions, settings and skills load and run on the Mac, and `AGENTS.md` and context files are read on the Mac.
 
+### Orb network boundary
+
+Dev does not enforce outbound-network isolation for orbs. `ssh_allowed_cidr` limits inbound SSH, not egress. Security groups, routing and DNS belong to Orbit/OpenStack and its deployment. The [verified deployment](https://github.com/taekwondodev/dev/issues/252#issuecomment-6599069325) permits unrestricted security-group egress; neither Internet isolation nor protection from private networks, hosts or cloud-management services is guaranteed. DNS or transport failures do not establish a security boundary. Reaching an unauthenticated management discovery endpoint does not imply permission to perform administrative actions.
+
+The [approved policy target](https://github.com/taekwondodev/dev/issues/252) is public Internet access for Git and dependencies, with new connections to private/internal networks, hosts and cloud-management services denied except explicit necessary allowances for DNS, metadata/bootstrap and other required services. This target is not yet implemented as an Orbit/OpenStack policy. [Infrastructure enforcement](https://github.com/taekwondodev/orbit/issues/16) must define the precise destinations, exceptions and mechanism, accounting for IPv6 and additive security groups, and verify both allowed workflows and denied destinations before claiming protection. It belongs outside guest-root control: a guest firewall is not a trustworthy boundary when the orb's user has passwordless `sudo`.
+
+Public egress lets code send out any data it can read. The SSH connection is also a data-transfer channel and SSH can carry tunnels, although dev's own SSH configuration disables forwarding. Network filtering is not an absolute exfiltration-prevention guarantee. Credentials remain on the Mac; the owner must still choose what data to upload to the orb.
+
 ### Returns
 
 The return can do no more than `write` and `edit`. Before writing, it refuses the whole return if an entry:

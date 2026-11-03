@@ -1096,10 +1096,19 @@ await claim(
       promptOf(createOrbReaderExtension(base)),
       /<orb>\nThe read, grep, find, ls and git_inspect tools read orb test/
     )
+    const writer = promptOf(createOrbWriterExtension(base))
     assert.match(
-      promptOf(createOrbWriterExtension(base)),
+      writer,
       /<orb>\nThe bash, read, write, edit, grep, find and ls tools run on orb test \(192\.0\.2\.7\), your own orb/
     )
+    for (const prompt of [lead, writer]) {
+      assert.match(
+        prompt,
+        /Network access depends on the deployment; dev does not enforce egress isolation\./
+      )
+      assert.match(prompt, /The orb has no interactive terminal\./)
+      assert.doesNotMatch(prompt, /The orb has no Internet access/)
+    }
   }
 )
 

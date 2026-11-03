@@ -467,7 +467,7 @@ export const createOrbWriterExtension =
     registerWriters(api, input)
     describeTools(
       api,
-      `The bash, read, write, edit, grep, find and ls tools run on ${input.label}, your own orb, over SSH, at the same absolute paths as on the Mac. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. When you finish, your commits and uncommitted changes return to your worktree on the Mac.`
+      `The bash, read, write, edit, grep, find and ls tools run on ${input.label}, your own orb, over SSH, at the same absolute paths as on the Mac. Network access depends on the deployment; dev does not enforce egress isolation. The orb has no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. When you finish, your commits and uncommitted changes return to your worktree on the Mac.`
     )
   }
 
@@ -489,7 +489,7 @@ export const createOrbExtension =
     }))
     describeTools(
       api,
-      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents: the files, commits and Git state they show are the orb's. A delegated agent that can write gets its own orb; its worktree appears at the same path on this orb once it ends. The orb has no Internet access and no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout only when the user runs /orb sync, which you cannot run, and at quit.`
+      `The bash, read, write, edit, grep, find and ls tools run on ${input.label} over SSH, at the same absolute paths as on the Mac, and so do ! commands, work processes and the read-only tools of delegated agents: the files, commits and Git state they show are the orb's. A delegated agent that can write gets its own orb; its worktree appears at the same path on this orb once it ends. Network access depends on the deployment; dev does not enforce egress isolation. The orb has no interactive terminal. Only tool output spill files, skill files and the task artifact directory stay on the Mac. Work returns to the Mac checkout only when the user runs /orb sync, which you cannot run, and at quit.`
     )
     api.registerCommand('orb', {
       description: 'Show the orb of this session, or return its work with /orb sync',
