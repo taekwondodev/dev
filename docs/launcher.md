@@ -44,7 +44,7 @@ Maintenance commands take options as `--flag value`. An unknown option or a stra
 
 Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update (also named `upgrade`) reinstalls dependencies when the merged `package-lock.json` changed, then activates Pi if its pinned version is not already active. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
 
-Setup and update compile dev's native addon when its source, compiler flags, Node installation or architecture changes; [Development](DEVELOPMENT.md#setup) lists compiler and Node-header requirements. A missing artifact also builds on first use.
+Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#native-addon) for toolchain requirements and build recovery.
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 

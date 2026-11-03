@@ -23,7 +23,7 @@ The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECT
 
 ## Use dev
 
-Dev is built for my macOS account: it needs the Xcode Command Line Tools (`xcode-select --install`) and Node's development headers to build its native addon at setup. It assumes `pi` installed with the [pi.dev installer](https://pi.dev), the skill library at `~/.agents/skills`, and Node satisfying `package.json` with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug). Read [SECURITY](SECURITY.md) before installing.
+Dev is built for me: it assumes `pi` installed with the [pi.dev installer](https://pi.dev), the skill library at `~/.agents/skills`, and Node satisfying `package.json` with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug). Read [SECURITY](SECURITY.md) before installing.
 
 ```bash
 cd ~/Developer/dev
