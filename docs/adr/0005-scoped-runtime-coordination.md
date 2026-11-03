@@ -109,7 +109,7 @@ Coordination does not contain concurrent filesystem changes by nonparticipants. 
 
 ## Effect boundary
 
-Coordination runs in Effect with typed failures and shared process observation/retry policy. Promises remain at Pi calling points: extension handlers, runtime factory, session replacements and tool-operation adapters running Effect through the host context. The authority worker's synchronous SQLite engine is the other boundary. One style was chosen over a parallel Promise layer despite rewrite cost. Pi session/native-file errors cross back unchanged because Pi recognizes some by class and owns their recovery; workspace refusals remain typed domain failures.
+Coordination runs in Effect with typed failures, fresh process observation and a shared retry policy. Promises remain at Pi calling points: extension handlers, runtime factory, session replacements and tool-operation adapters running Effect through the host context. The authority worker's synchronous SQLite engine is the other boundary. One style was chosen over a parallel Promise layer despite rewrite cost. Pi session/native-file errors cross back unchanged because Pi recognizes some by class and owns their recovery; workspace refusals remain typed domain failures.
 
 Deliberate departures from the Effect guide:
 
