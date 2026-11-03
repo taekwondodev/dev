@@ -532,5 +532,7 @@ export interface WorkOwnerService {
   readonly dispatch: EffectType<DispatchConfig, WorkFailure>
   readonly interrupt: (reason?: string) => EffectType<void, WorkFailure>
   readonly exhaust: (except?: AttemptId) => EffectType<void, WorkFailure>
+  readonly exhaustions: EffectType<number>
+  readonly recover: (exhaustions: number) => EffectType<boolean>
   readonly close: (reason?: string) => EffectType<void, WorkFailure>
 }

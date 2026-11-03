@@ -156,6 +156,8 @@ export const createWorkExtension = ({
   let removeSessionListener: (() => void) | undefined
   let idleDeliveryReady = false
   let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
+  let runExhaustions: number | undefined
+  let retryBeforeExhaustion: boolean | undefined
   let statusScheduled:
     | { readonly context: Pi.ExtensionContext; readonly owner: OwnerState | undefined }
     | undefined
@@ -487,6 +489,14 @@ export const createWorkExtension = ({
     if (sessionOwner?._tag === 'active') Latch.openUnsafe(sessionOwner.wake)
   }
 
+  const recoverQuota = Effect.fnUntraced(function* (scope: DeliveryScope, since: number) {
+    if (!(yield* ownedBy(scope.owner, owner => owner.recover(since)))) return
+    if (retryBeforeExhaustion !== undefined)
+      scope.session.settingsManager.applyOverrides({ retry: { enabled: retryBeforeExhaustion } })
+    retryBeforeExhaustion = undefined
+    scheduleStatus()
+  })
+
   const settleBoundary = Effect.fnUntraced(function* (
     event: Pi.AgentBeforeSettleEvent,
     ctx: Pi.ExtensionContext
@@ -494,6 +504,8 @@ export const createWorkExtension = ({
     yield* ownerRuntime(ctx)
     const scope = deliveryScope()
     if (scope === undefined) return undefined
+    if (event.outcome === 'completed' && runExhaustions !== undefined)
+      yield* recoverQuota(scope, runExhaustions)
     yield* reconcileSubmitted(scope)
     const candidates = yield* inspectPending(scope)
     const { items, canReactivate } = selectBatch(scope, candidates, event.entries)
@@ -654,6 +666,15 @@ export const createWorkExtension = ({
       }
       await Effect.runPromise(updateStatus(ctx))
     })
+    pi.on('agent_start', async () => {
+      runExhaustions = undefined
+      const owner = sessionOwner
+      if (owner?._tag !== 'active') return
+      const counted = await Effect.runPromise(
+        ownedBy(owner, work => work.exhaustions).pipe(Effect.option)
+      )
+      if (counted._tag === 'Some') runExhaustions = counted.value
+    })
     pi.on('agent_before_settle', async (event, ctx) => {
       idleDeliveryReady = false
 
@@ -686,6 +707,7 @@ export const createWorkExtension = ({
         'errorMessage' in event.message &&
         quotaExhausted(event.message.errorMessage)
       ) {
+        retryBeforeExhaustion ??= session?.settingsManager.getRetryEnabled()
         session?.settingsManager.applyOverrides({ retry: { enabled: false } })
         if (context !== undefined)
           await run(
