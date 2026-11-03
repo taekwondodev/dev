@@ -456,6 +456,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     generation: asGenerationId(randomUUID()),
     closed: false,
     exhausted: false,
+    exhaustions: 0,
   }
   const admissionLock = Semaphore.makeUnsafe(1)
   const ownerSessionId = asSessionId(requiredString(options.sessionId, 'Session identity'))
@@ -639,6 +640,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     yield* admissionLock.withPermit(
       Effect.sync(() => {
         state.exhausted = true
+        state.exhaustions += 1
         if (except !== undefined) quotaReporters.add(except)
       })
     )
@@ -649,6 +651,16 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       'subscription exhausted'
     )
   }, Effect.mapError(toFailure))
+
+  const exhaustions = Effect.sync(() => state.exhaustions)
+
+  const recover = (since: number): Effect.Effect<boolean> =>
+    admissionLock.withPermit(
+      Effect.sync(() => {
+        if (state.exhaustions === since) state.exhausted = false
+        return !state.exhausted
+      })
+    )
 
   const close = Effect.fnUntraced(function* (
     reason = 'session ended'
@@ -1998,6 +2010,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     recordDeliveryFailure,
     interrupt,
     exhaust,
+    exhaustions,
+    recover,
     close,
   })
 })

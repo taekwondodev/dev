@@ -705,16 +705,19 @@ return JSON.stringify({
   )
 
   await claim(
-    'subscription exhaustion blocks new agents and automatic continuation, and another user message does not clear it',
+    'subscription exhaustion blocks new agents until a lead run started after it completes, which then continues with pending outcomes and restores retries',
     () =>
       withLead({}, async lead => {
+        const settings = lead.session.settingsManager
+        settings.applyOverrides({ retry: { enabled: true } })
         const held = gate()
         const { run, next, started } = await launch(lead, 0, [held.command])
         const [attempt] = started
         assert.ok(attempt)
-        next.fail('insufficient_quota: You exceeded your current quota')
+        next.fail('Claude quota exceeded: rate limit (five_hour), resets 22:00:00')
         await run
         await lead.idle()
+        assert.equal(settings.getRetryEnabled(), false)
         const again = lead.session.prompt('try again')
         const retried = await lead.request(2)
         retried.reply([
@@ -730,16 +733,13 @@ return JSON.stringify({
         held.open()
         await lead.status('the process completed', value => value.includes('completed'))
         refused.reply(text('finished'))
+        const continued = await lead.request(4)
+        assert.ok(seen(continued).includes(attempt.id), seen(continued))
+        continued.reply(text('outcome read'))
         await again
         await lead.idle()
+        assert.equal(settings.getRetryEnabled(), true)
         assert.deepEqual(delivered(lead), [attempt.id])
-        await userTurn(lead, 4, 'unrelated question')
-        assert.deepEqual(delivered(lead), [attempt.id])
-        assert.equal(lead.requests.length, 5)
-        assert.deepEqual(
-          (await listing(lead)).records.map(record => record.status),
-          ['completed']
-        )
       })
   )
 
