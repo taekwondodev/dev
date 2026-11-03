@@ -25,7 +25,8 @@ import {
   type WorkspaceGrant,
   type WorkspaceOperation,
 } from '../../src/workspace-domain.ts'
-import { unsupportedAuthorityStorage } from '../../src/workspace-authority.ts'
+import { unsupportedAuthorityStorage, WorkspaceAuthority } from '../../src/workspace-authority.ts'
+import { canonicalGitWorkspace } from '../../src/workspace-git.ts'
 import { authorityPaths } from '../../src/workspace-authority-root.ts'
 import { conversationRecord } from '../../src/workspace-attachment.ts'
 import { acquireConversationPresence } from '../../src/workspace-gates.ts'
@@ -1357,6 +1358,72 @@ try {
     await expectWorkspaceError(corruptCatalogInspector.inspect({}), 'review-required')
     await corruptCatalogInspector.close()
   })
+
+  await claim(
+    'a retained authority connection does not outlive its shard file: a moved shard is refused, and restoring it admits again',
+    async () => {
+      const shardRoot = join(sandbox, 'retained-shard-authority')
+      const shardLifecycle = await openLifecycle({ root: shardRoot })
+      const attachment = await shardLifecycle.attach({
+        conversation: conversation('retained-shard'),
+        cwd: repo,
+      })
+      try {
+        const grant = ready(await attachment.authorize({ kind: 'read' }))
+        const shardPath = join(shardRoot, 'repos', grant.repositoryId, 'records.sqlite')
+        const moved = `${shardPath}.moved`
+        renameSync(shardPath, moved)
+        try {
+          await expectWorkspaceError(attachment.authorize({ kind: 'read' }), 'review-required')
+        } finally {
+          renameSync(moved, shardPath)
+        }
+        ready(await attachment.authorize({ kind: 'read' }))
+      } finally {
+        await attachment.close()
+        await shardLifecycle.close()
+      }
+    }
+  )
+
+  await claim(
+    'the authority reuses its catalog and shard connections across operations and drops a catalog connection whose file moved',
+    () => {
+      const authority = new WorkspaceAuthority(join(sandbox, 'retained-reuse-authority'))
+      const { close } = DatabaseSync.prototype
+      let closes = 0
+      DatabaseSync.prototype.close = function (this: DatabaseSync) {
+        closes += 1
+        close.call(this)
+      }
+      try {
+        const repositoryId = authority.registerRepository(canonicalGitWorkspace(repo))
+        const registered = closes
+        for (let operation = 0; operation < 3; operation += 1) {
+          assert.equal(authority.listRepositories().length, 1)
+          authority.inShard(repositoryId, db =>
+            db.prepare('SELECT count(*) AS uses FROM uses').get()
+          )
+        }
+        assert.equal(closes, registered, 'later operations reuse the retained connections')
+        const { catalog } = authority.paths
+        renameSync(catalog, `${catalog}.moved`)
+        try {
+          assert.throws(
+            () => authority.listRepositories(),
+            (cause: unknown) => cause instanceof WorkspaceError && cause.outcome === 'unavailable'
+          )
+        } finally {
+          renameSync(`${catalog}.moved`, catalog)
+        }
+        assert.ok(closes > registered, 'the connection to the moved catalog was closed')
+        assert.equal(authority.listRepositories().length, 1)
+      } finally {
+        DatabaseSync.prototype.close = close
+        authority.close()
+      }
+    }
+  )
 
   const failureRepo = join(sandbox, 'failure-repo')
   initRepository(failureRepo, 'file.txt', 'durable failure fixture\n')
