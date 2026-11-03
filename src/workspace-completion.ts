@@ -81,6 +81,7 @@ export const integrationUnknown = (reason: string): IntegrationFacts => ({
 export interface Residue {
   readonly tracked: number
   readonly untracked: number
+  readonly unpublished: number
 }
 
 export interface CompletionFacts {
@@ -254,11 +255,19 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
         'integration-unknown',
         'Commits beyond the allocation base cannot be determined.'
       )
+    const { tracked, unpublished } = facts.residue
+    const delivered = (verdict: CompletionVerdict): CompletionVerdict =>
+      tracked + unpublished === 0
+        ? verdict
+        : retain(
+            'not-integrated',
+            `The branch HEAD is delivered, but ${tracked} uncommitted tracked change(s) and ${unpublished} unpublished untracked file(s) are not.`
+          )
     const merged = delivery(integration, pullRequest => pullRequest.containsHead)
     if (merged.proven !== undefined)
-      return finish('branch-merged', merged.proven.containsHead.reason)
+      return delivered(finish('branch-merged', merged.proven.containsHead.reason))
     if (integration.headInTip.kind === 'yes')
-      return finish('branch-in-target', integration.headInTip.reason)
+      return delivered(finish('branch-in-target', integration.headInTip.reason))
     return undecided(
       [...merged.unknown, ...unknownReason(integration.headInTip)],
       [

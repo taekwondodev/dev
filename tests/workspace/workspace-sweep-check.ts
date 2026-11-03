@@ -366,17 +366,26 @@ try {
   git(['add', 'feature.txt'], unmerged.checkout)
   git(['commit', '--quiet', '-m', 'unmerged'], unmerged.checkout)
 
+  const advancedCheckout = userCheckout('advanced')
+  const advancedOwner = await reserve(advancedCheckout)
+  const advanced = ready(await advancedOwner.owner.authorize({ kind: 'delegated-write' }))
+  await advancedOwner.owner.close()
+  await lifecycle.recordTarget(advancedOwner.taskId, localMain)
+  writeFileSync(join(advanced.checkout, 'tracked.txt'), 'uncommitted child edit\n')
+
   const dirtyCheckout = userCheckout('dirty')
   const dirtyOwner = await reserve(dirtyCheckout)
   await dirtyOwner.owner.close()
   writeFileSync(join(dirtyCheckout, 'tracked.txt'), 'uncommitted user edit\n')
   deliverBranch(finished.checkout)
-  writeFileSync(join(finished.checkout, 'notes.txt'), 'forgotten untracked report\n')
+  git(['checkout', '--quiet', '--', 'tracked.txt'], finished.checkout)
+  git(['switch', '--quiet', '-c', 'started-from-target', 'main'], advanced.checkout)
+  writeFileSync(join(advanced.checkout, 'native.c'), 'uncommitted new source\n')
   mkdirSync(join(finished.checkout, 'build'))
   writeFileSync(join(finished.checkout, 'build', 'cache.bin'), 'ignored dependency\n')
 
   await claim(
-    'a sweep at quit removes a finished worktree with its dirty, untracked and ignored residue, releases the clean pre-existing reservation, and retains a child whose attempt use is live, a branch worktree with unmerged commits and a dirty pre-existing checkout, each with its reason',
+    'a sweep at quit removes a delivered worktree with its ignored residue, releases the clean pre-existing reservation, and retains a child whose attempt use is live, a branch worktree with unmerged commits, a branch started from a later target commit with uncommitted edits and a dirty pre-existing checkout, each with its reason',
     async () => {
       const receipt = await sweepAtQuit(finishedOwner.write.workspaceId)
       assert.equal(receipt.moment, 'quit')
@@ -414,6 +423,14 @@ try {
         ['retained', 'retained:not-integrated']
       )
       assert.ok(existsSync(join(unmerged.checkout, 'feature.txt')))
+
+      const edited = rowOf(receipt, advanced.workspaceId)
+      assert.equal(edited.outcome, 'retained', edited.reason)
+      assert.equal(
+        readFileSync(join(advanced.checkout, 'tracked.txt'), 'utf8'),
+        'uncommitted child edit\n'
+      )
+      assert.ok(existsSync(join(advanced.checkout, 'native.c')))
       assert.deepEqual(
         [rowOf(receipt, unmergedOwner.write.workspaceId).outcome],
         ['released'],
