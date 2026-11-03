@@ -296,13 +296,17 @@ const residualOf = (inventory: Inventory | undefined, head: string | undefined):
     )
   if (inventory.files.length > 0)
     residual.push(
-      `${inventory.untracked} untracked and ${inventory.ignored} ignored path(s) remain in place`
+      `${inventory.untracked.length} untracked and ${inventory.ignored} ignored path(s) remain in place`
     )
   return residual
 }
-const residueOf = (inventory: Inventory): Residue => ({
+const residueOf = (
+  inventory: Inventory,
+  unpublished: number = inventory.untracked.length
+): Residue => ({
   tracked: inventory.tracked.length,
-  untracked: inventory.untracked,
+  untracked: inventory.untracked.length,
+  unpublished,
 })
 
 interface Assessed {
@@ -530,7 +534,7 @@ const stageWorkspace = (
       nextActions: ['Fix the reported read failure and check again.', CLEAR],
     })
   }
-  const residue = residueOf(evidence.inventory)
+  const residue = residueOf(evidence.inventory, evidence.unpublished)
   const complete = (): Assessed => {
     let target: TargetView =
       recordedTarget(workspace.path, override, branch) ??

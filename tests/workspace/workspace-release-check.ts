@@ -453,11 +453,13 @@ try {
   const assessmentOf = async (workspaceId: WorkspaceId, taskId: WorkspaceId) =>
     only(await lifecycle.check(taskId), workspaceId)
   await claim(
-    'on a branch whose commits are in the target, dirty tracked residue and unselected reports leave it finished, but an unintegrated local commit retains it as not integrated',
+    'on a branch whose commits are in the target, dirty tracked residue, an unpublished report or an unintegrated local commit retains it as not integrated',
     async () => {
-      writeFileSync(join(m3.checkout, 'tracked.txt'), 'dirty\n')
       let managed = await assessmentOf(m3.workspaceId, taskC)
       assert.equal(verdictName(managed.completion), 'branch-in-target', managed.reasons.join(' | '))
+      writeFileSync(join(m3.checkout, 'tracked.txt'), 'dirty\n')
+      managed = await assessmentOf(m3.workspaceId, taskC)
+      assert.equal(verdictName(managed.completion), 'retained:not-integrated')
       assert.equal(managed.evidence?.verdict, 'valid')
       assert.equal(managed.inventory?.trackedChanges, 1)
       git(['checkout', '--quiet', '--', 'tracked.txt'], m3.checkout)
@@ -483,12 +485,12 @@ try {
 
       writeFileSync(join(m3.checkout, 'report.txt'), 'evidence report\n')
       managed = await assessmentOf(m3.workspaceId, taskC)
-      assert.equal(verdictName(managed.completion), 'branch-in-target', managed.reasons.join(' '))
+      assert.equal(verdictName(managed.completion), 'retained:not-integrated')
       assert.ok((managed.inventory?.disposable ?? 0) >= 1)
     }
   )
   await claim(
-    'a recorded publication whose bytes match the local file covers it without any download; changed local bytes make the evidence invalid until the current bytes are published',
+    'a recorded publication whose bytes match the local file covers it without any download and no longer retains the delivered branch; changed local bytes make the evidence invalid until the current bytes are published',
     async () => {
       await lifecycle.recordPublication(
         publication(
@@ -501,6 +503,7 @@ try {
       let managed = await assessmentOf(m3.workspaceId, taskC)
       assert.equal(managed.evidence?.verdict, 'valid', managed.reasons.join(' '))
       assert.equal(managed.inventory?.published, 1)
+      assert.equal(verdictName(managed.completion), 'branch-in-target', managed.reasons.join(' '))
       writeFileSync(join(m3.checkout, 'report.txt'), 'evidence report, amended\n')
       managed = await assessmentOf(m3.workspaceId, taskC)
       assert.equal(managed.evidence?.verdict, 'invalid')
@@ -602,7 +605,11 @@ try {
       writeFileSync(attributes, 'tracked.txt diff=tripwire\n')
       writeFileSync(join(m3.checkout, 'tracked.txt'), 'changed for diff\n')
       let managed = await assessmentOf(m3.workspaceId, taskC)
-      assert.equal(verdictName(managed.completion), 'branch-in-target', managed.reasons.join(' '))
+      assert.equal(
+        verdictName(managed.completion),
+        'retained:not-integrated',
+        managed.reasons.join(' ')
+      )
       assert.ok(!existsSync(sentinel))
       git(['config', 'filter.tripwire.clean', command], m3.checkout)
       writeFileSync(attributes, 'tracked.txt filter=tripwire\n')
@@ -963,6 +970,7 @@ try {
 
   const installRepo = join(sandbox, 'install-repo')
   initRepository(installRepo)
+  writeFileSync(join(installRepo, '.git', 'info', 'exclude'), '.dev\n')
   const sweepRow = async (anchor: WorkspaceId, workspaceId: WorkspaceId) => {
     const receipt: SweepReceipt = await lifecycle.sweep({
       moment: 'quit',
@@ -1153,7 +1161,6 @@ try {
       managedFacts({
         allocation: 'checkout-contention',
         branch: 'refs/heads/feature',
-        residue: { tracked: 1, untracked: 0 },
         ownCommits: true,
         integration: integrationFacts(provider, worktree, {
           target: targetOverride,
@@ -1518,7 +1525,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/feature',
-          residue: { tracked: 1, untracked: 0 },
+          residue: { tracked: 1, untracked: 0, unpublished: 0 },
           ownCommits: true,
           integration: unavailableIntegration,
         })
@@ -1641,7 +1648,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/feature',
-          residue: { tracked: 1, untracked: 0 },
+          residue: { tracked: 1, untracked: 0, unpublished: 0 },
           ownCommits: true,
           integration: deletedForkIntegration,
         })
@@ -1706,7 +1713,7 @@ try {
       ) =>
         decideCompletion(
           managedFacts({
-            residue: { tracked: 2, untracked: 0 },
+            residue: { tracked: 2, untracked: 0, unpublished: 0 },
             ownCommits: input.head !== undefined && input.head !== input.base,
             integration: integrationFacts(provider, worktree, {
               target: targetOverride,
@@ -1911,7 +1918,7 @@ try {
         managedFacts({
           allocation: 'checkout-contention',
           branch: 'refs/heads/main',
-          residue: { tracked: 1, untracked: 0 },
+          residue: { tracked: 1, untracked: 0, unpublished: 0 },
           ownCommits: true,
           integration: integrationFacts(noGitHub, shallow, {
             target: { kind: 'local', ref: 'refs/remotes/origin/main' },
@@ -2277,7 +2284,11 @@ try {
 
       await bound.close()
       const managed = only(await lifecycle.check(allocated.taskId), allocated.managed.workspaceId)
-      assert.equal(managed.completion.kind, 'finished', managed.reasons.join(' '))
+      assert.equal(
+        verdictName(managed.completion),
+        'retained:not-integrated',
+        'the unpublished untracked files retain the delivered branch'
+      )
       assert.equal(managed.evidence?.verdict, 'valid', managed.reasons.join(' '))
       assert.equal(
         managed.inventory?.published,
