@@ -91,6 +91,7 @@ export interface OwnerFixture {
   readonly blockedHosts: readonly string[]
   readonly slowHosts: Readonly<Record<string, number>>
   readonly hang?: boolean
+  readonly processObservationBlock?: string
 }
 
 export const selectOwnerFixture = (fixture: OwnerFixture): void => {

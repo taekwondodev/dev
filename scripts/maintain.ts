@@ -3,6 +3,7 @@ import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Array as Arr, Cause, Config, Effect, FileSystem, Layer, Option, Schema } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { errorText } from '../src/error-text.ts'
+import { ensureNative } from '../src/native.ts'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
@@ -53,6 +54,11 @@ const assertPrivateDataProtected = Effect.fnUntraced(
   )
 )
 
+const buildNative = Effect.try({
+  try: ensureNative,
+  catch: cause => failed('Cannot build the native addon', cause),
+}).pipe(Effect.flatMap(artifact => say(`native addon ready at ${artifact}\n`)))
+
 const setup = Effect.fnUntraced(
   function* (requestedDataHome: Option.Option<string>) {
     const fs = yield* FileSystem.FileSystem
@@ -62,6 +68,7 @@ const setup = Effect.fnUntraced(
     yield* acquireMaintenance()
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
+    yield* buildNative
     const home = yield* Config.option(
       Config.String('HOME').pipe(Config.orElse(() => Config.String('USERPROFILE')))
     )
@@ -129,6 +136,7 @@ const update = Effect.fnUntraced(
       yield* linkPiDeclarations
       yield* say('reinstalled dependencies from the updated package-lock.json\n')
     }
+    yield* buildNative
     const cleanup = yield* Effect.try({
       try: () => {
         const authority = new WorkspaceAuthority(defaultAuthorityRoot())

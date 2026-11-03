@@ -13,9 +13,13 @@ npm start
 
 `npm start` and `npm run dev` work on this checkout; use `--cwd` to work elsewhere. `npm link --ignore-scripts` links the `dev` command to the checkout, so edits take effect on the next launch.
 
-Sources are strict, erasable TypeScript, run directly through Node type stripping. There is no build step. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
+TypeScript sources are strict and erasable, run directly through Node type stripping. No TypeScript build is needed. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
 
 Before `npm install` or `npm uninstall` in a checkout that already ran a check, remove the ignored `node_modules/@earendil-works` link: npm prunes through it and deletes the Pi release's packages from the installation. `npm ci` and `npm run types:pi` recreate the link; `npm run pi:update` works in a fresh worktree and is not affected.
+
+### Native addon
+
+Dev's macOS native addon requires the Xcode Command Line Tools (`xcode-select --install`) and a Node installation that ships `include/node/node_api.h` beside its `bin/` directory. Cached binaries live in the installation's `.dev/native/`, independently of data-home overrides. A missing binary builds on first use. If compilation fails, fix the reported toolchain error and restart dev: the running process retains its first build failure.
 
 ### Pi installation and declarations
 
@@ -47,7 +51,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 | `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                                                                                                            |
 | `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                                                                                                    |
 | `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                                                                                                 |
-| `npm run work:check`       | Native-session compaction, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery                                                                              |
+| `npm run work:check`       | Native-session compaction, native addon build and process observation, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery                                  |
 | `npm run web:check`        | URL policy, pinned retrieval, extraction, continuation, the installed Chrome on a fixture profile copy, the shared browser owner with concurrent independent clients, and direct/codemode reads through the host |
 | `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                                                                                               |
 

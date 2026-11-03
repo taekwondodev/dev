@@ -552,18 +552,9 @@ try {
       async () => {
         const home = join(fixture, 'unobserved')
         mkdirSync(home, { mode: 0o700 })
-        const bin = join(fixture, 'blind-observer')
-        mkdirSync(bin, { recursive: true })
         const flag = join(fixture, 'observation-blocked')
         writeFileSync(flag, 'blocked\n')
-        writeFileSync(
-          join(bin, 'ps'),
-          `#!/bin/sh\nif [ -f ${flag} ]; then exit 7; fi\nexec /bin/ps "$@"\n`,
-          { mode: 0o700 }
-        )
-        selectOwnerFixture(baseFixture)
-        const path = process.env.PATH
-        process.env.PATH = `${bin}:${path ?? ''}`
+        selectOwnerFixture({ ...baseFixture, processObservationBlock: flag })
         const blindAdmin = makeBrowserAdmin({ ...profileOptions, dataHome: home })
         try {
           const renderer = await openRenderer(home, newScope(), failures)
@@ -594,7 +585,6 @@ try {
           assert.ok(existsSync(join(home, 'browser', 'user-data')), 'enabling deleted nothing')
         } finally {
           rmSync(flag, { force: true })
-          process.env.PATH = path
         }
         const removed = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
         assert.equal(removed.kind, 'removed', 'settlement observed later allows removal')

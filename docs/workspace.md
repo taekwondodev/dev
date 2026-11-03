@@ -74,7 +74,7 @@ Removal outcomes appear in receipts and release results. Failed or interrupted a
 
 ### Process uses and gates
 
-A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Polling observers within one runtime share a process-table snapshot for 200 ms, launch identity capture and every signalling decision reads a fresh table. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; once its session has ended, only a [release](#release) clears it.
+A process use ends only when its group and tracked descendants are observed gone, not when a result arrives. Process observation, launch identity capture and signalling use fresh process facts rather than a shared snapshot. Use `/work stop` for attempts; it does not stop lead shells, which must be stopped separately. A process that detaches into its own session can escape observation. Lost observation records an `unknown` use and blocks writers; once its session has ended, only a [release](#release) clears it.
 
 A command whose checkout was replaced before user code is released never runs. A checkout replaced while a command runs, including by the command itself, does not end observation: stopping the shell still kills its family, and the use ends `unknown` instead of `quiescent`.
 
@@ -163,6 +163,8 @@ Declining quit's release offer keeps the sweep's code. A successful `check` can 
 
 The account-wide location is in the launcher's [state map](launcher.md#state). All installations share that authority, independently of `HOME` and data-home overrides; managed worktrees and task artifact directories live inside it.
 
-First use creates an absent authority. Missing parts of a known authority, invalid layout and damaged storage are refused, not reset. Each process validates a database's schema and integrity on first opening that file identity. In-place overwrites are not rechecked until another process starts: stop every dev session before restoring or copying over a database. Keep coordination databases on disk during normal operation; use [Development](DEVELOPMENT.md#discard-obsolete-state) for obsolete-state removal.
+First use creates an absent authority. Missing parts of a known authority, invalid layout and damaged storage are refused, not reset. Each process validates a database's schema and integrity on first opening that file identity. In-place overwrites are not rechecked until another process starts, and running sessions keep their database connections and WAL files open: stop every dev session before restoring or copying over a database. Keep coordination databases on disk during normal operation; use [Development](DEVELOPMENT.md#discard-obsolete-state) for obsolete-state removal.
+
+After an operating-system crash or power loss, inspect `dev workspace check <task>` results and `git worktree list` before trusting a release decision. This inspection does not certify that all acknowledged facts survived; see [durability by lifetime](adr/0004-authoritative-lifecycle-incremental-store.md#durability-by-lifetime).
 
 Paths containing newlines are refused for checkouts and Git directories. Replacing either at the same path changes its identity and can prevent resume. Inspect the reported reason rather than deleting coordination files to bypass it.
