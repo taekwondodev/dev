@@ -30,26 +30,26 @@ Outside a session:
 
 ### Configuration
 
-The OpenStack project is the same for OpenStack and for DevStack in a VM; only the Keystone URL differs. Two private, unversioned files in the data home hold the configuration, and `dev orb setup` writes both:
+Two private, unversioned files in the data home hold the configuration, and `dev orb setup` prompts for and writes both:
 
-- `<data-home>/openstack.json` holds the credentials: `auth_url`, `username`, `password` and `project_name`, and optionally `user_domain_id` and `project_domain_id` (default `default`), `region_name` (the orbit endpoint's region) and `cacert` (a CA file trusted for HTTPS). dev reads it only with mode `600` and prints the `chmod` that fixes it otherwise.
-- `<data-home>/orb.json` sets the orb's `size` (default 2 vCPU, 2048 MB, 10 GB), its `image` (default `ubuntu-24.04-arm64-dev`) and the required `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH.
+- `<data-home>/openstack.json` holds the OpenStack credentials and endpoint settings. dev reads it only with mode `600` and prints the `chmod` that fixes it otherwise.
+- `<data-home>/orb.json` selects the image and size and requires `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH.
 
-Without either file, or with an excess or missing field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home.
+The [configuration schemas](../src/orb/domain.ts) own the accepted fields; [configuration loading](../src/orb/config.ts) owns defaults.
+
+Without either file, or with an excess or missing required field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home.
 
 `dev orb setup` proposes the stored value of each field, Enter keeps it and `-` clears an optional one. The password is read without echo, and Enter keeps the stored one. dev authenticates with the answers and writes nothing unless Keystone accepts them. For `ssh_allowed_cidr` it proposes the stored value, otherwise the Mac's own address on its route to the Keystone host, as `<address>/32`. Each file is replaced through a temporary file and a rename, with mode `600`.
 
-The Mac must route to orbit's floating IPs; on DevStack, run orbit's `tools/reach-orbs.sh <devstack-host>` after either machine restarts.
+The Mac must route to orbit's floating IPs. Follow orbit's [deployment instructions](https://github.com/taekwondodev/orbit#installation) to make them reachable.
 
-The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH user, and an entry in orbit's `[orbs] ssh_users`. Its initializer must apply orbit's cloud-config user data, which carries the egress proxy settings: with tiny-cloud, `save_userdata` and `organize_userdata` must not be skipped. orbit's `tools/image` builds the DevStack image that way.
+The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH user, and an entry in orbit's `[orbs] ssh_users`. It must also meet orbit's [proxy initialization requirements](https://github.com/taekwondodev/orbit/blob/main/docs/architecture.md#images-other-than-cirros) for external network access.
 
 ### Network access
 
-Outbound connectivity depends on the deployment, not on the Mac's SSH connection to the orb. dev does not enforce egress isolation; orbit does. The [orb network boundary](../SECURITY.md#orb-network-boundary) describes the policy: default deny with destinations listed by the orbit operator, and what a deployment without it guarantees.
+See the [orb network boundary](../SECURITY.md#orb-network-boundary) for enforcement ownership and protection limits.
 
-Git clone, fetch and push executed inside the orb initiate outbound connections, as do package installation and dependency downloads. They work only toward listed destinations, and external ones only through the deployment's egress proxy, which orbit configures in the orb; Git then needs HTTPS remotes. Local Git operations need no network. dev keeps credentials on the Mac and does not forward an SSH agent; reaching a repository does not by itself provide authentication for it. Keep the required tools preinstalled in the image rather than relying on a download during startup.
-
-An orb has no resolver for external names: the egress proxy resolves them, so tools must use it. orbit's [DNS](https://github.com/taekwondodev/orbit/issues/11) and [guest TLS](https://github.com/taekwondodev/orbit/issues/17) issues concerned the orb's direct path to the Internet, which is now denied, and are closed. Failed DNS lookups, TLS handshakes or Git commands are not evidence of enforced isolation. The [deployment observations](https://github.com/taekwondodev/dev/issues/252#issuecomment-6599069325) record successful public TCP/SSH and management/metadata access separately from failed DNS/TLS/Git checks; they establish neither generally usable Internet access nor successful remote Git or dependency downloads.
+Git clone, fetch and push, package installation and dependency downloads need destinations admitted by the deployment. For external destinations, use tools that honor the egress proxy settings orbit supplies; the proxy resolves external names, so these requests need no guest DNS resolver. Git needs HTTPS remotes. Network access does not provide repository authentication; dev does not forward an SSH agent. Local Git operations need no network. Keep the required tools preinstalled in the image rather than relying on a download during startup.
 
 ## Behavior
 
@@ -67,21 +67,21 @@ Before the TUI opens, dev prints one line per phase with the elapsed time:
 
 The checkout must be on a branch with at least one commit. The footer shows the orb's id and state for the whole session.
 
-A failed step refuses the launch without retrying it: orbit's refusal (`401`, `403`, `409`, `502`, `503`), an orb that reaches `ERROR` (orbit's fault is printed; this includes orbit's ready timeout) or a failed upload. dev deletes the orb it created, waits for `DELETED`, removes the record, [withdraws](workspace.md#release) the session's writer use and, on a pre-existing checkout, the reservation the launch took, prints the cause and exits with code 1. The next launch therefore writes the same checkout. For a `409`, the message also lists the project's orbs that are not being deleted and the command that deletes one. Only the SSH connection after `ACTIVE` is retried, up to 24 times 5 s apart, because the orb's SSH server may not be listening yet.
+A failed step refuses the launch without retrying it: orbit's refusal (`401`, `403`, `409`, `502`, `503`), an orb that reaches `ERROR` (orbit's fault is printed; this includes orbit's ready timeout) or a failed upload. dev deletes the orb it created, waits for `DELETED`, removes the record, [withdraws](#recovery) the session's writer use and, on a pre-existing checkout, the reservation the launch took, prints the cause and exits with code 1. The next launch therefore writes the same checkout. For a `409`, the message also lists the project's orbs that are not being deleted and the command that deletes one. Only the SSH connection after `ACTIVE` gets bounded retries, because the orb's SSH server may not be listening yet.
 
 ### Spare orb
 
-The boot of a new orb takes minutes on an emulated host, so dev keeps one spare orb per data home, created ahead of the launch that uses it. orbit brings a spare to `ACTIVE` even when no dev reads it during its boot.
+To avoid waiting for a fresh boot, dev keeps one spare orb per data home, created ahead of the launch that uses it. orbit brings a spare to `ACTIVE` even when no dev reads it during its boot.
 
 Once its own orb is ready, a session requests a spare with the current `orb.json` when no orb record of the data home is a spare. It prints nothing while the TUI is open; a `409` or another refusal leaves the session without one. The check and the request are not atomic: two sessions whose orbs become ready together can each leave a spare, and a later launch takes one and leaves the other until it expires. A [writing child](#writing-children) takes the session's spare, still booting or ready, instead of creating an orb; after a child's orb is deleted, the session requests a spare again if it holds none.
 
 At quit, dev lets an in-flight spare request finish, so its record names the orb, and does not wait for `ACTIVE`. It prints the spare's id, the time until which it stays valid and its `dev orb delete` command, or why no spare was left.
 
-The next launch takes the spare, through the record's owner lock, when its Keystone URL and project match the credentials, its size, image and `ssh_allowed_cidr` equal the current `orb.json`, orbit reports it `RESERVING`, `BUILDING` or `ACTIVE`, and orbit created it less than 2 hours ago. It assigns the spare's record to the checkout in place and prints the spare's id, status and age; a spare still booting is awaited like a new orb. Any other spare is deleted, and `DELETED` awaited before the launch requests its own orb, because the spare would take the capacity it needs: a spare whose machine stopped, as after DevStack restarts, is in `ERROR`. A spare that orbit no longer has loses its record; one orbit cannot read, one of another project and one a running session holds are left as they are.
+The next launch takes the spare, through the record's owner lock, when its Keystone URL and project match the credentials, its size, image and `ssh_allowed_cidr` equal the current `orb.json`, orbit reports it `RESERVING`, `BUILDING` or `ACTIVE`, and it has not expired. It assigns the spare's record to the checkout in place and prints the spare's id, status and age; a spare still booting is awaited like a new orb. Any other spare is deleted, and `DELETED` awaited before the launch requests its own orb, because the spare would take the capacity it needs: a spare whose machine stopped is in `ERROR`. A spare that orbit no longer has loses its record; one orbit cannot read, one of another project and one a running session holds are left as they are.
 
 No dev process runs between sessions, so a spare holds its reservation until a launch takes or deletes it, or `dev orb delete` removes it.
 
-Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request finish, so the orb it created is known, then deletes the orb, waits for `DELETED`, removes the record, withdraws the writer use as above and exits with code 130. A second Ctrl-C stops the wait for `DELETED`, once a pending orbit request has answered or timed out after 30 s: dev prints the orb's id and delete command and leaves the record to the next `dev --orb`, which [recovers](#recovery) it; the writer use is withdrawn all the same, since the orb holds no work.
+Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request finish, so the orb it created is known, then deletes the orb, waits for `DELETED`, removes the record, withdraws the writer use as above and exits with code 130. A second Ctrl-C stops the wait for `DELETED`, once a pending orbit request has answered or timed out: dev prints the orb's id and delete command and leaves the record to the next `dev --orb`, which [recovers](#recovery) it; the writer use is withdrawn all the same, since the orb holds no work.
 
 ### Tools
 
@@ -97,7 +97,7 @@ An `orb` section of the system prompt tells the model which tools run on the orb
 
 A delegated agent that can write gets [its own orb](#writing-children). A read-only agent gets none: its `read`, `grep`, `find`, `ls` and `git_inspect` read over SSH, at the same paths, the orb that holds its workspace, so it sees that orb's current files, uncommitted ones included. That is the lead's orb, or a writing coordinator's orb for that coordinator's read-only leaves. The same three Mac-side homes apply, using the child's own skill files. Its tool calls keep their [workspace check](work.md#execution-and-access) on every call.
 
-When the orb cannot be reached, a tool call fails with SSH's error, which reaches the model, and the footer reads `orb <id>: unreachable` until a call reaches the orb again. Git transfers for delegation, upload, return and copying child work also update reachability; after a failed Git transfer, dev probes SSH so a Git error alone does not mark the orb unreachable. `/orb sync` fails with the reason. The session stays usable, and dev never recreates the orb. The Keystone token serves only orbit's API, so a token that can no longer be renewed fails only the deletion at quit, which then keeps the orb as below. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. `bash`, `!` and `work process` set `GIT_PAGER=cat` and `PAGER=cat` on the orb so paging commands print their output without waiting for terminal input. Stopping a command ends its SSH client, which hangs up the orb's terminal.
+When the orb cannot be reached, a tool call fails with SSH's error, which reaches the model, and the footer reads `orb <id>: unreachable` until a call reaches the orb again. Git transfers for delegation, upload, return and copying child work also update reachability; after a failed Git transfer, dev probes SSH so a Git error alone does not mark the orb unreachable. `/orb sync` fails with the reason. The session stays usable, and dev never recreates the orb. The Keystone token serves only orbit's API, so a token that can no longer be renewed fails only the deletion at quit, which then keeps the orb as below. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. Paging commands print their output without waiting for terminal input; [orb execution](../SECURITY.md#orb-execution) defines the environment controls. Stopping a command ends its SSH client, which hangs up the orb's terminal.
 
 Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, a delegation whose `cwd` lies outside the orb's checkout, and `work process` outside the session's directory. Quit and relaunch instead.
 
@@ -144,11 +144,11 @@ dev deletes the orb once the return completed or its work is on a `dev/orb-retur
 
 For a kept orb dev prints its id, where its work is, its `dev orb delete` command and that the next `dev --orb` [recovers](#recovery) it.
 
-Once the work has returned, dev sends `DELETE` and waits about 60 s for orbit to report `DELETED`, printing each state. If the wait ends first, or Ctrl-C stops it, dev exits, printing the orb's id and delete command and leaving the record to the next `dev --orb`, which deletes the orb.
+Once the work has returned, dev sends `DELETE` and waits a bounded time for orbit to report `DELETED`, printing each state. If the wait ends first, or Ctrl-C stops it, dev exits, printing the orb's id and delete command and leaving the record to the next `dev --orb`, which deletes the orb.
 
 ### Recovery
 
-A session that crashed, was killed or kept its orb at quit leaves its orb record behind, and so does each of its [writing children](#writing-children) whose orb it had not deleted; the record of a child names the child's worktree as its checkout. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project, left after `openstack.json` changed or DevStack was rebuilt, is kept, and dev prints the `rm -r` that removes its directory.
+A session that crashed, was killed or kept its orb at quit leaves its orb record behind, and so does each of its [writing children](#writing-children) whose orb it had not deleted; the record of a child names the child's worktree as its checkout. Every `dev --orb` recovers such records of its data home after authenticating and before admitting itself, whatever checkout each record names. It takes each record's owner lock without waiting and skips a record whose session still runs. A record of another Keystone URL or project, left after credentials or the deployment changed, is kept, and dev prints the `rm -r` that removes its directory.
 
 | Record                                                                  | Recovery                                                                                                                                                |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -162,7 +162,11 @@ The recovery branch holds the orb's commits, topped by a snapshot commit of its 
 
 A session that ended between the creation request and orbit's answer recorded no orb id, and orbit cannot tell which orb answered it. dev lists the project's orbs that are not being deleted, that no record of the data home names, and that orbit created since the earliest such request, allowing one minute of clock skew; an orb whose creation time dev cannot read is left out. While any orb record of the data home cannot be read, dev deletes none of them and keeps the records. Without such orbs the records are removed. Otherwise dev prints them, warning that another data home or client may own them. At an interactive terminal, `y` deletes them, except one a running `dev --orb` recorded while dev was asking, and removes the records; anything else, or no terminal, keeps everything and the next `dev --orb` asks again.
 
-The ended session's writer use then no longer holds the checkout: dev [settles it](workspace.md#release), so the new session starts in the same checkout. A session that ended while returning work may have left the checkout half-written, so its use stays and dev prints the command that clears it, `dev workspace release <task>` while the session's task reserves the checkout, otherwise `dev workspace release pre-existing`. Check the checkout before running it.
+Recovery settles the ended session's writer use without confirmation under the [settlement boundary](../SECURITY.md#recovery). It deletes that session's use records in the checkout and releases its task's reservation of a pre-existing checkout only when no other use of that task remains. Earlier sessions' recorded uses preserve an existing reservation; managed worktrees stay reserved. `dev workspace inspect` names orb recovery as the decider. Settlement removes the ended session's write blocker without releasing unrelated work.
+
+A failed or cancelled launch before the TUI opens withdraws its own writer use through the same settlement and names the failed start as decider. No orb tool or return ran, so it never wrote the checkout. If withdrawal fails, the launch prints the release command.
+
+A session that ended while returning work may have left the checkout half-written, so its use stays and dev prints the command that clears it, `dev workspace release <task>` while the session's task reserves the checkout, otherwise `dev workspace release pre-existing`. Check the checkout before running it.
 
 ## State
 

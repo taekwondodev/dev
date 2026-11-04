@@ -8,11 +8,11 @@
 
 Ask the lead to run a command or delegate an assignment. It calls `work` with `action: "process"` or `action: "delegate"`; there is no `/work start`.
 
-A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). Give paths, facts and acceptance conditions, not the lead's transcript. This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
+A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
 
-`skill` names the skill the child loads first and selects [dispatch](../config/README.md#resolution). Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Leave `model` and `effort` unset unless the user requested those overrides.
+`skill` names the skill the child loads first and selects [dispatch](../config/README.md#resolution). Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Explicit overrides follow the [dispatch rules](../config/README.md#resolution).
 
-Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
+With `coordinate: true`, the child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 
 ```text
 /work                        list this session's attempts, including leaves and their parent
@@ -38,13 +38,11 @@ Every child receives its working project's instructions, Pi's base prompt and pr
 
 Children can [read URLs](web-read.md) directly or through codemode, including authenticated pages. Scripts retain the child's tool permissions and have no model catalog; see [codemode's trust boundary](../SECURITY.md#trusted-base).
 
-The [security model](../SECURITY.md#outside-the-protection) explains why the allowlist does not sandbox trusted extensions or external agent providers.
+The [security model](../SECURITY.md#outside-the-protection) explains why the allowlist does not sandbox trusted extensions or external agent providers; command text follows its [credential rule](../SECURITY.md#credentials).
 
 Pi expands a verified leading skill invocation once in the first user message, including hidden skills. Unknown or unreadable skills and extension-command collisions fail before a model request. Other commands and prompt templates are not expanded. The attempt records the invoked skill, not every skill the child later reads.
 
 Every child has independent [background compaction](compaction.md).
-
-Command text must follow the [credential rule](../SECURITY.md#credentials). Process separation and read-only tools are not an OS sandbox.
 
 ### Delegation scope
 
@@ -66,11 +64,11 @@ Aborting a coordinator tool call interrupts its local wait, not an IPC request a
 
 ### Delivery and verification
 
-While background work runs, do independent work or end the turn and let outcome delivery resume it. Do not poll or run shell waits just to await completion; inspection remains available for diagnosis or a requested progress check. Dev refuses, including through codemode, a simple sleep-only wait while the agent owns pending work and, for the lead only, a command whose first step is a long sleep, whether or not work is running. The second refusal names the replacement: run the wait itself as a `work process`, then do independent work or end the turn so that outcome delivery resumes it. This guard is not a general shell-loop detector; [ADR 0007](adr/0007-observed-usage-wait-guard.md) records its rules, accepted gaps and what evidence a change needs.
+Outcomes resume the owning conversation without polling. Inspection remains available for diagnosis or a requested progress check. Dev refuses blocking shell waits covered by the [wait guard](adr/0007-observed-usage-wait-guard.md) and names `work process` as the alternative for a lead's leading long sleep; the ADR owns the rules, accepted gaps and evidence required to change them.
 
 Outcomes include summaries, stale-artifact status and retained logs, including a child's answer, so the common case needs no `inspect`. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
-A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.
+A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. [Workspace release](workspace.md#release) governs retained workspaces.
 
 ### Cancellation and session changes
 
@@ -98,7 +96,7 @@ Global extensions own presentation, including title activity while a child runs 
 | `<data-home>/work/attempts/<attempt>/` | Temporary full logs                                                               |
 | `<data-home>/child-sessions/`          | Child conversations, excluded from lead `--continue` selection                    |
 
-Retention keeps seven days from completion and the newest 64 completed results within that window. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries. Child conversation history follows the separate [history cleanup policy](launcher.md#automatic-history-cleanup).
+Retention applies age and count limits to completed results; [the attempt store](../src/work-store-worker.ts) owns the limits. Active and unresolved attempts remain. Expired results are unavailable rather than reconstructed from summaries. Child conversation history follows the separate [history cleanup policy](launcher.md#automatic-history-cleanup).
 
 Process crashes are recoverable, but power loss can drop recent attempt updates. To back up the store, stop sessions and preserve the database with its WAL and SHM companions. Before opening it, dev checks the Node minimum in `package.json` and an embedded SQLite with the [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug); the Node number alone does not establish safety.
 

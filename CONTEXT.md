@@ -4,11 +4,11 @@ Dev is a personal agent distro built on Pi. This glossary defines terms used in 
 
 ## Environment
 
-| Term                        | Meaning                                                                                                 |
-| --------------------------- | ------------------------------------------------------------------------------------------------------- |
-| **Pi**                      | The coding agent and SDK dev integrates.                                                                |
-| **Shared workflow library** | Common development guidance owned by `~/Developer/skills`, exposed through `~/.agents/skills`.          |
-| **Profile**                 | A selectable set of guidance and skills. Apple is one of the owner's profiles, not the identity of dev. |
+| Term                        | Meaning                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Pi**                      | The coding agent and SDK dev integrates.                                                       |
+| **Shared workflow library** | Common development guidance owned by `~/Developer/skills`, exposed through `~/.agents/skills`. |
+| **Profile**                 | A selectable set of guidance and skills.                                                       |
 
 ## Background work
 

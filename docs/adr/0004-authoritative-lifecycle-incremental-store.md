@@ -2,7 +2,7 @@
 
 Keep one mutable authority for each live attempt and persist ownership with its observations in native SQLite. UI snapshots and stored payloads are projections, not competing lifecycle owners. Transactional ownership avoids record/index drift and whole-store scans without creating a second workflow database.
 
-The [approved follow-up](https://github.com/taekwondodev/dev/issues/16#issuecomment-5743930804) records the storage choice; [implementation evidence](https://github.com/taekwondodev/dev/issues/16#issuecomment-5743959689) and the [upstream comparison](https://github.com/taekwondodev/dev/blob/1c2a4d4e5614735ed8a7daa5ebe7407fc60c1bf3/docs/adr/0004-authoritative-lifecycle-incremental-store.md#upstream-comparison) retain the investigation. Read this record before changing lifecycle ownership, persistence or external-effect recovery.
+The [approved follow-up](https://github.com/taekwondodev/dev/issues/16#issuecomment-5743930804) records the storage choice; [implementation evidence](https://github.com/taekwondodev/dev/issues/16#issuecomment-5743959689) retains its verification. The [upstream comparison](https://github.com/taekwondodev/dev/blob/1c2a4d4e5614735ed8a7daa5ebe7407fc60c1bf3/docs/adr/0004-authoritative-lifecycle-incremental-store.md#upstream-comparison) supports generation fencing and indexed reads, not replacing transactional ownership with advisory indexes. Read this record before changing lifecycle ownership, persistence or external-effect recovery.
 
 ## Lifecycle authority
 
@@ -20,7 +20,7 @@ Database commits cannot certify filesystem or process cleanup. Those are recover
 
 ## Durability by lifetime
 
-The temporary attempt store uses WAL with `synchronous=NORMAL`, accepting recent-update loss after power failure. Code, credentials and Pi conversations live elsewhere. Check the embedded SQLite for the [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug); Node version ordering alone is insufficient across release lines. [Work](../work.md#state) owns retention and recovery operations.
+The temporary attempt store uses WAL with `synchronous=NORMAL`, accepting recent-update loss after power failure. Code, credentials and Pi conversations live elsewhere. [Work](../work.md#state) owns SQLite runtime requirements, retention and recovery operations.
 
 Workspace reservations, conversation bindings and self-contained use facts outlive attempt retention. The [authority decision](https://github.com/taekwondodev/dev/issues/31#issuecomment-5798717688) gives them repository-sharded SQLite storage with worker I/O and short WAL transactions. Missing known storage, non-canonical layouts and corruption fail closed rather than recreating authority. No stored fact authorizes replaying a job or Git effect.
 
@@ -38,7 +38,7 @@ Use deletion follows release authority: sweep deletes only the reservation's set
 
 The [disposable-worktree decision](https://github.com/taekwondodev/dev/issues/42) means recorded publications are not an exhaustive list of disposable contents. Their size and digest recheck selected files at each assessment; changed selected bytes stop matching. Runtime storage adds no separate delivery receipt or pending-report ledger: the workflow owns delivery and failed-publication checkpoints.
 
-Incomplete removal leaves an open release, refuses resume and blocks automatic retry. Explicit task release supersedes it and removes again. Git removal and bounded leftover deletion converge, so recovery needs no inventory of what the interrupted attempt deleted. [ADR 0005](0005-scoped-runtime-coordination.md#fenced-effects) owns deletion bounds and fencing; [Workspace](../workspace.md#release) owns the retry procedure.
+Git removal and bounded leftover deletion converge, so recovery needs no inventory of what an interrupted attempt deleted. [ADR 0005](0005-scoped-runtime-coordination.md#fenced-effects) owns deletion bounds and fencing; [Workspace](../workspace.md#release) owns interrupted-removal states and the retry procedure.
 
 ## Current state only
 

@@ -39,7 +39,7 @@ Candidate repeated-error or recovery sequences connect a failed result to a late
 
 ### Operations inside codemode
 
-The private report shows codemode's recorded internal operations separately from outer tool calls. It reads Pi's `nestedCalls` metadata offline, without changing prompts, tool responses or transcript collection. Existing token totals, outer tool metrics and public exports are unchanged.
+The private report shows codemode's recorded internal operations separately from outer tool calls, using Pi's `nestedCalls` metadata. Internal operations are excluded from public exports and are not added to token totals or outer tool counts.
 
 Internal `ok`, `error` and `unfinished` counts describe each operation, even when the outer script returns without error. Missing or malformed metadata is unknown coverage, not zero operations. Incomplete metadata can omit calls or arguments or contain unfinished work; malformed calls are counted separately and excluded from operation totals. A complete empty list records zero operations.
 

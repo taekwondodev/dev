@@ -20,9 +20,9 @@ dev browser enable     # allow authenticated rendering again
 
 Static retrieval prefers origin Markdown, accepts plain text and otherwise extracts readable HTML into text with headings, code blocks, lists, tables and absolute links. Usable static content never launches a browser.
 
-Chrome is used when extracted text is thin on a script-dependent page or the origin answers 401, 403, 429 or 503. A browser result names its use of the authenticated profile copy. When Chrome is missing, disabled or unavailable, the static result is returned with that limitation.
+Chrome is used when extracted text is thin on a script-dependent page or the origin answers HTTP 401, 403, 429 or 503. [Extraction policy](../src/web-extract.ts) owns the escalation tests. A browser result names its use of the authenticated profile copy. When Chrome is missing, disabled or unavailable, the static result is returned with that limitation.
 
-Reads have body, time and concurrency limits; a cut body is reported as `partial`, and exhausted capacity or time is reported explicitly. Aborting cancels the static read, browser wait or render and closes only that render's pages; a Chrome launch already in progress completes first. A page posting a body of tens of megabytes can stall its render until timeout; the next read relaunches Chrome if needed.
+Reads have body, time and concurrency limits; a cut body is reported as `partial`, and exhausted capacity or time is reported explicitly. Aborting cancels the static read, browser wait or render and closes only that render's pages; a Chrome launch already in progress completes first. After a render timeout, the next read relaunches Chrome if needed.
 
 Destinations must satisfy the [network policy](../SECURITY.md#network-policy). Fetched content is untrusted text, including when the page was read through your account.
 
@@ -34,13 +34,13 @@ A continuation reads the next part of an immutable snapshot in the current sessi
 
 One browser owner per data home serves every reader. Separate sessions can render concurrently; cancelling a read or closing a session leaves other readers' pages alone. A Chrome or owner failure can fail all in-flight renders and does not replay them through a replacement owner.
 
-Chrome closes after three idle minutes and relaunches on the next render. When the last reader disconnects, the owner settles Chrome and exits. The copy is refreshed before each fresh launch. An exclusive cookie-database lock or interrupted refresh prevents launching an incomplete copy and reports the reason.
+Chrome closes after an idle period and relaunches on the next render; [the browser owner](../src/web-browser-owner.ts) owns lifecycle time limits. When the last reader disconnects, the owner settles Chrome and exits. The copy is refreshed before each fresh launch. An exclusive cookie-database lock or interrupted refresh prevents launching an incomplete copy and reports the reason.
 
 If Chrome shutdown cannot be verified, the live owner keeps the profile lock and reports the unsettled state through `dev browser`. It retries settlement on a later render or lifecycle operation. Owner death releases kernel locks but does not prove Chrome stopped: a leftover owner record blocks replacement, copy refresh and deletion. Use the recovery procedure below rather than treating free locks as permission to reuse the copy.
 
 ## Revocation
 
-`dev browser revoke` disables new authenticated renders first, then waits up to ten seconds for existing reads to finish without cancelling them. It closes Chrome and deletes only dev's copy after verified shutdown. If the wait expires or shutdown remains unverified, rendering stays disabled and the copy is kept; rerun revoke after the reads finish. If the owner is gone but its record remains, revoke reports `kept-live`.
+`dev browser revoke` disables new authenticated renders first, then waits a bounded time for existing reads to finish without cancelling them. It closes Chrome and deletes only dev's copy after verified shutdown. If the wait expires or shutdown remains unverified, rendering stays disabled and the copy is kept; rerun revoke after the reads finish. If the owner is gone but its record remains, revoke reports `kept-live`.
 
 `dev browser enable` allows rendering again but neither clears an uncertain owner record nor authorizes profile reuse. While disabled, automatic escalation reports that state.
 
