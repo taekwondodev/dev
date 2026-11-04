@@ -1,5 +1,4 @@
-import { FIXTURE_MANIFEST, writeProfileFixture } from '../profile-fixture.ts'
-import { MANIFEST_FILE } from '../../src/profiles.ts'
+import { FIXTURE_MANIFEST, MANIFEST_FILE, writeProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'

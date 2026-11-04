@@ -86,7 +86,6 @@ const scriptedStream = (calls: string, attemptId: string) => {
         ...messages.flatMap(systemTextOf),
       ].join('\n')
       if (system.includes('You are a context summarization assistant.')) {
-        appendFileSync(calls, `summary:${attemptId}\n`)
         return emitReply(
           parts,
           {
