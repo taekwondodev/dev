@@ -43,7 +43,7 @@ Maintenance commands take options as `--flag value`. An unknown option or a stra
 
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
-Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update (also named `upgrade`) reinstalls dependencies when the merged `package-lock.json` changed, then activates Pi if its pinned version is not already active. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
+Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout. When `.dev/` exists, both also refuse revisions that would track it or stop ignoring it.
 
 Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#native-addon) for toolchain requirements and build recovery.
 
@@ -70,9 +70,9 @@ Profiles are personal configuration. The installation's `profiles/` directory is
   "default": "general",
   "profiles": {
     "general": { "soul": "general/SOUL.md", "skills": [] },
-    "apple": {
-      "soul": "apple/SOUL.md",
-      "skills": ["apple/skills/swiftui-pro", "apple/skills/swift-concurrency-pro"]
+    "specialist": {
+      "soul": "specialist/SOUL.md",
+      "skills": ["specialist/skills/example"]
     }
   }
 }
@@ -98,7 +98,7 @@ Independent repositories can share a data home. See [workspace session commands]
 
 Interactive startup and graceful exit request a detached, one-shot cleanup process. Dev does not wait for its readiness or completion, and the process can finish after dev exits. Help, diagnostics, runtime probes and save-only commands do not request cleanup. There is no periodic timer. Concurrent requests or installation maintenance can cause a pass to be skipped; a later lifecycle trigger retries.
 
-Each data home retains the newest 100 eligible inactive lead conversations and 100 eligible inactive child conversations, ordered by modification time with a filename tie-break. Live conversations, retained-task recovery, pending switches and unresolved work are protected outside those quotas. Unrecognized files, symbolic or hard links, and files whose deletion safety cannot be established remain untouched. Deleted history cannot be resumed; these are count limits, not byte ceilings.
+Each data home keeps separate count-limited sets of eligible inactive lead and child conversations, newest first. [Conversation retention](../src/conversation-retention.ts) owns the quota and ordering. Live conversations, retained-task recovery, pending switches and unresolved work are protected outside those quotas. Unrecognized files, symbolic or hard links, and files whose deletion safety cannot be established remain untouched. Deleted history cannot be resumed; these are count limits, not byte ceilings.
 
 The same pass applies [attempt retention](work.md#state) and removes recognized abandoned preference-write temporaries. No other data is a cleanup target, including workspaces and their reservations. Errors do not fail startup or exit. Non-blocking cleanup still consumes system resources.
 

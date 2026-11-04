@@ -18,4 +18,4 @@ Specs and implementation tickets are GitHub issues. A ticket names the affected 
 
 Native dependency APIs take the blocker's numeric database `id`, not its issue number or `node_id`. `issue_dependencies_summary.blocked_by` counts open blockers. In the fallback representation, inspect the referenced issues' states instead.
 
-For wayfinding, the map uses `wayfinder:map`; children use `wayfinder:research`, `wayfinder:grilling` or `wayfinder:task`. The frontier follows the map's order among unassigned children with no open blockers. The shared `wayfinder` skill owns claiming, resolving and recording decisions.
+For wayfinding, the map uses `wayfinder:map`; children use `wayfinder:research`, `wayfinder:grilling` or `wayfinder:task`. Use the shared `wayfinder` skill for traversal, claiming, resolving and recording decisions.

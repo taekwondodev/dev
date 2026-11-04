@@ -4,7 +4,7 @@
 
 ## Resolution
 
-The delegation's `skill` field selects that skill's entry in `rules`, if configured, otherwise `default`. The skill still loads when it has no dispatch rule, and a delegation without a skill uses `default`. An explicit `model` or `effort` overrides the selection. The [work protocol](../docs/work.md#use) limits those overrides to user-requested model/effort choices.
+The delegation's `skill` field selects that skill's entry in `rules`, if configured, otherwise `default`. The skill still loads when it has no dispatch rule, and a delegation without a skill uses `default`. An explicit `model` or `effort` overrides the selection. Set `model` and `effort` only when the user requested those overrides.
 
 Each selection specifies the `pi` harness and may specify `model` as `provider/model-id` and `effort`. Omitted values use the child's Pi defaults, not the lead's picker.
 

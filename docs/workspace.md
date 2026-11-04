@@ -7,7 +7,7 @@ The workspace authority coordinates dev conversations and children without treat
 Terminal commands are read-only except `release`:
 
 ```bash
-dev workspace                 # list this repository's tasks and workspaces
+dev workspace list            # list this repository's tasks and workspaces
 dev workspace inspect <task>  # inspect the exact task across repositories and its next safe action
 dev workspace check <task>    # assess completion, target, blockers and evidence
 dev workspace release <task>  # interactively confirm clearing every workspace of the task
@@ -52,7 +52,7 @@ Selection refuses a directory outside any Git checkout, inside authority storage
 Lead and writing-child write/edit classify destinations before writer admission:
 
 - Current-workspace files use scoped admission.
-- Files inside the bound task's [artifact directory](#task-artifacts) first admit the conversation as writer of its checkout, like a workspace write, then proceed as an external write. Another task's directory, the artifacts root and the rest of the authority stay refused.
+- Files in the bound task's artifact directory follow [task-artifact admission](#task-artifacts).
 - Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or rebind.
 - Another worktree of the bound repository, including its original checkout, is refused with the same file's path in the current workspace, or with a statement that the file does not exist there. The destination is never rewritten.
 - Another repository, including a checkout nested in the caller's own managed workspace, is reserved for the conversation's [foreign workflow task](#delegation-into-another-checkout) through that repository's authority and written in place, without a managed worktree or rebind. A checkout reserved or being written by another task is refused with guidance to delegate the change or wait.
@@ -66,7 +66,9 @@ External permits provide neither cross-session file locking nor cleanup ownershi
 
 ### Task artifacts
 
-Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoffs. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [rebind](#admission-and-isolation) instead. A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task>` show the path while the directory exists.
+Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoffs. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [rebind](#admission-and-isolation) instead. Native writes there also require checkout writer admission, then proceed as external writes. Another task's directory, the artifacts root and the rest of the authority stay refused.
+
+A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task>` show the path while the directory exists.
 
 The directory is retained while the task reserves any workspace across repositories. A [sweep](#sweep) removes it after the attempt ending the last reservation; quit and replacement sweeps also remove orphan directories within their budget. Explicit [task release](#release) lists the directory in its confirmation and removes it once no reservations remain.
 
@@ -133,9 +135,7 @@ The command requires an interactive terminal, lists each workspace and its conse
 
 A pre-existing checkout no task reserves is never swept, so uses its ended sessions left unsettled keep it `blocked` and settled ones accumulate. **`dev workspace release pre-existing`** handles the repository at `--cwd`: it lists each unreserved pre-existing checkout with recorded uses, asks for one `y`, then deletes the uses of every ended dev session there. Uses of running sessions stay, as do files and commits; a checkout a task reserves meanwhile fails and names `dev workspace release <task>`. It stops no process those sessions started: run it only when nothing they started still works there.
 
-A `dev --orb` session that ended without quitting leaves its writer use active and, on a pre-existing checkout, its task's reservation. The next `dev --orb` [recovery](orb.md#recovery) settles them without confirmation, on the evidence [ADR 0005](adr/0005-scoped-runtime-coordination.md#release) names. It deletes the use records of that session in the checkout and, when no other use of the task remains, releases the task's reservation of the pre-existing checkout; inspect names the decider as the orb recovery. A use that is not the writer use of a `dev --orb` session, or whose session still runs, is refused. A session that ended while returning work into the checkout keeps its use: clear it with the printed release command after checking the checkout.
-
-A `dev --orb` launch that fails or is cancelled before its TUI opens withdraws its own writer use the same way, without waiting for the next launch: no orb tool and no return ran, so nothing wrote the checkout. Inspect names the decider as the failed `dev --orb` start. If the withdrawal fails, the launch prints the release command.
+Orb recovery and failed orb starts can settle their session's writer use without confirmation; inspect names which operation made the decision. [Orb recovery](orb.md#recovery) owns settlement conditions and the manual-release cases; [ADR 0005](adr/0005-scoped-runtime-coordination.md#release) records why this exception is safe.
 
 Release respects explicit Git worktree locks. A failed or interrupted removal stays `release-review`; rerun release to finish it. Leftover directories are deleted only after Git confirms the worktree is no longer registered, and only within dev's managed storage; an admin directory serving a moved worktree is preserved. An unreadable Git worktree list prevents confirmation and leftover deletion. When the directory is already gone, retry retains the interrupted removal's recorded HEAD as sibling delivery evidence.
 
@@ -149,7 +149,7 @@ An interactive quit offers one confirmation to release eligible remaining tasks,
 
 A task excluded only because a previous session left its use unsettled or unresolved is then offered alone, with its status. Tasks guarded against cleanup, unassessed, or with a reserved workspace outside this sweep are never offered: run their command after checking them. These convenience filters are not a guarantee against concurrent use: the [release warning](#release) still applies.
 
-Each prompt counts managed worktrees and pre-existing reservations and explains their consequences. Only `y` releases them; Enter or any other answer keeps them. Interactive terminals show a sweep spinner and colored status output; `NO_COLOR` disables colors without stopping progress updates. Dev also emits progress notifications for terminals that support them, without checking the terminal's name. Non-TTY output uses plain text without progress escapes. Without an interactive terminal there is no release prompt.
+Each prompt counts managed worktrees and pre-existing reservations and explains their consequences. Only `y` releases them; Enter or any other answer keeps them. Interactive terminals show sweep progress and colored status output; `NO_COLOR` disables colors. Non-TTY output uses plain text without progress escapes or a release prompt.
 
 Ctrl-C before the sweep or at a confirmation starts no further release. During sweep or confirmed release, started attempts reach recorded outcomes; an interrupted Git step stays `release-review`. SIGHUP can end dev without a receipt. If a sweep does not report back, its outcome is unknown and the launcher points to `dev workspace list`.
 

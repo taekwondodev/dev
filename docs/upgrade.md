@@ -49,7 +49,7 @@ For update options and its `upgrade` alias, see [Maintenance](launcher.md#mainte
 
 From this checkout on `main`, update removes the upgrade worktree, its attached local branch and its workspace registration, even when dev is already up to date. The Pi candidate remains available until activation succeeds.
 
-Activation requires a verified candidate matching the pin and Pi's latest release. It checks the installed version and lockfile against the candidate, runs smoke and prints diagnostics before removing the candidate. If the pinned Pi is already active, activation is skipped and any candidate remains. For a missing or outdated candidate, use the recovery instructions below.
+Update reinstalls dev's dependencies when the merged `package-lock.json` changed, then activates Pi if its pinned version is not already active. Activation requires a verified candidate matching the pin and Pi's latest release. It checks the installed version and lockfile against the candidate, runs smoke and prints diagnostics before removing the candidate. If the pinned Pi is already active, activation is skipped and any candidate remains. For a missing or outdated candidate, use the recovery instructions below.
 
 After a Pi change, run one normal session, then `npm run profile`. Use [Usage profile](usage-profile.md) to interpret the report and its limitations.
 
