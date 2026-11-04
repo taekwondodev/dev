@@ -118,7 +118,15 @@ try {
   git(['config', 'user.name', 'Launcher TUI Probe'], repo)
   git(['config', 'user.email', 'launcher-tui@example.invalid'], repo)
   writeFileSync(join(repo, 'AGENTS.md'), 'launcher tui probe\n')
-  git(['add', 'AGENTS.md'], repo)
+  const tracked = ['AGENTS.md']
+  if (removeInstallation) {
+    writeFileSync(
+      join(repo, '.gitignore'),
+      '/.dev/\n/node_modules\n/package.json\n/src/\n/tests/\n'
+    )
+    tracked.push('.gitignore')
+  }
+  git(['add', ...tracked], repo)
   git(['commit', '--quiet', '-m', 'fixture'], repo)
 
   const lifecycle = await openLifecycle({ root })

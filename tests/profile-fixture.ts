@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { MANIFEST_FILE } from '../src/profiles.ts'
+
+export const MANIFEST_FILE = 'manifest.json'
 
 export interface ProfileFixture {
   readonly root: string

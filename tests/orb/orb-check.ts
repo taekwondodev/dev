@@ -2054,7 +2054,7 @@ await claim(
 )
 
 await claim(
-  'at quit, an interrupt stops only the wait for DELETED: the DELETE was sent and the record stays in phase deleting',
+  'an interrupt of a recorded deletion stops only the wait for DELETED: the DELETE was sent and the record stays in phase deleting',
   async () => {
     const dataHome = join(sandbox, 'quit-stop-data')
     mkdirSync(dataHome, { mode: 0o700 })

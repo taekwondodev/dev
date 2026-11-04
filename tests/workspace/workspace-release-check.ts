@@ -287,7 +287,7 @@ try {
     }
   )
   await claim(
-    'installation coordination refuses concurrent exclusive cleanup ownership and keeps one stable lock inode',
+    'installation coordination refuses a second concurrent maintenance and keeps one stable lock inode',
     async () => {
       const home = join(sandbox, 'installation')
       mkdirSync(home)

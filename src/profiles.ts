@@ -50,7 +50,7 @@ export interface ComposeResourcesOptions {
   readonly profile: Profile
 }
 
-export const MANIFEST_FILE = 'manifest.json'
+const MANIFEST_FILE = 'manifest.json'
 
 const MANIFEST_EXAMPLE =
   '{ "default": "general", "profiles": { "general": { "soul": "general/SOUL.md", "skills": [] } } }'
