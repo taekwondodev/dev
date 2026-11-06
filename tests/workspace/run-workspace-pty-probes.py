@@ -41,6 +41,7 @@ class Probe:
     expect: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
     expect_raw_order: tuple[str, ...] = ()
+    reject_raw_after: tuple[str, tuple[str, ...]] = ('', ())
 
     env: tuple[tuple[str, str], ...] = ()
 
@@ -67,6 +68,8 @@ STUB_ACTIONS = (
     Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND', 'resume the failing task\r'),
 )
 
+
+TUI_STOPPED = '\x1b[?2004l'
 
 QUIT_ACTIONS = (
     Action('quit', 'Press ctrl+o to show full startup help', '\x15/quit\r', delay=2.0),
@@ -133,7 +136,7 @@ PROBES = {
         expect=('Sweeping workspaces…', '✓ 1 reservation released', '✓ 1 worktree removed',
                 'Exit 0: done.'),
         expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07', '\x1b[32m'),
-        env=(('TERM_PROGRAM', 'rex'),),
+        env=(('TERM_PROGRAM', 'rex'), ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
     ),
 
     'quit-release': Probe(
@@ -160,8 +163,29 @@ PROBES = {
                           '[y = release, Enter = keep]', '\x1b[?2026h', '\x1b_Ga=T,f=32,o=z',
                           'Releasing 1 task…', '\x1b_Ga=d,d=I,i=', '\x1b[?2026l',
                           '\x1b[?25h', '✓ 1 worktree removed', 'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b[2B',)),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'), ('TERM_PROGRAM', 'rex'),
-             ('PI_IMAGE_PROTOCOL', 'kitty')),
+             ('PI_IMAGE_PROTOCOL', 'kitty'), ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
+    ),
+
+    'quit-empty': Probe(
+        script='tests/workspace/workspace-launcher-empty-quit-probe.ts',
+        passed_marker='DEV_EMPTY_QUIT_PROBE_PASSED ',
+        actions=QUIT_ACTIONS,
+        expect=('No reserved workspaces', 'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b_G', '\x1b[?25l', 'Sweeping workspaces')),
+        env=(('TERM_PROGRAM', 'rex'), ('PI_IMAGE_PROTOCOL', 'kitty')),
+    ),
+
+    'quit-empty-slow-graphics': Probe(
+        script='tests/workspace/workspace-launcher-empty-quit-probe.ts',
+        passed_marker='DEV_EMPTY_QUIT_PROBE_PASSED ',
+        actions=QUIT_ACTIONS,
+        expect_raw_order=(TUI_STOPPED, 'Sweeping workspaces…', '\x1b_Ga=d,d=I,i=',
+                          '\x1b8\x1b[K\r\x1b[?25h', 'No reserved workspaces', 'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b[2B',)),
+        env=(('TERM_PROGRAM', 'rex'), ('PI_IMAGE_PROTOCOL', 'kitty'),
+             ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
     ),
 
     'quit-release-declined': Probe(
@@ -406,6 +430,14 @@ def run(name: str, probe: Probe) -> bool:
                 continue
             if expected not in haystack:
                 missing_output.append(expected)
+    marker, rejected = probe.reject_raw_after
+    if rejected:
+        start = text.rfind(marker)
+        if start < 0:
+            missing_output.append(f'marker: {marker!r}')
+        else:
+            missing_output.extend(f'absent after marker: {needle!r}'
+                                  for needle in rejected if needle in text[start:])
     cursor = 0
     for needle in probe.expect_raw_order:
         try:
