@@ -1536,7 +1536,8 @@ try {
       )
       const restEndpoints = (
         headRepository: string | null,
-        commitList: readonly string[]
+        commits = 1,
+        lastPage = 1
       ): { readonly calls: string[]; readonly call: Parameters<typeof makeGitHubReader>[0] } => {
         const calls: string[] = []
         const responses = new Map<string, unknown>([
@@ -1552,18 +1553,11 @@ try {
                 repo: headRepository === null ? null : { full_name: headRepository },
               },
               base: { ref: 'main', repo: { full_name: 'owner/repo' } },
-              commits: commitList.length,
+              commits,
             },
           ],
+          [`repos/owner/repo/pulls/7/commits?per_page=100&page=${lastPage}`, [{ sha: feature }]],
         ])
-        const githubMaxPageSize = 100
-        for (let page = 1; (page - 1) * githubMaxPageSize < Math.max(1, commitList.length); page++)
-          responses.set(
-            `repos/owner/repo/pulls/7/commits?per_page=100&page=${page}`,
-            commitList
-              .slice((page - 1) * githubMaxPageSize, page * githubMaxPageSize)
-              .map(sha => ({ sha }))
-          )
         return {
           calls,
           call: endpoint => {
@@ -1603,7 +1597,7 @@ try {
           siblings: { heads: [], unknown: [] },
         })
 
-      const erroredRest = restEndpoints('owner/repo', [feature])
+      const erroredRest = restEndpoints('owner/repo')
       const erroredProof = explicitBranchFacts(
         makeGitHubReader(
           erroredRest.call,
@@ -1629,7 +1623,7 @@ try {
         'a GraphQL errors payload returned with HTTP 200 is discarded and REST supplies the proof'
       )
 
-      const deletedForkRest = restEndpoints(null, [feature])
+      const deletedForkRest = restEndpoints(null)
       const deletedForkIntegration = explicitBranchFacts(
         makeGitHubReader(
           deletedForkRest.call,
@@ -1663,11 +1657,7 @@ try {
         'a pull request whose source repository was deleted cannot be bound'
       )
 
-      const longHistory = [
-        ...Array.from({ length: 200 }, (_, index) => (index + 1).toString(16).padStart(40, '0')),
-        feature,
-      ]
-      const longRest = restEndpoints('owner/repo', longHistory)
+      const longRest = restEndpoints('owner/repo', 201, 3)
       const longProof = explicitBranchFacts(
         makeGitHubReader(
           longRest.call,
@@ -1681,7 +1671,7 @@ try {
                   ref: { target: { oid: squash } },
                   pullRequest: graphqlPull({
                     commits: {
-                      totalCount: longHistory.length,
+                      totalCount: 201,
                       nodes: [{ commit: { oid: feature } }],
                     },
                   }),
@@ -1698,25 +1688,33 @@ try {
         'a pull request with more than 100 commits is bound from the batched GraphQL read alone'
       )
 
-      const longFallbackRest = restEndpoints('owner/repo', longHistory)
-      const longFallbackProof = explicitBranchFacts(
-        makeGitHubReader(
-          longFallbackRest.call,
-          30_000,
-          () => 0,
-          () => ({ status: 'ok', text: '{"data": null}' })
+      for (const [commits, lastPage] of [
+        [100, 1],
+        [101, 2],
+        [200, 2],
+        [201, 3],
+        [250, 3],
+      ] as const) {
+        const fallbackRest = restEndpoints('owner/repo', commits, lastPage)
+        const fallbackProof = explicitBranchFacts(
+          makeGitHubReader(
+            fallbackRest.call,
+            30_000,
+            () => 0,
+            () => ({ status: 'ok', text: '{"data": null}' })
+          )
         )
-      )
-      assert.equal(longFallbackProof.pullRequests[0]?.containsHead.kind, 'yes')
-      assert.deepEqual(
-        longFallbackRest.calls,
-        [
-          'repos/owner/repo/git/ref/heads/main',
-          'repos/owner/repo/pulls/7',
-          'repos/owner/repo/pulls/7/commits?per_page=100&page=3',
-        ],
-        'without GraphQL, REST reads only the 100-commit page holding the last commit of a 201-commit pull request'
-      )
+        assert.equal(fallbackProof.pullRequests[0]?.containsHead.kind, 'yes', `${commits} commits`)
+        assert.deepEqual(
+          fallbackRest.calls,
+          [
+            'repos/owner/repo/git/ref/heads/main',
+            'repos/owner/repo/pulls/7',
+            `repos/owner/repo/pulls/7/commits?per_page=100&page=${lastPage}`,
+          ],
+          `without GraphQL, REST reads only page ${lastPage} for a ${commits}-commit pull request`
+        )
+      }
     }
   )
   await claim(
