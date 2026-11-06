@@ -40,7 +40,7 @@ class Probe:
 
     expect: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
-    expect_order: tuple[str, ...] = ()
+    expect_raw_order: tuple[str, ...] = ()
 
     env: tuple[tuple[str, str], ...] = ()
 
@@ -154,11 +154,12 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
-        expect=('dev workspace release {TASK}', 'Status: The worktree directory is missing',
-                'Release 1 task (1 managed worktree)?', 'Exit 0: done.'),
-        expect_raw=('\x1b_Ga=T,f=32,o=z', '\x1b_Ga=d,d=I,i=', '\x1b[?2026h', '\x1b[?25h'),
-        expect_order=('dev workspace release {TASK}', 'Release 1 task (1 managed worktree)?',
-                      '[y = release, Enter = keep]', '✓ 1 worktree removed', 'Exit 0: done.'),
+        expect=('Status: The worktree directory is missing',),
+        expect_raw_order=('Sweeping workspaces…', '\x1b_Ga=T,f=32,o=z',
+                          'dev workspace release {TASK}', 'Release 1 task (1 managed worktree)?',
+                          '[y = release, Enter = keep]', '\x1b[?2026h', '\x1b_Ga=T,f=32,o=z',
+                          'Releasing 1 task…', '\x1b_Ga=d,d=I,i=', '\x1b[?2026l',
+                          '\x1b[?25h', '✓ 1 worktree removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'), ('TERM_PROGRAM', 'rex'),
              ('PI_IMAGE_PROTOCOL', 'kitty')),
     ),
@@ -406,13 +407,13 @@ def run(name: str, probe: Probe) -> bool:
             if expected not in haystack:
                 missing_output.append(expected)
     cursor = 0
-    for needle in probe.expect_order:
+    for needle in probe.expect_raw_order:
         try:
             expected = needle.format_map(inputs)
         except KeyError:
             missing_output.append(needle)
             continue
-        found = plain.find(expected, cursor)
+        found = text.find(expected, cursor)
         if found < 0:
             missing_output.append(f'in order: {expected}')
         else:

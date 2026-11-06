@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
+import { inflateSync } from 'node:zlib'
 import { Effect } from 'effect'
 import { loadQuitGraphics } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
@@ -13,8 +14,6 @@ import {
   type Scene,
   ROWS,
   SETTLED_AT,
-  SYNC_BEGIN,
-  SYNC_END,
   drawRelease,
   drawSweep,
   encodeFrame,
@@ -183,8 +182,8 @@ await claim(
       before: '<before>',
       after: '<after>',
     })
-    assert.ok(text.startsWith(`${SYNC_BEGIN}<before>`))
-    assert.ok(text.endsWith(`<after>${SYNC_END}`))
+    assert.ok(text.startsWith('\x1b[?2026h<before>'))
+    assert.ok(text.endsWith('<after>\x1b[?2026l'))
     const sequences = text
       .split('\x1b_G')
       .slice(1)
@@ -199,6 +198,10 @@ await claim(
       assert.ok(keys.endsWith(index === sequences.length - 1 ? 'm=0' : 'm=1'), keys)
       if (index > 0) assert.equal(keys, keys.slice(keys.indexOf('m=')))
     })
+    assert.deepEqual(
+      inflateSync(Buffer.from(sequences.map(([, , data]) => data).join(''), 'base64')),
+      rgba
+    )
     const first = sequences[0]?.[1] ?? ''
     for (const key of [
       'a=T',
@@ -209,14 +212,15 @@ await claim(
       'i=55',
       'p=1',
       'c=7',
-      `r=${ROWS}`,
+      'r=2',
       'C=1',
       'q=2',
     ])
       assert.ok(first.split(',').includes(key), `${key} in ${first}`)
     const remove = '\x1b_Ga=d,d=I,i=54,q=2\x1b\\'
-    assert.ok(text.indexOf(remove) > text.lastIndexOf('\x1b_G', text.indexOf(remove) - 1))
-    assert.ok(text.indexOf(remove) > text.indexOf('<before>'))
+    const lastChunk = sequences.at(-1)?.[0] ?? ''
+    assert.ok(text.indexOf(remove) >= text.indexOf(lastChunk) + lastChunk.length + 2)
+    assert.ok(text.indexOf(remove) < text.indexOf('<after>'))
     assert.ok(
       !encodeFrame({
         rgba,
@@ -306,13 +310,13 @@ await claim('the graphical sweep animates in place and always restores the termi
   assert.ok(text.endsWith(`\x1b8\x1b[K\x1b[${ROWS}B\r\x1b[?25h`), JSON.stringify(text.slice(-40)))
   assert.equal(text.split('\x1b[?25h').length - 1, 1)
   assert.ok(text.includes('\x1b_Ga=d,d=I,i='))
-  const frames = text.split(SYNC_BEGIN).length - 1
+  const frames = text.split('\x1b[?2026h').length - 1
   assert.ok(frames >= 5, String(frames))
   const unsettled = await runSweep(live, graphics, false)
   assert.ok(unsettled.endsWith(`\x1b8\x1b[K\x1b[${ROWS}B\r\x1b[?25h`))
 })
 
-await claim('the release animation follows the scene and ends below the strip', async () => {
+await claim('release strips report progress and restore the terminal', async () => {
   const initial: Scene = { dots: 1, branches: [{ kind: 'waiting' }, { kind: 'waiting' }] }
   const run = async (
     style: ReturnType<typeof terminalStyle>,

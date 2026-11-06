@@ -467,8 +467,8 @@ export const toRgba = (canvas: Canvas): Buffer => {
   return out
 }
 
-export const SYNC_BEGIN = '\x1b[?2026h'
-export const SYNC_END = '\x1b[?2026l'
+const SYNC_BEGIN = '\x1b[?2026h'
+const SYNC_END = '\x1b[?2026l'
 const CHUNK = 4096
 
 export interface KittyFrame {
