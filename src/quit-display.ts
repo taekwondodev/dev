@@ -1,4 +1,6 @@
-import { Clock, Effect, type Scope } from 'effect'
+import { Clock, Effect, Fiber, type Scope } from 'effect'
+import { type ReleaseStrip, releaseStrip, stripFits, sweepStrip } from './quit-animation.ts'
+import { type QuitGraphics, type Scene, type SceneShape, SCAN_SHAPE } from './quit-scene.ts'
 import type {
   RetainedReason,
   SweepReceipt,
@@ -61,23 +63,59 @@ const spin = Effect.fnUntraced(function* (
   }
 })
 
+export interface SweepIndicator {
+  readonly sweepDone: Effect.Effect<void>
+  readonly settle: (shape: SceneShape) => Effect.Effect<void>
+}
+
+const LABEL_COLUMNS = 32
+
+const idle: SweepIndicator = { sweepDone: Effect.void, settle: () => Effect.void }
+
 export const sweepIndicator = Effect.fnUntraced(function* (
   style: TerminalStyle,
-  out: NodeJS.WritableStream
-): Effect.fn.Return<void, never, Scope.Scope> {
+  out: NodeJS.WritableStream,
+  graphics?: QuitGraphics
+): Effect.fn.Return<SweepIndicator, never, Scope.Scope> {
   if (!style.live) {
     yield* Effect.sync(() => {
       out.write('Sweeping workspaces...\n')
     })
-    return
+    return idle
   }
   const started = yield* Clock.currentTimeMillis
-  yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      out.write(CLEAR_LINE)
-    })
+  if (stripFits(graphics, SCAN_SHAPE, LABEL_COLUMNS)) {
+    const strip = yield* sweepStrip(out, graphics, elapsed =>
+      paint(style, 'dim', `Sweeping workspaces… ${seconds(elapsed)}`)
+    )
+    return { sweepDone: Effect.void, settle: strip.settle }
+  }
+  let cleared = false
+  const clear = Effect.sync(() => {
+    if (cleared) return
+    cleared = true
+    out.write(CLEAR_LINE)
+  })
+  yield* Effect.addFinalizer(() => clear)
+  const spinner = yield* Effect.forkScoped(spin(style, out, started), { uninterruptible: false })
+  return {
+    sweepDone: Fiber.interrupt(spinner).pipe(Effect.andThen(clear)),
+    settle: () => Effect.void,
+  }
+})
+
+export const releaseIndicator = Effect.fnUntraced(function* (
+  style: TerminalStyle,
+  out: NodeJS.WritableStream,
+  graphics: QuitGraphics | undefined,
+  initial: Scene,
+  tasks: number
+): Effect.fn.Return<ReleaseStrip | undefined, never, Scope.Scope> {
+  const shape = { dots: initial.dots, branches: initial.branches.length }
+  if (!style.live || !stripFits(graphics, shape, LABEL_COLUMNS)) return undefined
+  return yield* releaseStrip(out, graphics, initial, elapsed =>
+    paint(style, 'dim', `Releasing ${count(tasks, 'task')}… ${seconds(elapsed)}`)
   )
-  yield* Effect.forkScoped(spin(style, out, started), { uninterruptible: false })
 })
 
 type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
@@ -165,6 +203,9 @@ const taskOffers = (receipt: SweepReceipt): ReadonlyMap<WorkspaceId, ReleaseOffe
 
 const tasksOffered = (receipt: SweepReceipt, offer: ReleaseOffer): readonly WorkspaceId[] =>
   [...taskOffers(receipt)].filter(([, value]) => value === offer).map(([taskId]) => taskId)
+
+export const sweptWorktrees = (receipt: SweepReceipt): number =>
+  workspaceRows(receipt).filter(row => row.outcome === 'removed').length
 
 export const tasksToRelease = (receipt: SweepReceipt): readonly WorkspaceId[] =>
   tasksOffered(receipt, 'together')
