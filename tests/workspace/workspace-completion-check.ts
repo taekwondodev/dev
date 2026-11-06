@@ -500,7 +500,7 @@ try {
     },
     refTip: () => ({ unavailable: 'not consulted' }),
     pullRequest: () => ({ unavailable: 'not consulted' }),
-    pullRequestCommits: () => ({ unavailable: 'not consulted' }),
+    pullRequestLastCommit: () => ({ unavailable: 'not consulted' }),
     mergedPullRequestsForCommit: () => ({ unavailable: 'not consulted' }),
     compare: () => ({ unavailable: 'not consulted' }),
   })
