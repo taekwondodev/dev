@@ -14,8 +14,8 @@ import {
   deleteImage,
   drawRelease,
   drawSweep,
-  drawVanish,
   encodeFrame,
+  fadeAway,
   fitsStrip,
   makeCanvas,
   releaseEnd,
@@ -25,6 +25,8 @@ import {
 } from './quit-scene.ts'
 
 const FRAME_MS = 16
+const HOLD_MS = 250
+const NOTHING: SceneShape = { dots: 0, branches: 0 }
 const DEFAULT_COLUMNS = 80
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
 const PROGRESS_KEEPALIVE_FRAMES = 60
@@ -68,9 +70,11 @@ interface Strip {
     draw: (canvas: Canvas) => void,
     label: string
   ) => Effect.Effect<void>
-  readonly opened: () => boolean
-  readonly finish: Effect.Effect<void>
-  readonly vanish: Effect.Effect<void>
+  readonly leave: (
+    columns: number,
+    draw: (canvas: Canvas) => void,
+    holdMs: number
+  ) => Effect.Effect<void>
 }
 
 const openStrip = Effect.fnUntraced(function* (
@@ -81,14 +85,13 @@ const openStrip = Effect.fnUntraced(function* (
   let previousId: number | undefined
   let opened = false
   let finished = false
-  const close = (restore: string) =>
-    Effect.sync(() => {
-      if (finished) return
-      finished = true
-      if (opened) out.write(restore)
-    })
-  const finish = close(`\x1b8\x1b[K\x1b[${ROWS}B\r\x1b[?25h`)
-  yield* Effect.addFinalizer(() => finish)
+  const close = Effect.sync(() => {
+    if (finished) return
+    finished = true
+    if (opened)
+      out.write(`${previousId === undefined ? '' : deleteImage(previousId)}\x1b8\x1b[K\r\x1b[?25h`)
+  })
+  yield* Effect.addFinalizer(() => close)
   const frame: Strip['frame'] = (columns, draw, label) =>
     Effect.sync(() => {
       if (finished) return
@@ -114,10 +117,27 @@ const openStrip = Effect.fnUntraced(function* (
       )
       previousId = id
     })
-  const vanish = Effect.suspend(() =>
-    close(`${previousId === undefined ? '' : deleteImage(previousId)}\x1b8\x1b[K\r\x1b[?25h`)
-  )
-  return { frame, opened: () => opened, finish, vanish }
+  const leave: Strip['leave'] = Effect.fnUntraced(function* (columns, draw, holdMs) {
+    if (opened) {
+      yield* Effect.sleep(holdMs)
+      const begun = yield* Clock.currentTimeMillis
+      for (;;) {
+        const elapsed = Math.min((yield* Clock.currentTimeMillis) - begun, VANISH_MS)
+        yield* frame(
+          columns,
+          canvas => {
+            draw(canvas)
+            fadeAway(canvas, elapsed)
+          },
+          ''
+        )
+        if (elapsed >= VANISH_MS) break
+        yield* Effect.sleep(FRAME_MS)
+      }
+    }
+    yield* close
+  })
+  return { frame, leave }
 })
 
 export interface SweepStrip {
@@ -168,20 +188,21 @@ export const sweepStrip = Effect.fnUntraced(function* (
       if (t >= at + duration) break
       yield* Effect.sleep(FRAME_MS)
     }
+    return at
   })
   const settle = Effect.fnUntraced(function* (requested: SceneShape) {
     yield* Fiber.interrupt(scan)
     if (requested.dots + requested.branches === 0 || !fitsStrip(graphics, requested, 0)) {
-      if (strip.opened()) yield* animate(scanColumns, VANISH_MS, drawVanish)
-      yield* strip.vanish
+      const at = origin === undefined ? 0 : (yield* Clock.currentTimeMillis) - origin
+      yield* strip.leave(scanColumns, canvas => drawSweep(canvas, at, { shape: NOTHING, at }), 0)
       return
     }
-    yield* animate(
-      Math.max(scanColumns, stripColumns(graphics, requested)),
-      settleDuration(requested),
-      (canvas, at, t) => drawSweep(canvas, t, { shape: requested, at })
-    )
-    yield* strip.finish
+    const columns = Math.max(scanColumns, stripColumns(graphics, requested))
+    const duration = settleDuration(requested)
+    const draw = (canvas: Canvas, at: number, t: number) =>
+      drawSweep(canvas, t, { shape: requested, at })
+    const at = yield* animate(columns, duration, draw)
+    yield* strip.leave(columns, canvas => draw(canvas, at, at + duration), HOLD_MS)
   })
   return { settle }
 })
@@ -233,8 +254,9 @@ export const releaseStrip = Effect.fnUntraced(function* (
       yield* Effect.sleep(FRAME_MS)
     }
     yield* Fiber.interrupt(loop)
-    yield* render(Math.max((yield* Clock.currentTimeMillis) - started, releaseEnd(sceneNow())))
-    yield* strip.finish
+    const last = Math.max((yield* Clock.currentTimeMillis) - started, releaseEnd(sceneNow()))
+    yield* render(last)
+    yield* strip.leave(columns, canvas => drawRelease(canvas, sceneNow(), last), HOLD_MS)
   })
   return { begin, end, finish }
 })

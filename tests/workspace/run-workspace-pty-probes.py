@@ -163,6 +163,7 @@ PROBES = {
                           '[y = release, Enter = keep]', '\x1b[?2026h', '\x1b_Ga=T,f=32,o=z',
                           'Releasing 1 task…', '\x1b_Ga=d,d=I,i=', '\x1b[?2026l',
                           '\x1b[?25h', '✓ 1 worktree removed', 'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b[2B',)),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'), ('TERM_PROGRAM', 'rex'),
              ('PI_IMAGE_PROTOCOL', 'kitty'), ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
     ),

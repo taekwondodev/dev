@@ -377,11 +377,17 @@ export const drawSweep = (canvas: Canvas, t: number, settled?: Settled): void =>
   })
 }
 
-export const drawVanish = (canvas: Canvas, at: number, t: number): void => {
-  const scan = layout(canvas.height, SCAN_SHAPE)
-  const k = easeOut(progress(t - at, 0, VANISH_MS))
-  const to = mix(scanReach(scan, at), scan.left, 0.7 * k)
-  mainLine(canvas, scan, to, mix(scan.lineEnd, to, k), PALETTE.gray, 0.55 * (1 - k))
+export const fadeAway = (canvas: Canvas, elapsed: number): void => {
+  const k = easeOut(progress(elapsed, 0, VANISH_MS))
+  const cutoff = canvas.width * (1 - 0.7 * k)
+  const edge = 0.3 * canvas.height
+  const p = canvas.px
+  for (let y = 0; y < canvas.height; y += 1)
+    for (let x = 0; x < canvas.width; x += 1) {
+      const keep = clamp01((cutoff - x) / edge) * (1 - k)
+      const i = (y * canvas.width + x) * 4
+      for (let c = 0; c < 4; c += 1) p[i + c] = (p[i + c] ?? 0) * keep
+    }
 }
 
 const settledTimes = (scene: Scene): readonly number[] =>
