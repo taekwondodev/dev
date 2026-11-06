@@ -92,7 +92,9 @@ import {
   formatQuitSweepFailure,
   progressDone,
   quitReleaseExclusion,
+  releaseIndicator,
   sweepIndicator,
+  sweptWorktrees,
   taskReleaseExclusion,
   tasksToConfirm,
   tasksToRelease,
@@ -100,6 +102,8 @@ import {
   type TaskReleasePlan,
   type TerminalStyle,
 } from './quit-display.ts'
+import { loadQuitGraphics } from './quit-animation.ts'
+import { SETTLED_AT, type BranchState, type QuitGraphics, type Scene } from './quit-scene.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 
 export class LauncherError extends Schema.TaggedError<
@@ -468,7 +472,9 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   receipt: SweepReceipt,
   style: TerminalStyle,
   proceed: () => boolean,
-  elapsedMs: number
+  elapsedMs: number,
+  graphics: QuitGraphics | undefined,
+  settle: (branches: number) => Effect.Effect<void>
 ): Effect.fn.Return<QuitExit> {
   const swept = sweepExit(receipt)
   const excluded = new Map<WorkspaceId, string>()
@@ -496,22 +502,65 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   })
   const plans = yield* preflight(tasksToRelease(receipt), quitReleaseExclusion)
   const singles = yield* preflight(tasksToConfirm(receipt), taskReleaseExclusion)
+  const branchTasks = [...plans, ...singles].map(plan => plan.taskId)
+  yield* settle(branchTasks.length)
   yield* write(formatQuitReceipt(receipt, elapsedMs, style, excluded))
   const released = new Set<WorkspaceId>()
+  const outcomes = new Map<WorkspaceId, BranchState>()
   let failed = false
   const release = Effect.fnUntraced(function* (taskIds: readonly WorkspaceId[]) {
-    for (const taskId of taskIds) {
-      if (!proceed()) return
-      const results = yield* Effect.exit(lifecycle.release({ taskId }).pipe(Effect.uninterruptible))
-      if (Exit.isFailure(results)) {
-        failed = true
-        yield* write(formatQuitReleaseFailure(taskId, 'unreported', style))
-        continue
-      }
-      yield* write(formatQuitReleaseResults(taskId, results.value, style))
-      if (releaseExitCode(results.value) === 0) released.add(taskId)
-      else failed = true
+    const initial: Scene = {
+      dots: sweptWorktrees(receipt),
+      branches: branchTasks.map(taskId => outcomes.get(taskId) ?? { kind: 'waiting' }),
     }
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const strip = yield* releaseIndicator(
+          style,
+          process.stdout,
+          graphics,
+          initial,
+          taskIds.length
+        )
+        const buffered: string[] = []
+        const report = (text: string): Effect.Effect<void> =>
+          strip === undefined
+            ? write(text)
+            : Effect.sync(() => {
+                buffered.push(text)
+              })
+        const settled = Effect.gen(function* () {
+          if (strip !== undefined) yield* strip.finish
+          for (const text of buffered) yield* write(text)
+        })
+        yield* Effect.gen(function* () {
+          for (const taskId of taskIds) {
+            if (!proceed()) return
+            const index = branchTasks.indexOf(taskId)
+            if (strip !== undefined) yield* strip.begin(index)
+            const results = yield* Effect.exit(
+              lifecycle.release({ taskId }).pipe(Effect.uninterruptible)
+            )
+            if (Exit.isFailure(results)) {
+              failed = true
+              outcomes.set(taskId, { kind: 'failed', at: SETTLED_AT })
+              if (strip !== undefined) yield* strip.end(index, false)
+              yield* report(formatQuitReleaseFailure(taskId, 'unreported', style))
+              continue
+            }
+            const merged = releaseExitCode(results.value) === 0
+            outcomes.set(
+              taskId,
+              merged ? { kind: 'merged', at: SETTLED_AT } : { kind: 'failed', at: SETTLED_AT }
+            )
+            if (strip !== undefined) yield* strip.end(index, merged)
+            yield* report(formatQuitReleaseResults(taskId, results.value, style))
+            if (merged) released.add(taskId)
+            else failed = true
+          }
+        }).pipe(Effect.ensuring(settled))
+      })
+    )
   })
   const cancelled = (): QuitExit => ({
     code: 130,
@@ -556,19 +605,24 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     readonly occupiedPaths: readonly string[]
     readonly detached: boolean
     readonly proceed: () => boolean
+    readonly packageRoot?: string
   }
 ): Effect.fn.Return<void> {
   const style = terminalStyle(process.stdout, process.env)
+  const graphics =
+    input.packageRoot === undefined
+      ? undefined
+      : yield* loadQuitGraphics(input.packageRoot, style.live, process.stdout.columns)
   yield* write(
     input.detached
       ? ''
       : '\nClosing the workspace attachment was not confirmed, so the sweep rechecks every use.'
   )
   const started = yield* Clock.currentTimeMillis
-  const swept = yield* Effect.exit(
-    Effect.scoped(
-      Effect.andThen(
-        sweepIndicator(style, process.stdout),
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const indicator = yield* sweepIndicator(style, process.stdout, graphics)
+      const swept = yield* Effect.exit(
         lifecycle.sweep({
           moment: 'quit',
           anchorWorkspaceId: input.anchorWorkspaceId,
@@ -576,30 +630,48 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
           occupiedPaths: input.occupiedPaths.map(path => resolve(path)),
         })
       )
-    )
+      const elapsed = (yield* Clock.currentTimeMillis) - started
+      yield* indicator.sweepDone
+      if (Exit.isFailure(swept)) {
+        yield* indicator.settle({ dots: 0, branches: 0 })
+        yield* write(`${progressDone(style, true)}${formatQuitSweepFailure(style)}\nExit 1.`)
+        process.exitCode = 1
+        return
+      }
+      const receipt = swept.value
+      const sweptExit = sweepExit(receipt)
+      const settle = (branches: number): Effect.Effect<void> =>
+        indicator
+          .settle({ dots: sweptWorktrees(receipt), branches })
+          .pipe(
+            Effect.andThen(
+              write(progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0))
+            )
+          )
+      let exit: QuitExit
+      if (input.proceed() && process.stdin.isTTY === true && process.stdout.isTTY === true) {
+        exit = yield* releaseAtQuit(
+          lifecycle,
+          receipt,
+          style,
+          input.proceed,
+          elapsed,
+          graphics,
+          settle
+        )
+        if (!input.proceed() && exit.code !== 130)
+          exit = { code: 130, text: 'interrupted after the sweep' }
+      } else {
+        yield* settle(0)
+        yield* write(formatQuitReceipt(receipt, elapsed, style))
+        exit = input.proceed() ? sweptExit : { code: 130, text: 'interrupted after the sweep' }
+      }
+      yield* write(
+        `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
+      )
+      process.exitCode = exit.code
+    })
   )
-  const elapsed = (yield* Clock.currentTimeMillis) - started
-  if (Exit.isFailure(swept)) {
-    yield* write(`${progressDone(style, true)}${formatQuitSweepFailure(style)}\nExit 1.`)
-    process.exitCode = 1
-    return
-  }
-  const receipt = swept.value
-  const sweptExit = sweepExit(receipt)
-  yield* write(progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0))
-  let exit: QuitExit
-  if (input.proceed() && process.stdin.isTTY === true && process.stdout.isTTY === true) {
-    exit = yield* releaseAtQuit(lifecycle, receipt, style, input.proceed, elapsed)
-    if (!input.proceed() && exit.code !== 130)
-      exit = { code: 130, text: 'interrupted after the sweep' }
-  } else {
-    yield* write(formatQuitReceipt(receipt, elapsed, style))
-    exit = input.proceed() ? sweptExit : { code: 130, text: 'interrupted after the sweep' }
-  }
-  yield* write(
-    `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
-  )
-  process.exitCode = exit.code
 }, Effect.uninterruptible)
 
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
@@ -1188,6 +1260,7 @@ const run = Effect.fnUntraced(function* (
             occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
             detached: workspaceHost.isDetached(),
             proceed,
+            packageRoot: packageInfo.root,
           })
         )
       )

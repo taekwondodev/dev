@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-ESCAPES = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+ESCAPES = re.compile(
+    r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x1b]*\x1b\\|\x1b[78]'
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class Probe:
 
     expect: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
+    expect_order: tuple[str, ...] = ()
 
     env: tuple[tuple[str, str], ...] = ()
 
@@ -143,6 +146,21 @@ PROBES = {
                 'Release 1 task (1 managed worktree)?', 'including uncommitted changes and undelivered commits',
                 '✓ 1 worktree removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'),),
+    ),
+
+    'quit-release-graphics': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
+        expect=('dev workspace release {TASK}', 'Status: The worktree directory is missing',
+                'Release 1 task (1 managed worktree)?', 'Exit 0: done.'),
+        expect_raw=('\x1b_Ga=T,f=32,o=z', '\x1b_Ga=d,d=I,i=', '\x1b[?2026h', '\x1b[?25h'),
+        expect_order=('dev workspace release {TASK}', 'Release 1 task (1 managed worktree)?',
+                      '[y = release, Enter = keep]', '✓ 1 worktree removed', 'Exit 0: done.'),
+        env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'), ('TERM_PROGRAM', 'rex'),
+             ('PI_IMAGE_PROTOCOL', 'kitty')),
     ),
 
     'quit-release-declined': Probe(
@@ -309,6 +327,7 @@ def run(name: str, probe: Probe) -> bool:
         'PI_OFFLINE': '1',
         'PI_TELEMETRY_DISABLED': '1',
         'TERM_PROGRAM': 'probe',
+        'PI_IMAGE_PROTOCOL': 'none',
     })
     env.update(dict(probe.env))
     pid, master = pty.fork()
@@ -386,6 +405,18 @@ def run(name: str, probe: Probe) -> bool:
                 continue
             if expected not in haystack:
                 missing_output.append(expected)
+    cursor = 0
+    for needle in probe.expect_order:
+        try:
+            expected = needle.format_map(inputs)
+        except KeyError:
+            missing_output.append(needle)
+            continue
+        found = plain.find(expected, cursor)
+        if found < 0:
+            missing_output.append(f'in order: {expected}')
+        else:
+            cursor = found + len(expected)
     passed = (os.WIFEXITED(exit_status) and os.WEXITSTATUS(exit_status) == 0
               and report is not None and not missing and not missing_output
               and input_error is None)
