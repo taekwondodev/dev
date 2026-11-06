@@ -30,7 +30,7 @@ const pull = await claim(
   }
 )
 await claim(
-  'one GraphQL evidence read matches the target tip, merged pull request and commit list observed through REST',
+  'one GraphQL evidence read matches the target tip, merged pull request and last commit observed through REST',
   () => {
     const evidence = reader.pullRequestEvidence?.(repository, 'refs/heads/trunk', number)
     if (evidence === undefined || isUnavailable(evidence))
@@ -40,7 +40,7 @@ await claim(
     assert.equal(evidence.tip, reader.refTip(repository, 'refs/heads/trunk'))
     assert.equal(evidence.pullRequest.headSha, pull.headSha)
     assert.equal(evidence.pullRequest.mergeCommit, pull.mergeCommit)
-    assert.deepEqual(evidence.commits, { kind: 'complete', commits: [pull.headSha] })
+    assert.equal(evidence.lastCommit, pull.headSha)
   }
 )
 await claim(
@@ -48,9 +48,24 @@ await claim(
   () => {
     const tip = reader.refTip(repository, 'refs/heads/bagtoad/cli-security-reporting-guidance')
     assert.equal(tip, 'missing', 'the source branch no longer exists')
-    const commits = reader.pullRequestCommits(repository, number)
-    if (isUnavailable(commits)) return fail('pull request commits', commits)
-    assert.equal(commits.at(-1), pull.headSha)
+    assert.equal(reader.pullRequestLastCommit(repository, number, pull.commits), pull.headSha)
+  }
+)
+await claim(
+  'a merged pull request with more than 100 commits yields its head as the last commit through both GraphQL and the paged REST list',
+  () => {
+    const [longRepository, longNumber] = ['nodejs/node', 58388]
+    const long = reader.pullRequest(longRepository, longNumber)
+    if (long === 'missing' || isUnavailable(long)) return fail('long pull request', long)
+    assert.ok(long.commits > 100 && long.commits <= 250, `${long.commits} commits`)
+    const evidence = reader.pullRequestEvidence?.(longRepository, 'refs/heads/v22.x', longNumber)
+    if (evidence === undefined || isUnavailable(evidence))
+      return fail('long pull request evidence', evidence)
+    assert.equal(evidence.lastCommit, long.headSha)
+    assert.equal(
+      reader.pullRequestLastCommit(longRepository, longNumber, long.commits),
+      long.headSha
+    )
   }
 )
 await claim(

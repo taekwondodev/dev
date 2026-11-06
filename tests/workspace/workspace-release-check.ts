@@ -811,7 +811,7 @@ try {
         defaultBranch: () => 'main',
         refTip: () => base,
         pullRequest: () => 'missing',
-        pullRequestCommits: () => [],
+        pullRequestLastCommit: () => undefined,
         mergedPullRequestsForCommit: (_repository, sha) => {
           searched.push(sha)
           return []
@@ -1149,7 +1149,7 @@ try {
     defaultBranch: () => 'main',
     refTip: () => squash,
     pullRequest: () => pull(pullOverrides),
-    pullRequestCommits: () => [feature],
+    pullRequestLastCommit: () => feature,
     mergedPullRequestsForCommit: (_repository, sha) => (sha === feature ? [7] : []),
     compare: (_repository, base, head) =>
       base === squash && head === squash ? 'identical' : 'diverged',
@@ -1224,7 +1224,7 @@ try {
       assert.equal(
         prove(
           reader(
-            { pullRequestCommits: () => [feature, extendedSource] },
+            { pullRequestLastCommit: () => extendedSource },
             { headSha: extendedSource, commits: 2 }
           ),
           feature
@@ -1241,12 +1241,12 @@ try {
       )
       assert.ok(prove(reader({}, { headRepository: 'fork/repo' })).reason.includes('fork/repo'))
       assert.equal(
-        prove(reader({ pullRequestCommits: () => [githubMain] }, { headSha: githubMain })).outcome,
+        prove(reader({ pullRequestLastCommit: () => githubMain }, { headSha: githubMain })).outcome,
         'retained:not-integrated',
         'a pull request whose merged head is another commit does not cover this worktree'
       )
       assert.equal(
-        prove(reader({ pullRequestCommits: () => [feature, githubMain] })).outcome,
+        prove(reader({ pullRequestLastCommit: () => githubMain })).outcome,
         'retained:integration-unknown',
         'provider facts that disagree on the merged head bind nothing'
       )
@@ -1348,7 +1348,6 @@ try {
                     commits: {
                       totalCount: 1,
                       nodes: [{ commit: { oid: feature } }],
-                      pageInfo: { hasNextPage: false },
                     },
                   },
                 },
@@ -1432,7 +1431,6 @@ try {
                 commits: {
                   totalCount: 1,
                   nodes: [{ commit: { oid: feature } }],
-                  pageInfo: { hasNextPage: false },
                 },
               },
             },
@@ -1538,7 +1536,8 @@ try {
       )
       const restEndpoints = (
         headRepository: string | null,
-        commitList: readonly string[]
+        commits = 1,
+        lastPage = 1
       ): { readonly calls: string[]; readonly call: Parameters<typeof makeGitHubReader>[0] } => {
         const calls: string[] = []
         const responses = new Map<string, unknown>([
@@ -1554,10 +1553,10 @@ try {
                 repo: headRepository === null ? null : { full_name: headRepository },
               },
               base: { ref: 'main', repo: { full_name: 'owner/repo' } },
-              commits: commitList.length,
+              commits,
             },
           ],
-          ['repos/owner/repo/pulls/7/commits?per_page=250', commitList.map(sha => ({ sha }))],
+          [`repos/owner/repo/pulls/7/commits?per_page=100&page=${lastPage}`, [{ sha: feature }]],
         ])
         return {
           calls,
@@ -1585,7 +1584,6 @@ try {
         commits: {
           totalCount: 1,
           nodes: [{ commit: { oid: feature } }],
-          pageInfo: { hasNextPage: false },
         },
         ...overrides,
       })
@@ -1599,7 +1597,7 @@ try {
           siblings: { heads: [], unknown: [] },
         })
 
-      const erroredRest = restEndpoints('owner/repo', [feature])
+      const erroredRest = restEndpoints('owner/repo')
       const erroredProof = explicitBranchFacts(
         makeGitHubReader(
           erroredRest.call,
@@ -1620,12 +1618,12 @@ try {
         [
           'repos/owner/repo/git/ref/heads/main',
           'repos/owner/repo/pulls/7',
-          'repos/owner/repo/pulls/7/commits?per_page=250',
+          'repos/owner/repo/pulls/7/commits?per_page=100&page=1',
         ],
         'a GraphQL errors payload returned with HTTP 200 is discarded and REST supplies the proof'
       )
 
-      const deletedForkRest = restEndpoints(null, [feature])
+      const deletedForkRest = restEndpoints(null)
       const deletedForkIntegration = explicitBranchFacts(
         makeGitHubReader(
           deletedForkRest.call,
@@ -1659,11 +1657,7 @@ try {
         'a pull request whose source repository was deleted cannot be bound'
       )
 
-      const longHistory = [
-        ...Array.from({ length: 100 }, (_, index) => (index + 1).toString(16).padStart(40, '0')),
-        feature,
-      ]
-      const longRest = restEndpoints('owner/repo', longHistory)
+      const longRest = restEndpoints('owner/repo', 201, 3)
       const longProof = explicitBranchFacts(
         makeGitHubReader(
           longRest.call,
@@ -1677,9 +1671,8 @@ try {
                   ref: { target: { oid: squash } },
                   pullRequest: graphqlPull({
                     commits: {
-                      totalCount: longHistory.length,
-                      nodes: longHistory.slice(0, 100).map(oid => ({ commit: { oid } })),
-                      pageInfo: { hasNextPage: true },
+                      totalCount: 201,
+                      nodes: [{ commit: { oid: feature } }],
                     },
                   }),
                 },
@@ -1691,9 +1684,37 @@ try {
       assert.equal(longProof.pullRequests[0]?.containsHead.kind, 'yes')
       assert.deepEqual(
         longRest.calls,
-        ['repos/owner/repo/pulls/7/commits?per_page=250'],
-        'an incomplete GraphQL commit page keeps the batched tip and pull request and reads only the commit list through REST'
+        [],
+        'a pull request with more than 100 commits is bound from the batched GraphQL read alone'
       )
+
+      for (const [commits, lastPage] of [
+        [100, 1],
+        [101, 2],
+        [200, 2],
+        [201, 3],
+        [250, 3],
+      ] as const) {
+        const fallbackRest = restEndpoints('owner/repo', commits, lastPage)
+        const fallbackProof = explicitBranchFacts(
+          makeGitHubReader(
+            fallbackRest.call,
+            30_000,
+            () => 0,
+            () => ({ status: 'ok', text: '{"data": null}' })
+          )
+        )
+        assert.equal(fallbackProof.pullRequests[0]?.containsHead.kind, 'yes', `${commits} commits`)
+        assert.deepEqual(
+          fallbackRest.calls,
+          [
+            'repos/owner/repo/git/ref/heads/main',
+            'repos/owner/repo/pulls/7',
+            `repos/owner/repo/pulls/7/commits?per_page=100&page=${lastPage}`,
+          ],
+          `without GraphQL, REST reads only page ${lastPage} for a ${commits}-commit pull request`
+        )
+      }
     }
   )
   await claim(
@@ -1798,7 +1819,7 @@ try {
             reader(
               {
                 mergedPullRequestsForCommit: seeded(feature),
-                pullRequestCommits: () => [feature, unknownSha],
+                pullRequestLastCommit: () => unknownSha,
               },
               { headSha: unknownSha, commits: 2 }
             ),

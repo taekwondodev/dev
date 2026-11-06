@@ -725,7 +725,7 @@ try {
         },
         refTip: () => offline('refTip'),
         pullRequest: () => offline('pullRequest'),
-        pullRequestCommits: () => offline('pullRequestCommits'),
+        pullRequestLastCommit: () => offline('pullRequestLastCommit'),
         mergedPullRequestsForCommit: () => offline('mergedPullRequestsForCommit'),
         compare: () => offline('compare'),
       }
@@ -801,7 +801,7 @@ try {
         defaultBranch: () => 'main',
         refTip: () => tip,
         pullRequest: () => 'missing',
-        pullRequestCommits: () => [],
+        pullRequestLastCommit: () => undefined,
         mergedPullRequestsForCommit: () => [],
         compare: () => ({ unavailable: 'unexpected comparison of local history' }),
       }
@@ -940,7 +940,6 @@ try {
                   commits: {
                     totalCount: 1,
                     nodes: [{ commit: { oid: head } }],
-                    pageInfo: { hasNextPage: false },
                   },
                 },
               },
