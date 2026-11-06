@@ -57,12 +57,23 @@ const interruptedDuringSweep = Effect.gen(function* () {
   return lifecycle
 })
 
+const slowSweep = Effect.gen(function* () {
+  const real = yield* makeWorkspaceLifecycle({ root })
+  const lifecycle: WorkspaceLifecycle = {
+    ...real,
+    sweep: input => Effect.sleep(400).pipe(Effect.andThen(real.sweep(input))),
+  }
+  return lifecycle
+})
+
 const lifecycleFor = (fault: string | undefined) => {
   switch (fault) {
     case 'sigint-after-quit':
       return interruptedAfterQuit
     case 'sigint-during-sweep':
       return interruptedDuringSweep
+    case 'slow-sweep':
+      return slowSweep
     default:
       return makeWorkspaceLifecycle({ root })
   }

@@ -46,6 +46,8 @@ export const SCAN_SHAPE: SceneShape = { dots: 2, branches: 2 }
 const WAITING = 0.6
 const STAGGER = 60
 const SCAN_PERIOD = 1100
+const SCAN_DRAW_MS = 320
+export const VANISH_MS = 180
 const PULSE_PERIOD = 820
 const SLIDE_MS = 420
 const RING_MS = 460
@@ -331,10 +333,13 @@ const shake = (since: number, amplitude: number): number =>
 export const settleDuration = (shape: SceneShape): number =>
   STAGGER * (shape.dots + shape.branches) + 420
 
+const scanReach = (scan: Layout, t: number): number =>
+  mix(scan.left, scan.lineEnd, easeOut(progress(t, 0, SCAN_DRAW_MS)))
+
 export const drawSweep = (canvas: Canvas, t: number, settled?: Settled): void => {
   const H = canvas.height
   const scan = layout(H, SCAN_SHAPE)
-  const drawn = mix(scan.left, scan.lineEnd, easeOut(progress(t, 0, 320)))
+  const drawn = scanReach(scan, t)
   if (settled === undefined) {
     mainLine(canvas, scan, drawn, scan.lineEnd, PALETTE.gray, 0.55)
     const f = (t % SCAN_PERIOD) / SCAN_PERIOD
@@ -348,7 +353,7 @@ export const drawSweep = (canvas: Canvas, t: number, settled?: Settled): void =>
   const s = t - settled.at
   const extend = easeOut(progress(s, 0, 340))
   const end = mix(scan.lineEnd, L.lineEnd, extend)
-  const startedAt = mix(scan.left, scan.lineEnd, easeOut(progress(settled.at, 0, 320)))
+  const startedAt = scanReach(scan, settled.at)
   mainLine(canvas, L, mix(startedAt, end, extend), end, PALETTE.gray, 0.55)
   L.dots.forEach((_, j) => {
     const local = s - j * STAGGER
@@ -370,6 +375,13 @@ export const drawSweep = (canvas: Canvas, t: number, settled?: Settled): void =>
         WAITING
       )
   })
+}
+
+export const drawVanish = (canvas: Canvas, at: number, t: number): void => {
+  const scan = layout(canvas.height, SCAN_SHAPE)
+  const k = easeOut(progress(t - at, 0, VANISH_MS))
+  const to = mix(scanReach(scan, at), scan.left, 0.7 * k)
+  mainLine(canvas, scan, to, mix(scan.lineEnd, to, k), PALETTE.gray, 0.55 * (1 - k))
 }
 
 const settledTimes = (scene: Scene): readonly number[] =>
@@ -482,6 +494,8 @@ export interface KittyFrame {
   readonly after: string
 }
 
+export const deleteImage = (id: number): string => `\x1b_Ga=d,d=I,i=${id},q=2\x1b\\`
+
 export const encodeFrame = (frame: KittyFrame): string => {
   const data = deflateSync(frame.rgba, { level: 1 }).toString('base64')
   let chunks = ''
@@ -493,7 +507,6 @@ export const encodeFrame = (frame: KittyFrame): string => {
         : `m=${more}`
     chunks += `\x1b_G${head};${data.slice(i, i + CHUNK)}\x1b\\`
   }
-  const removal =
-    frame.previousId === undefined ? '' : `\x1b_Ga=d,d=I,i=${frame.previousId},q=2\x1b\\`
+  const removal = frame.previousId === undefined ? '' : deleteImage(frame.previousId)
   return `${SYNC_BEGIN}${frame.before}${chunks}${removal}${frame.after}${SYNC_END}`
 }

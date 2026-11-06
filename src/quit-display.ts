@@ -69,6 +69,7 @@ export interface SweepIndicator {
 }
 
 const LABEL_COLUMNS = 32
+const INDICATOR_DELAY_MS = 150
 
 const idle: SweepIndicator = { sweepDone: Effect.void, settle: () => Effect.void }
 
@@ -85,19 +86,30 @@ export const sweepIndicator = Effect.fnUntraced(function* (
   }
   const started = yield* Clock.currentTimeMillis
   if (stripFits(graphics, SCAN_SHAPE, LABEL_COLUMNS)) {
-    const strip = yield* sweepStrip(out, graphics, elapsed =>
+    const strip = yield* sweepStrip(out, graphics, INDICATOR_DELAY_MS, elapsed =>
       paint(style, 'dim', `Sweeping workspaces… ${seconds(elapsed)}`)
     )
     return { sweepDone: Effect.void, settle: strip.settle }
   }
+  let shown = false
   let cleared = false
   const clear = Effect.sync(() => {
-    if (cleared) return
+    if (!shown || cleared) return
     cleared = true
     out.write(CLEAR_LINE)
   })
   yield* Effect.addFinalizer(() => clear)
-  const spinner = yield* Effect.forkScoped(spin(style, out, started), { uninterruptible: false })
+  const spinner = yield* Effect.forkScoped(
+    Effect.sleep(INDICATOR_DELAY_MS).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          shown = true
+        })
+      ),
+      Effect.andThen(spin(style, out, started))
+    ),
+    { uninterruptible: false }
+  )
   return {
     sweepDone: Fiber.interrupt(spinner).pipe(Effect.andThen(clear)),
     settle: () => Effect.void,

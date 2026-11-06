@@ -10,8 +10,11 @@ import {
   type SceneShape,
   ROWS,
   SCAN_SHAPE,
+  VANISH_MS,
+  deleteImage,
   drawRelease,
   drawSweep,
+  drawVanish,
   encodeFrame,
   fitsStrip,
   makeCanvas,
@@ -65,7 +68,9 @@ interface Strip {
     draw: (canvas: Canvas) => void,
     label: string
   ) => Effect.Effect<void>
+  readonly opened: () => boolean
   readonly finish: Effect.Effect<void>
+  readonly vanish: Effect.Effect<void>
 }
 
 const openStrip = Effect.fnUntraced(function* (
@@ -74,19 +79,23 @@ const openStrip = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Strip, never, Scope.Scope> {
   const heightPx = ROWS * graphics.cellHeight
   let previousId: number | undefined
+  let opened = false
   let finished = false
-  yield* Effect.sync(() => {
-    out.write(`${'\n'.repeat(ROWS)}\x1b[${ROWS}A\x1b[?25l\x1b7`)
-  })
-  const finish = Effect.sync(() => {
-    if (finished) return
-    finished = true
-    out.write(`\x1b8\x1b[K\x1b[${ROWS}B\r\x1b[?25h`)
-  })
+  const close = (restore: string) =>
+    Effect.sync(() => {
+      if (finished) return
+      finished = true
+      if (opened) out.write(restore)
+    })
+  const finish = close(`\x1b8\x1b[K\x1b[${ROWS}B\r\x1b[?25h`)
   yield* Effect.addFinalizer(() => finish)
   const frame: Strip['frame'] = (columns, draw, label) =>
     Effect.sync(() => {
       if (finished) return
+      if (!opened) {
+        opened = true
+        out.write(`${'\n'.repeat(ROWS)}\x1b[${ROWS}A\x1b[?25l\x1b7`)
+      }
       const widthPx = columns * graphics.cellWidth
       const canvas = makeCanvas(widthPx, heightPx)
       draw(canvas)
@@ -105,7 +114,10 @@ const openStrip = Effect.fnUntraced(function* (
       )
       previousId = id
     })
-  return { frame, finish }
+  const vanish = Effect.suspend(() =>
+    close(`${previousId === undefined ? '' : deleteImage(previousId)}\x1b8\x1b[K\r\x1b[?25h`)
+  )
+  return { frame, opened: () => opened, finish, vanish }
 })
 
 export interface SweepStrip {
@@ -115,37 +127,60 @@ export interface SweepStrip {
 export const sweepStrip = Effect.fnUntraced(function* (
   out: NodeJS.WritableStream,
   graphics: QuitGraphics,
+  delayMs: number,
   label: (elapsedMs: number) => string
 ): Effect.fn.Return<SweepStrip, never, Scope.Scope> {
   const started = yield* Clock.currentTimeMillis
   const strip = yield* openStrip(out, graphics)
   const scanColumns = stripColumns(graphics, SCAN_SHAPE)
+  let origin: number | undefined
   const scan = yield* Effect.forkScoped(
     Effect.gen(function* () {
+      yield* Effect.sleep(delayMs)
+      const shown = yield* Clock.currentTimeMillis
+      origin = shown
       for (let index = 0; ; index += 1) {
-        const t = (yield* Clock.currentTimeMillis) - started
+        const now = yield* Clock.currentTimeMillis
+        yield* strip.frame(
+          scanColumns,
+          canvas => drawSweep(canvas, now - shown),
+          label(now - started)
+        )
         if (index % PROGRESS_KEEPALIVE_FRAMES === 0)
           yield* Effect.sync(() => {
             out.write(PROGRESS_ACTIVE)
           })
-        yield* strip.frame(scanColumns, canvas => drawSweep(canvas, t), label(t))
         yield* Effect.sleep(FRAME_MS)
       }
     }),
     { uninterruptible: false }
   )
-  const settle = Effect.fnUntraced(function* (requested: SceneShape) {
-    yield* Fiber.interrupt(scan)
-    const shape = fitsStrip(graphics, requested, 0) ? requested : { dots: 0, branches: 0 }
-    const columns = Math.max(scanColumns, stripColumns(graphics, shape))
-    const at = (yield* Clock.currentTimeMillis) - started
-    const duration = settleDuration(shape)
+  const animate = Effect.fnUntraced(function* (
+    columns: number,
+    duration: number,
+    draw: (canvas: Canvas, at: number, t: number) => void
+  ) {
+    const begun = origin ?? (yield* Clock.currentTimeMillis)
+    const at = (yield* Clock.currentTimeMillis) - begun
     for (;;) {
-      const t = Math.min((yield* Clock.currentTimeMillis) - started, at + duration)
-      yield* strip.frame(columns, canvas => drawSweep(canvas, t, { shape, at }), '')
+      const t = Math.min((yield* Clock.currentTimeMillis) - begun, at + duration)
+      yield* strip.frame(columns, canvas => draw(canvas, at, t), '')
       if (t >= at + duration) break
       yield* Effect.sleep(FRAME_MS)
     }
+  })
+  const settle = Effect.fnUntraced(function* (requested: SceneShape) {
+    yield* Fiber.interrupt(scan)
+    if (requested.dots + requested.branches === 0 || !fitsStrip(graphics, requested, 0)) {
+      if (strip.opened()) yield* animate(scanColumns, VANISH_MS, drawVanish)
+      yield* strip.vanish
+      return
+    }
+    yield* animate(
+      Math.max(scanColumns, stripColumns(graphics, requested)),
+      settleDuration(requested),
+      (canvas, at, t) => drawSweep(canvas, t, { shape: requested, at })
+    )
     yield* strip.finish
   })
   return { settle }
