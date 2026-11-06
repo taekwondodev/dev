@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
 import { NodeServices } from '@effect/platform-node'
@@ -140,12 +140,16 @@ try {
   await lifecycle.recordTarget(taskId, { kind: 'local', ref: 'refs/heads/main' })
   if (removeInstallation) {
     const source = fileURLToPath(new URL('../../', import.meta.url))
-    for (const path of ['src', 'tests', 'package.json'])
+    const installation = ['src', 'tests', 'package.json', '.gitignore']
+    for (const path of installation)
       cpSync(join(source, path), join(worktree, path), { recursive: true })
     symlinkSync(join(source, 'node_modules'), join(worktree, 'node_modules'))
+    const exclude = git(['rev-parse', '--git-path', 'info/exclude'], worktree)
+    mkdirSync(dirname(resolve(worktree, exclude)), { recursive: true })
+    writeFileSync(resolve(worktree, exclude), '/node_modules\n')
     git(['switch', '--quiet', '-c', 'delivered-installation'], worktree)
     writeFileSync(join(worktree, 'delivered.txt'), 'delivered\n')
-    git(['add', 'delivered.txt'], worktree)
+    git(['add', 'delivered.txt', ...installation], worktree)
     git(['commit', '--quiet', '-m', 'delivered'], worktree)
     git(['merge', '--quiet', '--ff-only', 'delivered-installation'], repo)
     if (containedHistory) {
