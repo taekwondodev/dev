@@ -811,7 +811,7 @@ try {
         defaultBranch: () => 'main',
         refTip: () => base,
         pullRequest: () => 'missing',
-        pullRequestCommits: () => [],
+        pullRequestLastCommit: () => undefined,
         mergedPullRequestsForCommit: (_repository, sha) => {
           searched.push(sha)
           return []
@@ -1149,7 +1149,7 @@ try {
     defaultBranch: () => 'main',
     refTip: () => squash,
     pullRequest: () => pull(pullOverrides),
-    pullRequestCommits: () => [feature],
+    pullRequestLastCommit: () => feature,
     mergedPullRequestsForCommit: (_repository, sha) => (sha === feature ? [7] : []),
     compare: (_repository, base, head) =>
       base === squash && head === squash ? 'identical' : 'diverged',
@@ -1224,7 +1224,7 @@ try {
       assert.equal(
         prove(
           reader(
-            { pullRequestCommits: () => [feature, extendedSource] },
+            { pullRequestLastCommit: () => extendedSource },
             { headSha: extendedSource, commits: 2 }
           ),
           feature
@@ -1241,12 +1241,12 @@ try {
       )
       assert.ok(prove(reader({}, { headRepository: 'fork/repo' })).reason.includes('fork/repo'))
       assert.equal(
-        prove(reader({ pullRequestCommits: () => [githubMain] }, { headSha: githubMain })).outcome,
+        prove(reader({ pullRequestLastCommit: () => githubMain }, { headSha: githubMain })).outcome,
         'retained:not-integrated',
         'a pull request whose merged head is another commit does not cover this worktree'
       )
       assert.equal(
-        prove(reader({ pullRequestCommits: () => [feature, githubMain] })).outcome,
+        prove(reader({ pullRequestLastCommit: () => githubMain })).outcome,
         'retained:integration-unknown',
         'provider facts that disagree on the merged head bind nothing'
       )
@@ -1348,7 +1348,6 @@ try {
                     commits: {
                       totalCount: 1,
                       nodes: [{ commit: { oid: feature } }],
-                      pageInfo: { hasNextPage: false },
                     },
                   },
                 },
@@ -1432,7 +1431,6 @@ try {
                 commits: {
                   totalCount: 1,
                   nodes: [{ commit: { oid: feature } }],
-                  pageInfo: { hasNextPage: false },
                 },
               },
             },
@@ -1557,8 +1555,15 @@ try {
               commits: commitList.length,
             },
           ],
-          ['repos/owner/repo/pulls/7/commits?per_page=250', commitList.map(sha => ({ sha }))],
         ])
+        const githubMaxPageSize = 100
+        for (let page = 1; (page - 1) * githubMaxPageSize < Math.max(1, commitList.length); page++)
+          responses.set(
+            `repos/owner/repo/pulls/7/commits?per_page=100&page=${page}`,
+            commitList
+              .slice((page - 1) * githubMaxPageSize, page * githubMaxPageSize)
+              .map(sha => ({ sha }))
+          )
         return {
           calls,
           call: endpoint => {
@@ -1585,7 +1590,6 @@ try {
         commits: {
           totalCount: 1,
           nodes: [{ commit: { oid: feature } }],
-          pageInfo: { hasNextPage: false },
         },
         ...overrides,
       })
@@ -1620,7 +1624,7 @@ try {
         [
           'repos/owner/repo/git/ref/heads/main',
           'repos/owner/repo/pulls/7',
-          'repos/owner/repo/pulls/7/commits?per_page=250',
+          'repos/owner/repo/pulls/7/commits?per_page=100&page=1',
         ],
         'a GraphQL errors payload returned with HTTP 200 is discarded and REST supplies the proof'
       )
@@ -1660,7 +1664,7 @@ try {
       )
 
       const longHistory = [
-        ...Array.from({ length: 100 }, (_, index) => (index + 1).toString(16).padStart(40, '0')),
+        ...Array.from({ length: 200 }, (_, index) => (index + 1).toString(16).padStart(40, '0')),
         feature,
       ]
       const longRest = restEndpoints('owner/repo', longHistory)
@@ -1678,8 +1682,7 @@ try {
                   pullRequest: graphqlPull({
                     commits: {
                       totalCount: longHistory.length,
-                      nodes: longHistory.slice(0, 100).map(oid => ({ commit: { oid } })),
-                      pageInfo: { hasNextPage: true },
+                      nodes: [{ commit: { oid: feature } }],
                     },
                   }),
                 },
@@ -1691,8 +1694,28 @@ try {
       assert.equal(longProof.pullRequests[0]?.containsHead.kind, 'yes')
       assert.deepEqual(
         longRest.calls,
-        ['repos/owner/repo/pulls/7/commits?per_page=250'],
-        'an incomplete GraphQL commit page keeps the batched tip and pull request and reads only the commit list through REST'
+        [],
+        'a pull request with more than 100 commits is bound from the batched GraphQL read alone'
+      )
+
+      const longFallbackRest = restEndpoints('owner/repo', longHistory)
+      const longFallbackProof = explicitBranchFacts(
+        makeGitHubReader(
+          longFallbackRest.call,
+          30_000,
+          () => 0,
+          () => ({ status: 'ok', text: '{"data": null}' })
+        )
+      )
+      assert.equal(longFallbackProof.pullRequests[0]?.containsHead.kind, 'yes')
+      assert.deepEqual(
+        longFallbackRest.calls,
+        [
+          'repos/owner/repo/git/ref/heads/main',
+          'repos/owner/repo/pulls/7',
+          'repos/owner/repo/pulls/7/commits?per_page=100&page=3',
+        ],
+        'without GraphQL, REST reads only the 100-commit page holding the last commit of a 201-commit pull request'
       )
     }
   )
@@ -1798,7 +1821,7 @@ try {
             reader(
               {
                 mergedPullRequestsForCommit: seeded(feature),
-                pullRequestCommits: () => [feature, unknownSha],
+                pullRequestLastCommit: () => unknownSha,
               },
               { headSha: unknownSha, commits: 2 }
             ),

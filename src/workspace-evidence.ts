@@ -63,14 +63,10 @@ export interface Unavailable {
 export const isUnavailable = (value: unknown): value is Unavailable =>
   Predicate.hasProperty(value, 'unavailable') && Predicate.isString(value.unavailable)
 
-export type GitHubCommitListEvidence =
-  | { readonly kind: 'complete'; readonly commits: readonly string[] }
-  | { readonly kind: 'incomplete' }
-
 export interface GitHubPullRequestEvidence {
   readonly tip: string | 'missing' | Unavailable
   readonly pullRequest: GitHubPullRequest | 'missing' | Unavailable
-  readonly commits: GitHubCommitListEvidence | Unavailable | undefined
+  readonly lastCommit: string | undefined
 }
 
 export interface GitHubReader {
@@ -88,7 +84,11 @@ export interface GitHubReader {
   refTip(repository: string, ref: string): string | 'missing' | Unavailable
   pullRequest(repository: string, number: number): GitHubPullRequest | 'missing' | Unavailable
 
-  pullRequestCommits(repository: string, number: number): readonly string[] | Unavailable
+  pullRequestLastCommit(
+    repository: string,
+    number: number,
+    commits: number
+  ): string | undefined | Unavailable
   mergedPullRequestsForCommit(repository: string, sha: string): readonly number[] | Unavailable
   compare(repository: string, base: string, head: string): CompareStatus | Unavailable
 }
@@ -129,7 +129,6 @@ const GraphqlPullRequestEvidencePayload = Schema.Struct({
             commits: Schema.Struct({
               totalCount: Schema.Int,
               nodes: Schema.Array(Schema.Struct({ commit: Schema.Struct({ oid: CommitSha }) })),
-              pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
             }),
           })
         ),
@@ -187,14 +186,14 @@ const PULL_REQUEST_EVIDENCE_QUERY = `query($owner: String!, $name: String!, $num
       headRefOid
       headRepository { nameWithOwner }
       mergeCommit { oid }
-      commits(first: 100) {
+      commits(last: 1) {
         totalCount
         nodes { commit { oid } }
-        pageInfo { hasNextPage }
       }
     }
   }
 }`
+const GITHUB_MAX_PAGE_SIZE = 100
 const GH_OPTIONS = {
   encoding: 'utf8',
   maxBuffer: 16 * 1024 * 1024,
@@ -317,7 +316,7 @@ export const makeGitHubReader = (
   ): GitHubPullRequestEvidence | Unavailable => {
     if (isUnavailable(response)) return response
     if (response.status === 'not-found')
-      return { tip: 'missing', pullRequest: 'missing', commits: undefined }
+      return { tip: 'missing', pullRequest: 'missing', lastCommit: undefined }
     const payload = decodeGraphqlPullRequestEvidence(response.text)
     if (isUnavailable(payload)) return payload
     if (payload.errors !== undefined && payload.errors.length > 0)
@@ -341,14 +340,7 @@ export const makeGitHubReader = (
             baseRef: pull.baseRefName,
             commits: pull.commits.totalCount,
           }
-    let commits: GitHubCommitListEvidence | undefined
-    if (pull !== null && pull !== undefined) {
-      commits =
-        pull.commits.totalCount > 100 || pull.commits.pageInfo.hasNextPage
-          ? { kind: 'incomplete' }
-          : { kind: 'complete', commits: pull.commits.nodes.map(node => node.commit.oid) }
-    }
-    return { tip, pullRequest, commits }
+    return { tip, pullRequest, lastCommit: pull?.commits.nodes.at(-1)?.commit.oid }
   }
   const settleEvidence = (
     key: string,
@@ -441,12 +433,16 @@ export const makeGitHubReader = (
         commits: value.commits,
       }
     },
-    pullRequestCommits(repository, number) {
+    pullRequestLastCommit(repository, number, commits) {
+      const lastPage = Math.max(1, Math.ceil(commits / GITHUB_MAX_PAGE_SIZE))
       const value = orUnavailable(
-        read(`repos/${repository}/pulls/${number}/commits?per_page=250`, decodeCommitList),
+        read(
+          `repos/${repository}/pulls/${number}/commits?per_page=${GITHUB_MAX_PAGE_SIZE}&page=${lastPage}`,
+          decodeCommitList
+        ),
         `pull request ${number} commits`
       )
-      return isUnavailable(value) ? value : value.map(commit => commit.sha)
+      return isUnavailable(value) ? value : value.at(-1)?.sha
     },
     mergedPullRequestsForCommit(repository, sha) {
       const value = orUnavailable(
@@ -850,7 +846,7 @@ const bindPullRequest = (
   preloaded:
     | {
         readonly pullRequest: GitHubPullRequest
-        readonly commits?: readonly string[]
+        readonly lastCommit: string | undefined
       }
     | undefined,
   commitPresent: CommitPresence
@@ -876,9 +872,11 @@ const bindPullRequest = (
     )
   if (pull.commits > 250)
     return unboundable(`${label} has more than 250 commits; its merged head cannot be bound`)
-  const commits = preloaded?.commits ?? reader.pullRequestCommits(target.repository, number)
-  if (isUnavailable(commits)) return unboundable(`${label} commits: ${commits.unavailable}`)
-  const mergedHead = commits.at(-1)
+  const mergedHead =
+    preloaded === undefined
+      ? reader.pullRequestLastCommit(target.repository, number, pull.commits)
+      : preloaded.lastCommit
+  if (isUnavailable(mergedHead)) return unboundable(`${label} commits: ${mergedHead.unavailable}`)
   if (mergedHead === undefined) return unboundable(`${label} lists no commits`)
   if (mergedHead !== pull.headSha)
     return unboundable(
@@ -1011,7 +1009,7 @@ export const integrationFacts = (
     | {
         readonly tip: string
         readonly pullRequest: GitHubPullRequest
-        readonly commits?: readonly string[]
+        readonly lastCommit: string | undefined
       }
     | undefined
   let tip: Tip
@@ -1019,18 +1017,12 @@ export const integrationFacts = (
     const evidence = reader.pullRequestEvidence(target.repository, target.ref, target.pullRequest)
     if (!isUnavailable(evidence) && evidence.tip !== 'missing' && !isUnavailable(evidence.tip)) {
       tip = { sha: evidence.tip, local: commitPresent(evidence.tip) }
-      if (evidence.pullRequest !== 'missing' && !isUnavailable(evidence.pullRequest)) {
-        const commitList = evidence.commits
+      if (evidence.pullRequest !== 'missing' && !isUnavailable(evidence.pullRequest))
         bundledEvidence = {
           tip: evidence.tip,
           pullRequest: evidence.pullRequest,
-          ...(commitList !== undefined &&
-          !isUnavailable(commitList) &&
-          commitList.kind === 'complete'
-            ? { commits: commitList.commits }
-            : {}),
+          lastCommit: evidence.lastCommit,
         }
-      }
     } else tip = resolveTip(reader, checkout, target, commitPresent)
   } else tip = resolveTip(reader, checkout, target, commitPresent)
   if ('unknown' in tip) return { tip: undefined, ...integrationUnknown(tip.unknown) }
@@ -1054,10 +1046,7 @@ export const integrationFacts = (
     const preloaded =
       bundledEvidence === undefined
         ? undefined
-        : {
-            pullRequest: bundledEvidence.pullRequest,
-            ...(bundledEvidence.commits === undefined ? {} : { commits: bundledEvidence.commits }),
-          }
+        : { pullRequest: bundledEvidence.pullRequest, lastCommit: bundledEvidence.lastCommit }
     const bound = bindPullRequest(
       reader,
       checkout,
