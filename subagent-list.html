@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Subagent list below the editor: chosen design</title>
+<style>body{background:#191724;margin:24px;font:13px system-ui;color:#908caa}
+.wrap{font:12px system-ui;color:#908caa}
+.ctl{margin:0 0 8px;display:flex;gap:6px;align-items:center}
+.ctl button{font:12px system-ui;background:#1f1d2e;color:#908caa;border:1px solid #393552;border-radius:4px;padding:3px 9px;cursor:pointer;transition:transform 120ms cubic-bezier(.23,1,.32,1)}
+.ctl button:active{transform:scale(.97)}
+.ctl button[aria-pressed=true]{color:#e0def4;border-color:#6e6a86}
+.term{font-family:"JetBrainsMono Nerd Font Mono",ui-monospace,monospace;font-size:15px;line-height:1.75;background:#0a0e14;color:#e0def4;padding:10px 0 12px;border-radius:8px;display:inline-block}
+.ln{white-space:pre;padding:0 1ch;height:1.75em}
+.ic{font-family:"JetBrainsMono Nerd Font","JetBrainsMono Nerd Font Mono",monospace}
+.b{font-weight:700}
+.text{color:#e0def4}.muted{color:#908caa}.dim{color:#6e6a86}.border{color:#393552}
+.pine{color:#3e8fb0}.foam{color:#9ccfd8}.gold{color:#f6c177}.love{color:#eb6f92}.iris{color:#c4a7e7}.rose{color:#ea9a97}
+.pill{background:#2a273f}.cap{color:#2a273f}
+.note{margin-top:8px;max-width:760px;line-height:1.5}
+.tray{background:#1f1d2e}
+.ln.tray{padding:0 1ch}
+.ctl{flex-wrap:wrap}
+.ctl .lbl{min-width:120px}
+#steplabel{color:#e0def4;margin-left:6px}
+</style>
+<p>Chosen design (owner, 2026-11-07, issue #279). Demonstrative data; requires JetBrainsMono Nerd Font installed locally. Labels inside the mock are Italian, as reviewed.</p>
+<div class="wrap">
+<div class="ctl"><span class="lbl">Scenario:</span><button data-scn="single">one child</button><button data-scn="mixed">mixed</button><button data-scn="coord">coordinator and leaves</button><button data-scn="many">nine children</button><button data-scn="quota">subscription exhausted</button></div>
+<div class="ctl"><span class="lbl">Width:</span><button data-cols="120">120 columns</button><button data-cols="80">80 columns</button></div>
+<div class="term" id="term"></div>
+</div>
+<script>
+// Demonstrative prototype of the subagent list below the editor. Hypothetical data only.
+// Each question sets window.QKEY to the dimension its options vary; the rest use defaults.
+const DEFAULTS = { lifecycle: 'batch', fields: 'rich', task: 'taskid', processes: 'agents', overflow: 'cap5', nesting: 'indent', notices: 'notices' }
+const I = { folder: '\u{f07b}', branch: '\u{f418}', pr: '\u{f407}', wt: '\u{f0645}', ctx: '\u{ee9c}', warm: '\u{f0954}' }
+const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+let cols = 120, scenario = 'mixed', step = 2, frame = 0
+
+const A = (o) => ({ kind: 'agent', ...o })
+const implement = A({ title: 'implement', key: 'live-activity-facts', named: 'Publish live activity facts from children', prompt: 'Implement the ticket below in the managed worktree. Read AGENTS.md first…', status: 'running', activity: 'edit src/pi-child.ts', model: 'opus-5-5', turns: 27, tools: 27, ctx: 61, tokens: '225k', time: '4m 12s' })
+const review = A({ title: 'code-review', key: 'review-activity', named: 'Review the live activity diff', prompt: 'Review the diff in the worktree below against the ticket…', status: 'running', activity: 'thinking…', model: 'sonnet-5-5', turns: 6, tools: 11, ctx: 22, tokens: '61k', time: '1m 05s' })
+const seams = A({ title: 'investigation', key: 'pi-seams', named: 'Find the Pi seams for the list', prompt: 'Answer the research ticket below. Read-only: change nothing…', status: 'completed', activity: 'done', model: 'sonnet-5-5', turns: 9, tools: 31, ctx: 12, tokens: '149k', time: '1m 40s' })
+const hud = A({ title: 'writer', key: 'fix-hud-grid', named: 'Redraw the HUD grid', prompt: 'Rewrite hud-footer/lib/layout.ts so that…', status: 'failed', activity: 'provider error: overloaded', model: 'opus-5-5', turns: 3, tools: 4, ctx: 9, tokens: '18k', time: '0m 41s' })
+const check = { kind: 'process', title: 'npm run work:check', status: 'running', time: '0m 38s' }
+const coord = A({ title: 'dev-cycle', key: 'monitor-phase', named: 'Run the implementation phase', prompt: '/skill:dev-cycle Implement and review…', status: 'running', activity: 'waiting for 2 leaves', model: 'opus-5-5', turns: 14, tools: 9, ctx: 34, tokens: '96k', time: '6m 30s', coordinator: true })
+const leaf = (c) => ({ ...c, parent: 'dev-cycle' })
+const many = [implement, review, A({ ...seams }), A({ ...seams, title: 'reader', key: 'docs-scan', named: 'Scan the work docs', time: '0m 52s' }), hud,
+  A({ ...implement, title: 'writer', key: 'statusline', named: 'Write the statusline', activity: 'bash npm run lint', turns: 12, time: '2m 03s' }),
+  A({ ...review, title: 'reader', key: 'calm-audit', named: 'Audit Calm patches', activity: 'read calm/index.ts', time: '0m 20s' }),
+  A({ ...seams, title: 'reader', key: 'tui-scan', named: 'Scan pi-tui renderer', time: '2m 11s' }),
+  A({ ...seams, title: 'investigation', key: 'ipc-rate', named: 'Measure IPC rate', time: '3m 02s' })]
+
+const SCENARIOS = {
+  single: () => [implement],
+  mixed: () => [implement, seams, hud, check],
+  coord: () => [coord, leaf(implement), leaf(review)],
+  many: () => many,
+  quota: () => [implement, seams, hud],
+}
+// Lifecycle timeline for the lifecycle question.
+const TIMELINE = [
+  { label: '1. Lead al lavoro, nessun figlio', items: [] },
+  { label: '2. Lanciati tre figli', items: [implement, { ...seams, status: 'running', activity: 'read docs/work.md' }, { ...review, status: 'running' }] },
+  { label: '3. Uno ha finito', items: [implement, seams, { ...review, status: 'running' }] },
+  { label: '4. Tutti finiti, il lead risponde', items: [{ ...implement, status: 'completed', activity: 'done' }, seams, { ...review, status: 'completed', activity: 'done' }] },
+  { label: '5. Scrivi un nuovo messaggio', items: [{ ...implement, status: 'completed', activity: 'done' }, seams, { ...review, status: 'completed', activity: 'done' }], nextRun: true },
+]
+
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const w = (segs) => segs.reduce((n, [t]) => n + [...t].length, 0)
+const html = (segs) => segs.map(([t, c, ic]) => `<span class="${c || ''}${ic ? ' ic' : ''}">${esc(t)}</span>`).join('')
+const gap = (n) => [[' '.repeat(Math.max(0, n)), '']]
+const line = (segs) => `<div class="ln">${html(segs)}</div>`
+const row = (left, right) => line([...left, ...gap(Math.max(2, cols - 2 - w(left) - w(right))), ...right])
+const cut = (s, n) => ([...s].length <= n ? s : [...s].slice(0, Math.max(1, n - 1)).join('') + '…')
+const narrow = () => cols < 100
+const opt = (k) => (window.QKEY === k ? document.documentElement.dataset.variant || DEFAULTS[k] : DEFAULTS[k])
+
+const glyph = (c) => ({ running: [SPIN[frame % SPIN.length], 'iris'], waiting: ['◌', 'dim'], completed: ['✓', 'foam'], failed: ['✗', 'love'], cancelled: ['⊘', 'dim'] })[c.status]
+const taskText = (c) => {
+  const t = opt('task')
+  if (t === 'title') return c.named
+  if (t === 'prompt') return c.prompt
+  return c.key.replace(/-/g, ' ')
+}
+const rightFor = (c) => {
+  const f = opt('fields'), sep = [' · ', 'dim'], out = []
+  const push = (...xs) => { if (out.length) out.push(sep); out.push(...xs) }
+  if (c.kind === 'process') return [[c.time, 'dim']]
+  if (f === 'minimal') return c.status === 'running' ? [] : [[c.time, 'dim']]
+  if (f === 'rich' && !narrow()) push([c.model, 'dim'])
+  if (f !== 'pressure') push(['↻' + c.turns, 'dim'])
+  if (f === 'rich' && !narrow()) push([c.ctx + '%', c.status !== 'running' ? 'dim' : c.ctx >= 85 ? 'love' : c.ctx >= 60 ? 'gold' : 'dim'])
+  if (f === 'pressure') { push([c.tokens + ' tok', 'dim']); push([c.ctx + '%', c.status === 'running' && c.ctx >= 60 ? 'gold' : 'dim']) }
+  push([c.time, 'dim'])
+  return out
+}
+let colTitle = 0, colTask = 0
+const childRow = (c, indent) => {
+  const [g, gc] = glyph(c)
+  const nest = opt('nesting')
+  const pre = indent && nest === 'indent' ? [['   └ ', 'dim']] : []
+  const title = c.parent && nest === 'flat' ? `${c.parent}>${c.title}` : c.title
+  const right = rightFor(c)
+  const actTone = c.status === 'failed' ? 'love' : c.status === 'running' ? 'muted' : 'dim'
+  const act = c.kind === 'process' || c.status === 'completed' ? '' : c.activity
+  const budget = cols - 2 - w(right) - 4
+  const head = [...pre, [g, gc], ['  ', ''], [title, c.kind === 'process' ? 'muted' : 'text b'], ...gap(colTitle - [...title].length - w(pre))]
+  let room = budget - w(head)
+  const left = [...head]
+  const task = c.kind === 'process' ? '' : taskText(c)
+  if (task && !(narrow() && room < 30)) { const t = cut(task, Math.min(room - 4 - (act ? 14 : 0), colTask)); left.push(['  ', ''], [t, 'muted'], ...gap(colTask - [...t].length)); room = budget - w(left) }
+  if (act && room > 6) left.push(['   ', ''], [cut(act, room - 3), actTone])
+  return row(left, right)
+}
+const order = { running: 0, waiting: 1, failed: 2, cancelled: 3, completed: 4 }
+
+const listLines = () => {
+  let items, notice = scenario === 'quota'
+  if (window.QKEY === 'lifecycle') {
+    const s = TIMELINE[step], v = opt('lifecycle')
+    items = s.items
+    if (v === 'live') items = items.filter((c) => c.status === 'running' || c.status === 'waiting')
+    if (v === 'batch' && s.nextRun) items = []
+    notice = false
+  } else items = SCENARIOS[scenario]()
+  const p = opt('processes')
+  const procs = items.filter((c) => c.kind === 'process')
+  if (p !== 'all') items = items.filter((c) => c.kind !== 'process')
+  if (!items.length && !notice) return []
+  const sorted = [...items].sort((a, b) => (a.parent || b.parent ? 0 : order[a.status] - order[b.status]))
+  const cap = { cap5: 5, cap3: 3, all: Infinity }[opt('overflow')]
+  const shown = sorted.slice(0, cap), hidden = sorted.slice(cap)
+  const titleOf = (c) => (c.parent && opt('nesting') === 'flat' ? `${c.parent}>${c.title}` : c.title)
+  colTitle = Math.max(...shown.map((c) => [...titleOf(c)].length + (c.parent && opt('nesting') === 'indent' ? 5 : 0)))
+  colTask = Math.min(narrow() ? 18 : 34, Math.max(0, ...shown.filter((c) => c.kind !== 'process').map((c) => [...taskText(c)].length)))
+  const out = shown.map((c) => childRow(c, Boolean(c.parent)))
+  if (hidden.length) {
+    const counts = {}
+    for (const c of hidden) counts[c.status] = (counts[c.status] || 0) + 1
+    const words = { running: 'in corso', completed: 'concluse', failed: 'fallite', waiting: 'in attesa' }
+    out.push(line([['+' + hidden.length, 'muted b'], ['  ' + Object.entries(counts).map(([k, n]) => `${n} ${words[k]}`).join(' · '), 'dim']]))
+  }
+  const summaryParts = []
+  if (p === 'agents' && procs.length) summaryParts.push(`${procs.length} comando in corso`)
+  if (opt('notices') === 'summary') {
+    const live = items.filter((c) => c.status === 'running').length
+    summaryParts.unshift(`${live} in corso`, `${items.length - live} conclusi`)
+    summaryParts.push('472k tok')
+  }
+  if (summaryParts.length) out.push(line([[summaryParts.join(' · '), 'dim']]))
+  if (notice) out.push(line([['!', 'gold b'], ['  abbonamento esaurito: nuovi agenti bloccati', 'gold']]))
+  return out
+}
+
+const hudRows = () => [
+  row([[I.folder, 'muted', true], ['  ', ''], ['dev', 'text b'], ...gap(3), [I.branch, 'muted', true], ['  ', ''], ['feat/monitor', 'text'], ...(narrow() ? [] : [...gap(3), [I.pr, 'gold', true], ['  ', ''], ['#271', 'gold']]), ...gap(3), ['+120', 'pine'], [' ', ''], ['−30', 'love']],
+    [['opus-5-5', 'text'], ...gap(2), ['high', 'rose']]),
+  row(narrow() ? [] : [['monitor', 'dim'], ...gap(3), [I.wt, 'dim', true], ['  2', 'dim']],
+    [[I.ctx, 'muted', true], ['  ', ''], ['━━━', 'muted'], ['───────', 'border'], [' 28%', 'text'], ...gap(3), ['$0.53', 'muted'], ...gap(3), [I.warm, 'muted', true], ['  3:12', 'muted']]),
+]
+const editor = () => line([['─'.repeat(cols - 2), 'iris']]) + line([['▏', 'text']]) + line([['─'.repeat(cols - 2), 'iris']])
+const blank = () => '<div class="ln"></div>'
+
+const render = () => {
+  const list = listLines()
+  // Pi adds one spacer above a non-empty below-editor container; the list adds one below itself.
+  const body = editor() + (list.length ? blank() + list.join('') + blank() : blank()) + hudRows().join('')
+  document.getElementById('term').innerHTML = body
+  document.querySelectorAll('[data-cols]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.cols === cols)))
+  document.querySelectorAll('[data-scn]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scn === scenario)))
+  document.querySelectorAll('[data-step]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.step === step)))
+  const lab = document.getElementById('steplabel')
+  if (lab) lab.textContent = TIMELINE[step].label
+}
+document.addEventListener('lavagna:option', render)
+document.addEventListener('click', (e) => {
+  const d = e.target.dataset || {}
+  if (d.cols) cols = +d.cols
+  if (d.scn) scenario = d.scn
+  if (d.step !== undefined) step = +d.step
+  if (d.cols || d.scn || d.step !== undefined) render()
+})
+setInterval(() => { frame++; render() }, 100)
+render()
+
+</script>
