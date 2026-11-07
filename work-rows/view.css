@@ -1,0 +1,10 @@
+.wrap{font:12px system-ui;color:#908caa}
+.ctl{margin:0 0 8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.ctl .lbl{min-width:90px}
+.ctl button{font:12px system-ui;background:#1f1d2e;color:#908caa;border:1px solid #393552;border-radius:4px;padding:3px 9px;cursor:pointer;transition:transform 120ms cubic-bezier(.23,1,.32,1)}
+.ctl button:active{transform:scale(.97)}
+.ctl button[aria-pressed=true]{color:#e0def4;border-color:#6e6a86}
+#note{color:#e0def4;margin-left:6px}
+.term{font-family:"JetBrainsMono Nerd Font Mono",ui-monospace,monospace;font-size:13px;line-height:1.6;background:#0a0e14;color:#e0def4;padding:8px 0;border-radius:8px;display:inline-block;max-height:760px;overflow-y:auto}
+.ln{white-space:pre;min-height:1.6em}
+.ln span{display:inline-block;height:1.6em;line-height:1.6em;vertical-align:top}
