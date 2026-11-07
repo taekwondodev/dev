@@ -60,6 +60,10 @@ The cache lives in the operating system's temporary directory (`node-compile-cac
 
 Help, diagnostics, save-only and browser commands do not start the workspace worker.
 
+### Outside a Git repository
+
+Dev works in Git repositories. A new conversation launched from a directory outside any repository checks this before loading profiles or Pi, then offers the repositories directly inside it: visible subdirectories holding `.git`, the most recently used in a dev conversation first, then by name. Type to filter, Enter opens dev there as if launched with `--cwd`, Esc exits with status 0. The picker uses Pi's theme from `~/.pi/agent/settings.json` and erases itself before dev starts. A directory with no repository inside exits 1 and names it. `--resume`, `--continue`, `--diagnostics`, `--probe-runtime` and `--save-profile` keep their own handling.
+
 ### Profiles and resources
 
 Profiles are personal configuration. The installation's `profiles/` directory is ignored by Git and holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Dev knows the manifest format, not profile or skill names:

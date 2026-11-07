@@ -41,6 +41,7 @@ class Probe:
     expect: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
     expect_raw_order: tuple[str, ...] = ()
+    reject_raw_after: tuple[str, tuple[str, ...]] = ('', ())
 
     env: tuple[tuple[str, str], ...] = ()
 
@@ -162,6 +163,33 @@ PROBES = {
                           '\x1b[?25h', '✓ 1 worktree removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'), ('TERM_PROGRAM', 'rex'),
              ('PI_IMAGE_PROTOCOL', 'kitty')),
+    ),
+
+    'repo-picker': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('filter', 'Open dev in:', 'al', delay=0.5),
+            Action('open', 'filter', '\r', delay=0.5),
+            *QUIT_ACTIONS,
+        ),
+        expect=('{ALPHA}', 'No reserved workspaces', 'Exit 0: done.'),
+        expect_raw_order=('Open dev in:', 'beta', 'alpha', '\x1b[J', 'Press ctrl+o'),
+        reject_raw_after=('Open dev in:', ('\x1b[3J',)),
+    ),
+
+    'repo-picker-cancel': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('paste', 'Open dev in:', '\x1b[200~ab\x1b]0;owned\x07\x1b[201~', delay=0.5),
+            Action('cancel', 'ab]0;owned', '\x1b', delay=0.5),
+        ),
+        expect=('No matching repositories',),
+        reject_raw_after=('Open dev in:', ('\x1b[3J', 'Press ctrl+o', '\x1b]0;owned')),
+        env=(('LAUNCHER_PICKER', 'cancel'),),
     ),
 
     'quit-release-declined': Probe(
@@ -406,6 +434,14 @@ def run(name: str, probe: Probe) -> bool:
                 continue
             if expected not in haystack:
                 missing_output.append(expected)
+    marker, rejected = probe.reject_raw_after
+    if rejected:
+        start = text.rfind(marker)
+        if start < 0:
+            missing_output.append(f'marker: {marker!r}')
+        else:
+            missing_output.extend(f'absent after marker: {needle!r}'
+                                  for needle in rejected if needle in text[start:])
     cursor = 0
     for needle in probe.expect_raw_order:
         try:
