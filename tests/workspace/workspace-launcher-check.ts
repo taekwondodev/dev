@@ -266,6 +266,49 @@ try {
       }
     }
   )
+  await claim(
+    'a new conversation outside any Git repository, with none inside, exits 1 naming the directory before opening the authority or touching the data home',
+    async () => {
+      const outside = join(sandbox, 'outside-git')
+      mkdirSync(join(outside, 'plain'), { recursive: true })
+      const unusedData = join(sandbox, 'outside-git-data')
+      const result = await runLauncher(
+        ['--cwd', outside, '--data-home', unusedData, '--profile', profiles.defaultProfile],
+        { REPORT_OPEN: '1' }
+      )
+      assert.equal(result.code, 1, result.stderr)
+      assert.equal(
+        result.stderr.trim(),
+        `${outside} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`
+      )
+      assert.ok(!existsSync(unusedData), 'the data home was not created')
+    }
+  )
+  await claim(
+    'diagnostics and profile saving outside any Git repository keep their own handling instead of looking for repositories',
+    async () => {
+      const outside = join(sandbox, 'outside-git')
+      const diagnostics = await runLauncher([
+        '--diagnostics',
+        '--cwd',
+        outside,
+        '--data-home',
+        dataHome,
+      ])
+      assert.equal(diagnostics.code, 0, diagnostics.stderr)
+      assert.ok(diagnostics.stdout.startsWith(`cwd: ${outside}\n`), diagnostics.stdout)
+      const saved = await runLauncher([
+        '--save-profile',
+        profiles.defaultProfile,
+        '--cwd',
+        outside,
+        '--data-home',
+        dataHome,
+      ])
+      assert.equal(saved.code, 0, saved.stderr)
+      assert.match(saved.stdout, /^saved profile /)
+    }
+  )
   const resumeArgs = (resumed: string) => [
     '--resume',
     resumed,
