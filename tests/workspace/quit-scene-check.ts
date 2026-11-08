@@ -14,6 +14,7 @@ import {
   type Scene,
   type SceneShape,
   ROWS,
+  SCAN_SHAPE,
   SETTLED_AT,
   VANISH_MS,
   drawRelease,
@@ -39,12 +40,15 @@ const graphics: QuitGraphics = {
     let next = 100
     return () => (next += 1)
   })(),
+  hold: { begin: () => {}, end: () => {} },
 }
 const H = ROWS * graphics.cellHeight
 const live = terminalStyle({ isTTY: true }, {})
 
 const load = (packageRoot: string, isLive = true, ...columns: [number?]) =>
-  Effect.runPromise(loadQuitGraphics(packageRoot, isLive, columns.length === 0 ? 120 : columns[0]))
+  Effect.runPromise(
+    loadQuitGraphics(packageRoot, isLive, columns.length === 0 ? 120 : columns[0], graphics.hold)
+  )
 
 const collector = () => {
   const chunks: string[] = []
@@ -289,7 +293,13 @@ await claim('graphics need a live terminal, kitty support and room for the strip
     const kitty = stub('kitty', '{ widthPx: 9, heightPx: 18 }')
     assert.deepEqual(
       { ...(await load(kitty)), allocateImageId: undefined },
-      { cellWidth: 9, cellHeight: 18, columns: 120, allocateImageId: undefined }
+      {
+        cellWidth: 9,
+        cellHeight: 18,
+        columns: 120,
+        allocateImageId: undefined,
+        hold: graphics.hold,
+      }
     )
     assert.equal(await load(kitty, false), undefined)
     assert.equal((await load(kitty, true, undefined))?.columns, 80)
@@ -309,7 +319,8 @@ const sweepOutput = (
   style: ReturnType<typeof terminalStyle>,
   withGraphics: QuitGraphics | undefined,
   settle: SceneShape | undefined,
-  sweepMs = 400
+  sweepMs = 400,
+  label = SUMMARY
 ) => {
   const out = collector()
   return Effect.runPromise(
@@ -318,12 +329,13 @@ const sweepOutput = (
         const indicator = yield* sweepIndicator(style, out.stream, withGraphics)
         yield* Effect.sleep(sweepMs)
         yield* indicator.sweepDone
-        if (settle !== undefined) yield* indicator.settle(settle)
+        if (settle !== undefined) yield* indicator.settle(settle, label)
       })
     )
   ).then(() => out)
 }
 
+const SUMMARY = '\x1b[32m✓ 1 worktree removed\x1b[0m\x1b[2m · 0.4s\x1b[0m'
 const runSweep = (...args: Parameters<typeof sweepOutput>) =>
   sweepOutput(...args).then(out => out.text())
 
@@ -345,7 +357,9 @@ const assertNothingLeft = (text: string) => {
   assert.ok(placed.length > 0)
   assert.deepEqual(deletedIds(text).toSorted(), placed.toSorted())
   assert.ok(
-    text.endsWith(`\x1b_Ga=d,d=I,${placed.at(-1)},q=2\x1b\\\x1b8\x1b[K\r\x1b[?25h`),
+    text.endsWith(
+      `\x1b_Ga=d,d=I,${placed.at(-1)},q=2\x1b\\\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h`
+    ),
     JSON.stringify(text.slice(-60))
   )
   assert.ok(!text.includes(`\x1b[${ROWS}B`))
@@ -379,6 +393,77 @@ await claim('the graphical sweep animates in place and always restores the termi
   assertNothingLeft(await runSweep(live, graphics, undefined))
 })
 
+const beside = (columns: number) => `\x1b8\x1b[${ROWS - 1}B\x1b[K\x1b[${columns + 2}C`
+const lastFrame = (text: string) => text.slice(text.lastIndexOf('\x1b[?2026h'))
+
+await claim(
+  'strip labels sit on the bottom row, level with the main line, and the summary stays through the fade',
+  async () => {
+    const scan = stripColumns(graphics, SCAN_SHAPE)
+    const settled = Math.max(scan, stripColumns(graphics, found))
+    const text = await runSweep(live, graphics, found)
+    assert.ok(text.includes(`${beside(scan)}\x1b[2mSweeping workspaces… 0.`))
+    assert.ok(lastFrame(text).includes(`${beside(settled)}${SUMMARY}\x1b8`))
+    const nothing = await runSweep(live, graphics, empty)
+    assert.ok(lastFrame(nothing).includes(`${beside(scan)}${SUMMARY}\x1b8`))
+  }
+)
+
+await claim('a label that does not fit beside the strip is left out', async () => {
+  const wide = 'w'.repeat(graphics.columns)
+  const text = await runSweep(live, graphics, found, 400, wide)
+  assert.ok(text.includes('\x1b[2mSweeping workspaces… 0.'))
+  assert.ok(!text.includes(wide))
+  assert.ok(lastFrame(text).includes(`\x1b8\x1b[${ROWS - 1}B\x1b[K\x1b8`))
+  assertNothingLeft(text)
+  const columns = Math.max(stripColumns(graphics, SCAN_SHAPE), stripColumns(graphics, found))
+  const room = graphics.columns - columns - 2
+  for (const [label, shown] of [
+    ['e'.repeat(room), true],
+    ['o'.repeat(room + 1), false],
+    [`\x1b[32m${'c'.repeat(room)}\x1b[0m`, true],
+  ] as const)
+    assert.equal(
+      lastFrame(await runSweep(live, graphics, found, 400, label)).includes(label),
+      shown,
+      `${label.length} characters`
+    )
+})
+
+const heldSweep = async (sweepMs: number, shape: SceneShape) => {
+  const out = collector()
+  const holding: QuitGraphics = {
+    ...graphics,
+    hold: { begin: () => out.stream.write('<held>'), end: () => out.stream.write('<free>') },
+  }
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const indicator = yield* sweepIndicator(live, out.stream, holding)
+        yield* Effect.sleep(sweepMs)
+        yield* indicator.sweepDone
+        yield* indicator.settle(shape, SUMMARY)
+      })
+    )
+  )
+  return out.text()
+}
+
+await claim(
+  'a strip holds other terminal output from its first frame until its rows are cleared',
+  async () => {
+    const text = await heldSweep(400, found)
+    assert.ok(text.startsWith(`<held>\n\n\x1b[${ROWS}A`), JSON.stringify(text.slice(0, 40)))
+    assert.ok(
+      text.endsWith('\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h<free>'),
+      JSON.stringify(text.slice(-40))
+    )
+    assert.equal(text.split('<held>').length - 1, 1)
+    assert.equal(text.split('<free>').length - 1, 1)
+    assert.equal(await heldSweep(20, empty), '')
+  }
+)
+
 await claim('a sweep summary holds its final frame for 250 ms, then fades out', async () => {
   assertHoldsThenLeaves((await sweepOutput(live, graphics, found)).frameTimes)
 })
@@ -406,7 +491,9 @@ await claim('a slow sweep with nothing to show deletes its strip and keeps no ro
   }
 })
 
-await claim('release strips report progress, then leave nothing behind', async () => {
+const RESULT = '\x1b[32m✓ 1 worktree removed\x1b[0m'
+
+await claim('release strips show progress and result, then leave nothing', async () => {
   const initial: Scene = { dots: 1, branches: [{ kind: 'waiting' }, { kind: 'waiting' }] }
   const run = async (
     style: ReturnType<typeof terminalStyle>,
@@ -423,7 +510,7 @@ await claim('release strips report progress, then leave nothing behind', async (
           yield* active.begin(0)
           yield* Effect.sleep(80)
           yield* active.end(0, succeeds)
-          if (finished) yield* active.finish
+          if (finished) yield* active.finish(RESULT)
           return true
         })
       )
@@ -433,6 +520,7 @@ await claim('release strips report progress, then leave nothing behind', async (
   const shown = await run(live, graphics)
   assert.ok(shown.strip)
   assert.ok(shown.text.includes('\x1b[2mReleasing 1 task… 0.'))
+  assert.ok(lastFrame(shown.text).includes(RESULT), JSON.stringify(lastFrame(shown.text)))
   assert.ok(shown.text.includes('\x1b_Ga=T'))
   assertNothingLeft(shown.text)
   assert.equal(shown.text.split('\x1b[?25l').length - 1, 1)

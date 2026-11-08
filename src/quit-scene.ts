@@ -2,11 +2,17 @@ import { deflateSync } from 'node:zlib'
 
 export const ROWS = 2
 
+export interface TerminalHold {
+  readonly begin: () => void
+  readonly end: () => void
+}
+
 export interface QuitGraphics {
   readonly cellWidth: number
   readonly cellHeight: number
   readonly columns: number
   readonly allocateImageId: () => number
+  readonly hold: TerminalHold
 }
 
 export interface SceneShape {
