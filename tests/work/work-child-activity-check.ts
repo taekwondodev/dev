@@ -122,7 +122,7 @@ await claim(
 )
 
 await claim(
-  'targets come from an allowlist: paths, patterns, git operations and credential-free URLs, never bash or codemode text, capped at 120 characters',
+  'targets come from an allowlist: paths, patterns, git operations and credential-free URLs, never bash or codemode text, with secrets and opaque URL path segments redacted, capped at 120 characters',
   () => {
     assert.equal(toolTarget('read', { path: 'docs/work.md', offset: 1 }), 'docs/work.md')
     assert.equal(toolTarget('ls', { path: 'src' }), 'src')
@@ -140,6 +140,27 @@ await claim(
         url: 'https://user:pass@docs.example/guide?token=secret#part',
       }),
       'https://docs.example/guide'
+    )
+    assert.equal(
+      toolTarget('read_url', {
+        url: 'https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage',
+      }),
+      'https://api.telegram.org/[redacted]/sendMessage'
+    )
+    assert.equal(
+      toolTarget('read_url', {
+        url: 'https://hooks.slack.com/services/T0123/B0456/abcDEF123456ghiJKL789xyz',
+      }),
+      'https://hooks.slack.com/services/T0123/B0456/[redacted]'
+    )
+    assert.equal(
+      toolTarget('read_url', { url: 'https://docs.example/getting-started-with-effect' }),
+      'https://docs.example/getting-started-with-effect'
+    )
+    assert.equal(toolTarget('grep', { pattern: 'api_key=abc123' }), 'api_key=[redacted]')
+    assert.equal(
+      toolTarget('read', { path: 'keys/sk-abcdefghijklmnop.txt' }),
+      'keys/[redacted].txt'
     )
     assert.equal(toolTarget('read_url', { url: 'not a url' }), undefined)
     assert.equal(toolTarget('bash', { command: 'curl -H "Authorization: secret"' }), undefined)

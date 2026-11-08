@@ -21,6 +21,10 @@ export const initialActivity: ActivityState = { turns: 0, tools: [] }
 
 const PATH_TOOLS = new Set(['read', 'ls', 'edit', 'write'])
 const PATTERN_TOOLS = new Set(['grep', 'find'])
+const OPAQUE_SEGMENT_LENGTH = 20
+
+const isOpaqueSegment = (segment: string): boolean =>
+  segment.length >= OPAQUE_SEGMENT_LENGTH && /\d/.test(segment) && /[A-Za-z]/.test(segment)
 
 export const activityText = (text: string): string => {
   let kept = ''
@@ -40,11 +44,11 @@ const field = (args: unknown, name: string): string | undefined => {
 const publicUrl = (value: string | undefined): string | undefined => {
   if (value === undefined || !URL.canParse(value)) return undefined
   const url = new URL(value)
-  url.username = ''
-  url.password = ''
-  url.search = ''
-  url.hash = ''
-  return url.href
+  const path = url.pathname
+    .split('/')
+    .map(segment => (isOpaqueSegment(segment) ? '[redacted]' : segment))
+    .join('/')
+  return `${url.protocol}//${url.host}${path}`
 }
 
 export const toolTarget = (name: string, args: unknown): string | undefined => {
@@ -56,7 +60,7 @@ export const toolTarget = (name: string, args: unknown): string | undefined => {
     const path = field(args, 'path')
     target = operation === undefined ? undefined : [operation, path].filter(Boolean).join(' ')
   } else if (name === 'read_url') target = publicUrl(field(args, 'url'))
-  return target === undefined ? undefined : activityText(target)
+  return target === undefined ? undefined : activityText(redactSecrets(target))
 }
 
 const toolActivity = (name: string, args: unknown): ChildActivity => {
