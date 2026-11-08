@@ -15,9 +15,11 @@ import {
   type WorkOwnerService,
   type WorkResult,
   type WorkSetupError,
+  type WorkSnapshot,
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
-import { activeWorkChildren, workStatusText } from './work-status.ts'
+import { workResultText } from './work-model-text.ts'
+import { emptyWorkView, WORK_VIEW_EVENT, workView } from './work-view.ts'
 import { leadingLongSleep, sleepRefusal, waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
 import {
   decodeWorkInput,
@@ -112,7 +114,9 @@ const UNACKNOWLEDGED = 'Outcome not acknowledged by the owning conversation'
 const isFailure = (cause: Cause.Cause<unknown>): boolean => !Cause.hasInterruptsOnly(cause)
 
 const LEAD_OUTCOME_GUIDANCE =
-  'Background work outcomes. These are producer observations, not verification; reconcile artifacts and honor dev-cycle checkpoints before proceeding. Report any recorded worktree and follow its cleanup guidance.'
+  'Work outcomes: producer observations, not verification. Read a result from offset 0 when it is not included. Honor dev-cycle checkpoints; report worktrees.'
+
+const VIEW_INTERVAL_MS = 100
 
 const leadOutcomeMessage = (items: readonly AttemptView[]) =>
   outcomeMessage(
@@ -121,7 +125,7 @@ const leadOutcomeMessage = (items: readonly AttemptView[]) =>
   )
 
 export const LEAD_TOOL_DESCRIPTION =
-  'Run a local command or a separate Pi child in the background; the lead stays available. process runs a shell command; delegate starts a child from a focused, self-contained prompt; list, inspect and cancel manage owned attempts, and cancel without an id stops them all. Outcomes arrive automatically as a message with the retained answer and logs; the complete record is behind inspect. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. Outcomes are producer observations, not verification; dev-cycle owns checkpoints and recovery. Report retained worktrees in your handoff and never release reservations or remove worktrees through this tool.'
+  'Run a local command or a separate Pi child in the background; the lead stays available. process runs a shell command; delegate starts a child from a focused, self-contained prompt; list, inspect and cancel manage owned attempts, and cancel without an id stops them all. Outcomes arrive automatically as a message with the whole answer of a child when it fits, otherwise a pointer to read it from offset 0 with inspect, and the tail of command output; inspect without a stream shows metadata only. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. Outcomes are producer observations, not verification; dev-cycle owns checkpoints and recovery. Report retained worktrees in your handoff and never release reservations or remove worktrees through this tool.'
 
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
@@ -134,6 +138,7 @@ export const createWorkExtension = ({
   profile,
   workspace,
   isWorkspaceParked,
+  childEntry,
 }: {
   readonly dataHome: string
   readonly profile: string
@@ -147,6 +152,7 @@ export const createWorkExtension = ({
     ) => void
   }
   readonly isWorkspaceParked: () => boolean
+  readonly childEntry?: URL
 }): WorkExtension => {
   let sessionOwner: OwnerState | undefined
   let session: WorkSession | undefined
@@ -158,9 +164,23 @@ export const createWorkExtension = ({
   let reactivation: 'awaiting-success' | 'ready' | 'suspended' = 'awaiting-success'
   let runExhaustions: number | undefined
   let retryBeforeExhaustion: boolean | undefined
-  let statusScheduled:
-    | { readonly context: Pi.ExtensionContext; readonly owner: OwnerState | undefined }
-    | undefined
+  const view: {
+    snapshot?: WorkSnapshot
+    stale: boolean
+    timer?: NodeJS.Timeout
+    publishing: boolean
+    again: boolean
+    lastAt: number
+    failureNotified: boolean
+    batchStart: number
+  } = {
+    stale: true,
+    publishing: false,
+    again: false,
+    lastAt: 0,
+    failureNotified: false,
+    batchStart: Date.now(),
+  }
   let receipts:
     | {
         readonly sessions: WorkSession['sessionManager']
@@ -196,7 +216,9 @@ export const createWorkExtension = ({
                     requestRebind: handoff =>
                       workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
                   },
-                  onChange: () => scheduleStatus(),
+                  ...(childEntry === undefined ? {} : { childEntry }),
+                  onChange: () => scheduleView(true),
+                  onLive: () => scheduleView(false),
                   onOutcome: attempt => {
                     if (
                       context?.sessionManager.getSessionId() !== sessionId ||
@@ -237,43 +259,78 @@ export const createWorkExtension = ({
     effect: Effect.Effect<A, WorkFailure, WorkOwner>
   ): Promise<A> => Effect.runPromise(runOwned(ctx, effect))
 
-  const updateStatus = (ctx: Pi.ExtensionContext): Effect.Effect<void, WorkFailure> =>
-    ctx.hasUI && sessionOwner?._tag !== 'unavailable'
-      ? runOwned(
-          ctx,
-          withOwner(owner => owner.snapshot)
-        ).pipe(
-          Effect.flatMap(snapshot =>
-            Effect.sync(() => {
-              ctx.ui.setStatus('dev/work', workStatusText(snapshot, reactivation === 'suspended'))
-              events?.emit('dev/work-activity', {
-                sessionId: ctx.sessionManager.getSessionId(),
-                active: activeWorkChildren(snapshot).length > 0,
-              })
-            })
-          )
-        )
-      : Effect.void
-
-  const scheduleStatus = (): void => {
+  const publishView = (): void => {
+    view.timer = undefined
     const current = context
-    const currentOwner = sessionOwner
-    if (
-      current === undefined ||
-      (statusScheduled?.context === current && statusScheduled.owner === currentOwner)
-    )
-      return
-    const scheduled = { context: current, owner: currentOwner }
-    statusScheduled = scheduled
-    setImmediate(() => {
-      if (statusScheduled === scheduled) statusScheduled = undefined
-      if (context === current && sessionOwner === currentOwner)
-        Effect.runFork(
-          updateStatus(current).pipe(
-            Effect.catchCause(cause => Effect.sync(() => notifyError(Cause.squash(cause))))
-          )
+    const owner = sessionOwner
+    if (current === undefined || !current.hasUI || owner?._tag !== 'active') return
+    const refresh = view.stale || view.snapshot === undefined
+    view.stale = false
+    view.publishing = true
+    Effect.runFork(
+      ownedBy(owner, work =>
+        Effect.all({
+          snapshot:
+            refresh || view.snapshot === undefined ? work.snapshot : Effect.succeed(view.snapshot),
+          live: work.live,
+        })
+      ).pipe(
+        Effect.flatMap(({ snapshot, live }) =>
+          Effect.sync(() => {
+            if (context !== current || sessionOwner !== owner) return
+            view.snapshot = snapshot
+            view.lastAt = Date.now()
+            view.failureNotified = false
+            events?.emit(
+              WORK_VIEW_EVENT,
+              workView({
+                sessionId: owner.sessionId,
+                snapshot,
+                live,
+                batchStart: view.batchStart,
+                reactivationSuspended: reactivation === 'suspended',
+              })
+            )
+          })
+        ),
+        Effect.catchCause(cause =>
+          Effect.sync(() => {
+            if (refresh) view.stale = true
+            view.lastAt = Date.now()
+            if (!view.failureNotified) notifyError(Cause.squash(cause))
+            view.failureNotified = true
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            view.publishing = false
+            if (!view.again) return
+            view.again = false
+            scheduleView(false)
+          })
         )
-    })
+      )
+    )
+  }
+
+  const scheduleView = (refresh: boolean): void => {
+    if (refresh) view.stale = true
+    if (view.publishing) {
+      view.again = true
+      return
+    }
+    if (view.timer !== undefined) return
+    view.timer = setTimeout(publishView, Math.max(0, view.lastAt + VIEW_INTERVAL_MS - Date.now()))
+  }
+
+  const closeView = (owner: SessionOwner): void => {
+    clearTimeout(view.timer)
+    view.timer = undefined
+    view.snapshot = undefined
+    view.stale = true
+    view.again = false
+    view.failureNotified = false
+    if (context?.hasUI) events?.emit(WORK_VIEW_EVENT, emptyWorkView(owner.sessionId))
   }
 
   const notifyError = (cause: unknown): void => {
@@ -291,7 +348,7 @@ export const createWorkExtension = ({
           withOwner(owner => owner.interrupt(reason))
         )
       ),
-      Effect.andThen(updateStatus(ctx))
+      Effect.andThen(Effect.sync(() => scheduleView(true)))
     )
   const interrupt = (ctx: Pi.ExtensionContext, reason: string): Promise<void> =>
     Effect.runPromise(interruptOwned(ctx, reason))
@@ -494,7 +551,7 @@ export const createWorkExtension = ({
     if (retryBeforeExhaustion !== undefined)
       scope.session.settingsManager.applyOverrides({ retry: { enabled: retryBeforeExhaustion } })
     retryBeforeExhaustion = undefined
-    scheduleStatus()
+    scheduleView(true)
   })
 
   const settleBoundary = Effect.fnUntraced(function* (
@@ -540,6 +597,7 @@ export const createWorkExtension = ({
     removeSessionListener = undefined
     idleDeliveryReady = false
     const current = sessionOwner
+    if (current?._tag === 'active') closeView(current)
     context = undefined
     const shutdown =
       current === undefined || current._tag !== 'active'
@@ -664,7 +722,8 @@ export const createWorkExtension = ({
           { triggerTurn: false }
         )
       }
-      await Effect.runPromise(updateStatus(ctx))
+      view.batchStart = Date.now()
+      scheduleView(true)
     })
     pi.on('agent_start', async () => {
       runExhaustions = undefined
@@ -681,7 +740,7 @@ export const createWorkExtension = ({
       if (event.outcome === 'error') reactivation = 'suspended'
       else if (reactivation !== 'suspended')
         reactivation = event.outcome === 'completed' ? 'ready' : 'awaiting-success'
-      scheduleStatus()
+      scheduleView(false)
       if (sessionOwner?._tag !== 'active') return undefined
       return Effect.runPromise(settleBoundary(event, ctx))
     })
@@ -691,7 +750,11 @@ export const createWorkExtension = ({
       await Effect.runPromise(reconcileSettled(ctx))
     })
     pi.on('input', event => {
-      if (event.source !== 'extension') reactivation = 'awaiting-success'
+      if (event.source !== 'extension') {
+        reactivation = 'awaiting-success'
+        view.batchStart = Date.now()
+        scheduleView(false)
+      }
       scheduleDelivery()
     })
     pi.on('agent_end', async event => {
@@ -714,7 +777,7 @@ export const createWorkExtension = ({
             context,
             withOwner(owner => owner.exhaust())
           )
-        scheduleStatus()
+        scheduleView(true)
         scheduleDelivery()
       }
     })
@@ -733,7 +796,7 @@ export const createWorkExtension = ({
         Effect.runPromise(
           runOwned(ctx, decodeInput(input).pipe(Effect.flatMap(execute))).pipe(
             Effect.map(result => ({
-              content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+              content: [{ type: 'text' as const, text: workResultText(result) }],
               details: result,
               structuredContent: result,
             })),
@@ -781,8 +844,9 @@ export const createWorkExtension = ({
           pi.sendMessage(
             {
               customType: 'dev/work-inspection',
-              content: JSON.stringify(result ?? {}, null, 2),
+              content: workResultText(result),
               display: true,
+              details: result,
             },
             { triggerTurn: false }
           )

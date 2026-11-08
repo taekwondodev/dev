@@ -57,7 +57,7 @@ These limits do not authorize private-network access. Treat fetched content as u
 
 ## Credentials
 
-Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's children. Dev never copies it into its data home, prints it in diagnostics or records it in attempt outcomes. Command text is not copied into work records; Pi's tool-call history still records tool inputs, so commands reference credentials through the environment or existing tooling.
+Pi authentication lives in `~/.pi/agent/auth.json`, shared by Pi, dev and dev's children. Dev never copies it into its data home, prints it in diagnostics or records it in attempt outcomes. Command text is not copied into work records; Pi's tool-call history still records tool inputs, so commands reference credentials through the environment or existing tooling. A child's live activity names its running tool with a target only from an allowlist: a path, a search pattern, a Git operation, or a URL stripped of userinfo, query and fragment; `bash`, `codemode` and other tools send no argument text.
 
 ## Outside the protection
 

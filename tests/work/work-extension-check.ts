@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { isDeepStrictEqual } from 'node:util'
 import { join } from 'node:path'
 import { Effect, Schema } from 'effect'
 import {
@@ -15,14 +14,18 @@ import {
   type CoordinatorLink,
 } from '../../src/work-child-coordination.ts'
 import {
+  AttemptFactsSchema,
   AttemptOutcomeSchema,
   INTEGRATED_CHILD_TOOLS,
   READ_ONLY_CHILD_TOOLS,
   WorkResultSchema,
   type WorkResult,
 } from '../../src/work-domain.ts'
+import { workResultText } from '../../src/work-model-text.ts'
+import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
-import { openWorkFixture } from './work-check-support.ts'
+import { openWorkFixture, script } from './work-check-support.ts'
+import { CHILD_MODEL, RAW_AFTER_READY_MARKER, USAGE_MARKER } from './work-child-model.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
 const OUTCOME = 'dev/work-outcome'
@@ -33,18 +36,33 @@ const { claim, passed } = makeClaims()
 const fixture = await openWorkFixture('work-extension')
 process.env.PI_CODING_AGENT_DIR = fixture.agentDir
 
-const decodeResult = Schema.decodeUnknownSync(Schema.fromJsonString(WorkResultSchema), {
-  onExcessProperty: 'error',
+const ModelAttemptSchema = Schema.Struct({
+  id: Schema.String,
+  taskId: Schema.String,
+  kind: Schema.Literals(['process', 'agent']),
+  status: Schema.String,
+  parent: Schema.optionalKey(Schema.String),
+  coordinator: Schema.optionalKey(Schema.Literal(true)),
+  exitCode: Schema.optionalKey(Schema.Int),
+  error: Schema.optionalKey(Schema.String),
+  worktree: Schema.optionalKey(Schema.Struct({ path: Schema.String, cleanup: Schema.String })),
 })
-const decodeStructured = Schema.decodeUnknownSync(WorkResultSchema, {
-  onExcessProperty: 'error',
-})
-const decodeOutcomes = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Array(AttemptOutcomeSchema)),
-  { onExcessProperty: 'error' }
+const strict = { onExcessProperty: 'error' } as const
+const decodeModelAttempt = Schema.decodeUnknownSync(
+  Schema.fromJsonString(ModelAttemptSchema),
+  strict
 )
+const decodeStructured = Schema.decodeUnknownSync(WorkResultSchema, strict)
 const decodeDelivered = Schema.decodeUnknownSync(
   Schema.Struct({ attempts: Schema.Array(Schema.String) })
+)
+const decodeOutcomeDetails = Schema.decodeUnknownSync(
+  Schema.Struct({
+    attempts: Schema.Array(Schema.String),
+    children: Schema.Array(AttemptFactsSchema),
+    outcomes: Schema.Array(AttemptOutcomeSchema),
+  }),
+  strict
 )
 const decodeParameters = Schema.decodeUnknownSync(
   Schema.Struct({
@@ -72,7 +90,8 @@ const toolResults = (request: LeadRequest): string[] =>
     if (message.role !== 'toolResult' || typeof message.content === 'string') return []
     return [message.content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('\n')]
   })
-const outcomeItems = (content: string) => decodeOutcomes(content.slice(content.indexOf('\n') + 1))
+const modelEntries = (content: string): unknown =>
+  JSON.parse(content.slice(content.indexOf('\n') + 1))
 const byKind = (items: readonly WorkResult[]) =>
   items.toSorted((left, right) => left.kind.localeCompare(right.kind))
 const alive = (pid: number): boolean => {
@@ -113,13 +132,8 @@ const launch = async (lead: Lead, index: number, commands: readonly string[]) =>
   const next = await lead.request(index + 1)
   const started = toolResults(next)
     .slice(-commands.length)
-    .map(result => {
-      const { kind, attempt } = decodeResult(result)
-      assert.equal(kind, 'attempt')
-      assert.ok(attempt !== undefined)
-      return attempt
-    })
-  return { run, next, started }
+    .map(result => decodeModelAttempt(result))
+  return { run, next, started, from: lead.views.length }
 }
 
 const delivered = (lead: Lead): string[] =>
@@ -128,8 +142,10 @@ const delivered = (lead: Lead): string[] =>
 const displayed = async (lead: Lead, command: string) => {
   await lead.session.prompt(command)
   const message = lead.customMessages(INSPECTION).at(-1)
-  assert.ok(message !== undefined && typeof message.content === 'string')
-  return decodeResult(message.content)
+  assert.ok(message !== undefined)
+  const result = decodeStructured(message.details)
+  assert.equal(message.content, workResultText(result))
+  return result
 }
 
 const listing = async (lead: Lead, command = '/work') => {
@@ -289,7 +305,7 @@ try {
   )
 
   await claim(
-    'every work action returns a structured summary that decodes strictly, equals its text content, and keeps process and workspace facts for inspect',
+    'every work action returns a structured result that decodes strictly and keeps process and workspace facts, while the model reads its compact projection',
     async () => {
       const structured: unknown[] = []
       await withLead(
@@ -300,10 +316,10 @@ try {
         },
         async lead => {
           const held = gate()
-          const { run, next, started } = await launch(lead, 0, [held.command, 'true'])
+          const { run, next, started, from } = await launch(lead, 0, [held.command, 'true'])
           const [slow, quick] = started
           assert.ok(slow && quick)
-          await lead.status('the quick attempt completed', value => value.includes('completed'))
+          await lead.view('the quick attempt completed', view => view.commands.running === 1, from)
           next.reply([
             toolCall('dispatch', 'work', { action: 'dispatch' }),
             toolCall('list', 'work', { action: 'list' }),
@@ -317,14 +333,14 @@ try {
             toolCall('cancel', 'work', { action: 'cancel', id: slow.id }),
           ])
           const after = await lead.request(2)
-          const results = toolResults(after)
-            .slice(-5)
-            .map(result => decodeResult(result))
+          const texts = toolResults(after).slice(-5)
+          const results = byKind(structured.slice(-5).map(value => decodeStructured(value)))
           assert.deepEqual(
             results.map(result => result.kind),
-            ['dispatch', 'snapshot', 'inspection', 'log', 'attempt']
+            ['attempt', 'dispatch', 'inspection', 'log', 'snapshot']
           )
-          const [dispatch, snapshot, inspection, page, cancelled] = results
+          assert.deepEqual(texts.toSorted(), results.map(workResultText).toSorted())
+          const [cancelled, dispatch, inspection, page, snapshot] = results
           assert.equal(dispatch?.dispatch?.configured, true)
           assert.throws(() => decodeStructured({ kind: 'dispatch', dispatch: {} }))
           assert.throws(() =>
@@ -354,10 +370,23 @@ try {
           })
           assert.equal(cancelled?.attempt?.id, slow.id)
           assert.equal(cancelled?.attempt?.status, 'cancelled')
-          assert.deepEqual(
-            byKind(structured.slice(-5).map(value => decodeStructured(value))),
-            byKind(results)
-          )
+          const [shownCancel, shownDispatch, shownInspection, shownPage, shownList] = [
+            cancelled,
+            dispatch,
+            inspection,
+            page,
+            snapshot,
+          ].map(result => JSON.parse(result === undefined ? '{}' : workResultText(result)))
+          assert.deepEqual(Object.keys(shownDispatch), ['default', 'rules'])
+          assert.deepEqual(shownPage, { text: '', nextOffset: null })
+          assert.equal(shownCancel.id, slow.id)
+          assert.equal(shownCancel.status, 'cancelled')
+          assert.deepEqual(Object.keys(shownList), ['records', 'nextOffset'])
+          for (const record of shownList.records) decodeModelAttempt(JSON.stringify(record))
+          assert.equal(shownInspection.workflowTaskId, inspection?.inspection?.workflowTaskId)
+          assert.equal(shownInspection.cwd, inspection?.inspection?.cwd)
+          for (const hidden of ['record', 'logs', 'completedAt', 'usage'])
+            assert.equal(hidden in shownInspection, false, hidden)
           after.reply(text('inspected'))
           await readOutcomes(lead, 3, 2)
           await run
@@ -529,13 +558,14 @@ return JSON.stringify({
     'outcomes arrive when the current run settles and an eligible batch continues a successful lead run without another user message',
     () =>
       withLead({}, async lead => {
-        const { run, next, started } = await launch(lead, 0, ['true'])
+        const { run, next, started, from } = await launch(lead, 0, ['true'])
         const [attempt] = started
         assert.ok(attempt)
-        await lead.status('the process completed', value => value.includes('completed'))
-        assert.ok(lead.activities.length >= 2)
-        for (const activity of lead.activities)
-          assert.deepEqual(activity, { sessionId: lead.manager.getSessionId(), active: false })
+        await lead.view('the process completed', view => view.commands.running === 0, from)
+        for (const view of lead.views) {
+          assert.equal(view.sessionId, lead.manager.getSessionId())
+          assert.deepEqual(view.children, [])
+        }
         assert.deepEqual(delivered(lead), [])
         next.reply(text('launched'))
         const continued = await lead.request(2)
@@ -543,8 +573,10 @@ return JSON.stringify({
         assert.deepEqual(delivered(lead), [attempt.id])
         const [outcome] = lead.customMessages(OUTCOME)
         assert.ok(outcome !== undefined && typeof outcome.content === 'string')
-        const [item] = outcomeItems(outcome.content)
+        const details = decodeOutcomeDetails(outcome.details)
+        const [item] = details.outcomes
         assert.ok(item !== undefined)
+        assert.deepEqual(details.attempts, [attempt.id])
         assert.equal(item.id, attempt.id)
         assert.equal(item.status, 'completed')
         assert.equal(item.exitCode, 0)
@@ -556,6 +588,16 @@ return JSON.stringify({
             ['stderr', true, ''],
           ]
         )
+        const [facts] = details.children
+        assert.equal(facts?.kind, 'process')
+        assert.equal(typeof facts?.startedAt, 'number')
+        assert.equal(typeof facts?.completedAt, 'number')
+        assert.ok(
+          outcome.content.startsWith('Work outcomes: producer observations, not verification.')
+        )
+        assert.deepEqual(modelEntries(outcome.content), [
+          { id: attempt.id, taskId: 'task-0-0', kind: 'process', status: 'completed', exitCode: 0 },
+        ])
         continued.reply(text('outcome read'))
         await run
         await lead.idle()
@@ -563,6 +605,101 @@ return JSON.stringify({
         assert.deepEqual(delivered(lead), [attempt.id])
         assert.equal(lead.requests.length, 4)
       })
+  )
+
+  await claim(
+    'the live view shows a delegated child from launch through coalesced activity to settlement and keeps it until the next owner message, while requested selection stays out of model text',
+    async () => {
+      const launched: unknown[] = []
+      await withLead(
+        {
+          children: true,
+          onToolResult: event => {
+            if (event.toolName === 'work') launched.push(event.structuredContent)
+          },
+        },
+        async lead => {
+          const burst = Array.from({ length: 30 }, (_, index) => ({
+            type: 'activity',
+            turns: index + 1,
+            activity: { kind: 'tool', name: 'read', target: `file-${index}.md` },
+          }))
+          const run = lead.session.prompt('delegate a look around')
+          const first = await lead.request(0)
+          first.reply([
+            toolCall('look', 'work', {
+              action: 'delegate',
+              taskId: 'look-around',
+              prompt: [
+                'Look around',
+                `${RAW_AFTER_READY_MARKER}${JSON.stringify(burst)}`,
+                `${USAGE_MARKER}${JSON.stringify({ input: 10, output: 5 })}`,
+                script([{ delayMs: 1500, content: [{ type: 'text', text: 'LOOKED' }] }]),
+              ].join('\n'),
+              model: CHILD_MODEL,
+            }),
+          ])
+          const next = await lead.request(1)
+          const [shown] = toolResults(next).slice(-1)
+          const attempt = decodeModelAttempt(shown)
+          assert.equal(attempt.status, 'running')
+          assert.ok(!(shown ?? '').includes('requested') && !(shown ?? '').includes(CHILD_MODEL))
+          const [result] = launched.map(value => decodeStructured(value))
+          assert.equal(result?.attempt?.requested?.model, CHILD_MODEL)
+          const child = (view: WorkView) => view.children.find(item => item.id === attempt.id)
+          const active = await lead.view(
+            'the last activity level',
+            view => child(view)?.turns === 30
+          )
+          assert.deepEqual(child(active)?.activity, {
+            kind: 'tool',
+            name: 'read',
+            target: 'file-29.md',
+          })
+          assert.equal(child(active)?.taskId, 'look-around')
+          assert.equal(child(active)?.model, CHILD_MODEL)
+          assert.equal(child(active)?.coordinator, false)
+          assert.equal(child(active)?.access, 'read-only')
+          const ticks = lead.views.filter(view => (child(view)?.turns ?? 0) > 0).length
+          assert.ok(ticks <= 5, `${ticks} views for a burst of 30 activity messages`)
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          const continued = await lead.request(2)
+          assert.ok(seen(continued).includes('LOOKED'), seen(continued))
+          continued.reply(text('outcome read'))
+          await lead.idle()
+          const settledView = await lead.view(
+            'the child settled',
+            view => child(view)?.status === 'completed'
+          )
+          const done = child(settledView)
+          assert.equal(done?.activity, undefined)
+          assert.equal(typeof done?.completedAt, 'number')
+          const [outcome] = lead.customMessages(OUTCOME)
+          assert.ok(outcome !== undefined && typeof outcome.content === 'string')
+          const [facts] = decodeOutcomeDetails(outcome.details).children
+          assert.equal(facts?.turns, 1)
+          assert.equal(done?.turns, 1)
+          assert.equal(typeof facts?.toolUses, 'number')
+          assert.equal(typeof facts?.effort, 'string')
+          assert.equal(facts?.completedAt, done?.completedAt)
+          assert.deepEqual(modelEntries(outcome.content), [
+            {
+              id: attempt.id,
+              taskId: 'look-around',
+              kind: 'agent',
+              status: 'completed',
+              exitCode: 0,
+              result: 'LOOKED',
+            },
+          ])
+          assert.ok(child(lead.views.at(-1) ?? emptyWorkView('')) !== undefined)
+          await userTurn(lead, 3, 'unrelated question')
+          await lead.view('the batch closed', view => view.children.length === 0)
+        }
+      )
+    }
   )
 
   await claim(
@@ -730,8 +867,10 @@ return JSON.stringify({
         ])
         const refused = await lead.request(3)
         assert.ok(seen(refused).includes('Subscription exhausted'), seen(refused))
+        await lead.view('agents blocked', view => view.blocks.agentsBlocked)
+        const opened = lead.views.length
         held.open()
-        await lead.status('the process completed', value => value.includes('completed'))
+        await lead.view('the process completed', view => view.commands.running === 0, opened)
         refused.reply(text('finished'))
         const continued = await lead.request(4)
         assert.ok(seen(continued).includes(attempt.id), seen(continued))
@@ -772,10 +911,10 @@ return JSON.stringify({
 
   await claim('compaction and context edits do not erase delivery acknowledgment', () =>
     withLead({}, async lead => {
-      const { run, next, started } = await launch(lead, 0, ['true'])
+      const { run, next, started, from } = await launch(lead, 0, ['true'])
       const [attempt] = started
       assert.ok(attempt)
-      await lead.status('the process completed', value => value.includes('completed'))
+      await lead.view('the process completed', view => view.commands.running === 0, from)
       next.reply(text('launched'))
       const continued = await lead.request(2)
       const [outcome] = lead.customMessages(OUTCOME)
@@ -799,23 +938,25 @@ return JSON.stringify({
     })
   )
 
-  await claim('the status line shows states and follows each change to the final state', () =>
-    withLead({}, async lead => {
-      const held = gate()
-      const { run, next } = await launch(lead, 0, [held.command, 'true'])
-      await lead.status('one attempt still running', value =>
-        isDeepStrictEqual(value.split(' · ').toSorted(), ['1 completed', '1 running'])
-      )
-      held.open()
-      await lead.status('every attempt completed', value => value === '2 completed')
-      next.reply(text('launched'))
-      ;(await lead.request(2)).reply(text('outcome read'))
-      await run
-      await lead.idle()
-      await userTurn(lead, 3, 'unrelated question')
-      assert.equal(lead.statuses.at(-1), '2 completed')
-      assert.ok(lead.statuses.includes('1 running') || lead.statuses.includes('2 running'))
-    })
+  await claim(
+    'the live view counts running local commands without rows and follows each change to the final state',
+    () =>
+      withLead({}, async lead => {
+        const held = gate()
+        const { run, next, from } = await launch(lead, 0, [held.command, 'true'])
+        await lead.view('one command still running', view => view.commands.running === 1, from)
+        const opened = lead.views.length
+        held.open()
+        await lead.view('every command completed', view => view.commands.running === 0, opened)
+        next.reply(text('launched'))
+        ;(await lead.request(2)).reply(text('outcome read'))
+        await run
+        await lead.idle()
+        await userTurn(lead, 3, 'unrelated question')
+        assert.deepEqual(lead.views.at(-1), emptyWorkView(lead.manager.getSessionId()))
+        assert.ok(lead.views.every(view => view.children.length === 0))
+        assert.ok(lead.views.length < 40, `${lead.views.length} views`)
+      })
   )
 
   await claim(
@@ -862,8 +1003,9 @@ return JSON.stringify({
       const [attempt] = started
       assert.ok(attempt)
       assert.equal(lead.session.isStreaming, true)
+      const typed = lead.views.length
       lead.typeTerminal('\u001b')
-      await lead.status('the attempt cancelled', value => value === '1 cancelled')
+      await lead.view('the attempt cancelled', view => view.commands.running === 0, typed)
       next.reply(text('launched'))
       await run
       await lead.idle()
@@ -883,8 +1025,10 @@ return JSON.stringify({
     await lead.idle()
     const pid = await pidOf(lead, attempt.id)
     assert.equal(alive(pid), true)
+    const sessionId = lead.manager.getSessionId()
     await lead.close()
     assert.equal(alive(pid), false)
+    assert.deepEqual(lead.views.at(-1), emptyWorkView(sessionId))
     assert.deepEqual(lead.handlerErrors, [])
   })
 } finally {
@@ -897,7 +1041,7 @@ console.log(
       result: 'passed',
       checks: passed,
       limitation:
-        'Offline scripted lead in a real Pi session; background work is local commands only, no child agent or live model',
+        'Offline scripted lead in a real Pi session; background work is local commands and one scripted child, no live model',
     },
     null,
     2

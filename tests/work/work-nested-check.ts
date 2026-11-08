@@ -26,6 +26,7 @@ import {
   CHILD_MODEL,
   DROP_FIRST_ACK,
   ipcLog,
+  RAW_AFTER_READY_MARKER,
   RAW_AFTER_REPLY_MARKER,
   RAW_MARKER,
   RAW_ON_CANCEL_MARKER,
@@ -50,17 +51,30 @@ const say = (text: string) => [{ type: 'text', text }]
 const slow = (delayMs: number) => ({ delayMs, content: say('slow reply') })
 type ToolInput = Parameters<typeof toolCall>[2]
 const work = (id: string, input: ToolInput) => toolCall(id, 'work', input)
-const decodeOutcomes = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Array(AttemptOutcomeSchema)),
-  { onExcessProperty: 'error' }
-)
 const decodeEntry = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
       customType: Schema.optionalKey(Schema.String),
       content: Schema.optionalKey(Schema.String),
-      details: Schema.optionalKey(Schema.Struct({ children: Schema.Array(AttemptFactsSchema) })),
+      details: Schema.optionalKey(
+        Schema.Struct({
+          children: Schema.Array(AttemptFactsSchema),
+          outcomes: Schema.Array(AttemptOutcomeSchema),
+        })
+      ),
     })
+  )
+)
+const decodeModelEntries = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        parent: Schema.optionalKey(Schema.String),
+        status: Schema.String,
+        result: Schema.optionalKey(Schema.String),
+      })
+    )
   )
 )
 const outcomesReceivedBy = (view: AttemptView) => {
@@ -71,12 +85,13 @@ const outcomesReceivedBy = (view: AttemptView) => {
     .map(line => decodeEntry(line))
     .filter(entry => entry.customType === 'dev/work-outcome')
   return {
-    outcomes: entries.flatMap(entry =>
+    outcomes: entries.flatMap(entry => entry.details?.outcomes ?? []),
+    children: entries.flatMap(entry => entry.details?.children ?? []),
+    shown: entries.flatMap(entry =>
       entry.content === undefined
         ? []
-        : decodeOutcomes(entry.content.slice(entry.content.indexOf('\n') + 1))
+        : decodeModelEntries(entry.content.slice(entry.content.indexOf('\n') + 1))
     ),
-    children: entries.flatMap(entry => entry.details?.children ?? []),
   }
 }
 const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): ToolInput => ({
@@ -590,8 +605,8 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         )
         const freeText = await owner.result(free.id)
         const heldText = await owner.result(held.id)
-        assert.equal(count(freeText, 'Leaf outcomes.'), 1)
-        assert.equal(count(heldText, 'Leaf outcomes.'), 1)
+        assert.equal(count(freeText, 'Leaf outcomes:'), 1)
+        assert.equal(count(heldText, 'Leaf outcomes:'), 1)
         const [, freeLater = ''] = freeText.split('LATER-MESSAGES')
         const [, heldLater = ''] = heldText.split('LATER-MESSAGES')
         assert.ok(freeLater.includes(quickLeaf.id) && !freeLater.includes(slowLeaf.id))
@@ -614,6 +629,10 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           leafOutcome.logs[0]?.text?.startsWith('MODEL-SAW\nQuick leaf'),
           leafOutcome.logs[0]?.text ?? 'no result text'
         )
+        const [shownLeaf] = received.shown
+        assert.equal(shownLeaf?.id, quickLeaf.id)
+        assert.equal(shownLeaf?.parent, free.id)
+        assert.equal(shownLeaf?.result, leafOutcome.logs[0]?.text)
         assert.ok(
           completedAt(freeView) < completedAt(slowLeaf),
           'the free coordinator waited for another branch'
@@ -637,7 +656,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         ]),
       })
       assertStatus(view, 'completed')
-      assert.equal(count(text, 'Leaf outcomes.'), 1)
+      assert.equal(count(text, 'Leaf outcomes:'), 1)
       const offered = replies(fixture.dataHome, view.id).filter(
         reply => reply.type === 'work-pending' && reply.outcomes.length > 0
       )
@@ -764,6 +783,52 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
     )
 
     await claim(
+      'activity reaches only the controller memory: it changes no record revision, and settlement clears it',
+      async () => {
+        const burst = Array.from({ length: 20 }, (_, index) => ({
+          type: 'activity',
+          turns: index + 1,
+          activity: { kind: 'tool', name: 'read', target: `file-${index}.md` },
+        }))
+        const quiet = await owner.delegate({
+          taskId: 'quiet-activity',
+          prompt: `Quiet\n${script([slow(60_000)])}`,
+        })
+        const busy = await owner.delegate({
+          taskId: 'busy-activity',
+          prompt: `Busy\n${raw(RAW_AFTER_READY_MARKER, burst)}\n${script([slow(60_000)])}`,
+        })
+        const level = await waitFor(
+          'the last activity level',
+          async () => {
+            const live = await owner.call(controller => controller.live)
+            const current = live.get(busy.id)
+            return current?.turns === 20 ? current : undefined
+          },
+          { attempts: 1200, intervalMs: 50 }
+        )
+        assert.deepEqual(level, {
+          turns: 20,
+          activity: { kind: 'tool', name: 'read', target: 'file-19.md' },
+        })
+        const ready = (id: string) =>
+          owner.attempt(
+            `${id} ready`,
+            record => record.id === id,
+            record => record.model !== undefined
+          )
+        const [quietRecord, busyRecord] = await Promise.all([ready(quiet.id), ready(busy.id)])
+        assert.equal(busyRecord.revision, quietRecord.revision)
+        assert.equal('turns' in busyRecord || 'activity' in busyRecord, false)
+        assert.equal((await owner.call(controller => controller.live)).has(quiet.id), false)
+        await Promise.all(
+          [quiet.id, busy.id].map(id => owner.call(controller => controller.cancel(id)))
+        )
+        assert.equal((await owner.call(controller => controller.live)).size, 0)
+      }
+    )
+
+    await claim(
       'a request carrying a forged attempt identity and generation is rejected and stops its sender without effect',
       async () => {
         const started = await owner.delegate({
@@ -885,7 +950,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           prompt: `Silent phase\n${script([[work('d', delegation('heard', 'Heard leaf'))], []])}`,
         })
         assertStatus(view, 'completed')
-        assert.equal(count(text, 'Leaf outcomes.'), 1)
+        assert.equal(count(text, 'Leaf outcomes:'), 1)
         assert.equal((await owner.leaf(view.id, 'heard', settled)).status, 'completed')
       }
     )
@@ -1024,7 +1089,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           ])}`,
         })
         assertStatus(view, 'completed')
-        assert.equal(count(text, 'Leaf outcomes.') >= 1, true)
+        assert.equal(count(text, 'Leaf outcomes:') >= 1, true)
         const worktree = view.worktree?.path
         assert.ok(worktree !== undefined && worktree !== fixture.repository)
         const reviewer = await owner.leaf(view.id, 'reviewer', settled)

@@ -6,6 +6,7 @@ import {
   AttemptFactsSchema,
   AttemptId,
   AttemptOutcomeSchema,
+  ChildLiveSchema,
   ContextUsageSchema,
   ChildResourcesSchema,
   type ChildResources,
@@ -16,6 +17,7 @@ import {
   WorkProtocolError,
 } from './work-domain.ts'
 import { errorText } from './error-text.ts'
+import { outcomeText } from './work-model-text.ts'
 
 const NonEmptyText = Schema.NonEmptyString
 
@@ -30,6 +32,7 @@ const readyKeys = [
 ] as const
 const progressKeys = readyKeys
 const resultKeys = [...readyKeys, 'text', 'error', 'quotaExhausted'] as const
+const activityKeys = ['type', 'turns', 'activity'] as const
 
 const noUnexpectedKeys = (keys: readonly string[]) =>
   Schema.makeFilter((value: unknown) => {
@@ -97,6 +100,11 @@ const ResultMessageSchema = strictMessage(
         : 'Child result needs text or an explicit failure'
     })
   )
+)
+
+const ActivityMessageSchema = strictMessage(
+  { type: Schema.Literal('activity'), ...ChildLiveSchema.fields },
+  activityKeys
 )
 
 const text = (description: string) => Schema.optionalKey(Schema.String.annotate({ description }))
@@ -175,6 +183,7 @@ export const ChildMessageSchema = Schema.Union([
   ReadyMessageSchema,
   ProgressMessageSchema,
   ResultMessageSchema,
+  ActivityMessageSchema,
   Schema.Struct({
     type: Schema.Literal('workspace-check'),
     requestId: WorkspaceId,
@@ -251,10 +260,14 @@ const decodeDeliveryDetails = Schema.decodeUnknownResult(
 export const outcomeMessage = (entries: readonly OutcomeEntry[], guidance: string) => ({
   customType: OUTCOME_MESSAGE,
   display: true,
-  content: `${guidance}\n${JSON.stringify(entries.map(entry => entry.outcome))}`,
+  content: outcomeText(
+    entries.map(entry => entry.outcome),
+    guidance
+  ),
   details: {
     attempts: entries.map(entry => entry.facts.id),
     children: entries.map(entry => entry.facts),
+    outcomes: entries.map(entry => entry.outcome),
   },
 })
 
@@ -317,6 +330,7 @@ const validateMessageContext = (
   if (
     message.type === 'workspace-check' ||
     message.type === 'browser-ensure' ||
+    message.type === 'activity' ||
     isCoordinationMessage(message)
   )
     return message

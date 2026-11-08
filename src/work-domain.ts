@@ -141,6 +141,29 @@ export const UsageSchema = Schema.Struct({
 })
 export type Usage = typeof UsageSchema.Type
 
+const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+
+export const ACTIVITY_TEXT_LIMIT = 120
+const ActivityText = Schema.String.check(Schema.isMaxLength(ACTIVITY_TEXT_LIMIT))
+
+export const ChildActivitySchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('tool'),
+    name: Schema.NonEmptyString.check(Schema.isMaxLength(ACTIVITY_TEXT_LIMIT)),
+    target: Schema.optionalKey(ActivityText),
+  }),
+  Schema.Struct({ kind: Schema.Literal('thinking') }),
+  Schema.Struct({ kind: Schema.Literal('writing') }),
+  Schema.Struct({ kind: Schema.Literal('retrying'), message: ActivityText }),
+])
+export type ChildActivity = typeof ChildActivitySchema.Type
+
+export const ChildLiveSchema = Schema.Struct({
+  turns: Count,
+  activity: Schema.optionalKey(ChildActivitySchema),
+})
+export type ChildLive = typeof ChildLiveSchema.Type
+
 export const ContextUsageSchema = Schema.Struct({
   tokens: Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   contextWindow: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -359,6 +382,11 @@ export const AttemptSummarySchema = Schema.Struct({
   error: OptionalText,
   context: Schema.optionalKey(ContextUsageSchema),
   usage: Schema.optionalKey(Schema.Struct({ total: Schema.Finite, cost: Schema.Finite })),
+  requested: Schema.optionalKey(
+    Schema.Struct({ model: OptionalText, effort: OptionalText }).annotate({
+      description: 'Model and effort the dispatch selection requested.',
+    })
+  ),
   deliveryError: OptionalText,
   cleanupError: OptionalText,
   gateReleaseWarning: OptionalText,
@@ -373,6 +401,11 @@ export const AttemptFactsSchema = Schema.Struct({
   parent: Schema.optionalKey(AttemptId),
   coordinator: Schema.optionalKey(Schema.Boolean),
   sessionFile: OptionalText,
+  effort: OptionalText,
+  turns: Schema.optionalKey(Schema.Finite),
+  toolUses: Schema.optionalKey(Schema.Finite),
+  startedAt: Schema.Finite,
+  completedAt: Schema.optionalKey(Schema.Finite),
 })
 export type AttemptFacts = typeof AttemptFactsSchema.Type
 
@@ -520,6 +553,7 @@ export type WorkFailure =
 
 export interface WorkOwnerService {
   readonly snapshot: EffectType<WorkSnapshot, WorkFailure>
+  readonly live: EffectType<ReadonlyMap<AttemptId, ChildLive>>
   readonly startProcess: (request: ProcessStartRequest) => EffectType<AttemptView, WorkFailure>
   readonly startAgent: (request: AgentStartRequest) => EffectType<AttemptView, WorkFailure>
   readonly cancel: (id: AttemptId, reason?: string) => EffectType<AttemptView, WorkFailure>
