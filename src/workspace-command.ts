@@ -36,9 +36,30 @@ export const isReleaseCommand = (command: WorkspaceCommand): command is ReleaseC
 export const terminalReleaseCommand = (command: ReleaseCommand): string =>
   `dev workspace release ${command.kind === 'release' ? command.taskId : 'pre-existing'}`
 
+export type WorkspaceReport =
+  | {
+      readonly kind: 'list'
+      readonly repositoryRoot: string
+      readonly current?: { readonly workspaceId: WorkspaceId; readonly effectiveCwd: string }
+      readonly artifacts?: string
+      readonly views: readonly WorkspaceView[]
+    }
+  | {
+      readonly kind: 'inspect'
+      readonly taskId: WorkspaceId
+      readonly artifacts?: string
+      readonly views: readonly WorkspaceView[]
+    }
+  | {
+      readonly kind: 'check'
+      readonly taskId: WorkspaceId
+      readonly assessments: readonly WorkspaceAssessment[]
+    }
+
 export interface WorkspaceCommandResult {
   readonly exitCode: 0 | 1 | 2
   readonly text: string
+  readonly report?: WorkspaceReport
 }
 
 interface WorkspaceListScope<R = never> {
@@ -355,7 +376,7 @@ export const sweepExitCode = (receipt: SweepReceipt): 0 | 1 =>
     ? 0
     : 1
 
-const SWEEP_MOMENT_TEXT: Record<SweepMoment, string> = {
+export const SWEEP_MOMENT_TEXT: Record<SweepMoment, string> = {
   quit: 'at quit',
   replacement: 'at the conversation replacement',
   allocation: 'before a worktree allocation',
@@ -390,7 +411,15 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
           : { ownConversation: scope.current.conversation }),
       })
 
-      return { exitCode: 0, text: formatAssessments(command.taskId, assessments) }
+      return {
+        exitCode: 0,
+        text: formatAssessments(command.taskId, assessments),
+        report: {
+          kind: 'check',
+          taskId: command.taskId,
+          assessments: sortedAssessments(assessments),
+        },
+      }
     }
     if (command.kind === 'inspect') {
       const lifecycle = yield* openLifecycle
@@ -405,6 +434,12 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
                 `Workspace records for exact task ${command.taskId}: ${formatWorkspaceViews(views)}`,
                 ...(artifacts === undefined ? [] : [`task artifacts: ${artifacts}`]),
               ].join('\n'),
+        report: {
+          kind: 'inspect',
+          taskId: command.taskId,
+          ...(artifacts === undefined ? {} : { artifacts }),
+          views: sortedViews(views),
+        },
       }
     }
     const repositoryRoot = yield* scope.repositoryRoot
@@ -415,14 +450,24 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
       }
     const lifecycle = yield* openLifecycle
     const views = yield* lifecycle.inspect({ cwd: repositoryRoot })
+    const artifacts = existingTaskArtifacts(lifecycle.root, scope.current?.taskId)
     return {
       exitCode: 0,
-      text: formatWorkspaceList(
-        views,
+      text: formatWorkspaceList(views, repositoryRoot, scope.current, artifacts),
+      report: {
+        kind: 'list',
         repositoryRoot,
-        scope.current,
-        existingTaskArtifacts(lifecycle.root, scope.current?.taskId)
-      ),
+        ...(scope.current === undefined
+          ? {}
+          : {
+              current: {
+                workspaceId: scope.current.workspaceId,
+                effectiveCwd: scope.current.effectiveCwd,
+              },
+            }),
+        ...(artifacts === undefined ? {} : { artifacts }),
+        views: sortedViews(views),
+      },
     }
   },
   Effect.catch(cause =>

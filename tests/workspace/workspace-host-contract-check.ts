@@ -127,6 +127,22 @@ const receipt: SweepReceipt = makeFixtureReceipt({
     },
   ],
 })
+const unchanged: SweepReceipt = makeFixtureReceipt({
+  moment: 'allocation',
+  rows: [
+    {
+      descriptor: current,
+      outcome: 'skipped',
+      verdict: {
+        kind: 'retained',
+        role: 'pre-existing',
+        retained: 'excluded',
+        reason: 'It belongs to the conversation that is allocating a worktree.',
+      },
+      reason: 'It belongs to the conversation that is allocating a worktree.',
+    },
+  ],
+})
 const receipts = await Effect.runPromise(Queue.make<SweepReceipt, Cause.Done>())
 const authorized: string[] = []
 const attachment: WorkspaceAttachment = {
@@ -134,7 +150,10 @@ const attachment: WorkspaceAttachment = {
   delegatedCwds: [],
   authorize: operation => {
     authorized.push(operation.kind)
-    if (operation.kind === 'write') Queue.offerUnsafe(receipts, receipt)
+    if (operation.kind === 'write') {
+      Queue.offerUnsafe(receipts, receipt)
+      Queue.offerUnsafe(receipts, unchanged)
+    }
     return Effect.fail(refused)
   },
   select: selection => {
@@ -277,17 +296,50 @@ try {
     ])
   })
   await claim(
-    'a sweep receipt the authority delivers while a work tool admission allocates is shown once in the conversation',
+    'sweep receipts the authority delivers while a work tool admission allocates reach the model only when they change something, and the TUI receives every receipt with its facts',
     async () => {
       const before = displayed().length
       await runtime.session.prompt('start the fixture work')
       const shown = displayed().slice(before)
-      assert.equal(shown.length, 1, JSON.stringify(shown))
+      assert.deepEqual(
+        shown,
+        [
+          `Workspace sweep before a worktree allocation: ${JSON.stringify([
+            {
+              taskId: swept.taskId,
+              workspaceId: swept.workspaceId,
+              path: swept.path,
+              outcome: 'removed',
+            },
+          ])}`,
+        ],
+        'the model reads the removed workspace without the verdict or the skipped row'
+      )
+      const entries = runtime.session.sessionManager.getEntries()
+      assert.deepEqual(
+        entries.flatMap(entry =>
+          entry.type === 'custom_message' &&
+          entry.customType === 'dev/workspace' &&
+          entry.details !== undefined
+            ? [entry.details]
+            : []
+        ),
+        [{ kind: 'sweep', receipt }]
+      )
+      assert.deepEqual(
+        entries.flatMap(entry =>
+          entry.type === 'custom' && entry.customType === 'dev/workspace-receipt'
+            ? [entry.data]
+            : []
+        ),
+        [{ kind: 'sweep', receipt: unchanged }],
+        'a receipt that changes nothing is a session entry outside the model context'
+      )
+      const context = JSON.stringify(runtime.session.sessionManager.buildSessionContext().messages)
+      assert.ok(context.includes(swept.workspaceId), 'the changed receipt is in the model context')
       assert.ok(
-        shown[0]?.includes('before a worktree allocation') &&
-          shown[0].includes(swept.workspaceId) &&
-          shown[0].includes('removed (automatic)'),
-        shown[0]
+        !context.includes('It belongs to the conversation that is allocating a worktree.'),
+        'the unchanged receipt is not'
       )
     }
   )
