@@ -1,6 +1,7 @@
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
@@ -24,6 +25,7 @@ import {
   globalPiAgentDir,
   globalPiAuthPath,
   gitRoot,
+  initRepository,
   RepositoryRoot,
   resolveSelection,
   saveSelection,
@@ -45,7 +47,12 @@ import {
   resolvePiPackage,
   type PiApi,
 } from './pi-runtime.ts'
-import { chooseRepository, displayPath, findRepositories } from './repository-picker.ts'
+import {
+  chooseRepository,
+  confirmInitialization,
+  displayPath,
+  findRepositories,
+} from './repository-picker.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { createWebExtension } from './web-extension.ts'
 import { makeWebReader, type WebReader } from './web-reader.ts'
@@ -1007,16 +1014,32 @@ const launchDirectory = Effect.fnUntraced(function* (options: LaunchOptions) {
     options.dataHome === undefined ? defaultDataHome : Effect.succeed(options.dataHome)
   ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve dev data home')))
   const repositories = yield* findRepositories(options.cwd, join(dataHome, 'sessions'))
-  if (repositories.length === 0)
+  const initializable =
+    process.stdin.isTTY &&
+    process.stdout.isTTY &&
+    options.cwd !== homedir() &&
+    options.cwd !== parse(options.cwd).root
+  if (repositories.length === 0 && !initializable)
     return yield* new LauncherError({
       message: `${displayPath(options.cwd)} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`,
     })
   const { root } = yield* resolvePiPackage.pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot resolve the installed Pi release'))
   )
-  return yield* chooseRepository(root, options.cwd, repositories).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot open the repository picker'))
+  if (repositories.length > 0)
+    return yield* chooseRepository(root, options.cwd, repositories).pipe(
+      Effect.mapError(error => toLauncherError(error, 'Cannot open the repository picker'))
+    )
+  const confirmed = yield* confirmInitialization(root, options.cwd).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot open the initialization prompt'))
   )
+  if (!confirmed) return undefined
+  yield* initRepository(options.cwd).pipe(
+    Effect.mapError(error =>
+      toLauncherError(error, `Cannot open dev in ${displayPath(options.cwd)}`)
+    )
+  )
+  return options.cwd
 })
 
 const run = Effect.fnUntraced(function* (

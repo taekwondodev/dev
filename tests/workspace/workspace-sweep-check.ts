@@ -489,10 +489,9 @@ try {
       const unborn = join(sandbox, 'unborn-repo')
       mkdirSync(unborn)
       git(['init', '--quiet', '-b', 'main'], unborn)
-      await assert.rejects(
-        owner.owner.authorize({ kind: 'delegated-write', cwd: unborn }),
-        /no current commit/
-      )
+      await assert.rejects(owner.owner.authorize({ kind: 'delegated-write', cwd: unborn }), {
+        message: `Checkout ${unborn} has no commits yet, so no worktree can start from it. Make a first commit there, then retry.`,
+      })
       assert.deepEqual(
         owner.owner.effect.delegatedCwds,
         [foreignRepo, unborn],
