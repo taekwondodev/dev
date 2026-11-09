@@ -140,7 +140,9 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
 
 export const currentCommit = (workspace: GitWorkspace): string => {
   if (workspace.head.length === 0)
-    throw gitBlocked(`Checkout has no current commit: ${workspace.path}`)
+    throw gitBlocked(
+      `Checkout ${workspace.path} has no commits yet, so no worktree can start from it. Make a first commit there, then retry.`
+    )
   return workspace.head
 }
 

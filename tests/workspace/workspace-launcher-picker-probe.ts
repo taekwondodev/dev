@@ -1,14 +1,33 @@
 import { installProfileFixture } from '../profile-fixture.ts'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeClaims } from './workspace-check-support.ts'
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-picker-')))
-const cancelled = process.env.LAUNCHER_PICKER === 'cancel'
+const claims = {
+  pick: 'the repository picker opens dev in the filtered choice, which then quits normally',
+  cancel: 'Esc at the repository picker exits 0 without starting a conversation',
+  init: 'the initialization prompt ignores typing, creates a repository in the directory and opens dev there, which then quits normally',
+  'init-cancel':
+    'Esc at the initialization prompt exits 0 without creating a repository or starting a conversation',
+  'init-home':
+    'the home directory with no repository inside is never offered initialization and exits 1',
+}
+const scenario = (process.env.LAUNCHER_PICKER ?? 'pick') as keyof typeof claims
+const empty = scenario.startsWith('init')
+const started = scenario === 'pick' || scenario === 'init'
 const git = (args: readonly string[], cwd: string) =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' })
 const { claim, passed } = makeClaims()
@@ -23,7 +42,7 @@ try {
     mkdirSync(path, { recursive: true })
   mkdirSync(root, { mode: 0o700 })
   const profiles = installProfileFixture(join(sandbox, 'profiles'))
-  for (const name of ['alpha', 'beta']) {
+  for (const name of empty ? [] : ['alpha', 'beta']) {
     const repo = join(area, name)
     mkdirSync(repo)
     git(['init', '--quiet', '-b', 'main'], repo)
@@ -58,7 +77,7 @@ try {
       stdio: 'inherit',
       env: {
         ...process.env,
-        HOME: home,
+        HOME: scenario === 'init-home' ? area : home,
         PI_OFFLINE: '1',
         PI_TELEMETRY_DISABLED: '1',
         LAUNCHER_TUI_ROOT: root,
@@ -70,16 +89,13 @@ try {
       child.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }))
     }
   )
-  await claim(
-    cancelled
-      ? 'Esc at the repository picker exits 0 without starting a conversation'
-      : 'the repository picker opens dev in the filtered choice, which then quits normally',
-    () => {
-      assert.equal(exit.signal, null)
-      assert.equal(exit.code, 0)
-      if (cancelled) assert.deepEqual(readdirSync(sessions), ['earlier.jsonl'])
-    }
-  )
+  await claim(claims[scenario], () => {
+    assert.equal(exit.signal, null)
+    assert.equal(exit.code, scenario === 'init-home' ? 1 : 0)
+    if (!started) assert.deepEqual(readdirSync(sessions), ['earlier.jsonl'])
+    if (empty) assert.equal(existsSync(join(area, '.git')), started)
+    if (empty && started) assert.equal(git(['rev-parse', '--show-toplevel'], area).trim(), area)
+  })
   process.stdout.write(`\nDEV_PICKER_PROBE_PASSED ${JSON.stringify({ checks: passed })}\n`)
 } finally {
   rmSync(sandbox, { recursive: true, force: true })

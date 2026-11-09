@@ -87,6 +87,12 @@ export const globalPiAuthPath = (): string => join(globalPiAgentDir(), 'auth.jso
 export const gitRoot = (cwd: string): Effect.Effect<string | undefined> =>
   runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(Effect.orElseSucceed(() => undefined))
 
+export const initRepository = (cwd: string): Effect.Effect<void, PreferencesError> =>
+  runGit(cwd, ['init', '--quiet']).pipe(
+    Effect.asVoid,
+    Effect.mapError(error => toPreferencesError(error, 'Cannot initialize a Git repository'))
+  )
+
 export class RepositoryRoot extends Context.Service<
   RepositoryRoot,
   { readonly resolve: (cwd: string) => Effect.Effect<string | undefined> }
