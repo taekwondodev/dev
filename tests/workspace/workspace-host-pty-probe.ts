@@ -565,10 +565,27 @@ const lifecycle: WorkspaceLifecycle = {
   settleOrbPresence: unsupported,
 }
 
-const headings = (text: string): readonly string[] =>
-  text.split('\n').filter(line => !line.startsWith(' '))
-const row = (taskId: string, workspaceId: string, current = false): string =>
-  `task ${taskId} — workspace ${workspaceId}${current ? ' [current binding]' : ''}`
+interface ShownMessage {
+  readonly content: string
+  readonly details?: unknown
+}
+const shown = (message: ShownMessage): unknown => {
+  if (message.details === undefined) return message.content
+  const details = message.details as {
+    readonly kind: string
+    readonly taskId?: string
+    readonly current?: { readonly workspaceId: string; readonly effectiveCwd: string }
+    readonly repositoryRoot?: string
+    readonly views?: readonly { readonly taskId?: string; readonly workspaceId: string }[]
+  }
+  return {
+    kind: details.kind,
+    ...(details.taskId === undefined ? {} : { taskId: details.taskId }),
+    ...(details.repositoryRoot === undefined ? {} : { repositoryRoot: details.repositoryRoot }),
+    ...(details.current === undefined ? {} : { current: details.current }),
+    views: (details.views ?? []).map(view => [view.taskId, view.workspaceId]),
+  }
+}
 
 const finalText = [{ type: 'text' as const, text: 'Offline host integration fixture completed.' }]
 const readAgents = (callId: string) => toolCall(callId, 'read', { path: 'AGENTS.md' })
@@ -806,8 +823,8 @@ const decodeWorkResult = Schema.decodeUnknownSync(WorkResultSchema, {
   onExcessProperty: 'error',
 })
 const hostBlocks: HostBlock[] = []
-const hostMessages: string[] = []
-const handoffMessages: string[] = []
+const hostMessages: ShownMessage[] = []
+const handoffMessages: ShownMessage[] = []
 const userBashDecisions: {
   readonly event: UserBashEvent
   readonly executed: boolean
@@ -923,9 +940,12 @@ const instrumentHost =
             return (...args: Parameters<ExtensionAPI['sendMessage']>) => {
               const [message] = args
               if (typeof message.content === 'string') {
-                if (message.customType === 'dev/workspace') hostMessages.push(message.content)
-                if (message.customType === 'dev/workspace-handoff')
-                  handoffMessages.push(message.content)
+                const entry: ShownMessage = {
+                  content: message.content,
+                  ...(message.details === undefined ? {} : { details: message.details }),
+                }
+                if (message.customType === 'dev/workspace') hostMessages.push(entry)
+                if (message.customType === 'dev/workspace-handoff') handoffMessages.push(entry)
               }
               return target.sendMessage(...args)
             }
@@ -1709,20 +1729,34 @@ assert.deepEqual(
 )
 assert.ok(inspections.some(input => resolve(input.cwd ?? '') === resolve(targetB)))
 assert.ok(inspections.some(input => input.taskId === TASK_LEAD))
-const switchedTo = (workspaceId: string, cwd: string): string =>
-  `Workspace is now ${workspaceId} at ${cwd}. The blocked operation was not replayed.`
+const switchedTo = (reason: string, workspaceId: string, cwd: string, resumed = false) => ({
+  kind: 'switch',
+  resumed,
+  workspaceId,
+  cwd,
+  reason,
+})
 const cancelledSiblings =
   'Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed.'
 const reevaluate = (reason: string, workspaceId: string, cwd: string): string =>
   `Workspace admission changed after ${reason}. Dev ended that turn. Current workspace: ${workspaceId} at ${cwd}. The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it. ${cancelledSiblings}`
 assert.deepEqual(
-  handoffMessages,
+  handoffMessages.map(message => message.content),
   [
     reevaluate('fixture competing writer required an isolated workspace', WS_A, targetA),
     reevaluate('fixture repeated contention required another isolated workspace', WS_B, targetB),
     `This conversation resumed onto a retained workspace through the workspace tool: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Dev ended the turn that requested it. ${cancelledSiblings} Continue the conversation in this new context.`,
   ],
   'the model was told why each switch happened, which call was refused and which calls were cancelled'
+)
+assert.deepEqual(
+  handoffMessages.map(message => message.details),
+  [
+    switchedTo('fixture competing writer required an isolated workspace', WS_A, targetA),
+    switchedTo('fixture repeated contention required another isolated workspace', WS_B, targetB),
+    switchedTo('fixture explicit retained-workspace selection', WS_RESUME_A, targetA, true),
+  ],
+  'each switch reached the TUI once, as the handoff with its facts for renderers'
 )
 assert.deepEqual(
   timeline.flatMap(entry =>
@@ -1734,23 +1768,32 @@ assert.deepEqual(
   'each tool-originated rebind explained the ended turn before the switch'
 )
 assert.deepEqual(
-  hostMessages.map(headings),
+  hostMessages.map(shown),
   [
-    [switchedTo(WS_A, targetA)],
-    [switchedTo(WS_B, targetB)],
-    [
-      `Workspace list for repository ${targetB}:`,
-      `Current binding: ${WS_B}`,
-      `Effective cwd: ${targetB}`,
-      row(TASK_B, WS_B, true),
-    ],
-    [`Workspace records for exact task ${TASK_LEAD}: ${row(TASK_LEAD, WS_LEAD)}`],
-    [
-      `Release runs only from a terminal: dev workspace release ${TASK_RESUME}. The task of this conversation is swept when dev quits.`,
-    ],
-    [`Workspace is now ${WS_RESUME_A} at ${targetA}.`],
+    {
+      kind: 'list',
+      repositoryRoot: targetB,
+      current: { workspaceId: WS_B, effectiveCwd: targetB },
+      views: [[TASK_B, WS_B]],
+    },
+    { kind: 'inspect', taskId: TASK_LEAD, views: [[TASK_LEAD, WS_LEAD]] },
+    `Release runs only from a terminal: dev workspace release ${TASK_RESUME}. The task of this conversation is swept when dev quits.`,
   ],
-  'the TUI showed each switch, the /workspace list, inspect and release answers'
+  'the TUI showed the /workspace list, inspect and release answers and no second switch notice'
+)
+const listedForModel = JSON.parse(hostMessages[0]!.content) as {
+  readonly repository: string
+  readonly current: unknown
+  readonly workspaces: readonly Record<string, unknown>[]
+}
+assert.deepEqual(
+  [
+    listedForModel.repository,
+    listedForModel.current,
+    listedForModel.workspaces.map(item => item.workspaceId),
+  ],
+  [targetB, { workspaceId: WS_B, cwd: targetB }, [WS_B]],
+  'the model reads the list as compact JSON'
 )
 assert.ok(terminalInputs.length > 0)
 assert.equal(processResults.size, 3)

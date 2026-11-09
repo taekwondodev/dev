@@ -51,6 +51,7 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
     'tests/workspace/workspace-authority-check.ts',
     'tests/workspace/workspace-release-check.ts',
     'tests/workspace/workspace-sweep-check.ts',
+    'tests/workspace/workspace-model-text-check.ts',
     'tests/workspace/workspace-sweep-recovery-check.ts',
     'tests/workspace/workspace-process-check.ts',
     'tests/workspace/workspace-host-contract-check.ts',

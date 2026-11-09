@@ -249,7 +249,8 @@ export interface WorkspaceToolOptions {
 }
 
 interface ToolReply {
-  readonly value: unknown
+  readonly value: object
+  readonly model: object
   readonly terminate: boolean
 }
 
@@ -297,21 +298,28 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       )
     }
     const { binding } = attachment
-    if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId)
-      return {
-        value: { resumed: 'already-bound', taskId: input.taskId, workspaceId: binding.workspaceId },
-        terminate: false,
+    if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId) {
+      const value = {
+        resumed: 'already-bound',
+        taskId: input.taskId,
+        workspaceId: binding.workspaceId,
       }
+      return { value, model: value, terminate: false }
+    }
     const handoff = yield* attachment
       .select(candidate.selection)
       .pipe(Effect.mapError(error => refuse(`Workspace selection was refused: ${error.message}`)))
     options.requestResume(handoff, context)
+    const value = {
+      resumed: 'requested',
+      taskId: input.taskId,
+      workspaceId: candidate.view.workspaceId,
+      path: candidate.view.path,
+    }
     return {
-      value: {
-        resumed: 'requested',
-        taskId: input.taskId,
-        workspaceId: candidate.view.workspaceId,
-        path: candidate.view.path,
+      value,
+      model: {
+        ...value,
         note: 'The conversation switches to this workspace when the current turn ends; no other tool runs before then.',
       },
       terminate: true,
@@ -325,10 +333,11 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       .pipe(Effect.mapError(error => refuse(`Workspace admission was refused: ${error.message}`)))
     if (admitted.kind === 'rebind') {
       options.requestResume(admitted.handoff, context)
+      const value = { artifacts: 'rebind-requested', reason: admitted.handoff.reason }
       return {
-        value: {
-          artifacts: 'rebind-requested',
-          reason: admitted.handoff.reason,
+        value,
+        model: {
+          ...value,
           note: 'The conversation switches workspace when the current turn ends; call artifacts again afterwards.',
         },
         terminate: true,
@@ -343,12 +352,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       catch: cause => refuse(`Task artifact directory could not be created: ${errorText(cause)}`),
     })
     return {
-      value: {
-        artifacts: 'ready',
-        taskId,
-        path,
-        note: "Keep files that stay outside the commit scope here; dev deletes the directory when the task's last workspace reservation ends or the task is released.",
-      },
+      value: { artifacts: 'ready', taskId, path },
+      model: { artifacts: 'ready', path },
       terminate: false,
     }
   })
@@ -360,7 +365,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     yield* options.lifecycle
       .recordTarget({ taskId, target: input.target })
       .pipe(Effect.mapError(error => refuse(`Target was not recorded: ${error.message}`)))
-    return { value: { recorded: 'target', taskId, target: input.target }, terminate: false }
+    const value = { recorded: 'target', taskId, target: input.target }
+    return { value, model: value, terminate: false }
   })
 
   const recordPublication = Effect.fnUntraced(function* (
@@ -456,7 +462,18 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     yield* options.lifecycle
       .recordPublication({ reference })
       .pipe(Effect.mapError(error => refuse(`Publication was not recorded: ${error.message}`)))
-    return { value: { recorded: 'publication', reference }, terminate: false }
+    return {
+      value: { recorded: 'publication', reference },
+      model: {
+        recorded: 'publication',
+        root,
+        path: relativePath,
+        byteLength: bytes.byteLength,
+        readBack,
+        url: destination.url,
+      },
+      terminate: false,
+    }
   })
 
   return {
@@ -489,7 +506,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       const outcome = await options.runPromise(Effect.exit(run))
       if (Exit.isSuccess(outcome))
         return {
-          content: [{ type: 'text', text: JSON.stringify(outcome.value.value) }],
+          content: [{ type: 'text', text: JSON.stringify(outcome.value.model) }],
           details: outcome.value.value,
           ...(outcome.value.terminate ? { terminate: true } : {}),
         }

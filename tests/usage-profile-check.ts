@@ -978,7 +978,7 @@ const DEV_TEXTS = [
 const DEV_ANCHORS = [
   ['src/work-protocol.ts', ["const OUTCOME_MESSAGE = 'dev/work-outcome'"]],
   ['src/work-model-text.ts', ['`', String.raw`\n`, '`']],
-  ['src/workspace-host.ts', ["customType: 'dev/workspace-handoff'"]],
+  ['src/workspace-model-text.ts', ["export const HANDOFF_MESSAGE = 'dev/workspace-handoff'"]],
   ['src/workspace-host.ts', ['text: `[dev workspace] ', '`']],
   ['src/pi-child.ts', [String.raw`\n\n[git output truncated at `, ' bytes]']],
   [
