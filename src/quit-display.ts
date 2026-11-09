@@ -65,10 +65,11 @@ const spin = Effect.fnUntraced(function* (
 
 export interface SweepIndicator {
   readonly sweepDone: Effect.Effect<void>
-  readonly settle: (shape: SceneShape) => Effect.Effect<void>
+  readonly settle: (shape: SceneShape, label: string) => Effect.Effect<void>
 }
 
 const LABEL_COLUMNS = 32
+const INDICATOR_DELAY_MS = 150
 
 const idle: SweepIndicator = { sweepDone: Effect.void, settle: () => Effect.void }
 
@@ -85,19 +86,30 @@ export const sweepIndicator = Effect.fnUntraced(function* (
   }
   const started = yield* Clock.currentTimeMillis
   if (stripFits(graphics, SCAN_SHAPE, LABEL_COLUMNS)) {
-    const strip = yield* sweepStrip(out, graphics, elapsed =>
+    const strip = yield* sweepStrip(out, graphics, INDICATOR_DELAY_MS, elapsed =>
       paint(style, 'dim', `Sweeping workspaces… ${seconds(elapsed)}`)
     )
     return { sweepDone: Effect.void, settle: strip.settle }
   }
+  let shown = false
   let cleared = false
   const clear = Effect.sync(() => {
-    if (cleared) return
+    if (!shown || cleared) return
     cleared = true
     out.write(CLEAR_LINE)
   })
   yield* Effect.addFinalizer(() => clear)
-  const spinner = yield* Effect.forkScoped(spin(style, out, started), { uninterruptible: false })
+  const spinner = yield* Effect.forkScoped(
+    Effect.sleep(INDICATOR_DELAY_MS).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          shown = true
+        })
+      ),
+      Effect.andThen(spin(style, out, started))
+    ),
+    { uninterruptible: false }
+  )
   return {
     sweepDone: Fiber.interrupt(spinner).pipe(Effect.andThen(clear)),
     settle: () => Effect.void,
@@ -221,7 +233,7 @@ const statusOf = (row: WorkspaceRow): string => {
 }
 
 const commandStatus = (style: TerminalStyle, command: string, status: string): string =>
-  `${paint(style, 'warn', command)}\n${paint(style, 'dim', `Status: ${status}`)}`
+  `${paint(style, 'warn', command)}  ${paint(style, 'dim', status)}`
 
 const count = (value: number, noun: string): string => `${value} ${noun}${value === 1 ? '' : 's'}`
 
@@ -242,6 +254,17 @@ const successes = (
       ? []
       : [paint(style, 'ok', `✓ ${count(artifacts, 'task artifact directory')} removed`)]),
   ].join(' · ')
+}
+
+export const formatQuitSummary = (
+  receipt: SweepReceipt,
+  elapsedMs: number,
+  style: TerminalStyle
+): string => {
+  const summary =
+    successes(receipt.rows, style) ||
+    (receipt.rows.length === 0 ? 'No reserved workspaces' : 'No workspaces removed')
+  return `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`
 }
 
 export const formatQuitReceipt = (
@@ -295,17 +318,12 @@ export const formatQuitReceipt = (
         return []
     }
   })
-  const summary =
-    successes(receipt.rows, style) ||
-    (receipt.rows.length === 0 ? 'No reserved workspaces' : 'No workspaces removed')
   return [
-    `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`,
+    formatQuitSummary(receipt, elapsedMs, style),
     ...blocks(remaining.filter(row => offered.has(row.taskId))),
-    ...(unavailable.length === 0
-      ? []
-      : [paint(style, 'bold', 'Not included in the quick release:'), ...blocks(unavailable)]),
+    ...blocks(unavailable).map(line => `${paint(style, 'dim', 'Not offered:')} ${line}`),
     ...unassessed,
-  ].join('\n\n')
+  ].join('\n')
 }
 
 export const taskReleaseExclusion = (
@@ -349,9 +367,8 @@ const releaseConsequences = (
     ...(artifacts === 0 ? [] : [count(artifacts, 'task artifact directory')]),
   ].join(', ')
   return [
-    '',
     paint(style, 'bold', title(scope)),
-    ...status.map(text => paint(style, 'dim', `Status: ${text}`)),
+    ...status.map(text => paint(style, 'dim', text)),
     ...(managed === 0
       ? []
       : [
@@ -367,7 +384,7 @@ const releaseConsequences = (
     ...(artifacts === 0
       ? []
       : [paint(style, 'fail', 'Task artifact directories are deleted with everything in them.')]),
-  ].join('\n')
+  ].join(' ')
 }
 
 const artifactsOf = (plans: readonly TaskReleasePlan[]): number =>
@@ -426,19 +443,28 @@ export const formatQuitReleaseFailure = (
       : 'The release did not report back; its outcome is unknown.'
   )
 
+export const formatQuitReleaseSummary = (
+  results: readonly WorkspaceReleaseResult[],
+  style: TerminalStyle
+): string => successes(results, style)
+
+export const formatQuitReleaseFailures = (
+  taskId: WorkspaceId,
+  results: readonly WorkspaceReleaseResult[],
+  style: TerminalStyle
+): readonly string[] =>
+  results
+    .filter(result => result.outcome === 'failed' || result.outcome === 'review-required')
+    .map(() => formatQuitReleaseFailure(taskId, 'failed', style))
+
 export const formatQuitReleaseResults = (
   taskId: WorkspaceId,
   results: readonly WorkspaceReleaseResult[],
   style: TerminalStyle
 ): string =>
-  [
-    successes(results, style),
-    ...results
-      .filter(result => result.outcome === 'failed' || result.outcome === 'review-required')
-      .map(() => formatQuitReleaseFailure(taskId, 'failed', style)),
-  ]
+  [formatQuitReleaseSummary(results, style), ...formatQuitReleaseFailures(taskId, results, style)]
     .filter(text => text.length > 0)
-    .join('\n\n')
+    .join('\n')
 
 export const formatExitLine = (style: TerminalStyle, code: number, text: string): string =>
   paint(style, code === 0 ? 'ok' : 'fail', `Exit ${code}: ${text}.`)

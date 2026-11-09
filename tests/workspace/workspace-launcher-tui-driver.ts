@@ -57,12 +57,39 @@ const interruptedDuringSweep = Effect.gen(function* () {
   return lifecycle
 })
 
+const interruptedDuringStrip = Effect.gen(function* () {
+  const real = yield* makeWorkspaceLifecycle({ root })
+  const lifecycle: WorkspaceLifecycle = {
+    ...real,
+    sweep: input =>
+      Effect.sleep(300).pipe(
+        Effect.andThen(deliverSigint),
+        Effect.andThen(Effect.sleep(200)),
+        Effect.andThen(real.sweep(input))
+      ),
+  }
+  return lifecycle
+})
+
+const slowSweep = Effect.gen(function* () {
+  const real = yield* makeWorkspaceLifecycle({ root })
+  const lifecycle: WorkspaceLifecycle = {
+    ...real,
+    sweep: input => Effect.sleep(400).pipe(Effect.andThen(real.sweep(input))),
+  }
+  return lifecycle
+})
+
 const lifecycleFor = (fault: string | undefined) => {
   switch (fault) {
     case 'sigint-after-quit':
       return interruptedAfterQuit
     case 'sigint-during-sweep':
       return interruptedDuringSweep
+    case 'sigint-during-strip':
+      return interruptedDuringStrip
+    case 'slow-sweep':
+      return slowSweep
     default:
       return makeWorkspaceLifecycle({ root })
   }

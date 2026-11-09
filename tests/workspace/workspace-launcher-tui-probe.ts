@@ -42,7 +42,9 @@ const waitFor = async (ready: () => boolean, message: string) => {
 }
 
 const interruptedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'sigint-after-quit'
-const interruptedDuringSweep = process.env.LAUNCHER_TUI_FAULT === 'sigint-during-sweep'
+const interruptedDuringSweep = ['sigint-during-sweep', 'sigint-during-strip'].includes(
+  process.env.LAUNCHER_TUI_FAULT ?? ''
+)
 const failedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-quit'
 const failedInteractive = process.env.LAUNCHER_TUI_FAULT === 'interactive-failure'
 const containedHistory = process.env.LAUNCHER_TUI_CONTAINED_HISTORY === '1'
