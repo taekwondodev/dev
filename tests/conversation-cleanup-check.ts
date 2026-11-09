@@ -27,6 +27,8 @@ import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
 import { openLifecycle } from './workspace/workspace-test-lifecycle.ts'
 import { loadPi, findRecentSession } from '../src/pi-runtime.ts'
 
+const RETAINED = 3
+const newestNumbered = String(RETAINED).padStart(3, '0')
 const root = mkdtempSync(join(tmpdir(), 'dev-conversation-cleanup-'))
 const home = join(root, 'home')
 const otherHome = join(root, 'other-home')
@@ -50,7 +52,7 @@ for (const dataHome of [home, otherHome]) {
   for (const category of ['sessions', 'child-sessions']) {
     const directory = join(dataHome, category)
     mkdirSync(directory, { recursive: true })
-    for (let index = 0; index < 101; index++)
+    for (let index = 0; index <= RETAINED; index++)
       makeSession(
         directory,
         String(index).padStart(3, '0'),
@@ -135,16 +137,16 @@ try {
         namespacePath: namespace,
       })
       yield* lease.protect({ path: live, sessionId: 'live' })
-      assert.equal(yield* lease.creating(cleanConversations(home, namespace)), 0)
+      assert.equal(yield* lease.creating(cleanConversations(home, namespace, RETAINED)), 0)
       assert.equal(
-        yield* lease.navigate(cleanConversations(home, namespace), () => ({
+        yield* lease.navigate(cleanConversations(home, namespace, RETAINED), () => ({
           path: live,
           sessionId: 'live',
         })),
         0
       )
       yield* lease.protect({ path: active, sessionId: 'active' })
-      assert.equal(yield* cleanConversations(home, namespace), 2)
+      assert.equal(yield* cleanConversations(home, namespace, RETAINED), 2)
       assert.ok(existsSync(live))
       assert.ok(existsSync(active))
       assert.ok(existsSync(retained))
@@ -156,7 +158,7 @@ try {
       for (const category of ['sessions', 'child-sessions'])
         assert.ok(existsSync(join(otherHome, category, '000.jsonl')))
       assert.equal(
-        yield* cleanConversations(otherHome, namespace).pipe(
+        yield* cleanConversations(otherHome, namespace, RETAINED).pipe(
           Effect.provide(
             WorkStore.layer(otherHome, SessionId.make('other-home')).pipe(
               Layer.provide(NodeServices.layer)
@@ -169,18 +171,20 @@ try {
         for (const category of ['sessions', 'child-sessions']) {
           const tied = dataHome === otherHome && category === 'child-sessions'
           assert.equal(
-            existsSync(join(dataHome, category, tied ? '100.jsonl' : '000.jsonl')),
+            existsSync(join(dataHome, category, tied ? `${newestNumbered}.jsonl` : '000.jsonl')),
             false
           )
-          assert.ok(existsSync(join(dataHome, category, tied ? '000.jsonl' : '100.jsonl')))
+          assert.ok(
+            existsSync(join(dataHome, category, tied ? '000.jsonl' : `${newestNumbered}.jsonl`))
+          )
           assert.equal(
             readdirSync(join(dataHome, category)).filter(name => /^\d{3}\.jsonl$/.test(name))
               .length,
-            100
+            RETAINED
           )
         }
       }
-      assert.equal(yield* cleanConversations(home, namespace), 0)
+      assert.equal(yield* cleanConversations(home, namespace, RETAINED), 0)
       const { api, packageInfo } = yield* loadPi
       const recent = yield* findRecentSession(packageInfo.root, root, leads)
       assert.equal(recent, active)

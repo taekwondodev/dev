@@ -99,7 +99,8 @@ const inventory = (directory: string): readonly Candidate[] => {
 
 export const cleanConversations = Effect.fnUntraced(function* (
   dataHome: string,
-  authorityRoot = defaultAuthorityRoot()
+  authorityRoot = defaultAuthorityRoot(),
+  retained = RETAINED_CONVERSATIONS
 ) {
   const store = yield* WorkStore
   const protectedData = yield* store.maintain
@@ -148,15 +149,13 @@ export const cleanConversations = Effect.fnUntraced(function* (
         for (const candidate of ordered) {
           const identity = identify(candidate)
           if (identity === undefined) continue
-          if (kept < RETAINED_CONVERSATIONS) {
+          if (kept < retained) {
             if (conversationInUse(authority, identity)) continue
             kept += 1
           }
           candidate.eligible = true
         }
-        const expired = ordered
-          .filter(candidate => candidate.eligible)
-          .slice(RETAINED_CONVERSATIONS)
+        const expired = ordered.filter(candidate => candidate.eligible).slice(retained)
         for (const candidate of expired) {
           try {
             withDisposableConversation(
