@@ -9,6 +9,7 @@ import {
   DROP_FIRST_ACK,
   HOLD_CANCEL,
   ipcLog,
+  RAW_AFTER_READY_MARKER,
   RAW_AFTER_REPLY_MARKER,
   RAW_MARKER,
   RAW_ON_CANCEL_MARKER,
@@ -53,7 +54,10 @@ if (channelSend !== undefined)
       if (typeof callback === 'function') callback(null)
       return true
     }
-    return Reflect.apply(channelSend, process, [message, ...rest])
+    const sent = Reflect.apply(channelSend, process, [message, ...rest])
+    if (Predicate.isObject(message) && message.type === 'ready')
+      sendRaw(directive(assignment.prompt, RAW_AFTER_READY_MARKER))
+    return sent
   }) as NonNullable<typeof process.send>
 
 if (channelDisconnect !== undefined)

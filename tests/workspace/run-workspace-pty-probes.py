@@ -41,6 +41,7 @@ class Probe:
     expect: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
     expect_raw_order: tuple[str, ...] = ()
+    reject_raw_after: tuple[str, tuple[str, ...]] = ('', ())
 
     env: tuple[tuple[str, str], ...] = ()
 
@@ -67,6 +68,8 @@ STUB_ACTIONS = (
     Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND', 'resume the failing task\r'),
 )
 
+
+TUI_STOPPED = '\x1b[?2004l'
 
 QUIT_ACTIONS = (
     Action('quit', 'Press ctrl+o to show full startup help', '\x15/quit\r', delay=2.0),
@@ -133,7 +136,7 @@ PROBES = {
         expect=('Sweeping workspaces…', '✓ 1 reservation released', '✓ 1 worktree removed',
                 'Exit 0: done.'),
         expect_raw=('\x1b]9;4;3\x07', '\x1b]9;4;1;100\x07', '\x1b[32m'),
-        env=(('TERM_PROGRAM', 'rex'),),
+        env=(('TERM_PROGRAM', 'rex'), ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
     ),
 
     'quit-release': Probe(
@@ -142,7 +145,7 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
-        expect=('dev workspace release {TASK}', 'Status: The worktree directory is missing',
+        expect=('dev workspace release {TASK}  The worktree directory is missing',
                 'Release 1 task (1 managed worktree)?', 'including uncommitted changes and undelivered commits',
                 '✓ 1 worktree removed', 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'),),
@@ -154,14 +157,66 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
-        expect=('Status: The worktree directory is missing',),
-        expect_raw_order=('Sweeping workspaces…', '\x1b_Ga=T,f=32,o=z',
-                          'dev workspace release {TASK}', 'Release 1 task (1 managed worktree)?',
+        expect=('dev workspace release {TASK}  The worktree directory is missing',),
+        expect_raw_order=('\x1b8\x1b[1B\x1b[K\x1b[', 'Sweeping workspaces…', '\x1b_Ga=T,f=32,o=z',
+                          '✓ 1 reservation released', '\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h',
+                          '\x1b]9;4;2;100\x07\x1b[32m✓ 1 reservation released',
+                          'dev workspace release {TASK}',
+                          'Release 1 task (1 managed worktree)?',
                           '[y = release, Enter = keep]', '\x1b[?2026h', '\x1b_Ga=T,f=32,o=z',
-                          'Releasing 1 task…', '\x1b_Ga=d,d=I,i=', '\x1b[?2026l',
-                          '\x1b[?25h', '✓ 1 worktree removed', 'Exit 0: done.'),
+                          '\x1b8\x1b[1B\x1b[K\x1b[', 'Releasing 1 task…', '✓ 1 worktree removed',
+                          '\x1b_Ga=d,d=I,i=', '\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h', '✓ 1 worktree removed',
+                          'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b[2B',)),
         env=(('LAUNCHER_TUI_MISSING_WORKTREE', 'release'), ('TERM_PROGRAM', 'rex'),
-             ('PI_IMAGE_PROTOCOL', 'kitty')),
+             ('PI_IMAGE_PROTOCOL', 'kitty'), ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
+    ),
+
+    'quit-empty': Probe(
+        script='tests/workspace/workspace-launcher-empty-quit-probe.ts',
+        passed_marker='DEV_EMPTY_QUIT_PROBE_PASSED ',
+        actions=QUIT_ACTIONS,
+        expect=('No reserved workspaces', 'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b_G', '\x1b[?25l', 'Sweeping workspaces')),
+        env=(('TERM_PROGRAM', 'rex'), ('PI_IMAGE_PROTOCOL', 'kitty')),
+    ),
+
+    'quit-empty-slow-graphics': Probe(
+        script='tests/workspace/workspace-launcher-empty-quit-probe.ts',
+        passed_marker='DEV_EMPTY_QUIT_PROBE_PASSED ',
+        actions=QUIT_ACTIONS,
+        expect_raw_order=(TUI_STOPPED, 'Sweeping workspaces…', '\x1b_Ga=d,d=I,i=',
+                          '\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h', 'No reserved workspaces', 'Exit 0: done.'),
+        reject_raw_after=(TUI_STOPPED, ('\x1b[2B',)),
+        env=(('TERM_PROGRAM', 'rex'), ('PI_IMAGE_PROTOCOL', 'kitty'),
+             ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
+    ),
+
+    'repo-picker': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('filter', 'Open dev in:', 'al', delay=0.5),
+            Action('open', 'filter', '\r', delay=0.5),
+            *QUIT_ACTIONS,
+        ),
+        expect=('{ALPHA}', 'No reserved workspaces', 'Exit 0: done.'),
+        expect_raw_order=('Open dev in:', 'beta', 'alpha', '\x1b[J', 'Press ctrl+o'),
+        reject_raw_after=('Open dev in:', ('\x1b[3J',)),
+    ),
+
+    'repo-picker-cancel': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('paste', 'Open dev in:', '\x1b[200~ab\x1b]0;owned\x07\x1b[201~', delay=0.5),
+            Action('cancel', 'ab]0;owned', '\x1b', delay=0.5),
+        ),
+        expect=('No matching repositories',),
+        reject_raw_after=('Open dev in:', ('\x1b[3J', 'Press ctrl+o', '\x1b]0;owned')),
+        env=(('LAUNCHER_PICKER', 'cancel'),),
     ),
 
     'quit-release-declined': Probe(
@@ -190,10 +245,10 @@ PROBES = {
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
-        expect=('dev workspace release {TASK}',
-                'Status: Delivery to the integration target could not be verified.',
+        expect=('dev workspace release {TASK}  Delivery to the integration target could not be verified.',
                 'Release 1 task (1 managed worktree)?', '✓ 1 worktree removed', 'Exit 0: done.'),
-        expect_raw=('\x1b[33mdev workspace release ', '\x1b[2mStatus:', '\x1b[31mThis deletes'),
+        expect_raw=('\x1b[33mdev workspace release ', '\x1b[2mDelivery to the integration target',
+                    '\x1b[31mThis deletes'),
         env=(('LAUNCHER_TUI_UNDELIVERED_WORKTREE', '1'), ('TERM_PROGRAM', 'other')),
     ),
 
@@ -203,9 +258,8 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=(*QUIT_ACTIONS, Action('confirm', '[y = release, Enter = keep]', 'y\r', delay=0.5)),
-        expect=('Not included in the quick release:', 'dev workspace release {CRASHED_TASK}',
-                'Release task {CRASHED_TASK} (1 managed worktree)?',
-                'Status: A previous session ended without settling its workspace use.',
+        expect=('Not offered: dev workspace release {CRASHED_TASK}  A previous session ended without settling its workspace use.',
+                'Release task {CRASHED_TASK} (1 managed worktree)? A previous session ended without settling its workspace use.',
                 'Exit 0: done.'),
         env=(('LAUNCHER_TUI_ABANDONED_USE', '1'),),
     ),
@@ -226,8 +280,8 @@ PROBES = {
         inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
         timeout=240.0,
         actions=QUIT_ACTIONS,
-        expect=('Not included in the quick release:',
-                'Status: A cleanup guard blocked removal after completion was verified.', 'Exit 1:'),
+        expect=('Not offered: dev workspace release ',
+                '  A cleanup guard blocked removal after completion was verified.', 'Exit 1:'),
         env=(('LAUNCHER_TUI_CONTAINED_HISTORY', '1'),),
     ),
 
@@ -252,6 +306,19 @@ PROBES = {
                 '✓ 1 worktree removed',
                 'Exit 130: interrupted after the sweep'),
         env=(('LAUNCHER_TUI_FAULT', 'sigint-during-sweep'),),
+    ),
+
+    'quit-interrupt-during-strip': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=QUIT_ACTIONS,
+        expect_raw_order=('\x1b_Ga=T,f=32,o=z', '\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h',
+                          'Interrupt received: the sweep, or a confirmed release, runs on',
+                          '✓ 1 worktree removed', 'Exit 130: interrupted after the sweep'),
+        env=(('LAUNCHER_TUI_FAULT', 'sigint-during-strip'), ('TERM_PROGRAM', 'rex'),
+             ('PI_IMAGE_PROTOCOL', 'kitty')),
     ),
 
     'interactive-failure': Probe(
@@ -406,6 +473,14 @@ def run(name: str, probe: Probe) -> bool:
                 continue
             if expected not in haystack:
                 missing_output.append(expected)
+    marker, rejected = probe.reject_raw_after
+    if rejected:
+        start = text.rfind(marker)
+        if start < 0:
+            missing_output.append(f'marker: {marker!r}')
+        else:
+            missing_output.extend(f'absent after marker: {needle!r}'
+                                  for needle in rejected if needle in text[start:])
     cursor = 0
     for needle in probe.expect_raw_order:
         try:

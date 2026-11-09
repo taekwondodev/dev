@@ -5,6 +5,8 @@ import {
   formatQuitReleaseFailure,
   formatQuitReleasePlan,
   formatQuitReleaseResults,
+  formatQuitReleaseSummary,
+  formatQuitSummary,
   formatQuitSweepFailure,
   formatQuitTaskReleasePlan,
   progressDone,
@@ -64,23 +66,18 @@ const tty = terminalStyle({ isTTY: true }, {})
 const ttyNoColor = terminalStyle({ isTTY: true }, { NO_COLOR: '1' })
 
 await claim(
-  'mixed quit output offers undelivered work with a full command and English status, and separates abandoned use without paths or Git diagnostics',
+  'mixed quit output gives each task one line with a full command and English status, and marks abandoned use as not offered without paths or Git diagnostics',
   () => {
     assert.deepEqual(tasksToRelease(receipt), [undelivered.taskId])
     assert.equal(
       formatQuitReceipt(receipt, 12900, plain),
       [
         '✓ 1 worktree removed · 12.9s',
-        '',
-        `dev workspace release ${undelivered.taskId}`,
-        'Status: Delivery to the integration target could not be verified.',
-        '',
-        'Not included in the quick release:',
-        '',
-        `dev workspace release ${abandoned.taskId}`,
-        'Status: A previous session ended without settling its workspace use.',
+        `dev workspace release ${undelivered.taskId}  Delivery to the integration target could not be verified.`,
+        `Not offered: dev workspace release ${abandoned.taskId}  A previous session ended without settling its workspace use.`,
       ].join('\n')
     )
+    assert.equal(formatQuitSummary(receipt, 12900, plain), '✓ 1 worktree removed · 12.9s')
   }
 )
 
@@ -152,15 +149,16 @@ await claim(
       plain
     )
     assert.ok(
-      text.includes(`dev workspace check ${id('70')}\nStatus: The workspace assessment failed.`),
+      text.includes(`dev workspace check ${id('70')}  The workspace assessment failed.`),
       text
     )
     assert.ok(
       text.includes(
-        `dev workspace check ${id('71')}\nStatus: The sweep ran out of time before assessing this task.`
+        `dev workspace check ${id('71')}  The sweep ran out of time before assessing this task.`
       ),
       text
     )
+    assert.ok(!text.includes('Not offered'), 'only release commands are marked as not offered')
   }
 )
 
@@ -203,7 +201,7 @@ await claim(
     const text = formatQuitReceipt(receipt, 12900, tty)
     assert.ok(text.includes('\x1b[32m✓ 1 worktree removed\x1b[0m'), text)
     assert.ok(text.includes(`\x1b[33mdev workspace release ${undelivered.taskId}\x1b[0m`), text)
-    assert.ok(text.includes('\x1b[2mStatus:'), text)
+    assert.ok(text.includes('\x1b[2mDelivery to the integration target'), text)
     assert.equal(
       formatQuitReceipt(receipt, 12900, ttyNoColor),
       formatQuitReceipt(receipt, 12900, plain)
@@ -263,12 +261,11 @@ await claim(
         plain
       ),
       [
-        '',
         `Release task ${abandoned.taskId} (1 managed worktree, 1 task artifact directory)?`,
-        'Status: A previous session ended without settling its workspace use.',
+        'A previous session ended without settling its workspace use.',
         'This deletes the managed worktrees, including uncommitted changes and undelivered commits.',
         'Task artifact directories are deleted with everything in them.',
-      ].join('\n')
+      ].join(' ')
     )
     const plans = [
       {
@@ -302,6 +299,7 @@ await claim(
       text
     )
     assert.ok(!text.includes('/worktrees/one') && !text.includes('/repo'), text)
+    assert.ok(!text.includes('\n'), text)
     const colored = formatQuitReleasePlan(plans, tty)
     assert.ok(colored.includes('\x1b[31m'), colored)
   }
@@ -334,6 +332,11 @@ await claim(
       formatQuitReleaseResults(undelivered.taskId, [result, artifacts], plain),
       '✓ 1 worktree removed · ✓ 1 task artifact directory removed'
     )
+    assert.equal(
+      formatQuitReleaseSummary([result, { ...result, workspaceId: id('1002') }, artifacts], plain),
+      '✓ 2 worktrees removed · ✓ 1 task artifact directory removed',
+      'results of several tasks add up to one line'
+    )
     const unreviewed = formatQuitReleaseResults(
       undelivered.taskId,
       [{ ...artifacts, outcome: 'review-required', reason: 'not a plain directory' }],
@@ -354,7 +357,7 @@ await claim(
       plain
     )
     assert.ok(
-      review.includes(`dev workspace inspect ${undelivered.taskId}\nStatus: The entry is a link.`),
+      review.includes(`dev workspace inspect ${undelivered.taskId}  The entry is a link.`),
       review
     )
     const failed = formatQuitReleaseResults(
@@ -370,18 +373,18 @@ await claim(
     )
     assert.ok(
       failed.includes(
-        `dev workspace release ${undelivered.taskId}\nStatus: The release failed; its recorded outcome needs review.`
+        `dev workspace release ${undelivered.taskId}  The release failed; its recorded outcome needs review.`
       ),
       failed
     )
     assert.ok(!failed.includes(result.path), failed)
     assert.equal(
       formatQuitReleaseFailure(undelivered.taskId, 'unreported', plain),
-      `dev workspace release ${undelivered.taskId}\nStatus: The release did not report back; its outcome is unknown.`
+      `dev workspace release ${undelivered.taskId}  The release did not report back; its outcome is unknown.`
     )
     assert.equal(
       formatQuitSweepFailure(plain),
-      'dev workspace list\nStatus: The sweep did not report back; its outcome is unknown.'
+      'dev workspace list  The sweep did not report back; its outcome is unknown.'
     )
     const sweepFailure = formatQuitReceipt(
       { moment: 'quit', rows: [{ kind: 'sweep-failure', reason: 'Error at /private/path' }] },

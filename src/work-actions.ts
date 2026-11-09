@@ -54,18 +54,31 @@ export const summarize = (record: AttemptView): AttemptSummary =>
         : { path: record.worktree.path, cleanup: record.worktree.cleanup },
     exitCode: record.exitCode,
     completedAt: record.completedAt,
-    error: record.error ?? record.observationError ?? record.persistenceError,
+    error: attemptError(record),
     context: record.context,
     usage:
       record.usage === undefined
         ? undefined
         : { total: record.usage.total, cost: record.usage.cost },
+    requested:
+      record.selection === undefined
+        ? undefined
+        : defined<NonNullable<AttemptSummary['requested']>>({
+            model: record.selection.model,
+            effort: record.selection.effort,
+          }),
     deliveryError: record.deliveryError,
     cleanupError: record.cleanupError,
     gateReleaseWarning: record.gateReleaseWarning,
     processObservation: record.processObservation,
     recovery: record.recovery,
   })
+
+export const attemptError = (record: AttemptView): string | undefined =>
+  record.error ?? record.observationError ?? record.persistenceError
+
+export const settledTurns = (record: AttemptView): number | undefined =>
+  record.usage?.assistantMessages
 
 export const factsOf = (record: AttemptView): AttemptFacts =>
   defined<AttemptFacts>({
@@ -74,6 +87,11 @@ export const factsOf = (record: AttemptView): AttemptFacts =>
     parent: record.owner.parent,
     coordinator: record.coordinator,
     sessionFile: record.sessionFile,
+    effort: record.effort,
+    turns: settledTurns(record),
+    toolUses: record.usage?.toolCalls,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
   })
 
 export const logView = (page: LogPage, stream: LogRequest['stream']): LogView =>

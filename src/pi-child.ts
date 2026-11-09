@@ -31,6 +31,13 @@ import { createWebExtension } from './web-extension.ts'
 import type { AddressResolver } from './web-network.ts'
 import { CODEMODE_TOOL, READ_URL_TOOL } from './integrated-tools.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
+import { errorText, redactSecrets } from './error-text.ts'
+import {
+  initialActivity,
+  liveLevel,
+  makeActivitySender,
+  reduceActivity,
+} from './work-child-activity.ts'
 import {
   acquireCoordinatorLink,
   coordinate,
@@ -197,10 +204,7 @@ interface SessionOutcome {
 }
 
 function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
-  return message
-    .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*)\S+/gi, '$1[redacted]')
-    .replace(/\b(?:sk|key|token)-[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
+  return redactSecrets(errorText(error))
 }
 
 function toChildError(error: unknown): ChildError {
@@ -969,6 +973,25 @@ const runSession = Effect.fnUntraced(
         })
       ),
       cleanup => Effect.sync(cleanup)
+    )
+    const activity = makeActivitySender(level => {
+      void Effect.runPromiseWith(context)(send({ type: 'activity', ...level })).catch(() => {})
+    })
+    let observed = initialActivity
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        resource.session.subscribe(event => {
+          const next = reduceActivity(observed, event)
+          if (next === observed) return
+          observed = next
+          activity.offer(liveLevel(next))
+        })
+      ),
+      cleanup =>
+        Effect.sync(() => {
+          cleanup()
+          activity.stop()
+        })
     )
     if (signal?.aborted)
       return yield* new ChildError({ message: 'Child run cancelled before prompt' })
