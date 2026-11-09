@@ -41,7 +41,8 @@ const NAVIGATION = [
   'tui.select.cancel',
 ] as const
 const ICON = { folder: '\u{f07b}', branch: '\u{f418}' }
-const NOT_A_REPOSITORY = ' is not a Git repository. Open dev in:'
+const NOT_A_REPOSITORY = ' is not a Git repository.'
+const INITIALIZE = 'initialize'
 
 const control = (character: string): boolean =>
   character < ' ' || (character >= '\u007F' && character <= '\u009F')
@@ -175,43 +176,36 @@ const loadModules = (packageRoot: string): Effect.Effect<PickerModules, Reposito
       }),
   })
 
-const pick = (
+interface Menu {
+  readonly heading: string
+  readonly items: readonly PiTui.SelectItem[]
+  readonly filterable: boolean
+  readonly hints: readonly (readonly [key: string, action: string])[]
+}
+
+const present = (
   { tui, theme: themes }: PickerModules,
   directory: string,
-  repositories: readonly Repository[],
-  now: number
+  menu: Menu
 ): Effect.Effect<string | undefined> =>
   Effect.callback<string | undefined>(resume => {
     const { theme } = themes
     const dim = (text: string) => theme.fg('dim', text)
     const muted = (text: string) => theme.fg('muted', text)
-    const hint = (key: string, action: string) => dim(key) + muted(` ${action}`)
-    const items = repositories.map(repository => ({
-      value: repository.name,
-      label: repository.name,
-      description: [
-        repository.branch === undefined
-          ? undefined
-          : theme.fg('success', `${theme.bold(ICON.branch)} ${repository.branch}`),
-        repository.lastUsed === undefined ? undefined : muted(ago(now, repository.lastUsed)),
-      ]
-        .filter(part => part !== undefined)
-        .join(dim(' • ')),
-    }))
+    const items = [...menu.items]
     const listTheme = { ...themes.getSelectListTheme(), description: (text: string) => text }
     const layout = {
       minPrimaryColumnWidth: 12,
-      maxPrimaryColumnWidth:
-        Math.max(...repositories.map(repository => repository.name.length)) + 3,
+      maxPrimaryColumnWidth: Math.max(...items.map(item => item.label.length)) + 3,
     }
     const header: PiTui.Component = {
       render: width => {
         const folder = `${ICON.folder} `
-        const budget = width - tui.visibleWidth(folder) - tui.visibleWidth(NOT_A_REPOSITORY)
+        const budget = width - tui.visibleWidth(folder) - tui.visibleWidth(menu.heading)
         const path = tailToWidth(displayPath(directory), budget, tui.visibleWidth)
         return [
           tui.truncateToWidth(
-            `${theme.bold(theme.fg('syntaxType', `${folder}${path}`))}${muted(NOT_A_REPOSITORY)}`,
+            `${theme.bold(theme.fg('syntaxType', `${folder}${path}`))}${muted(menu.heading)}`,
             width
           ),
         ]
@@ -219,12 +213,7 @@ const pick = (
       invalidate: () => undefined,
     }
     const hints = new tui.TruncatedText(
-      [
-        hint('↑↓', 'select'),
-        hint('type', 'filter'),
-        hint('enter', 'open'),
-        hint('esc', 'quit'),
-      ].join('  '),
+      menu.hints.map(([key, action]) => dim(key) + muted(` ${action}`)).join('  '),
       0,
       0
     )
@@ -243,12 +232,12 @@ const pick = (
       screen.stop({ preserveScreen: true })
       process.stdout.write(`${hardwareCursorRow > 0 ? `\x1b[${hardwareCursorRow}A` : ''}\r\x1b[J`)
     }
-    const finish = (path: string | undefined) => {
+    const finish = (value: string | undefined) => {
       if (settled) return
       settled = true
       const handOver = () => {
         close()
-        resume(Effect.succeed(path))
+        resume(Effect.succeed(value))
       }
       void terminal.drainInput(DRAIN_MS).then(handOver, handOver)
     }
@@ -256,7 +245,7 @@ const pick = (
       const filter = query.getValue()
       const matches = tui.fuzzyFilter(items, filter, item => item.value)
       list = new tui.SelectList(matches, visible, listTheme, layout)
-      list.onSelect = item => finish(join(directory, item.value))
+      list.onSelect = item => finish(item.value)
       list.onCancel = () => finish(undefined)
       root.children = [
         header,
@@ -277,7 +266,7 @@ const pick = (
       handleInput: data => {
         const keys = tui.getKeybindings()
         if (NAVIGATION.some(action => keys.matches(data, action))) list.handleInput(data)
-        else {
+        else if (menu.filterable) {
           const before = query.getValue()
           query.handleInput(data)
           const typed = query.getValue()
@@ -297,11 +286,10 @@ const pick = (
     })
   })
 
-export const chooseRepository = Effect.fnUntraced(function* (
+const prepare = Effect.fnUntraced(function* (
   packageRoot: string,
-  directory: string,
-  repositories: readonly Repository[]
-): Effect.fn.Return<string | undefined, RepositoryPickerError> {
+  directory: string
+): Effect.fn.Return<PickerModules, RepositoryPickerError> {
   const modules = yield* loadModules(packageRoot)
   const name = yield* Effect.try({
     try: () =>
@@ -315,5 +303,62 @@ export const chooseRepository = Effect.fnUntraced(function* (
       }),
   })
   modules.theme.initTheme(name)
-  return yield* pick(modules, directory, repositories, yield* Clock.currentTimeMillis)
+  return modules
+})
+
+export const chooseRepository = Effect.fnUntraced(function* (
+  packageRoot: string,
+  directory: string,
+  repositories: readonly Repository[]
+): Effect.fn.Return<string | undefined, RepositoryPickerError> {
+  const modules = yield* prepare(packageRoot, directory)
+  const { theme } = modules.theme
+  const muted = (text: string) => theme.fg('muted', text)
+  const now = yield* Clock.currentTimeMillis
+  const name = yield* present(modules, directory, {
+    heading: `${NOT_A_REPOSITORY} Open dev in:`,
+    items: repositories.map(repository => ({
+      value: repository.name,
+      label: repository.name,
+      description: [
+        repository.branch === undefined
+          ? undefined
+          : theme.fg('success', `${theme.bold(ICON.branch)} ${repository.branch}`),
+        repository.lastUsed === undefined ? undefined : muted(ago(now, repository.lastUsed)),
+      ]
+        .filter(part => part !== undefined)
+        .join(theme.fg('dim', ' • ')),
+    })),
+    filterable: true,
+    hints: [
+      ['↑↓', 'select'],
+      ['type', 'filter'],
+      ['enter', 'open'],
+      ['esc', 'quit'],
+    ],
+  })
+  return name === undefined ? undefined : join(directory, name)
+})
+
+export const confirmInitialization = Effect.fnUntraced(function* (
+  packageRoot: string,
+  directory: string
+): Effect.fn.Return<boolean, RepositoryPickerError> {
+  const modules = yield* prepare(packageRoot, directory)
+  const choice = yield* present(modules, directory, {
+    heading: NOT_A_REPOSITORY,
+    items: [
+      {
+        value: INITIALIZE,
+        label: 'Initialize a repository here',
+        description: modules.theme.theme.fg('muted', 'git init'),
+      },
+    ],
+    filterable: false,
+    hints: [
+      ['enter', 'initialize'],
+      ['esc', 'quit'],
+    ],
+  })
+  return choice === INITIALIZE
 })
