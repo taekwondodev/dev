@@ -34,7 +34,17 @@ import {
   parseWorkspaceCommand,
   terminalReleaseCommand,
   runReadOnlyWorkspaceCommand,
+  type WorkspaceCommandResult,
 } from './workspace-command.ts'
+import {
+  HANDOFF_MESSAGE,
+  RECEIPT_ENTRY,
+  reportText,
+  sweepText,
+  WORKSPACE_MESSAGE,
+  type SweepDetails,
+  type SwitchDetails,
+} from './workspace-model-text.ts'
 import {
   WorkspaceError,
   type SweepReceipt,
@@ -258,14 +268,25 @@ const notify = (
   else process.stderr.write(`${message}\n`)
 }
 
-const display = (api: ExtensionAPI, context: ExtensionContext, message: string): void => {
+const display = (
+  api: ExtensionAPI,
+  context: ExtensionContext,
+  { text, report }: Pick<WorkspaceCommandResult, 'text' | 'report'>
+): void => {
   if (context.hasUI) {
     api.sendMessage(
-      { customType: 'dev/workspace', content: message, display: true },
+      report === undefined
+        ? { customType: WORKSPACE_MESSAGE, content: text, display: true }
+        : {
+            customType: WORKSPACE_MESSAGE,
+            content: reportText(report),
+            display: true,
+            details: report,
+          },
       { triggerTurn: false }
     )
   } else {
-    process.stderr.write(`${message}\n`)
+    process.stderr.write(`${text}\n`)
   }
 }
 
@@ -275,16 +296,23 @@ const cancelledSiblingsNotice =
 const switchNotices = (
   { origin, handoff }: PendingTransition,
   binding: WorkspaceBinding
-): { readonly user: string; readonly model: string; readonly unqueued: string } => {
+): { readonly details: SwitchDetails; readonly model: string; readonly unqueued: string } => {
   const current = `Current workspace: ${handoff.target.workspaceId} at ${handoff.target.cwd}.`
+  const details: SwitchDetails = {
+    kind: 'switch',
+    resumed: origin === 'tool-resume',
+    workspaceId: binding.workspaceId,
+    cwd: binding.cwd,
+    reason: handoff.reason,
+  }
   return origin === 'tool-resume'
     ? {
-        user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}.`,
+        details,
         model: `This conversation resumed onto a retained workspace through the workspace tool: ${handoff.reason}. ${current} Dev ended the turn that requested it. ${cancelledSiblingsNotice} Continue the conversation in this new context.`,
         unqueued: 'Submit a new prompt.',
       }
     : {
-        user: `Workspace is now ${binding.workspaceId} at ${binding.cwd}. The blocked operation was not replayed.`,
+        details,
         model: `Workspace admission changed after ${handoff.reason}. Dev ended that turn. ${current} The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it. ${cancelledSiblingsNotice}`,
         unqueued: 'The blocked request was not replayed; submit a new prompt.',
       }
@@ -459,18 +487,21 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   })
 
   const showSweep = (receipt: SweepReceipt): void => {
-    const text = formatSweepReceipt(receipt)
     if (currentApi === undefined || !currentContext?.hasUI) {
-      process.stderr.write(`${text}\n`)
+      process.stderr.write(`${formatSweepReceipt(receipt)}\n`)
       return
     }
+    const details: SweepDetails = { kind: 'sweep', receipt }
+    const content = sweepText(receipt)
     try {
-      currentApi.sendMessage(
-        { customType: 'dev/workspace', content: text, display: true },
-        { triggerTurn: false }
-      )
+      if (content === undefined) currentApi.appendEntry(RECEIPT_ENTRY, details)
+      else
+        currentApi.sendMessage(
+          { customType: WORKSPACE_MESSAGE, content, display: true, details },
+          { triggerTurn: false }
+        )
     } catch {
-      process.stderr.write(`${text}\n`)
+      process.stderr.write(`${formatSweepReceipt(receipt)}\n`)
     }
   }
   const followedSweeps = new WeakSet<WorkspaceAttachment>()
@@ -617,11 +648,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const notices = switchNotices(transition, activeAttachment.binding)
     try {
       api.sendMessage(
-        { customType: 'dev/workspace', content: notices.user, display: true },
-        { triggerTurn: false }
-      )
-      api.sendMessage(
-        { customType: 'dev/workspace-handoff', content: notices.model, display: true },
+        {
+          customType: HANDOFF_MESSAGE,
+          content: notices.model,
+          display: true,
+          details: notices.details,
+        },
         { triggerTurn: true, deliverAs: 'followUp' }
       )
     } catch (error) {
@@ -1375,11 +1407,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     function* (api: ExtensionAPI, args: string, context: ExtensionCommandContext) {
       const command = yield* parseWorkspaceCommand(args.trim() ? args.trim().split(/\s+/) : [])
       if (isReleaseCommand(command)) {
-        display(
-          api,
-          context,
-          `Release runs only from a terminal: ${terminalReleaseCommand(command)}. The task of this conversation is swept when dev quits.`
-        )
+        display(api, context, {
+          text: `Release runs only from a terminal: ${terminalReleaseCommand(command)}. The task of this conversation is swept when dev quits.`,
+        })
         return
       }
       const result = yield* runReadOnlyWorkspaceCommand(Effect.succeed(authority), command, {
@@ -1393,12 +1423,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           conversation: activeAttachment.binding.conversation,
         },
       })
-      display(api, context, result.text)
+      display(api, context, result)
     },
     (effect, api, _args, context) =>
       effect.pipe(
         Effect.catchTag('WorkspaceCommandError', error =>
-          Effect.sync(() => display(api, context, error.message))
+          Effect.sync(() => display(api, context, { text: error.message }))
         )
       )
   )

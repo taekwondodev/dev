@@ -138,8 +138,8 @@ const resultOf = (results: readonly WorkspaceReleaseResult[], workspaceId: strin
   if (found === undefined) throw new Error(`no release result for ${workspaceId}`)
   return found
 }
-const reply = (text: string) =>
-  JSON.parse(text) as {
+const reply = (details: unknown) =>
+  details as {
     readonly recorded?: string
     readonly reference?: PublicationReference
     readonly artifacts?: string
@@ -2061,8 +2061,7 @@ try {
           cwd: active.binding.cwd,
           hasUI: true,
         } as unknown as Parameters<ToolDefinition['execute']>[4])
-      const value = (result: Awaited<ReturnType<typeof call>>) =>
-        reply(result.content.map(part => (part.type === 'text' ? part.text : '')).join(''))
+      const value = (result: Awaited<ReturnType<typeof call>>) => reply(result.details)
       assert.equal(owner.binding.taskId, undefined, 'the action must perform the first admission')
       const announced = await call()
       const taskId = requireTask(owner.binding.taskId)
@@ -2070,6 +2069,11 @@ try {
       assert.deepEqual(
         [value(announced).artifacts, value(announced).taskId, value(announced).path],
         ['ready', taskId, directory]
+      )
+      assert.deepEqual(
+        announced.content,
+        [{ type: 'text', text: JSON.stringify({ artifacts: 'ready', path: directory }) }],
+        'the model reads only the directory; the tool description already explains it'
       )
       assert.ok(statSync(directory).isDirectory(), 'the action creates the directory')
       assert.equal(value(await call()).path, directory, 'repeat calls reuse the task directory')
@@ -2167,9 +2171,13 @@ try {
         try {
           const result = await tool.execute('call', input as never, undefined, undefined, context())
           const text = result.content.map(part => (part.type === 'text' ? part.text : '')).join('')
-          return { ok: true, text }
+          return { ok: true, text, details: result.details as unknown }
         } catch (cause) {
-          return { ok: false, text: cause instanceof Error ? cause.message : String(cause) }
+          return {
+            ok: false,
+            text: cause instanceof Error ? cause.message : String(cause),
+            details: undefined,
+          }
         }
       }
       for (const input of [
@@ -2212,9 +2220,21 @@ try {
         destination: { repository: 'owner/repo', number: 37, commentId: 9 },
       })
       assert.ok(recorded.ok, recorded.text)
-      assert.equal(reply(recorded.text).reference?.destination.readBack, 'text-in-body')
+      assert.equal(reply(recorded.details).reference?.destination.readBack, 'text-in-body')
+      assert.deepEqual(
+        JSON.parse(recorded.text),
+        {
+          recorded: 'publication',
+          root: 'workspace',
+          path: 'report.txt',
+          byteLength: Buffer.byteLength('published report\n'),
+          readBack: 'text-in-body',
+          url: reply(recorded.details).reference?.destination.url,
+        },
+        'the model reads the verified file and destination, not the digest or record identities'
+      )
       assert.equal(
-        reply(recorded.text).reference?.verifiedAt,
+        reply(recorded.details).reference?.verifiedAt,
         1234,
         'publication uses the runtime Clock'
       )
@@ -2224,7 +2244,7 @@ try {
         destination: { repository: 'owner/repo', number: 37, commentId: 9 },
       })
       assert.ok(attached.ok, attached.text)
-      assert.equal(reply(attached.text).reference?.destination.readBack, 'attachment-sha256')
+      assert.equal(reply(attached.details).reference?.destination.readBack, 'attachment-sha256')
       const sensitive = await call({
         action: 'record-publication',
         path: 'id_rsa',
@@ -2252,8 +2272,8 @@ try {
       assert.ok(artifactPublication.ok, artifactPublication.text)
       assert.deepEqual(
         [
-          reply(artifactPublication.text).reference?.root,
-          reply(artifactPublication.text).reference?.relativePath,
+          reply(artifactPublication.details).reference?.root,
+          reply(artifactPublication.details).reference?.relativePath,
         ],
         ['artifacts', 'pr-body.md']
       )

@@ -603,11 +603,26 @@ await claim(
   "/workspace check of the TUI task shows its managed worktree as finished for the sweep, naming the conversation's own live shell as a use that ends when it quits, without parking the host or stopping anything",
   async () => {
     const shown = await waitFor('the check to be displayed', () =>
-      workspaceEntries().find(content => content.includes('Sweep assessment for exact task'))
+      workspaceEntries().find(content => content.startsWith('A check changes nothing'))
     )
-    assert.ok(shown.includes(`workspace ${binding.workspaceId} (managed)`), shown)
-    assert.ok(shown.includes('sweep verdict: finished (no-residue)'), shown)
-    assert.ok(shown.includes('lead-shell') && shown.includes('they end when it quits'), shown)
+    const checked = JSON.parse(shown.slice(shown.indexOf('\n') + 1)) as {
+      readonly taskId: string
+      readonly workspaces: readonly {
+        readonly workspaceId: string
+        readonly origin: string
+        readonly verdict: string
+        readonly reasons?: readonly string[]
+      }[]
+    }
+    assert.equal(checked.taskId, hostTask, shown)
+    const own = checked.workspaces.find(item => item.workspaceId === binding.workspaceId)
+    assert.deepEqual([own?.origin, own?.verdict], ['managed', 'finished (no-residue)'], shown)
+    assert.ok(
+      own?.reasons?.some(
+        reason => reason.includes('lead-shell') && reason.includes('they end when it quits')
+      ),
+      shown
+    )
     assert.equal(workspaceHost.isParked(), false)
     assert.ok(alive(survivorPid), 'a check stops nothing')
   }
