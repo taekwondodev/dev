@@ -5,9 +5,11 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { makeClaims } from './workspace-check-support.ts'
+import { awaitCleanupExits, makeClaims } from './workspace-check-support.ts'
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-empty-quit-')))
+const cleanupMarkers = join(sandbox, 'cleanup-markers')
+mkdirSync(cleanupMarkers)
 const git = (args: readonly string[], cwd: string) =>
   execFileSync('git', [...args], { cwd, encoding: 'utf8' })
 const { claim, passed } = makeClaims()
@@ -47,6 +49,7 @@ try {
         PI_OFFLINE: '1',
         PI_TELEMETRY_DISABLED: '1',
         LAUNCHER_TUI_ROOT: root,
+        LAUNCHER_TUI_CLEANUP_MARKERS: cleanupMarkers,
       },
     }
   )
@@ -61,5 +64,6 @@ try {
   })
   process.stdout.write(`\nDEV_EMPTY_QUIT_PROBE_PASSED ${JSON.stringify({ checks: passed })}\n`)
 } finally {
+  await awaitCleanupExits(cleanupMarkers)
   rmSync(sandbox, { recursive: true, force: true })
 }
