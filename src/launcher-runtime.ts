@@ -1,5 +1,6 @@
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
@@ -217,7 +218,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
       }
       for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index]
-        if (arg === '--cwd') values.cwd = resolve(nextArgument(argv, ++index, arg))
+        if (arg === '--cwd') values.cwd = realpathSync(resolve(nextArgument(argv, ++index, arg)))
         else if (arg === '--data-home') values.dataHome = resolve(nextArgument(argv, ++index, arg))
         else if (arg === '--profile') values.profile = nextArgument(argv, ++index, arg)
         else if (arg === '--save-profile') values.saveProfile = nextArgument(argv, ++index, arg)
