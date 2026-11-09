@@ -1,6 +1,6 @@
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
@@ -38,7 +38,14 @@ import {
   type Profile,
 } from './profiles.ts'
 import { errorText } from './error-text.ts'
-import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
+import {
+  findRecentSession,
+  loadPi,
+  loadPiPathResolver,
+  resolvePiPackage,
+  type PiApi,
+} from './pi-runtime.ts'
+import { chooseRepository, displayPath, findRepositories } from './repository-picker.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { createWebExtension } from './web-extension.ts'
 import { makeWebReader, type WebReader } from './web-reader.ts'
@@ -986,6 +993,32 @@ const browserCommand = Effect.fnUntraced(function* (
   return 0
 })
 
+const launchDirectory = Effect.fnUntraced(function* (options: LaunchOptions) {
+  if (
+    options.resume !== undefined ||
+    options.continueSession ||
+    options.diagnostics ||
+    options.probeRuntime ||
+    options.saveProfile !== undefined ||
+    (yield* gitRoot(options.cwd)) !== undefined
+  )
+    return options.cwd
+  const dataHome = yield* (
+    options.dataHome === undefined ? defaultDataHome : Effect.succeed(options.dataHome)
+  ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve dev data home')))
+  const repositories = yield* findRepositories(options.cwd, join(dataHome, 'sessions'))
+  if (repositories.length === 0)
+    return yield* new LauncherError({
+      message: `${displayPath(options.cwd)} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`,
+    })
+  const { root } = yield* resolvePiPackage.pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot resolve the installed Pi release'))
+  )
+  return yield* chooseRepository(root, options.cwd, repositories).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot open the repository picker'))
+  )
+})
+
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
   dependencies: LauncherDependencies
@@ -1044,7 +1077,8 @@ const run = Effect.fnUntraced(function* (
     return
   }
 
-  const launchCwd = options.cwd
+  const launchCwd = yield* launchDirectory(options)
+  if (launchCwd === undefined) return
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const catalog = yield* loadCatalog.pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load profiles'))
@@ -1061,7 +1095,7 @@ const run = Effect.fnUntraced(function* (
       .load(options.saveProfile)
       .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference')))
     const path = yield* saveSelection({
-      cwd: options.cwd,
+      cwd: launchCwd,
       dataHome,
       profile: options.saveProfile,
     }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot save profile preference')))

@@ -192,6 +192,33 @@ PROBES = {
              ('LAUNCHER_TUI_FAULT', 'slow-sweep')),
     ),
 
+    'repo-picker': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('filter', 'Open dev in:', 'al', delay=0.5),
+            Action('open', 'filter', '\r', delay=0.5),
+            *QUIT_ACTIONS,
+        ),
+        expect=('{ALPHA}', 'No reserved workspaces', 'Exit 0: done.'),
+        expect_raw_order=('Open dev in:', 'beta', 'alpha', '\x1b[J', 'Press ctrl+o'),
+        reject_raw_after=('Open dev in:', ('\x1b[3J',)),
+    ),
+
+    'repo-picker-cancel': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('paste', 'Open dev in:', '\x1b[200~ab\x1b]0;owned\x07\x1b[201~', delay=0.5),
+            Action('cancel', 'ab]0;owned', '\x1b', delay=0.5),
+        ),
+        expect=('No matching repositories',),
+        reject_raw_after=('Open dev in:', ('\x1b[3J', 'Press ctrl+o', '\x1b]0;owned')),
+        env=(('LAUNCHER_PICKER', 'cancel'),),
+    ),
+
     'quit-release-declined': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
