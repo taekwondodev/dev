@@ -37,12 +37,15 @@ Forking before the first user message can fail after a workspace rebind. [Issue 
 
 ## Verification
 
-Choose checks for the affected boundary. The commands and their full composition are in `package.json`; these are their purposes and non-obvious limits.
+Choose checks for the affected boundary. Suite composition is in [the check runner](../tests/run-checks.ts); these are their purposes and non-obvious limits.
+
+The runner links the Pi declarations once, then runs every selected check file, lint pass and pseudo-terminal probe as one job queue, as many at once as the machine has cores, longest first by the previous run's durations. On macOS every job's `TMPDIR` is a RAM disk the runner mounts for the run and ejects afterwards, also on interruption, and a later run ejects one left by a killed runner: authority and gate databases publish with `F_FULLFSYNC`, which on the real disk dominated the slowest checks and made concurrent ones contend. Checks therefore prove behavior, not on-disk durability. One invocation beats sequential ones: `npm run check` runs every suite below except `workspace:github`, and `node tests/run-checks.ts <suite>...` runs several named suites together. Output is printed per job after all finish, followed by one status line per job.
 
 Tests follow integration boundaries and use disposable storage. Profile fixtures come from `tests/profile-fixture.ts` through `DEV_PROFILES`, so checks also run in worktrees without personal profiles. Keep scripted models, injected resolvers and fault controls in test composition roots; production must not load test entries or test-selection variables.
 
 | Check                      | Evidence                                                                                                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run check`            | Every recurring suite below in one concurrent run                                                                                                                                                                |
 | `npm run lint`             | Type checking, strict Effect diagnostics, type-aware Promise checks and Oxlint with warnings as errors                                                                                                           |
 | `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                                                                                        |
 | `npm run smoke`            | Launcher diagnostics and upgrade cleanup on disposable storage, without a model response                                                                                                                         |
@@ -59,7 +62,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 
 `web:check` serves loopback fixtures and launches the installed Chrome on a disposable profile. It skips browser claims when Chrome is absent; a passing run with those skips is not browser evidence.
 
-Use the actual TUI for interactive behavior. The Python pseudo-terminal driver exists because Node has no built-in pty; it drives TypeScript fixtures. To run one probe, use `python3 tests/workspace/run-workspace-pty-probes.py <name>`; the driver lists the supported names. Match proof to the change rather than adding a test or benchmark campaign by default.
+Use the actual TUI for interactive behavior. The Python pseudo-terminal driver exists because Node has no built-in pty; it drives TypeScript fixtures. To run one probe, use `python3 tests/workspace/run-workspace-pty-probes.py <name>`; `--list` prints the supported names. Match proof to the change rather than adding a test or benchmark campaign by default.
 
 The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
 

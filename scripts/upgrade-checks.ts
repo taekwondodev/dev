@@ -33,6 +33,6 @@ export const runUpgradeChecks = Effect.fnUntraced(function* (
   const [preparation, ...checks] = suites
   const prepared = yield* run(preparation)
   if (!prepared.passed) return [prepared]
-  const ran = yield* Effect.forEach(checks, run, { concurrency: 3 })
+  const ran = yield* Effect.forEach(checks, run)
   return [prepared, ...ran]
 })

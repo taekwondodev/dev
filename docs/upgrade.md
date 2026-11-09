@@ -16,7 +16,7 @@ The command prepares the upgrade in `.dev/upgrade/worktree` and the Pi candidate
 
 Pi and dependencies target their latest releases, including dependency major updates. The Node requirement can rise to the major running the command. Review these changes in the generated report.
 
-Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. Checks run concurrently after preparation succeeds; a failed check does not cancel the others.
+Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. After preparation succeeds, suites run one at a time because each suite already runs its own files concurrently; a failed check does not cancel the others.
 
 Each check's output appears when it finishes, so a running check may be quiet. Only the tail of command output is retained. Check durations overlap and should not be summed as elapsed upgrade time. The pull request body is the report; the full copy is saved in `.dev/upgrade/report.md`.
 
