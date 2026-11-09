@@ -99,23 +99,23 @@ export const parseWorkspaceCommand = Effect.fnUntraced(function* (
     return { kind: 'list' }
   }
   if (verb === 'inspect') {
-    if (args.length !== 1) return yield* usage('Usage: workspace inspect <task>')
+    if (args.length !== 1) return yield* usage('Usage: workspace inspect <task-id>')
     return { kind: 'inspect', taskId: yield* exactId(args[0], 'Task') }
   }
   if (verb === 'check') {
-    if (args.length !== 1) return yield* usage('Usage: workspace check <task>')
+    if (args.length !== 1) return yield* usage('Usage: workspace check <task-id>')
     return { kind: 'check', taskId: yield* exactId(args[0], 'Task') }
   }
   if (verb === 'release') {
     if (args.length !== 1)
       return yield* usage(
-        'Usage: workspace release <task> | workspace release pre-existing (interactive confirmation; no unattended mode exists)'
+        'Usage: workspace release <task-id> | workspace release pre-existing (interactive confirmation; no unattended mode exists)'
       )
     if (args[0] === 'pre-existing') return { kind: 'release-pre-existing' }
     return { kind: 'release', taskId: yield* exactId(args[0], 'Task') }
   }
   return yield* usage(
-    `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task>, check <task>, release <task> or release pre-existing.`
+    `Unknown workspace command ${JSON.stringify(verb)}. Use list, inspect <task-id>, check <task-id>, release <task-id> or release pre-existing.`
   )
 })
 

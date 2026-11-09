@@ -459,7 +459,7 @@ try {
   )
 
   await claim(
-    'dev workspace and dev workspace inspect <task> against an authority that does not exist yet report no records, exit 0 and create neither the root nor its parent',
+    'dev workspace and dev workspace inspect <task-id> against an authority that does not exist yet report no records, exit 0 and create neither the root nor its parent',
     async () => {
       const emptyList = await readOnly(absentRoot, ['--cwd', repo, 'workspace'])
       assert.equal(emptyList.code, 0, emptyList.stderr)
@@ -500,7 +500,7 @@ try {
     )
   }
   await claim(
-    'dev workspace inspect <task> finds exactly that task in whichever of two repositories holds it, from a non-Git or another repository launch directory, and a task ID differing in one character finds nothing',
+    'dev workspace inspect <task-id> finds exactly that task in whichever of two repositories holds it, from a non-Git or another repository launch directory, and a task ID differing in one character finds nothing',
     async () => {
       await inspectTask(notGit, secondGrant, secondRepo)
       await inspectTask(secondRepo, firstGrant, repo)
@@ -524,7 +524,7 @@ try {
   )
 
   await claim(
-    'dev workspace list and inspect <task> report a corrupt catalog with exit 1 and no listing, leave every authority file byte-identical, and after repair the same records answer again, so nothing was reinitialized',
+    'dev workspace list and inspect <task-id> report a corrupt catalog with exit 1 and no listing, leave every authority file byte-identical, and after repair the same records answer again, so nothing was reinitialized',
     async () => {
       const catalogPath = join(inspectRoot, 'catalog.sqlite')
       const setCatalogPayload = (payload: string) => {
@@ -565,7 +565,7 @@ try {
   )
 
   await claim(
-    'dev workspace check <task> returns the role, target and sweep verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
+    'dev workspace check <task-id> returns the role, target and sweep verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
     async () => {
       const checked = await readOnly(inspectRoot, [
         '--cwd',
@@ -595,7 +595,7 @@ try {
         '--yes',
       ])
       assert.equal(unattended.code, 2, unattended.stderr)
-      assert.ok(unattended.stderr.includes('workspace release <task>'), unattended.stderr)
+      assert.ok(unattended.stderr.includes('workspace release <task-id>'), unattended.stderr)
       const resume = await readOnly(inspectRoot, ['workspace', 'resume', firstGrant.taskId])
       assert.equal(resume.code, 2, resume.stderr)
       assert.ok(
@@ -605,7 +605,7 @@ try {
     }
   )
   await claim(
-    'dev workspace release <task> without a TTY refuses with exit 2 and releases nothing: the reservation is still held afterwards',
+    'dev workspace release <task-id> without a TTY refuses with exit 2 and releases nothing: the reservation is still held afterwards',
     async () => {
       const refused = await readOnly(inspectRoot, [
         '--cwd',

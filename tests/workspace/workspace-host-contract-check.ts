@@ -254,10 +254,19 @@ try {
           : []
       )
 
+  await claim('the /workspace description names only the verbs the command accepts', () => {
+    const description = runtime.session.extensionRunner.getCommand('workspace')?.description ?? ''
+    assert.deepEqual(description.toLowerCase().match(/\b(list|inspect|check|release|resume)\b/g), [
+      'list',
+      'inspect',
+      'check',
+      'release',
+    ])
+  })
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')
     assert.deepEqual(displayed(), [
-      'Unknown workspace command "switch". Use list, inspect <task>, check <task>, release <task> or release pre-existing.',
+      'Unknown workspace command "switch". Use list, inspect <task-id>, check <task-id>, release <task-id> or release pre-existing.',
     ])
   })
   await claim('/workspace release pre-existing only names its terminal command', async () => {

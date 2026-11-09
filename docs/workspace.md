@@ -7,10 +7,10 @@ The workspace authority coordinates dev conversations and children without treat
 Terminal commands are read-only except `release`:
 
 ```bash
-dev workspace                 # list this repository's tasks and workspaces
-dev workspace inspect <task>  # inspect the exact task across repositories and its next safe action
-dev workspace check <task>    # assess completion, target, blockers and evidence
-dev workspace release <task>  # interactively confirm clearing every workspace of the task
+dev workspace                    # list this repository's tasks and workspaces
+dev workspace inspect <task-id>  # inspect the exact task across repositories and its next safe action
+dev workspace check <task-id>    # assess completion, target, blockers and evidence
+dev workspace release <task-id>  # interactively confirm clearing every workspace of the task
 dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts
 ```
 
@@ -66,7 +66,7 @@ External permits provide neither cross-session file locking nor cleanup ownershi
 
 ### Task artifacts
 
-Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoffs. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [rebind](#admission-and-isolation) instead. A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task>` show the path while the directory exists.
+Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoffs. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [rebind](#admission-and-isolation) instead. A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task-id>` show the path while the directory exists.
 
 The directory is retained while the task reserves any workspace across repositories. A [sweep](#sweep) removes it after the attempt ending the last reservation; quit and replacement sweeps also remove orphan directories within their budget. Explicit [task release](#release) lists the directory in its confirmation and removes it once no reservations remain.
 
@@ -122,15 +122,15 @@ Each finished workspace gets one fenced removal attempt after reassessment. A pr
 
 The budget runs from the request, including queue time; [the sweep implementation](../src/workspace-release.ts) owns its limits. Unstarted tasks become `task-deferred`. Quit and replacement also sweep repositories reached by native writes or selected for delegation during the leaving session, including refused delegations, within the same budget. A repository assessment failure is reported without preventing the others from proceeding; a later sweep can assess it again.
 
-Allocation and replacement receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then a complete release command and short status for each retained workspace. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task>` for paths and detailed evidence.
+Allocation and replacement receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then a complete release command and short status for each retained workspace. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task-id>` for paths and detailed evidence.
 
 ### Release
 
-**`dev workspace release <task>` discards everything left in all of the task's managed worktrees and in its [artifact directory](#task-artifacts), including uncommitted changes and undelivered commits.** Pre-existing checkout files and commits stay; their reservations and use records end.
+**`dev workspace release <task-id>` discards everything left in all of the task's managed worktrees and in its [artifact directory](#task-artifacts), including uncommitted changes and undelivered commits.** Pre-existing checkout files and commits stay; their reservations and use records end.
 
 The command requires an interactive terminal, lists each workspace and its consequence, then asks for one `y`. There is no `--yes`. It checks no completion, evidence or live use: run it only when nothing still works in those workspaces. It neither waits for uses nor acquires path or installation gates; this is an [explicit user override](adr/0005-scoped-runtime-coordination.md#release), not a guarded sweep. The session command and agent tool cannot release them.
 
-A pre-existing checkout no task reserves is never swept, so uses its ended sessions left unsettled keep it `blocked` and settled ones accumulate. **`dev workspace release pre-existing`** handles the repository at `--cwd`: it lists each unreserved pre-existing checkout with recorded uses, asks for one `y`, then deletes the uses of every ended dev session there. Uses of running sessions stay, as do files and commits; a checkout a task reserves meanwhile fails and names `dev workspace release <task>`. It stops no process those sessions started: run it only when nothing they started still works there.
+A pre-existing checkout no task reserves is never swept, so uses its ended sessions left unsettled keep it `blocked` and settled ones accumulate. **`dev workspace release pre-existing`** handles the repository at `--cwd`: it lists each unreserved pre-existing checkout with recorded uses, asks for one `y`, then deletes the uses of every ended dev session there. Uses of running sessions stay, as do files and commits; a checkout a task reserves meanwhile fails and names `dev workspace release <task-id>`. It stops no process those sessions started: run it only when nothing they started still works there.
 
 Release respects explicit Git worktree locks. A failed or interrupted removal stays `release-review`; rerun release to finish it. Leftover directories are deleted only after Git confirms the worktree is no longer registered, and only within dev's managed storage; an admin directory serving a moved worktree is preserved. An unreadable Git worktree list prevents confirmation and leftover deletion. When the directory is already gone, retry retains the interrupted removal's recorded HEAD as sibling delivery evidence.
 
@@ -167,6 +167,6 @@ The account-wide location is in the launcher's [state map](launcher.md#state). A
 
 First use creates an absent authority. Missing parts of a known authority, invalid layout and damaged storage are refused, not reset. Each process validates a database's schema and integrity on first opening that file identity. In-place overwrites are not rechecked until another process starts, and running sessions keep their database connections and WAL files open: stop every dev session before restoring or copying over a database. Keep coordination databases on disk during normal operation; use [Development](DEVELOPMENT.md#discard-obsolete-state) for obsolete-state removal.
 
-After an operating-system crash or power loss, inspect `dev workspace check <task>` results and `git worktree list` before trusting a release decision. This inspection does not certify that all acknowledged facts survived; see [durability by lifetime](adr/0004-authoritative-lifecycle-incremental-store.md#durability-by-lifetime).
+After an operating-system crash or power loss, inspect `dev workspace check <task-id>` results and `git worktree list` before trusting a release decision. This inspection does not certify that all acknowledged facts survived; see [durability by lifetime](adr/0004-authoritative-lifecycle-incremental-store.md#durability-by-lifetime).
 
 Paths containing newlines are refused for checkouts and Git directories. Replacing either at the same path changes its identity and can prevent resume. Inspect the reported reason rather than deleting coordination files to bypass it.
