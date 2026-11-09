@@ -30,6 +30,7 @@ import {
 import { decideCompletion } from '../../src/workspace-completion.ts'
 import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
 import { checkTask } from '../../src/workspace-release.ts'
+import { gitResult } from '../../src/workspace-git.ts'
 import {
   integrationFacts,
   isUnavailable,
@@ -53,6 +54,7 @@ import {
   releaseExitCode,
   releasePlan,
   reservedViews,
+  unreservedCheckoutViews,
 } from '../../src/workspace-command.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { acquireMaintenance, acquireRuntime } from '../../src/runtime-coordination.ts'
@@ -2605,6 +2607,53 @@ try {
         'the reservation stays'
       )
       await unreserved.close()
+    }
+  )
+
+  await claim(
+    'an unreserved pre-existing checkout deleted outside dev is reported missing, and dev workspace release pre-existing forgets it so the path registers afresh',
+    async () => {
+      const missingRoot = join(sandbox, 'missing-checkout-authority')
+      const missingRepo = join(sandbox, 'missing-checkout-repo')
+      const linked = join(sandbox, 'missing-checkout-linked')
+      initRepository(missingRepo)
+      git(['worktree', 'add', '--quiet', '--detach', linked, 'HEAD'], missingRepo)
+      const missing = await openLifecycle({ root: missingRoot })
+      const visitor = await missing.attach({ conversation: conversation(), cwd: linked })
+      const read = ready(await visitor.authorize({ kind: 'read' }))
+      await visitor.close()
+      rmSync(linked, { recursive: true, force: true })
+      git(['worktree', 'prune'], missingRepo)
+      assert.throws(() => gitResult(linked, ['status']), /Directory does not exist/)
+
+      const listed = await missing.inspect({ cwd: missingRepo })
+      const view = listed.find(entry => entry.workspaceId === read.workspaceId)
+      assert.equal(view?.outcome, 'review-required')
+      assert.equal(view.directoryMissing, true)
+      assert.equal(view.reason, 'The checkout directory no longer exists.')
+      assert.ok(view.nextAction.includes('dev workspace release pre-existing'), view.nextAction)
+      assert.deepEqual(
+        unreservedCheckoutViews(listed).map(entry => entry.workspaceId),
+        [read.workspaceId],
+        'only the missing checkout is offered'
+      )
+
+      const released = await missing.releasePreExisting(read.repositoryId, [read.workspaceId])
+      assert.deepEqual(outcomes(released), [[read.workspaceId, 'released']])
+      assert.ok(resultOf(released, read.workspaceId).reason.includes('dev forgot it'))
+      assert.ok(
+        (await missing.inspect({ cwd: missingRepo })).every(
+          entry => entry.workspaceId !== read.workspaceId
+        ),
+        'the forgotten checkout is no longer listed'
+      )
+
+      git(['worktree', 'add', '--quiet', '--detach', linked, 'HEAD'], missingRepo)
+      const returning = await missing.attach({ conversation: conversation(), cwd: linked })
+      const again = ready(await returning.authorize({ kind: 'read' }))
+      await returning.close()
+      assert.notEqual(again.workspaceId, read.workspaceId, 'the recreated path registers afresh')
+      await missing.close()
     }
   )
 

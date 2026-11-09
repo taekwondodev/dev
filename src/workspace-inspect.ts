@@ -23,7 +23,7 @@ import {
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { rows, textField } from './workspace-sqlite.ts'
-import { effectiveUid, hasErrorCode } from './workspace-platform.ts'
+import { effectiveUid, hasErrorCode, lstatIfExists } from './workspace-platform.ts'
 
 const logAvailability = (path: string): boolean | undefined => {
   try {
@@ -41,8 +41,20 @@ const logAvailability = (path: string): boolean | undefined => {
   }
 }
 
+export const checkoutMissing = (workspace: WorkspaceRecord): boolean => {
+  if (workspace.origin !== 'pre-existing') return false
+  try {
+    return lstatIfExists(workspace.path) === undefined
+  } catch {
+    return false
+  }
+}
+
+const MISSING_REASON = 'The checkout directory no longer exists.'
+
 const assessWorkspace = (input: {
   readonly identityReason: string | undefined
+  readonly missing: boolean
   readonly pending: { readonly id: string; readonly stage: string } | undefined
   readonly unresolved: boolean
   readonly unknown: boolean
@@ -54,6 +66,14 @@ const assessWorkspace = (input: {
     input.pending === undefined
       ? undefined
       : `Operation ${input.pending.id} is ${input.pending.stage}; inspection does not replay it.`
+  if (input.missing && input.pending === undefined)
+    return {
+      outcome: 'review-required',
+      reason: MISSING_REASON,
+      nextAction: `Restore it at this path, or if it was deleted on purpose, ${
+        input.reserved ? 'run dev workspace release <task-id>, then ' : ''
+      }dev workspace release pre-existing forgets it.`,
+    }
   if (input.identityReason !== undefined || input.unresolved)
     return {
       outcome: 'review-required',
@@ -194,17 +214,20 @@ export const inspectWorkspaces = (
           visibleOperationIds.add(value.id)
           return { id: value.id, kind: value.kind, stage: value.phase }
         })
-        let identityReason: string | undefined
-        try {
-          validateWorkspace(authority, workspace)
-        } catch (cause) {
-          identityReason = errorText(cause)
-        }
+        const missing = checkoutMissing(workspace)
+        let identityReason: string | undefined = missing ? MISSING_REASON : undefined
+        if (!missing)
+          try {
+            validateWorkspace(authority, workspace)
+          } catch (cause) {
+            identityReason = errorText(cause)
+          }
         const unresolved = pending.some(operation => operation.stage !== 'intent')
         const unknown = uses.some(use => use.stage === 'unknown')
         const live = uses.some(use => isActiveUse(use))
         const { outcome, reason, nextAction } = assessWorkspace({
           identityReason,
+          missing,
           pending: pending[0],
           unresolved,
           unknown,
@@ -223,6 +246,7 @@ export const inspectWorkspaces = (
           outcome,
           reason,
           nextAction,
+          ...(missing ? { directoryMissing: true } : {}),
           uses: uses.map(use => ({
             id: use.id,
             access: use.access,

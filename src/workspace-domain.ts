@@ -218,6 +218,7 @@ export const WorkspaceViewSchema = Schema.Struct({
   ]),
   reason: Schema.NonEmptyString,
   nextAction: Schema.NonEmptyString,
+  directoryMissing: Schema.optional(Schema.Boolean),
   uses: Schema.Array(
     Schema.Struct({
       id: WorkspaceId,
