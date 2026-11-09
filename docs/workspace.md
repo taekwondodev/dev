@@ -99,6 +99,22 @@ The same conversation cannot attach in two dev sessions, even across installatio
 | `!`, `!!`, lead bash                                          | Run dev's shell in the conversation's workspace                                                                                                               |
 | Any replacement or workspace switch under `dev --orb`         | Refused; the session keeps its orb and checkout until quit. See [orb](orb.md#tools)                                                                           |
 
+### Model-visible messages
+
+`/workspace` reports, sweep rows and tool results reach the model as minified JSON without repository, reservation, use or record identities, digests or timestamps. `details` carry the full facts for [presentation](adr/0006-global-visual-layer.md).
+
+| Source                                | Model-visible form                                                                                                                                                                                     | `details`                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `/workspace` list and `inspect`       | `{repository, current, artifacts, workspaces}` or `{taskId, artifacts, workspaces}`; each workspace with task, path, origin, outcome, reason, `next`, and its uses and pending operations when present | the `list` or `inspect` report with its views         |
+| `/workspace check`                    | one guidance sentence, then `{taskId, workspaces}` with each verdict as one string such as `finished (no-residue)`, its reasons, target, evidence, inventory, residue and next actions                 | the `check` report with its assessments               |
+| Other `/workspace` answers and errors | the text itself                                                                                                                                                                                        | none                                                  |
+| Allocation or replacement sweep       | the moment, then only rows that changed something: removed or released workspaces, task artifacts and review-required failures; a reason only where review is required                                 | `{kind: 'sweep', receipt}`                            |
+| Workspace switch                      | the `dev/workspace-handoff` follow-up described under [admission and isolation](#admission-and-isolation)                                                                                              | `{kind: 'switch', resumed, workspaceId, cwd, reason}` |
+
+A receipt whose rows are all retained, skipped or deferred is a `dev/workspace-receipt` session entry with the same `details`, outside model context; only an extension's entry renderer draws it. Without a UI, receipts and answers print as text on stderr.
+
+The `workspace` tool returns its full result in `details`. The model reads `artifacts` as `{artifacts, path}` and `record-publication` as the verified file, its root, size, readback method and URL; `resume` and an `artifacts` rebind add a next-step note.
+
 ### Completion evidence
 
 `check` and sweep derive completion from recorded and observed facts, not declarations that work is done. The target is a recorded override, otherwise the `origin` GitHub repository's default branch, otherwise the remote HEAD branch.
@@ -125,7 +141,7 @@ Each finished workspace gets one fenced removal attempt after reassessment. A pr
 
 The budget runs from the request, including queue time; [the sweep implementation](../src/workspace-release.ts) owns its limits. Unstarted tasks become `task-deferred`. Quit and replacement also sweep repositories reached by native writes or selected for delegation during the leaving session, including refused delegations, within the same budget. A repository assessment failure is reported without preventing the others from proceeding; a later sweep can assess it again.
 
-Allocation and replacement receipts appear in the conversation when there are rows. At quit, the receipt shows totals and elapsed time, then one line per retained workspace with its complete release command and a short status. Release commands for tasks left out of the offer are marked `Not offered:`. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task-id>` for paths and detailed evidence.
+Allocation and replacement receipts appear in the conversation when there are rows; [model-visible messages](#model-visible-messages) define what the model reads. At quit, the receipt shows totals and elapsed time, then one line per retained workspace with its complete release command and a short status. Release commands for tasks left out of the offer are marked `Not offered:`. Tasks with a workspace still used by a live session or process are left out: that session's own quit sweeps them. Failed or deferred assessments get a check command instead. Use `dev workspace check <task-id>` for paths and detailed evidence.
 
 ### Release
 
