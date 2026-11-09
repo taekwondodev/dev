@@ -76,7 +76,7 @@ import {
   symbolicBranch,
   type GitWorkspace,
 } from './workspace-git.ts'
-import { abandonedUseIds, sampledPaths } from './workspace-inspect.ts'
+import { abandonedUseIds, checkoutMissing, sampledPaths } from './workspace-inspect.ts'
 import { isWithin } from './workspace-paths.ts'
 import {
   confirmedReleases,
@@ -106,7 +106,7 @@ import {
 import { errorText } from './error-text.ts'
 import { holdExistingInstallationForRemoval } from './runtime-coordination.ts'
 import { rows, textField, transaction } from './workspace-sqlite.ts'
-import { hasErrorCode, lstatIfExists, newId, now } from './workspace-platform.ts'
+import { hash, hasErrorCode, lstatIfExists, newId, now } from './workspace-platform.ts'
 
 export interface EvidenceReaders {
   readonly github: GitHubReader
@@ -1347,13 +1347,42 @@ const clearEndedUses = (
         db,
         ended.map(use => use.id)
       )
+      const deleted = `${ended.length} use record(s) of ended dev sessions were deleted${
+        kept.size === 0 ? '' : `; ${kept.size} use(s) of running dev sessions stay`
+      }`
+      if (!checkoutMissing(workspace))
+        return releaseResult(
+          repo,
+          workspace,
+          'released',
+          `${deleted}; files and commits are unchanged.`
+        )
+      if (
+        kept.size > 0 ||
+        openOperations(db, workspace.id).length > 0 ||
+        getBindingRows(db, workspace.id).some(
+          binding =>
+            binding.superseded !== true &&
+            conversationPresent(authority.paths, conversationIdentity(binding.conversation))
+        )
+      )
+        return releaseResult(
+          repo,
+          workspace,
+          'released',
+          `${deleted}; the checkout directory no longer exists, but a running dev session or pending operation still refers to it, so dev keeps it registered.`
+        )
+      saveWorkspace(db, {
+        ...workspace,
+        status: 'removed',
+        pathKey: hash(workspace.id),
+        revision: workspace.revision + 1,
+      })
       return releaseResult(
         repo,
         workspace,
         'released',
-        `${ended.length} use record(s) of ended dev sessions were deleted${
-          kept.size === 0 ? '' : `; ${kept.size} use(s) of running dev sessions stay`
-        }; files and commits are unchanged.`
+        `${deleted}; the checkout directory no longer exists, so dev forgot it.`
       )
     })
   )

@@ -8,7 +8,6 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  readdirSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -22,7 +21,7 @@ import { NodeServices } from '@effect/platform-node'
 import { Clock, Effect, Layer } from 'effect'
 import { WorkStore } from '../../src/work-store.ts'
 import { AttemptId, GenerationId, SessionId, TaskId } from '../../src/work-domain.ts'
-import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
+import { awaitCleanupExits, loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import { WorkspaceId } from '../../src/workspace-domain.ts'
 
@@ -446,17 +445,6 @@ try {
     running.kill('SIGKILL')
     await exited
   }
-  for (const name of readdirSync(cleanupMarkers).filter(file => file.endsWith('.json'))) {
-    const pid = JSON.parse(readFileSync(join(cleanupMarkers, name), 'utf8')) as number
-    await waitFor(() => {
-      try {
-        process.kill(pid, 0)
-        return false
-      } catch (error) {
-        assert.match(String(error), /ESRCH/)
-        return true
-      }
-    }, `cleanup process ${pid} did not exit before fixture removal`)
-  }
+  await awaitCleanupExits(cleanupMarkers)
   rmSync(sandbox, { recursive: true, force: true })
 }

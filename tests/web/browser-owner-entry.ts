@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Duration, Effect, Schema } from 'effect'
 import { native } from '../../src/native.ts'
 import { serveBrowserOwner } from '../../src/web-browser-owner.ts'
@@ -17,6 +18,7 @@ const FixtureSchema = Schema.Struct({
   blockedHosts: Schema.Array(Schema.String),
   slowHosts: Schema.Record(Schema.String, Schema.Finite),
   hang: Schema.optional(Schema.Boolean),
+  pidDirectory: Schema.optional(Schema.String),
   processObservationBlock: Schema.optional(Schema.String),
 })
 
@@ -25,6 +27,8 @@ const decodeFixture = Schema.decodeUnknownSync(Schema.fromJsonString(FixtureSche
 const raw = process.env[FIXTURE_VARIABLE]
 if (raw === undefined) throw new Error(`${FIXTURE_VARIABLE} is required by the fixture owner entry`)
 const fixture = decodeFixture(raw)
+if (fixture.pidDirectory !== undefined)
+  writeFileSync(join(fixture.pidDirectory, String(process.pid)), '')
 const observationBlock = fixture.processObservationBlock
 if (observationBlock !== undefined) {
   const addon = native()

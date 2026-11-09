@@ -562,6 +562,9 @@ def run(name: str, probe: Probe) -> bool:
 
 
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--list']:
+        print('\n'.join(PROBES))
+        raise SystemExit(0)
     selected = sys.argv[1:] or list(PROBES)
     unknown = [name for name in selected if name not in PROBES]
     if unknown:

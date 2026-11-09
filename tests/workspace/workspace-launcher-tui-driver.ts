@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import childProcess from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { renameSync, writeFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -104,7 +104,9 @@ if (cleanupMarkers !== undefined) {
       if (args[1]?.[0]?.endsWith('/cleanup-runtime.ts')) {
         const request = JSON.parse(args[1][1] ?? '') as { trigger: string }
         assert.ok(child.pid)
-        writeFileSync(join(cleanupMarkers, `${request.trigger}.json`), JSON.stringify(child.pid))
+        const marker = join(cleanupMarkers, `${request.trigger}.json`)
+        writeFileSync(`${marker}.partial`, JSON.stringify(child.pid))
+        renameSync(`${marker}.partial`, marker)
         if (process.env.LAUNCHER_TUI_CLEANUP === '1') assert.ok(child.kill('SIGSTOP'))
       }
       return child
