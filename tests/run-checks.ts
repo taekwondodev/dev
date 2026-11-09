@@ -88,7 +88,8 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
 const externalServiceSuites = new Set(['workspace:github'])
 const recurringSuites = Object.keys(suites).filter(suite => !externalServiceSuites.has(suite))
 
-const durationsPath = `${checkout}node_modules/.cache/dev-checks/durations.json`
+const cacheDirectory = `${checkout}node_modules/.cache/dev-checks`
+const durationsPath = `${cacheDirectory}/durations.json`
 const readDurations = (): Record<string, number> => {
   try {
     return JSON.parse(readFileSync(durationsPath, 'utf8')) as Record<string, number>
@@ -193,7 +194,11 @@ const stopOnSignal = (exitCode: number) => () => {
 }
 process.once('SIGINT', stopOnSignal(130))
 process.once('SIGTERM', stopOnSignal(143))
-const env = ramDisk === undefined ? process.env : { ...process.env, TMPDIR: `${ramDisk}/` }
+const env = {
+  ...process.env,
+  NODE_COMPILE_CACHE: `${cacheDirectory}/compile`,
+  ...(ramDisk === undefined ? {} : { TMPDIR: `${ramDisk}/` }),
+}
 const outcomes: Outcome[] = []
 const worker = async () => {
   for (const job of longestFirst) outcomes.push(await run(job, env))
