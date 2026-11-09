@@ -19,6 +19,7 @@ export const USAGE_MARKER = 'USAGE '
 export const RAW_MARKER = 'RAW '
 export const RAW_ON_CANCEL_MARKER = 'RAW-ON-CANCEL '
 export const RAW_AFTER_REPLY_MARKER = 'RAW-AFTER-REPLY '
+export const RAW_AFTER_READY_MARKER = 'RAW-AFTER-READY '
 export const DROP_FIRST_ACK = 'DROP-FIRST-ACK'
 export const HOLD_CANCEL = 'HOLD-CANCEL'
 export const ipcLog = (dataHome: string, attemptId: string): string =>

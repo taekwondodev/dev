@@ -1,5 +1,6 @@
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { createWorkExtension } from '../../src/work-extension.ts'
+import { WORK_VIEW_EVENT, type WorkView } from '../../src/work-view.ts'
 import {
   makeOfflineModel,
   waitFor,
@@ -37,6 +38,7 @@ export const openLead = async (
     readonly notify?: (notice: Notice) => void
     readonly tools?: readonly string[]
     readonly codemode?: boolean
+    readonly children?: boolean
     readonly onToolResult?: (event: {
       readonly toolName: string
       readonly structuredContent?: unknown
@@ -98,8 +100,11 @@ export const openLead = async (
       },
     },
     isWorkspaceParked: () => false,
+    ...(options.children === true
+      ? { childEntry: new URL('./work-child-entry.ts', import.meta.url) }
+      : {}),
   })
-  const activities: unknown[] = []
+  const views: WorkView[] = []
   const services = await pi.createAgentSessionServices({
     cwd: fixture.repository,
     agentDir: fixture.agentDir,
@@ -113,7 +118,7 @@ export const openLead = async (
       extensionFactories: [
         work.factory,
         api => {
-          api.events.on('dev/work-activity', activity => activities.push(activity))
+          api.events.on(WORK_VIEW_EVENT, view => views.push(view as WorkView))
           api.on('tool_result', event => {
             options.onToolResult?.(event)
             return undefined
@@ -144,16 +149,12 @@ export const openLead = async (
       return session.isStreaming
     },
   })
-  const statuses: (string | undefined)[] = []
   const notices: Notice[] = []
   const handlerErrors: string[] = []
   const terminal: ((data: string) => unknown)[] = []
   await session.bindExtensions({
     uiContext: {
       ...session.extensionRunner.getUIContext(),
-      setStatus: (key, text) => {
-        if (key === 'dev/work') statuses.push(text)
-      },
       notify: (message, level) => {
         options.notify?.({ message, level })
         notices.push({ message, level })
@@ -181,12 +182,12 @@ export const openLead = async (
       .flatMap(entry =>
         entry.type === 'custom_message' && entry.customType === customType ? [entry] : []
       )
-  const status = (what: string, done: (text: string) => boolean): Promise<string> =>
+  const view = (what: string, done: (current: WorkView) => boolean, from = 0): Promise<WorkView> =>
     waitFor(
-      `status line: ${what}`,
+      `work view: ${what}`,
       () => {
-        const text = statuses.at(-1)
-        return text !== undefined && done(text) ? text : undefined
+        const current = views.at(-1)
+        return views.length > from && current !== undefined && done(current) ? current : undefined
       },
       POLL
     )
@@ -198,13 +199,12 @@ export const openLead = async (
     manager,
     work,
     requests,
-    statuses,
-    activities,
+    views,
     notices,
     handlerErrors,
     request,
     customMessages,
-    status,
+    view,
     idle,
     wait: <A>(what: string, probe: () => A | undefined | Promise<A | undefined>): Promise<A> =>
       waitFor(what, probe, POLL),

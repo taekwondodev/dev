@@ -23,6 +23,8 @@ Dev is a personal agent distro built on Pi. This glossary defines terms used in 
 | **Outcome delivery** | An attempt's result arriving in the conversation that started it, acknowledged on that conversation's active branch. |
 | **Attempt summary**  | The compact operational view of an attempt returned to the caller.                                                   |
 | **Inspection**       | The detailed view of an attempt's retained facts and output.                                                         |
+| **Live view**        | The never persisted view of a session's batch, running commands and blocking notices, for extensions.                |
+| **Batch**            | The children a live view shows: active ones and those settled since the owner's last message.                        |
 
 A `work` **task key** (`taskId`) is local to the controller. It is not the durable **workflow task** identity (`workflowTaskId`). [Work](docs/work.md) owns execution and delivery behavior; [dispatch](config/README.md) owns selection rules.
 
