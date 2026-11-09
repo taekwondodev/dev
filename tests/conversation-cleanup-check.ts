@@ -220,8 +220,29 @@ try {
       }
     }).pipe(Effect.scoped, Effect.provide(services))
   )
+  const quotaHome = join(root, 'quota-home')
+  const quotaLeads = join(quotaHome, 'sessions')
+  mkdirSync(quotaLeads, { recursive: true })
+  for (let index = 0; index <= 100; index++)
+    makeSession(quotaLeads, String(index).padStart(3, '0'), 1000 + index)
+  assert.equal(
+    await Effect.runPromise(
+      cleanConversations(quotaHome, namespace).pipe(
+        Effect.scoped,
+        Effect.provide(
+          WorkStore.layer(quotaHome, SessionId.make('quota-home')).pipe(
+            Layer.provide(NodeServices.layer)
+          )
+        )
+      )
+    ),
+    1,
+    'the production default retains the newest 100 lead conversations'
+  )
+  assert.equal(existsSync(join(quotaLeads, '000.jsonl')), false)
+  assert.ok(existsSync(join(quotaLeads, '001.jsonl')))
   console.log(
-    'conversation cleanup: independent home/category quotas, equal-time filename ordering, active and recovery protection, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
+    'conversation cleanup: the production quota of 100, independent home/category quotas, equal-time filename ordering, active and recovery protection, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })
