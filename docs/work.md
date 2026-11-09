@@ -68,7 +68,7 @@ Aborting a coordinator tool call interrupts its local wait, not an IPC request a
 
 While background work runs, do independent work or end the turn and let outcome delivery resume it. Do not poll or run shell waits just to await completion; inspection remains available for diagnosis or a requested progress check. Dev refuses, including through codemode, a simple sleep-only wait while the agent owns pending work and, for the lead only, a command whose first step is a long sleep, whether or not work is running. The second refusal names the replacement: run the wait itself as a `work process`, then do independent work or end the turn so that outcome delivery resumes it. This guard is not a general shell-loop detector; [ADR 0007](adr/0007-observed-usage-wait-guard.md) records its rules, accepted gaps and what evidence a change needs.
 
-Outcomes carry a child's whole answer when it fits the 6,000-byte read and the tail of command output, so the common case needs no `inspect`; a longer answer is read from offset 0. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
+Outcomes carry a child's whole answer when it fits the result read and the tail of command output, so the common case needs no `inspect`; a longer answer is read from offset 0. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
 A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.
 
@@ -86,30 +86,17 @@ Subscription exhaustion from any attempt, including a leaf, blocks new agents an
 
 ### Live view
 
-Dev publishes the `dev/work-view` event on Pi's event bus for global extensions, which own presentation, including title activity while a child runs and the lead is idle. See [ADR 0006](adr/0006-global-visual-layer.md) for the presentation boundary. The view is emitted only with a UI, at most about ten times a second, and is never persisted or shown to the model.
+Dev publishes `dev/work-view` on Pi's event bus only when a UI is present. Each emission replaces the session's previous view; closing work emits an empty view. Global extensions own presentation under [ADR 0006](adr/0006-global-visual-layer.md). The [view declaration](../src/work-view.ts) owns its exact fields.
 
-Each emission is the complete view of the session and replaces the previous one:
+A batch includes active children and children that settled since the owner's last message. Outcome deliveries and other extension input do not close it; the owner's next message drops settled children. Leaves retain their coordinator in the view. Local commands contribute a running count rather than child rows.
 
-- **Children.** Delegated children of the current batch, ordered by start, each with its task key, status, invoked skill, coordinator flag, access, model, effort, context, start and completion times, turns, current activity while running and terminal error. Leaves name their coordinator as `parent`, which is always in the view. `turns` is the live count while the child runs, then the recorded assistant message count.
-- **Activity.** A running tool with an allowlisted target, `thinking`, `writing` or a provider retry with its message. The child sends it only on change, at most every 200 ms; the controller holds it in memory and it leaves with the attempt. [SECURITY](../SECURITY.md#credentials) lists which tool targets are sent.
-- **Batch.** Active children, plus children that settled after the owner's last message. Outcome deliveries and other extension input do not close a batch; the owner's next message drops settled children.
-- **Session.** The number of running local commands, which have no rows, and the blocking notices: agents blocked by subscription exhaustion and suspended automatic reactivation.
-
-Live ticks rebuild the view from memory; the store is read only on transitions and accepted progress. Closing work emits an empty view.
+Live activity is transient: it stays in controller memory, never in the attempt store or model context. Updates are coalesced without reading the store on each tick. [SECURITY](../SECURITY.md#credentials) owns target disclosure and redaction limits.
 
 ### Model-visible results
 
-The model reads minified JSON without result envelopes, `cwd`, workspace and workflow identities, model, usage, context, timestamps or records. `details` and the structured result keep the full projections for extensions and scripts; outcome `details` also carry every outcome entry and its attempt facts. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+The model and `/work` read compact JSON, not the full structured result. Extensions and scripts use `details` or codemode's structured return for complete attempt facts; renderers must not decode model-facing text as the structured result. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
 
-| Action                               | Model-visible form                                                                                                                                                                                                     |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `delegate`, `process`, `cancel <id>` | the attempt: `id`, `taskId`, `kind`, `status`, `parent`, `coordinator` when true, a numeric `exitCode` including 0, errors and warnings, `worktree`                                                                    |
-| `list`, `cancel` without id          | `{records, nextOffset}`, with `unavailable`, `agentsBlocked` and `cancellationRequested` only when present                                                                                                             |
-| `inspect`                            | the attempt with `staleArtifact` when not false, workflow and workspace identities, access, invoked skill, `cwd` when it is not the worktree, readable `streams` and `unavailable` ones; no answer, log text or record |
-| `inspect` with a stream              | `{text, nextOffset}` with `truncated` when true, or `{error}` when the log is unavailable                                                                                                                              |
-| `dispatch`                           | `{default, rules}` with model and effort                                                                                                                                                                               |
-
-An outcome entry is the attempt with `staleArtifact` when not false and its output. A child's `result` is its whole answer when it fits the 6,000-byte read, otherwise `"truncated: read from offset 0"`. `stdout` and `stderr` keep their last 512 characters, prefixed by `…` when cut; empty streams are omitted and unavailable ones are listed. One guidance sentence opens each batch. `/work` sends the same compact text, with the full result in `details`.
+Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Outcomes include answers that fit the result read and previews of command output; a truncated answer points to offset 0. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
 
 A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
 
