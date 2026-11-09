@@ -1546,7 +1546,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
 
       api.registerCommand('workspace', {
-        description: 'List, inspect, check, release, or resume an exact workspace task',
+        description: 'List workspaces, or inspect, check or release <task-id>',
         handler: (args, context) => runPromise(workspaceCommand(api, args, context)),
       })
       api.registerTool(
