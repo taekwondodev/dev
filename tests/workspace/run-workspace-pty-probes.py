@@ -219,6 +219,53 @@ PROBES = {
         env=(('LAUNCHER_PICKER', 'cancel'),),
     ),
 
+    'repo-init': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('ignored', 'Initialize a repository here', 'x', delay=0.5),
+            Action('initialize', 'Initialize a repository here', '\r', delay=0.5),
+            *QUIT_ACTIONS,
+        ),
+        expect=('No reserved workspaces', 'Exit 0: done.'),
+        expect_raw_order=('is not a Git repository.', 'Initialize a repository here', 'git init',
+                          'enter', 'initialize', '\x1b[J', 'Press ctrl+o'),
+        reject_raw_after=('Initialize a repository here', ('\x1b[3J',)),
+        env=(('LAUNCHER_PICKER', 'init'),),
+    ),
+
+    'repo-init-cancel': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('cancel', 'Initialize a repository here', '\x1b', delay=0.5),
+        ),
+        reject_raw_after=('Initialize a repository here', ('\x1b[3J', 'Press ctrl+o')),
+        env=(('LAUNCHER_PICKER', 'init-cancel'),),
+    ),
+
+    'repo-init-home': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(),
+        expect=('~ is not a Git repository and contains none.',),
+        reject_raw_after=('DEV_PICKER_INPUTS ', ('Initialize a repository here',)),
+        env=(('LAUNCHER_PICKER', 'init-home'),),
+    ),
+
+    'repo-init-orb': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(),
+        expect=('is not a Git repository and contains none.',),
+        reject_raw_after=('DEV_PICKER_INPUTS ', ('Initialize a repository here',)),
+        env=(('LAUNCHER_PICKER', 'init-orb'),),
+    ),
+
     'quit-release-declined': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',

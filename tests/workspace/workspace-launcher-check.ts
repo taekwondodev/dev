@@ -266,7 +266,7 @@ try {
     }
   )
   await claim(
-    'a new conversation outside any Git repository, with none inside, exits 1 naming the directory before opening the authority or touching the data home',
+    'a new conversation without a terminal outside any Git repository, with none inside, exits 1 naming the directory before opening the authority or touching the data home',
     async () => {
       const outside = join(sandbox, 'outside-git')
       mkdirSync(join(outside, 'plain'), { recursive: true })
@@ -280,6 +280,7 @@ try {
         result.stderr.trim(),
         `${outside} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`
       )
+      assert.ok(!existsSync(join(outside, '.git')), 'no repository was created')
       assert.ok(!existsSync(unusedData), 'the data home was not created')
     }
   )

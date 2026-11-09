@@ -31,7 +31,7 @@ The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifac
 
 ### Admission and isolation
 
-Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files. Readers share presence with a writer and receive a warning. Independent checkouts and linked worktrees progress concurrently; only dev's structural Git effects serialize across a repository.
+Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files. A repository with no commits yet has nothing to allocate from: allocation is refused until its first commit. Readers share presence with a writer and receive a warning. Independent checkouts and linked worktrees progress concurrently; only dev's structural Git effects serialize across a repository.
 
 A live process prevents switching or isolation until it is stopped or finishes.
 
