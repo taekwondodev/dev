@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import { Deferred, Effect } from 'effect'
 import { orbFailure } from '../../src/orb/domain.ts'
 import type { ChildOrb, ChildOrbs, OrbReader, WorkRemote } from '../../src/work-domain.ts'
+import { summarize } from '../../src/work-actions.ts'
+import { workResultText } from '../../src/work-model-text.ts'
+import { workView } from '../../src/work-view.ts'
 import { makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
 import { assertStatus, openWorkFixture, script } from '../work/work-check-support.ts'
 
@@ -116,6 +119,22 @@ try {
         attempt => attempt.status === 'provisioning' && attempt.orb?.status === 'BUILDING'
       )
       assert.equal(provisioning.orb?.id, 'child-orb')
+      const live = workView({
+        sessionId: provisioning.owner.sessionId,
+        snapshot: { records: [provisioning], unavailable: [], agentsBlocked: false },
+        live: new Map(),
+        batchStart: Number.POSITIVE_INFINITY,
+        reactivationSuspended: false,
+      })
+      assert.deepEqual(
+        live.children.map(child => ({ status: child.status, orb: child.orb })),
+        [{ status: 'provisioning', orb: { id: 'child-orb', status: 'BUILDING' } }]
+      )
+      assert.ok(
+        workResultText({ kind: 'attempt', attempt: summarize(provisioning) }).includes(
+          '"orb":{"id":"child-orb","status":"BUILDING"}'
+        )
+      )
       const worktree = provisioning.worktreePath
       assert.ok(worktree !== undefined)
       assert.equal(fixture.git(['rev-parse', 'HEAD'], worktree), leadCommit)
@@ -142,6 +161,11 @@ try {
         status: 'DELETED',
         report: 'Orb 4567cdef was deleted.',
       })
+      assert.ok(
+        workResultText({ kind: 'attempt', attempt: summarize(view) }).includes(
+          '"orb":{"id":"child-orb","status":"DELETED","report":"Orb 4567cdef was deleted."}'
+        )
+      )
     }
   )
 

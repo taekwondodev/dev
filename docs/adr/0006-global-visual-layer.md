@@ -2,6 +2,8 @@
 
 Presentation changes to Pi's interface, such as the footer, live in global extensions under `~/.pi/agent/extensions/`, not in dev and not in Pi's code. They apply to plain `pi` and to dev alike, and survive Pi upgrades without patches. They target the one terminal in use, Ghostty with JetBrainsMono Nerd Font Mono, and use its private-use glyphs without a fallback: the user chose a richer interface over portability, accepting placeholder boxes in any other terminal or font.
 
-Dev publishes status text through Pi's status API and session-scoped child activity through Pi's event bus. The activity signal lets global title extensions react while the lead is idle, without parsing footer text or depending on a custom footer. Dev supplies execution facts, not title formatting, and does not depend on a subscriber. `dev/work` separates groups with `│` and items with `·`, and an extension wraps at those separators without interpreting the content; changing them breaks the wrapping, not the meaning.
+Dev owns execution facts and batch membership; extensions own presentation and keep no independent child registry. Publish replaceable snapshots rather than formatted status text or partial change events, so subscribers need no state reconstruction. A late-subscriber recovery path is unnecessary because disk extensions load before dev's own and `/reload` closes work. [Work](../work.md#live-view) owns current event behavior and links to its declaration.
 
-Read this record before adding presentation to dev, making dev depend on a specific extension, changing the `dev/work` status separators, or supporting another terminal or font.
+Extensions adapt to dev, never the reverse: when dev changes `content`, `details` or an event, the global extensions change with it and dev keeps no field for their sake. Presentation consumes structured facts rather than parsing model-facing text, so compact model results do not constrain the interface. Dev does not depend on a subscriber.
+
+Read this record before adding presentation to dev, making dev depend on a specific extension, changing the `dev/work-view` contract, or supporting another terminal or font.

@@ -51,7 +51,11 @@ for (const dataHome of [home, otherHome]) {
     const directory = join(dataHome, category)
     mkdirSync(directory, { recursive: true })
     for (let index = 0; index < 101; index++)
-      makeSession(directory, String(index).padStart(3, '0'), 1000 + index)
+      makeSession(
+        directory,
+        String(index).padStart(3, '0'),
+        dataHome === otherHome && category === 'child-sessions' ? 1000 : 1000 + index
+      )
   }
 }
 const leads = join(home, 'sessions')
@@ -163,7 +167,12 @@ try {
       )
       for (const dataHome of [home, otherHome]) {
         for (const category of ['sessions', 'child-sessions']) {
-          assert.equal(existsSync(join(dataHome, category, '000.jsonl')), false)
+          const tied = dataHome === otherHome && category === 'child-sessions'
+          assert.equal(
+            existsSync(join(dataHome, category, tied ? '100.jsonl' : '000.jsonl')),
+            false
+          )
+          assert.ok(existsSync(join(dataHome, category, tied ? '000.jsonl' : '100.jsonl')))
           assert.equal(
             readdirSync(join(dataHome, category)).filter(name => /^\d{3}\.jsonl$/.test(name))
               .length,
@@ -208,7 +217,7 @@ try {
     }).pipe(Effect.scoped, Effect.provide(services))
   )
   console.log(
-    'conversation cleanup: independent home/category quotas, active and recovery protection, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
+    'conversation cleanup: independent home/category quotas, equal-time filename ordering, active and recovery protection, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })

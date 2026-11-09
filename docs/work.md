@@ -17,14 +17,14 @@ With `coordinate: true`, the child gets a scoped `work` tool to start and manage
 ```text
 /work                        list this session's attempts, including leaves and their parent
 /work dispatch               inspect configured dispatch rules; not a prerequisite to launch
-/work inspect <id>           inspect the complete record, logs and tracked artifact changes
+/work inspect <id>           inspect an attempt's metadata, stale-artifact status and readable streams
 /work inspect <id> stdout 0  page output by byte offset; continue with nextOffset until it is null
 /work inspect <id> stderr 0  page stderr; use result for a child's retained answer
 /work stop <id>              cancel an attempt and, for a coordinator, its leaves
 /work stop                   cancel all owned attempts, including while the lead is idle
 ```
 
-Results show attempt summaries; use `inspect` for the complete record, stale-artifact status and retained logs, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result; use `describeTool('work')` for its current declaration.
+The model reads [compact results](#model-visible-results); use `inspect` for an attempt's metadata, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the complete record on inspection; use `describeTool('work')` for its current declaration.
 
 Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Neither status authorizes deletion. [Workspace](workspace.md) owns reservation and release.
 
@@ -66,7 +66,7 @@ Aborting a coordinator tool call interrupts its local wait, not an IPC request a
 
 Outcomes resume the owning conversation without polling. Inspection remains available for diagnosis or a requested progress check. Dev refuses blocking shell waits covered by the [wait guard](adr/0007-observed-usage-wait-guard.md) and names `work process` as the alternative for a lead's leading long sleep; the ADR owns the rules, accepted gaps and evidence required to change them.
 
-Outcomes include summaries, stale-artifact status and retained logs, including a child's answer, so the common case needs no `inspect`. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
+Outcomes carry a child's whole answer when it fits the result read and the tail of command output, so the common case needs no `inspect`; a longer answer is read from offset 0. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
 A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. [Workspace release](workspace.md#release) governs retained workspaces.
 
@@ -82,11 +82,23 @@ A local command that exits normally is `completed`, even with a nonzero exit cod
 
 Subscription exhaustion from any attempt, including a leaf, blocks new agents and automatic continuation and disables the lead's provider retries. A user message alone does not clear it. The block lifts and retries return to their prior setting when a lead run that started after the last exhaustion completes; exhaustion reported during a run outlasts that run. Existing commands finish and their outcomes are recorded. A final lead provider or transport failure after Pi retries suspends automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
 
-### Status and inspection
+### Live view
 
-The `dev/work` status shows attempt states, active children and usage. A writing child under `dev --orb` is `provisioning` until its orb is ready, and shows orbit's state of that orb instead of its model and context pressure; its outcome carries the orb's final state and where its work went in `orb`. Children are titled by invoked skill or by role (`coordinator`, `reader`, `writer`); leaves show `coordinator>leaf`, and repeated titles add the task key. Each shows its model and context pressure. Inspection includes the complete record with parent, skill, tools and observed usage. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+Dev publishes `dev/work-view` on Pi's event bus only when a UI is present. Each emission replaces the session's previous view; closing work emits an empty view. Global extensions own presentation under [ADR 0006](adr/0006-global-visual-layer.md). The [view declaration](../src/work-view.ts) owns its exact fields.
 
-Global extensions own presentation, including title activity while a child runs and the lead is idle. See [ADR 0006](adr/0006-global-visual-layer.md) for the presentation boundary and status-text contract. A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
+Under `dev --orb`, a writing child remains `provisioning` until its orb is ready. The view includes the orb's phase, and tool results and outcomes keep its final state and where its work went.
+
+A batch includes active children and children that settled since the owner's last message. Outcome deliveries and other extension input do not close it; the owner's next message drops settled children. Leaves retain their coordinator in the view. Local commands contribute a running count rather than child rows.
+
+Live activity is transient: it stays in controller memory, never in the attempt store or model context. Updates are coalesced without reading the store on each tick. [SECURITY](../SECURITY.md#credentials) owns target disclosure and redaction limits.
+
+### Model-visible results
+
+The model and `/work` read compact JSON, not the full structured result. Extensions and scripts use `details` or codemode's structured return for complete attempt facts; renderers must not decode model-facing text as the structured result. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+
+Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Outcomes include answers that fit the result read and previews of command output; a truncated answer points to offset 0. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
+
+A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
 
 ## State
 

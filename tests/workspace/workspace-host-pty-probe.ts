@@ -802,7 +802,7 @@ interface WorkResult {
   readonly id: string
   readonly status: string
 }
-const decodeWorkResult = Schema.decodeUnknownSync(Schema.fromJsonString(WorkResultSchema), {
+const decodeWorkResult = Schema.decodeUnknownSync(WorkResultSchema, {
   onExcessProperty: 'error',
 })
 const hostBlocks: HostBlock[] = []
@@ -1033,11 +1033,10 @@ const observer =
     })
     api.on('tool_result', event => {
       if (event.toolCallId.startsWith('work-owner-')) {
-        const text = textOf(event.content)
-        const result = decodeWorkResult(text)
+        const result = decodeWorkResult(event.details)
         assert.ok(
           result.kind === 'attempt' && result.attempt !== undefined,
-          `WorkOwner returned an unexpected result: ${text}`
+          `WorkOwner returned an unexpected result: ${JSON.stringify(event.details)}`
         )
         processResults.set(event.toolCallId, {
           id: result.attempt.id,

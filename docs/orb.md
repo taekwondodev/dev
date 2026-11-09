@@ -105,7 +105,7 @@ Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspac
 
 `work delegate` with `access: write` returns as in plain dev, once the child process exists. Before that, dev fetches the lead orb's committed `HEAD` into the pinned ref `refs/dev/orb/<lead-record-id>/fork/<attempt>` and allocates the child's [managed worktree](work.md#delegation-scope) from that commit; uncommitted files on the lead's orb are not copied. If the lead's orb cannot be reached, the delegation is refused and no attempt is recorded. A writing leaf also starts from the lead orb's commit.
 
-The lead then creates the child's orb in the background, or takes the session's [spare](#spare-orb), with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, `/work` shows the attempt as `provisioning` and the footer shows orbit's state of its orb. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
+The lead then creates the child's orb in the background, or takes the session's [spare](#spare-orb), with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, the attempt is `provisioning` and the [live work view](work.md#live-view) carries orbit's phase. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
 
 The child's `bash`, `read`, `write`, `edit`, `grep`, `find` and `ls` run on its orb, with the Mac-side homes of the [tools](#tools) and its tool calls' workspace check. How it ends decides where its work goes:
 
@@ -166,7 +166,7 @@ Recovery settles the ended session's writer use without confirmation under the [
 
 A failed or cancelled launch before the TUI opens withdraws its own writer use through the same settlement and names the failed start as decider. No orb tool or return ran, so it never wrote the checkout. If withdrawal fails, the launch prints the release command.
 
-A session that ended while returning work may have left the checkout half-written, so its use stays and dev prints the command that clears it, `dev workspace release <task>` while the session's task reserves the checkout, otherwise `dev workspace release pre-existing`. Check the checkout before running it.
+A session that ended while returning work may have left the checkout half-written, so its use stays and dev prints the command that clears it, `dev workspace release <task-id>` while the session's task reserves the checkout, otherwise `dev workspace release pre-existing`. Check the checkout before running it.
 
 ## State
 

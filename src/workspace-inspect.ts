@@ -74,7 +74,7 @@ const assessWorkspace = (input: {
         operation ??
         `Uses ${abandoned.join(', ')} were left unsettled by dev sessions that have ended; processes they started may still run.`,
       nextAction: `Do not reuse it for writing; once their processes are gone, ${
-        input.reserved ? 'dev workspace release <task>' : 'dev workspace release pre-existing'
+        input.reserved ? 'dev workspace release <task-id>' : 'dev workspace release pre-existing'
       } clears them.`,
     }
   if (input.live)

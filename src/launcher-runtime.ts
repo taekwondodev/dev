@@ -1,6 +1,6 @@
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
@@ -40,7 +40,14 @@ import {
   type Profile,
 } from './profiles.ts'
 import { errorText } from './error-text.ts'
-import { findRecentSession, loadPi, loadPiPathResolver, type PiApi } from './pi-runtime.ts'
+import {
+  findRecentSession,
+  loadPi,
+  loadPiPathResolver,
+  resolvePiPackage,
+  type PiApi,
+} from './pi-runtime.ts'
+import { chooseRepository, displayPath, findRepositories } from './repository-picker.ts'
 import { createWorkExtension } from './work-extension.ts'
 import { createWebExtension } from './web-extension.ts'
 import { makeWebReader, type WebReader } from './web-reader.ts'
@@ -86,11 +93,14 @@ import {
 import {
   formatExitLine,
   formatQuitReceipt,
+  formatQuitSummary,
   formatQuitReleaseFailure,
   formatQuitReleasePlan,
   formatQuitReleasePrompt,
   formatQuitTaskReleasePlan,
+  formatQuitReleaseFailures,
   formatQuitReleaseResults,
+  formatQuitReleaseSummary,
   formatQuitSweepFailure,
   progressDone,
   quitReleaseExclusion,
@@ -105,7 +115,13 @@ import {
   type TerminalStyle,
 } from './quit-display.ts'
 import { loadQuitGraphics } from './quit-animation.ts'
-import { SETTLED_AT, type BranchState, type QuitGraphics, type Scene } from './quit-scene.ts'
+import {
+  SETTLED_AT,
+  type BranchState,
+  type QuitGraphics,
+  type Scene,
+  type TerminalHold,
+} from './quit-scene.ts'
 import type * as PiProjectTrust from '../node_modules/@earendil-works/pi-coding-agent/dist/core/project-trust.js'
 import type { OrbOpenInput, OrbQuit, OrbSession } from './orb/session.ts'
 
@@ -236,7 +252,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task> | check <task> | release <task> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task>     inspect all exact-task records across repositories\n  workspace check <task>       read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task>     confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -558,16 +574,33 @@ const releaseAtQuit = Effect.fnUntraced(function* (
           initial,
           taskIds.length
         )
-        const buffered: string[] = []
-        const report = (text: string): Effect.Effect<void> =>
-          strip === undefined
-            ? write(text)
-            : Effect.sync(() => {
-                buffered.push(text)
-              })
+        const reported: WorkspaceReleaseResult[] = []
+        const failures: string[] = []
+        const report = (
+          taskId: WorkspaceId,
+          results: readonly WorkspaceReleaseResult[] | 'unreported'
+        ): Effect.Effect<void> => {
+          const unreported = formatQuitReleaseFailure(taskId, 'unreported', style)
+          if (strip === undefined)
+            return write(
+              results === 'unreported'
+                ? unreported
+                : formatQuitReleaseResults(taskId, results, style)
+            )
+          return Effect.sync(() => {
+            if (results === 'unreported') failures.push(unreported)
+            else {
+              reported.push(...results)
+              failures.push(...formatQuitReleaseFailures(taskId, results, style))
+            }
+          })
+        }
         const settled = Effect.gen(function* () {
-          if (strip !== undefined) yield* strip.finish
-          for (const text of buffered) yield* write(text)
+          if (strip === undefined) return
+          const summary = formatQuitReleaseSummary(reported, style)
+          yield* strip.finish(summary)
+          const text = [summary, ...failures].filter(line => line.length > 0).join('\n')
+          if (text.length > 0) yield* write(text)
         })
         yield* Effect.gen(function* () {
           for (const taskId of taskIds) {
@@ -581,7 +614,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
               failed = true
               outcomes.set(taskId, { kind: 'failed', at: SETTLED_AT })
               if (strip !== undefined) yield* strip.end(index, false)
-              yield* report(formatQuitReleaseFailure(taskId, 'unreported', style))
+              yield* report(taskId, 'unreported')
               continue
             }
             const merged = releaseExitCode(results.value) === 0
@@ -590,7 +623,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
               merged ? { kind: 'merged', at: SETTLED_AT } : { kind: 'failed', at: SETTLED_AT }
             )
             if (strip !== undefined) yield* strip.end(index, merged)
-            yield* report(formatQuitReleaseResults(taskId, results.value, style))
+            yield* report(taskId, results.value)
             if (merged) released.add(taskId)
             else failed = true
           }
@@ -616,8 +649,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   if (confirmations.length === 0 || !proceed()) return swept
   for (const [question, taskIds] of confirmations) {
     if (!proceed()) break
-    yield* write(question)
-    const confirmation = yield* askConfirmation(formatQuitReleasePrompt(style))
+    const confirmation = yield* askConfirmation(`${question} ${formatQuitReleasePrompt(style)}`)
     if (confirmation === 'interrupted') return cancelled()
     if (confirmation === 'confirmed') yield* release(taskIds)
   }
@@ -641,14 +673,19 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     readonly occupiedPaths: readonly string[]
     readonly detached: boolean
     readonly proceed: () => boolean
-    readonly packageRoot?: string
+    readonly terminal?: { readonly packageRoot: string; readonly hold: TerminalHold }
   }
 ): Effect.fn.Return<void> {
   const style = terminalStyle(process.stdout, process.env)
   const graphics =
-    input.packageRoot === undefined
+    input.terminal === undefined
       ? undefined
-      : yield* loadQuitGraphics(input.packageRoot, style.live, process.stdout.columns)
+      : yield* loadQuitGraphics(
+          input.terminal.packageRoot,
+          style.live,
+          process.stdout.columns,
+          input.terminal.hold
+        )
   yield* write(
     input.detached
       ? ''
@@ -669,7 +706,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
       const elapsed = (yield* Clock.currentTimeMillis) - started
       yield* indicator.sweepDone
       if (Exit.isFailure(swept)) {
-        yield* indicator.settle({ dots: 0, branches: 0 })
+        yield* indicator.settle({ dots: 0, branches: 0 }, '')
         yield* write(`${progressDone(style, true)}${formatQuitSweepFailure(style)}\nExit 1.`)
         process.exitCode = 1
         return
@@ -678,10 +715,17 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
       const sweptExit = sweepExit(receipt)
       const settle = (branches: number): Effect.Effect<void> =>
         indicator
-          .settle({ dots: sweptWorktrees(receipt), branches })
+          .settle(
+            { dots: sweptWorktrees(receipt), branches },
+            formatQuitSummary(receipt, elapsed, style)
+          )
           .pipe(
             Effect.andThen(
-              write(progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0))
+              Effect.sync(() => {
+                process.stdout.write(
+                  progressDone(style, sweptExit.code !== 0 || tasksToRelease(receipt).length > 0)
+                )
+              })
             )
           )
       let exit: QuitExit
@@ -843,16 +887,31 @@ const cancellation = (notice: () => string | undefined) =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const signalled = Deferred.makeUnsafe<void>()
+      let held = false
+      let deferred: string | undefined
       const onSignal = (): void => {
         Deferred.doneUnsafe(signalled, Effect.void)
         const text = notice()
-        if (text !== undefined) process.stderr.write(`\n${text}\n`)
+        if (text === undefined) return
+        if (held) deferred = text
+        else process.stderr.write(`\n${text}\n`)
+      }
+      const hold: TerminalHold = {
+        begin: () => {
+          held = true
+        },
+        end: () => {
+          held = false
+          if (deferred !== undefined) process.stderr.write(`${deferred}\n`)
+          deferred = undefined
+        },
       }
       process.on('SIGINT', onSignal)
       process.on('SIGTERM', onSignal)
       return {
         proceed: () => !Deferred.isDoneUnsafe(signalled),
         interrupted: Deferred.await(signalled),
+        hold,
         onSignal,
       }
     }),
@@ -1071,6 +1130,32 @@ const orbCommand = Effect.fnUntraced(function* (
   )
 })
 
+const launchDirectory = Effect.fnUntraced(function* (options: LaunchOptions) {
+  if (
+    options.resume !== undefined ||
+    options.continueSession ||
+    options.diagnostics ||
+    options.probeRuntime ||
+    options.saveProfile !== undefined ||
+    (yield* gitRoot(options.cwd)) !== undefined
+  )
+    return options.cwd
+  const dataHome = yield* (
+    options.dataHome === undefined ? defaultDataHome : Effect.succeed(options.dataHome)
+  ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve dev data home')))
+  const repositories = yield* findRepositories(options.cwd, join(dataHome, 'sessions'))
+  if (repositories.length === 0)
+    return yield* new LauncherError({
+      message: `${displayPath(options.cwd)} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`,
+    })
+  const { root } = yield* resolvePiPackage.pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot resolve the installed Pi release'))
+  )
+  return yield* chooseRepository(root, options.cwd, repositories).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot open the repository picker'))
+  )
+})
+
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
   dependencies: LauncherDependencies
@@ -1158,7 +1243,8 @@ const run = Effect.fnUntraced(function* (
     return yield* new LauncherError({
       message: '--orb cannot be combined with --diagnostics or --probe-runtime.',
     })
-  const launchCwd = options.cwd
+  const launchCwd = yield* launchDirectory(options)
+  if (launchCwd === undefined) return
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const catalog = yield* loadCatalog.pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load profiles'))
@@ -1175,7 +1261,7 @@ const run = Effect.fnUntraced(function* (
       .load(options.saveProfile)
       .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot validate profile preference')))
     const path = yield* saveSelection({
-      cwd: options.cwd,
+      cwd: launchCwd,
       dataHome,
       profile: options.saveProfile,
     }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot save profile preference')))
@@ -1402,7 +1488,7 @@ const run = Effect.fnUntraced(function* (
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
 
-  let quit: { readonly proceed: () => boolean } | undefined
+  let quit: { readonly proceed: () => boolean; readonly hold: TerminalHold } | undefined
   let sweepStarted = false
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
@@ -1469,7 +1555,7 @@ const run = Effect.fnUntraced(function* (
           yield* Effect.uninterruptible(closing.close(orbQuit(cancel, process)))
           orbClosing = false
         }
-        quit = { proceed: cancel.proceed }
+        quit = { proceed: cancel.proceed, hold: cancel.hold }
       }
     })
   )
@@ -1483,7 +1569,7 @@ const run = Effect.fnUntraced(function* (
         process.chdir(returnCwd)
       } catch {}
     })
-    const { proceed } = quit
+    const { proceed, hold } = quit
     yield* Effect.uninterruptible(
       Effect.sync(() => {
         sweepStarted = true
@@ -1495,7 +1581,7 @@ const run = Effect.fnUntraced(function* (
             occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
             detached: workspaceHost.isDetached(),
             proceed,
-            packageRoot: packageInfo.root,
+            terminal: { packageRoot: packageInfo.root, hold },
           })
         )
       )

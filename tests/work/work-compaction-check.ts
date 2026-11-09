@@ -150,7 +150,7 @@ try {
         entry => entry.type === 'custom_message' && entry.customType === 'dev/work-outcome'
       )
       assert.equal(outcomes.length, 1)
-      assert.equal(result.text.split('Leaf outcomes.').length - 1, 1)
+      assert.equal(result.text.split('Leaf outcomes:').length - 1, 1)
       assert.ok(
         leaf.resources?.tools.every(name => !['write', 'edit', 'bash', 'work'].includes(name))
       )

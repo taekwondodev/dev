@@ -16,6 +16,7 @@ import {
   type CoordinationMessage,
 } from './work-protocol.ts'
 import { errorText } from './error-text.ts'
+import { workResultText } from './work-model-text.ts'
 import { awaitReply } from './work-child-ipc.ts'
 import { waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
 
@@ -26,9 +27,9 @@ type Request =
   | { readonly type: 'work-idle' }
 
 const LEAF_OUTCOME_GUIDANCE =
-  'Leaf outcomes. These are producer observations, not verification; reconcile them before you report your own result.'
+  'Leaf outcomes: producer observations, not verification. Read a result from offset 0 when it is not included. Reconcile them before you report your own result.'
 export const COORDINATOR_TOOL_DESCRIPTION =
-  'Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused, self-contained prompt; a read-only leaf reads your workspace as it is, uncommitted files included, and a writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. list, inspect and cancel cover only your own leaves; cancel without an id stops them all. Leaf outcomes arrive as a message after your turn ends, with the retained answer and logs. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. Your result is reported only after every leaf settled and its outcome reached you; outcomes are observations, not verification.'
+  'Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused, self-contained prompt; a read-only leaf reads your workspace as it is, uncommitted files included, and a writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. list, inspect and cancel cover only your own leaves; cancel without an id stops them all. Leaf outcomes arrive after your turn ends; read any answer they omit from offset 0. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. Your result is reported only after every leaf settled and its outcome reached you; outcomes are observations, not verification.'
 
 const decodeControllerMessage = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
 const decodeResult = Schema.decodeUnknownEffect(WorkResultSchema)
@@ -165,7 +166,7 @@ export const createCoordinatorWorkTool = (link: CoordinatorLink): Pi.ToolDefinit
           )
         ),
         Effect.map(result => ({
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: workResultText(result) }],
           details: result,
           structuredContent: result,
         }))

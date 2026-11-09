@@ -41,6 +41,7 @@ import {
   type AttemptOrb,
   type AttemptView,
   type ChildOrb,
+  type ChildLive,
   type DispatchConfig,
   type DispatchProfile,
   type GenerationId,
@@ -145,6 +146,7 @@ interface Job {
   orbReturn?: OrbReturn
   orbEnded?: Deferred.Deferred<void>
   finishing?: Deferred.Deferred<void>
+  live?: ChildLive
 }
 
 type CoordinationRequest = Exclude<CoordinationMessage, { readonly type: 'work-outcomes-ack' }>
@@ -193,6 +195,7 @@ interface WorkOwnerOptions {
     readonly requestRebind: (handoff: WorkspaceHandoff) => void
   }
   readonly onChange?: () => void
+  readonly onLive?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
   readonly childEntry?: URL
   readonly browserOwnerEntry?: URL
@@ -464,6 +467,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const dataHome = resolve(options.dataHome)
   const { profile, workspace } = options
   const onChange = options.onChange ?? (() => undefined)
+  const onLive = options.onLive ?? (() => undefined)
   const onOutcome = options.onOutcome ?? (() => undefined)
   const childEntry = options.childEntry ?? PI_CHILD_ENTRY
   const browserOwner = makeOwnerBootstrap({
@@ -488,6 +492,17 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       })
     return { records, unavailable: listed.unavailable, agentsBlocked: state.exhausted }
   }).pipe(Effect.mapError(toFailure))
+
+  const liveAttempts = Effect.sync(
+    (): ReadonlyMap<AttemptId, ChildLive> =>
+      new Map(
+        [...active].flatMap(([id, job]) => {
+          if (job.live === undefined || !job.lifecycle.isActive()) return []
+          const awaitingSettlement = job.lifecycle.hasExited() || job.lifecycle.hasResult()
+          return [[id, awaitingSettlement ? { turns: job.live.turns } : job.live] as const]
+        })
+      )
+  )
 
   const dispatch: Effect.Effect<DispatchConfig, WorkFailure> = readDispatch.pipe(
     Effect.provideService(FileSystem.FileSystem, fs),
@@ -1487,6 +1502,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         cwd: job.cwd,
         sessionDir: join(dataHome, 'child-sessions'),
       }).pipe(Effect.mapError(toFailure))
+      if (message.type === 'activity') {
+        job.live = {
+          turns: message.turns,
+          ...(message.activity === undefined ? {} : { activity: message.activity }),
+        }
+        onLive()
+        return
+      }
       if (message.type === 'workspace-check') {
         const { child } = job
         if (child === undefined)
@@ -2000,6 +2023,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
 
   return WorkOwner.of({
     snapshot,
+    live: liveAttempts,
     dispatch,
     startProcess,
     startAgent,
