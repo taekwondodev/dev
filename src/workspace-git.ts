@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { basename, isAbsolute, resolve } from 'node:path'
 import { Option, Schema } from 'effect'
@@ -65,7 +65,12 @@ export const gitResult = (cwd: string, args: readonly string[], input?: string):
     timeout: GIT_TIMEOUT_MS,
     env: gitEnvironment(),
   })
-  if (result.error !== undefined) throw gitBlocked(`Cannot run Git: ${result.error.message}`)
+  if (result.error !== undefined)
+    throw gitBlocked(
+      existsSync(cwd)
+        ? `Cannot run Git: ${result.error.message}`
+        : `Directory does not exist: ${cwd}`
+    )
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
 
