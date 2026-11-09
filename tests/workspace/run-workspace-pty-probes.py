@@ -256,6 +256,16 @@ PROBES = {
         env=(('LAUNCHER_PICKER', 'init-home'),),
     ),
 
+    'repo-init-orb': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(),
+        expect=('is not a Git repository and contains none.',),
+        reject_raw_after=('DEV_PICKER_INPUTS ', ('Initialize a repository here',)),
+        env=(('LAUNCHER_PICKER', 'init-orb'),),
+    ),
+
     'quit-release-declined': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',

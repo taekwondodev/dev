@@ -1152,6 +1152,7 @@ const launchDirectory = Effect.fnUntraced(function* (options: LaunchOptions) {
   ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve dev data home')))
   const repositories = yield* findRepositories(options.cwd, join(dataHome, 'sessions'))
   const initializable =
+    !options.orb &&
     process.stdin.isTTY &&
     process.stdout.isTTY &&
     options.cwd !== homedir() &&

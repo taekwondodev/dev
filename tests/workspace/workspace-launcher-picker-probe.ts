@@ -24,6 +24,8 @@ const claims = {
     'Esc at the initialization prompt exits 0 without creating a repository or starting a conversation',
   'init-home':
     'the home directory with no repository inside is never offered initialization and exits 1',
+  'init-orb':
+    'dev --orb in a directory with no repository inside is never offered initialization and exits 1',
 }
 const scenario = (process.env.LAUNCHER_PICKER ?? 'pick') as keyof typeof claims
 const empty = scenario.startsWith('init')
@@ -72,6 +74,7 @@ try {
       dataHome,
       '--profile',
       profiles.defaultProfile,
+      ...(scenario === 'init-orb' ? ['--orb'] : []),
     ],
     {
       stdio: 'inherit',
@@ -91,7 +94,7 @@ try {
   )
   await claim(claims[scenario], () => {
     assert.equal(exit.signal, null)
-    assert.equal(exit.code, scenario === 'init-home' ? 1 : 0)
+    assert.equal(exit.code, scenario === 'init-home' || scenario === 'init-orb' ? 1 : 0)
     if (!started) assert.deepEqual(readdirSync(sessions), ['earlier.jsonl'])
     if (empty) assert.equal(existsSync(join(area, '.git')), started)
     if (empty && started) assert.equal(git(['rev-parse', '--show-toplevel'], area).trim(), area)
