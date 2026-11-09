@@ -281,7 +281,7 @@ export const createWorkExtension = ({
       ).pipe(
         Effect.flatMap(({ snapshot, live }) =>
           Effect.sync(() => {
-            if (context !== current || sessionOwner !== owner) return
+            if (sessionOwner !== owner) return
             view.snapshot = snapshot
             view.lastAt = Date.now()
             view.failureNotified = false

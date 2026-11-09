@@ -269,15 +269,21 @@ export const unreservedCheckoutViews = (
 ): readonly WorkspaceView[] =>
   sortedViews(views).filter(
     view =>
-      view.origin === 'pre-existing' && view.reservationId === undefined && view.uses.length > 0
+      view.origin === 'pre-existing' &&
+      view.reservationId === undefined &&
+      (view.uses.length > 0 || view.directoryMissing === true)
   )
 
 export const preExistingReleasePlan = (views: readonly WorkspaceView[]): string =>
   [
-    'dev workspace release pre-existing deletes the use records of ended dev sessions in every unreserved pre-existing checkout of this repository:',
+    'dev workspace release pre-existing deletes the use records of ended dev sessions in every unreserved pre-existing checkout of this repository and forgets checkouts whose directory no longer exists:',
     ...views.map(
       view =>
-        `- ${view.workspaceId} at ${view.path} (${view.outcome}): ${view.uses.length} use record(s); those of running dev sessions stay, files and commits stay`
+        `- ${view.workspaceId} at ${view.path} (${view.outcome}): ${
+          view.directoryMissing === true
+            ? `the directory no longer exists; ${view.uses.length} use record(s), then dev forgets the checkout unless a running dev session still refers to it`
+            : `${view.uses.length} use record(s); those of running dev sessions stay, files and commits stay`
+        }`
     ),
     'Processes started by ended sessions are not stopped; run this only when nothing they started still works there.',
   ].join('\n')

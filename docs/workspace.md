@@ -11,7 +11,7 @@ dev workspace                    # list this repository's tasks and workspaces
 dev workspace inspect <task-id>  # inspect the exact task across repositories and its next safe action
 dev workspace check <task-id>    # assess completion, target, blockers and evidence
 dev workspace release <task-id>  # interactively confirm clearing every workspace of the task
-dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts
+dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts and forgetting deleted ones
 ```
 
 In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing.
@@ -133,7 +133,7 @@ Allocation and replacement receipts appear in the conversation when there are ro
 
 The command requires an interactive terminal, lists each workspace and its consequence, then asks for one `y`. There is no `--yes`. It checks no completion, evidence or live use: run it only when nothing still works in those workspaces. It neither waits for uses nor acquires path or installation gates; this is an [explicit user override](adr/0005-scoped-runtime-coordination.md#release), not a guarded sweep. The session command and agent tool cannot release them.
 
-A pre-existing checkout no task reserves is never swept, so uses its ended sessions left unsettled keep it `blocked` and settled ones accumulate. **`dev workspace release pre-existing`** handles the repository at `--cwd`: it lists each unreserved pre-existing checkout with recorded uses, asks for one `y`, then deletes the uses of every ended dev session there. Uses of running sessions stay, as do files and commits; a checkout a task reserves meanwhile fails and names `dev workspace release <task-id>`. It stops no process those sessions started: run it only when nothing they started still works there.
+A pre-existing checkout no task reserves is never swept, so uses its ended sessions left unsettled keep it `blocked` and settled ones accumulate. **`dev workspace release pre-existing`** handles the repository at `--cwd`: it lists each unreserved pre-existing checkout with recorded uses or a deleted directory, asks for one `y`, then deletes the uses of every ended dev session there. Uses of running sessions stay, as do files and commits; a checkout a task reserves meanwhile fails and names `dev workspace release <task-id>`. A checkout whose directory was deleted outside dev is listed as `review-required` until restored or forgotten: once no running session, pending operation or open conversation refers to it, release forgets it, and dev registers that path afresh if a checkout returns there. It stops no process those sessions started: run it only when nothing they started still works there.
 
 Orb recovery and failed orb starts can settle their session's writer use without confirmation; inspect names which operation made the decision. [Orb recovery](orb.md#recovery) owns settlement conditions and the manual-release cases; [ADR 0005](adr/0005-scoped-runtime-coordination.md#release) records why this exception is safe.
 

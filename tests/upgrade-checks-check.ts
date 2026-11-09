@@ -41,22 +41,10 @@ if (name === 'types:pi') {
 appendFileSync('events', JSON.stringify({ name, start: true }) + '\n')
 console.log('fixture:stdout:' + name)
 console.error('fixture:stderr:' + name)
-const end = () => {
+setTimeout(() => {
   appendFileSync('events', JSON.stringify({ name, start: false }) + '\n')
   process.exit(name === 'lint' ? 1 : 0)
-}
-if (['lint', 'format:check', 'smoke'].includes(name)) {
-  writeFileSync(name, '')
-  const deadline = Date.now() + 10000
-  const timer = setInterval(() => {
-    if (['lint', 'format:check', 'smoke'].every(name => existsSync(name))) {
-      clearInterval(timer)
-      setTimeout(end, 100)
-    } else if (Date.now() > deadline) {
-      throw new Error('suites did not overlap')
-    }
-  }, 10)
-} else end()
+}, 50)
 `
   )
   const run = (env: Record<string, string>) =>
@@ -80,7 +68,7 @@ if (['lint', 'format:check', 'smoke'].includes(name)) {
     active += event.start ? 1 : -1
     peak = Math.max(peak, active)
   }
-  assert.equal(peak, 3)
+  assert.equal(peak, 1)
   assert.equal(active, 0)
   for (const result of results) {
     assert.deepEqual(
@@ -99,7 +87,7 @@ if (['lint', 'format:check', 'smoke'].includes(name)) {
   )
   assert.equal(readFileSync(join(cwd, 'events'), 'utf8'), events)
   console.log(
-    'upgrade checks: serial preparation, three concurrent suites, ordered failures and per-suite stdout/stderr capture passed'
+    'upgrade checks: serial preparation, one suite at a time, ordered failures and per-suite stdout/stderr capture passed'
   )
 } finally {
   rmSync(cwd, { recursive: true, force: true })

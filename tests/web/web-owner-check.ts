@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -17,7 +18,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Cause, Duration, Effect, Exit, Fiber, Scope } from 'effect'
-import { makeClaims, waitFor } from '../workspace/workspace-check-support.ts'
+import { makeClaims, waitFor, waitUntil } from '../workspace/workspace-check-support.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
 import {
@@ -104,6 +105,8 @@ const profileOptions = {
   sourceUserData: source.userData,
   chromeExecutables: CHROME_EXECUTABLES,
 }
+const ownerPids = join(fixture, 'owner-pids')
+mkdirSync(ownerPids)
 const baseFixture = {
   sourceUserData: source.userData,
   chromeExecutables: CHROME_EXECUTABLES,
@@ -115,6 +118,7 @@ const baseFixture = {
   allowSuffix: '.fixture.invalid',
   blockedHosts: [BLOCKED],
   slowHosts: {},
+  pidDirectory: ownerPids,
 }
 selectOwnerFixture(baseFixture)
 
@@ -134,10 +138,19 @@ const text = (html: string) =>
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-const ownerProcesses = (): number =>
-  execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' })
-    .split('\n')
-    .filter(line => line.includes('browser-owner-entry.ts')).length
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+const queuedRenders = async (): Promise<number> => {
+  const status = await Effect.runPromise(admin.status)
+  return status.owner.kind === 'live' ? status.owner.activity.queued : -1
+}
+const ownerProcesses = (): number => readdirSync(ownerPids).filter(pid => alive(Number(pid))).length
 const startOwner = (home: string): Promise<string> =>
   new Promise((resolve, reject) => {
     const child = spawn(
@@ -453,18 +466,14 @@ try {
         const waiting = Array.from({ length: 64 }, (_, index) =>
           Effect.runFork(burst.render(`${origin}/page.html?m=Q${index}`, MAX_HTML))
         )
-        await sleep(400)
-        const full = await Effect.runPromise(admin.status)
-        assert.equal(full.owner.kind === 'live' ? full.owner.activity.queued : -1, 64)
+        await waitUntil('64 queued renders', queuedRenders, count => count === 64)
         const overflow = await Effect.runPromiseExit(
           burst.render(`${origin}/page.html?m=OVERFLOW`, MAX_HTML)
         )
         assert.ok(Exit.isFailure(overflow))
         assert.match(String(Cause.squash(overflow.cause)), /already has 64 renders waiting/)
         for (const fiber of [holding, ...waiting]) await Effect.runPromise(Fiber.interrupt(fiber))
-        await sleep(300)
-        const drained = await Effect.runPromise(admin.status)
-        assert.equal(drained.owner.kind === 'live' ? drained.owner.activity.queued : -1, 0)
+        await waitUntil('the interrupted queue to drain', queuedRenders, count => count === 0)
         const page = await Effect.runPromise(
           burst.render(`${origin}/page.html?m=AFTERBURST`, MAX_HTML)
         )
@@ -504,7 +513,12 @@ try {
         const page = await Effect.runPromise(idle.render(`${origin}/page.html?m=IDLE`, MAX_HTML))
         assert.match(text(page.html), /MARKER IDLE/)
         assert.ok(chromeRunningOn(copyDir) > 0)
-        await sleep(8000)
+        await waitFor('the idle shared Chrome to close and release the copy', async () =>
+          chromeRunningOn(copyDir) === 0 &&
+          !(await Effect.runPromise(makeBrowserProfileOwner(profileOptions).status)).inUse
+            ? true
+            : undefined
+        )
         await assertCopyReleased(profileOptions, 'after the idle period')
         assert.ok(ownerPublished(dataHome), 'the owner stayed available for its clients')
         const again = await Effect.runPromise(
@@ -616,8 +630,11 @@ try {
         assert.ok(Exit.isFailure(exit))
         assert.match(String(Cause.squash(exit.cause)), /did not become ready within ten seconds/)
         assert.ok(Date.now() - started < 15_000, 'the bootstrap budget bounded the wait')
-        await sleep(300)
-        assert.equal(ownerProcesses(), before, 'the hanging helper was killed')
+        await waitUntil(
+          'the hanging helper to be killed',
+          ownerProcesses,
+          count => count === before
+        )
         assert.ok(!ownerPublished(home))
         selectOwnerFixture(baseFixture)
         const renderer = await openRenderer(home, newScope(), failures)
@@ -635,8 +652,12 @@ try {
         selectOwnerFixture({ ...baseFixture, firstClientGraceMs: 1000 })
         assert.match(await startOwner(home), /started/)
         assert.ok(ownerPublished(home), 'the owner published after commit')
-        await sleep(2500)
-        assert.ok(!ownerPublished(home), 'the unvisited owner exited within its grace')
+        await waitUntil(
+          'the unvisited owner to exit within its grace',
+          () => ownerPublished(home),
+          published => !published,
+          { attempts: 50, intervalMs: 100 }
+        )
         selectOwnerFixture(baseFixture)
       }
     )
@@ -647,8 +668,11 @@ try {
         mkdirSync(home, { mode: 0o700 })
         const before = ownerProcesses()
         const [first, second] = await Promise.all([startOwner(home), startOwner(home)])
-        await sleep(500)
-        assert.equal(ownerProcesses(), before + 1, 'the losing helper exited; one owner remains')
+        await waitUntil(
+          'the losing helper to exit, leaving one owner',
+          ownerProcesses,
+          count => count === before + 1
+        )
         assert.match(first, /started/)
         assert.match(second, /started/)
         const published = JSON.parse(readFileSync(join(home, 'browser', 'owner.json'), 'utf8')) as {

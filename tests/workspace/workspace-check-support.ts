@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
@@ -140,6 +141,21 @@ export const waitFor = <A>(
   probe: () => A | undefined | Promise<A | undefined>,
   timing?: WaitTiming
 ): Promise<A> => waitUntil(what, probe, (value): value is A => value !== undefined, timing)
+
+export const awaitCleanupExits = async (markers: string): Promise<void> => {
+  for (const name of readdirSync(markers).filter(file => file.endsWith('.json'))) {
+    const pid = JSON.parse(readFileSync(join(markers, name), 'utf8')) as number
+    await waitFor(`cleanup process ${pid} to exit before fixture removal`, () => {
+      try {
+        process.kill(pid, 0)
+        return undefined
+      } catch (error) {
+        assert.match(String(error), /ESRCH/)
+        return true
+      }
+    })
+  }
+}
 
 export type ScriptedContent = AssistantMessage['content']
 
