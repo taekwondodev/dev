@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Effect, Schema } from 'effect'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { createBackgroundCompaction } from '../src/background-compaction.ts'
+import { createBackgroundCompaction, fenceRuntimeDisposal } from '../src/background-compaction.ts'
 import { COMPACTION_OBSERVATION, CompactionObservation } from '../src/compaction-observation.ts'
 
 import {
@@ -273,6 +273,7 @@ const open = async (
   const runtime = new pi.AgentSessionRuntime(session, services, async () => {
     throw new Error('This native-session fixture does not replace sessions')
   })
+  fenceRuntimeDisposal(runtime)
   const summary = (index = 0) =>
     waitFor('summary request', () => summaries[index], { intervalMs: 5 })
   const compactions = () => manager.getEntries().filter(entry => entry.type === 'compaction')
