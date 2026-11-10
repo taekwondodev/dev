@@ -432,6 +432,28 @@ try {
     }
   )
 
+  await claim(
+    'a new conversation launched with a --cwd behind a symlink, such as /tmp on macOS, opens in the real checkout path',
+    async () => {
+      const linked = join(sandbox, 'repo-link')
+      symlinkSync(repo, linked)
+      const probed = await runLauncher(
+        [
+          '--probe-runtime',
+          '--cwd',
+          linked,
+          '--data-home',
+          dataHome,
+          '--profile',
+          profiles.defaultProfile,
+        ],
+        { HOME: join(sandbox, 'probe-home'), LAUNCHER_CHECK_ROOT: join(sandbox, 'probe-authority') }
+      )
+      assert.equal(probed.code, 0, probed.stderr)
+      assert.match(probed.stdout, /^runtime probe: ok$/m)
+    }
+  )
+
   const secondRepo = join(sandbox, 'second-repo')
   const notGit = join(sandbox, 'not-git')
   const readOnlyHome = join(sandbox, 'read-only-home')
