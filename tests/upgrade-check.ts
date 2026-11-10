@@ -13,8 +13,10 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { Schema } from 'effect'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { NodeServices } from '@effect/platform-node'
+import { Effect, Schema } from 'effect'
+import type * as Upgrade from '../scripts/upgrade.ts'
 import { WorkspaceAuthority, registerWorkspace } from '../src/workspace-authority.ts'
 import { canonicalGitWorkspace } from '../src/workspace-git.ts'
 import { inspectWorkspaces } from '../src/workspace-inspect.ts'
@@ -181,6 +183,40 @@ registerHooks({
     '',
     'an absent worktree does not authorize guessing a branch'
   )
+  const { placeWorktree } = (await import(
+    pathToFileURL(join(checkout, 'scripts', 'upgrade.ts')).href
+  )) as typeof Upgrade
+  const place = (start: string, head: Upgrade.WorktreeHead) =>
+    Effect.runPromise(
+      placeWorktree(start, Effect.succeed(head)).pipe(Effect.provide(NodeServices.layer))
+    )
+  const pushed = 'chore/upgrade-2026-10-16'
+  await place('origin/main', { kind: 'created', branch: pushed })
+  writeFileSync(join(worktree, 'tracked.txt'), 'fixed upgrade\n')
+  git(['commit', '--quiet', '-am', 'fixed upgrade'], worktree)
+  git(['push', '--quiet', 'origin', pushed], worktree)
+  git(['fetch', '--quiet', 'origin'])
+  registerWorkspace(authority, repository, canonicalGitWorkspace(worktree))
+  await place(`origin/${pushed}`, { kind: 'reset', branch: pushed })
+  assert.equal(git(['branch', '--show-current'], worktree), pushed)
+  assert.equal(readFileSync(join(worktree, 'tracked.txt'), 'utf8'), 'fixed upgrade\n')
+  const piRelease = join(sandbox, 'pi-release')
+  mkdirSync(piRelease)
+  writeFileSync(join(piRelease, 'package.json'), '{}\n')
+  mkdirSync(join(worktree, 'node_modules'))
+  symlinkSync(piRelease, join(worktree, 'node_modules', '@earendil-works'))
+  await place('origin/main', { kind: 'created', branch: 'chore/upgrade-2026-10-17' })
+  assert.equal(git(['branch', '--show-current'], worktree), 'chore/upgrade-2026-10-17')
+  assert.equal(readFileSync(join(worktree, 'tracked.txt'), 'utf8'), 'upgrade\n')
+  assert.equal(existsSync(join(worktree, 'node_modules')), false)
+  assert.ok(existsSync(join(piRelease, 'package.json')), 'the linked Pi release is left intact')
+  update()
+  assert.equal(existsSync(worktree), false, 'a worktree reused by a later upgrade is cleaned up')
+  assert.equal(
+    inspectWorkspaces(authority, { cwd: checkout }).some(view => view.path === worktree),
+    false
+  )
+  assert.equal(git(['branch', '--list', 'chore/upgrade-2026-10-17']), '')
   git(['worktree', 'add', '--quiet', worktree, branch])
   registerWorkspace(authority, repository, canonicalGitWorkspace(worktree))
   writeFileSync(
@@ -196,7 +232,7 @@ registerHooks({
   assert.equal(git(['rev-parse', 'HEAD']), updated, 'activation reads the pin after updating dev')
   assert.equal(readFileSync(join(installation, 'current-version'), 'utf8'), '1.0.0\n')
   console.log(
-    'upgrade cleanup and maintenance: update alias, Pi preparation rename, current Pi no-op, post-update activation refusal, main cleanup, squash, scope, lock, repeat and path reuse passed'
+    'upgrade cleanup and maintenance: update alias, Pi preparation rename, current Pi no-op, post-update activation refusal, main cleanup, squash, scope, lock, repeat, path reuse and in-place worktree reuse passed'
   )
 } finally {
   authority.close()
