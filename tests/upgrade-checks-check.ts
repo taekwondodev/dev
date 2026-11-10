@@ -1,93 +1,54 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NodeServices } from '@effect/platform-node'
-import { Effect, Schema } from 'effect'
-import { runUpgradeChecks } from '../scripts/upgrade-checks.ts'
+import { Effect, Option } from 'effect'
+import { type CheckOutcome, runUpgradeChecks } from '../scripts/upgrade-checks.ts'
 
 const cwd = mkdtempSync(join(tmpdir(), 'dev-upgrade-checks-'))
-const names = [
-  'types:pi',
-  'lint',
-  'format:check',
-  'smoke',
-  'profile:check',
-  'workspace:check',
-  'workspace:tui',
-  'workspace:github',
-  'work:check',
-  'web:check',
-  'orb:check',
+const reportPath = join(cwd, 'checks.json')
+const reported: readonly CheckOutcome[] = [
+  { suite: 'lint', command: 'npm run -s lint', passed: false, ms: 20, output: 'lint failed\n' },
+  { suite: 'smoke', command: 'node tests/smoke.ts', passed: true, ms: 10, output: 'smoke\n' },
 ]
 try {
+  writeFileSync(join(cwd, 'package.json'), JSON.stringify({ type: 'module' }))
+  mkdirSync(join(cwd, 'tests'))
   writeFileSync(
-    join(cwd, 'package.json'),
-    JSON.stringify({
-      scripts: Object.fromEntries(names.map(name => [name, 'node check.cjs'])),
-    })
-  )
-  writeFileSync(
-    join(cwd, 'check.cjs'),
+    join(cwd, 'tests', 'run-checks.ts'),
     String.raw`
-const { appendFileSync, existsSync, writeFileSync } = require('node:fs')
-const name = process.env.npm_lifecycle_event
-if (name === 'types:pi') {
-  if (process.env.FAIL_PREPARATION === 'yes') process.exit(1)
-  writeFileSync('prepared', process.env.DEV_PI_RELEASE)
-} else if (!existsSync('prepared')) {
-  throw new Error('suite started before preparation')
-}
-appendFileSync('events', JSON.stringify({ name, start: true }) + '\n')
-console.log('fixture:stdout:' + name)
-console.error('fixture:stderr:' + name)
-setTimeout(() => {
-  appendFileSync('events', JSON.stringify({ name, start: false }) + '\n')
-  process.exit(name === 'lint' ? 1 : 0)
-}, 50)
+import { writeFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+writeFileSync('invocation.json', JSON.stringify({ args, release: process.env.DEV_PI_RELEASE }))
+console.log('fixture:stdout')
+console.error('fixture:stderr')
+const report = process.env.FIXTURE_REPORT
+if (report !== undefined) writeFileSync(args.at(-1).slice('--report='.length), report)
+process.exit(1)
 `
   )
   const run = (env: Record<string, string>) =>
-    Effect.runPromise(runUpgradeChecks(cwd, env).pipe(Effect.provide(NodeServices.layer)))
-  const results = await run({ DEV_PI_RELEASE: '/fixture/pi' })
-  assert.deepEqual(
-    results.map(result => result.step),
-    names
-  )
-  assert.deepEqual(
-    results.filter(result => !result.passed).map(result => result.step),
-    ['lint']
-  )
-  assert.equal(readFileSync(join(cwd, 'prepared'), 'utf8'), '/fixture/pi')
-  let active = 0
-  let peak = 0
-  for (const line of readFileSync(join(cwd, 'events'), 'utf8').trim().split('\n')) {
-    const event = Schema.decodeSync(
-      Schema.fromJsonString(Schema.Struct({ start: Schema.Boolean }))
-    )(line)
-    active += event.start ? 1 : -1
-    peak = Math.max(peak, active)
-  }
-  assert.equal(peak, 1)
-  assert.equal(active, 0)
-  for (const result of results) {
-    assert.deepEqual(
-      result.output
-        .split(/\r?\n/)
-        .filter(line => line.startsWith('fixture:'))
-        .toSorted(),
-      [`fixture:stderr:${result.step}`, `fixture:stdout:${result.step}`]
+    Effect.runPromise(
+      runUpgradeChecks(cwd, env, reportPath).pipe(Effect.provide(NodeServices.layer))
     )
-  }
-  const events = readFileSync(join(cwd, 'events'), 'utf8')
-  const failed = await run({ FAIL_PREPARATION: 'yes' })
-  assert.deepEqual(
-    failed.map(result => [result.step, result.passed]),
-    [['types:pi', false]]
+  const ran = await run({ DEV_PI_RELEASE: '/fixture/pi', FIXTURE_REPORT: JSON.stringify(reported) })
+  assert.deepEqual(ran.outcomes, Option.some(reported))
+  assert.deepEqual(JSON.parse(readFileSync(join(cwd, 'invocation.json'), 'utf8')), {
+    args: ['--all', `--report=${reportPath}`],
+    release: '/fixture/pi',
+  })
+  const unprepared = await run({})
+  assert.deepEqual(unprepared.outcomes, Option.none(), 'an earlier report is not read again')
+  assert.equal(existsSync(reportPath), false)
+  assert.match(unprepared.output, /fixture:stdout/)
+  assert.match(unprepared.output, /fixture:stderr/)
+  await assert.rejects(
+    run({ FIXTURE_REPORT: '[{"suite":"lint"}]' }),
+    /Cannot read the check report/
   )
-  assert.equal(readFileSync(join(cwd, 'events'), 'utf8'), events)
   console.log(
-    'upgrade checks: serial preparation, one suite at a time, ordered failures and per-suite stdout/stderr capture passed'
+    'upgrade checks: one runner invocation for every suite, candidate environment, per-check outcomes, missing and malformed reports passed'
   )
 } finally {
   rmSync(cwd, { recursive: true, force: true })

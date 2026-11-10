@@ -17,7 +17,12 @@ import {
   piSections,
 } from './pi-upgrade.ts'
 import { cell, collapsed, counted, fence, lastLines, listed, withoutFinalPeriod } from './report.ts'
-import { runUpgradeChecks, suites, type StepResult } from './upgrade-checks.ts'
+import {
+  checkRunner,
+  type CheckOutcome,
+  type CheckRun,
+  runUpgradeChecks,
+} from './upgrade-checks.ts'
 
 export class UpgradeError extends Schema.TaggedError<
   UpgradeError,
@@ -29,6 +34,7 @@ export class UpgradeError extends Schema.TaggedError<
 
 const worktree = join(upgradeHome, 'worktree')
 const reportPath = join(upgradeHome, 'report.md')
+const checkReportPath = join(upgradeHome, 'checks.json')
 const bodyPath = join(upgradeHome, 'pull-request.md')
 const branchPrefix = 'chore/upgrade-'
 const manifestFiles = ['package.json', 'package-lock.json']
@@ -90,9 +96,17 @@ interface Change {
   readonly to: string | undefined
 }
 
+interface StepResult {
+  readonly step: string
+  readonly command: string
+  readonly passed: boolean
+  readonly ms: number
+  readonly output: string
+}
+
 interface Verification {
   readonly install: StepResult
-  readonly suites: readonly StepResult[]
+  readonly checks: Option.Option<CheckRun>
   readonly pi: Option.Option<PiComparison>
   readonly audit: Option.Option<AuditSummary>
   readonly installScripts: Option.Option<readonly string[]>
@@ -237,6 +251,16 @@ const overrideTarget = Effect.fnUntraced(function* (
     : `${parsed[1]}${dependency.replace(/^[~^]/, '')}`
 })
 
+const pinnedManifest = (document: Record<string, unknown>, pi: PiVersion): string =>
+  `${JSON.stringify(
+    {
+      ...document,
+      config: { ...(Predicate.isObject(document.config) ? document.config : {}), pi },
+    },
+    null,
+    2
+  )}\n`
+
 const upgradedManifest = Effect.fnUntraced(function* (
   { document, manifest }: ManifestFile,
   pi: PiVersion
@@ -260,8 +284,7 @@ const upgradedManifest = Effect.fnUntraced(function* (
   if (overrides !== undefined) upgraded.overrides = overrides
   const engines = raisedEngines(manifest.engines)
   if (engines !== undefined) upgraded.engines = engines
-  upgraded.config = { ...(Predicate.isObject(document.config) ? document.config : {}), pi }
-  return `${JSON.stringify(upgraded, null, 2)}\n`
+  return pinnedManifest(upgraded, pi)
 })
 
 const changedVersions = (base: Versions = {}, head: Versions = {}): readonly Change[] =>
@@ -336,11 +359,14 @@ const hasMergedPullRequest = Effect.fnUntraced(function* (branch: string, head: 
   return false
 })
 
-const releaseWorktree = Effect.gen(function* () {
+const reclaimWorktree = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
-  if (!(yield* fs.exists(worktree))) return yield* git(['worktree', 'prune'])
+  if (!(yield* fs.exists(worktree))) {
+    yield* git(['worktree', 'prune'])
+    return false
+  }
   const refuse = (reason: string) =>
-    new UpgradeError({ message: `Refusing to replace ${worktree}: ${reason}.` })
+    new UpgradeError({ message: `Refusing to reuse ${worktree}: ${reason}.` })
   if ((yield* inWorktree(['rev-parse', '--show-toplevel'])) !== (yield* fs.realPath(worktree)))
     return yield* refuse('it is not a Git worktree; remove the directory first')
   const leftovers = (yield* worktreePaths(['--ignored'])).filter(
@@ -360,10 +386,51 @@ const releaseWorktree = Effect.gen(function* () {
     return yield* refuse(
       `it has commits that are not on origin; push them with git -C ${worktree} push origin HEAD:${branch === '' ? '<branch>' : branch}`
     )
-  yield* git(['worktree', 'remove', '--force', worktree])
-  yield* git(['worktree', 'prune'])
-  if (ownAttempt && branch.startsWith(branchPrefix))
-    yield* git(['branch', '--delete', '--force', branch])
+  if (ownAttempt) {
+    yield* inWorktree(['reset', '--quiet', '--hard'])
+    if (branch.startsWith(branchPrefix)) {
+      yield* inWorktree(['switch', '--quiet', '--detach'])
+      yield* git(['branch', '--delete', '--force', branch])
+    }
+  }
+  yield* fs.remove(join(worktree, 'node_modules'), { recursive: true, force: true })
+  return true
+})
+
+export type WorktreeHead =
+  | { readonly kind: 'detached' }
+  | { readonly kind: 'created' | 'reset'; readonly branch: string }
+
+const headFlags = (head: WorktreeHead, create: 'b' | 'c'): readonly string[] => {
+  switch (head.kind) {
+    case 'detached':
+      return ['--detach']
+    case 'created':
+      return ['--no-track', `-${create}`, head.branch]
+    case 'reset':
+      return [`-${create.toUpperCase()}`, head.branch]
+  }
+}
+
+export const placeWorktree = Effect.fnUntraced(function* <E, R>(
+  start: string,
+  chooseHead: Effect.Effect<WorktreeHead, E, R>
+) {
+  const reused = yield* reclaimWorktree
+  const head = yield* chooseHead
+  yield* reused
+    ? inWorktree(['switch', '--quiet', ...headFlags(head, 'c'), start])
+    : git(['worktree', 'add', '--quiet', ...headFlags(head, 'b'), worktree, start])
+  return head
+})
+
+const checkedOutElsewhere = Effect.fnUntraced(function* (branch: string) {
+  const fs = yield* FileSystem.FileSystem
+  const here = (yield* fs.exists(worktree)) ? yield* inWorktree(['branch', '--show-current']) : ''
+  return (
+    here !== branch &&
+    lines(yield* git(['worktree', 'list', '--porcelain'])).includes(`branch refs/heads/${branch}`)
+  )
 })
 
 const freeBranch = Effect.fnUntraced(function* (date: string) {
@@ -371,7 +438,7 @@ const freeBranch = Effect.fnUntraced(function* (date: string) {
     const branch = `${branchPrefix}${date}${attempt === 1 ? '' : `-${attempt}`}`
     const local = yield* git(['branch', '--list', branch])
     const remote = yield* git(['ls-remote', '--heads', 'origin', branch])
-    if (local === '' && remote === '') return branch
+    if (local === '' && remote === '') return { kind: 'created', branch } satisfies WorktreeHead
   }
   return yield* new UpgradeError({ message: `No free ${branchPrefix}${date} branch name` })
 })
@@ -424,23 +491,43 @@ const verify = Effect.fnUntraced(function* (base: Manifest, head: Manifest, refr
   if (!installed.passed)
     return {
       install: installed,
-      suites: [],
+      checks: Option.none(),
       pi,
       audit: Option.none(),
       installScripts: Option.none(),
     } satisfies Verification
-  const ran = yield* runUpgradeChecks(worktree, env)
   return {
     install: installed,
-    suites: ran,
+    checks: Option.some(yield* runUpgradeChecks(worktree, env, checkReportPath)),
     pi,
     audit: Option.some(yield* auditAt(worktree, 'all')),
     installScripts: Option.some(yield* installScripts),
   } satisfies Verification
 })
 
-const failures = ({ install: installed, suites: ran }: Verification): readonly StepResult[] =>
-  [installed, ...ran].filter(result => !result.passed)
+const ranChecks = ({ checks }: Verification): readonly CheckOutcome[] =>
+  checks.pipe(
+    Option.flatMap(({ outcomes }) => outcomes),
+    Option.getOrElse(() => [])
+  )
+
+const failures = (verification: Verification): readonly StepResult[] => {
+  const { install: installed, checks } = verification
+  if (!installed.passed) return [installed]
+  if (Option.isSome(checks) && Option.isNone(checks.value.outcomes))
+    return [
+      {
+        step: 'checks',
+        command: checkRunner,
+        passed: false,
+        ms: checks.value.ms,
+        output: checks.value.output,
+      },
+    ]
+  return ranChecks(verification)
+    .filter(outcome => !outcome.passed)
+    .map(({ suite, ...outcome }) => Object.assign(outcome, { step: suite }))
+}
 
 const isGreen = (upgrade: Upgrade): boolean => failures(upgrade.verification).length === 0
 
@@ -464,11 +551,11 @@ const rerun = (upgrade: Upgrade, result: StepResult): string =>
     : result.command
 
 const checksRow = (verification: Verification): string => {
-  if (!verification.install.passed) return 'install failed; suites not run'
+  if (!verification.install.passed) return 'install failed; checks not run'
   const failed = failures(verification)
   return failed.length === 0
-    ? `${verification.suites.length}/${suites.length} green`
-    : `red: ${listed(failed.map(result => result.step))}`
+    ? `${counted(ranChecks(verification).length, 'check')} green`
+    : `red: ${listed(Arr.dedupe(failed.map(result => result.step)))}`
 }
 
 const dependenciesRow = (changes: readonly Change[]): string => {
@@ -531,19 +618,37 @@ const renderChanges = (upgrade: Upgrade): string => {
   ].join('\n\n')
 }
 
-const renderTimes = (verification: Verification): string =>
-  collapsed(
+const timeRow = (name: string, passed: boolean, ms: number): string =>
+  `| \`${name}\` | ${passed ? 'passed' : 'failed'} | ${Math.round(ms / 1000)} s |`
+
+const renderTimes = (verification: Verification): string => {
+  const { install: installed, checks } = verification
+  const outcomes = ranChecks(verification)
+  return collapsed(
     'Checks and times',
     [
       '| Check | Result | Time |',
       '| --- | --- | --- |',
-      ...(['install', ...suites] as const).map(step => {
-        const result = [verification.install, ...verification.suites].find(ran => ran.step === step)
-        if (result === undefined) return `| \`${step}\` | not run | |`
-        return `| \`${step}\` | ${result.passed ? 'passed' : 'failed'} | ${Math.round(result.ms / 1000)} s |`
+      timeRow('install', installed.passed, installed.ms),
+      ...Option.match(checks, {
+        onNone: () => ['| checks | not run | |'],
+        onSome: ({ ms }) => [
+          timeRow(checkRunner, failures(verification).length === 0, ms),
+          ...Arr.dedupe(outcomes.map(outcome => outcome.suite)).map(suite => {
+            const ran = outcomes.filter(outcome => outcome.suite === suite)
+            return timeRow(
+              suite,
+              ran.every(outcome => outcome.passed),
+              ran.reduce((total, outcome) => total + outcome.ms, 0)
+            )
+          }),
+        ],
       }),
+      '',
+      'Checks run concurrently: a suite time is the sum over its files, so suites add up to more than the run.',
     ].join('\n')
   )
+}
 
 const afterMerging = (upgrade: Upgrade): string =>
   Option.isSome(upgrade.verification.pi)
@@ -683,21 +788,16 @@ const fresh = Effect.gen(function* () {
     return yield* say(
       `Nothing to upgrade: main pins the latest Pi ${pi}, which is active, and every dependency is at its target.\n`
     )
-  yield* releaseWorktree
-  const branch = changed ? Option.some(yield* freeBranch(date)) : Option.none<string>()
-  yield* git([
-    'worktree',
-    'add',
-    ...Option.match(branch, {
-      onNone: () => ['--detach'],
-      onSome: name => ['--no-track', '-b', name],
-    }),
-    worktree,
+  const placed = yield* placeWorktree(
     baseCommit,
-  ])
+    changed ? freeBranch(date) : Effect.succeed<WorktreeHead>({ kind: 'detached' })
+  )
   if (changed) yield* fs.writeFileString(join(worktree, 'package.json'), upgradedText)
   const upgrade: Upgrade = {
-    branch: Option.map(branch, name => ({ name, detached: false })),
+    branch:
+      placed.kind === 'detached'
+        ? Option.none()
+        : Option.some({ name: placed.branch, detached: false }),
     verified: { commit: baseCommit, upgraded: true },
     pins: { from: base.manifest.config.pi, to: pi },
     changes,
@@ -705,12 +805,38 @@ const fresh = Effect.gen(function* () {
     verification: yield* verify(base.manifest, head.manifest, changed),
   }
   yield* writeReports(upgrade, date)
-  if (Option.isSome(branch)) return yield* openPullRequest(upgrade, branch.value)
+  if (placed.kind !== 'detached') return yield* openPullRequest(upgrade, placed.branch)
   if (!isGreen(upgrade))
     return yield* new UpgradeError({
       message: `main pins Pi ${pi}, but it failed checks against that release; see ${reportPath}.`,
     })
   yield* say(`main pins Pi ${pi} and it passed every check. Activate it with npm run update.\n`)
+})
+
+const pinLatestPi = Effect.fnUntraced(function* (pullRequest: PullRequest) {
+  const fs = yield* FileSystem.FileSystem
+  const manifestPath = join(worktree, 'package.json')
+  const pushed = yield* parseManifest(
+    yield* fs.readFileString(manifestPath),
+    pullRequest.headRefName
+  )
+  const latest = yield* latestVersion
+  if (pushed.manifest.config.pi === latest) return
+  const push = ['push', 'origin', `HEAD:refs/heads/${pullRequest.headRefName}`]
+  yield* fs.writeFileString(manifestPath, pinnedManifest(pushed.document, latest))
+  yield* inWorktree(['commit', '--message', `chore: pin Pi ${latest}`, '--', 'package.json'])
+  yield* inWorktree(push).pipe(
+    Effect.mapError(
+      error =>
+        new UpgradeError({
+          message: `Committed the Pi ${latest} pin in ${worktree}, but could not push it: ${withoutFinalPeriod(error.message)}. Push it with git -C ${worktree} ${push.join(' ')}, then run npm run pi:update again.`,
+          cause: error,
+        })
+    )
+  )
+  yield* say(
+    `Pi ${latest} was released after ${pullRequest.url} pinned ${pushed.manifest.config.pi}: pushed the new pin to ${pullRequest.headRefName}.\n`
+  )
 })
 
 const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
@@ -726,11 +852,13 @@ const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
     return yield* new UpgradeError({
       message: `Refusing to re-verify ${pullRequest.url}: the local branch ${branch} has commits that are not on ${remote}. Push them first.`,
     })
-  yield* releaseWorktree
-  const checkedOut = lines(yield* git(['worktree', 'list', '--porcelain'])).includes(
-    `branch refs/heads/${branch}`
+  const placed = yield* placeWorktree(
+    remote,
+    Effect.map(checkedOutElsewhere(branch), (elsewhere): WorktreeHead =>
+      elsewhere ? { kind: 'detached' } : { kind: 'reset', branch }
+    )
   )
-  yield* git(['worktree', 'add', ...(checkedOut ? ['--detach'] : ['-B', branch]), worktree, remote])
+  yield* pinLatestPi(pullRequest)
   const commit = yield* inWorktree(['rev-parse', 'HEAD'])
   const base = yield* manifestAt(yield* git(['merge-base', 'origin/main', remote]))
   const head = yield* parseManifest(
@@ -738,7 +866,7 @@ const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
     remote
   )
   const upgrade: Upgrade = {
-    branch: Option.some({ name: branch, detached: checkedOut }),
+    branch: Option.some({ name: branch, detached: placed.kind === 'detached' }),
     verified: { commit, upgraded: false },
     pins: { from: base.manifest.config.pi, to: head.manifest.config.pi },
     changes: dependencyChanges(base.manifest, head.manifest),
