@@ -2,7 +2,9 @@ import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import { dirname, join } from 'node:path'
+import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import type { CheckOutcome } from '../scripts/upgrade-checks.ts'
 
 interface Job {
   readonly suite: string
@@ -170,16 +172,22 @@ const run = (job: Job, env: NodeJS.ProcessEnv): Promise<Outcome> =>
     })
   })
 
-const selected = process.argv.slice(2)
+const { values: options, positionals: selected } = parseArgs({
+  allowPositionals: true,
+  options: { all: { type: 'boolean', default: false }, report: { type: 'string' } },
+})
 const unknown = selected.filter(suite => !(suite in suites))
 if (unknown.length > 0)
   throw new Error(
     `unknown suite(s) ${unknown.join(', ')}; choose from ${Object.keys(suites).join(', ')}`
   )
+if (options.all && selected.length > 0) throw new Error('--all takes no suite names')
+const everySuite = options.all ? Object.keys(suites) : recurringSuites
+const chosen = selected.length > 0 ? selected : everySuite
 
 execFileSync(process.execPath, ['scripts/resolve-pi.ts'], { cwd: checkout, stdio: 'inherit' })
 const durations = readDurations()
-const jobs = (selected.length === 0 ? recurringSuites : selected).flatMap(suite =>
+const jobs = chosen.flatMap(suite =>
   suites[suite]!().map(({ label, argv }) => ({ suite, label, argv }))
 )
 const unmeasured = Number.MAX_SAFE_INTEGER
@@ -234,4 +242,17 @@ for (const outcome of ordered) {
     `${outcome.suite} ${outcome.label}: ${status} [${Math.round(outcome.ms)} ms]\n`
   )
 }
+if (options.report !== undefined)
+  writeFileSync(
+    options.report,
+    JSON.stringify(
+      ordered.map(({ suite, argv: [file, ...args], code, ms, output }): CheckOutcome => ({
+        suite,
+        command: [file === process.execPath ? 'node' : file, ...args].join(' '),
+        passed: code === 0,
+        ms,
+        output,
+      }))
+    )
+  )
 process.exitCode = ordered.every(outcome => outcome.code === 0) ? 0 : 1

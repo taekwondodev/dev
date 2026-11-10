@@ -1,38 +1,50 @@
-import { Effect } from 'effect'
-import { streamed } from './checkout.ts'
+import { Effect, FileSystem, Option, Schema } from 'effect'
+import { errorText } from '../src/error-text.ts'
+import { CommandError, streamed } from './checkout.ts'
 
-export const suites = [
-  'types:pi',
-  'lint',
-  'format:check',
-  'smoke',
-  'profile:check',
-  'workspace:check',
-  'workspace:tui',
-  'workspace:github',
-  'work:check',
-  'web:check',
-] as const
+export const CheckOutcome = Schema.Struct({
+  suite: Schema.String,
+  command: Schema.String,
+  passed: Schema.Boolean,
+  ms: Schema.Finite,
+  output: Schema.String,
+})
+export type CheckOutcome = typeof CheckOutcome.Type
 
-export interface StepResult {
-  readonly step: 'install' | (typeof suites)[number]
-  readonly command: string
-  readonly passed: boolean
+const CheckReport = Schema.fromJsonString(Schema.Array(CheckOutcome))
+
+export interface CheckRun {
   readonly ms: number
   readonly output: string
+  readonly outcomes: Option.Option<readonly CheckOutcome[]>
 }
+
+export const checkRunner = 'node tests/run-checks.ts --all'
 
 export const runUpgradeChecks = Effect.fnUntraced(function* (
   cwd: string,
-  env: Record<string, string>
+  env: Record<string, string>,
+  reportPath: string
 ) {
-  const run = (suite: (typeof suites)[number]) =>
-    streamed('npm', ['run', suite], env, cwd, suite).pipe(
-      Effect.map((result): StepResult => ({ step: suite, command: `npm run ${suite}`, ...result }))
-    )
-  const [preparation, ...checks] = suites
-  const prepared = yield* run(preparation)
-  if (!prepared.passed) return [prepared]
-  const ran = yield* Effect.forEach(checks, run)
-  return [prepared, ...ran]
+  const fs = yield* FileSystem.FileSystem
+  const unreadable = (cause: unknown) =>
+    new CommandError({
+      message: `Cannot read the check report ${reportPath}: ${errorText(cause)}`,
+      cause,
+    })
+  yield* fs.remove(reportPath, { force: true }).pipe(Effect.mapError(unreadable))
+  const { ms, output } = yield* streamed(
+    process.execPath,
+    ['tests/run-checks.ts', '--all', `--report=${reportPath}`],
+    env,
+    cwd
+  )
+  const outcomes = (yield* fs.exists(reportPath).pipe(Effect.mapError(unreadable)))
+    ? Option.some(
+        yield* fs
+          .readFileString(reportPath)
+          .pipe(Effect.flatMap(Schema.decodeEffect(CheckReport)), Effect.mapError(unreadable))
+      )
+    : Option.none()
+  return { ms, output, outcomes } satisfies CheckRun
 })
