@@ -112,7 +112,9 @@ const text = (description: string) => Schema.optionalKey(Schema.String.annotate(
 const sharedWorkInput = {
   taskId: text('Task key for process and delegate; not the workflowTaskId.'),
   prompt: text('Focused, self-contained assignment, never a transcript.'),
-  skill: text('Skill the child loads first; selects its dispatch rule.'),
+  skill: text(
+    'Skill the child must follow. Set it whenever you would tell the child to load a skill: it is loaded for the child and selects its dispatch rule.'
+  ),
   id: text('Attempt id for inspect and cancel.'),
   access: Schema.optionalKey(
     WorkAccessSchema.annotate({
