@@ -12,13 +12,13 @@ Close every dev TUI: both commands take exclusive installation admission. `gh` m
 npm run pi:update
 ```
 
-The command prepares the upgrade in `.dev/upgrade/worktree` and the Pi candidate in `.dev/upgrade/pi`, leaving the installation checkout, its dependencies and personal profiles unchanged.
+The command prepares the upgrade in `.dev/upgrade/worktree` and the Pi candidate in `.dev/upgrade/pi`, leaving the installation checkout, its dependencies and personal profiles unchanged. A later run reuses that worktree in place, switching it to the revision it verifies.
 
 Pi and dependencies target their latest releases, including dependency major updates. The Node requirement can rise to the major running the command. Review these changes in the generated report.
 
-Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. After preparation succeeds, suites run one at a time because each suite already runs its own files concurrently; a failed check does not cancel the others.
+Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. It runs every suite of [the check runner](../tests/run-checks.ts) as one concurrent queue, including those outside `npm run check`; a failed check does not cancel the others.
 
-Each check's output appears when it finishes, so a running check may be quiet. Only the tail of command output is retained. The pull request body is the report; the full copy is saved in `.dev/upgrade/report.md`.
+Check output appears when the whole queue has finished, so the run stays quiet for a few minutes. Only the tail of command output is retained. The pull request body is the report; the full copy is saved in `.dev/upgrade/report.md`.
 
 When nothing differs from `main` and the pinned Pi is active, the command says so and publishes nothing. When `main` already pins the latest Pi but another Pi is active, it verifies that release without opening a pull request, so `npm run update` can activate it; a failed check there exits with an error.
 
@@ -28,9 +28,11 @@ Review the report's breaking versions, Pi changelog, changed contracts, audit fi
 
 For failed checks, follow the report's **Before merging** instructions:
 
-1. Fix on the upgrade branch and rerun the commands supplied by the report.
+1. Fix on the upgrade branch and rerun the commands supplied by the report: each names the failed check file, lint pass or probe.
 2. Commit and push.
 3. Run `npm run pi:update` again to verify the pushed revision and refresh the existing pull request. If the branch moves during verification, rerun against its new head.
+
+When Pi has released again since the pull request was opened, that run first pushes a commit pinning the new release to the upgrade branch, then verifies it: `npm run update` activates only the latest release.
 
 Before merging, confirm the refreshed report covers the revision being merged and all reported failures are resolved.
 
