@@ -652,10 +652,19 @@ try {
         selectOwnerFixture({ ...baseFixture, firstClientGraceMs: 1000 })
         assert.match(await startOwner(home), /started/)
         assert.ok(ownerPublished(home), 'the owner published after commit')
+        const { pid } = JSON.parse(readFileSync(join(home, 'browser', 'owner.json'), 'utf8')) as {
+          pid: number
+        }
         await waitUntil(
-          'the unvisited owner to exit within its grace',
+          'the unvisited owner to unpublish within its grace',
           () => ownerPublished(home),
           published => !published,
+          { attempts: 50, intervalMs: 100 }
+        )
+        await waitUntil(
+          'the unvisited owner to exit after unpublishing',
+          () => alive(pid),
+          running => !running,
           { attempts: 50, intervalMs: 100 }
         )
         selectOwnerFixture(baseFixture)
