@@ -23,8 +23,6 @@ dev workspace ...                 # workspace observation and release commands
 dev browser [status|revoke|enable]  # authenticated Chrome profile copy and browser owner used by read_url
 ```
 
-`--cwd` follows symbolic links: dev works in the real directory, so on macOS `--cwd /tmp/repo` opens `/private/tmp/repo`.
-
 ### Maintenance
 
 Run from the installation checkout:
