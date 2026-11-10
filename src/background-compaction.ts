@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { Effect, Fiber, Option, Schema } from 'effect'
 import type {
   AgentSession,
+  AgentSessionRuntime,
   BoundaryState,
   BoundaryResult,
   CompactionEntry,
@@ -113,6 +114,16 @@ const matchesCommit = (
   entry.summary === proposed.summary &&
   entry.firstKeptEntryId === proposed.firstKeptEntryId &&
   entry.details === proposed.details
+
+const closers = new WeakMap<AgentSession, () => void>()
+
+export const fenceRuntimeDisposal = (runtime: AgentSessionRuntime): void => {
+  const dispose = runtime.dispose.bind(runtime)
+  runtime.dispose = () => {
+    closers.get(runtime.session)?.()
+    return dispose()
+  }
+}
 
 export const createBackgroundCompaction = Effect.fnUntraced(function* (
   api: PiApi,
@@ -552,6 +563,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
     session = active
     record(active, { runId, kind: 'attached' })
     fenceBoundary(active)
+    closers.set(active, () => invalidate('closed', 'shutdown'))
     const abort = active.abort.bind(active)
     active.abort = () => {
       invalidate('suspended', 'abort')
