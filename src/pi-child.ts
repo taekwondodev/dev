@@ -19,7 +19,7 @@ import {
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
-import { createBackgroundCompaction } from './background-compaction.ts'
+import { createBackgroundCompaction, fenceRuntimeDisposal } from './background-compaction.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
 import { composeResources, loadCatalog } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
@@ -884,6 +884,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     catch: toChildError,
   })
   state.runtime = runtime
+  fenceRuntimeDisposal(runtime)
   const { model } = session
   if (!model)
     return yield* new ChildError({ message: 'Pi did not select a model for the child run' })
