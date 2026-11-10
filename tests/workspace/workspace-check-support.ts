@@ -11,6 +11,7 @@ import type {
   AssistantMessage,
   Model,
 } from '../../node_modules/@earendil-works/pi-ai/dist/index.js'
+import { fenceRuntimeDisposal } from '../../src/background-compaction.ts'
 import { makeRuntimeFactory, type RuntimeParts } from '../../src/launcher-runtime.ts'
 import { WorkOwner } from '../../src/work-controller.ts'
 import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
@@ -361,6 +362,7 @@ export const openHostRuntime = async (input: {
       agentDir: input.agentDir,
       sessionManager: input.manager,
     })
+    fenceRuntimeDisposal(runtime)
     host.bindRuntime(runtime)
     guard.bind(runtime)
     if ((input.mode ?? 'headless') === 'headless') {

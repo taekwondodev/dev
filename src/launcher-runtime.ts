@@ -66,7 +66,7 @@ import {
   type BrowserOwnerStatus,
 } from './web-browser-owner.ts'
 import { PublicationDestinations } from './workspace-tool.ts'
-import { createBackgroundCompaction } from './background-compaction.ts'
+import { createBackgroundCompaction, fenceRuntimeDisposal } from './background-compaction.ts'
 import { readDispatch } from './work-dispatch.ts'
 import { acquireRuntime, type CoordinationOptions } from './runtime-coordination.ts'
 import { createSessionGuard } from './session-guard.ts'
@@ -1541,6 +1541,7 @@ const run = Effect.fnUntraced(function* (
         disposeRuntime
       )
       yield* Effect.sync(() => {
+        fenceRuntimeDisposal(runtime)
         workspaceHost.bindRuntime(runtime)
         guard.bind(runtime)
       })
