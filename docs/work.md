@@ -10,7 +10,7 @@ Ask the lead to run a command or delegate an assignment. It calls `work` with `a
 
 A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
 
-`skill` names the skill the child loads first and selects [dispatch](../config/README.md#resolution). Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Explicit overrides follow the [dispatch rules](../config/README.md#resolution).
+`skill` names the skill the child loads first and selects [dispatch](../config/README.md#resolution). Set it whenever the assignment would otherwise tell the child to load a skill: a skill the prompt merely mentions does not select its dispatch rule. Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Explicit overrides follow the [dispatch rules](../config/README.md#resolution).
 
 With `coordinate: true`, the child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
 
