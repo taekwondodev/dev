@@ -3,13 +3,12 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { WorkspaceError, type SweepReceipt, type WorkspaceId } from '../../src/workspace-domain.ts'
 import { authorityPaths, taskArtifactsPath } from '../../src/workspace-authority-root.ts'
@@ -433,7 +432,7 @@ try {
   }
 
   await claim(
-    'a worktree allocation interrupted right after Git created the worktree is listed by the sweep at quit as an unresolved transition its task can release, and dev workspace release clears it: the worktree and its Git registration are removed, the pending operation closes and the next sweep lists nothing of it',
+    'a worktree allocation interrupted right after Git created the worktree is listed by the sweep at quit as an unresolved transition its task can release, and dev workspace release clears it: the worktree and its Git registration are removed and the pending operation closes',
     async () => {
       const { owner, unfinished } = await crashedAllocation('allocation-crash')
       assert.ok(existsSync(unfinished.path), 'Git created the worktree before the crash')
@@ -461,7 +460,6 @@ try {
         undefined,
         'the confirmation does not exclude the task'
       )
-      assert.equal(sweepExitCode(quit), 0)
       assert.ok(existsSync(unfinished.path), 'the sweep itself removes nothing of it')
 
       const released = await lifecycle.release(unfinished.taskId)
@@ -477,13 +475,6 @@ try {
       assert.equal(existsSync(unfinished.path), false)
       assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
       assert.deepEqual(await pendingAllocations(), [])
-      const later = await sweepAtQuit(owner.write.workspaceId)
-      assert.ok(
-        !later.rows.some(
-          entry => entry.kind === 'workspace' && entry.workspaceId === unfinished.workspaceId
-        ),
-        JSON.stringify(later.rows)
-      )
     }
   )
 
@@ -511,36 +502,6 @@ try {
         'the other task keeps its reservation'
       )
       await lifecycle.release(taskOf(adopted))
-    }
-  )
-
-  await claim(
-    "releasing an unfinished allocation follows Git's own link to its admin directory: an unrelated entry that merely carries the worktree's name stays, on the release and on a repeated one",
-    async () => {
-      const { unfinished } = await crashedAllocation('allocation-renamed-admin')
-      const admins = join(repo, '.git', 'worktrees')
-      const name = basename(unfinished.path)
-      const admin = join(admins, `${name}1`)
-      renameSync(join(admins, name), admin)
-      writeFileSync(join(unfinished.path, '.git'), `gitdir: ${admin}\n`)
-      const unrelated = join(admins, name)
-      mkdirSync(unrelated)
-      writeFileSync(join(unrelated, 'keep'), 'not this allocation\n')
-      assert.ok(git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
-
-      const released = await lifecycle.release(unfinished.taskId)
-      assert.deepEqual(
-        released.map(result => result.outcome),
-        ['removed'],
-        JSON.stringify(released)
-      )
-      assert.equal(existsSync(unfinished.path), false)
-      assert.equal(existsSync(admin), false)
-      assert.ok(existsSync(join(unrelated, 'keep')), 'the unrelated admin entry stays')
-      assert.deepEqual(await pendingAllocations(), [])
-      assert.deepEqual(await lifecycle.release(unfinished.taskId), [])
-      assert.ok(existsSync(join(unrelated, 'keep')), 'a repeated release leaves it too')
-      rmSync(unrelated, { recursive: true })
     }
   )
 

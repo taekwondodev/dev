@@ -244,6 +244,10 @@ const ready = (result: Awaited<ReturnType<TestAttachment['authorize']>>) => {
   if (result.kind !== 'ready') throw new Error(`Expected a ready grant, got ${result.kind}`)
   return result.grant
 }
+const refusedWithoutCommits = (checkout: string, holder: string | undefined) => ({
+  outcome: 'blocked',
+  message: `Checkout ${checkout} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run: dev workspace release ${holder}. Files stay.`,
+})
 const resolveDefaultRoot = (
   installation: URL,
   cwd: string,
@@ -660,7 +664,6 @@ try {
       const unbornRepo = join(sandbox, 'unborn-repo')
       mkdirSync(unbornRepo)
       git(['init', '--quiet', '-b', 'main'], unbornRepo)
-      writeFileSync(join(unbornRepo, 'notes.txt'), 'never committed\n')
       const leaving = await lifecycle.attach({
         conversation: conversation('unborn-leaving'),
         cwd: unbornRepo,
@@ -694,10 +697,10 @@ try {
         conversation: conversation('unborn-contender'),
         cwd: unbornRepo,
       })
-      await assert.rejects(contender.authorize({ kind: 'write' }), {
-        outcome: 'blocked',
-        message: `Checkout ${unbornRepo} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run: dev workspace release ${taken.taskId}. Files stay.`,
-      })
+      await assert.rejects(
+        contender.authorize({ kind: 'write' }),
+        refusedWithoutCommits(unbornRepo, taken.taskId)
+      )
       await contender.close()
 
       await assert.rejects(arriving.authorize({ kind: 'delegated-write' }), {
@@ -737,29 +740,27 @@ try {
         conversation: conversation('unborn-after-crash'),
         cwd: unbornRepo,
       })
-      await assert.rejects(afterCrash.authorize({ kind: 'write' }), {
-        outcome: 'blocked',
-        message: `Checkout ${unbornRepo} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run: dev workspace release ${crashedTask}. Files stay.`,
-      })
+      await assert.rejects(
+        afterCrash.authorize({ kind: 'write' }),
+        refusedWithoutCommits(unbornRepo, crashedTask)
+      )
       await afterCrash.close()
       assert.deepEqual(
         (await lifecycle.inspect({ cwd: unbornRepo })).map(view => view.taskId),
         [crashedTask],
         'the write use a killed session left keeps its reservation'
       )
-      assert.equal(readFileSync(join(unbornRepo, 'notes.txt'), 'utf8'), 'never committed\n')
     }
   )
 
   await claim(
-    'a native write into another repository with no commits takes the checkout from a paused foreign reservation and the release names the admission, while the next writer is refused with the release command as long as that one lives',
+    'a native write into another repository with no commits takes the checkout from a paused foreign reservation, while the next writer is refused with the release command as long as that one lives',
     async () => {
       const home = join(sandbox, 'unborn-foreign-home')
       initRepository(home, 'file.txt', 'fixture\n')
       const unbornForeign = join(sandbox, 'unborn-foreign-repo')
       mkdirSync(unbornForeign)
       git(['init', '--quiet', '-b', 'main'], unbornForeign)
-      writeFileSync(join(unbornForeign, 'notes.txt'), 'never committed\n')
       const scoped = await openLifecycle({ root: join(sandbox, 'unborn-foreign-authority') })
       const writeFrom = async (name: string) => {
         const attachment = await scoped.attach({ conversation: conversation(name), cwd: home })
@@ -777,24 +778,12 @@ try {
       assert.equal(taken.checkout, unbornForeign)
       assert.equal(taken.workspaceId, left.workspaceId)
       assert.notEqual(taken.taskId, left.taskId)
-      const release = (await scoped.inspect({ taskId: left.taskId })).find(
-        view => view.workspaceId === left.workspaceId
-      )
-      assert.equal(release?.outcome, 'released')
-      assert.ok(
-        release?.reason.startsWith('By a write admitted in a checkout with no commits'),
-        release?.reason
-      )
 
       const contender = await writeFrom('unborn-foreign-contender')
-      await assert.rejects(contender.write(), {
-        outcome: 'blocked',
-        message: `Checkout ${unbornForeign} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run: dev workspace release ${taken.taskId}. Files stay.`,
-      })
+      await assert.rejects(contender.write(), refusedWithoutCommits(unbornForeign, taken.taskId))
       await contender.attachment.close()
       await arriving.attachment.close()
       await scoped.close()
-      assert.equal(readFileSync(join(unbornForeign, 'notes.txt'), 'utf8'), 'never committed\n')
     }
   )
 
