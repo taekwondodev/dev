@@ -40,6 +40,8 @@ const GIT_ISOLATION_ARGUMENTS = [
   'submodule.recurse=false',
   '-c',
   'core.untrackedCache=false',
+  '-c',
+  'advice.graftFileDeprecated=false',
 ] as const
 export const gitArguments = (args: readonly string[]): string[] => [
   ...GIT_ISOLATION_ARGUMENTS,
@@ -143,8 +145,10 @@ export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
   return workspace.value
 }
 
+export const hasNoCommits = (workspace: GitWorkspace): boolean => workspace.head.length === 0
+
 export const currentCommit = (workspace: GitWorkspace): string => {
-  if (workspace.head.length === 0)
+  if (hasNoCommits(workspace))
     throw gitBlocked(
       `Checkout ${workspace.path} has no commits yet, so no worktree can start from it. Make a first commit there, then retry.`
     )

@@ -110,6 +110,7 @@ const refused = new WorkspaceError({
   outcome: 'blocked',
   message: 'not used by this check',
 })
+let admissionFailure = refused
 const receipt: SweepReceipt = makeFixtureReceipt({
   moment: 'allocation',
   rows: [
@@ -137,9 +138,9 @@ const unchanged: SweepReceipt = makeFixtureReceipt({
         kind: 'retained',
         role: 'pre-existing',
         retained: 'excluded',
-        reason: 'It belongs to the conversation that is allocating a worktree.',
+        reason: 'The conversation allocating a worktree is working in it.',
       },
-      reason: 'It belongs to the conversation that is allocating a worktree.',
+      reason: 'The conversation allocating a worktree is working in it.',
     },
   ],
 })
@@ -154,7 +155,7 @@ const attachment: WorkspaceAttachment = {
       Queue.offerUnsafe(receipts, receipt)
       Queue.offerUnsafe(receipts, unchanged)
     }
-    return Effect.fail(refused)
+    return Effect.fail(admissionFailure)
   },
   select: selection => {
     selections.push(selection)
@@ -219,13 +220,14 @@ const steps: readonly ScriptedContent[] = [
     }),
   ],
 ]
+const laterSteps: ScriptedContent[] = []
 let calls = 0
 const offline = await makeOfflineModel({
   pi,
   importFromPi,
   fixture,
   id: 'host-contract',
-  stream: replay(() => steps[calls++] ?? [{ type: 'text', text: 'done' }]),
+  stream: replay(() => steps[calls++] ?? laterSteps.shift() ?? [{ type: 'text', text: 'done' }]),
 })
 
 let opened: Awaited<ReturnType<typeof openHostRuntime>> | undefined
@@ -338,7 +340,7 @@ try {
       const context = JSON.stringify(runtime.session.sessionManager.buildSessionContext().messages)
       assert.ok(context.includes(swept.workspaceId), 'the changed receipt is in the model context')
       assert.ok(
-        !context.includes('It belongs to the conversation that is allocating a worktree.'),
+        !context.includes('The conversation allocating a worktree is working in it.'),
         'the unchanged receipt is not'
       )
     }
@@ -377,6 +379,80 @@ try {
       assert.equal(host.isParked(), false)
       assert.deepEqual(handlerErrors, [])
       assert.deepEqual(notices, [])
+    }
+  )
+  await claim(
+    'an admission that requires review ends the turn on the refused call even beside a completed sibling call and records its reason as a workspace refusal entry, while a blocked admission returns to the model in the same turn without one',
+    async () => {
+      const resultText = (toolCallId: string) =>
+        runtime.session.sessionManager
+          .getEntries()
+          .flatMap(entry =>
+            entry.type === 'message' &&
+            entry.message.role === 'toolResult' &&
+            entry.message.toolCallId === toolCallId
+              ? entry.message.content.flatMap(part => (part.type === 'text' ? [part.text] : []))
+              : []
+          )
+          .join('\n')
+      admissionFailure = new WorkspaceError({
+        outcome: 'review-required',
+        message: 'fixture allocation did not finish',
+      })
+      laterSteps.push([
+        toolCall('review-sibling', 'work', { action: 'list' }),
+        toolCall('review-write', 'write', { path: 'review.txt', content: 'refused' }),
+      ])
+      const beforeReview = calls
+      await runtime.session.prompt('write while the authority requires review')
+      assert.equal(
+        calls - beforeReview,
+        1,
+        'the model is not called again, although a sibling call of the batch completed'
+      )
+      assert.notEqual(resultText('review-sibling'), '', 'the sibling call ran')
+      assert.equal(
+        resultText('review-write'),
+        'Workspace admission failed closed: fixture allocation did not finish'
+      )
+      const refusals = () =>
+        runtime.session.sessionManager
+          .getEntries()
+          .flatMap(entry =>
+            entry.type === 'custom' && entry.customType === 'dev/workspace-refusal'
+              ? [entry.data]
+              : []
+          )
+      assert.deepEqual(
+        refusals(),
+        [
+          {
+            kind: 'refusal',
+            reason: 'fixture allocation did not finish',
+            endedTurn: true,
+            next: '/workspace shows the state and its next action.',
+          },
+        ],
+        'the refusal is a session entry outside the model context, drawn by the workspace renderer'
+      )
+      assert.deepEqual(notices, [], 'the refusal is not also a Pi notice')
+      assert.equal(existsSync(join(current.path, 'review.txt')), false)
+
+      admissionFailure = new WorkspaceError({ outcome: 'blocked', message: 'fixture contention' })
+      laterSteps.push([
+        toolCall('blocked-write', 'write', { path: 'blocked.txt', content: 'refused' }),
+      ])
+      const beforeBlocked = calls
+      await runtime.session.prompt('write while another session holds the checkout')
+      assert.equal(calls - beforeBlocked, 2, 'the model answers the refusal in the same turn')
+      assert.equal(
+        resultText('blocked-write'),
+        'Workspace admission failed closed: fixture contention'
+      )
+      assert.equal(refusals().length, 1, 'a blocked admission adds no refusal entry')
+      assert.deepEqual(notices, [])
+      assert.equal(existsSync(join(current.path, 'blocked.txt')), false)
+      assert.equal(host.isParked(), false)
     }
   )
 } finally {

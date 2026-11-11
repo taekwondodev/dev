@@ -17,6 +17,7 @@ import {
   WorkspaceOriginSchema,
   WorkspaceProcessSchema,
   type PublicationReference,
+  type ReleaseDecider,
   type WorkspaceBinding,
   type WorkspaceOrigin,
 } from './workspace-domain.ts'
@@ -308,6 +309,29 @@ export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): v
     value.workspaceId
   )
 }
+export const startedRelease = (
+  repo: WorkspaceId,
+  reservation: ReservationRecord,
+  workspace: WorkspaceRecord,
+  decider: ReleaseDecider,
+  effect: ReleaseOperationRecord['effect'],
+  head: string | undefined
+): ReleaseOperationRecord => ({
+  id: newId(),
+  kind: 'release',
+  phase: 'started',
+  repositoryId: repo,
+  workspaceId: workspace.id,
+  taskId: reservation.taskId,
+  reservationId: reservation.id,
+  decider,
+  effect,
+  targetPath: workspace.path,
+  ...(head === undefined ? {} : { head }),
+  expectedReservationRevision: reservation.revision,
+  createdAt: now(),
+})
+
 export const forgetReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   statement(db, 'DELETE FROM reservations WHERE id=?').run(value.id)
   statement(db, 'DELETE FROM uses WHERE workspace_id=?').run(value.workspaceId)
@@ -512,6 +536,20 @@ export const openOperations = (db: DatabaseSync, workspaceIdValue?: string): Ope
   workspaceIdValue === undefined
     ? operationsWhere(db, `phase IN ${OPEN_PHASES}`)
     : operationsWhere(db, `workspace_id=? AND phase IN ${OPEN_PHASES}`, workspaceIdValue)
+export type AllocationOperationRecord = Extract<
+  TransitionOperationRecord,
+  { readonly kind: 'allocation' }
+>
+export const unfinishedAllocations = (
+  db: DatabaseSync,
+  taskIdValue?: string
+): AllocationOperationRecord[] =>
+  openOperations(db).filter(
+    (operation): operation is AllocationOperationRecord =>
+      operation.kind === 'allocation' &&
+      (taskIdValue === undefined || operation.taskId === taskIdValue) &&
+      getWorkspace(db, operation.workspaceId) === undefined
+  )
 export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: string): void => {
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)

@@ -219,6 +219,7 @@ const allocateWorktree = (
   sweep: AllocationSweep,
   admitWriter: (allocation: Allocation) => WorkspaceAuthorization
 ): WorkspaceAuthorization => {
+  const commit = currentCommit(source.git)
   sweep(authority, source.repo, state)
   const workspaceIdValue = newId()
   const allocationId = newId()
@@ -255,7 +256,6 @@ const allocateWorktree = (
       gateIntents
     )
     state.extraGates.push(...pathGates.extras)
-    const commit = currentCommit(source.git)
     const intent = {
       id: allocationId,
       kind: 'allocation',
@@ -358,7 +358,8 @@ const allocateWorktree = (
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, unresolved)))
       } catch {}
       state.parked = true
-      throw cause
+      state.review = `${errorText(cause)}. Worktree allocation ${operation.id} did not finish, so this session admits nothing more. Quit it and release the allocation when asked, or run: dev workspace release ${operation.taskId}.`
+      requireReview(state.review)
     }
 
     if (operation !== undefined) {

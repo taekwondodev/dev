@@ -31,11 +31,13 @@ The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifac
 
 ### Admission and isolation
 
-Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files. A repository with no commits yet has nothing to allocate from: allocation is refused until its first commit. Readers share presence with a writer and receive a warning. Independent checkouts and linked worktrees progress concurrently; only dev's structural Git effects serialize across a repository.
+Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files. Readers share presence with a writer and receive a warning. Independent checkouts and linked worktrees progress concurrently; only dev's structural Git effects serialize across a repository.
 
 A live process prevents switching or isolation until it is stopped or finishes.
 
-Tools need a recorded effect classification. An unknown tool is refused visibly without ending the turn. Resource trust and pre-admission initialization are governed by [SECURITY](../SECURITY.md#trusted-base).
+A repository with no commits yet has nothing to allocate from, so another task's reservation does not isolate there. When no session is writing the checkout, the next writer takes it, whether it works there or writes into it from another repository: the earlier reservation ends and files stay untouched. While another session writes it, or after an ended one left a write use unsettled, the write is refused and names the [release](#release) that clears it. Delegated writers are refused until the first commit.
+
+Tools need a recorded effect classification. An unknown tool is refused visibly without ending the turn. So is an admission that fails without requesting a rebind or requiring review: the model receives the reason and continues. An admission that requires review ends the turn and records its reason as a [refusal entry](#model-visible-messages). A worktree allocation that did not finish is one: that session admits nothing more, so quit it; the quit receipt offers its task for [release](#release), which clears the allocation. Resource trust and pre-admission initialization are governed by [SECURITY](../SECURITY.md#trusted-base).
 
 A rebind requested by a tool call ends the turn, as Escape would: the refused call keeps its reason, sibling calls that had not run are cancelled, a notice names the rebind reason, and the conversation switches once the turn settles. After the switch, the follow-up tells the model to re-evaluate the refused operation in the new workspace rather than replay it, and that cancelled calls may be issued again. Queued messages and the editor draft are carried into the new session. [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) records why the run ends.
 
@@ -55,7 +57,7 @@ Lead and writing-child write/edit classify destinations before writer admission:
 - Files inside the bound task's [artifact directory](#task-artifacts) first admit the conversation as writer of its checkout, like a workspace write, then proceed as an external write. Another task's directory, the artifacts root and the rest of the authority stay refused.
 - Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or rebind.
 - Another worktree of the bound repository, including its original checkout, is refused with the same file's path in the current workspace, or with a statement that the file does not exist there. The destination is never rewritten.
-- Another repository, including a checkout nested in the caller's own managed workspace, is reserved for the conversation's [foreign workflow task](#delegation-into-another-checkout) through that repository's authority and written in place, without a managed worktree or rebind. A checkout reserved or being written by another task is refused with guidance to delegate the change or wait.
+- Another repository, including a checkout nested in the caller's own managed workspace, is reserved for the conversation's [foreign workflow task](#delegation-into-another-checkout) through that repository's authority and written in place, without a managed worktree or rebind. A checkout reserved or being written by another task is refused with guidance to delegate the change or wait; one with no commits is instead taken or refused as [admission](#admission-and-isolation) does for the conversation's own checkout.
 - Git administration, dev authority/coordination metadata and other conversations' managed worktrees remain protected, including canonical aliases.
 
 A writing child follows the same policy: its controller reserves the other repository for the lead conversation. Inside managed storage, native writes require the caller to be an active writer in the containing workspace; [delegation selection](#delegation-into-another-checkout) remains separate. [SECURITY](../SECURITY.md#trusted-base) governs which repository resources load. Refusals state the reason and the next action at the failed call.
@@ -86,15 +88,15 @@ A gate-close failure returns a warning and keeps the gate held. Dev retries at t
 
 The same conversation cannot attach in two dev sessions, even across installations. See [automatic history cleanup](launcher.md#automatic-history-cleanup) for conversation retention and [ADR 0005](adr/0005-scoped-runtime-coordination.md#conversation-retention-admission) before changing deletion admission.
 
-| Operation                                                     | Behavior                                                                                                                                                      |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/resume`, import of a conversation already in dev's sessions | Attach the target before teardown; refusal preserves the current session                                                                                      |
-| `/new`, `/fork`, import of a copied conversation              | Attach after teardown; authority refusal ends the session. A copied conversation outside Git is refused before teardown                                       |
-| `/new`, import of a copied conversation                       | Apply the [replacement sweep](#sweep)                                                                                                                         |
-| `/fork`                                                       | Start a new conversation in the current workspace without the original task; first write isolates from the current commit. Commit changes first to carry them |
-| Confirmed replacement                                         | Stop the leaving session's shells and work; all replacements are refused while a workspace switch is pending                                                  |
-| `/reload`                                                     | Keep lead shells observed; see [work cancellation](work.md#cancellation-and-session-changes) for attempts                                                     |
-| `!`, `!!`, lead bash                                          | Run dev's shell in the conversation's workspace                                                                                                               |
+| Operation                                                     | Behavior                                                                                                                                                                                                                                |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/resume`, import of a conversation already in dev's sessions | Attach the target before teardown; refusal preserves the current session                                                                                                                                                                |
+| `/new`, `/fork`, import of a copied conversation              | Attach after teardown; authority refusal ends the session. A copied conversation outside Git is refused before teardown                                                                                                                 |
+| `/new`, import of a copied conversation                       | Apply the [replacement sweep](#sweep)                                                                                                                                                                                                   |
+| `/fork`                                                       | Start a new conversation in the current workspace without the original task; first write isolates from the current commit, or [takes the checkout when it has no commits](#admission-and-isolation). Commit changes first to carry them |
+| Confirmed replacement                                         | Stop the leaving session's shells and work; all replacements are refused while a workspace switch is pending                                                                                                                            |
+| `/reload`                                                     | Keep lead shells observed; see [work cancellation](work.md#cancellation-and-session-changes) for attempts                                                                                                                               |
+| `!`, `!!`, lead bash                                          | Run dev's shell in the conversation's workspace                                                                                                                                                                                         |
 
 ### Model-visible messages
 
@@ -108,7 +110,7 @@ The same conversation cannot attach in two dev sessions, even across installatio
 | Allocation or replacement sweep       | the moment, then only rows that changed something: removed or released workspaces, task artifacts and review-required failures; a reason only where review is required                                 | `{kind: 'sweep', receipt}`                            |
 | Workspace switch                      | the `dev/workspace-handoff` follow-up described under [admission and isolation](#admission-and-isolation)                                                                                              | `{kind: 'switch', resumed, workspaceId, cwd, reason}` |
 
-A receipt whose rows are all retained, skipped or deferred is a `dev/workspace-receipt` session entry with the same `details`, outside model context; only an extension's entry renderer draws it. Without a UI, receipts and answers print as text on stderr.
+A receipt whose rows are all retained, skipped or deferred is a `dev/workspace-receipt` session entry with the same `details`, outside model context; only an extension's entry renderer draws it. An admission refused for review is likewise a `dev/workspace-refusal` entry `{kind: 'refusal', reason, endedTurn, next}`: the model already holds the reason in the refused call's result. Without an entry renderer the refusal is recorded but not drawn: that refused result, with no answer from the model in that turn, is all the transcript shows. Without a UI, receipts, refusals and answers print as text on stderr.
 
 The `workspace` tool returns its full result in `details`. The model reads `artifacts` as `{artifacts, path}` and `record-publication` as the verified file, its root, size, readback method and URL; `resume` and an `artifacts` rebind add a next-step note.
 
@@ -130,9 +132,11 @@ Use `record-publication` for selected reports or artifacts already published in 
 
 ### Sweep
 
-Automatic sweeps run at quit, at a conversation replacement by `/new` or a copied import, and before managed allocation. Startup, turn end, `/fork`, `/resume`, crash and signal shutdown do not trigger them. Allocation skips clean pre-existing checkouts and the allocating conversation's workspaces.
+Automatic sweeps run at quit, at a conversation replacement by `/new` or a copied import, and before managed allocation. Startup, turn end, `/fork`, `/resume`, crash and signal shutdown do not trigger them. Allocation skips clean pre-existing checkouts and the workspaces the allocating conversation is working in.
 
-The replacement sweep runs after the leaving conversation's attachment closes and before the new conversation attaches. Releasing a clean pre-existing checkout lets the new conversation's first write keep it; a modified checkout stays reserved and that write isolates. A sweep failure appears in the receipt without failing the replacement.
+The replacement sweep runs after the leaving conversation's attachment closes and before the new conversation attaches. Releasing a clean pre-existing checkout lets the new conversation's first write keep it; a modified checkout stays reserved and that write isolates, except [without commits](#admission-and-isolation). A sweep failure appears in the receipt without failing the replacement.
+
+A closing sweep lists a worktree allocation that did not finish as an unresolved transition of its task and removes nothing of it; [release](#release) clears it.
 
 Each finished workspace gets one fenced removal attempt after reassessment. A pre-existing checkout loses only its reservation and settled use records; a managed worktree is removed. Live gates, occupied worktrees, active installation coordination or changed evidence retain it. Incomplete removal becomes `release-review`, refuses resume and is never retried automatically. Task artifact cleanup follows its [reservation-based lifecycle](#task-artifacts).
 
@@ -142,7 +146,7 @@ Allocation and replacement receipts appear in the conversation when there are ro
 
 ### Release
 
-**`dev workspace release <task-id>` discards everything left in all of the task's managed worktrees and in its [artifact directory](#task-artifacts), including uncommitted changes and undelivered commits.** Pre-existing checkout files and commits stay; their reservations and use records end.
+**`dev workspace release <task-id>` discards everything left in all of the task's managed worktrees and in its [artifact directory](#task-artifacts), including uncommitted changes and undelivered commits.** Pre-existing checkout files and commits stay; their reservations and use records end. A worktree allocation of the task that did not finish is cleared too: what Git created of the worktree is removed and its pending operation closes. If another task has since taken that path as its checkout, only the operation closes.
 
 The command requires an interactive terminal, lists each workspace and its consequence, then asks for one `y`. There is no `--yes`. It checks no completion, evidence or live use: run it only when nothing still works in those workspaces. It neither waits for uses nor acquires path or installation gates; this is an [explicit user override](adr/0005-scoped-runtime-coordination.md#release), not a guarded sweep. The session command and agent tool cannot release them.
 

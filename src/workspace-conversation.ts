@@ -81,6 +81,7 @@ export interface ConversationState {
   readonly foreignTasks: Map<WorkspaceId, WorkspaceId>
   refs: number
   parked: boolean
+  review?: string
   closing: boolean
   pending?: PendingTransition
   writeGrant?: WorkspaceGrant
