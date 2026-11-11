@@ -1,6 +1,6 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { Option, Schema } from 'effect'
 import {
   inDb,
@@ -25,7 +25,6 @@ import {
   WorkspaceId,
   type AllocationReason,
   type CompletionVerdict,
-  type ReleaseDecider,
   type ClosingSweepMoment,
   type SweepMoment,
   type SweepOutcome,
@@ -82,13 +81,17 @@ import {
   getTask,
   getUseRows,
   getWorkspace,
+  getWorkspaceByPath,
   isUnresolvedRelease,
   isActiveUse,
   openOperations,
   putOperation,
   saveOperation,
   saveWorkspace,
+  startedRelease,
+  unfinishedAllocations,
   unresolvedReleases,
+  type AllocationOperationRecord,
   type ReleaseOperationRecord,
   type ReservationRecord,
   type UseRecord,
@@ -97,7 +100,7 @@ import {
 import { errorText } from './error-text.ts'
 import { holdExistingInstallationForRemoval } from './runtime-coordination.ts'
 import { rows, textField, transaction } from './workspace-sqlite.ts'
-import { hash, hasErrorCode, lstatIfExists, newId, now } from './workspace-platform.ts'
+import { hash, hasErrorCode, lstatIfExists, now } from './workspace-platform.ts'
 
 export interface EvidenceReaders {
   readonly github: GitHubReader
@@ -131,7 +134,12 @@ const absenceText = (what: string, absence: Absence): string => {
   if (absence === 'absent') return `${what} absent`
   return `${what} inaccessible (${absence.inaccessible})`
 }
-const adminServesAnotherWorktree = (workspace: WorkspaceRecord): boolean => {
+type Worktree = Pick<WorkspaceRecord, 'path' | 'commonPath' | 'repositoryId'> & {
+  readonly gitAdminPath: string | undefined
+}
+
+const adminServesAnotherWorktree = (workspace: Worktree): boolean => {
+  if (workspace.gitAdminPath === undefined) return false
   try {
     const gitdir = readFileSync(join(workspace.gitAdminPath, 'gitdir'), 'utf8').trim()
     return gitdir.length > 0 && dirname(gitdir) !== workspace.path
@@ -139,7 +147,7 @@ const adminServesAnotherWorktree = (workspace: WorkspaceRecord): boolean => {
     return false
   }
 }
-const listed = (workspace: WorkspaceRecord): boolean | undefined => {
+const listed = (workspace: Worktree): boolean | undefined => {
   try {
     return registeredWorktrees(workspace.commonPath).includes(workspace.path)
   } catch {
@@ -151,9 +159,12 @@ interface RemovalObservation {
   readonly complete: boolean
   readonly text: string
 }
-const observeRemoval = (workspace: WorkspaceRecord): RemovalObservation => {
+const observeRemoval = (workspace: Worktree): RemovalObservation => {
   const directory = observeAbsence(workspace.path)
-  const admin = observeAbsence(workspace.gitAdminPath, workspace.commonPath)
+  const admin =
+    workspace.gitAdminPath === undefined
+      ? 'absent'
+      : observeAbsence(workspace.gitAdminPath, workspace.commonPath)
   const registered = listed(workspace)
   let registrationText = 'worktree not registered'
   if (registered === undefined) registrationText = 'worktree registration unreadable'
@@ -165,7 +176,9 @@ const observeRemoval = (workspace: WorkspaceRecord): RemovalObservation => {
       (admin === 'absent' || adminServesAnotherWorktree(workspace)),
     text: [
       absenceText('directory', directory),
-      absenceText(`admin directory ${workspace.gitAdminPath}`, admin),
+      workspace.gitAdminPath === undefined
+        ? 'no admin directory linked'
+        : absenceText(`admin directory ${workspace.gitAdminPath}`, admin),
       registrationText,
     ].join('; '),
   }
@@ -788,33 +801,10 @@ export const checkTask = (
   }).map(({ assessment }) => assessment)
 }
 
-const startedRelease = (
-  repo: WorkspaceId,
-  reservation: ReservationRecord,
-  workspace: WorkspaceRecord,
-  decider: ReleaseDecider,
-  effect: ReleaseOperationRecord['effect'],
-  head: string | undefined
-): ReleaseOperationRecord => ({
-  id: newId(),
-  kind: 'release',
-  phase: 'started',
-  repositoryId: repo,
-  workspaceId: workspace.id,
-  taskId: reservation.taskId,
-  reservationId: reservation.id,
-  decider,
-  effect,
-  targetPath: workspace.path,
-  ...(head === undefined ? {} : { head }),
-  expectedReservationRevision: reservation.revision,
-  createdAt: now(),
-})
-
 const save = (
   authority: WorkspaceAuthority,
   repo: WorkspaceId,
-  operation: ReleaseOperationRecord
+  operation: ReleaseOperationRecord | AllocationOperationRecord
 ): void => inDb(authority, repo, db => transaction(db, () => saveOperation(db, operation)))
 
 const markRemoved = (
@@ -1072,7 +1062,7 @@ const deleteBelow = (root: string, path: string): string | undefined => {
   return undefined
 }
 
-const disposeWorktree = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): string => {
+const disposeWorktree = (authority: WorkspaceAuthority, workspace: Worktree): string => {
   let detail = 'Git does not list the worktree'
   const registered = listed(workspace)
   if (registered === undefined)
@@ -1087,7 +1077,7 @@ const disposeWorktree = (authority: WorkspaceAuthority, workspace: WorkspaceReco
     const servesMoved = adminServesAnotherWorktree(workspace)
     const unsafe = [
       deleteBelow(resolve(authority.paths.worktrees, workspace.repositoryId), workspace.path),
-      servesMoved
+      servesMoved || workspace.gitAdminPath === undefined
         ? undefined
         : deleteBelow(join(workspace.commonPath, 'worktrees'), workspace.gitAdminPath),
     ].filter(path => path !== undefined)
@@ -1279,12 +1269,116 @@ const releaseForUser = (
   )
 }
 
+const linkedAdminPath = (commonPath: string, target: string): string | undefined => {
+  const admins = join(commonPath, 'worktrees')
+  const linksBack = (admin: string): boolean => {
+    try {
+      return readFileSync(join(admin, 'gitdir'), 'utf8').trim() === join(target, '.git')
+    } catch {
+      return false
+    }
+  }
+  let pointer: string | undefined
+  try {
+    pointer = /^gitdir: (.+)$/m.exec(readFileSync(join(target, '.git'), 'utf8'))?.[1]
+  } catch {}
+  if (pointer !== undefined && dirname(pointer) === admins && linksBack(pointer)) return pointer
+  const named = join(admins, basename(target))
+  return linksBack(named) ? named : undefined
+}
+
+const clearUnfinishedAllocation = (
+  authority: WorkspaceAuthority,
+  repo: WorkspaceId,
+  operation: AllocationOperationRecord
+): WorkspaceReleaseResult => {
+  const result = (
+    outcome: Extract<WorkspaceReleaseResult, { readonly kind: 'workspace' }>['outcome'],
+    reason: string
+  ): WorkspaceReleaseResult => ({
+    kind: 'workspace',
+    repositoryId: repo,
+    workspaceId: operation.workspaceId,
+    path: operation.targetPath,
+    origin: 'managed',
+    outcome,
+    reason,
+  })
+  let structure: GateRelease | undefined
+  let gates: PathGates | undefined
+  try {
+    const source = inDb(authority, repo, db => getWorkspace(db, operation.sourceWorkspaceId))
+    if (source === undefined)
+      return result(
+        'failed',
+        `The source checkout of the unfinished allocation is no longer recorded: ${operation.sourcePath}. Remove ${operation.targetPath} by hand.`
+      )
+    structure = acquireStructureGate(authority.paths, source, repo)
+    const occupied = observeAbsence(operation.targetPath) !== 'absent'
+    if (occupied) gates = acquirePathGates(authority.paths, operation.targetPath, 'removal')
+    const { current, owner } = inDb(authority, repo, db => ({
+      current: unfinishedAllocations(db, operation.taskId).find(open => open.id === operation.id),
+      owner: occupied ? getWorkspaceByPath(db, operation.targetPath) : undefined,
+    }))
+    if (current === undefined)
+      return result('failed', 'The allocation finished meanwhile; release the task again.')
+    const closed = (detail: string): AllocationOperationRecord => ({
+      ...current,
+      phase: 'cancelled',
+      result: `${current.result === undefined ? '' : `${current.result} `}Superseded by dev workspace release: ${detail}.`,
+    })
+    if (owner !== undefined) {
+      save(authority, repo, closed(`${current.targetPath} is now workspace ${owner.id}`))
+      return result(
+        'released',
+        `The unfinished allocation was closed; its path is now workspace ${owner.id}, so nothing was removed.`
+      )
+    }
+    const worktree: Worktree = {
+      path: current.targetPath,
+      commonPath: source.commonPath,
+      gitAdminPath: linkedAdminPath(source.commonPath, current.targetPath),
+      repositoryId: repo,
+    }
+    const detail = disposeWorktree(authority, worktree)
+    const after = observeRemoval(worktree)
+    if (!after.complete)
+      return result(
+        'failed',
+        `The unfinished allocation was not cleared (${detail}): ${after.text}. Fix the cause and release again.`
+      )
+    save(authority, repo, closed(detail))
+    removeEmptyRepositoryDirectory(authority, repo)
+    return result(
+      'removed',
+      'The unfinished worktree allocation was cleared; nothing of the worktree remains.'
+    )
+  } catch (cause) {
+    return result('failed', `${errorText(cause)}. Fix the cause and release again.`)
+  } finally {
+    if (gates !== undefined) releaseGates(gates)
+    structure?.()
+  }
+}
+
+const taskUnfinishedAllocations = (
+  authority: WorkspaceAuthority,
+  taskId: WorkspaceId
+): { readonly repo: WorkspaceId; readonly operation: AllocationOperationRecord }[] =>
+  authority
+    .listRepositories()
+    .flatMap(repository =>
+      inDb(authority, repository.id, db =>
+        unfinishedAllocations(db, taskId).map(operation => ({ repo: repository.id, operation }))
+      )
+    )
+
 export const releaseTask = (
   authority: WorkspaceAuthority,
   taskId: WorkspaceId
 ): readonly WorkspaceReleaseResult[] => {
   if (authority.inspectExisting() === undefined) return []
-  const results = taskWorkspaces(authority, taskId).map(({ repo, reservation, workspace }) => {
+  const reserved = taskWorkspaces(authority, taskId).map(({ repo, reservation, workspace }) => {
     let structure: GateRelease | undefined
     try {
       if (workspace.origin === 'pre-existing')
@@ -1302,6 +1396,12 @@ export const releaseTask = (
       structure?.()
     }
   })
+  const results = [
+    ...reserved,
+    ...taskUnfinishedAllocations(authority, taskId).map(({ repo, operation }) =>
+      clearUnfinishedAllocation(authority, repo, operation)
+    ),
+  ]
   if (results.length === 0) return results
   const artifacts = reportTaskArtifacts(authority, taskId)
   return artifacts === undefined ? results : [...results, artifacts]
@@ -1410,6 +1510,7 @@ interface SweepRun {
   readonly fail: (taskId: WorkspaceId, cause: unknown) => void
   readonly abort: (cause: unknown) => void
   readonly settle: (index: number, taskId: WorkspaceId, assessed: readonly Assessed[]) => boolean
+  readonly unfinished: () => void
   readonly orphans: () => void
   readonly receipt: () => SweepReceipt
 }
@@ -1538,6 +1639,29 @@ const startSweep = (
       }
       return false
     },
+    unfinished: () => {
+      if (authority.inspectExisting() === undefined) return
+      const reason =
+        'A worktree allocation did not finish; releasing the task removes what Git created of it.'
+      receipt.push(
+        ...inDb(authority, input.repositoryId, db => unfinishedAllocations(db)).map(operation => ({
+          kind: 'workspace' as const,
+          taskId: operation.taskId,
+          workspaceId: operation.workspaceId,
+          path: operation.targetPath,
+          origin: 'managed' as const,
+          verdict: {
+            kind: 'retained' as const,
+            role: roleOf({ origin: 'managed', branch: undefined, allocation: operation.reason }),
+            retained: 'transition-unresolved' as const,
+            reason,
+          },
+          outcome: RETAINED['transition-unresolved'].sweep,
+          reason,
+          operationId: operation.id,
+        }))
+      )
+    },
     orphans: () => {
       const reported = new Set(
         receipt.flatMap(row => (row.kind === 'task-artifacts' ? [row.taskId] : []))
@@ -1595,6 +1719,7 @@ export const sweepRepositoryAtClose = async (
       }
       if (sweep.settle(index, taskId, assessed)) break
     }
+    sweep.unfinished()
     sweep.orphans()
   } catch (cause) {
     sweep.abort(cause)

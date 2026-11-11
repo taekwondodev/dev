@@ -143,6 +143,7 @@ const DECIDER_TEXT: Record<ReleaseDecider, string> = {
   quit: 'By the sweep at quit',
   replacement: 'By the sweep at a conversation replacement',
   allocation: 'By the sweep before a worktree allocation',
+  admission: 'By a write admitted in a checkout with no commits',
 }
 
 const receiptView = (
@@ -285,7 +286,9 @@ export const inspectWorkspaces = (
           outcome: 'review-required',
           reason: `Pending ${operation.kind} operation ${operation.id} has no ready workspace record (${operation.phase}).`,
           nextAction:
-            'Observe the exact Git effect and require explicit recovery; do not replay or adopt it.',
+            operation.kind === 'allocation'
+              ? `dev workspace release ${operation.taskId} clears it and removes what Git created of the worktree.`
+              : 'Observe the exact Git effect and require explicit recovery; do not replay or adopt it.',
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],
           reservationId: operation.reservationId,

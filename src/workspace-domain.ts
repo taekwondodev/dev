@@ -372,7 +372,13 @@ export const TargetViewSchema = Schema.Struct({
 })
 export type TargetView = typeof TargetViewSchema.Type
 
-export const ReleaseDeciderSchema = Schema.Literals(['user', 'quit', 'replacement', 'allocation'])
+export const ReleaseDeciderSchema = Schema.Literals([
+  'user',
+  'quit',
+  'replacement',
+  'allocation',
+  'admission',
+])
 export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
 
 export const WorkspaceAssessmentSchema = Schema.Struct({

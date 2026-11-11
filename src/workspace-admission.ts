@@ -41,7 +41,7 @@ import {
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
-import { canonicalGitWorkspace, type GitWorkspace } from './workspace-git.ts'
+import { canonicalGitWorkspace, hasNoCommits, type GitWorkspace } from './workspace-git.ts'
 import {
   assertDestinationUnchanged,
   assertNonAdministrativePath,
@@ -55,6 +55,9 @@ import {
   getReservation,
   putReservation,
   updateReservation,
+  deleteReservation,
+  putOperation,
+  startedRelease,
   getBinding,
   putBinding,
   getUse,
@@ -64,6 +67,7 @@ import {
   assertWithinLiveInDb,
   type WorkspaceRecord,
   type BindingRecord,
+  type ReservationRecord,
   type UseRecord,
 } from './workspace-records.ts'
 import { transaction } from './workspace-sqlite.ts'
@@ -120,6 +124,78 @@ const validateWithinGrant = (
   return { lease, ...result }
 }
 
+const foreignWriters =
+  (state: ConversationState, workspaceId: WorkspaceId) =>
+  (db: DatabaseSync): boolean =>
+    getActiveUseRows(db, workspaceId).some(
+      use => use.access === 'write' && !state.leases.has(use.id)
+    )
+
+interface Takeover {
+  readonly from: ReservationRecord
+  readonly foreignWriters: (db: DatabaseSync) => boolean
+}
+
+const refuseWithoutCommits = (path: string, holder: WorkspaceId | undefined): never =>
+  blocked(
+    `Checkout ${path} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run${holder === undefined ? ' in that checkout' : ''}: dev workspace release ${holder ?? 'pre-existing'}. Files stay.`
+  )
+
+const assertNoCommitArrived = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): void => {
+  if (!hasNoCommits(validateWorkspace(authority, workspace)))
+    blocked(
+      `Checkout ${workspace.path} received its first commit while this write was being admitted; retry the operation.`
+    )
+}
+
+const reserveForTask = (
+  db: DatabaseSync,
+  source: WorkspaceSource,
+  claim: {
+    readonly taskId: WorkspaceId
+    readonly reservationId: WorkspaceId
+    readonly acquisitionId: WorkspaceId
+  },
+  takeover: Takeover | undefined,
+  refusal: string
+): void => {
+  const recorded = getReservation(db, source.workspace.id)
+  if (recorded !== undefined && recorded.taskId === claim.taskId) {
+    if (recorded.id !== claim.reservationId) requireReview('Workspace reservation identity changed')
+    updateReservation(db, {
+      ...recorded,
+      acquisitionId: claim.acquisitionId,
+      revision: recorded.revision + 1,
+    })
+    return
+  }
+  if (recorded !== undefined) {
+    if (takeover === undefined || recorded.id !== takeover.from.id || takeover.foreignWriters(db))
+      blocked(refusal)
+    putOperation(db, {
+      ...startedRelease(
+        source.repo,
+        recorded,
+        source.workspace,
+        'admission',
+        'release-reservation',
+        undefined
+      ),
+      phase: 'confirmed',
+      result: `Reservation ${recorded.id} released to task ${claim.taskId}; files unchanged.`,
+    })
+    deleteReservation(db, recorded)
+  }
+  putReservation(db, {
+    id: claim.reservationId,
+    taskId: claim.taskId,
+    workspaceId: source.workspace.id,
+    acquisitionId: claim.acquisitionId,
+    revision: 0,
+    createdAt: now(),
+  })
+}
+
 export const authorizeOperation = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
@@ -139,6 +215,7 @@ const admit = (
 ): WorkspaceAuthorization => {
   attachment.assertOpen()
   const { state } = attachment
+  if (state.review !== undefined) requireReview(state.review)
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
   retryDeferredGateReleases(authority, state)
@@ -195,33 +272,36 @@ const admit = (
       : executionUse(authority, state, lease, operation.execution)
   }
   const reservation = inDb(authority, source.repo, db => getReservation(db, source.workspace.id))
-  if (reservation !== undefined && reservation.taskId !== source.binding.taskId)
-    return isolateContendedWriter(authority, state, source, source.binding.taskId ?? newId(), sweep)
-  const activeWrites = inDb(authority, source.repo, db =>
-    getActiveUseRows(db, source.workspace.id).filter(use => use.access === 'write')
-  )
-  const foreignActive = activeWrites.some(use => !state.leases.has(use.id))
-  if (foreignActive) {
-    if (source.binding.taskId !== undefined)
+  const writers = foreignWriters(state, source.workspace.id)
+  const takeover: Takeover | undefined =
+    reservation !== undefined && reservation.taskId !== source.binding.taskId
+      ? { from: reservation, foreignWriters: writers }
+      : undefined
+  const unborn = hasNoCommits(source.git)
+  const ownTaskContended = source.binding.taskId !== undefined && takeover === undefined
+  const isolate = (taskId: WorkspaceId): WorkspaceAuthorization =>
+    unborn
+      ? refuseWithoutCommits(source.workspace.path, reservation?.taskId)
+      : isolateContendedWriter(authority, state, source, taskId, sweep)
+  if (takeover !== undefined && !unborn) return isolate(source.binding.taskId ?? newId())
+  if (inDb(authority, source.repo, writers)) {
+    if (ownTaskContended)
       blocked(`The selected task has an unresolved writer use: ${source.workspace.path}`)
-    return isolateContendedWriter(authority, state, source, newId(), sweep)
+    return isolate(newId())
   }
   let gates: PathGates
   try {
     gates = acquirePathGates(authority.paths, source.workspace.path, 'writer')
   } catch (cause) {
-    if (
-      !(cause instanceof WorkspaceError) ||
-      cause.outcome !== 'blocked' ||
-      source.binding.taskId !== undefined
-    )
+    if (!(cause instanceof WorkspaceError) || cause.outcome !== 'blocked' || ownTaskContended)
       throw cause
-    return isolateContendedWriter(authority, state, source, newId(), sweep)
+    return isolate(newId())
   }
   try {
+    if (takeover !== undefined) assertNoCommitArrived(authority, source.workspace)
     const taskId = source.binding.taskId ?? newId()
     const useId = newId()
-    const reservationId = reservation?.id ?? newId()
+    const reservationId = takeover === undefined ? (reservation?.id ?? newId()) : newId()
     const acquisitionId = newId()
     const updatedBinding = {
       ...source.binding,
@@ -252,27 +332,13 @@ const admit = (
           currentBinding.workspaceId !== source.workspace.id
         )
           requireReview('Conversation binding changed during write admission')
-        const currentReservation = getReservation(db, source.workspace.id)
-        if (currentReservation !== undefined && currentReservation.taskId !== taskId)
-          blocked(`Checkout is reserved by another task: ${source.workspace.path}`)
-        if (currentReservation === undefined) {
-          putReservation(db, {
-            id: reservationId,
-            taskId,
-            workspaceId: source.workspace.id,
-            acquisitionId,
-            revision: 0,
-            createdAt: now(),
-          })
-        } else {
-          if (currentReservation.id !== reservationId)
-            requireReview('Workspace reservation identity changed')
-          updateReservation(db, {
-            ...currentReservation,
-            acquisitionId,
-            revision: currentReservation.revision + 1,
-          })
-        }
+        reserveForTask(
+          db,
+          source,
+          { taskId, reservationId, acquisitionId },
+          takeover,
+          `Checkout is reserved by another task: ${source.workspace.path}`
+        )
         if (getTask(db, taskId) === undefined)
           putTask(db, { id: taskId, repositoryId: source.repo, revision: 0, createdAt: now() })
         if (
@@ -396,19 +462,22 @@ const reserveForeignWriter = (
   const remedy = `delegate the change with work delegate and a cwd in that checkout, or wait for that task`
   const taskId = state.foreignTasks.get(workspace.id) ?? newId()
   const reservation = inDb(authority, repo, db => getReservation(db, workspace.id))
-  if (reservation !== undefined && reservation.taskId !== taskId)
+  const writers = foreignWriters(state, workspace.id)
+  const takeover: Takeover | undefined =
+    reservation !== undefined && reservation.taskId !== taskId
+      ? { from: reservation, foreignWriters: writers }
+      : undefined
+  const unborn = hasNoCommits(source.git)
+  if (takeover !== undefined && !unborn)
     blocked(`Checkout ${workspace.path} is reserved by another task; ${remedy}`)
-  if (
-    inDb(authority, repo, db =>
-      getActiveUseRows(db, workspace.id).some(
-        use => use.access === 'write' && !state.leases.has(use.id)
-      )
-    )
-  )
+  if (inDb(authority, repo, writers)) {
+    if (unborn) refuseWithoutCommits(workspace.path, reservation?.taskId)
     blocked(`Checkout ${workspace.path} has a live writer from another conversation; ${remedy}`)
+  }
   const gates = acquirePathGates(authority.paths, workspace.path, 'writer')
   try {
-    const reservationId = reservation?.id ?? newId()
+    if (takeover !== undefined) assertNoCommitArrived(authority, workspace)
+    const reservationId = takeover === undefined ? (reservation?.id ?? newId()) : newId()
     const acquisitionId = newId()
     const use = {
       id: newId(),
@@ -427,27 +496,13 @@ const reserveForeignWriter = (
     } satisfies UseRecord
     inDb(authority, repo, db =>
       transaction(db, () => {
-        const currentReservation = getReservation(db, workspace.id)
-        if (currentReservation !== undefined && currentReservation.taskId !== taskId)
-          blocked(`Checkout ${workspace.path} is reserved by another task; ${remedy}`)
-        if (currentReservation === undefined) {
-          putReservation(db, {
-            id: reservationId,
-            taskId,
-            workspaceId: workspace.id,
-            acquisitionId,
-            revision: 0,
-            createdAt: now(),
-          })
-        } else {
-          if (currentReservation.id !== reservationId)
-            requireReview('Workspace reservation identity changed')
-          updateReservation(db, {
-            ...currentReservation,
-            acquisitionId,
-            revision: currentReservation.revision + 1,
-          })
-        }
+        reserveForTask(
+          db,
+          source,
+          { taskId, reservationId, acquisitionId },
+          takeover,
+          `Checkout ${workspace.path} is reserved by another task; ${remedy}`
+        )
         if (getTask(db, taskId) === undefined)
           putTask(db, { id: taskId, repositoryId: repo, revision: 0, createdAt: now() })
         putUse(db, use)

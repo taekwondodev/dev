@@ -150,7 +150,7 @@ const RETAINED_DISPLAY: Record<
   'release-review': { offer: 'together', status: 'An earlier removal did not finish.' },
   excluded: {
     offer: 'never',
-    status: 'The workspace belongs to the conversation allocating a worktree.',
+    status: 'The conversation allocating a worktree is working in the workspace.',
   },
   'use-unknown': { offer: 'alone', status: 'A workspace use is unresolved.' },
   'use-abandoned': {
