@@ -190,7 +190,7 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
       'An earlier release did not finish; dev workspace release completes it.'
     )
   if (facts.excluded)
-    return retain('excluded', 'It belongs to the conversation that is allocating a worktree.')
+    return retain('excluded', 'The conversation allocating a worktree is working in it.')
   if (facts.uses.unknown > 0)
     return retain('use-unknown', `${facts.uses.unknown} workspace use(s) are unresolved.`)
   if (facts.uses.abandoned > 0)

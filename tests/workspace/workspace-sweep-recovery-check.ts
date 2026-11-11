@@ -12,7 +12,8 @@ import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { WorkspaceError, type SweepReceipt, type WorkspaceId } from '../../src/workspace-domain.ts'
 import { authorityPaths, taskArtifactsPath } from '../../src/workspace-authority-root.ts'
-import { formatSweepReceipt, sweepExitCode } from '../../src/workspace-command.ts'
+import { formatSweepReceipt, reservedViews, sweepExitCode } from '../../src/workspace-command.ts'
+import { quitReleaseExclusion, tasksToRelease } from '../../src/quit-display.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
@@ -29,6 +30,7 @@ import {
   rowOf,
   sweepSandbox,
   sweepWith,
+  taskOf,
 } from './workspace-sweep-fixture.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
@@ -401,6 +403,105 @@ try {
         JSON.stringify(settled.rows)
       )
       assert.equal(sweepExitCode(settled), 0)
+    }
+  )
+
+  const pendingAllocations = async () =>
+    (await lifecycle.inspect({ cwd: repo })).filter(view =>
+      view.pending.some(operation => operation.kind === 'allocation')
+    )
+  const crashedAllocation = async (name: string) => {
+    const checkout = userCheckout(name)
+    const owner = await reserve(checkout)
+    await owner.owner.close()
+    const faulty = await openLifecycle({
+      root,
+      startWorker: faultyWorker('after-git-add', checkout),
+    })
+    const contender = await faulty.attach({ conversation: conversation(), cwd: checkout })
+    await assert.rejects(
+      contender.authorize({ kind: 'write' }),
+      (cause: unknown) => cause instanceof WorkspaceError && cause.outcome === 'unavailable'
+    )
+    await faulty.close()
+    const [view, ...others] = await pendingAllocations()
+    assert.ok(view !== undefined && others.length === 0)
+    const { taskId } = view
+    assert.ok(taskId !== undefined)
+    return { owner, unfinished: { ...view, taskId } }
+  }
+
+  await claim(
+    'a worktree allocation interrupted right after Git created the worktree is listed by the sweep at quit as an unresolved transition its task can release, and dev workspace release clears it: the worktree and its Git registration are removed and the pending operation closes',
+    async () => {
+      const { owner, unfinished } = await crashedAllocation('allocation-crash')
+      assert.ok(existsSync(unfinished.path), 'Git created the worktree before the crash')
+      assert.ok(git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
+      assert.equal(
+        unfinished.nextAction,
+        `dev workspace release ${unfinished.taskId} clears it and removes what Git created of the worktree.`
+      )
+
+      const quit = await sweepAtQuit(owner.write.workspaceId)
+      const row = rowOf(quit, unfinished.workspaceId)
+      assert.deepEqual(
+        [row.taskId, row.outcome, verdictName(row.verdict), row.path],
+        [unfinished.taskId, 'retained', 'retained:transition-unresolved', unfinished.path]
+      )
+      assert.ok(
+        tasksToRelease(quit).includes(unfinished.taskId),
+        'the quit prompt offers the task for release'
+      )
+      assert.equal(
+        quitReleaseExclusion(
+          quit,
+          reservedViews(await lifecycle.inspect({ taskId: unfinished.taskId }))
+        ),
+        undefined,
+        'the confirmation does not exclude the task'
+      )
+      assert.ok(existsSync(unfinished.path), 'the sweep itself removes nothing of it')
+
+      const released = await lifecycle.release(unfinished.taskId)
+      assert.deepEqual(
+        released.map(result => [
+          result.kind,
+          result.kind === 'workspace' ? result.workspaceId : undefined,
+          result.outcome,
+        ]),
+        [['workspace', unfinished.workspaceId, 'removed']],
+        JSON.stringify(released)
+      )
+      assert.equal(existsSync(unfinished.path), false)
+      assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
+      assert.deepEqual(await pendingAllocations(), [])
+    }
+  )
+
+  await claim(
+    'releasing an unfinished allocation removes nothing when another task has since taken its target as a checkout: the operation closes and that task keeps its files and reservation',
+    async () => {
+      const { unfinished } = await crashedAllocation('allocation-adopted')
+      const adopter = await lifecycle.attach({ conversation: conversation(), cwd: unfinished.path })
+      const adopted = ready(await adopter.authorize({ kind: 'write' }))
+      writeFileSync(join(unfinished.path, 'adopted.txt'), 'work of another task\n')
+      await adopter.close()
+
+      const released = await lifecycle.release(unfinished.taskId)
+      assert.deepEqual(
+        released.map(result => result.outcome),
+        ['released'],
+        JSON.stringify(released)
+      )
+      assert.ok(existsSync(join(unfinished.path, 'adopted.txt')), 'the other task keeps its files')
+      assert.deepEqual(await pendingAllocations(), [])
+      assert.ok(
+        (await lifecycle.inspect({ taskId: adopted.taskId })).some(
+          view => view.workspaceId === adopted.workspaceId && view.path === unfinished.path
+        ),
+        'the other task keeps its reservation'
+      )
+      await lifecycle.release(taskOf(adopted))
     }
   )
 

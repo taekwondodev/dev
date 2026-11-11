@@ -110,6 +110,7 @@ const script: readonly ScriptedContent[] = [
       content: 'must not reach the contended checkout',
     }),
   ],
+  [{ type: 'text', text: 'The allocation was refused.' }],
   [toolCall('contended-read', 'read', { path: 'AGENTS.md' })],
   [
     toolCall('contended-native-write', 'write', {
@@ -145,6 +146,7 @@ const {
   }, 40),
 })
 const refusalEnded = deferred<void>()
+let refusalTurnCalls: number | undefined
 const finished = deferred<void>()
 const leadStarted = deferred<void>()
 const reloaded = deferred<void>()
@@ -167,7 +169,10 @@ const observer: ExtensionFactory = (api: ExtensionAPI) => {
   })
   api.on('agent_end', event => {
     const last = event.messages.findLast(message => message.role === 'assistant')
-    if (providerCall === 1) refusalEnded.resolve()
+    if (refusalTurnCalls === undefined) {
+      refusalTurnCalls = providerCall
+      refusalEnded.resolve()
+    }
     if (providerCall >= script.length && last?.stopReason === 'stop') finished.resolve()
   })
 }
@@ -331,8 +336,13 @@ const SHELL_GONE = 'The shell process group and every tracked descendant were ob
 
 await within(refusalEnded.promise, 30000, 'the turn with the refused allocation to end')
 await claim(
-  'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI and changes nothing: the binding is kept, neither the write nor the filter runs, and no worktree or pending operation is left',
+  'a contended write whose managed allocation is refused by a checkout filter on the target commit is reported as a failed tool call in the TUI, reaches the model in the same turn and changes nothing: the binding is kept, neither the write nor the filter runs, and no worktree or pending operation is left',
   async () => {
+    assert.equal(
+      refusalTurnCalls,
+      2,
+      'the model is called again with the refusal instead of the turn ending on it'
+    )
     assert.deepEqual(workspaceHost.attachment.binding, bindingBeforeRefusal, 'the binding is kept')
     assert.equal(bindingBeforeRefusal.cwd, resolve(lead))
     assert.equal(workspaceHost.isParked(), false, 'the refusal does not park the host')

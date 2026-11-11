@@ -18,6 +18,7 @@ import {
 import { tmpdir, userInfo } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { Effect, Stream } from 'effect'
 import {
   WorkspaceError,
   type WorkspaceExecution,
@@ -243,6 +244,10 @@ const ready = (result: Awaited<ReturnType<TestAttachment['authorize']>>) => {
   if (result.kind !== 'ready') throw new Error(`Expected a ready grant, got ${result.kind}`)
   return result.grant
 }
+const refusedWithoutCommits = (checkout: string, holder: string | undefined) => ({
+  outcome: 'blocked',
+  message: `Checkout ${checkout} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run: dev workspace release ${holder}. Files stay.`,
+})
 const resolveDefaultRoot = (
   installation: URL,
   cwd: string,
@@ -650,6 +655,211 @@ try {
       await pausedContender.handoff(pausedDecision.handoff, async () => 'confirmed')
       assert.equal(pausedContender.binding.workspaceId, pausedDecision.handoff.target.workspaceId)
       await pausedContender.close()
+    }
+  )
+
+  await claim(
+    'in a repository with no commits a paused foreign reservation does not isolate: the next conversation writes the same checkout under its own task and the release names the admission, and a resumed conversation takes it back; a contender of a live or killed writer is refused with the release command and a delegated writer with the first commit, without a sweep',
+    async () => {
+      const unbornRepo = join(sandbox, 'unborn-repo')
+      mkdirSync(unbornRepo)
+      git(['init', '--quiet', '-b', 'main'], unbornRepo)
+      const leaving = await lifecycle.attach({
+        conversation: conversation('unborn-leaving'),
+        cwd: unbornRepo,
+      })
+      const left = ready(await leaving.authorize({ kind: 'write' }))
+      await leaving.close()
+
+      const arriving = await lifecycle.attach({
+        conversation: conversation('unborn-arriving'),
+        cwd: unbornRepo,
+      })
+      const taken = ready(await arriving.authorize({ kind: 'write' }))
+      assert.equal(taken.checkout, unbornRepo)
+      assert.equal(taken.workspaceId, left.workspaceId)
+      assert.notEqual(taken.taskId, left.taskId)
+      assert.deepEqual(
+        (await lifecycle.inspect({ cwd: unbornRepo })).map(view => view.taskId),
+        [taken.taskId],
+        'the arriving task is the only one reserving the checkout'
+      )
+      const release = (await lifecycle.inspect({ taskId: left.taskId })).find(
+        view => view.workspaceId === left.workspaceId
+      )
+      assert.equal(release?.outcome, 'released')
+      assert.ok(
+        release?.reason.startsWith('By a write admitted in a checkout with no commits'),
+        release?.reason
+      )
+
+      const contender = await lifecycle.attach({
+        conversation: conversation('unborn-contender'),
+        cwd: unbornRepo,
+      })
+      await assert.rejects(
+        contender.authorize({ kind: 'write' }),
+        refusedWithoutCommits(unbornRepo, taken.taskId)
+      )
+      await contender.close()
+
+      await assert.rejects(arriving.authorize({ kind: 'delegated-write' }), {
+        message: `Checkout ${unbornRepo} has no commits yet, so no worktree can start from it. Make a first commit there, then retry.`,
+      })
+      ready(await arriving.authorize({ kind: 'write' }))
+      const closing = arriving.close()
+      assert.deepEqual(
+        await Effect.runPromise(Stream.runCollect(arriving.effect.sweeps)),
+        [],
+        'no allocation was attempted, so no sweep ran'
+      )
+      await closing
+
+      const returning = await lifecycle.attach({
+        conversation: conversation('unborn-leaving'),
+        cwd: unbornRepo,
+      })
+      const retaken = ready(await returning.authorize({ kind: 'write' }))
+      assert.equal(retaken.taskId, left.taskId, 'a resumed conversation takes it back as its task')
+      assert.equal(retaken.checkout, unbornRepo)
+      await returning.close()
+
+      await runChild(`
+        import { openLifecycle } from ${JSON.stringify(moduleUrl)}
+        const lifecycle = await openLifecycle({ root: ${JSON.stringify(root)} })
+        const attachment = await lifecycle.attach({ conversation: ${JSON.stringify(conversation('unborn-crashed'))}, cwd: ${JSON.stringify(unbornRepo)} })
+        await attachment.authorize({ kind: 'write' })
+        process.kill(process.pid, 'SIGKILL')
+      `).then(
+        () => assert.fail('the crashing child must not exit cleanly'),
+        () => undefined
+      )
+      const crashedTask = (await lifecycle.inspect({ cwd: unbornRepo }))[0]?.taskId
+      assert.ok(crashedTask !== undefined && crashedTask !== left.taskId)
+      const afterCrash = await lifecycle.attach({
+        conversation: conversation('unborn-after-crash'),
+        cwd: unbornRepo,
+      })
+      await assert.rejects(
+        afterCrash.authorize({ kind: 'write' }),
+        refusedWithoutCommits(unbornRepo, crashedTask)
+      )
+      await afterCrash.close()
+      assert.deepEqual(
+        (await lifecycle.inspect({ cwd: unbornRepo })).map(view => view.taskId),
+        [crashedTask],
+        'the write use a killed session left keeps its reservation'
+      )
+    }
+  )
+
+  await claim(
+    'a native write into another repository with no commits takes the checkout from a paused foreign reservation, while the next writer is refused with the release command as long as that one lives',
+    async () => {
+      const home = join(sandbox, 'unborn-foreign-home')
+      initRepository(home, 'file.txt', 'fixture\n')
+      const unbornForeign = join(sandbox, 'unborn-foreign-repo')
+      mkdirSync(unbornForeign)
+      git(['init', '--quiet', '-b', 'main'], unbornForeign)
+      const scoped = await openLifecycle({ root: join(sandbox, 'unborn-foreign-authority') })
+      const writeFrom = async (name: string) => {
+        const attachment = await scoped.attach({ conversation: conversation(name), cwd: home })
+        return {
+          attachment,
+          write: () => attachment.authorize({ kind: 'foreign-write', cwd: unbornForeign }),
+        }
+      }
+      const leaving = await writeFrom('unborn-foreign-leaving')
+      const left = ready(await leaving.write())
+      await leaving.attachment.close()
+
+      const arriving = await writeFrom('unborn-foreign-arriving')
+      const taken = ready(await arriving.write())
+      assert.equal(taken.checkout, unbornForeign)
+      assert.equal(taken.workspaceId, left.workspaceId)
+      assert.notEqual(taken.taskId, left.taskId)
+
+      const contender = await writeFrom('unborn-foreign-contender')
+      await assert.rejects(contender.write(), refusedWithoutCommits(unbornForeign, taken.taskId))
+      await contender.attachment.close()
+      await arriving.attachment.close()
+      await scoped.close()
+    }
+  )
+
+  await claim(
+    "a worktree allocation that fails after its Git effect started requires review with Git's failure leading the reason: that conversation is refused the same way from then on, the pending operation stays listed, and the conversation can still close",
+    async () => {
+      const unfinishedRepo = join(sandbox, 'unfinished-allocation-repo')
+      initRepository(unfinishedRepo, 'file.txt', 'fixture\n')
+      const unfinished = await openLifecycle({ root: join(sandbox, 'unfinished-authority') })
+      const owner = await unfinished.attach({
+        conversation: conversation('unfinished-owner'),
+        cwd: unfinishedRepo,
+      })
+      ready(await owner.authorize({ kind: 'write' }))
+      await owner.close()
+      writeFileSync(join(unfinishedRepo, '.git', 'worktrees'), 'not a directory\n')
+      const contender = await unfinished.attach({
+        conversation: conversation('unfinished-contender'),
+        cwd: unfinishedRepo,
+      })
+      const refusal = await contender.authorize({ kind: 'write' }).then(
+        () => assert.fail('the allocation must not succeed'),
+        (error: unknown) => error
+      )
+      assert.ok(refusal instanceof WorkspaceError)
+      assert.equal(refusal.outcome, 'review-required')
+      const pendingViews = (await unfinished.inspect({ cwd: unfinishedRepo })).filter(
+        view => view.pending.length > 0
+      )
+      const pending = pendingViews.flatMap(view => view.pending)
+      const unfinishedTask = pendingViews[0]?.taskId
+      assert.ok(unfinishedTask !== undefined)
+      assert.deepEqual(
+        pending.map(operation => [operation.kind, operation.stage]),
+        [['allocation', 'review-required']]
+      )
+      assert.ok(
+        refusal.message.startsWith('Git worktree failed: ') &&
+          refusal.message.endsWith(
+            `. Worktree allocation ${pending[0]?.id} did not finish, so this session admits nothing more. Quit it and release the allocation when asked, or run: dev workspace release ${unfinishedTask}.`
+          ),
+        refusal.message
+      )
+      assert.ok(
+        !refusal.message.includes('hint:'),
+        `the cause leads the reason without Git advice: ${refusal.message}`
+      )
+      await assert.rejects(contender.authorize({ kind: 'read' }), {
+        outcome: 'review-required',
+        message: refusal.message,
+      })
+      await contender.close()
+      rmSync(join(unfinishedRepo, '.git', 'worktrees'))
+      const delegating = await unfinished.attach({
+        conversation: conversation('unfinished-delegating'),
+        cwd: unfinishedRepo,
+      })
+      const child = ready(await delegating.authorize({ kind: 'delegated-write' }))
+      await delegating.close()
+      await unfinished.release(child.taskId!)
+      assert.equal(
+        existsSync(join(child.checkout, '..')),
+        false,
+        'removing the last worktree of the repository removed their common directory'
+      )
+      const cleared = await unfinished.release(unfinishedTask)
+      assert.deepEqual(
+        cleared.map(result => result.outcome),
+        ['removed'],
+        `release clears an allocation of which Git created nothing, even without that directory: ${JSON.stringify(cleared)}`
+      )
+      assert.deepEqual(
+        (await unfinished.inspect({ cwd: unfinishedRepo })).flatMap(view => view.pending),
+        []
+      )
+      await unfinished.close()
     }
   )
 

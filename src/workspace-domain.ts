@@ -391,6 +391,7 @@ export const ReleaseDeciderSchema = Schema.Literals([
   'allocation',
   'orb-recovery',
   'orb-start',
+  'admission',
 ])
 export type ReleaseDecider = typeof ReleaseDeciderSchema.Type
 

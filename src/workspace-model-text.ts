@@ -10,10 +10,18 @@ import type {
 export const WORKSPACE_MESSAGE = 'dev/workspace'
 export const HANDOFF_MESSAGE = 'dev/workspace-handoff'
 export const RECEIPT_ENTRY = 'dev/workspace-receipt'
+export const REFUSAL_ENTRY = 'dev/workspace-refusal'
 
 export interface SweepDetails {
   readonly kind: 'sweep'
   readonly receipt: SweepReceipt
+}
+
+export interface RefusalDetails {
+  readonly kind: 'refusal'
+  readonly reason: string
+  readonly endedTurn: boolean
+  readonly next: string
 }
 
 export interface SwitchDetails {
