@@ -39,9 +39,11 @@ import {
 import {
   HANDOFF_MESSAGE,
   RECEIPT_ENTRY,
+  REFUSAL_ENTRY,
   reportText,
   sweepText,
   WORKSPACE_MESSAGE,
+  type RefusalDetails,
   type SweepDetails,
   type SwitchDetails,
 } from './workspace-model-text.ts'
@@ -143,7 +145,27 @@ interface HostToolCallEvent {
 
 type Admission =
   | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant; readonly warning?: string }
-  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'refused'; readonly reason: string; readonly endsTurn: boolean }
+
+const endRun = (context: ExtensionContext, purpose: string): void => {
+  try {
+    context.abort()
+  } catch (error) {
+    notify(
+      context,
+      `The turn could not be ended for ${purpose}, so Pi may spend one more request: ${errorText(error)}`,
+      'warning'
+    )
+  }
+}
+
+const refusalOf = (
+  refused: Extract<Admission, { readonly kind: 'refused' }>
+): ToolCallEventResult => ({
+  block: true,
+  ...(refused.endsTurn ? { terminate: true } : {}),
+  reason: refused.reason,
+})
 
 type WriterAdmission =
   | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant }
@@ -424,6 +446,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let closed = false
   let pending: PendingTransition | undefined
   let armedRunEnd: PendingTransition | undefined
+  let armedReviewEnd: RefusalDetails | undefined
   let invokingHandoffSwitch = false
   let replacing = false
   let quitting = false
@@ -508,6 +531,18 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         )
     } catch {
       process.stderr.write(`${formatSweepReceipt(receipt)}\n`)
+    }
+  }
+  const showRefusal = (refusal: RefusalDetails): void => {
+    const plain = `Workspace admission requires review: ${refusal.reason}. ${refusal.endedTurn ? 'The turn ended' : 'The command did not run'}; ${refusal.next}`
+    if (currentApi === undefined || !currentContext?.hasUI) {
+      process.stderr.write(`${plain}\n`)
+      return
+    }
+    try {
+      currentApi.appendEntry(REFUSAL_ENTRY, refusal)
+    } catch {
+      process.stderr.write(`${plain}\n`)
     }
   }
   const followedSweeps = new WeakSet<WorkspaceAttachment>()
@@ -819,15 +854,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     armedRunEnd = undefined
     if (pending !== transition) return
     notify(context, rebindTurnEndNotice(transition.handoff))
-    try {
-      context.abort()
-    } catch (error) {
-      notify(
-        context,
-        `The turn could not be ended for the workspace rebind, so Pi may spend one more request before the switch: ${errorText(error)}`,
-        'warning'
-      )
-    }
+    endRun(context, 'the workspace rebind')
+  }
+
+  const endRunForReview = (context: ExtensionContext): void => {
+    const refusal = armedReviewEnd
+    if (refusal === undefined) return
+    armedReviewEnd = undefined
+    showRefusal(refusal)
+    endRun(context, 'the workspace review')
   }
 
   const authorization = Effect.fnUntraced(
@@ -835,11 +870,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       context: ExtensionContext,
       access: WorkspaceGrant['access'],
       cwd: string,
-      origin: 'tool-call' | 'user-bash' = 'tool-call'
+      origin: 'tool-call' | 'user-bash'
     ): Effect.fn.Return<Admission, WorkspaceError> {
       if (parked)
         return {
           kind: 'refused',
+          endsTurn: true,
           reason: 'Workspace host is parked during a transition; no operation started.',
         }
       const result = yield* activeAttachment.authorize({ kind: access, cwd })
@@ -847,6 +883,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         requestHandoff(result.handoff, origin, context, origin === 'user-bash')
         return {
           kind: 'refused',
+          endsTurn: true,
           reason: `Workspace admission requires a host rebind: ${result.handoff.reason}. The operation was not executed.`,
         }
       }
@@ -856,12 +893,25 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         ...(result.warning ? { warning: result.warning } : {}),
       }
     },
-    Effect.catchCause(cause =>
-      Effect.succeed<Admission>({
-        kind: 'refused',
-        reason: `Workspace admission failed closed: ${errorText(Cause.squash(cause))}`,
-      })
-    )
+    (effect, context, _access, _cwd, origin) =>
+      Effect.catchCause(effect, cause =>
+        Effect.sync((): Admission => {
+          const error = Cause.squash(cause)
+          const reason = `Workspace admission failed closed: ${errorText(error)}`
+          const endsTurn = error instanceof WorkspaceError && error.outcome === 'review-required'
+          if (endsTurn) {
+            const refusal: RefusalDetails = {
+              kind: 'refusal',
+              reason: errorText(error),
+              endedTurn: origin === 'tool-call',
+              next: '/workspace shows the state and its next action.',
+            }
+            if (refusal.endedTurn) armedReviewEnd = refusal
+            else showRefusal(refusal)
+          }
+          return { kind: 'refused', endsTurn, reason }
+        })
+      )
   )
 
   const validateNativeGrant = (
@@ -880,26 +930,24 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   }
 
   const admitWriter = (context: ExtensionContext) =>
-    Effect.map(authorization(context, 'write', context.cwd), (admitted): WriterAdmission => {
-      if (admitted.kind === 'refused')
-        return {
-          kind: 'refused',
-          refusal: { block: true, terminate: true, reason: admitted.reason },
+    Effect.map(
+      authorization(context, 'write', context.cwd, 'tool-call'),
+      (admitted): WriterAdmission => {
+        if (admitted.kind === 'refused') return { kind: 'refused', refusal: refusalOf(admitted) }
+        const mismatch = validateNativeGrant(admitted.grant, context, 'write')
+        if (mismatch) {
+          parked = 'switch'
+          return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
         }
-      const mismatch = validateNativeGrant(admitted.grant, context, 'write')
-      if (mismatch) {
-        parked = 'switch'
-        return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
+        return { kind: 'admitted', grant: admitted.grant }
       }
-      return { kind: 'admitted', grant: admitted.grant }
-    })
+    )
 
   const admitRead = (toolCallId: string, context: ExtensionContext) =>
     Effect.map(
-      authorization(context, 'read', context.cwd),
+      authorization(context, 'read', context.cwd, 'tool-call'),
       (admitted): ToolCallEventResult | undefined => {
-        if (admitted.kind === 'refused')
-          return { block: true, terminate: true, reason: admitted.reason }
+        if (admitted.kind === 'refused') return refusalOf(admitted)
         const mismatch = validateNativeGrant(admitted.grant, context, 'read')
         if (mismatch) {
           parked = 'switch'
@@ -1525,6 +1573,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
               Effect.sync(() => {
                 readerWarnings.delete(event.toolCallId)
                 endRunForRebind(context)
+                endRunForReview(context)
               })
             )
           )

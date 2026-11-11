@@ -2,7 +2,12 @@ import childProcess from 'node:child_process'
 import { syncBuiltinESMExports } from 'node:module'
 import { isMainThread } from 'node:worker_threads'
 
-const RELEASE_FAULTS = ['before-git-remove', 'after-git-remove', 'clock-after-git-remove'] as const
+const RELEASE_FAULTS = [
+  'before-git-remove',
+  'after-git-remove',
+  'clock-after-git-remove',
+  'after-git-add',
+] as const
 export type ReleaseFault = (typeof RELEASE_FAULTS)[number]
 
 const parseFault = (value: string): ReleaseFault => {
@@ -23,8 +28,19 @@ const removesWorktree = (args: readonly string[] | undefined): boolean =>
   checkout !== undefined &&
   args.includes(checkout)
 
+const addsWorktree = (args: readonly string[] | undefined): boolean =>
+  args !== undefined && args.includes('worktree') && args.includes('add')
+
 const arm = (fault: ReleaseFault): void => {
   const spawn = childProcess.spawnSync
+  if (fault === 'after-git-add') {
+    childProcess.spawnSync = ((command: string, args?: readonly string[], options?: object) => {
+      const result = spawn(command, args, options)
+      if (addsWorktree(args)) crash()
+      return result
+    }) as typeof childProcess.spawnSync
+    return
+  }
   if (fault === 'clock-after-git-remove') {
     const realNow = Date.now
     let offset = 0

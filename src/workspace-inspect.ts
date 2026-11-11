@@ -145,6 +145,7 @@ const DECIDER_TEXT: Record<ReleaseDecider, string> = {
   allocation: 'By the sweep before a worktree allocation',
   'orb-recovery': 'By the orb recovery at dev --orb startup',
   'orb-start': 'By the failed dev --orb start that reserved it',
+  admission: 'By a write admitted in a checkout with no commits',
 }
 
 const receiptView = (
@@ -287,7 +288,9 @@ export const inspectWorkspaces = (
           outcome: 'review-required',
           reason: `Pending ${operation.kind} operation ${operation.id} has no ready workspace record (${operation.phase}).`,
           nextAction:
-            'Observe the exact Git effect and require explicit recovery; do not replay or adopt it.',
+            operation.kind === 'allocation'
+              ? `dev workspace release ${operation.taskId} clears it and removes what Git created of the worktree.`
+              : 'Observe the exact Git effect and require explicit recovery; do not replay or adopt it.',
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],
           reservationId: operation.reservationId,
