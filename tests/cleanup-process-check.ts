@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
+  statSync,
   existsSync,
   rmSync,
   realpathSync,
@@ -15,7 +18,11 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
 import { Effect } from 'effect'
-import { acquireCleanupRuntime, acquireMaintenance } from '../src/runtime-coordination.ts'
+import {
+  acquireCleanupRuntime,
+  acquireMaintenance,
+  acquireRuntime,
+} from '../src/runtime-coordination.ts'
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'dev-cleanup-process-')))
 try {
@@ -27,7 +34,7 @@ try {
   const authority = new WorkspaceAuthority(namespace)
   authority.initialize()
   authority.close()
-  for (let index = 0; index < 101; index++) {
+  for (let index = 0; index < 501; index++) {
     const name = String(index).padStart(3, '0')
     writeFileSync(
       join(home, 'sessions', `${name}.jsonl`),
@@ -58,6 +65,85 @@ try {
   assert.equal(retried.signal, null, retried.stderr)
   assert.notEqual(retried.status, null, retried.stderr)
   assert.equal(existsSync(oldest), false)
+  const coordinationRoot = join(installation, '.dev', 'coordination')
+  const locks = join(coordinationRoot, 'conversations')
+  const interrupted = join(
+    coordinationRoot,
+    'conversations.00000000-0000-4000-8000-000000000000.retired'
+  )
+  const unrecognized = join(coordinationRoot, 'conversations.kept')
+  const conversation = { path: join(home, 'sessions', '500.jsonl'), sessionId: '500' }
+  const claim = acquireRuntime(home, coordination).pipe(
+    Effect.tap(lease => lease.protect(conversation))
+  )
+  const identities = () => readdirSync(locks).map(name => statSync(join(locks, name)).ino)
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* claim
+      const held = identities()
+      assert.equal(held.length, 2)
+      mkdirSync(interrupted)
+      writeFileSync(join(interrupted, 'left.sqlite'), '')
+      mkdirSync(unrecognized)
+      assert.equal(run().status, 0)
+      assert.deepEqual(identities(), held, 'a held conversation lock stays on its inode')
+      assert.equal(existsSync(interrupted), false, 'an interrupted purge is finished')
+      assert.ok(existsSync(unrecognized))
+      const refused = yield* Effect.flip(Effect.scoped(claim))
+      assert.match(refused.message, /already open in another dev session/)
+    }).pipe(Effect.scoped)
+  )
+  assert.equal(run().status, 0)
+  assert.deepEqual(
+    readdirSync(coordinationRoot).toSorted(),
+    ['conversations.kept', 'installation.sqlite'],
+    'released conversation locks are purged'
+  )
+  await Effect.runPromise(Effect.scoped(claim))
+  const released = identities()
+  assert.equal(released.length, 2)
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* acquireRuntime(home, coordination)
+      assert.equal(run().status, 0)
+      assert.deepEqual(
+        identities(),
+        released,
+        'an admitted runtime that claimed nothing yet keeps the locks'
+      )
+    }).pipe(Effect.scoped)
+  )
+  const waiting = join(root, 'runtime-waiting')
+  const maintenance = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import { existsSync } from 'node:fs';
+      import { setTimeout } from 'node:timers/promises';
+      import { Effect } from ${JSON.stringify(import.meta.resolve('effect'))};
+      import { acquireMaintenance } from ${JSON.stringify(new URL('../src/runtime-coordination.ts', import.meta.url).href)};
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.andThen(
+            acquireMaintenance(${JSON.stringify(coordination)}),
+            Effect.promise(async () => {
+              process.stdout.write('held');
+              while (!existsSync(${JSON.stringify(waiting)})) await setTimeout(5);
+              await setTimeout(40);
+            })
+          )
+        )
+      );
+    `,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] }
+  )
+  await once(maintenance.stdout, 'data')
+  writeFileSync(waiting, '')
+  await Effect.runPromise(Effect.scoped(acquireRuntime(home, coordination)))
+  await once(maintenance, 'exit')
   const marker = join(root, 'cleaner-pid.json')
   const parent = spawnSync(
     process.execPath,
@@ -100,7 +186,7 @@ try {
   assert.ok(exited, 'cleanup process did not exit after resuming')
   assert.equal(parent.status, 0, parent.stderr)
   console.log(
-    'cleanup process: maintenance/singleton contention, retry and natural parent exit with cleanup stopped passed'
+    'cleanup process: maintenance/singleton contention, retry, conversation lock purge only without runtimes, a runtime outwaiting a momentary exclusive hold and natural parent exit with cleanup stopped passed'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })

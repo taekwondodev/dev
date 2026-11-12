@@ -211,7 +211,7 @@ try {
   let expiredLog: string | undefined
   if (process.env.LAUNCHER_TUI_CLEANUP === '1') {
     mkdirSync(join(dataHome, 'sessions'), { recursive: true })
-    for (let index = 0; index < 101; index++) {
+    for (let index = 0; index < 501; index++) {
       const id = `cleanup-${String(index).padStart(3, '0')}`
       const path = join(dataHome, 'sessions', `${id}.jsonl`)
       writeFileSync(

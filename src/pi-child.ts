@@ -162,6 +162,7 @@ export interface ChildServeOptions {
     request: ChildRequest
   ) => Effect.Effect<Pi.ModelRuntime, ChildError>
   readonly resolveAddress?: AddressResolver
+  readonly installationPath?: (request: ChildRequest) => string
 }
 interface ChildRunOptions extends ChildServeOptions {
   readonly signal?: AbortSignal
@@ -710,6 +711,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
 ) {
   const lease = yield* acquireRuntime(request.dataHome, {
     namespacePath: request.authorityRoot,
+    ...(options.installationPath === undefined
+      ? {}
+      : { installationPath: options.installationPath(request) }),
   }).pipe(Effect.mapError(toChildError))
   if (request.access === 'read-only')
     yield* Effect.sync(() => {

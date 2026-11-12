@@ -22,7 +22,9 @@ import { WorkStore } from '../src/work-store.ts'
 import { AttemptId, GenerationId, SessionId, TaskId } from '../src/work-domain.ts'
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
-import { withDisposableConversation } from '../src/workspace-retention.ts'
+import { conversationInUse, withDisposableConversation } from '../src/workspace-retention.ts'
+import { conversationRecord } from '../src/workspace-attachment.ts'
+import { acquireConversationPresence } from '../src/workspace-gates.ts'
 import { makeWorkspaceLifecycle } from '../src/workspace-lifecycle.ts'
 import { openLifecycle } from './workspace/workspace-test-lifecycle.ts'
 import { loadPi, findRecentSession } from '../src/pi-runtime.ts'
@@ -215,6 +217,29 @@ try {
           undefined
         )
         assert.ok(existsSync(late))
+        const probed = conversationRecord({
+          sessionId: 'probed',
+          sessionFile: makeSession(leads, 'probed', 4),
+          dataHome: home,
+        })
+        const published = () =>
+          ['conversations', 'incarnations'].map(family =>
+            readdirSync(join(namespace, 'gates', family)).toSorted()
+          )
+        const before = published()
+        assert.equal(conversationInUse(observer, probed), false)
+        assert.deepEqual(
+          published(),
+          before,
+          'probing a conversation publishes no conversation or incarnation gate'
+        )
+        const presence = acquireConversationPresence(observer.paths, probed.identity, 0)
+        try {
+          assert.equal(conversationInUse(observer, probed), true)
+        } finally {
+          presence.release()
+        }
+        assert.equal(conversationInUse(observer, probed), false)
       } finally {
         observer.close()
       }
@@ -223,7 +248,7 @@ try {
   const quotaHome = join(root, 'quota-home')
   const quotaLeads = join(quotaHome, 'sessions')
   mkdirSync(quotaLeads, { recursive: true })
-  for (let index = 0; index <= 100; index++)
+  for (let index = 0; index <= 500; index++)
     makeSession(quotaLeads, String(index).padStart(3, '0'), 1000 + index)
   assert.equal(
     await Effect.runPromise(
@@ -237,12 +262,12 @@ try {
       )
     ),
     1,
-    'the production default retains the newest 100 lead conversations'
+    'the production default retains the newest 500 lead conversations'
   )
   assert.equal(existsSync(join(quotaLeads, '000.jsonl')), false)
   assert.ok(existsSync(join(quotaLeads, '001.jsonl')))
   console.log(
-    'conversation cleanup: the production quota of 100, independent home/category quotas, equal-time filename ordering, active and recovery protection, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
+    'conversation cleanup: the production quota of 500, independent home/category quotas, equal-time filename ordering, active and recovery protection, presence probing without presence publication, durable admission revalidation, unknown entries, malformed files, links and idempotence passed'
   )
 } finally {
   rmSync(root, { recursive: true, force: true })
