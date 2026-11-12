@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect, Layer, Schema } from 'effect'
-import { acquireCleanupRuntime } from './runtime-coordination.ts'
+import { acquireCleanupRuntime, purgeConversationLocks } from './runtime-coordination.ts'
 import { cleanConversations } from './conversation-cleanup.ts'
 import { cleanPreferenceTemporaries } from './preferences.ts'
 import { SessionId } from './work-domain.ts'
@@ -21,6 +21,7 @@ const CleanupRequest = Schema.Struct({
 type CleanupRequest = typeof CleanupRequest.Type
 
 const cleanup = Effect.fnUntraced(function* (request: CleanupRequest) {
+  yield* purgeConversationLocks(request.coordination).pipe(Effect.ignore)
   yield* acquireCleanupRuntime(request.dataHome, request.coordination)
   yield* cleanPreferenceTemporaries(request.dataHome).pipe(Effect.ignore)
   yield* cleanConversations(request.dataHome, request.coordination?.namespacePath).pipe(

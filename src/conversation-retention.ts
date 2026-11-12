@@ -1,4 +1,4 @@
-export const RETAINED_CONVERSATIONS = 100
+export const RETAINED_CONVERSATIONS = 500
 
 export interface ConversationCandidate {
   readonly path: string
