@@ -20,6 +20,7 @@ import { setTimeout } from 'node:timers/promises'
 import { NodeServices } from '@effect/platform-node'
 import { Clock, Effect, Layer } from 'effect'
 import { WorkStore } from '../../src/work-store.ts'
+import { RETAINED_CONVERSATIONS } from '../../src/conversation-retention.ts'
 import { AttemptId, GenerationId, SessionId, TaskId } from '../../src/work-domain.ts'
 import { awaitCleanupExits, loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
@@ -219,7 +220,7 @@ try {
   let expiredLog: string | undefined
   if (process.env.LAUNCHER_TUI_CLEANUP === '1') {
     mkdirSync(join(dataHome, 'sessions'), { recursive: true })
-    for (let index = 0; index < 101; index++) {
+    for (let index = 0; index <= RETAINED_CONVERSATIONS; index++) {
       const id = `cleanup-${String(index).padStart(3, '0')}`
       const path = join(dataHome, 'sessions', `${id}.jsonl`)
       writeFileSync(
