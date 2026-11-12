@@ -103,7 +103,7 @@ Interactive startup and graceful exit request a detached, one-shot cleanup proce
 
 Each data home retains the newest 500 eligible inactive lead conversations and 500 eligible inactive child conversations, ordered by modification time with a filename tie-break. Live conversations, retained-task recovery, pending switches and unresolved work are protected outside those quotas. Unrecognized files, symbolic or hard links, and files whose deletion safety cannot be established remain untouched. Deleted history cannot be resumed; these are count limits, not byte ceilings.
 
-The same pass applies [attempt retention](work.md#state) and removes recognized abandoned preference-write temporaries. It also removes the installation's conversation claim locks, but only when no dev runtime of that installation is running: a pass requested while another session, child or browser owner lives leaves them for a later one. No other data is a cleanup target, including workspaces and their reservations. Errors do not fail startup or exit. Non-blocking cleanup still consumes system resources.
+The same pass applies [attempt retention](work.md#state) and removes recognized abandoned preference-write temporaries. It also removes the lock databases of the installation's conversation claims once no session, child or browser owner of that installation is running; until then a later pass retries. No other data is a cleanup target, including workspaces and their reservations. Errors do not fail startup or exit. Non-blocking cleanup still consumes system resources.
 
 [ADR 0005](adr/0005-scoped-runtime-coordination.md#conversation-retention-admission) explains deletion admission; [usage profile](usage-profile.md#run-a-report) describes the effect on report coverage.
 

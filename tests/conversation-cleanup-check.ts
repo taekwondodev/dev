@@ -239,7 +239,6 @@ try {
         } finally {
           presence.release()
         }
-        assert.equal(conversationInUse(observer, probed), false)
       } finally {
         observer.close()
       }

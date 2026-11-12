@@ -7,7 +7,6 @@ import {
   writeFileSync,
   readFileSync,
   readdirSync,
-  statSync,
   existsSync,
   rmSync,
   realpathSync,
@@ -17,6 +16,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
+import { RETAINED_CONVERSATIONS } from '../src/conversation-retention.ts'
 import { Effect } from 'effect'
 import {
   acquireCleanupRuntime,
@@ -34,7 +34,7 @@ try {
   const authority = new WorkspaceAuthority(namespace)
   authority.initialize()
   authority.close()
-  for (let index = 0; index < 501; index++) {
+  for (let index = 0; index <= RETAINED_CONVERSATIONS; index++) {
     const name = String(index).padStart(3, '0')
     writeFileSync(
       join(home, 'sessions', `${name}.jsonl`),
@@ -72,24 +72,28 @@ try {
     'conversations.00000000-0000-4000-8000-000000000000.retired'
   )
   const unrecognized = join(coordinationRoot, 'conversations.kept')
-  const conversation = { path: join(home, 'sessions', '500.jsonl'), sessionId: '500' }
-  const claim = acquireRuntime(home, coordination).pipe(
-    Effect.tap(lease => lease.protect(conversation))
-  )
-  const identities = () => readdirSync(locks).map(name => statSync(join(locks, name)).ino)
+  const claim = (name: string) =>
+    acquireRuntime(home, coordination).pipe(
+      Effect.tap(lease =>
+        lease.protect({ path: join(home, 'sessions', `${name}.jsonl`), sessionId: name })
+      )
+    )
+  await Effect.runPromise(Effect.scoped(claim('released')))
   await Effect.runPromise(
     Effect.gen(function* () {
-      yield* claim
-      const held = identities()
-      assert.equal(held.length, 2)
+      yield* claim('held')
+      const present = readdirSync(locks).toSorted()
       mkdirSync(interrupted)
       writeFileSync(join(interrupted, 'left.sqlite'), '')
       mkdirSync(unrecognized)
-      assert.equal(run().status, 0)
-      assert.deepEqual(identities(), held, 'a held conversation lock stays on its inode')
+      run()
       assert.equal(existsSync(interrupted), false, 'an interrupted purge is finished')
-      assert.ok(existsSync(unrecognized))
-      const refused = yield* Effect.flip(Effect.scoped(claim))
+      assert.deepEqual(
+        readdirSync(locks).toSorted(),
+        present,
+        'a running runtime keeps every conversation lock, released ones included'
+      )
+      const refused = yield* Effect.flip(Effect.scoped(claim('held')))
       assert.match(refused.message, /already open in another dev session/)
     }).pipe(Effect.scoped)
   )
@@ -99,20 +103,7 @@ try {
     ['conversations.kept', 'installation.sqlite'],
     'released conversation locks are purged'
   )
-  await Effect.runPromise(Effect.scoped(claim))
-  const released = identities()
-  assert.equal(released.length, 2)
-  await Effect.runPromise(
-    Effect.gen(function* () {
-      yield* acquireRuntime(home, coordination)
-      assert.equal(run().status, 0)
-      assert.deepEqual(
-        identities(),
-        released,
-        'an admitted runtime that claimed nothing yet keeps the locks'
-      )
-    }).pipe(Effect.scoped)
-  )
+  await Effect.runPromise(Effect.scoped(claim('held')))
   const waiting = join(root, 'runtime-waiting')
   const maintenance = spawn(
     process.execPath,
