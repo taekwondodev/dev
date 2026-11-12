@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { Effect, Option, Predicate, Schema } from 'effect'
 import { ChildRequestEnvelope, serveChild } from '../../src/pi-child.ts'
 import { WebNetworkError } from '../../src/web-network.ts'
@@ -111,6 +112,7 @@ process.on = ((event: string, listener: (...args: unknown[]) => void) =>
   })) as typeof process.on
 serveChild({
   modelRuntime: scriptedModelRuntime,
+  installationPath: request => dirname(request.authorityRoot),
   resolveAddress: host =>
     host.endsWith('.fixture.invalid')
       ? Effect.succeed('127.0.0.1')

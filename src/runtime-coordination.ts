@@ -7,7 +7,10 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   realpathSync,
+  renameSync,
+  rmSync,
   unlinkSync,
 } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
@@ -20,6 +23,7 @@ import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 import {
   acquireConversationFileGate,
   acquirePathGates,
+  MOMENTARY_HOLD_WAIT_MS,
   type GateRelease,
 } from './workspace-gates.ts'
 import { WorkspaceId } from './workspace-domain.ts'
@@ -168,7 +172,8 @@ const lockDatabase = (
   path: string,
   shared: boolean,
   conflict: string,
-  create = true
+  create = true,
+  waitMs = 0
 ): (() => void) => {
   if (create) publishLockDatabase(path)
   if (!lstatSync(path).isFile()) throw new Error(`Invalid coordination file: ${path}`)
@@ -176,7 +181,7 @@ const lockDatabase = (
   let database: DatabaseSync | undefined
   try {
     database = new DatabaseSync(path, { timeout: 0, allowExtension: false })
-    database.exec('PRAGMA busy_timeout = 0')
+    database.exec(`PRAGMA busy_timeout = ${waitMs}`)
     Schema.decodeUnknownSync(JournalMode)(database.prepare('PRAGMA journal_mode').get())
     if (
       database.prepare("SELECT sql FROM sqlite_schema WHERE name = 'guard'").get()?.sql !==
@@ -230,9 +235,47 @@ const prepareCoordination = (options: CoordinationOptions): string => {
   privateDirectory(home)
   const root = join(realpathSync(home), 'coordination')
   privateDirectory(root)
-  privateDirectory(join(root, 'conversations'))
   return root
 }
+
+const RETIRED_CONVERSATION_LOCKS = /^conversations\.[0-9a-f-]{36}\.retired$/
+
+const retireConversationLocks = (root: string): void => {
+  let releaseInstallation: GateRelease
+  try {
+    releaseInstallation = lockDatabase(
+      join(root, 'installation.sqlite'),
+      false,
+      'Dev runtimes or maintenance hold the installation'
+    )
+  } catch (cause) {
+    if (cause instanceof CoordinationError) return
+    throw cause
+  }
+  try {
+    const current = join(root, 'conversations')
+    if (existsSync(current))
+      renameSync(current, join(root, `conversations.${randomUUID()}.retired`))
+  } finally {
+    releaseInstallation()
+  }
+}
+
+export const purgeConversationLocks = (
+  options: CoordinationOptions = {}
+): Effect.Effect<void, CoordinationError> =>
+  native(() => {
+    const releaseSource = sourcePresence(options)
+    try {
+      const root = prepareCoordination(options)
+      retireConversationLocks(root)
+      for (const entry of readdirSync(root, { withFileTypes: true }))
+        if (entry.isDirectory() && RETIRED_CONVERSATION_LOCKS.test(entry.name))
+          rmSync(join(root, entry.name), { recursive: true, force: true })
+    } finally {
+      releaseSource()
+    }
+  })
 
 export const holdConversationInventory = (
   authority: WorkspaceAuthority,
@@ -263,7 +306,9 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
     releaseInstallation = lockDatabase(
       join(root, 'installation.sqlite'),
       true,
-      'Dev maintenance is active; retry after it finishes.'
+      'Dev maintenance is active; retry after it finishes.',
+      true,
+      MOMENTARY_HOLD_WAIT_MS
     )
   } catch (cause) {
     releaseSource()
@@ -272,6 +317,7 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
   const fileAuthority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
   const claims = new Map<string, () => void>()
   const navigation = Semaphore.makeUnsafe(1)
+  let admitted = true
   let closed = false
   const keys = (conversation: ConversationClaim): readonly string[] => [
     `file:${canonicalConversation(conversation.path)}`,
@@ -300,7 +346,8 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
     creating,
     protect: conversation =>
       native(() => {
-        if (closed) throw new Error('Dev runtime ownership has closed')
+        if (!admitted) throw new Error('Dev runtime ownership has closed')
+        privateDirectory(join(root, 'conversations'))
         const retained = new Set(claims.keys())
         try {
           for (const key of keys(conversation)) {
@@ -348,6 +395,7 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
       if (closed) return
       releaseExcept(new Set())
       fileAuthority.close()
+      admitted = false
       releaseInstallation()
       releaseSource()
       closed = true

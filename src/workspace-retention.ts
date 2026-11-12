@@ -1,7 +1,11 @@
 import { type WorkspaceAuthority, inDb } from './workspace-authority.ts'
 import { conversationRecord } from './workspace-attachment.ts'
 import type { WorkspaceConversation } from './workspace-domain.ts'
-import { acquireConversationPresence, acquireConversationFileGate } from './workspace-gates.ts'
+import {
+  acquireConversationPresence,
+  acquireConversationFileGate,
+  conversationPresent,
+} from './workspace-gates.ts'
 import { getAllBindings, getActiveUseRows, openOperations } from './workspace-records.ts'
 import { rows, textField } from './workspace-sqlite.ts'
 import { holdConversationInventory } from './runtime-coordination.ts'
@@ -84,7 +88,16 @@ export const conversationInUse = (
   conversation: ConversationIdentity
 ): boolean => {
   try {
-    return holdConversationGates(authority, conversation, () => false)
+    const releaseFile = acquireConversationFileGate(
+      authority.paths,
+      conversation.conversation.sessionFile,
+      true
+    )
+    try {
+      return conversationPresent(authority.paths, conversation.identity)
+    } finally {
+      releaseFile()
+    }
   } catch {
     return true
   }
