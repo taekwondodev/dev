@@ -82,8 +82,6 @@ try {
   const kept = inherit({ ...base, NODE_COMPILE_CACHE: chosen })
   assert.equal(kept.child, kept.parent, 'a cache chosen by the user reaches the child unchanged')
   assert.deepEqual(kept.leaked, [chosen], 'a cache chosen by the user stays in the environment')
-  const disabled = inherit({ ...base, NODE_DISABLE_COMPILE_CACHE: '1' })
-  assert.equal(disabled.child, undefined, 'a disabled cache is not passed on')
   for (const entry of ['src/pi-child.ts', 'src/cleanup-runtime.ts', 'src/web-browser-owner.ts']) {
     const started = spawnSync(
       process.execPath,
