@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'node:url'
-import { Effect, FileSystem, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Schema from 'effect/Schema'
 import { errorText } from '../src/error-text.ts'
 
 export class PiPinError extends Schema.TaggedError<PiPinError, { readonly brand: unique symbol }>()(

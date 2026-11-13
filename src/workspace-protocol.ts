@@ -1,4 +1,5 @@
-import { type Option, Schema } from 'effect'
+import type * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import {
   AbsolutePath,
   PublicationReferenceSchema,

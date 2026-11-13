@@ -1,4 +1,4 @@
-import { Predicate } from 'effect'
+import * as Predicate from 'effect/Predicate'
 
 export interface ReplyChannel {
   on(event: 'message', listener: (message: unknown) => void): unknown

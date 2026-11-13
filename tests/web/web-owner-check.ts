@@ -17,7 +17,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Cause, Duration, Effect, Exit, Fiber, Scope } from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as Scope from 'effect/Scope'
 import { makeClaims, waitFor, waitUntil } from '../workspace/workspace-check-support.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
@@ -31,6 +36,14 @@ import {
   ownerPublished,
   selectOwnerFixture,
 } from './chrome-fixture.ts'
+
+const statusFrame = (requestId: string): Buffer => {
+  const payload = Buffer.from(JSON.stringify({ type: 'status', requestId }), 'utf8')
+  const framed = Buffer.alloc(4 + payload.length)
+  framed.writeUInt32BE(payload.length, 0)
+  payload.copy(framed, 4)
+  return framed
+}
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-web-owner-')))
 const dataHome = join(fixture, 'data')
@@ -345,6 +358,54 @@ try {
           survivor.render(`${origin}/page.html?m=SURVIVED`, MAX_HTML)
         )
         assert.match(text(page.html), /MARKER SURVIVED/)
+      }
+    )
+    await claim(
+      'control frames split inside the length header and the payload, and several frames arriving in one write, are each answered exactly once and in order',
+      async () => {
+        const published = JSON.parse(readFileSync(locator, 'utf8')) as { socket: string }
+        const ids = ['split-header', 'split-payload', 'joined-a', 'joined-b', 'joined-tail']
+        const [header, payload, joinedA, joinedB, tail] = ids.map(statusFrame)
+        assert.ok(header && payload && joinedA && joinedB && tail)
+        const writes = [
+          header.subarray(0, 2),
+          header.subarray(2),
+          payload.subarray(0, 4),
+          payload.subarray(4, 9),
+          payload.subarray(9),
+          Buffer.concat([joinedA, joinedB, tail.subarray(0, 3)]),
+          tail.subarray(3),
+        ]
+        const answered = await new Promise<string[]>((resolve, reject) => {
+          const replies: string[] = []
+          let received = Buffer.alloc(0)
+          const socket = createConnection({ path: published.socket }, () => {
+            void (async () => {
+              for (const part of writes) {
+                socket.write(part)
+                await sleep(40)
+              }
+            })()
+          })
+          socket.on('data', (chunk: Buffer) => {
+            received = Buffer.concat([received, chunk])
+            while (received.length >= 4 && received.length >= 4 + received.readUInt32BE(0)) {
+              const length = received.readUInt32BE(0)
+              const reply = JSON.parse(received.subarray(4, 4 + length).toString('utf8')) as {
+                requestId: string
+              }
+              replies.push(reply.requestId)
+              received = received.subarray(4 + length)
+            }
+            if (replies.length >= ids.length) {
+              socket.destroy()
+              resolve(replies)
+            }
+          })
+          socket.once('error', reject)
+          socket.once('close', () => resolve(replies))
+        })
+        assert.deepEqual(answered, ids)
       }
     )
     await claim(

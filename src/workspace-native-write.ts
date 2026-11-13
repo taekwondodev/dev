@@ -1,7 +1,11 @@
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import type { EditOperations, WriteOperations } from '@earendil-works/pi-coding-agent'
-import { Deferred, Duration, Effect, Exit, Schema } from 'effect'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Schema from 'effect/Schema'
 import type { WorkspaceAttachment, WorkspaceError, WorkspaceGrant } from './workspace-domain.ts'
 import {
   assertDestinationUnchanged,

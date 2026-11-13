@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Effect, type JsonSchema, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import type * as JsonSchema from 'effect/JsonSchema'
+import * as Schema from 'effect/Schema'
 import { DocumentLink, RetrievalMethod, type DocumentSlice } from './web-documents.ts'
 import { READ_URL_TOOL } from './integrated-tools.ts'
 import type { ReadOutcome, WebReader } from './web-reader.ts'

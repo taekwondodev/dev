@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { makeClaims, waitFor } from '../workspace/workspace-check-support.ts'
 import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
 import { cancelLog, HOLD_CANCEL } from './work-child-model.ts'

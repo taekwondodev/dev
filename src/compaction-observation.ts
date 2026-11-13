@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 
 export const COMPACTION_OBSERVATION = 'dev:compaction-observation'
 export const BACKGROUND_COMPACTION_USAGE = 'background_compaction'

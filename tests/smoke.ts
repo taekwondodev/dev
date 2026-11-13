@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { NodeRuntime, NodeServices } from '@effect/platform-node'
-import { Effect, FileSystem, Schema } from 'effect'
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Schema from 'effect/Schema'
 import { readPiPin } from '../scripts/pi-pin.ts'
 import { errorText } from '../src/error-text.ts'
 import { writeProfileFixture } from './profile-fixture.ts'
@@ -57,7 +60,7 @@ const program = Effect.scoped(
         '--input-type=module',
         '--eval',
         `
-        import { NodeRuntime } from '@effect/platform-node'
+        import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
         import { launch } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/launcher-runtime.ts')).href)}
         import { makeWorkspaceLifecycle } from ${JSON.stringify(pathToFileURL(join(checkout, 'src/workspace-lifecycle.ts')).href)}
         const root = ${JSON.stringify(join(dataHome, 'authority'))}

@@ -12,7 +12,9 @@ import {
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { Effect, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -311,7 +313,7 @@ const handoffTo = (
 const authorizeScoped = (
   owned: Set<string>,
   operation: ScopedOperation
-): WorkspaceAuthorization => {
+): Extract<WorkspaceAuthorization, { readonly kind: 'ready' }> => {
   const { within: parent } = operation
   const checkout = descriptorByPath.get(resolve(parent.checkout))
   if (checkout === undefined) throw new Error('within grant names an unknown fixture checkout')
@@ -357,6 +359,12 @@ const makeAttachment = (
               kind: 'rebind',
               handoff: handoffTo(binding, displaced.target, displaced.reason),
             }
+          if (operation.kind === 'write' && operation.scoped !== undefined) {
+            const { scoped, ...ordinary } = operation
+            const grant = issue(owned, grantFor(attached, 'write', cwd), ordinary, 'ordinary')
+            const continued = authorizeScoped(owned, { ...scoped, within: grant })
+            return { kind: 'ready', grant, scoped: { kind: 'ready', grant: continued.grant } }
+          }
           const grant = issue(owned, grantFor(attached, operation.kind, cwd), operation, 'ordinary')
           return operation.kind === 'read' && cwd === resolve(targetB)
             ? { kind: 'ready', grant, warning: WRITER_WARNING }

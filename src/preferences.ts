@@ -13,7 +13,12 @@ import {
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { Config, Context, Effect, FileSystem, Layer, Schema } from 'effect'
+import * as Config from 'effect/Config'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 import { acquireExclusiveLock } from './runtime-coordination.ts'
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 
 export const RetrievalMethod = Schema.Literals(['markdown', 'text', 'html', 'browser'])
 export type RetrievalMethod = typeof RetrievalMethod.Type
@@ -63,8 +63,9 @@ const HIGH_SURROGATE = /[\uD800-\uDBFF]/
 const cutAt = (text: string, offset: number, maxChars: number): number => {
   if (text.length - offset <= maxChars) return text.length
   const hardEnd = offset + maxChars
-  const newline = text.lastIndexOf('\n', hardEnd)
-  if (newline > offset + Math.floor(maxChars / 2)) return newline + 1
+  const earliest = offset + Math.floor(maxChars / 2) + 1
+  const newline = text.slice(earliest, hardEnd + 1).lastIndexOf('\n')
+  if (newline !== -1) return earliest + newline + 1
   return HIGH_SURROGATE.test(text.charAt(hardEnd - 1)) ? hardEnd - 1 : hardEnd
 }
 

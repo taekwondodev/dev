@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
-import { NodeFileSystem } from '@effect/platform-node'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Clock, Effect, Layer, Result } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as Result from 'effect/Result'
 import {
   asAttemptId,
   asGenerationId,

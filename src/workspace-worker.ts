@@ -1,8 +1,10 @@
+import './compile-cache-adoption.ts'
 import { resolve as resolvePath } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
-import { Option } from 'effect'
+import * as Option from 'effect/Option'
 import {
   authorizeOperation,
+  authorizeScopedWithin,
   reportExecutionFact,
   validateDurableGrant,
 } from './workspace-admission.ts'
@@ -14,6 +16,7 @@ import {
   attachmentClosed,
   invalid,
   WorkspaceError,
+  type ScopedOutcome,
   type SweepReceipt,
   type SweepRequest,
   type SweepRow,
@@ -42,7 +45,7 @@ import {
   sweepRepositoryForAllocation,
   type EvidenceReaders,
 } from './workspace-release.ts'
-import { canonicalGitWorkspace } from './workspace-git.ts'
+import { canonicalGitWorkspace, resolveIdentityGit } from './workspace-git.ts'
 import { getWorkspace } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { now } from './workspace-platform.ts'
@@ -85,6 +88,7 @@ const startEngine = (): WorkspaceEngine | undefined => {
     }
     const started = new WorkspaceEngine(data.root ?? defaultAuthorityRoot())
     send({ type: 'ready' })
+    resolveIdentityGit()
     return started
   } catch (cause) {
     send({ type: 'startup-failure', outcome: outcomeOf(cause), message: errorText(cause) })
@@ -250,12 +254,27 @@ if (port !== null && engine !== undefined) {
           if (receipt.rows.length > 0)
             send({ type: 'sweep-receipt', attachmentId: request.attachmentId, receipt })
         }
-        return replyTo(
-          'authorize',
-          await engine.run(authority =>
-            authorizeOperation(authority, attachment, request.operation, sweep)
-          )
+        const { operation } = request
+        const { authorization, observed } = await engine.run(authority =>
+          authorizeOperation(authority, attachment, operation, sweep)
         )
+        if (authorization.kind !== 'ready' || operation.kind !== 'write')
+          return replyTo('authorize', authorization)
+        const { scoped } = operation
+        if (scoped === undefined) return replyTo('authorize', authorization)
+        const outcome = await engine
+          .run(authority =>
+            authorizeScopedWithin(authority, attachment, authorization.grant, scoped, observed)
+          )
+          .then(
+            (grant): ScopedOutcome => ({ kind: 'ready', grant }),
+            (cause: unknown): ScopedOutcome => ({
+              kind: 'refused',
+              outcome: outcomeOf(cause),
+              message: errorText(cause),
+            })
+          )
+        return replyTo('authorize', { ...authorization, scoped: outcome })
       }
       case 'select': {
         const attachment = requireAttachment(request.attachmentId)

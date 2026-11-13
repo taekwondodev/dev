@@ -1,10 +1,16 @@
+import './compile-cache-adoption.ts'
 import { spawn } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { NodeServices } from '@effect/platform-node'
-import { Clock, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { StringEnum } from '@earendil-works/pi-ai'
 import { compile, int, obj, opt, str } from '@earendil-works/pi-schema'
@@ -17,7 +23,7 @@ import {
   TaskId,
 } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
-import { loadPi } from './pi-runtime.ts'
+import { loadBundledPi } from './pi-runtime.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
 import { createBackgroundCompaction, fenceRuntimeDisposal } from './background-compaction.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
@@ -155,7 +161,7 @@ interface ResourceContext {
 }
 
 type ChildEmitter = (message: ChildMessage) => Promise<void>
-type LoadedPi = Effect.Success<typeof loadPi>
+type LoadedPi = Effect.Success<typeof loadBundledPi>
 export interface ChildServeOptions {
   readonly modelRuntime?: (
     pi: LoadedPi,
@@ -538,7 +544,7 @@ function createReviewGitTool(cwd: string): Pi.ToolDefinition {
 
 function telemetry(session: Pi.AgentSession): Telemetry {
   const stats = session.getSessionStats()
-  const contextUsage = session.getContextUsage()
+  const contextUsage = stats.contextUsage ?? session.getContextUsage()
   if (!Number.isFinite(stats.tokens.total) || stats.tokens.total <= 0)
     return contextUsage ? { context: contextUsage } : {}
   return {
@@ -719,7 +725,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     yield* Effect.sync(() => {
       process.env.PI_OFFLINE = '1'
     })
-  const loaded = yield* loadPi.pipe(Effect.mapError(toChildError))
+  const loaded = yield* loadBundledPi.pipe(Effect.mapError(toChildError))
   const catalog = yield* loadCatalog.pipe(Effect.mapError(toChildError))
   const profile = yield* catalog.load(request.profile).pipe(Effect.mapError(toChildError))
   const projectGitRoot = yield* gitRoot(request.cwd).pipe(Effect.mapError(toChildError))

@@ -1,23 +1,27 @@
 import { isAbsolute } from 'node:path'
-import { type Effect, Schema, type Stream } from 'effect'
+import type * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import type * as Stream from 'effect/Stream'
 
 export const WorkspaceId = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)
 ).pipe(Schema.brand('WorkspaceId'))
 export type WorkspaceId = typeof WorkspaceId.Type
 
+const WorkspaceOutcomeSchema = Schema.Literals([
+  'blocked',
+  'review-required',
+  'invalid',
+  'unavailable',
+  'ambiguous',
+  'closed',
+])
+
 export class WorkspaceError extends Schema.TaggedError<
   WorkspaceError,
   { readonly brand: unique symbol }
 >()('WorkspaceError', {
-  outcome: Schema.Literals([
-    'blocked',
-    'review-required',
-    'invalid',
-    'unavailable',
-    'ambiguous',
-    'closed',
-  ]),
+  outcome: WorkspaceOutcomeSchema,
   message: Schema.String,
 }) {}
 
@@ -132,21 +136,52 @@ export const WorkspaceHandoffSchema = Schema.Struct({
 })
 export type WorkspaceHandoff = typeof WorkspaceHandoffSchema.Type
 
+const ScopedOutcomeSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('ready'), grant: WorkspaceGrantSchema }),
+  Schema.Struct({
+    kind: Schema.Literal('refused'),
+    outcome: WorkspaceOutcomeSchema,
+    message: Schema.String,
+  }),
+])
+export type ScopedOutcome = typeof ScopedOutcomeSchema.Type
+
 export const WorkspaceAuthorizationSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal('ready'),
     grant: WorkspaceGrantSchema,
     warning: Schema.optional(Schema.String),
+    scoped: Schema.optional(ScopedOutcomeSchema),
   }),
   Schema.Struct({ kind: Schema.Literal('rebind'), handoff: WorkspaceHandoffSchema }),
 ])
 export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
+const ScopedContinuationSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('native-file-write'),
+    path: Schema.NonEmptyString,
+    cwd: Schema.optional(AbsolutePath),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('opaque'),
+    execution: WorkspaceExecutionSchema,
+    cwd: Schema.optional(AbsolutePath),
+  }),
+])
+export type ScopedContinuation = typeof ScopedContinuationSchema.Type
+
 export const WorkspaceOperationSchema = Schema.Union([
   Schema.Struct({
-    kind: Schema.Literals(['read', 'write']),
+    kind: Schema.Literal('read'),
     cwd: Schema.optional(AbsolutePath),
     execution: Schema.optional(WorkspaceExecutionSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('write'),
+    cwd: Schema.optional(AbsolutePath),
+    execution: Schema.optional(WorkspaceExecutionSchema),
+    scoped: Schema.optional(ScopedContinuationSchema),
   }),
   Schema.Struct({
     kind: Schema.Literal('delegated-write'),
@@ -178,6 +213,15 @@ export const WorkspaceOperationSchema = Schema.Union([
   }),
 ])
 export type WorkspaceOperation = typeof WorkspaceOperationSchema.Type
+
+export const scopedGrantOf = (
+  scoped: ScopedOutcome | undefined
+): WorkspaceGrant | WorkspaceError | undefined => {
+  if (scoped === undefined) return undefined
+  return scoped.kind === 'ready'
+    ? scoped.grant
+    : new WorkspaceError({ outcome: scoped.outcome, message: scoped.message })
+}
 export type ScopedOperation = Extract<WorkspaceOperation, { readonly within: WorkspaceGrant }>
 
 export const WorkspaceExecutionFactSchema = Schema.Union([

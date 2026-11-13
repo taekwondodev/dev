@@ -1,4 +1,7 @@
-import { Array as Arr, DateTime, Number as Num, Order } from 'effect'
+import * as Arr from 'effect/Array'
+import * as DateTime from 'effect/DateTime'
+import * as Num from 'effect/Number'
+import * as Order from 'effect/Order'
 import {
   attributed,
   type CallFact,

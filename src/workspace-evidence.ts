@@ -2,7 +2,11 @@ import { execFile as execFileCallback, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { DateTime, Option, Predicate, Result, Schema } from 'effect'
+import * as DateTime from 'effect/DateTime'
+import * as Option from 'effect/Option'
+import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 import {
   branchName,
