@@ -5,11 +5,10 @@ import { homedir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as DateTime from 'effect/DateTime'
-import * as Deferred from 'effect/Deferred'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -119,6 +118,12 @@ import {
   type TerminalStyle,
 } from './quit-display.ts'
 import { loadQuitGraphics } from './quit-animation.ts'
+import {
+  makeQuitTerminalSource,
+  type QuitTerminal,
+  type QuitTerminalSource,
+} from './quit-terminal.ts'
+import { makeSessionEnd, type SessionEnd, type SignalCode } from './session-end.ts'
 import {
   SETTLED_AT,
   type BranchState,
@@ -293,10 +298,6 @@ const validateDiagnostics = (
   }
 }
 
-const QUIT_TERMINAL_EXTENSION = fileURLToPath(
-  new URL('./quit-terminal-extension.ts', import.meta.url)
-)
-
 export interface RuntimeParts {
   readonly api: PiApi
   readonly packageRoot: string
@@ -306,6 +307,7 @@ export interface RuntimeParts {
   readonly workspaceHost: WorkspaceHost
   readonly lifecycle: WorkspaceLifecycle
   readonly webReader: WebReader
+  readonly quitTerminal: QuitTerminalSource
   readonly modelRuntime?: Effect.Effect<ModelRuntime, LauncherError>
   readonly model?: SessionModel
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
@@ -380,6 +382,7 @@ const createRuntime = Effect.fnUntraced(function* (
     { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
     { name: 'dev:web', factory: createWebExtension(webReader).factory },
     { name: 'dev:codemode', factory: api.createCodemodeExtension({ mode: 'on' }) },
+    { name: 'dev:quit-terminal', factory: parts.quitTerminal.askingExtension },
   ]
   const services = yield* fromPromise('Cannot create Pi session services', () =>
     api.createAgentSessionServices({
@@ -389,7 +392,7 @@ const createRuntime = Effect.fnUntraced(function* (
       modelRuntime,
       resourceLoaderOptions: {
         additionalSkillPaths: [...resources.skillPaths],
-        additionalExtensionPaths: [QUIT_TERMINAL_EXTENSION],
+        additionalExtensionPaths: [parts.quitTerminal.answeringExtensionPath],
         appendSystemPrompt: [profile.guidance],
         extensionFactories: [...(parts.extensions?.(extensions, cwd) ?? extensions)],
       },
@@ -453,29 +456,20 @@ export const makeRuntimeFactory = (
     }
   })
 
-const disposeRuntime = (runtime: AgentRuntime): Effect.Effect<void, never> =>
-  fromPromise('Cannot dispose Pi runtime', () => runtime.dispose()).pipe(Effect.orDie)
-
 const runInteractive = Effect.fnUntraced(function* (
   api: PiApi,
   runtime: AgentRuntime,
-  host: WorkspaceHost
-): Effect.fn.Return<boolean, LauncherError> {
+  ending: SessionEnd
+): Effect.fn.Return<void, LauncherError> {
   const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
-  const quit = yield* Effect.acquireUseRelease(
-    Effect.sync(() => host.interceptQuit(true)),
-    () =>
-      Effect.raceFirst(
-        fromPromise('Pi interactive mode failed', () => mode.run()).pipe(Effect.as(false)),
-        Deferred.await(host.quitRequested).pipe(Effect.as(true))
-      ),
-    () => Effect.sync(() => host.interceptQuit(false))
+  yield* Effect.raceFirst(
+    fromPromise('Pi interactive mode failed', () => mode.run()),
+    ending.requested
   )
-  if (quit)
+  if (ending.current().phase === 'quitting')
     yield* Effect.sync(() => {
       mode.stop()
     })
-  return quit
 })
 
 type ReleaseExitCode = ReturnType<typeof releaseExitCode> | 130
@@ -663,14 +657,22 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     readonly occupiedPaths: readonly string[]
     readonly detached: boolean
     readonly proceed: () => boolean
-    readonly terminal?: { readonly hold: TerminalHold }
+    readonly terminal?: {
+      readonly hold: TerminalHold
+      readonly module: QuitTerminal | undefined
+    }
   }
 ): Effect.fn.Return<void> {
   const style = terminalStyle(process.stdout, process.env)
   const graphics =
     input.terminal === undefined
       ? undefined
-      : yield* loadQuitGraphics(style.live, process.stdout.columns, input.terminal.hold)
+      : yield* loadQuitGraphics(
+          style.live,
+          process.stdout.columns,
+          input.terminal.hold,
+          input.terminal.module
+        )
   yield* write(
     input.detached
       ? ''
@@ -739,51 +741,15 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
   )
 }, Effect.uninterruptible)
 
+const SWEEP_INTERRUPT_NOTICE =
+  'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchCause(effect, cause =>
     Effect.sync(() => {
       process.stderr.write(`${errorText(Cause.squash(cause))}\n`)
     })
   )
-
-interface SignalHandlers {
-  readonly remove: () => void
-}
-
-const installSignalHandlers = (
-  runtime: AgentRuntime,
-  release: Effect.Effect<void, never>,
-  host: WorkspaceHost
-): Effect.Effect<SignalHandlers> => {
-  const terminate = (exitCode: number): void => {
-    host.interceptQuit(false)
-    Effect.runFork(
-      reported(disposeRuntime(runtime)).pipe(
-        Effect.andThen(reported(release)),
-        Effect.andThen(
-          Effect.sync(() => {
-            process.exitCode = exitCode
-            process.exit(exitCode)
-          })
-        )
-      )
-    )
-  }
-  const onInterrupt = (): void => terminate(130)
-  const onTerminate = (): void => terminate(1)
-  return Effect.sync(() => {
-    process.once('SIGTERM', onTerminate)
-    process.once('SIGINT', onInterrupt)
-    process.once('SIGHUP', onTerminate)
-    return {
-      remove: () => {
-        process.removeListener('SIGTERM', onTerminate)
-        process.removeListener('SIGINT', onInterrupt)
-        process.removeListener('SIGHUP', onTerminate)
-      },
-    }
-  })
-}
 
 interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
@@ -813,40 +779,6 @@ const askConfirmation = (prompt: string): Effect.Effect<Confirmation> =>
     reader.question(prompt, line => answer(line.trim() === 'y' ? 'confirmed' : 'declined'))
     return Effect.sync(() => reader.close())
   })
-
-const cancellation = (notice: () => string | undefined) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      let cancelled = false
-      let held = false
-      let deferred: string | undefined
-      const onSignal = (): void => {
-        cancelled = true
-        const text = notice()
-        if (text === undefined) return
-        if (held) deferred = text
-        else process.stderr.write(`\n${text}\n`)
-      }
-      const hold: TerminalHold = {
-        begin: () => {
-          held = true
-        },
-        end: () => {
-          held = false
-          if (deferred !== undefined) process.stderr.write(`${deferred}\n`)
-          deferred = undefined
-        },
-      }
-      process.on('SIGINT', onSignal)
-      process.on('SIGTERM', onSignal)
-      return { proceed: () => !cancelled, hold, onSignal }
-    }),
-    ({ onSignal }) =>
-      Effect.sync(() => {
-        process.removeListener('SIGINT', onSignal)
-        process.removeListener('SIGTERM', onSignal)
-      })
-  )
 
 const write = (text: string, stream: NodeJS.WriteStream = process.stdout): Effect.Effect<void> =>
   Effect.sync(() => {
@@ -1312,6 +1244,7 @@ const run = Effect.fnUntraced(function* (
       renderer => makeWebReader({ renderer })
     )
   )
+  const quitTerminal = makeQuitTerminalSource()
   const createRuntimeFactory = yield* makeRuntimeFactory(
     {
       api,
@@ -1322,34 +1255,46 @@ const run = Effect.fnUntraced(function* (
       workspaceHost,
       lifecycle: workspaceLifecycle,
       webReader,
+      quitTerminal,
     },
     { cwd: effectiveCwd, resources }
   )
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
+  const ending = makeSessionEnd()
+  const exitOnSignal = (code: SignalCode): Effect.Effect<never> =>
+    reported(lease.release.pipe(Effect.orDie)).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          process.exitCode = code
+          return process.exit(code)
+        })
+      )
+    )
 
-  let quit: { readonly proceed: () => boolean; readonly hold: TerminalHold } | undefined
-  let sweepStarted = false
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(Effect.succeed(workspaceHost), host =>
         host.close.pipe(Effect.orDie)
       )
-      const runtime = yield* Effect.acquireRelease(
+      const { runtime } = yield* Effect.acquireRelease(
         fromPromise('Cannot create Pi runtime', () =>
           api.createAgentSessionRuntime(createRuntimeFactory, {
             cwd: effectiveCwd,
             agentDir: globalPiAgentDir(),
             sessionManager: sessions,
           })
+        ).pipe(
+          Effect.map(created => {
+            fenceRuntimeDisposal(created)
+            const dispose = ending.parkPiDispose(created)
+            workspaceHost.bindRuntime(created)
+            guard.bind(created)
+            return { runtime: created, dispose }
+          })
         ),
-        disposeRuntime
+        ({ dispose }) => fromPromise('Cannot dispose Pi runtime', dispose).pipe(Effect.orDie)
       )
-      yield* Effect.sync(() => {
-        fenceRuntimeDisposal(runtime)
-        workspaceHost.bindRuntime(runtime)
-        guard.bind(runtime)
-      })
       yield* fromSync('Pi startup diagnostics failed', () =>
         validateDiagnostics(runtime.services, profile, resources, options.probeRuntime)
       )
@@ -1360,27 +1305,15 @@ const run = Effect.fnUntraced(function* (
         })
         return
       }
-      const release = lease.release.pipe(Effect.orDie)
-      const signals = yield* Effect.acquireRelease(
-        installSignalHandlers(runtime, release, workspaceHost),
-        ({ remove }) => Effect.sync(remove)
-      )
-      if (yield* runInteractive(api, runtime, workspaceHost)) {
-        signals.remove()
-        const { proceed, hold } = yield* Scope.provide(outerScope)(
-          cancellation(() =>
-            sweepStarted
-              ? 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
-              : undefined
-          )
-        )
-        quit = { proceed, hold }
-      }
+      yield* Scope.provide(outerScope)(ending.watchSignals)
+      yield* runInteractive(api, runtime, ending)
     })
   )
   return yield* Effect.gen(function* () {
     yield* Effect.ensuring(sessionProgram, Scope.close(readerScope, Exit.void))
-    if (quit === undefined) return false
+    const ended = ending.current()
+    if (ended.phase === 'signalled') return yield* exitOnSignal(ended.code)
+    if (ended.phase !== 'quitting') return false
     yield* lease.release
     const { binding, delegatedCwds } = workspaceHost.attachment
     yield* Effect.sync(() => {
@@ -1388,31 +1321,41 @@ const run = Effect.fnUntraced(function* (
         process.chdir(returnCwd)
       } catch {}
     })
-    const { proceed, hold } = quit
     yield* Effect.uninterruptible(
-      Effect.sync(() => {
-        sweepStarted = true
-      }).pipe(
-        Effect.andThen(
-          sweepAtQuit(workspaceLifecycle, {
-            anchorWorkspaceId: binding.workspaceId,
-            delegatedCwds,
-            occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
-            detached: workspaceHost.isDetached(),
-            proceed,
-            terminal: { hold },
-          })
-        )
-      )
+      Effect.suspend(() => {
+        const interruption = ending.beginSweep(SWEEP_INTERRUPT_NOTICE)
+        return interruption === undefined
+          ? Effect.interrupt
+          : sweepAtQuit(workspaceLifecycle, {
+              anchorWorkspaceId: binding.workspaceId,
+              delegatedCwds,
+              occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
+              detached: workspaceHost.isDetached(),
+              proceed: interruption.proceed,
+              terminal: { hold: interruption.hold, module: quitTerminal.current() },
+            })
+      })
     )
     requestCleanup(dataHome, 'graceful-exit', dependencies.coordination)
     return true
   }).pipe(
-    Effect.onExit(exit =>
-      quit === undefined || sweepStarted || Exit.isSuccess(exit)
-        ? Effect.void
-        : write(quitFailureNotice(workspaceHost.isDetached(), exit.cause))
-    )
+    Effect.onExit(exit => {
+      if (Exit.isSuccess(exit)) return Effect.void
+      const ended = ending.current()
+      switch (ended.phase) {
+        case 'running':
+        case 'sweeping':
+          return Effect.void
+        case 'signalled':
+          return (
+            Cause.hasInterruptsOnly(exit.cause)
+              ? Effect.void
+              : write(errorText(Cause.squash(exit.cause)), process.stderr)
+          ).pipe(Effect.andThen(exitOnSignal(ended.code)))
+        case 'quitting':
+          return write(quitFailureNotice(workspaceHost.isDetached(), exit.cause))
+      }
+    })
   )
 }, Effect.scoped)
 

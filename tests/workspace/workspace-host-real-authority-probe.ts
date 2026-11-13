@@ -19,6 +19,7 @@ import type {
   ExtensionFactory,
 } from '../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
 import { sweepAtQuit } from '../../src/launcher-runtime.ts'
+import { makeSessionEnd } from '../../src/session-end.ts'
 import {
   isReleaseCommand,
   parseWorkspaceCommand,
@@ -38,7 +39,6 @@ import {
   within,
 } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
-import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
@@ -246,8 +246,10 @@ const recordHostNotices =
       })
     )
 
+const ending = makeSessionEnd()
 const opened = await openHostRuntime({
   mode: 'tui',
+  ending,
   coordination: { installationPath: fixture, namespacePath: authorityRoot },
   pi,
   packageRoot: packageInfo.root,
@@ -653,17 +655,17 @@ await claim(
     assert.equal(workspaceHost.isParked(), false, 'the TUI stays usable')
   }
 )
-workspaceHost.interceptQuit(true)
 signal('READY_FOR_QUIT')
 await within(
-  Effect.runPromise(Deferred.await(workspaceHost.quitRequested)),
+  Effect.runPromise(ending.requested),
   90000,
-  "the typed /quit to reach the host's dispose boundary"
+  'the typed /quit to reach the dispose boundary'
 )
 await sleep(500)
 await claim(
-  "a typed /quit parks Pi's own exit at the host's dispose boundary with the runtime still undisposed",
+  "a typed /quit parks Pi's own exit at the dispose boundary, recorded as a quit, with the runtime still undisposed",
   async () => {
+    assert.deepEqual(ending.current(), { phase: 'quitting', interrupted: false })
     assert.ok(alive(survivorPid), 'nothing was disposed before the launcher takes over')
     assert.ok(existsSync(managed))
   }

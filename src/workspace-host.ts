@@ -97,8 +97,6 @@ export interface WorkspaceHost {
   readonly shellOperations: BashOperations
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
-  readonly quitRequested: Deferred.Deferred<void>
-  interceptQuit(enabled: boolean): void
   isParked(): boolean
 
   isDetached(): boolean
@@ -477,8 +475,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let replacing = false
   let quitting = false
   const withdrawals = new Map<WorkspaceAttachment, Fiber.Fiber<void>>()
-  let quitInterception: 'off' | 'armed' | 'handed-over' = 'off'
-  const quitRequested = Deferred.makeUnsafe<void>()
   let runtimePreparationSerial = 0
   let pendingReopen:
     | {
@@ -1298,14 +1294,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
     return true
   })
-  const interceptQuit = Effect.fnUntraced(function* (rawDispose: () => Promise<void>) {
-    yield* Effect.yieldNow
-    if (quitInterception !== 'armed') return yield* piCall(rawDispose)
-    quitInterception = 'handed-over'
-    yield* Deferred.succeed(quitRequested, undefined)
-    return yield* Effect.never
-  })
-
   const guardedReplacement = Effect.fnUntraced(function* <A, E>(
     cancelled: A,
     replace: Effect.Effect<A, E>
@@ -1535,10 +1523,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     shellOperations: shell.operations,
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
-    quitRequested,
-    interceptQuit(enabled) {
-      if (quitInterception !== 'handed-over') quitInterception = enabled ? 'armed' : 'off'
-    },
     isParked: () => parked !== false,
     isDetached: () => detachedAttachments.has(activeAttachment),
     requestRebind: (handoff, source, context) =>
@@ -1554,7 +1538,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawDispose = nextRuntime.dispose.bind(nextRuntime)
       nextRuntime.dispose = () => {
         quitting = true
-        return quitInterception === 'armed' ? runPromise(interceptQuit(rawDispose)) : rawDispose()
+        return rawDispose()
       }
       const rawNew = nextRuntime.newSession.bind(nextRuntime)
       nextRuntime.newSession = newOptions =>
