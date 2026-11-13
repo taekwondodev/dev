@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
+import { publishPiTui } from '../../src/pi-tui.ts'
 import { loadQuitGraphics } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {
@@ -45,9 +43,9 @@ const graphics: QuitGraphics = {
 const H = ROWS * graphics.cellHeight
 const live = terminalStyle({ isTTY: true }, {})
 
-const load = (packageRoot: string, isLive = true, ...columns: [number?]) =>
+const load = (isLive = true, ...columns: [number?]) =>
   Effect.runPromise(
-    loadQuitGraphics(packageRoot, isLive, columns.length === 0 ? 120 : columns[0], graphics.hold)
+    loadQuitGraphics(isLive, columns.length === 0 ? 120 : columns[0], graphics.hold)
   )
 
 const collector = () => {
@@ -277,40 +275,39 @@ await claim(
   }
 )
 
+const publish = (
+  images: 'kitty' | 'iterm2' | null,
+  cell: { readonly widthPx: number; readonly heightPx: number }
+): void => {
+  publishPiTui({
+    getCapabilities: () => ({ images, trueColor: true, hyperlinks: true }),
+    getCellDimensions: () => ({ ...cell }),
+    allocateImageId: () => 7,
+  })
+}
+
 await claim('graphics need a live terminal, kitty support and room for the strip', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'dev-quit-scene-'))
-  try {
-    const stub = (images: string | null, cell: string) => {
-      const piRoot = join(root, `${String(images)}-${cell}`, 'pi-coding-agent')
-      const tui = join(piRoot, '../pi-tui/dist')
-      mkdirSync(tui, { recursive: true })
-      writeFileSync(
-        join(tui, 'terminal-image.js'),
-        `export const getCapabilities = () => ({ images: ${JSON.stringify(images)} })\nexport const getCellDimensions = () => (${cell})\nexport const allocateImageId = () => 7\n`
-      )
-      return piRoot
+  assert.equal(await load(), undefined)
+  publish('kitty', { widthPx: 9, heightPx: 18 })
+  assert.deepEqual(
+    { ...(await load()), allocateImageId: undefined },
+    {
+      cellWidth: 9,
+      cellHeight: 18,
+      columns: 120,
+      allocateImageId: undefined,
+      hold: graphics.hold,
     }
-    const kitty = stub('kitty', '{ widthPx: 9, heightPx: 18 }')
-    assert.deepEqual(
-      { ...(await load(kitty)), allocateImageId: undefined },
-      {
-        cellWidth: 9,
-        cellHeight: 18,
-        columns: 120,
-        allocateImageId: undefined,
-        hold: graphics.hold,
-      }
-    )
-    assert.equal(await load(kitty, false), undefined)
-    assert.equal((await load(kitty, true, undefined))?.columns, 80)
-    assert.equal((await load(kitty, true, 0))?.columns, 80)
-    assert.equal(await load(stub('iterm2', '{ widthPx: 9, heightPx: 18 }')), undefined)
-    assert.equal(await load(stub(null, '{ widthPx: 9, heightPx: 18 }')), undefined)
-    assert.equal(await load(stub('kitty', '{ widthPx: 0, heightPx: 18 }')), undefined)
-    assert.equal(await load(join(root, 'missing', 'pi-coding-agent')), undefined)
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
+  )
+  assert.equal(await load(false), undefined)
+  assert.equal((await load(true, undefined))?.columns, 80)
+  assert.equal((await load(true, 0))?.columns, 80)
+  publish('iterm2', { widthPx: 9, heightPx: 18 })
+  assert.equal(await load(), undefined)
+  publish(null, { widthPx: 9, heightPx: 18 })
+  assert.equal(await load(), undefined)
+  publish('kitty', { widthPx: 0, heightPx: 18 })
+  assert.equal(await load(), undefined)
   assert.ok(fitsStrip(graphics, { dots: 1, branches: 1 }, 32))
   assert.ok(!fitsStrip({ ...graphics, columns: 40 }, { dots: 1, branches: 1 }, 32))
 })
