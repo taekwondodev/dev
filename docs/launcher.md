@@ -58,9 +58,7 @@ Dev uses Node's best-effort module compile cache. The first launch populates it;
 
 The cache lives in the operating system's temporary directory (`node-compile-cache`), or `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup, and source or runtime changes need no manual reset.
 
-The runtimes dev starts share that cache: delegated children, the detached cleanup, the browser owner and the worker threads. A cache dev enabled itself reaches them through their environment and each removes it again before anything else loads, so the commands they run, including a child's shell and the authority's Git and `gh` reads, do not inherit it; a `NODE_COMPILE_CACHE` you set yourself is passed on unchanged.
-
-Startup loads only the Effect modules it uses and leaves the HTML extraction libraries to the first URL read, which loads them while the page is being fetched. `npm run lint:effect` rejects an import of the whole `effect` or `@effect/platform-node` package.
+Dev-started runtimes share the cache. Commands they run do not inherit a cache setting enabled by dev; an explicit `NODE_COMPILE_CACHE` setting is passed on unchanged.
 
 Help, diagnostics, save-only and browser commands do not start the workspace worker.
 
