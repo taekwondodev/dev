@@ -23,7 +23,7 @@ import {
   TaskId,
 } from './work-domain.ts'
 import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
-import { loadPi } from './pi-runtime.ts'
+import { loadBundledPi } from './pi-runtime.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
 import { createBackgroundCompaction, fenceRuntimeDisposal } from './background-compaction.ts'
 import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
@@ -161,7 +161,7 @@ interface ResourceContext {
 }
 
 type ChildEmitter = (message: ChildMessage) => Promise<void>
-type LoadedPi = Effect.Success<typeof loadPi>
+type LoadedPi = Effect.Success<typeof loadBundledPi>
 export interface ChildServeOptions {
   readonly modelRuntime?: (
     pi: LoadedPi,
@@ -725,7 +725,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
     yield* Effect.sync(() => {
       process.env.PI_OFFLINE = '1'
     })
-  const loaded = yield* loadPi.pipe(Effect.mapError(toChildError))
+  const loaded = yield* loadBundledPi.pipe(Effect.mapError(toChildError))
   const catalog = yield* loadCatalog.pipe(Effect.mapError(toChildError))
   const profile = yield* catalog.load(request.profile).pipe(Effect.mapError(toChildError))
   const projectGitRoot = yield* gitRoot(request.cwd).pipe(Effect.mapError(toChildError))

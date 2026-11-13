@@ -107,6 +107,7 @@ export const resolvePiPackage = Effect.gen(function* () {
     version: packageJson.version,
     packageJson,
     entry: join(root, packageJson.main),
+    bundledEntry: join(root, 'dist', 'bundle', 'index.js'),
   }
 }).pipe(
   Effect.mapError(cause =>
@@ -114,11 +115,12 @@ export const resolvePiPackage = Effect.gen(function* () {
   )
 )
 
-export const loadPi = Effect.gen(function* () {
+const loadPiFrom = Effect.fnUntraced(function* (build: 'entry' | 'bundledEntry') {
   const packageInfo = yield* resolvePiPackage
+  const entry = packageInfo[build]
   const api: PiApi = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(packageInfo.entry).href),
-    catch: piFailure(`Cannot load Pi from ${packageInfo.entry}`),
+    try: () => import(pathToFileURL(entry).href),
+    catch: piFailure(`Cannot load Pi from ${entry}`),
   })
   for (const name of [
     'createAgentSessionServices',
@@ -132,6 +134,10 @@ export const loadPi = Effect.gen(function* () {
   }
   return { api, packageInfo }
 })
+
+export const loadPi = loadPiFrom('entry')
+
+export const loadBundledPi = loadPiFrom('bundledEntry')
 
 export const findRecentSession = Effect.fnUntraced(function* (
   packageRoot: string,

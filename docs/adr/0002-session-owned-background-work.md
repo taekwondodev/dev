@@ -2,7 +2,7 @@
 
 Run delegated attempts in separate Node processes on the installed Pi SDK, with one controller owning the lead conversation's work. This protects the lead's event loop and gives cancellation a concrete process boundary without introducing a permanent worker fleet. Preserve native resources and project instructions, but start from a focused assignment rather than the lead's transcript.
 
-Accepted in [#12](https://github.com/taekwondodev/dev/issues/12), refined for conversation lifetime and delivery in [#24](https://github.com/taekwondodev/dev/issues/24), and extended to bounded nesting in [#19](https://github.com/taekwondodev/dev/issues/19). Read this record before changing controller ownership, nesting or outcome delivery. [Work](../work.md) owns operator behavior.
+Accepted in [#12](https://github.com/taekwondodev/dev/issues/12), refined for conversation lifetime and delivery in [#24](https://github.com/taekwondodev/dev/issues/24), and extended to bounded nesting in [#19](https://github.com/taekwondodev/dev/issues/19). Read this record before changing controller ownership, nesting, outcome delivery or the Pi build a process loads. [Work](../work.md) owns operator behavior.
 
 ## One controller, bounded nesting
 
@@ -23,6 +23,10 @@ Confirmed tree navigation invalidates attempts without closing the controller; c
 ## Native skill invocation
 
 Use Pi's `/skill:name` expansion instead of injected skill bodies or a filtered catalog. Pi's expansion path also admits extension commands/templates and can pass unknown skills through as text. Dev therefore validates the skill and command collision before any model request, then enables expansion only for that verified invocation.
+
+## Pi build per process
+
+A child loads the library build that Pi bundles for its own command; the lead loads the package entry. Every delegation pays for importing Pi, and the bundled build imports in less time. It also holds private copies of Pi's modules: a module imported from the release by path is then a second instance whose state Pi never updates. A child takes only pure functions from such imports. The lead reads state: its quit animation takes image support and cell size from the terminal module that Pi's interface updates. The lead therefore keeps the package entry for as long as a path import supplies module state. The package declarations type both builds, so both must export the same names.
 
 ## Workspace boundary
 
