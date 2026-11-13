@@ -24,6 +24,7 @@ import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
 import {
@@ -68,6 +69,7 @@ import {
 } from '../../src/orb/transfer.ts'
 import { toolEffect } from '../../src/workspace-host.ts'
 import { orbQuit } from '../../src/launcher-runtime.ts'
+import { makeSessionEnd } from '../../src/session-end.ts'
 import { loadInstalledPi, makeClaims } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { writeProfileFixture } from '../profile-fixture.ts'
@@ -790,6 +792,41 @@ await claim(
       false,
       'a signal while the prompt waits quits and keeps the orb'
     )
+  }
+)
+
+await claim(
+  "a signal during a quit step of the session end prints the step's notice, completes its interruption and keeps the sweep from starting; after the step a signal prints nothing",
+  async () => {
+    const ending = makeSessionEnd()
+    const scope = await Effect.runPromise(Scope.make())
+    await Effect.runPromise(Scope.provide(scope)(ending.watchSignals))
+    const written: string[] = []
+    const { write } = process.stderr
+    process.stderr.write = ((chunk: string) => {
+      written.push(chunk)
+      return true
+    }) as typeof process.stderr.write
+    try {
+      assert.equal(ending.beginQuitStep('step notice'), undefined, 'no step before a quit')
+      const runtime = { dispose: () => Promise.resolve() }
+      ending.parkPiDispose(runtime)
+      void runtime.dispose()
+      await Effect.runPromise(ending.requested)
+      const step = ending.beginQuitStep('step notice')
+      assert.ok(step !== undefined)
+      assert.equal(step.proceed(), true)
+      process.emit('SIGINT')
+      assert.equal(step.proceed(), false)
+      await Effect.runPromise(step.interrupted)
+      step.end()
+      process.emit('SIGTERM')
+      assert.deepEqual(written, ['\nstep notice\n'])
+      assert.equal(ending.beginSweep('sweep notice'), undefined)
+    } finally {
+      process.stderr.write = write
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+    }
   }
 )
 
