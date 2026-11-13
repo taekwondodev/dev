@@ -26,7 +26,7 @@ Use Pi's `/skill:name` expansion instead of injected skill bodies or a filtered 
 
 ## Pi build
 
-The lead and every child load the library build that Pi bundles for its own command, not the package entry. Every start and every delegation pays for importing Pi, and the bundled build imports in less time. It also holds private copies of Pi's modules: a module imported from the release by path is then a second instance whose state Pi never updates. Take only pure functions from path imports.
+The lead and every child load the library build that Pi bundles for its own command, not the package entry. Every start and every delegation pays for importing Pi, and the bundled build imports in less time. It also holds private copies of Pi's modules: a module imported from the release by path is then a second instance whose state Pi never updates. A path import must therefore not depend on module state or class identity that the running Pi owns. Helpers that work from their arguments and the file system qualify, and so does a component that initializes its own state, such as the repository picker.
 
 Module state comes through Pi's extension loader, which gives an extension the module instances Pi itself runs. The lead's quit animation reads image support and cell size from the terminal module that one dev extension file receives this way. That file must stay TypeScript: the loader imports a JavaScript file of this package natively, and Node then resolves Pi's packages to the copies on disk. The package declarations type the bundled build, so both must export the same names.
 
