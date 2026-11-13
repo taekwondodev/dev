@@ -720,10 +720,11 @@ try {
       JSON.stringify({
         name: '@earendil-works/pi-coding-agent',
         version: '0.0.0',
-        main: 'index.js',
       })
     )
-    writeFileSync(join(brokenPi, 'index.js'), "throw new Error('broken fixture Pi')\n")
+    const brokenEntry = join(brokenPi, 'dist', 'bundle', 'index.js')
+    mkdirSync(join(brokenPi, 'dist', 'bundle'), { recursive: true })
+    writeFileSync(brokenEntry, "throw new Error('broken fixture Pi')\n")
     const outcome = await runLauncher(
       ['--data-home', dataHome, '--profile', profiles.defaultProfile],
       {
@@ -732,9 +733,7 @@ try {
     )
     assert.equal(outcome.code, 1, outcome.stderr)
     assert.ok(
-      outcome.stderr.includes(
-        `Cannot load Pi from ${join(brokenPi, 'index.js')}: broken fixture Pi`
-      ),
+      outcome.stderr.includes(`Cannot load Pi from ${brokenEntry}: broken fixture Pi`),
       outcome.stderr
     )
   })

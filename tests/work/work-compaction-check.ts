@@ -4,15 +4,13 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
-import * as NodeServices from '@effect/platform-node/NodeServices'
 import { ALL_TIME, profileUsage } from '../../scripts/usage-profile.ts'
 import { COMPACTION_OBSERVATION, CompactionObservation } from '../../src/compaction-observation.ts'
-import { loadBundledPi } from '../../src/pi-runtime.ts'
 import { loadInstalledPi, makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
 import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
 import { CHILD_MODEL, USAGE_MARKER } from './work-child-model.ts'
 
-const { pi } = await loadInstalledPi()
+const { pi, importFromPi } = await loadInstalledPi()
 const { claim, passed } = makeClaims()
 const fixture = await openWorkFixture('work-compaction')
 writeFileSync(join(fixture.repository, 'tracked.txt'), 'Reviewable file content. '.repeat(100))
@@ -90,13 +88,11 @@ const observedRun = (file: string | undefined) => {
 const owner = fixture.openOwner()
 try {
   await claim(
-    'the bundled Pi build that children load exports the names of the package entry that types it',
+    'the bundled Pi build that dev loads exports the names of the package entry that types it',
     async () => {
-      const bundled = await Effect.runPromise(
-        loadBundledPi.pipe(Effect.provide(NodeServices.layer))
-      )
-      assert.notEqual(bundled.api.SessionManager, pi.SessionManager)
-      assert.deepEqual(Object.keys(bundled.api).toSorted(), Object.keys(pi).toSorted())
+      const typed = await importFromPi<typeof pi>('dist/index.js')
+      assert.notEqual(typed.SessionManager, pi.SessionManager)
+      assert.deepEqual(Object.keys(pi).toSorted(), Object.keys(typed).toSorted())
     }
   )
   await claim(
