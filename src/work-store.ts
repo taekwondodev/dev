@@ -1,19 +1,17 @@
 import * as NodeWorker from '@effect/platform-node/NodeWorker'
-import {
-  ByteSize,
-  Clock,
-  Context,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  FileSystem,
-  Layer,
-  Option,
-  Schema,
-} from 'effect'
+import * as ByteSize from 'effect/ByteSize'
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
-import { Worker as EffectWorker } from 'effect/workers'
+import * as EffectWorker from 'effect/workers/Worker'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open as openNative, readdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -35,6 +33,7 @@ import {
   type RpcInput,
   type RpcSuccess,
 } from './work-store-protocol.ts'
+import { withCompileCache } from './compile-cache.ts'
 
 const LOG_FILES = { stdout: 'stdout.log', stderr: 'stderr.log', result: 'result.txt' } as const
 const LOG_FILE_NAMES = new Set<string>(Object.values(LOG_FILES))
@@ -387,6 +386,7 @@ const openStoreWorker = Effect.fnUntraced(function* (
       NodeWorker.layer(() => {
         thread = new Worker(new URL('./work-store-worker.ts', import.meta.url), {
           workerData: { root, databasePath, sessionId },
+          env: withCompileCache(process.env),
         })
         return thread
       })

@@ -11,8 +11,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NodeFileSystem } from '@effect/platform-node'
-import { Effect } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as Effect from 'effect/Effect'
 import { cleanPreferenceTemporaries, saveSelection } from '../src/preferences.ts'
 import { acquireExclusiveLock } from '../src/runtime-coordination.ts'
 

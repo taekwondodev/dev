@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { ownerBootstrap } from './chrome-fixture.ts'
 
 const [, , dataHome] = process.argv

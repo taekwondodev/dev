@@ -1,4 +1,11 @@
-import { Cause, Effect, Exit, Fiber, FiberSet, Schema, Scope, Semaphore } from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as FiberSet from 'effect/FiberSet'
+import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
+import * as Semaphore from 'effect/Semaphore'
 import { errorText } from './error-text.ts'
 import type { BrowserError, RenderedPage } from './web-browser.ts'
 import type { BrowserOwnerError, SessionRenderer } from './web-browser-owner.ts'
@@ -16,6 +23,7 @@ import {
 import {
   decodeBody,
   extractHtml,
+  loadDom,
   extractMarkdown,
   extractText,
   needsRendering,
@@ -127,9 +135,9 @@ export const makeWebReader = Effect.fnUntraced(function* (
   ): Effect.Effect<RenderedPage, BrowserFailure | ReadCancelled> =>
     cancellable(options.renderer.render(url, limits.maxBytes), signal)
 
-  const staticDocument = (
+  const staticDocument = Effect.fnUntraced(function* (
     response: FetchedResponse
-  ): { readonly document: WebDocument; readonly renderable: boolean } => {
+  ): Effect.fn.Return<{ readonly document: WebDocument; readonly renderable: boolean }> {
     const text = decodeBody(response.body, response.charset, response.contentType)
     const limitations: string[] = []
     const status = statusLimitation(response.status)
@@ -152,7 +160,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
       /^\s*<(!doctype|html)/i.test(text)
     ) {
       method = 'html'
-      extracted = extractHtml(text, base)
+      extracted = extractHtml(yield* loadDom, text, base)
       renderable = needsRendering(text, extracted.text, response.status)
     } else {
       method = 'text'
@@ -174,7 +182,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
         limitations,
       },
     }
-  }
+  })
 
   const browserDocument = Effect.fnUntraced(function* (
     requestedUrl: string,
@@ -182,7 +190,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
     signal: AbortSignal | undefined
   ): Effect.fn.Return<WebDocument, BrowserFailure | ReadCancelled> {
     const rendered = yield* renderWithBrowser(requestedUrl, signal)
-    const extracted = extractHtml(rendered.html, rendered.finalUrl)
+    const extracted = extractHtml(yield* loadDom, rendered.html, rendered.finalUrl)
     const limitations = [...priorLimitations]
     if (rendered.blockedRequests > 0)
       limitations.push(
@@ -226,6 +234,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
     url: string,
     signal: AbortSignal | undefined
   ): Effect.fn.Return<WebDocument, ReadFailure> {
+    yield* Effect.forkChild(loadDom)
     const fetched = yield* fetchStatic(url, signal)
     if (fetched.kind === 'escalate')
       return yield* browserDocument(
@@ -233,7 +242,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
         [`Static retrieval failed first: ${fetched.error.message}`],
         signal
       )
-    const { document, renderable } = staticDocument(fetched.response)
+    const { document, renderable } = yield* staticDocument(fetched.response)
     if (!renderable) return document
     return yield* browserDocument(
       url,

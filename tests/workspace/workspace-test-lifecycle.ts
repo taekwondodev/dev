@@ -1,6 +1,9 @@
 import { Worker } from 'node:worker_threads'
-import { NodeServices } from '@effect/platform-node'
-import { Effect, Exit, Schema, Scope } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import { errorText } from '../../src/error-text.ts'
 import {
   WorkspaceError,

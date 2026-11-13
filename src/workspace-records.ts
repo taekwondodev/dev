@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 import {
   AllocationReasonSchema,
   blocked,

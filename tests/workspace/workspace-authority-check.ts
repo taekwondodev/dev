@@ -18,7 +18,8 @@ import {
 import { tmpdir, userInfo } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { Effect, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import {
   WorkspaceError,
   type WorkspaceExecution,

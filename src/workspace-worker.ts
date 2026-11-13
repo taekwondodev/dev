@@ -1,6 +1,7 @@
+import './compile-cache-adoption.ts'
 import { resolve as resolvePath } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
-import { Option } from 'effect'
+import * as Option from 'effect/Option'
 import {
   authorizeOperation,
   reportExecutionFact,
@@ -42,7 +43,7 @@ import {
   sweepRepositoryForAllocation,
   type EvidenceReaders,
 } from './workspace-release.ts'
-import { canonicalGitWorkspace } from './workspace-git.ts'
+import { canonicalGitWorkspace, resolveIdentityGit } from './workspace-git.ts'
 import { getWorkspace } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
 import { now } from './workspace-platform.ts'
@@ -85,6 +86,7 @@ const startEngine = (): WorkspaceEngine | undefined => {
     }
     const started = new WorkspaceEngine(data.root ?? defaultAuthorityRoot())
     send({ type: 'ready' })
+    resolveIdentityGit()
     return started
   } catch (cause) {
     send({ type: 'startup-failure', outcome: outcomeOf(cause), message: errorText(cause) })

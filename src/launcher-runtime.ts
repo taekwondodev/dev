@@ -6,19 +6,17 @@ import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
-import {
-  Cause,
-  Clock,
-  DateTime,
-  Deferred,
-  Duration,
-  Effect,
-  Exit,
-  Layer,
-  Option,
-  Schema,
-  Scope,
-} from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
@@ -311,9 +309,15 @@ export interface RuntimeParts {
 
 type RuntimeFactoryServices = FileSystem.FileSystem
 
+export interface LaunchResources {
+  readonly cwd: string
+  readonly resources: ComposedResources
+}
+
 const createRuntime = Effect.fnUntraced(function* (
   parts: RuntimeParts,
-  runtimeOptions: RuntimeFactoryOptions
+  runtimeOptions: RuntimeFactoryOptions,
+  launched: LaunchResources | undefined
 ): Effect.fn.Return<RuntimeFactoryResult, LauncherError, RuntimeFactoryServices> {
   const { api, packageRoot, dataHome, profile, guard, workspaceHost, lifecycle, webReader } = parts
   const { attachment, cwd, sessionManager } = yield* workspaceHost
@@ -326,11 +330,16 @@ const createRuntime = Effect.fnUntraced(function* (
   yield* guard
     .protect(sessionManager)
     .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot claim Pi conversation')))
-  const resources = yield* composeResources({
-    cwd,
-    gitRoot: yield* gitRoot(cwd),
-    profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources')))
+  const resources =
+    launched?.cwd === cwd
+      ? launched.resources
+      : yield* composeResources({
+          cwd,
+          gitRoot: yield* gitRoot(cwd),
+          profile,
+        }).pipe(
+          Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources'))
+        )
   const work = yield* fromSync('Cannot create background-work extension', () =>
     createWorkExtension({
       dataHome,
@@ -427,13 +436,17 @@ const createRuntime = Effect.fnUntraced(function* (
 })
 
 export const makeRuntimeFactory = (
-  parts: RuntimeParts
+  parts: RuntimeParts,
+  launched?: LaunchResources
 ): Effect.Effect<RuntimeFactory, never, RuntimeFactoryServices> =>
-  Effect.map(
-    Effect.context<RuntimeFactoryServices>(),
-    context => runtimeOptions =>
-      Effect.runPromiseWith(context)(createRuntime(parts, runtimeOptions))
-  )
+  Effect.map(Effect.context<RuntimeFactoryServices>(), context => {
+    let unused = launched
+    return runtimeOptions => {
+      const first = unused
+      unused = undefined
+      return Effect.runPromiseWith(context)(createRuntime(parts, runtimeOptions, first))
+    }
+  })
 
 const disposeRuntime = (runtime: AgentRuntime): Effect.Effect<void, never> =>
   fromPromise('Cannot dispose Pi runtime', () => runtime.dispose()).pipe(Effect.orDie)
@@ -1001,14 +1014,17 @@ const browserCommand = Effect.fnUntraced(function* (
   return 0
 })
 
-const launchDirectory = Effect.fnUntraced(function* (options: LaunchOptions) {
+const launchDirectory = Effect.fnUntraced(function* (
+  options: LaunchOptions,
+  rootOf: (cwd: string) => Effect.Effect<string | undefined>
+) {
   if (
     options.resume !== undefined ||
     options.continueSession ||
     options.diagnostics ||
     options.probeRuntime ||
     options.saveProfile !== undefined ||
-    (yield* gitRoot(options.cwd)) !== undefined
+    (yield* rootOf(options.cwd)) !== undefined
   )
     return options.cwd
   const dataHome = yield* (
@@ -1101,7 +1117,18 @@ const run = Effect.fnUntraced(function* (
     return
   }
 
-  const launchCwd = yield* launchDirectory(options)
+  const knownRoots = new Map<string, string>()
+  const rootOf = (cwd: string): Effect.Effect<string | undefined> => {
+    const known = knownRoots.get(cwd)
+    return known === undefined
+      ? Effect.tap(gitRoot(cwd), root =>
+          Effect.sync(() => {
+            if (root !== undefined) knownRoots.set(cwd, root)
+          })
+        )
+      : Effect.succeed(known)
+  }
+  const launchCwd = yield* launchDirectory(options, rootOf)
   if (launchCwd === undefined) return
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const catalog = yield* loadCatalog.pipe(
@@ -1257,7 +1284,7 @@ const run = Effect.fnUntraced(function* (
   const profile = yield* catalog
     .load(selectedName)
     .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
-  const effectiveRoot = yield* gitRoot(effectiveCwd)
+  const effectiveRoot = yield* rootOf(effectiveCwd)
   const resources = yield* composeResources({
     cwd: effectiveCwd,
     gitRoot: effectiveRoot,
@@ -1285,16 +1312,19 @@ const run = Effect.fnUntraced(function* (
       renderer => makeWebReader({ renderer })
     )
   )
-  const createRuntimeFactory = yield* makeRuntimeFactory({
-    api,
-    packageRoot: packageInfo.root,
-    dataHome,
-    profile,
-    guard,
-    workspaceHost,
-    lifecycle: workspaceLifecycle,
-    webReader,
-  })
+  const createRuntimeFactory = yield* makeRuntimeFactory(
+    {
+      api,
+      packageRoot: packageInfo.root,
+      dataHome,
+      profile,
+      guard,
+      workspaceHost,
+      lifecycle: workspaceLifecycle,
+      webReader,
+    },
+    { cwd: effectiveCwd, resources }
+  )
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
 

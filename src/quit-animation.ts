@@ -1,7 +1,10 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
-import { Clock, Effect, Fiber, type Scope } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import type * as Scope from 'effect/Scope'
 import type * as TerminalImage from '../node_modules/@earendil-works/pi-tui/dist/terminal-image.js'
 import {
   type BranchState,

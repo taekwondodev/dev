@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { createCoordinatorWorkTool } from '../../src/work-child-coordination.ts'
 import {
   asAttemptId,

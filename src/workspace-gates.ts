@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 import type { AuthorityPaths } from './workspace-authority-root.ts'
 import {
   blocked,

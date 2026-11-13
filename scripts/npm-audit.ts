@@ -1,4 +1,5 @@
-import { Effect, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import { errorText } from '../src/error-text.ts'
 import { run } from './checkout.ts'
 import { withoutFinalPeriod } from './report.ts'

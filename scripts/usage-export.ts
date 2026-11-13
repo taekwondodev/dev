@@ -1,4 +1,5 @@
-import { Number as Num, Schema } from 'effect'
+import * as Num from 'effect/Number'
+import * as Schema from 'effect/Schema'
 
 export const ROLES = ['lead', 'coordinator', 'leaf', 'child', 'unattributed'] as const
 export type Role = (typeof ROLES)[number]

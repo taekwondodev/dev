@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Effect, Fiber, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import type {
   AgentSession,
   AgentSessionRuntime,

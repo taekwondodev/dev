@@ -48,6 +48,7 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
   'profile:check': files('tests/usage-profile-check.ts'),
   'workspace:check': files(
     'tests/workspace/workspace-completion-check.ts',
+    'tests/workspace/workspace-git-check.ts',
     'tests/workspace/quit-display-check.ts',
     'tests/workspace/quit-scene-check.ts',
     'tests/workspace/workspace-authority-check.ts',

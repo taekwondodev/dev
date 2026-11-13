@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync, type BigIntStats } from 'node:fs'
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 import { unavailable, requireReview, WorkspaceError } from './workspace-domain.ts'
 import { errorText } from './error-text.ts'
 import { native } from './native.ts'

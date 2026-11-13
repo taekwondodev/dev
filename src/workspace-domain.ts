@@ -1,5 +1,7 @@
 import { isAbsolute } from 'node:path'
-import { type Effect, Schema, type Stream } from 'effect'
+import type * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import type * as Stream from 'effect/Stream'
 
 export const WorkspaceId = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)

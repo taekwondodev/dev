@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Effect, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import type {
   SweepReceipt,
   SweepRow,

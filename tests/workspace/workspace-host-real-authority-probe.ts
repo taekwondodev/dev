@@ -38,7 +38,8 @@ import {
   within,
 } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
-import { Deferred, Effect } from 'effect'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 

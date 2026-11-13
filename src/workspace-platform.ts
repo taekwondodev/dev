@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname } from 'node:path'
-import { Predicate } from 'effect'
+import * as Predicate from 'effect/Predicate'
 import { unavailable, WorkspaceId } from './workspace-domain.ts'
 
 export const hasErrorCode = (cause: unknown, code: string): boolean =>

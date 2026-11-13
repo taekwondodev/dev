@@ -12,7 +12,9 @@ import {
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { Effect, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import type {
   ExtensionAPI,
   ExtensionContext,

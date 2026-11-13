@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { loadQuitGraphics } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {

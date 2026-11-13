@@ -7,7 +7,13 @@ import {
   decodePreparationId,
   type CompactionObservation,
 } from '../src/compaction-observation.ts'
-import { DateTime, Effect, FileSystem, Option, Predicate, Schema, Stream } from 'effect'
+import * as DateTime from 'effect/DateTime'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 const TokenCount = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 

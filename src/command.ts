@@ -1,5 +1,10 @@
-import { Duration, Effect, Result, Schema, Stream } from 'effect'
-import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
+import * as ChildProcess from 'effect/process/ChildProcess'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 
 export class CommandFailure extends Schema.TaggedError<
   CommandFailure,

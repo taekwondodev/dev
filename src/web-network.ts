@@ -2,7 +2,9 @@ import { lookup } from 'node:dns/promises'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { BlockList, isIP } from 'node:net'
-import { Duration, Effect, Schema } from 'effect'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 
 export class WebNetworkError extends Schema.TaggedError<

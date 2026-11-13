@@ -22,7 +22,9 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { Effect, Exit, Scope } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import { acquireRuntime } from '../../src/runtime-coordination.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
@@ -159,9 +161,9 @@ try {
   const historyBefore = createHash('sha256').update(readFileSync(sessionFile)).digest('hex')
 
   const driver = `
-    import { NodeRuntime } from '@effect/platform-node'
+    import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
     import { Worker } from 'node:worker_threads'
-    import { Effect } from 'effect'
+    import * as Effect from 'effect/Effect'
     import { launch } from ${JSON.stringify(new URL('../../src/launcher-runtime.ts', import.meta.url).href)}
     import { WorkspaceError } from ${JSON.stringify(new URL('../../src/workspace-domain.ts', import.meta.url).href)}
     import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}

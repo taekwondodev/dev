@@ -1,16 +1,14 @@
-import {
-  Cause,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  FiberSet,
-  Option,
-  Schema,
-  type Scope,
-  Stream,
-} from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as FiberSet from 'effect/FiberSet'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+import type * as Scope from 'effect/Scope'
+import * as Stream from 'effect/Stream'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { closeSync, lstatSync, existsSync, openSync, readSync } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import { basename, resolve } from 'node:path'

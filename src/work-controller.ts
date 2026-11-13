@@ -1,20 +1,18 @@
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
-import {
-  Clock,
-  Context,
-  Deferred,
-  Duration,
-  Effect,
-  FileSystem,
-  Layer,
-  Option,
-  Queue,
-  Result,
-  Semaphore,
-  Schema,
-} from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
+import * as Result from 'effect/Result'
+import * as Semaphore from 'effect/Semaphore'
+import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import { createHash, randomUUID } from 'node:crypto'
 import { fork, spawn, type ChildProcess } from 'node:child_process'
@@ -62,6 +60,7 @@ import {
   type LifecycleTransition,
   type ProcessObservation,
 } from './work-lifecycle.ts'
+import { withCompileCache } from './compile-cache.ts'
 import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.ts'
 import { compactText, isRecordUnavailable, WorkStore } from './work-store.ts'
 import {
@@ -1155,6 +1154,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               request.kind === 'agent'
                 ? fork(childEntry, [], {
                     ...spawnOptions,
+                    env: withCompileCache(spawnOptions.env),
                     execArgv: [],
                     stdio: ['ignore', stdout, stderr, 'ipc'],
                   })
