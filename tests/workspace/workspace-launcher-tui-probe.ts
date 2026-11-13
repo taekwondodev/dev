@@ -17,8 +17,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
-import { NodeServices } from '@effect/platform-node'
-import { Clock, Effect, Layer } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import { WorkStore } from '../../src/work-store.ts'
 import { RETAINED_CONVERSATIONS } from '../../src/conversation-retention.ts'
 import { AttemptId, GenerationId, SessionId, TaskId } from '../../src/work-domain.ts'
@@ -47,6 +49,7 @@ const interruptedDuringSweep = ['sigint-during-sweep', 'sigint-during-strip'].in
 )
 const failedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-quit'
 const failedInteractive = process.env.LAUNCHER_TUI_FAULT === 'interactive-failure'
+const idleSignal = /^signal-idle:(SIG[A-Z]+)$/.exec(process.env.LAUNCHER_TUI_FAULT ?? '')?.[1]
 const containedHistory = process.env.LAUNCHER_TUI_CONTAINED_HISTORY === '1'
 const removeInstallation = process.env.LAUNCHER_TUI_SELF_REMOVE === '1' || containedHistory
 const missingWorktree = process.env.LAUNCHER_TUI_MISSING_WORKTREE
@@ -55,6 +58,8 @@ const abandonedUse = process.env.LAUNCHER_TUI_ABANDONED_USE === '1'
 const keptClaim = (): string => {
   if (interruptedAfterQuit)
     return 'a SIGINT during the teardown after /quit, before the sweep, exits 130 and releases nothing: both reservations, the worktree and the files stay'
+  if (idleSignal !== undefined)
+    return `${idleSignal} to an idle TUI, with no /quit, exits ${idleSignal === 'SIGINT' ? 130 : 1} without sweeping: both reservations, the worktree and the files stay`
   if (failedInteractive)
     return 'a failure of Pi interactive mode, with no /quit, disposes the runtime without parking it and exits 1 without sweeping: both reservations, the worktree and the files stay, and the conversation is kept'
   return 'a session disposal failure after /quit exits 1 without sweeping: both reservations, the worktree and the files stay, and the conversation is kept'
@@ -374,10 +379,10 @@ try {
     const reserved = (await after.check(taskId)).map(assessment => assessment.workspaceId)
     const outcomes = (await after.inspect({ taskId })).map(view => view.outcome).toSorted()
     const listed = git(['worktree', 'list', '--porcelain'], repo).match(/^worktree /gm)?.length
-    if (interruptedAfterQuit || failedAfterQuit || failedInteractive)
+    if (interruptedAfterQuit || failedAfterQuit || failedInteractive || idleSignal !== undefined)
       await claim(keptClaim(), () => {
         assert.equal(exit.signal, null)
-        assert.equal(exit.code, interruptedAfterQuit ? 130 : 1)
+        assert.equal(exit.code, interruptedAfterQuit || idleSignal === 'SIGINT' ? 130 : 1)
         assert.deepEqual(
           reserved.toSorted(),
           [write.grant.workspaceId, managed.grant.workspaceId].toSorted()

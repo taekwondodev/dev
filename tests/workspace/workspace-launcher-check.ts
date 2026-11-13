@@ -21,7 +21,9 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { Effect, Exit, Scope } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import { acquireRuntime } from '../../src/runtime-coordination.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
@@ -29,7 +31,7 @@ import { openLifecycle } from './workspace-test-lifecycle.ts'
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
 
 const devRoot = fileURLToPath(new URL('../..', import.meta.url))
-const { pi } = await loadInstalledPi()
+const { pi, importFromPi } = await loadInstalledPi()
 const initRepository = (cwd: string) => {
   const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd })
   git(['init', '--quiet', '-b', 'main'])
@@ -158,9 +160,9 @@ try {
   const historyBefore = createHash('sha256').update(readFileSync(sessionFile)).digest('hex')
 
   const driver = `
-    import { NodeRuntime } from '@effect/platform-node'
+    import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
     import { Worker } from 'node:worker_threads'
-    import { Effect } from 'effect'
+    import * as Effect from 'effect/Effect'
     import { launch } from ${JSON.stringify(new URL('../../src/launcher-runtime.ts', import.meta.url).href)}
     import { WorkspaceError } from ${JSON.stringify(new URL('../../src/workspace-domain.ts', import.meta.url).href)}
     import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
@@ -708,6 +710,14 @@ try {
       )
     }
   )
+  await claim(
+    'the bundled Pi build that dev loads exports the names of the package entry that types it',
+    async () => {
+      const typed = await importFromPi<typeof pi>('dist/index.js')
+      assert.notEqual(typed.SessionManager, pi.SessionManager)
+      assert.deepEqual(Object.keys(pi).toSorted(), Object.keys(typed).toSorted())
+    }
+  )
   await claim('dev stops with the reason when the installed Pi fails to load', async () => {
     const brokenRelease = join(sandbox, 'broken-pi-release')
     const brokenPi = join(brokenRelease, 'node_modules', '@earendil-works', 'pi-coding-agent')
@@ -717,10 +727,11 @@ try {
       JSON.stringify({
         name: '@earendil-works/pi-coding-agent',
         version: '0.0.0',
-        main: 'index.js',
       })
     )
-    writeFileSync(join(brokenPi, 'index.js'), "throw new Error('broken fixture Pi')\n")
+    const brokenEntry = join(brokenPi, 'dist', 'bundle', 'index.js')
+    mkdirSync(join(brokenPi, 'dist', 'bundle'), { recursive: true })
+    writeFileSync(brokenEntry, "throw new Error('broken fixture Pi')\n")
     const outcome = await runLauncher(
       ['--data-home', dataHome, '--profile', profiles.defaultProfile],
       {
@@ -729,9 +740,7 @@ try {
     )
     assert.equal(outcome.code, 1, outcome.stderr)
     assert.ok(
-      outcome.stderr.includes(
-        `Cannot load Pi from ${join(brokenPi, 'index.js')}: broken fixture Pi`
-      ),
+      outcome.stderr.includes(`Cannot load Pi from ${brokenEntry}: broken fixture Pi`),
       outcome.stderr
     )
   })

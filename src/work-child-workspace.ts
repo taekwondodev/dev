@@ -1,4 +1,6 @@
-import { Effect, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { WorkspaceError, WorkspaceId, type WorkspaceGrant } from './workspace-domain.ts'
 import type { ChildMessage } from './work-protocol.ts'

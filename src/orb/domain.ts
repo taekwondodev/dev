@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 
 export class OrbError extends Schema.TaggedError<OrbError, { readonly brand: unique symbol }>()(
   'OrbError',

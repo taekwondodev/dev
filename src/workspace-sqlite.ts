@@ -10,7 +10,9 @@ import {
 } from 'node:fs'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { basename, dirname, join } from 'node:path'
-import { Option, Predicate, Schema } from 'effect'
+import * as Option from 'effect/Option'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
 import { blocked, invalid, requireReview, unavailable, WorkspaceError } from './workspace-domain.ts'
 import {
   effectiveUid,

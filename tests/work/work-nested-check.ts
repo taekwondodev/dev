@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
-import { Effect, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import { executeWork } from '../../src/work-actions.ts'
 import {
   asAttemptId,

@@ -1,6 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { Duration, Effect, Schedule, type Scope } from 'effect'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Schedule from 'effect/Schedule'
+import type * as Scope from 'effect/Scope'
 import { errorText } from '../error-text.ts'
 import { orbFailure, shq, type OrbError } from './domain.ts'
 

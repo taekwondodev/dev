@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { launch } from '../../src/launcher-runtime.ts'
 import type { WorkspaceAuthorization, WorkspaceGrant } from '../../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'

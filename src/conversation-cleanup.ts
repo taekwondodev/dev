@@ -11,7 +11,8 @@ import {
   type BigIntStats,
 } from 'node:fs'
 import { join } from 'node:path'
-import { Effect, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import { WorkspaceAuthority } from './workspace-authority.ts'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 import { conversationRecord } from './workspace-attachment.ts'

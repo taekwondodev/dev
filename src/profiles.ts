@@ -1,6 +1,9 @@
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Config, Effect, FileSystem, Schema } from 'effect'
+import * as Config from 'effect/Config'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 
 export class ProfileError extends Schema.TaggedError<

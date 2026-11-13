@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync, type Stats, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { Option, Schema } from 'effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { blocked, invalid, requireReview } from './workspace-domain.ts'
 import { lstatIfExists } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'

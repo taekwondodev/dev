@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
 import { RETAINED_CONVERSATIONS } from '../src/conversation-retention.ts'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import {
   acquireCleanupRuntime,
   acquireMaintenance,

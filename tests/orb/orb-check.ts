@@ -19,7 +19,13 @@ import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Cause, Deferred, Effect, Exit, Fiber, Stream } from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as Scope from 'effect/Scope'
+import * as Stream from 'effect/Stream'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
 import {
   isSpare,
@@ -63,6 +69,7 @@ import {
 } from '../../src/orb/transfer.ts'
 import { toolEffect } from '../../src/workspace-host.ts'
 import { orbQuit } from '../../src/launcher-runtime.ts'
+import { makeSessionEnd } from '../../src/session-end.ts'
 import { loadInstalledPi, makeClaims } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { writeProfileFixture } from '../profile-fixture.ts'
@@ -71,7 +78,7 @@ import type {
   ExtensionAPI,
   NormalizedBuildSystemPromptOptions,
 } from '@earendil-works/pi-coding-agent'
-import type { ChildProcessSpawner } from 'effect/process'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { asAttemptId, type AttemptOrb } from '../../src/work-domain.ts'
 import type { PiApi } from '../../src/pi-runtime.ts'
 import {
@@ -789,6 +796,41 @@ await claim(
 )
 
 await claim(
+  "a signal during a quit step of the session end prints the step's notice, completes its interruption and keeps the sweep from starting; after the step a signal prints nothing",
+  async () => {
+    const ending = makeSessionEnd()
+    const scope = await Effect.runPromise(Scope.make())
+    await Effect.runPromise(Scope.provide(scope)(ending.watchSignals))
+    const written: string[] = []
+    const { write } = process.stderr
+    process.stderr.write = ((chunk: string) => {
+      written.push(chunk)
+      return true
+    }) as typeof process.stderr.write
+    try {
+      assert.equal(ending.beginQuitStep('step notice'), undefined, 'no step before a quit')
+      const runtime = { dispose: () => Promise.resolve() }
+      ending.parkPiDispose(runtime)
+      void runtime.dispose()
+      await Effect.runPromise(ending.requested)
+      const step = ending.beginQuitStep('step notice')
+      assert.ok(step !== undefined)
+      assert.equal(step.proceed(), true)
+      process.emit('SIGINT')
+      assert.equal(step.proceed(), false)
+      await Effect.runPromise(step.interrupted)
+      step.end()
+      process.emit('SIGTERM')
+      assert.deepEqual(written, ['\nstep notice\n'])
+      assert.equal(ending.beginSweep('sweep notice'), undefined)
+    } finally {
+      process.stderr.write = write
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+    }
+  }
+)
+
+await claim(
   'the applier refuses .git paths, symlinks leaving the checkout, writes through symlinked directories, hard links and modes other than 0644 and 0755',
   async () => {
     const root = join(sandbox, 'applier')
@@ -1402,7 +1444,7 @@ await claim(
         '-e',
         `
           import * as NodeServices from '@effect/platform-node/NodeServices'
-          import { Effect } from 'effect'
+          import * as Effect from 'effect/Effect'
           import { createRecord } from ${JSON.stringify(new URL('../../src/orb/registry.ts', import.meta.url).href)}
           const record = await Effect.runPromise(Effect.provide(createRecord(${JSON.stringify(dataHome)}, ${JSON.stringify(recordFields(checkout, 'presence-use'))}), NodeServices.layer))
           process.stdout.write(record.directory + '\\n')
@@ -2887,7 +2929,7 @@ await claim('plain dev loads no orb module, so it reads neither orb file', async
   const profiles = writeProfileFixture(join(sandbox, 'plain-profiles'))
   const authority = join(sandbox, 'plain-authority')
   const driver = `
-      import { NodeRuntime } from '@effect/platform-node'
+      import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
       import { launch } from ${JSON.stringify(new URL('../../src/launcher-runtime.ts', import.meta.url).href)}
       import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
       const root = ${JSON.stringify(authority)}

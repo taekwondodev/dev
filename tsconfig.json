@@ -21,8 +21,10 @@
           "lazyPromiseInEffectSync": "error",
           "unsafeEffectTypeAssertion": "error",
           "missingReturnYieldStar": "error",
-          "missingStarInYieldEffectGen": "error"
+          "missingStarInYieldEffectGen": "error",
+          "preferNamespaceImport": "error"
         },
+        "namespaceImportPackages": ["effect", "@effect/platform-node"],
         "allowedUnstableApis": [
           "effect/ByteSize",
           "effect/FileSystem",

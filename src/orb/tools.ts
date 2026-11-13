@@ -3,7 +3,9 @@ import { access, constants, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, relative } from 'node:path'
 import { createInterface } from 'node:readline'
 import { constants as osConstants, tmpdir } from 'node:os'
-import { Effect, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import type {
   BashOperations,
   EditOperations,

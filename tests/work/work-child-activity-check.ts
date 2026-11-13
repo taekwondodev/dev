@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { Effect, Result } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import {
   type ActivityClock,

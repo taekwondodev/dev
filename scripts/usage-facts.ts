@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
-import { HashMap, HashSet, Option } from 'effect'
+import * as HashMap from 'effect/HashMap'
+import * as HashSet from 'effect/HashSet'
+import * as Option from 'effect/Option'
 import {
   GIT_INSPECT_OPERATIONS,
   GIT_COMMANDS,

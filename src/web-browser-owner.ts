@@ -1,3 +1,4 @@
+import './compile-cache-adoption.ts'
 import { fork, type ChildProcess } from 'node:child_process'
 import {
   chmodSync,
@@ -16,20 +17,19 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import {
-  Cause,
-  Clock,
-  Deferred,
-  Duration,
-  Effect,
-  Exit,
-  Fiber,
-  Schedule,
-  Schema,
-  Scope,
-  Semaphore,
-} from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as Schedule from 'effect/Schedule'
+import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
+import * as Semaphore from 'effect/Semaphore'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
+import { withCompileCache } from './compile-cache.ts'
 import { errorText } from './error-text.ts'
 import {
   acquireExclusiveLock,
@@ -249,27 +249,46 @@ const readFrames = (
   onFrame: (text: string) => void,
   onBroken: (message: string) => void
 ): FrameChannel => {
-  let buffered = Buffer.alloc(0)
+  let pending: Uint8Array[] = []
+  let buffered = 0
+  let frameLength: number | undefined
   const broken = (message: string): void => {
     onBroken(message)
     socket.destroy()
   }
+  const coalesced = (): Buffer => {
+    const [only] = pending
+    const whole =
+      pending.length === 1 && only !== undefined
+        ? Buffer.from(only.buffer, only.byteOffset, only.byteLength)
+        : Buffer.concat(pending, buffered)
+    pending = [whole]
+    return whole
+  }
   socket.on('data', (chunk: Uint8Array) => {
-    if (buffered.length + chunk.length > 2 * (4 + limit)) {
+    if (buffered + chunk.length > 2 * (4 + limit)) {
       broken(`The browser control connection buffered more than ${2 * (4 + limit)} bytes`)
       return
     }
-    buffered = Buffer.concat([buffered, chunk])
+    pending.push(chunk)
+    buffered += chunk.length
     for (;;) {
-      if (buffered.length < 4) return
-      const length = buffered.readUInt32BE(0)
-      if (length > limit) {
-        broken(`A browser control frame of ${length} bytes exceeds the ${limit}-byte limit`)
-        return
+      if (frameLength === undefined) {
+        if (buffered < 4) return
+        const length = coalesced().readUInt32BE(0)
+        if (length > limit) {
+          broken(`A browser control frame of ${length} bytes exceeds the ${limit}-byte limit`)
+          return
+        }
+        frameLength = length
       }
-      if (buffered.length < 4 + length) return
-      const text = buffered.subarray(4, 4 + length).toString('utf8')
-      buffered = buffered.subarray(4 + length)
+      if (buffered < 4 + frameLength) return
+      const whole = coalesced()
+      const text = whole.subarray(4, 4 + frameLength).toString('utf8')
+      const rest = whole.subarray(4 + frameLength)
+      pending = rest.length === 0 ? [] : [rest]
+      buffered = rest.length
+      frameLength = undefined
       onFrame(text)
     }
   })
@@ -1396,7 +1415,7 @@ export const makeOwnerBootstrap = (options: {
         detached: true,
         execArgv: [],
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-        env: { ...process.env, DEV_DATA_HOME: options.dataHome },
+        env: withCompileCache({ ...process.env, DEV_DATA_HOME: options.dataHome }),
       })
     } catch (cause) {
       resume(Effect.fail(ownerFailure('bootstrap', errorText(cause))))

@@ -6,22 +6,20 @@ import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
-import {
-  Cause,
-  Clock,
-  DateTime,
-  Deferred,
-  Duration,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Option,
-  Schema,
-  Scope,
-} from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import type * as FileSystem from 'effect/FileSystem'
-import type { ChildProcessSpawner } from 'effect/process'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
   defaultDataHome,
@@ -123,6 +121,12 @@ import {
   type TerminalStyle,
 } from './quit-display.ts'
 import { loadQuitGraphics } from './quit-animation.ts'
+import {
+  makeQuitTerminalSource,
+  type QuitTerminal,
+  type QuitTerminalSource,
+} from './quit-terminal.ts'
+import { makeSessionEnd, type SessionEnd, type SignalCode } from './session-end.ts'
 import {
   SETTLED_AT,
   type BranchState,
@@ -316,6 +320,7 @@ export interface RuntimeParts {
   readonly workspaceHost: WorkspaceHost
   readonly lifecycle: WorkspaceLifecycle
   readonly webReader: WebReader
+  readonly quitTerminal: QuitTerminalSource
   readonly modelRuntime?: Effect.Effect<ModelRuntime, LauncherError>
   readonly model?: SessionModel
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
@@ -329,9 +334,15 @@ export interface OrbRuntime {
 
 type RuntimeFactoryServices = FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
 
+export interface LaunchResources {
+  readonly cwd: string
+  readonly resources: ComposedResources
+}
+
 const createRuntime = Effect.fnUntraced(function* (
   parts: RuntimeParts,
-  runtimeOptions: RuntimeFactoryOptions
+  runtimeOptions: RuntimeFactoryOptions,
+  launched: LaunchResources | undefined
 ): Effect.fn.Return<RuntimeFactoryResult, LauncherError, RuntimeFactoryServices> {
   const { api, packageRoot, dataHome, profile, guard, workspaceHost, lifecycle, webReader } = parts
   const { attachment, cwd, sessionManager } = yield* workspaceHost
@@ -344,11 +355,16 @@ const createRuntime = Effect.fnUntraced(function* (
   yield* guard
     .protect(sessionManager)
     .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot claim Pi conversation')))
-  const resources = yield* composeResources({
-    cwd,
-    gitRoot: yield* gitRoot(cwd),
-    profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources')))
+  const resources =
+    launched?.cwd === cwd
+      ? launched.resources
+      : yield* composeResources({
+          cwd,
+          gitRoot: yield* gitRoot(cwd),
+          profile,
+        }).pipe(
+          Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources'))
+        )
   const trustResolver: typeof PiProjectTrust = yield* fromPromise(
     'Cannot load Pi project-trust resolver',
     () => import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href)
@@ -400,6 +416,7 @@ const createRuntime = Effect.fnUntraced(function* (
     { name: 'dev:web', factory: createWebExtension(webReader).factory },
     { name: 'dev:codemode', factory: api.createCodemodeExtension({ mode: 'on' }) },
     ...(orb === undefined ? [] : [{ name: 'dev:orb', factory: orb.extensionFactory }]),
+    { name: 'dev:quit-terminal', factory: parts.quitTerminal.askingExtension },
   ]
   const services = yield* fromPromise('Cannot create Pi session services', () =>
     api.createAgentSessionServices({
@@ -409,6 +426,7 @@ const createRuntime = Effect.fnUntraced(function* (
       modelRuntime,
       resourceLoaderOptions: {
         additionalSkillPaths: [...resources.skillPaths],
+        additionalExtensionPaths: [parts.quitTerminal.answeringExtensionPath],
         appendSystemPrompt: [profile.guidance],
         extensionFactories: [...(parts.extensions?.(extensions, cwd) ?? extensions)],
       },
@@ -463,37 +481,32 @@ const createRuntime = Effect.fnUntraced(function* (
 })
 
 export const makeRuntimeFactory = (
-  parts: RuntimeParts
+  parts: RuntimeParts,
+  launched?: LaunchResources
 ): Effect.Effect<RuntimeFactory, never, RuntimeFactoryServices> =>
-  Effect.map(
-    Effect.context<RuntimeFactoryServices>(),
-    context => runtimeOptions =>
-      Effect.runPromiseWith(context)(createRuntime(parts, runtimeOptions))
-  )
-
-const disposeRuntime = (runtime: AgentRuntime): Effect.Effect<void, never> =>
-  fromPromise('Cannot dispose Pi runtime', () => runtime.dispose()).pipe(Effect.orDie)
+  Effect.map(Effect.context<RuntimeFactoryServices>(), context => {
+    let unused = launched
+    return runtimeOptions => {
+      const first = unused
+      unused = undefined
+      return Effect.runPromiseWith(context)(createRuntime(parts, runtimeOptions, first))
+    }
+  })
 
 const runInteractive = Effect.fnUntraced(function* (
   api: PiApi,
   runtime: AgentRuntime,
-  host: WorkspaceHost
-): Effect.fn.Return<boolean, LauncherError> {
+  ending: SessionEnd
+): Effect.fn.Return<void, LauncherError> {
   const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
-  const quit = yield* Effect.acquireUseRelease(
-    Effect.sync(() => host.interceptQuit(true)),
-    () =>
-      Effect.raceFirst(
-        fromPromise('Pi interactive mode failed', () => mode.run()).pipe(Effect.as(false)),
-        Deferred.await(host.quitRequested).pipe(Effect.as(true))
-      ),
-    () => Effect.sync(() => host.interceptQuit(false))
+  yield* Effect.raceFirst(
+    fromPromise('Pi interactive mode failed', () => mode.run()),
+    ending.requested
   )
-  if (quit)
+  if (ending.current().phase === 'quitting')
     yield* Effect.sync(() => {
       mode.stop()
     })
-  return quit
 })
 
 type ReleaseExitCode = ReturnType<typeof releaseExitCode> | 130
@@ -681,7 +694,10 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     readonly occupiedPaths: readonly string[]
     readonly detached: boolean
     readonly proceed: () => boolean
-    readonly terminal?: { readonly packageRoot: string; readonly hold: TerminalHold }
+    readonly terminal?: {
+      readonly hold: TerminalHold
+      readonly module: QuitTerminal | undefined
+    }
   }
 ): Effect.fn.Return<void> {
   const style = terminalStyle(process.stdout, process.env)
@@ -689,10 +705,10 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     input.terminal === undefined
       ? undefined
       : yield* loadQuitGraphics(
-          input.terminal.packageRoot,
           style.live,
           process.stdout.columns,
-          input.terminal.hold
+          input.terminal.hold,
+          input.terminal.module
         )
   yield* write(
     input.detached
@@ -762,51 +778,15 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
   )
 }, Effect.uninterruptible)
 
+const SWEEP_INTERRUPT_NOTICE =
+  'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchCause(effect, cause =>
     Effect.sync(() => {
       process.stderr.write(`${errorText(Cause.squash(cause))}\n`)
     })
   )
-
-interface SignalHandlers {
-  readonly remove: () => void
-}
-
-const installSignalHandlers = (
-  runtime: AgentRuntime,
-  release: Effect.Effect<void, never>,
-  host: WorkspaceHost
-): Effect.Effect<SignalHandlers> => {
-  const terminate = (exitCode: number): void => {
-    host.interceptQuit(false)
-    Effect.runFork(
-      reported(disposeRuntime(runtime)).pipe(
-        Effect.andThen(reported(release)),
-        Effect.andThen(
-          Effect.sync(() => {
-            process.exitCode = exitCode
-            process.exit(exitCode)
-          })
-        )
-      )
-    )
-  }
-  const onInterrupt = (): void => terminate(130)
-  const onTerminate = (): void => terminate(1)
-  return Effect.sync(() => {
-    process.once('SIGTERM', onTerminate)
-    process.once('SIGINT', onInterrupt)
-    process.once('SIGHUP', onTerminate)
-    return {
-      remove: () => {
-        process.removeListener('SIGTERM', onTerminate)
-        process.removeListener('SIGINT', onInterrupt)
-        process.removeListener('SIGHUP', onTerminate)
-      },
-    }
-  })
-}
 
 interface LauncherDependencies {
   readonly workspaceLifecycle: Effect.Effect<WorkspaceLifecycle, never, Scope.Scope>
@@ -858,6 +838,9 @@ export const orbQuit = (
       }
     : cancel
 
+const ORB_INTERRUPT_NOTICE =
+  'Interrupt received: the started orb step runs on until it ends, so the checkout is never left half-written; an orb whose work has not returned is kept, a returned orb is deleted without waiting for orbit to confirm it, and dev exits 130 afterwards.'
+
 const latchSignal = (signalled: Deferred.Deferred<void>): void => {
   const onSignal = (): void => {
     process.removeListener('SIGINT', onSignal)
@@ -890,45 +873,6 @@ const cancelOnSignal = <A, E, R>(
       return yield* new LauncherError({ message: 'The orb start was cancelled.' })
     return yield* exit
   })
-
-const cancellation = (notice: () => string | undefined) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      const signalled = Deferred.makeUnsafe<void>()
-      let held = false
-      let deferred: string | undefined
-      const onSignal = (): void => {
-        Deferred.doneUnsafe(signalled, Effect.void)
-        const text = notice()
-        if (text === undefined) return
-        if (held) deferred = text
-        else process.stderr.write(`\n${text}\n`)
-      }
-      const hold: TerminalHold = {
-        begin: () => {
-          held = true
-        },
-        end: () => {
-          held = false
-          if (deferred !== undefined) process.stderr.write(`${deferred}\n`)
-          deferred = undefined
-        },
-      }
-      process.on('SIGINT', onSignal)
-      process.on('SIGTERM', onSignal)
-      return {
-        proceed: () => !Deferred.isDoneUnsafe(signalled),
-        interrupted: Deferred.await(signalled),
-        hold,
-        onSignal,
-      }
-    }),
-    ({ onSignal }) =>
-      Effect.sync(() => {
-        process.removeListener('SIGINT', onSignal)
-        process.removeListener('SIGTERM', onSignal)
-      })
-  )
 
 const write = (text: string, stream: NodeJS.WriteStream = process.stdout): Effect.Effect<void> =>
   Effect.sync(() => {
@@ -1138,14 +1082,17 @@ const orbCommand = Effect.fnUntraced(function* (
   )
 })
 
-const launchDirectory = Effect.fnUntraced(function* (options: LaunchOptions) {
+const launchDirectory = Effect.fnUntraced(function* (
+  options: LaunchOptions,
+  rootOf: (cwd: string) => Effect.Effect<string | undefined>
+) {
   if (
     options.resume !== undefined ||
     options.continueSession ||
     options.diagnostics ||
     options.probeRuntime ||
     options.saveProfile !== undefined ||
-    (yield* gitRoot(options.cwd)) !== undefined
+    (yield* rootOf(options.cwd)) !== undefined
   )
     return options.cwd
   const dataHome = yield* (
@@ -1268,7 +1215,18 @@ const run = Effect.fnUntraced(function* (
     return yield* new LauncherError({
       message: '--orb cannot be combined with --diagnostics or --probe-runtime.',
     })
-  const launchCwd = yield* launchDirectory(options)
+  const knownRoots = new Map<string, string>()
+  const rootOf = (cwd: string): Effect.Effect<string | undefined> => {
+    const known = knownRoots.get(cwd)
+    return known === undefined
+      ? Effect.tap(gitRoot(cwd), root =>
+          Effect.sync(() => {
+            if (root !== undefined) knownRoots.set(cwd, root)
+          })
+        )
+      : Effect.succeed(known)
+  }
+  const launchCwd = yield* launchDirectory(options, rootOf)
   if (launchCwd === undefined) return
   const dataHome = options.dataHome ?? (yield* defaultDataHome)
   const catalog = yield* loadCatalog.pipe(
@@ -1425,7 +1383,7 @@ const run = Effect.fnUntraced(function* (
   const profile = yield* catalog
     .load(selectedName)
     .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
-  const effectiveRoot = yield* gitRoot(effectiveCwd)
+  const effectiveRoot = yield* rootOf(effectiveCwd)
   const resources = yield* composeResources({
     cwd: effectiveCwd,
     gitRoot: effectiveRoot,
@@ -1499,28 +1457,41 @@ const run = Effect.fnUntraced(function* (
             stopWork = close
           },
         }
-  const createRuntimeFactory = yield* makeRuntimeFactory({
-    api,
-    packageRoot: packageInfo.root,
-    dataHome,
-    profile,
-    guard,
-    workspaceHost,
-    lifecycle: workspaceLifecycle,
-    webReader,
-    ...(orbRuntime === undefined ? {} : { orb: orbRuntime }),
-  })
+  const quitTerminal = makeQuitTerminalSource()
+  const createRuntimeFactory = yield* makeRuntimeFactory(
+    {
+      api,
+      packageRoot: packageInfo.root,
+      dataHome,
+      profile,
+      guard,
+      workspaceHost,
+      lifecycle: workspaceLifecycle,
+      webReader,
+      quitTerminal,
+      ...(orbRuntime === undefined ? {} : { orb: orbRuntime }),
+    },
+    { cwd: effectiveCwd, resources }
+  )
   const returnCwd = process.cwd()
   const outerScope = yield* Effect.scope
+  const ending = makeSessionEnd()
+  const exitOnSignal = (code: SignalCode): Effect.Effect<never> =>
+    reported(lease.release.pipe(Effect.orDie)).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          process.exitCode = code
+          return process.exit(code)
+        })
+      )
+    )
 
-  let quit: { readonly proceed: () => boolean; readonly hold: TerminalHold } | undefined
-  let sweepStarted = false
   const sessionProgram = Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(Effect.succeed(workspaceHost), host =>
         host.close.pipe(Effect.orDie)
       )
-      const runtime = yield* Effect.acquireRelease(
+      const { runtime } = yield* Effect.acquireRelease(
         fromPromise('Cannot create Pi runtime', () =>
           api.createAgentSessionRuntime(createRuntimeFactory, {
             cwd: effectiveCwd,
@@ -1536,15 +1507,17 @@ const run = Effect.fnUntraced(function* (
               proceed: () => true,
               interrupted: Deferred.await(secondInterrupt),
             })
+          }),
+          Effect.map(created => {
+            fenceRuntimeDisposal(created)
+            const dispose = ending.parkPiDispose(created)
+            workspaceHost.bindRuntime(created)
+            guard.bind(created)
+            return { runtime: created, dispose }
           })
         ),
-        disposeRuntime
+        ({ dispose }) => fromPromise('Cannot dispose Pi runtime', dispose).pipe(Effect.orDie)
       )
-      yield* Effect.sync(() => {
-        fenceRuntimeDisposal(runtime)
-        workspaceHost.bindRuntime(runtime)
-        guard.bind(runtime)
-      })
       yield* fromSync('Pi startup diagnostics failed', () =>
         validateDiagnostics(runtime.services, profile, resources, options.probeRuntime)
       )
@@ -1555,39 +1528,25 @@ const run = Effect.fnUntraced(function* (
         })
         return
       }
-      const release = lease.release.pipe(Effect.orDie)
-      const signals = yield* Effect.acquireRelease(
-        installSignalHandlers(runtime, release, workspaceHost),
-        ({ remove }) => Effect.sync(remove)
-      )
-      if (yield* runInteractive(api, runtime, workspaceHost)) {
-        signals.remove()
-        let orbClosing = false
-        const cancel = yield* Scope.provide(outerScope)(
-          cancellation(() => {
-            if (sweepStarted)
-              return 'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
-            if (orbClosing)
-              return 'Interrupt received: the started orb step runs on until it ends, so the checkout is never left half-written; an orb whose work has not returned is kept, a returned orb is deleted without waiting for orbit to confirm it, and dev exits 130 afterwards.'
-            return undefined
-          })
+      yield* Scope.provide(outerScope)(ending.watchSignals)
+      yield* runInteractive(api, runtime, ending)
+      const closing = orbSession
+      const step = closing === undefined ? undefined : ending.beginQuitStep(ORB_INTERRUPT_NOTICE)
+      if (closing !== undefined && step !== undefined) {
+        const stop = stopWork
+        if (stop !== undefined)
+          yield* Effect.ignore(fromPromise('Cannot stop background work', stop))
+        yield* Effect.uninterruptible(closing.close(orbQuit(step, process))).pipe(
+          Effect.ensuring(Effect.sync(step.end))
         )
-        const closing = orbSession
-        if (closing !== undefined) {
-          orbClosing = true
-          const stop = stopWork
-          if (stop !== undefined)
-            yield* Effect.ignore(fromPromise('Cannot stop background work', stop))
-          yield* Effect.uninterruptible(closing.close(orbQuit(cancel, process)))
-          orbClosing = false
-        }
-        quit = { proceed: cancel.proceed, hold: cancel.hold }
       }
     })
   )
   return yield* Effect.gen(function* () {
     yield* Effect.ensuring(sessionProgram, Scope.close(readerScope, Exit.void))
-    if (quit === undefined) return false
+    const ended = ending.current()
+    if (ended.phase === 'signalled') return yield* exitOnSignal(ended.code)
+    if (ended.phase !== 'quitting') return false
     yield* lease.release
     const { binding, delegatedCwds } = workspaceHost.attachment
     yield* Effect.sync(() => {
@@ -1595,31 +1554,41 @@ const run = Effect.fnUntraced(function* (
         process.chdir(returnCwd)
       } catch {}
     })
-    const { proceed, hold } = quit
     yield* Effect.uninterruptible(
-      Effect.sync(() => {
-        sweepStarted = true
-      }).pipe(
-        Effect.andThen(
-          sweepAtQuit(workspaceLifecycle, {
-            anchorWorkspaceId: binding.workspaceId,
-            delegatedCwds,
-            occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
-            detached: workspaceHost.isDetached(),
-            proceed,
-            terminal: { packageRoot: packageInfo.root, hold },
-          })
-        )
-      )
+      Effect.suspend(() => {
+        const interruption = ending.beginSweep(SWEEP_INTERRUPT_NOTICE)
+        return interruption === undefined
+          ? Effect.interrupt
+          : sweepAtQuit(workspaceLifecycle, {
+              anchorWorkspaceId: binding.workspaceId,
+              delegatedCwds,
+              occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
+              detached: workspaceHost.isDetached(),
+              proceed: interruption.proceed,
+              terminal: { hold: interruption.hold, module: quitTerminal.current() },
+            })
+      })
     )
     requestCleanup(dataHome, 'graceful-exit', dependencies.coordination)
     return true
   }).pipe(
-    Effect.onExit(exit =>
-      quit === undefined || sweepStarted || Exit.isSuccess(exit)
-        ? Effect.void
-        : write(quitFailureNotice(workspaceHost.isDetached(), exit.cause))
-    )
+    Effect.onExit(exit => {
+      if (Exit.isSuccess(exit)) return Effect.void
+      const ended = ending.current()
+      switch (ended.phase) {
+        case 'running':
+        case 'sweeping':
+          return Effect.void
+        case 'signalled':
+          return (
+            Cause.hasInterruptsOnly(exit.cause)
+              ? Effect.void
+              : write(errorText(Cause.squash(exit.cause)), process.stderr)
+          ).pipe(Effect.andThen(exitOnSignal(ended.code)))
+        case 'quitting':
+          return write(quitFailureNotice(workspaceHost.isDetached(), exit.cause))
+      }
+    })
   )
 }, Effect.scoped)
 

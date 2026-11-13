@@ -1,4 +1,7 @@
-import { Clock, Effect, Fiber, type Scope } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import type * as Scope from 'effect/Scope'
 import { type ReleaseStrip, releaseStrip, stripFits, sweepStrip } from './quit-animation.ts'
 import { type QuitGraphics, type Scene, type SceneShape, SCAN_SHAPE } from './quit-scene.ts'
 import type {

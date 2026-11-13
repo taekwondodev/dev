@@ -1,4 +1,5 @@
-import { Schema, type Option } from 'effect'
+import * as Schema from 'effect/Schema'
+import type * as Option from 'effect/Option'
 import { AttemptId, AttemptRecordSchema, SessionId } from './work-domain.ts'
 
 const RpcId = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))

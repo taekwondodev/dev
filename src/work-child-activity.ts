@@ -1,4 +1,4 @@
-import { Predicate } from 'effect'
+import * as Predicate from 'effect/Predicate'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { ACTIVITY_TEXT_LIMIT, type ChildActivity, type ChildLive } from './work-domain.ts'
 import { redactSecrets } from './error-text.ts'

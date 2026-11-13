@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { Effect, FileSystem, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { join } from 'node:path'
 import { errorText } from '../error-text.ts'
 import {

@@ -1,4 +1,6 @@
-import { Effect, Predicate, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
 import { relative, isAbsolute } from 'node:path'
 import type { SessionEntry, SessionManager } from '@earendil-works/pi-coding-agent'
 import { WorkspaceId } from './workspace-domain.ts'

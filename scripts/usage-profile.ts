@@ -1,6 +1,11 @@
 import { join } from 'node:path'
 import { codemodeReport, codemodeSession, type CodemodeReport } from './usage-codemode.ts'
-import { Array as Arr, DateTime, Effect, FileSystem, Option, Schema } from 'effect'
+import * as Arr from 'effect/Array'
+import * as DateTime from 'effect/DateTime'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { orUnavailable, percent, renderCharts, seconds, size } from './usage-charts.ts'
 import { ROLES, type TokenTotals, USAGE_SOURCES } from './usage-export.ts'
 import {

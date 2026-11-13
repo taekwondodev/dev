@@ -1,7 +1,9 @@
 import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Effect, Predicate, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
 import { errorText } from '../../src/error-text.ts'
 import { ChildError, type ChildServeOptions } from '../../src/pi-child.ts'
 import {

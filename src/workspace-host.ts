@@ -1,16 +1,14 @@
-import {
-  Cause,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  FiberSet,
-  Option,
-  Schema,
-  type Scope,
-  Stream,
-} from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as FiberSet from 'effect/FiberSet'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+import type * as Scope from 'effect/Scope'
+import * as Stream from 'effect/Stream'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { closeSync, lstatSync, existsSync, openSync, readSync } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import { basename, resolve } from 'node:path'
@@ -48,7 +46,10 @@ import {
   type SwitchDetails,
 } from './workspace-model-text.ts'
 import {
+  scopedGrantOf,
   WorkspaceError,
+  type ScopedContinuation,
+  type ScopedOutcome,
   type SweepReceipt,
   type WorkspaceAttachment,
   type WorkspaceBinding,
@@ -97,8 +98,6 @@ export interface WorkspaceHost {
   readonly shellOperations: BashOperations
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
-  readonly quitRequested: Deferred.Deferred<void>
-  interceptQuit(enabled: boolean): void
   isParked(): boolean
 
   isDetached(): boolean
@@ -144,8 +143,33 @@ interface HostToolCallEvent {
 }
 
 type Admission =
-  | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant; readonly warning?: string }
+  | {
+      readonly kind: 'admitted'
+      readonly attachment: WorkspaceAttachment
+      readonly grant: WorkspaceGrant
+      readonly warning?: string
+      readonly scoped?: ScopedOutcome
+    }
   | { readonly kind: 'refused'; readonly reason: string; readonly endsTurn: boolean }
+
+const settleRefusedWrite = (
+  attachment: WorkspaceAttachment,
+  grant: WorkspaceGrant,
+  context: ExtensionContext,
+  toolName: string
+): Effect.Effect<void> =>
+  attachment.reportExecution(grant, { kind: 'operation-completed' }).pipe(
+    Effect.asVoid,
+    Effect.catch(settleError =>
+      Effect.sync(() =>
+        notify(
+          context,
+          `Refused native ${toolName} could not be settled: ${settleError.message}`,
+          'error'
+        )
+      )
+    )
+  )
 
 const endRun = (context: ExtensionContext, purpose: string): void => {
   try {
@@ -168,7 +192,12 @@ const refusalOf = (
 })
 
 type WriterAdmission =
-  | { readonly kind: 'admitted'; readonly grant: WorkspaceGrant }
+  | {
+      readonly kind: 'admitted'
+      readonly attachment: WorkspaceAttachment
+      readonly grant: WorkspaceGrant
+      readonly scoped: WorkspaceGrant | WorkspaceError | undefined
+    }
   | { readonly kind: 'refused'; readonly refusal: ToolCallEventResult }
 
 interface ConversationIdentity {
@@ -177,6 +206,7 @@ interface ConversationIdentity {
 }
 
 const hostFailure = (message: string) => new WorkspaceHostError({ message })
+const WRITE_ADMISSION_CHANGED = 'the workspace changed before the native write was admitted'
 const decodeSessionLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 const decodeSessionHeader = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -451,8 +481,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let replacing = false
   let quitting = false
   const withdrawals = new Map<WorkspaceAttachment, Fiber.Fiber<void>>()
-  let quitInterception: 'off' | 'armed' | 'handed-over' = 'off'
-  const quitRequested = Deferred.makeUnsafe<void>()
   let runtimePreparationSerial = 0
   let pendingReopen:
     | {
@@ -474,22 +502,25 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     runPromise,
     onError: message => notify(currentContext, message, 'error'),
   })
-  const shell = yield* makeWorkspaceShell(cwd =>
+  const shell = yield* makeWorkspaceShell((cwd, executionOf) =>
     Effect.suspend(() => {
       const attachment = activeAttachment
-      return attachment.authorize({ kind: 'write', cwd }).pipe(
-        Effect.flatMap(result =>
-          result.kind === 'ready'
-            ? Effect.succeed({ attachment, grant: result.grant })
-            : Effect.fail(
-                new WorkspaceError({
-                  outcome: 'blocked',
-                  message:
-                    'Workspace admission requires a host rebind; the command was not executed.',
-                })
-              )
+      const execution = executionOf(attachment)
+      return attachment
+        .authorize({ kind: 'write', cwd, scoped: { kind: 'opaque', execution, cwd } })
+        .pipe(
+          Effect.flatMap(result =>
+            result.kind === 'ready'
+              ? Effect.succeed({ attachment, execution, scoped: result.scoped })
+              : Effect.fail(
+                  new WorkspaceError({
+                    outcome: 'blocked',
+                    message:
+                      'Workspace admission requires a host rebind; the command was not executed.',
+                  })
+                )
+          )
         )
-      )
     })
   )
 
@@ -870,7 +901,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       context: ExtensionContext,
       access: WorkspaceGrant['access'],
       cwd: string,
-      origin: 'tool-call' | 'user-bash'
+      origin: 'tool-call' | 'user-bash',
+      scoped: ScopedContinuation | undefined
     ): Effect.fn.Return<Admission, WorkspaceError> {
       if (parked)
         return {
@@ -878,7 +910,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           endsTurn: true,
           reason: 'Workspace host is parked during a transition; no operation started.',
         }
-      const result = yield* activeAttachment.authorize({ kind: access, cwd })
+      const attachment = activeAttachment
+      const result = yield* attachment.authorize(
+        scoped === undefined ? { kind: access, cwd } : { kind: 'write', cwd, scoped }
+      )
       if (result.kind === 'rebind') {
         requestHandoff(result.handoff, origin, context, origin === 'user-bash')
         return {
@@ -889,8 +924,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       }
       return {
         kind: 'admitted',
+        attachment,
         grant: result.grant,
         ...(result.warning ? { warning: result.warning } : {}),
+        ...(result.scoped === undefined ? {} : { scoped: result.scoped }),
       }
     },
     (effect, context, _access, _cwd, origin) =>
@@ -929,23 +966,32 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     return undefined
   }
 
-  const admitWriter = (context: ExtensionContext) =>
-    Effect.map(
-      authorization(context, 'write', context.cwd, 'tool-call'),
-      (admitted): WriterAdmission => {
-        if (admitted.kind === 'refused') return { kind: 'refused', refusal: refusalOf(admitted) }
-        const mismatch = validateNativeGrant(admitted.grant, context, 'write')
-        if (mismatch) {
-          parked = 'switch'
-          return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
-        }
-        return { kind: 'admitted', grant: admitted.grant }
-      }
+  const admitWriter = Effect.fnUntraced(function* (
+    context: ExtensionContext,
+    within?: { readonly toolName: string; readonly operation: ScopedContinuation }
+  ): Effect.fn.Return<WriterAdmission> {
+    const admitted = yield* authorization(
+      context,
+      'write',
+      context.cwd,
+      'tool-call',
+      within?.operation
     )
+    if (admitted.kind === 'refused') return { kind: 'refused', refusal: refusalOf(admitted) }
+    const scoped = scopedGrantOf(admitted.scoped)
+    const mismatch = validateNativeGrant(admitted.grant, context, 'write')
+    if (mismatch) {
+      parked = 'switch'
+      if (within !== undefined && scoped !== undefined && !(scoped instanceof WorkspaceError))
+        yield* settleRefusedWrite(admitted.attachment, scoped, context, within.toolName)
+      return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
+    }
+    return { kind: 'admitted', attachment: admitted.attachment, grant: admitted.grant, scoped }
+  })
 
   const admitRead = (toolCallId: string, context: ExtensionContext) =>
     Effect.map(
-      authorization(context, 'read', context.cwd, 'tool-call'),
+      authorization(context, 'read', context.cwd, 'tool-call', undefined),
       (admitted): ToolCallEventResult | undefined => {
         if (admitted.kind === 'refused') return refusalOf(admitted)
         const mismatch = validateNativeGrant(admitted.grant, context, 'read')
@@ -1009,10 +1055,9 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         })
         return undefined
       }
-      let within: WorkspaceGrant
+      let operationGrant: WorkspaceGrant
       let writeScope = scope
       let admitted = destination
-      let scopedCwd = context.cwd
       if (destination.kind === 'foreign') {
         let caller: WorkspaceGrant | undefined
         if (isWithin(authority.root, destination.checkout)) {
@@ -1027,59 +1072,57 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         })
         if (foreign.kind !== 'ready')
           return yield* hostFailure('the other checkout was not reserved for this conversation')
-        within = foreign.grant
         writeScope = { checkout: foreign.grant.checkout, authorityRoot: authority.root }
-        scopedCwd = foreign.grant.checkout
+        const scopedCwd = foreign.grant.checkout
         admitted = yield* Effect.try({
           try: () => classifyWriteDestination(writeScope, scopedCwd, destination.operand),
           catch: cause => hostFailure(errorText(cause)),
         })
-      } else {
+        const operation = yield* attachment.authorize({
+          kind: 'native-file-write',
+          within: foreign.grant,
+          path: destination.operand,
+          cwd: scopedCwd,
+        })
+        if (operation.kind !== 'ready') return yield* hostFailure(WRITE_ADMISSION_CHANGED)
+        operationGrant = operation.grant
+      } else if (destination.kind === 'artifact') {
         const writer = yield* admitWriter(context)
         if (writer.kind === 'refused') return writer.refusal
-        if (destination.kind === 'artifact') {
-          if (writer.grant.taskId !== scope.taskId)
-            return yield* hostFailure('the task changed before the artifact write was admitted')
-          yield* nativeWrites.admit({
-            toolCallId: event.toolCallId,
-            scope,
-            destination,
-            lifecycle: { kind: 'local', validate },
-          })
-          return undefined
+        if (writer.grant.taskId !== scope.taskId)
+          return yield* hostFailure('the task changed before the artifact write was admitted')
+        yield* nativeWrites.admit({
+          toolCallId: event.toolCallId,
+          scope,
+          destination,
+          lifecycle: { kind: 'local', validate },
+        })
+        return undefined
+      } else {
+        const writer = yield* admitWriter(context, {
+          toolName: event.toolName,
+          operation: { kind: 'native-file-write', path, cwd: context.cwd },
+        })
+        if (writer.kind === 'refused') return writer.refusal
+        const { scoped } = writer
+        if (scoped instanceof WorkspaceError) return yield* scoped
+        if (scoped === undefined) return yield* hostFailure(WRITE_ADMISSION_CHANGED)
+        if (writer.attachment !== attachment) {
+          yield* settleRefusedWrite(writer.attachment, scoped, context, event.toolName)
+          return yield* hostFailure(WRITE_ADMISSION_CHANGED)
         }
-        within = writer.grant
+        operationGrant = scoped
       }
-      const operation = yield* attachment.authorize({
-        kind: 'native-file-write',
-        within,
-        path: destination.kind === 'foreign' ? destination.operand : path,
-        cwd: scopedCwd,
-      })
-      if (operation.kind !== 'ready')
-        return yield* hostFailure('the workspace changed before the native write was admitted')
       yield* nativeWrites
         .admit({
           toolCallId: event.toolCallId,
           scope: writeScope,
           destination: admitted,
-          lifecycle: { kind: 'workspace', attachment, grant: operation.grant },
+          lifecycle: { kind: 'workspace', attachment, grant: operationGrant },
         })
         .pipe(
           Effect.tapError(() =>
-            attachment
-              .reportExecution(operation.grant, { kind: 'operation-completed' })
-              .pipe(
-                Effect.catch(settleError =>
-                  Effect.sync(() =>
-                    notify(
-                      context,
-                      `Refused native ${event.toolName} could not be settled: ${settleError.message}`,
-                      'error'
-                    )
-                  )
-                )
-              )
+            settleRefusedWrite(attachment, operationGrant, context, event.toolName)
           )
         )
       return undefined
@@ -1263,14 +1306,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
     return true
   })
-  const interceptQuit = Effect.fnUntraced(function* (rawDispose: () => Promise<void>) {
-    yield* Effect.yieldNow
-    if (quitInterception !== 'armed') return yield* piCall(rawDispose)
-    quitInterception = 'handed-over'
-    yield* Deferred.succeed(quitRequested, undefined)
-    return yield* Effect.never
-  })
-
   const guardedReplacement = Effect.fnUntraced(function* <A, E>(
     cancelled: A,
     replace: Effect.Effect<A, E>
@@ -1500,10 +1535,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     shellOperations: shell.operations,
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
-    quitRequested,
-    interceptQuit(enabled) {
-      if (quitInterception !== 'handed-over') quitInterception = enabled ? 'armed' : 'off'
-    },
     isParked: () => parked !== false,
     isDetached: () => detachedAttachments.has(activeAttachment),
     requestRebind: (handoff, source, context) =>
@@ -1516,7 +1547,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const rawDispose = nextRuntime.dispose.bind(nextRuntime)
       nextRuntime.dispose = () => {
         quitting = true
-        return quitInterception === 'armed' ? runPromise(interceptQuit(rawDispose)) : rawDispose()
+        return rawDispose()
       }
       if (options.orbMode === true) {
         const refuse = async () => {
@@ -1596,17 +1627,19 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         options.orbMode === true
           ? undefined
           : runPromise(
-              Effect.map(authorization(context, 'write', event.cwd, 'user-bash'), admitted =>
-                admitted.kind === 'admitted'
-                  ? { operations: shell.operations }
-                  : {
-                      result: {
-                        output: admitted.reason,
-                        exitCode: 1,
-                        cancelled: false,
-                        truncated: false,
-                      },
-                    }
+              Effect.map(
+                authorization(context, 'write', event.cwd, 'user-bash', undefined),
+                admitted =>
+                  admitted.kind === 'admitted'
+                    ? { operations: shell.operations }
+                    : {
+                        result: {
+                          output: admitted.reason,
+                          exitCode: 1,
+                          cancelled: false,
+                          truncated: false,
+                        },
+                      }
               )
             )
       )

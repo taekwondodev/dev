@@ -3,7 +3,9 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { type Duration, Effect, Scope } from 'effect'
+import type * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Scope from 'effect/Scope'
 import { makeBrowserProfileOwner, type BrowserProfileOptions } from '../../src/web-profile.ts'
 import {
   BrowserOwnerError,

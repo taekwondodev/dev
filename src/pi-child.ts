@@ -1,10 +1,16 @@
+import './compile-cache-adoption.ts'
 import { spawn } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { NodeServices } from '@effect/platform-node'
-import { Clock, Effect, FileSystem, Option, Predicate, Schema } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { StringEnum } from '@earendil-works/pi-ai'
 import { compile, int, obj, opt, str } from '@earendil-works/pi-schema'
@@ -565,7 +571,7 @@ function createReviewGitTool(cwd: string, git: GitRunner): Pi.ToolDefinition {
 
 function telemetry(session: Pi.AgentSession): Telemetry {
   const stats = session.getSessionStats()
-  const contextUsage = session.getContextUsage()
+  const contextUsage = stats.contextUsage ?? session.getContextUsage()
   if (!Number.isFinite(stats.tokens.total) || stats.tokens.total <= 0)
     return contextUsage ? { context: contextUsage } : {}
   return {
