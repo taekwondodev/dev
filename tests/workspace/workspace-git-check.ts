@@ -132,7 +132,7 @@ try {
   )
 
   await claim(
-    'the authority worker shares the compile cache dev enabled without exposing it to the commands it runs, and passes on a cache the user chose',
+    'the commands the authority worker runs do not see the compile cache dev enabled, and see a cache the user chose',
     async () => {
       const seen = join(sandbox, 'seen')
       mkdirSync(seen)
