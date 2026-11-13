@@ -4,7 +4,8 @@ import { once } from 'node:events'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { Effect, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import {
   WorkspaceError,
   type SweepReceipt,

@@ -3,18 +3,16 @@ import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
-import {
-  Cause,
-  Clock,
-  Context,
-  Effect,
-  Exit,
-  type JsonSchema,
-  Layer,
-  Option,
-  Result,
-  Schema,
-} from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import type * as JsonSchema from 'effect/JsonSchema'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
 import { resumeCandidates } from './workspace-command.ts'

@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
-import { Clock, DateTime, Effect, Option, Schema } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { errorText } from '../error-text.ts'
 import {
   OrbViewSchema,

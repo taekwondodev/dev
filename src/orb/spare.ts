@@ -1,15 +1,13 @@
-import {
-  Cause,
-  Clock,
-  DateTime,
-  Duration,
-  Effect,
-  Exit,
-  Fiber,
-  type Context,
-  type Scope,
-} from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import type * as Context from 'effect/Context'
+import type * as Scope from 'effect/Scope'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { errorText } from '../error-text.ts'
 import type { Orbit } from './cloud.ts'
 import { deleteRecorded } from './deletion.ts'

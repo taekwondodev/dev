@@ -18,7 +18,8 @@ import {
 import { tmpdir, userInfo } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { Effect, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import {
   WorkspaceError,
   type WorkspaceExecution,
@@ -1806,6 +1807,80 @@ try {
       const completedNative = await findUse(scopedLifecycle, nativeWrite.useId)
       assert.equal(completedNative?.stage, 'quiescent')
       assert.equal(completedNative?.path, join(scopedRepo, 'tracked.txt'))
+    }
+  )
+
+  await claim(
+    'a write admission continued into a scoped operation answers in one request with the writer grant and the scoped use a separate request would record, and returns a scoped refusal as an outcome while the writer stays ready',
+    async () => {
+      const comparable = async (useId: string) => {
+        const use = await findUse(scopedLifecycle, useId)
+        assert.ok(use !== undefined)
+        const { id: _id, ...rest } = use
+        return rest
+      }
+      const continued = await scopedPrimary.authorize({
+        kind: 'write',
+        scoped: { kind: 'native-file-write', path: 'tracked.txt' },
+      })
+      assert.equal(continued.kind, 'ready')
+      if (continued.kind !== 'ready') return
+      assert.deepEqual(continued.grant, primaryGrant, 'the writer grant is the one already held')
+      assert.equal(continued.scoped?.kind, 'ready')
+      if (continued.scoped?.kind !== 'ready') return
+      const separate = ready(
+        await scopedPrimary.authorize({
+          kind: 'native-file-write',
+          within: primaryGrant,
+          path: 'tracked.txt',
+        })
+      )
+      const { useId: continuedUse, ...continuedGrant } = continued.scoped.grant
+      const { useId: separateUse, ...separateGrant } = separate
+      assert.notEqual(continuedUse, separateUse)
+      assert.deepEqual(continuedGrant, separateGrant)
+      assert.deepEqual(await comparable(continuedUse), await comparable(separateUse))
+      for (const grant of [continued.scoped.grant, separate]) {
+        await scopedPrimary.reportExecution(grant, { kind: 'operation-started' })
+        await scopedPrimary.reportExecution(grant, { kind: 'operation-completed' })
+        assert.equal((await findUse(scopedLifecycle, grant.useId))?.stage, 'quiescent')
+      }
+
+      const outside = { kind: 'native-file-write', path: '../outside.txt' } as const
+      const separateRefusal = await scopedPrimary
+        .authorize({ ...outside, within: primaryGrant })
+        .then(
+          () => undefined,
+          (cause: unknown) => cause
+        )
+      assert.ok(separateRefusal instanceof WorkspaceError)
+      const refused = await scopedPrimary.authorize({ kind: 'write', scoped: outside })
+      assert.equal(refused.kind, 'ready')
+      if (refused.kind !== 'ready') return
+      assert.deepEqual(refused.grant, primaryGrant, 'the writer stays ready')
+      assert.deepEqual(refused.scoped, {
+        kind: 'refused',
+        outcome: separateRefusal.outcome,
+        message: separateRefusal.message,
+      })
+
+      const shell = await scopedPrimary.authorize({
+        kind: 'write',
+        scoped: { kind: 'opaque', execution: processExecution('continued-shell') },
+      })
+      assert.equal(shell.kind, 'ready')
+      if (shell.kind !== 'ready' || shell.scoped?.kind !== 'ready') {
+        assert.fail('the opaque continuation was not admitted')
+      }
+      const shellUse = await findUse(scopedLifecycle, shell.scoped.grant.useId)
+      assert.equal(shellUse?.effect, 'opaque')
+      assert.equal(shellUse?.stage, 'authorized')
+      await scopedPrimary.reportExecution(shell.scoped.grant, {
+        kind: 'launch-failed',
+        reason: 'the check launches nothing',
+      })
+      const unscoped = await scopedPrimary.authorize({ kind: 'write' })
+      assert.equal(unscoped.kind === 'ready' ? unscoped.scoped : 'not ready', undefined)
     }
   )
 

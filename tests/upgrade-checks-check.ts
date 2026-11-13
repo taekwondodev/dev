@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NodeServices } from '@effect/platform-node'
-import { Effect, Option } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import { type CheckOutcome, runUpgradeChecks } from '../scripts/upgrade-checks.ts'
 
 const cwd = mkdtempSync(join(tmpdir(), 'dev-upgrade-checks-'))

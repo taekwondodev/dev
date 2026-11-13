@@ -12,7 +12,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type Effect, ManagedRuntime } from 'effect'
+import type * as Effect from 'effect/Effect'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { WorkOwner } from '../../src/work-controller.ts'
 import type {
   AgentStartRequest,

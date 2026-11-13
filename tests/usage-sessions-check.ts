@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Effect } from 'effect'
-import { NodeFileSystem } from '@effect/platform-node'
+import * as Effect from 'effect/Effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { readSessions } from '../scripts/usage-sessions.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'dev-usage-sessions-'))

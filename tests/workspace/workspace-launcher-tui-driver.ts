@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { launch } from '../../src/launcher-runtime.ts'
 import type { WorkspaceLifecycle } from '../../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle } from '../../src/workspace-lifecycle.ts'
@@ -135,6 +135,18 @@ if (process.env.LAUNCHER_TUI_FAULT === 'interactive-failure') {
     await sleep(1500)
     this.stop()
     throw new Error('injected interactive mode failure')
+  }
+}
+
+const idleSignal = /^signal-idle:(SIG[A-Z]+)$/.exec(process.env.LAUNCHER_TUI_FAULT ?? '')?.[1]
+if (idleSignal !== undefined) {
+  const {
+    pi: { InteractiveMode },
+  } = await loadInstalledPi()
+  const { run } = InteractiveMode.prototype
+  InteractiveMode.prototype.run = async function (this: InstanceType<typeof InteractiveMode>) {
+    setTimeout(() => process.kill(process.pid, idleSignal as NodeJS.Signals), 1500)
+    await run.call(this)
   }
 }
 

@@ -1,5 +1,6 @@
-import { isProbablyReaderable, Readability } from '@mozilla/readability'
-import { parseHTML } from 'linkedom'
+import type * as ReadabilityModule from '@mozilla/readability'
+import * as Effect from 'effect/Effect'
+import type * as Linkedom from 'linkedom'
 import type { DocumentLink } from './web-documents.ts'
 
 export interface Extracted {
@@ -366,7 +367,9 @@ class MarkdownWriter {
   }
 }
 
-const titleOf = (document: ReturnType<typeof parseHTML>['document']): string | undefined => {
+const titleOf = (
+  document: ReturnType<typeof Linkedom.parseHTML>['document']
+): string | undefined => {
   const candidates = [
     document.querySelector('meta[property="og:title"]')?.getAttribute('content'),
     document.querySelector('title')?.textContent,
@@ -381,8 +384,24 @@ const titleOf = (document: ReturnType<typeof parseHTML>['document']): string | u
 
 const MIN_SEMANTIC_CHARS = 200
 
-export const extractHtml = (html: string, base: string): Extracted => {
-  const { document } = parseHTML(html)
+export interface Dom {
+  readonly parseHTML: typeof Linkedom.parseHTML
+  readonly Readability: typeof ReadabilityModule.Readability
+  readonly isProbablyReaderable: typeof ReadabilityModule.isProbablyReaderable
+}
+
+export const loadDom: Effect.Effect<Dom> = Effect.promise(() =>
+  Promise.all([import('linkedom'), import('@mozilla/readability')])
+).pipe(
+  Effect.map(([{ parseHTML }, { Readability, isProbablyReaderable }]) => ({
+    parseHTML,
+    Readability,
+    isProbablyReaderable,
+  }))
+)
+
+export const extractHtml = (dom: Dom, html: string, base: string): Extracted => {
+  const { document } = dom.parseHTML(html)
   if (document.querySelector('base[href]') === null) {
     const baseElement = document.createElement('base')
     baseElement.setAttribute('href', base)
@@ -396,8 +415,8 @@ export const extractHtml = (html: string, base: string): Extracted => {
     const text = new MarkdownWriter(base, collector, DROPPED_TAGS).render(asDomNode(semantic))
     if (text.length >= MIN_SEMANTIC_CHARS) return { title, text, links: collector.links }
   }
-  if (isProbablyReaderable(document, { minContentLength: 60, minScore: 10 })) {
-    const article = new Readability<DomNode>(document.cloneNode(true) as typeof document, {
+  if (dom.isProbablyReaderable(document, { minContentLength: 60, minScore: 10 })) {
+    const article = new dom.Readability<DomNode>(document.cloneNode(true) as typeof document, {
       serializer: asDomNode,
       keepClasses: true,
     }).parse()

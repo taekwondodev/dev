@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path'
-import { Schema } from 'effect'
-import type { Effect as EffectType } from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import type * as Effect from 'effect/Effect'
 import { AbsolutePath } from './workspace-domain.ts'
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/
@@ -597,7 +597,7 @@ export type OrbReturn = typeof OrbReturnSchema.Type
 export interface PinnedStart {
   readonly ref: string
   readonly commit: string
-  readonly unpin: EffectType<void>
+  readonly unpin: Effect.Effect<void>
 }
 
 export interface ChildOrb {
@@ -605,17 +605,17 @@ export interface ChildOrb {
   end(input: {
     readonly returned: OrbReturn | undefined
     readonly into: ChildOrb | undefined
-  }): EffectType<{ readonly status: string; readonly report: string }>
+  }): Effect.Effect<{ readonly status: string; readonly report: string }>
 }
 
 export interface ChildOrbs {
-  fork(attempt: AttemptId): EffectType<PinnedStart, Error>
+  fork(attempt: AttemptId): Effect.Effect<PinnedStart, Error>
   provision(input: {
     readonly attempt: AttemptId
     readonly worktree: string
-    readonly report: (orb: AttemptOrb) => EffectType<void>
+    readonly report: (orb: AttemptOrb) => Effect.Effect<void>
     readonly adopt: (orb: ChildOrb) => void
-  }): EffectType<ChildOrb, Error>
+  }): Effect.Effect<ChildOrb, Error>
 }
 
 export interface WorkRemote {
@@ -632,21 +632,24 @@ export interface WorkRemote {
 }
 
 export interface WorkOwnerService {
-  readonly snapshot: EffectType<WorkSnapshot, WorkFailure>
-  readonly live: EffectType<ReadonlyMap<AttemptId, ChildLive>>
-  readonly startProcess: (request: ProcessStartRequest) => EffectType<AttemptView, WorkFailure>
-  readonly startAgent: (request: AgentStartRequest) => EffectType<AttemptView, WorkFailure>
-  readonly cancel: (id: AttemptId, reason?: string) => EffectType<AttemptView, WorkFailure>
-  readonly inspect: (id: AttemptId) => EffectType<AttemptDescription, WorkFailure>
-  readonly readLog: (request: LogRequest) => EffectType<LogPage, WorkFailure>
+  readonly snapshot: Effect.Effect<WorkSnapshot, WorkFailure>
+  readonly live: Effect.Effect<ReadonlyMap<AttemptId, ChildLive>>
+  readonly startProcess: (request: ProcessStartRequest) => Effect.Effect<AttemptView, WorkFailure>
+  readonly startAgent: (request: AgentStartRequest) => Effect.Effect<AttemptView, WorkFailure>
+  readonly cancel: (id: AttemptId, reason?: string) => Effect.Effect<AttemptView, WorkFailure>
+  readonly inspect: (id: AttemptId) => Effect.Effect<AttemptDescription, WorkFailure>
+  readonly readLog: (request: LogRequest) => Effect.Effect<LogPage, WorkFailure>
   readonly deliveryStatus: (
     attempts: readonly AttemptView[]
-  ) => EffectType<WorkDeliveryStatus, WorkFailure>
-  readonly recordDeliveryFailure: (id: AttemptId, message: string) => EffectType<void, WorkFailure>
-  readonly dispatch: EffectType<DispatchConfig, WorkFailure>
-  readonly interrupt: (reason?: string) => EffectType<void, WorkFailure>
-  readonly exhaust: (except?: AttemptId) => EffectType<void, WorkFailure>
-  readonly exhaustions: EffectType<number>
-  readonly recover: (exhaustions: number) => EffectType<boolean>
-  readonly close: (reason?: string) => EffectType<void, WorkFailure>
+  ) => Effect.Effect<WorkDeliveryStatus, WorkFailure>
+  readonly recordDeliveryFailure: (
+    id: AttemptId,
+    message: string
+  ) => Effect.Effect<void, WorkFailure>
+  readonly dispatch: Effect.Effect<DispatchConfig, WorkFailure>
+  readonly interrupt: (reason?: string) => Effect.Effect<void, WorkFailure>
+  readonly exhaust: (except?: AttemptId) => Effect.Effect<void, WorkFailure>
+  readonly exhaustions: Effect.Effect<number>
+  readonly recover: (exhaustions: number) => Effect.Effect<boolean>
+  readonly close: (reason?: string) => Effect.Effect<void, WorkFailure>
 }

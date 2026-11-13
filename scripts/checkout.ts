@@ -1,7 +1,11 @@
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Clock, Effect, Schema, Stream } from 'effect'
-import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
+import * as ChildProcess from 'effect/process/ChildProcess'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { runCommand } from '../src/command.ts'
 import { errorText } from '../src/error-text.ts'
 

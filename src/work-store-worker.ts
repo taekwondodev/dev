@@ -1,3 +1,4 @@
+import './compile-cache-adoption.ts'
 import {
   closeSync,
   constants,
@@ -14,7 +15,9 @@ import { dirname, join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 import { setTimeout as delay } from 'node:timers/promises'
 import * as NodeWorkerRunner from '@effect/platform-node/NodeWorkerRunner'
-import { Effect, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import * as WorkerRunner from 'effect/workers/WorkerRunner'
 import {
   OwnerIdentitySchema,

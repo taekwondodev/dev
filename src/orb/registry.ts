@@ -11,8 +11,10 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, join } from 'node:path'
-import { DateTime, Effect, Schema } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as DateTime from 'effect/DateTime'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { runCommand } from '../command.ts'
 import { errorText } from '../error-text.ts'
 import { acquireExclusiveLock, CoordinationError } from '../runtime-coordination.ts'

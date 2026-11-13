@@ -1,18 +1,15 @@
-import { getCompileCacheDir } from 'node:module'
 import { Worker, type Transferable, type WorkerOptions } from 'node:worker_threads'
-import {
-  type Cause,
-  Clock,
-  Deferred,
-  Duration,
-  Effect,
-  Exit,
-  FiberSet,
-  Option,
-  Queue,
-  type Scope,
-  Stream,
-} from 'effect'
+import type * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as FiberSet from 'effect/FiberSet'
+import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
+import type * as Scope from 'effect/Scope'
+import * as Stream from 'effect/Stream'
 import {
   attachmentClosed,
   WorkspaceError,
@@ -31,6 +28,7 @@ import {
   type WorkspaceRpcResults,
   type WorkspaceWorkerMessage,
 } from './workspace-protocol.ts'
+import { withCompileCache } from './compile-cache.ts'
 import { errorText } from './error-text.ts'
 import { defaultAuthorityRoot } from './workspace-authority-root.ts'
 
@@ -99,14 +97,11 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   let nextRequestId = 0
   let nextCallbackId = 0
 
-  const compileCacheDir = getCompileCacheDir()
   const worker = yield* Effect.acquireRelease(
     Effect.sync(() =>
       startWorker(new URL('./workspace-worker.ts', import.meta.url), {
         workerData: options?.root === undefined ? {} : { root: options.root },
-        ...(compileCacheDir === undefined
-          ? {}
-          : { env: { ...process.env, NODE_COMPILE_CACHE: compileCacheDir } }),
+        env: withCompileCache(process.env),
         execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')),
       })
     ),

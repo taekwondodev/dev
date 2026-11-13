@@ -14,8 +14,9 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { NodeServices } from '@effect/platform-node'
-import { Effect, Schema } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import type * as Upgrade from '../scripts/upgrade.ts'
 import { WorkspaceAuthority, registerWorkspace } from '../src/workspace-authority.ts'
 import { canonicalGitWorkspace } from '../src/workspace-git.ts'
@@ -73,7 +74,7 @@ try {
   writeFileSync(join(installation, 'current-version'), '1.0.0\n')
   writeFileSync(
     join(piPackage, 'package.json'),
-    JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0', main: 'index.js' })
+    JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0' })
   )
   mkdirSync(checkout)
   writeFileSync(

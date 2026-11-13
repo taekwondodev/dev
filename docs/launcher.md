@@ -59,6 +59,8 @@ Dev uses Node's best-effort module compile cache. The first launch populates it;
 
 The cache lives in the operating system's temporary directory (`node-compile-cache`), or `NODE_COMPILE_CACHE`. Set `NODE_DISABLE_COMPILE_CACHE=1` to disable it. An unavailable cache does not prevent startup, and source or runtime changes need no manual reset.
 
+Dev-started runtimes share the cache. Commands they run do not inherit a cache setting enabled by dev; an explicit `NODE_COMPILE_CACHE` setting is passed on unchanged.
+
 Help, diagnostics, save-only and browser commands do not start the workspace worker.
 
 ### Outside a Git repository

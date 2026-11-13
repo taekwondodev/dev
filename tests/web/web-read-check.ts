@@ -14,7 +14,12 @@ import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Cause, Deferred, Duration, Effect, Exit, Scope } from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 import {
   assertCopyReleased,

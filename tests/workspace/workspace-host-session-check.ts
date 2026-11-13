@@ -17,7 +17,7 @@ import { mock } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import {
   WorkspaceError,
   type WorkspaceAttachment,

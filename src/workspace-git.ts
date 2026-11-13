@@ -1,7 +1,8 @@
-import { existsSync, realpathSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
-import { basename, isAbsolute, resolve } from 'node:path'
-import { Option, Schema } from 'effect'
+import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
+import { execFile, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { basename, delimiter, isAbsolute, join, resolve } from 'node:path'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { WorkspaceError } from './workspace-domain.ts'
 import { FileIdentitySchema, observePhysicalIdentities } from './workspace-identity.ts'
 
@@ -57,8 +58,22 @@ export const gitEnvironment = (): NodeJS.ProcessEnv => ({
 })
 export const GIT_TIMEOUT_MS = 30_000
 
-export const gitResult = (cwd: string, args: readonly string[], input?: string): GitResult => {
-  const result = spawnSync('git', gitArguments(args), {
+const PATH_GIT = 'git'
+
+export interface GitLauncher {
+  readonly git: string
+  readonly finder: string
+}
+
+const XCRUN_LAUNCHER: GitLauncher = { git: '/usr/bin/git', finder: '/usr/bin/xcrun' }
+
+const runGit = (
+  executable: string,
+  cwd: string,
+  args: readonly string[],
+  input?: string
+): SpawnSyncReturns<string> =>
+  spawnSync(executable, gitArguments(args), {
     cwd,
     encoding: 'utf8',
     input,
@@ -67,6 +82,8 @@ export const gitResult = (cwd: string, args: readonly string[], input?: string):
     timeout: GIT_TIMEOUT_MS,
     env: gitEnvironment(),
   })
+
+const completed = (cwd: string, result: SpawnSyncReturns<string>): GitResult => {
   if (result.error !== undefined)
     throw gitBlocked(
       existsSync(cwd)
@@ -76,14 +93,54 @@ export const gitResult = (cwd: string, args: readonly string[], input?: string):
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
 
-const git = (cwd: string, args: readonly string[], input?: string): string => {
-  const result = gitResult(cwd, args, input)
+export const gitResult = (cwd: string, args: readonly string[], input?: string): GitResult =>
+  completed(cwd, runGit(PATH_GIT, cwd, args, input))
+
+let identityGit = PATH_GIT
+
+const selectedInEveryDirectory = (name: string): string | undefined => {
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (!isAbsolute(directory)) return undefined
+    const candidate = join(directory, name)
+    try {
+      accessSync(candidate, constants.X_OK)
+      return candidate
+    } catch {}
+  }
+  return undefined
+}
+
+export const resolveIdentityGit = (launcher: GitLauncher = XCRUN_LAUNCHER): void => {
+  if (selectedInEveryDirectory(PATH_GIT) !== launcher.git) return
+  execFile(
+    launcher.finder,
+    ['--find', PATH_GIT],
+    { encoding: 'utf8', timeout: GIT_TIMEOUT_MS },
+    (error, stdout) => {
+      const found = stdout.trim()
+      if (error === null && isAbsolute(found) && found !== launcher.git) identityGit = found
+    }
+  )
+}
+
+const identityResult = (cwd: string, args: readonly string[]): GitResult => {
+  if (identityGit === PATH_GIT) return gitResult(cwd, args)
+  const result = runGit(identityGit, cwd, args)
+  if (result.error === undefined || existsSync(identityGit)) return completed(cwd, result)
+  identityGit = PATH_GIT
+  return gitResult(cwd, args)
+}
+
+const succeeded = (args: readonly string[], result: GitResult): string => {
   if (result.status !== 0)
     throw gitBlocked(
       `Git ${args[0] ?? 'command'} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ''}`
     )
   return result.stdout.replace(/\n$/, '')
 }
+
+const git = (cwd: string, args: readonly string[], input?: string): string =>
+  succeeded(args, gitResult(cwd, args, input))
 
 const DESCRIBE_CHECKOUT = [
   'rev-parse',
@@ -95,8 +152,12 @@ const DESCRIBE_CHECKOUT = [
 ] as const
 
 const describeCheckout = (cwd: string): { readonly lines: string[]; readonly head: string } => {
-  const described = gitResult(cwd, [...DESCRIBE_CHECKOUT, '--verify', 'HEAD^{commit}'])
-  if (described.status !== 0) return { lines: git(cwd, DESCRIBE_CHECKOUT).split('\n'), head: '' }
+  const described = identityResult(cwd, [...DESCRIBE_CHECKOUT, '--verify', 'HEAD^{commit}'])
+  if (described.status !== 0)
+    return {
+      lines: succeeded(DESCRIBE_CHECKOUT, identityResult(cwd, DESCRIBE_CHECKOUT)).split('\n'),
+      head: '',
+    }
   const lines = described.stdout.replace(/\n$/, '').split('\n')
   return { lines: lines.slice(0, -1), head: lines.at(-1) ?? '' }
 }

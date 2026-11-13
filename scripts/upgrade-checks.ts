@@ -1,4 +1,7 @@
-import { Effect, FileSystem, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { errorText } from '../src/error-text.ts'
 import { CommandError, streamed } from './checkout.ts'
 

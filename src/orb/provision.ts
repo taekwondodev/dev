@@ -1,4 +1,7 @@
-import { Clock, Duration, Effect, Schedule } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Schedule from 'effect/Schedule'
 import type { Orbit } from './cloud.ts'
 import { orbFailure, type OrbError, type OrbStatus, type OrbView } from './domain.ts'
 import type { OrbSsh } from './ssh.ts'

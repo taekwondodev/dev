@@ -1,7 +1,11 @@
 import { execFile } from 'node:child_process'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { Config, Effect, FileSystem, Option, Schema } from 'effect'
+import * as Config from 'effect/Config'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import type * as PiSessions from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
 import type * as PiPaths from '../node_modules/@earendil-works/pi-coding-agent/dist/utils/paths.js'
@@ -25,7 +29,6 @@ export const piInstaller = 'curl -fsSL https://pi.dev/install.sh | sh'
 const Manifest = Schema.Struct({
   name: Schema.String,
   version: Schema.String,
-  main: Schema.optional(Schema.String),
   types: Schema.optional(Schema.String),
 })
 
@@ -88,7 +91,7 @@ export const resolvePiPackage = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Manifest))),
       Effect.mapError(piFailure(`Cannot read the Pi release at ${selected.release}`))
     )
-  if (packageJson.name !== '@earendil-works/pi-coding-agent' || !packageJson.main)
+  if (packageJson.name !== '@earendil-works/pi-coding-agent')
     return yield* new PiError({
       message: `The Pi release at ${selected.release} does not contain @earendil-works/pi-coding-agent.`,
     })
@@ -102,7 +105,7 @@ export const resolvePiPackage = Effect.gen(function* () {
     root,
     version: packageJson.version,
     packageJson,
-    entry: join(root, packageJson.main),
+    entry: join(root, 'dist', 'bundle', 'index.js'),
   }
 }).pipe(
   Effect.mapError(cause =>

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Effect, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import {
   loadInstalledPi,
   makeClaims,

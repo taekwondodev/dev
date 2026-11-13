@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, Result } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
 import { hardenedGit, orbRepository } from '../../src/orb/transfer.ts'
 import { makeOrbSsh } from '../../src/orb/ssh.ts'
 

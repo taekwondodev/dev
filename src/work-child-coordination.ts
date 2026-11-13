@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { Cause, Effect, Option, Queue, Schema } from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
+import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import {
   WorkError,

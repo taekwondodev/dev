@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { Schema } from 'effect'
+import * as Schema from 'effect/Schema'
 import {
   CanonicalSessionFile,
   SweepReceiptSchema,

@@ -19,7 +19,12 @@ import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Cause, Deferred, Effect, Exit, Fiber, Stream } from 'effect'
+import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as Stream from 'effect/Stream'
 import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
 import {
   isSpare,
@@ -71,7 +76,7 @@ import type {
   ExtensionAPI,
   NormalizedBuildSystemPromptOptions,
 } from '@earendil-works/pi-coding-agent'
-import type { ChildProcessSpawner } from 'effect/process'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { asAttemptId, type AttemptOrb } from '../../src/work-domain.ts'
 import type { PiApi } from '../../src/pi-runtime.ts'
 import {
@@ -1402,7 +1407,7 @@ await claim(
         '-e',
         `
           import * as NodeServices from '@effect/platform-node/NodeServices'
-          import { Effect } from 'effect'
+          import * as Effect from 'effect/Effect'
           import { createRecord } from ${JSON.stringify(new URL('../../src/orb/registry.ts', import.meta.url).href)}
           const record = await Effect.runPromise(Effect.provide(createRecord(${JSON.stringify(dataHome)}, ${JSON.stringify(recordFields(checkout, 'presence-use'))}), NodeServices.layer))
           process.stdout.write(record.directory + '\\n')
@@ -2887,7 +2892,7 @@ await claim('plain dev loads no orb module, so it reads neither orb file', async
   const profiles = writeProfileFixture(join(sandbox, 'plain-profiles'))
   const authority = join(sandbox, 'plain-authority')
   const driver = `
-      import { NodeRuntime } from '@effect/platform-node'
+      import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
       import { launch } from ${JSON.stringify(new URL('../../src/launcher-runtime.ts', import.meta.url).href)}
       import { makeWorkspaceLifecycle } from ${JSON.stringify(new URL('../../src/workspace-lifecycle.ts', import.meta.url).href)}
       const root = ${JSON.stringify(authority)}

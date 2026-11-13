@@ -12,7 +12,10 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type Cause, Effect, Queue, Stream } from 'effect'
+import type * as Cause from 'effect/Cause'
+import * as Effect from 'effect/Effect'
+import * as Queue from 'effect/Queue'
+import * as Stream from 'effect/Stream'
 import { keptConversationGuidance } from '../../src/workspace-host.ts'
 import {
   WorkspaceError,

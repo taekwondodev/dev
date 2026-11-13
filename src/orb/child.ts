@@ -1,5 +1,5 @@
-import { Effect } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Effect from 'effect/Effect'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import type { GitRunner } from '../pi-child.ts'
 import type { PiApi } from '../pi-runtime.ts'
 import type { OrbReader, OrbReturn } from '../work-domain.ts'

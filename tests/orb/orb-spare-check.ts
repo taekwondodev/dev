@@ -11,8 +11,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Deferred, Effect, Exit, Scope } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import type { Orbit } from '../../src/orb/cloud.ts'
 import {
   isSpare,

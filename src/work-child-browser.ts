@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { Effect, Option, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 import { BrowserOwnerError } from './web-browser-owner.ts'
 import { awaitReply, type ReplyChannel } from './work-child-ipc.ts'

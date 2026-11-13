@@ -1,7 +1,8 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, join, resolve } from 'node:path'
-import { Option, Schema } from 'effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import {
   inDb,
   taskWorkspaces,

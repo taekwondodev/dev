@@ -38,6 +38,7 @@ import {
   type WorkspaceGrant,
   type WorkspaceId,
   type ScopedOperation,
+  type ScopedContinuation,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
@@ -101,12 +102,13 @@ export const currentSource = (
 const validateWithinGrant = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  grant: WorkspaceGrant
+  grant: WorkspaceGrant,
+  observed: GitWorkspace | undefined
 ): { readonly lease: GrantLease; readonly workspace: WorkspaceRecord; readonly use: UseRecord } => {
   const owners = attachment.state.leaseAttachments.get(grant.useId)
   if (owners === undefined || !owners.has(attachment.token))
     requireReview('Scoped operation grant was not issued to this attachment')
-  const lease = validateGrant(authority, attachment.state, grant)
+  const lease = validateGrant(authority, attachment.state, grant, observed)
   const result = inDb(authority, grant.repositoryId, db => {
     const { workspace, use } = fencedUse(
       db,
@@ -196,40 +198,89 @@ const reserveForTask = (
   })
 }
 
+export interface AdmittedOperation {
+  readonly authorization: WorkspaceAuthorization
+  readonly observed?: GitWorkspace
+}
+
 export const authorizeOperation = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
   operation: WorkspaceOperation,
   sweep: AllocationSweep
-): WorkspaceAuthorization => {
-  const result = admit(authority, attachment, operation, sweep)
-  if (result.kind === 'ready') claimGrant(attachment, result.grant)
-  return result
+): AdmittedOperation => {
+  const admitted = admit(authority, attachment, operation, sweep)
+  const { authorization } = admitted
+  if (authorization.kind !== 'ready') return { authorization }
+  claimGrant(attachment, authorization.grant)
+  return admitted.source?.workspace.id === authorization.grant.workspaceId
+    ? { authorization, observed: admitted.source.git }
+    : { authorization }
 }
 
-const admit = (
+export const authorizeScopedWithin = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  operation: WorkspaceOperation,
-  sweep: AllocationSweep
-): WorkspaceAuthorization => {
+  within: WorkspaceGrant,
+  continuation: ScopedContinuation,
+  observed: GitWorkspace | undefined
+): WorkspaceGrant => {
+  assertAdmitting(authority, attachment)
+  const { grant } = authorizeScoped(authority, attachment, { ...continuation, within }, observed)
+  claimGrant(attachment, grant)
+  return grant
+}
+
+const assertAdmitting = (authority: WorkspaceAuthority, attachment: AttachmentHandle): void => {
   attachment.assertOpen()
   const { state } = attachment
   if (state.review !== undefined) requireReview(state.review)
   if (state.closing || state.parked)
     blocked('Workspace admission is parked during a host transition')
   retryDeferredGateReleases(authority, state)
+}
+
+type OrdinaryOperation = Exclude<
+  WorkspaceOperation,
+  { readonly kind: 'native-file-write' | 'orb-return' | 'opaque' | 'leaf-read' }
+>
+
+const admit = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  operation: WorkspaceOperation,
+  sweep: AllocationSweep
+): { readonly authorization: WorkspaceAuthorization; readonly source?: CurrentSource } => {
+  assertAdmitting(authority, attachment)
   if (
     operation.kind === 'native-file-write' ||
     operation.kind === 'orb-return' ||
     operation.kind === 'opaque'
   )
-    return authorizeScoped(authority, attachment, operation)
+    return { authorization: authorizeScoped(authority, attachment, operation, undefined) }
   if (operation.kind === 'leaf-read')
-    return authorizeLeafRead(authority, attachment, operation.coordinator, operation.execution)
+    return {
+      authorization: authorizeLeafRead(
+        authority,
+        attachment,
+        operation.coordinator,
+        operation.execution
+      ),
+    }
   if (operation.kind === 'delegated-write' && operation.coordinator !== undefined)
     assertLocalCoordinator(attachment, operation.coordinator)
-  const source = currentSource(authority, state)
+  const source = currentSource(authority, attachment.state)
+  return { authorization: admitFrom(authority, attachment, operation, source, sweep), source }
+}
+
+const admitFrom = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  operation: OrdinaryOperation,
+  source: CurrentSource,
+  sweep: AllocationSweep
+): WorkspaceAuthorization => {
+  const { state } = attachment
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
   if (operation.kind === 'foreign-write') {
@@ -582,15 +633,16 @@ const attributeReader = (
 const authorizeScoped = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
-  operation: ScopedOperation
-): WorkspaceAuthorization => {
+  operation: ScopedOperation,
+  observed: GitWorkspace | undefined
+): Extract<WorkspaceAuthorization, { readonly kind: 'ready' }> => {
   const { state } = attachment
   const { within } = operation
   const {
     lease: withinLease,
     workspace,
     use: withinUse,
-  } = validateWithinGrant(authority, attachment, within)
+  } = validateWithinGrant(authority, attachment, within, observed)
   if (within.access !== 'write')
     blocked('A read-only workspace grant cannot authorize a scoped mutation')
   const cwd = realpathSync(resolve(operation.cwd ?? within.cwd))

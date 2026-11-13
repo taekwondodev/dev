@@ -1,5 +1,9 @@
-import { Cause, Effect, Exit, Scope, type Context } from 'effect'
-import type { ChildProcessSpawner } from 'effect/process'
+import * as Cause from 'effect/Cause'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
+import type * as Context from 'effect/Context'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { errorText } from '../error-text.ts'
 import type {
   AttemptId,

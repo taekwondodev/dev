@@ -1,21 +1,19 @@
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
-import {
-  Clock,
-  Context,
-  Deferred,
-  Duration,
-  Effect,
-  Fiber,
-  FileSystem,
-  Layer,
-  Option,
-  Queue,
-  Result,
-  Semaphore,
-  Schema,
-} from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
+import * as Result from 'effect/Result'
+import * as Semaphore from 'effect/Semaphore'
+import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import { createHash, randomUUID } from 'node:crypto'
 import { fork, spawn, type ChildProcess } from 'node:child_process'
@@ -69,6 +67,7 @@ import {
   type LifecycleTransition,
   type ProcessObservation,
 } from './work-lifecycle.ts'
+import { withCompileCache } from './compile-cache.ts'
 import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.ts'
 import { compactText, isRecordUnavailable, WorkStore } from './work-store.ts'
 import {
@@ -97,6 +96,7 @@ import {
   transientRetry,
 } from './process-family.ts'
 import {
+  scopedGrantOf,
   WorkspaceError,
   WorkspaceProcessSchema,
   type WorkspaceAttachment,
@@ -163,7 +163,8 @@ const admissionOf = (
   execution: WorkspaceExecution,
   pinned: PinnedStart | undefined
 ): WorkspaceOperation => {
-  if (request.kind === 'process') return { kind: 'write', cwd }
+  if (request.kind === 'process')
+    return { kind: 'write', cwd, scoped: { kind: 'opaque', execution } }
   if (request.access === 'read-only')
     return parent === undefined
       ? { kind: 'read', cwd, execution }
@@ -735,11 +736,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             admissionOf(request, parent, requestedCwd, execution, pinned)
           )
           if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
-          return yield* workspace.attachment.authorize({
-            kind: 'opaque',
-            within: allocated.grant,
-            execution,
-          })
+          const scoped = scopedGrantOf(allocated.scoped)
+          if (scoped === undefined)
+            return yield* new WorkspaceError({
+              outcome: 'unavailable',
+              message: 'Workspace admission changed before the process started',
+            })
+          if (scoped instanceof WorkspaceError) return yield* scoped
+          return { kind: 'ready' as const, grant: scoped }
         }).pipe(Effect.mapError(toFailure), Effect.ensuring(pinned?.unpin ?? Effect.void))
         if (admission.kind === 'rebind') {
           workspace.requestRebind(admission.handoff)
@@ -1217,6 +1221,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               request.kind === 'agent'
                 ? fork(childEntry, [], {
                     ...spawnOptions,
+                    env: withCompileCache(spawnOptions.env),
                     execArgv: [],
                     stdio: ['ignore', stdout, stderr, 'ipc'],
                   })
