@@ -1,11 +1,8 @@
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import type * as Scope from 'effect/Scope'
-import type * as TerminalImage from '../node_modules/@earendil-works/pi-tui/dist/terminal-image.js'
 import {
   type BranchState,
   type Canvas,
@@ -28,6 +25,7 @@ import {
   stripColumns,
   toRgba,
 } from './quit-scene.ts'
+import { quitTerminal } from './quit-terminal.ts'
 
 const FRAME_MS = 16
 const HOLD_MS = 250
@@ -39,33 +37,25 @@ const BOTTOM_ROW = `\x1b[${ROWS - 1}B`
 const CLEAR_ROWS = `\x1b8${Array.from({ length: ROWS }, () => '\x1b[2K').join('\x1b[1B')}\x1b8\r`
 
 export const loadQuitGraphics = (
-  packageRoot: string,
   live: boolean,
   columns: number | undefined,
   hold: TerminalHold
-): Effect.Effect<QuitGraphics | undefined> => {
-  if (!live) return Effect.undefined
-  return Effect.tryPromise(
-    (): Promise<typeof TerminalImage> =>
-      import(pathToFileURL(join(packageRoot, '../pi-tui/dist/terminal-image.js')).href)
-  ).pipe(
-    Effect.map((images): QuitGraphics | undefined => {
-      if (images.getCapabilities().images !== 'kitty') return undefined
-      const cell = images.getCellDimensions()
-      const cellWidth = Math.round(cell.widthPx)
-      const cellHeight = Math.round(cell.heightPx)
-      if (!(cellWidth > 0 && cellHeight > 0)) return undefined
-      return {
-        cellWidth,
-        cellHeight,
-        columns: columns || DEFAULT_COLUMNS,
-        allocateImageId: images.allocateImageId,
-        hold,
-      }
-    }),
-    Effect.orElseSucceed(() => undefined)
-  )
-}
+): Effect.Effect<QuitGraphics | undefined> =>
+  Effect.sync(() => {
+    const terminal = live ? quitTerminal() : undefined
+    if (terminal === undefined || terminal.getCapabilities().images !== 'kitty') return undefined
+    const cell = terminal.getCellDimensions()
+    const cellWidth = Math.round(cell.widthPx)
+    const cellHeight = Math.round(cell.heightPx)
+    if (!(cellWidth > 0 && cellHeight > 0)) return undefined
+    return {
+      cellWidth,
+      cellHeight,
+      columns: columns || DEFAULT_COLUMNS,
+      allocateImageId: terminal.allocateImageId,
+      hold,
+    }
+  })
 
 export const stripFits = (
   graphics: QuitGraphics | undefined,

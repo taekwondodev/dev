@@ -74,7 +74,7 @@ try {
   writeFileSync(join(installation, 'current-version'), '1.0.0\n')
   writeFileSync(
     join(piPackage, 'package.json'),
-    JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0', main: 'index.js' })
+    JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0' })
   )
   mkdirSync(checkout)
   writeFileSync(

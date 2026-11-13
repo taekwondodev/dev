@@ -184,7 +184,8 @@ PROBES = {
     'quit-empty-slow-graphics': Probe(
         script='tests/workspace/workspace-launcher-empty-quit-probe.ts',
         passed_marker='DEV_EMPTY_QUIT_PROBE_PASSED ',
-        actions=QUIT_ACTIONS,
+        actions=(Action('cell-size', '\x1b[16t', '\x1b[6;40;20t'),) + QUIT_ACTIONS,
+        expect_raw=('\x1b_Ga=T,f=32,o=z,s=400,v=80,',),
         expect_raw_order=(TUI_STOPPED, 'Sweeping workspaces…', '\x1b_Ga=d,d=I,i=',
                           '\x1b8\x1b[2K\x1b[1B\x1b[2K\x1b8\r\x1b[?25h', 'No reserved workspaces', 'Exit 0: done.'),
         reject_raw_after=(TUI_STOPPED, ('\x1b[2B',)),

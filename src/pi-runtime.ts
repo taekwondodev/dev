@@ -29,7 +29,6 @@ export const piInstaller = 'curl -fsSL https://pi.dev/install.sh | sh'
 const Manifest = Schema.Struct({
   name: Schema.String,
   version: Schema.String,
-  main: Schema.optional(Schema.String),
   types: Schema.optional(Schema.String),
 })
 
@@ -92,7 +91,7 @@ export const resolvePiPackage = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Manifest))),
       Effect.mapError(piFailure(`Cannot read the Pi release at ${selected.release}`))
     )
-  if (packageJson.name !== '@earendil-works/pi-coding-agent' || !packageJson.main)
+  if (packageJson.name !== '@earendil-works/pi-coding-agent')
     return yield* new PiError({
       message: `The Pi release at ${selected.release} does not contain @earendil-works/pi-coding-agent.`,
     })
@@ -106,8 +105,7 @@ export const resolvePiPackage = Effect.gen(function* () {
     root,
     version: packageJson.version,
     packageJson,
-    entry: join(root, packageJson.main),
-    bundledEntry: join(root, 'dist', 'bundle', 'index.js'),
+    entry: join(root, 'dist', 'bundle', 'index.js'),
   }
 }).pipe(
   Effect.mapError(cause =>
@@ -115,12 +113,11 @@ export const resolvePiPackage = Effect.gen(function* () {
   )
 )
 
-const loadPiFrom = Effect.fnUntraced(function* (build: 'entry' | 'bundledEntry') {
+export const loadPi = Effect.gen(function* () {
   const packageInfo = yield* resolvePiPackage
-  const entry = packageInfo[build]
   const api: PiApi = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(entry).href),
-    catch: piFailure(`Cannot load Pi from ${entry}`),
+    try: () => import(pathToFileURL(packageInfo.entry).href),
+    catch: piFailure(`Cannot load Pi from ${packageInfo.entry}`),
   })
   for (const name of [
     'createAgentSessionServices',
@@ -134,10 +131,6 @@ const loadPiFrom = Effect.fnUntraced(function* (build: 'entry' | 'bundledEntry')
   }
   return { api, packageInfo }
 })
-
-export const loadPi = loadPiFrom('entry')
-
-export const loadBundledPi = loadPiFrom('bundledEntry')
 
 export const findRecentSession = Effect.fnUntraced(function* (
   packageRoot: string,

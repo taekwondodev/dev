@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as DateTime from 'effect/DateTime'
@@ -293,6 +293,10 @@ const validateDiagnostics = (
   }
 }
 
+const QUIT_TERMINAL_EXTENSION = fileURLToPath(
+  new URL('./quit-terminal-extension.ts', import.meta.url)
+)
+
 export interface RuntimeParts {
   readonly api: PiApi
   readonly packageRoot: string
@@ -385,6 +389,7 @@ const createRuntime = Effect.fnUntraced(function* (
       modelRuntime,
       resourceLoaderOptions: {
         additionalSkillPaths: [...resources.skillPaths],
+        additionalExtensionPaths: [QUIT_TERMINAL_EXTENSION],
         appendSystemPrompt: [profile.guidance],
         extensionFactories: [...(parts.extensions?.(extensions, cwd) ?? extensions)],
       },
@@ -658,19 +663,14 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
     readonly occupiedPaths: readonly string[]
     readonly detached: boolean
     readonly proceed: () => boolean
-    readonly terminal?: { readonly packageRoot: string; readonly hold: TerminalHold }
+    readonly terminal?: { readonly hold: TerminalHold }
   }
 ): Effect.fn.Return<void> {
   const style = terminalStyle(process.stdout, process.env)
   const graphics =
     input.terminal === undefined
       ? undefined
-      : yield* loadQuitGraphics(
-          input.terminal.packageRoot,
-          style.live,
-          process.stdout.columns,
-          input.terminal.hold
-        )
+      : yield* loadQuitGraphics(style.live, process.stdout.columns, input.terminal.hold)
   yield* write(
     input.detached
       ? ''
@@ -1400,7 +1400,7 @@ const run = Effect.fnUntraced(function* (
             occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
             detached: workspaceHost.isDetached(),
             proceed,
-            terminal: { packageRoot: packageInfo.root, hold },
+            terminal: { hold },
           })
         )
       )

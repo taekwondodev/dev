@@ -32,7 +32,7 @@ import { openLifecycle } from './workspace-test-lifecycle.ts'
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
 
 const devRoot = fileURLToPath(new URL('../..', import.meta.url))
-const { pi } = await loadInstalledPi()
+const { pi, importFromPi } = await loadInstalledPi()
 const initRepository = (cwd: string) => {
   const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd })
   git(['init', '--quiet', '-b', 'main'])
@@ -711,6 +711,14 @@ try {
       )
     }
   )
+  await claim(
+    'the bundled Pi build that dev loads exports the names of the package entry that types it',
+    async () => {
+      const typed = await importFromPi<typeof pi>('dist/index.js')
+      assert.notEqual(typed.SessionManager, pi.SessionManager)
+      assert.deepEqual(Object.keys(pi).toSorted(), Object.keys(typed).toSorted())
+    }
+  )
   await claim('dev stops with the reason when the installed Pi fails to load', async () => {
     const brokenRelease = join(sandbox, 'broken-pi-release')
     const brokenPi = join(brokenRelease, 'node_modules', '@earendil-works', 'pi-coding-agent')
@@ -720,10 +728,11 @@ try {
       JSON.stringify({
         name: '@earendil-works/pi-coding-agent',
         version: '0.0.0',
-        main: 'index.js',
       })
     )
-    writeFileSync(join(brokenPi, 'index.js'), "throw new Error('broken fixture Pi')\n")
+    const brokenEntry = join(brokenPi, 'dist', 'bundle', 'index.js')
+    mkdirSync(join(brokenPi, 'dist', 'bundle'), { recursive: true })
+    writeFileSync(brokenEntry, "throw new Error('broken fixture Pi')\n")
     const outcome = await runLauncher(
       ['--data-home', dataHome, '--profile', profiles.defaultProfile],
       {
@@ -732,9 +741,7 @@ try {
     )
     assert.equal(outcome.code, 1, outcome.stderr)
     assert.ok(
-      outcome.stderr.includes(
-        `Cannot load Pi from ${join(brokenPi, 'index.js')}: broken fixture Pi`
-      ),
+      outcome.stderr.includes(`Cannot load Pi from ${brokenEntry}: broken fixture Pi`),
       outcome.stderr
     )
   })
