@@ -25,7 +25,7 @@ import {
   stripColumns,
   toRgba,
 } from './quit-scene.ts'
-import { quitTerminal } from './quit-terminal.ts'
+import type { QuitTerminal } from './quit-terminal.ts'
 
 const FRAME_MS = 16
 const HOLD_MS = 250
@@ -39,11 +39,11 @@ const CLEAR_ROWS = `\x1b8${Array.from({ length: ROWS }, () => '\x1b[2K').join('\
 export const loadQuitGraphics = (
   live: boolean,
   columns: number | undefined,
-  hold: TerminalHold
+  hold: TerminalHold,
+  terminal: QuitTerminal | undefined
 ): Effect.Effect<QuitGraphics | undefined> =>
   Effect.sync(() => {
-    const terminal = live ? quitTerminal() : undefined
-    if (terminal === undefined || terminal.getCapabilities().images !== 'kitty') return undefined
+    if (!live || terminal?.getCapabilities().images !== 'kitty') return undefined
     const cell = terminal.getCellDimensions()
     const cellWidth = Math.round(cell.widthPx)
     const cellHeight = Math.round(cell.heightPx)

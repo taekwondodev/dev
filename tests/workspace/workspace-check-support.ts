@@ -22,6 +22,8 @@ import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'
 import { loadCatalog } from '../../src/profiles.ts'
 import { acquireRuntime, type CoordinationOptions } from '../../src/runtime-coordination.ts'
+import { makeQuitTerminalSource } from '../../src/quit-terminal.ts'
+import type { SessionEnd } from '../../src/session-end.ts'
 import { createSessionGuard } from '../../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
 import { makeWorkspaceHost } from '../../src/workspace-host.ts'
@@ -304,6 +306,7 @@ export const openHostRuntime = async (input: {
   readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
   readonly extensions?: RuntimeParts['extensions']
   readonly webReader?: WebReader
+  readonly ending?: SessionEnd
   readonly mode?: 'headless' | 'tui'
 }) => {
   const resolveImportPath = await loadImportPathResolver(input.packageRoot)
@@ -351,6 +354,7 @@ export const openHostRuntime = async (input: {
           workspaceHost: host,
           lifecycle: input.lifecycle,
           webReader,
+          quitTerminal: makeQuitTerminalSource(),
           extensions: input.extensions,
           ...(input.offline === undefined
             ? {}
@@ -367,6 +371,7 @@ export const openHostRuntime = async (input: {
       sessionManager: input.manager,
     })
     fenceRuntimeDisposal(runtime)
+    const dispose = input.ending?.parkPiDispose(runtime) ?? (() => runtime.dispose())
     host.bindRuntime(runtime)
     guard.bind(runtime)
     if ((input.mode ?? 'headless') === 'headless') {
@@ -396,7 +401,7 @@ export const openHostRuntime = async (input: {
       host,
       runtime,
       close: async () => {
-        await runtime.dispose()
+        await dispose()
         await Effect.runPromise(host.close)
         await Effect.runPromise(Scope.close(scope, Exit.void))
       },

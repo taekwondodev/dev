@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
-import { publishQuitTerminal } from '../../src/quit-terminal.ts'
+import type { QuitTerminal } from '../../src/quit-terminal.ts'
 import { loadQuitGraphics } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {
@@ -43,9 +43,10 @@ const graphics: QuitGraphics = {
 const H = ROWS * graphics.cellHeight
 const live = terminalStyle({ isTTY: true }, {})
 
+let terminal: QuitTerminal | undefined
 const load = (isLive = true, ...columns: [number?]) =>
   Effect.runPromise(
-    loadQuitGraphics(isLive, columns.length === 0 ? 120 : columns[0], graphics.hold)
+    loadQuitGraphics(isLive, columns.length === 0 ? 120 : columns[0], graphics.hold, terminal)
   )
 
 const collector = () => {
@@ -279,11 +280,11 @@ const publish = (
   images: 'kitty' | 'iterm2' | null,
   cell: { readonly widthPx: number; readonly heightPx: number }
 ): void => {
-  publishQuitTerminal({
+  terminal = {
     getCapabilities: () => ({ images, trueColor: true, hyperlinks: true }),
     getCellDimensions: () => ({ ...cell }),
     allocateImageId: () => 7,
-  })
+  }
 }
 
 await claim('graphics need a live terminal, kitty support and room for the strip', async () => {

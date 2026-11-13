@@ -138,6 +138,18 @@ if (process.env.LAUNCHER_TUI_FAULT === 'interactive-failure') {
   }
 }
 
+const idleSignal = /^signal-idle:(SIG[A-Z]+)$/.exec(process.env.LAUNCHER_TUI_FAULT ?? '')?.[1]
+if (idleSignal !== undefined) {
+  const {
+    pi: { InteractiveMode },
+  } = await loadInstalledPi()
+  const { run } = InteractiveMode.prototype
+  InteractiveMode.prototype.run = async function (this: InstanceType<typeof InteractiveMode>) {
+    setTimeout(() => process.kill(process.pid, idleSignal as NodeJS.Signals), 1500)
+    await run.call(this)
+  }
+}
+
 if (process.env.LAUNCHER_TUI_FAULT === 'shutdown-after-quit') {
   const {
     pi: { AgentSession },

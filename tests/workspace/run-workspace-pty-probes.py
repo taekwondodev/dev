@@ -369,6 +369,36 @@ PROBES = {
         env=(('LAUNCHER_TUI_FAULT', 'interactive-failure'),),
     ),
 
+    'signal-idle-sigint': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(),
+        reject_raw_after=('', ('Sweeping workspaces', 'worktree removed')),
+        env=(('LAUNCHER_TUI_FAULT', 'signal-idle:SIGINT'),),
+    ),
+
+    'signal-idle-sigterm': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(),
+        reject_raw_after=('', ('Sweeping workspaces', 'worktree removed')),
+        env=(('LAUNCHER_TUI_FAULT', 'signal-idle:SIGTERM'),),
+    ),
+
+    'signal-idle-sighup': Probe(
+        script='tests/workspace/workspace-launcher-tui-probe.ts',
+        passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',
+        inputs_marker='DEV_LAUNCHER_TUI_INPUTS ',
+        timeout=240.0,
+        actions=(),
+        reject_raw_after=('', ('Sweeping workspaces', 'worktree removed')),
+        env=(('LAUNCHER_TUI_FAULT', 'signal-idle:SIGHUP'),),
+    ),
+
     'quit-shutdown-failure': Probe(
         script='tests/workspace/workspace-launcher-tui-probe.ts',
         passed_marker='DEV_LAUNCHER_TUI_PROBE_PASSED ',

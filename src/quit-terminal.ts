@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type * as PiTui from '../node_modules/@earendil-works/pi-tui/dist/index.js'
 
 export type QuitTerminal = Pick<
@@ -5,14 +7,28 @@ export type QuitTerminal = Pick<
   'getCapabilities' | 'getCellDimensions' | 'allocateImageId'
 >
 
-const PUBLISHED = Symbol.for('dev:quit-terminal')
+export const QUIT_TERMINAL_REQUEST = 'dev/quit-terminal'
 
-interface Holder {
-  [PUBLISHED]?: QuitTerminal
+export type QuitTerminalAnswer = (terminal: QuitTerminal) => void
+
+export interface QuitTerminalSource {
+  readonly answeringExtensionPath: string
+  readonly askingExtension: (pi: ExtensionAPI) => void
+  readonly current: () => QuitTerminal | undefined
 }
 
-export const publishQuitTerminal = (terminal: QuitTerminal): void => {
-  ;(globalThis as Holder)[PUBLISHED] = terminal
+export const makeQuitTerminalSource = (): QuitTerminalSource => {
+  let terminal: QuitTerminal | undefined
+  const answer: QuitTerminalAnswer = answered => {
+    terminal = answered
+  }
+  return {
+    answeringExtensionPath: fileURLToPath(new URL('./quit-terminal-extension.ts', import.meta.url)),
+    askingExtension: pi => {
+      pi.on('session_start', () => {
+        pi.events.emit(QUIT_TERMINAL_REQUEST, answer)
+      })
+    },
+    current: () => terminal,
+  }
 }
-
-export const quitTerminal = (): QuitTerminal | undefined => (globalThis as Holder)[PUBLISHED]

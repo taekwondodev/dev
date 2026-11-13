@@ -1,6 +1,9 @@
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import * as PiTui from '@earendil-works/pi-tui'
-import { publishQuitTerminal } from './quit-terminal.ts'
+import { QUIT_TERMINAL_REQUEST, type QuitTerminalAnswer } from './quit-terminal.ts'
 
-publishQuitTerminal(PiTui)
-
-export default function quitTerminalExtension(): void {}
+export default function quitTerminalExtension(pi: ExtensionAPI): void {
+  pi.events.on(QUIT_TERMINAL_REQUEST, answer => {
+    ;(answer as QuitTerminalAnswer)(PiTui)
+  })
+}
