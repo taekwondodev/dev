@@ -22,17 +22,22 @@ import {
   type TrackedFamily,
 } from './process-family.ts'
 import type { ProcessObservation } from './work-lifecycle.ts'
-import type {
-  WorkspaceAttachment,
+import {
+  scopedGrantOf,
   WorkspaceError,
-  WorkspaceExecutionFact,
-  WorkspaceGrant,
+  type ScopedOutcome,
+  type WorkspaceAttachment,
+  type WorkspaceExecution,
+  type WorkspaceExecutionFact,
 } from './workspace-domain.ts'
 
 export interface WorkspaceAdmission {
   readonly attachment: WorkspaceAttachment
-  readonly grant: WorkspaceGrant
+  readonly execution: WorkspaceExecution
+  readonly scoped: ScopedOutcome | undefined
 }
+
+export type ShellExecutionOf = (attachment: WorkspaceAttachment) => WorkspaceExecution
 
 export interface WorkspaceShell {
   readonly operations: BashOperations
@@ -120,7 +125,10 @@ const exitOf = (child: ChildProcess): Deferred.Deferred<ShellExit, ShellCommandE
 }
 
 export const makeWorkspaceShell = Effect.fnUntraced(function* (
-  admit: (cwd: string) => Effect.Effect<WorkspaceAdmission, WorkspaceError>
+  admit: (
+    cwd: string,
+    executionOf: ShellExecutionOf
+  ) => Effect.Effect<WorkspaceAdmission, WorkspaceError>
 ): Effect.fn.Return<WorkspaceShell, never, Scope.Scope> {
   const observers = yield* FiberSet.make<void>()
   const runInBackground = yield* FiberSet.runtime(observers)()
@@ -187,19 +195,19 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     env: NodeJS.ProcessEnv | undefined,
     signal: AbortSignal | undefined
   ): Effect.fn.Return<Launched, ShellCommandError | WorkspaceError> {
-    const { attachment, grant: within } = yield* admit(cwd)
-    const execution = {
-      sessionId: attachment.binding.conversation.sessionId,
+    const attemptId = randomUUID()
+    const { attachment, execution, scoped } = yield* admit(cwd, admitting => ({
+      sessionId: admitting.binding.conversation.sessionId,
       taskKey: 'lead-shell',
-      attemptId: randomUUID(),
+      attemptId,
       generation: 'lead',
-    }
-    const admitted = yield* attachment.authorize({ kind: 'opaque', within, cwd, execution })
-    if (admitted.kind !== 'ready')
+    }))
+    const grant = scopedGrantOf(scoped)
+    if (grant === undefined)
       return yield* failure(
         'Workspace admission changed before the shell started; the command was not executed.'
       )
-    const { grant } = admitted
+    if (grant instanceof WorkspaceError) return yield* grant
     const report: Report = fact => attachment.reportExecution(grant, fact)
     const notLaunched = (reason: string, cause: ShellCommandError | WorkspaceError) =>
       Effect.ignore(report({ kind: 'launch-failed', reason })).pipe(

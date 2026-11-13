@@ -89,6 +89,7 @@ import {
   transientRetry,
 } from './process-family.ts'
 import {
+  scopedGrantOf,
   WorkspaceError,
   WorkspaceProcessSchema,
   type WorkspaceAttachment,
@@ -147,7 +148,8 @@ const admissionOf = (
   cwd: string | undefined,
   execution: WorkspaceExecution
 ): WorkspaceOperation => {
-  if (request.kind === 'process') return { kind: 'write', cwd }
+  if (request.kind === 'process')
+    return { kind: 'write', cwd, scoped: { kind: 'opaque', execution } }
   if (parent !== undefined)
     return request.access === 'read-only'
       ? { kind: 'leaf-read', coordinator: parent.workspace, execution }
@@ -673,11 +675,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             admissionOf(request, parent, requestedCwd, execution)
           )
           if (allocated.kind !== 'ready' || request.kind !== 'process') return allocated
-          return yield* workspace.attachment.authorize({
-            kind: 'opaque',
-            within: allocated.grant,
-            execution,
-          })
+          const scoped = scopedGrantOf(allocated.scoped)
+          if (scoped === undefined)
+            return yield* new WorkspaceError({
+              outcome: 'unavailable',
+              message: 'Workspace admission changed before the process started',
+            })
+          if (scoped instanceof WorkspaceError) return yield* scoped
+          return { kind: 'ready' as const, grant: scoped }
         }).pipe(Effect.mapError(toFailure))
         if (admission.kind === 'rebind') {
           workspace.requestRebind(admission.handoff)

@@ -166,13 +166,18 @@ export interface TestShell {
   stop(): Promise<void>
 }
 
+export interface TestWriter {
+  readonly attachment: WorkspaceAttachment
+  readonly grant: WorkspaceGrant
+}
+
 export const openShell = async (
-  admit: (cwd: string) => Promise<WorkspaceAdmission>
+  admit: (cwd: string) => Promise<TestWriter>
 ): Promise<TestShell> => {
   const scope = await Effect.runPromise(Scope.make())
   const shell = await Effect.runPromise(
     Scope.provide(scope)(
-      makeWorkspaceShell(cwd =>
+      makeWorkspaceShell((cwd, executionOf) =>
         Effect.tryPromise({
           try: () => admit(cwd),
           catch: cause =>
@@ -182,7 +187,19 @@ export const openShell = async (
                   outcome: 'unavailable',
                   message: errorText(cause),
                 }),
-        })
+        }).pipe(
+          Effect.flatMap(({ attachment, grant: within }) => {
+            const execution = executionOf(attachment)
+            return attachment.authorize({ kind: 'opaque', within, cwd, execution }).pipe(
+              Effect.map((admitted): WorkspaceAdmission => ({
+                attachment,
+                execution,
+                scoped:
+                  admitted.kind === 'ready' ? { kind: 'ready', grant: admitted.grant } : undefined,
+              }))
+            )
+          })
+        )
       ).pipe(Effect.provide(NodeServices.layer))
     )
   )

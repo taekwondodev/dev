@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
@@ -16,6 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { canonicalGitWorkspace, resolveIdentityGit } from '../../src/workspace-git.ts'
 import { makeClaims } from './workspace-check-support.ts'
+import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const { claim, passed } = makeClaims()
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-git-')))
@@ -189,6 +191,49 @@ try {
       assert.deepEqual(observe('chosen', { NODE_COMPILE_CACHE: chosen }), [
         `NODE_COMPILE_CACHE=${chosen}`,
       ])
+    }
+  )
+
+  await claim(
+    'a write admission continued into a scoped operation reads the checkout identity once, where the same two admissions as separate requests read it twice',
+    async () => {
+      const counted = join(sandbox, 'counted')
+      const log = join(sandbox, 'counted.log')
+      mkdirSync(counted)
+      recordingGit(join(counted, 'git'), log)
+      const dataHome = join(sandbox, 'counted-data')
+      mkdirSync(join(dataHome, 'sessions'), { recursive: true })
+      const sessionFile = join(dataHome, 'sessions', 'session.jsonl')
+      writeFileSync(sessionFile, '')
+      process.env.PATH = `${counted}:${originalPath}`
+      const lifecycle = await openLifecycle({ root: join(sandbox, 'counted-authority') })
+      process.env.PATH = originalPath
+      try {
+        const attachment = await lifecycle.attach({
+          conversation: { sessionId: randomUUID(), sessionFile, dataHome },
+          cwd: committed,
+        })
+        const writer = await attachment.authorize({ kind: 'write' })
+        assert.equal(writer.kind, 'ready')
+        if (writer.kind !== 'ready') return
+        const reads = async (work: () => Promise<unknown>): Promise<number> => {
+          const before = runs(log)
+          await work()
+          return runs(log) - before
+        }
+        const scoped = { kind: 'native-file-write', path: 'file.txt' } as const
+        assert.equal(await reads(() => attachment.authorize({ kind: 'write', scoped })), 1)
+        assert.equal(
+          await reads(async () => {
+            await attachment.authorize({ kind: 'write' })
+            await attachment.authorize({ ...scoped, within: writer.grant })
+          }),
+          2
+        )
+        await attachment.close()
+      } finally {
+        await lifecycle.close()
+      }
     }
   )
 
