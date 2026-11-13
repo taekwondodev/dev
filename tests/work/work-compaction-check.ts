@@ -10,7 +10,7 @@ import { loadInstalledPi, makeClaims, toolCall } from '../workspace/workspace-ch
 import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
 import { CHILD_MODEL, USAGE_MARKER } from './work-child-model.ts'
 
-const { pi, importFromPi } = await loadInstalledPi()
+const { pi } = await loadInstalledPi()
 const { claim, passed } = makeClaims()
 const fixture = await openWorkFixture('work-compaction')
 writeFileSync(join(fixture.repository, 'tracked.txt'), 'Reviewable file content. '.repeat(100))
@@ -87,14 +87,6 @@ const observedRun = (file: string | undefined) => {
 }
 const owner = fixture.openOwner()
 try {
-  await claim(
-    'the bundled Pi build that dev loads exports the names of the package entry that types it',
-    async () => {
-      const typed = await importFromPi<typeof pi>('dist/index.js')
-      assert.notEqual(typed.SessionManager, pi.SessionManager)
-      assert.deepEqual(Object.keys(pi).toSorted(), Object.keys(typed).toSorted())
-    }
-  )
   await claim(
     'read-only and writable children independently compact through actual composition and both load ordinary global extensions',
     async () => {

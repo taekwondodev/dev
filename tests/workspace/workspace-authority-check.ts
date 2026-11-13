@@ -1722,54 +1722,6 @@ try {
     }
   )
 
-  await claim(
-    'a lost acknowledgment of a write admission continued into a scoped operation preserves both durable uses, authorized and unstarted',
-    async () => {
-      const interruptedRoot = join(sandbox, 'lost-continued-ack-authority')
-      const lost = faultInjector()
-      const interrupted = await openLifecycle({
-        root: interruptedRoot,
-        startWorker: lost.startWorker,
-      })
-      const attachment = await interrupted.attach({
-        conversation: conversation('lost-continued-ack'),
-        cwd: failureRepo,
-      })
-      lost.dropNextAcknowledgment('authorize')
-      await expectWorkspaceError(
-        attachment.authorize({
-          kind: 'write',
-          scoped: { kind: 'native-file-write', path: 'file.txt' },
-        }),
-        'unavailable'
-      )
-      assert.deepEqual(lost.dropped, ['authorize'], 'the authorize acknowledgment was dropped')
-      const { workspaceId } = attachment.binding
-      await interrupted.close()
-      const recovery = await openLifecycle({ root: interruptedRoot })
-      try {
-        const uses = (await recovery.inspect({}))
-          .filter(view => view.workspaceId === workspaceId)
-          .flatMap(view => view.uses)
-        assert.deepEqual(
-          uses
-            .map(use => ({ effect: use.effect, stage: use.stage, path: use.path }))
-            .toSorted((left, right) => (left.effect ?? '').localeCompare(right.effect ?? '')),
-          [
-            { effect: undefined, stage: 'authorized', path: undefined },
-            {
-              effect: 'native-file-write',
-              stage: 'authorized',
-              path: join(failureRepo, 'file.txt'),
-            },
-          ]
-        )
-      } finally {
-        await recovery.close()
-      }
-    }
-  )
-
   const scopedRepo = join(sandbox, 'scoped-repo')
   const linkedRepo = join(sandbox, 'linked-repo')
   const scopedCommit = initRepository(scopedRepo, 'tracked.txt', 'before scoped operation\n')

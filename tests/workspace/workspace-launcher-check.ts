@@ -32,7 +32,7 @@ import { openLifecycle } from './workspace-test-lifecycle.ts'
 type SessionMessage = Parameters<Pi.SessionManager['appendMessage']>[0]
 
 const devRoot = fileURLToPath(new URL('../..', import.meta.url))
-const { pi } = await loadInstalledPi()
+const { pi, importFromPi } = await loadInstalledPi()
 const initRepository = (cwd: string) => {
   const git = (args: readonly string[]) => execFileSync('git', [...args], { cwd })
   git(['init', '--quiet', '-b', 'main'])
@@ -709,6 +709,14 @@ try {
         jsonlBefore,
         'no read-only command created a Pi session file'
       )
+    }
+  )
+  await claim(
+    'the bundled Pi build that dev loads exports the names of the package entry that types it',
+    async () => {
+      const typed = await importFromPi<typeof pi>('dist/index.js')
+      assert.notEqual(typed.SessionManager, pi.SessionManager)
+      assert.deepEqual(Object.keys(pi).toSorted(), Object.keys(typed).toSorted())
     }
   )
   await claim('dev stops with the reason when the installed Pi fails to load', async () => {
