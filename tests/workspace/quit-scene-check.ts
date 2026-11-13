@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
-import { publishPiTui } from '../../src/pi-tui.ts'
+import { publishQuitTerminal } from '../../src/quit-terminal.ts'
 import { loadQuitGraphics } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {
@@ -279,7 +279,7 @@ const publish = (
   images: 'kitty' | 'iterm2' | null,
   cell: { readonly widthPx: number; readonly heightPx: number }
 ): void => {
-  publishPiTui({
+  publishQuitTerminal({
     getCapabilities: () => ({ images, trueColor: true, hyperlinks: true }),
     getCellDimensions: () => ({ ...cell }),
     allocateImageId: () => 7,

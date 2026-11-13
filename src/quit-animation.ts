@@ -25,7 +25,7 @@ import {
   stripColumns,
   toRgba,
 } from './quit-scene.ts'
-import { loadedPiTui } from './pi-tui.ts'
+import { quitTerminal } from './quit-terminal.ts'
 
 const FRAME_MS = 16
 const HOLD_MS = 250
@@ -42,9 +42,9 @@ export const loadQuitGraphics = (
   hold: TerminalHold
 ): Effect.Effect<QuitGraphics | undefined> =>
   Effect.sync(() => {
-    const tui = live ? loadedPiTui() : undefined
-    if (tui === undefined || tui.getCapabilities().images !== 'kitty') return undefined
-    const cell = tui.getCellDimensions()
+    const terminal = live ? quitTerminal() : undefined
+    if (terminal === undefined || terminal.getCapabilities().images !== 'kitty') return undefined
+    const cell = terminal.getCellDimensions()
     const cellWidth = Math.round(cell.widthPx)
     const cellHeight = Math.round(cell.heightPx)
     if (!(cellWidth > 0 && cellHeight > 0)) return undefined
@@ -52,7 +52,7 @@ export const loadQuitGraphics = (
       cellWidth,
       cellHeight,
       columns: columns || DEFAULT_COLUMNS,
-      allocateImageId: tui.allocateImageId,
+      allocateImageId: terminal.allocateImageId,
       hold,
     }
   })

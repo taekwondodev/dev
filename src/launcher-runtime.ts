@@ -293,7 +293,9 @@ const validateDiagnostics = (
   }
 }
 
-const PI_TUI_EXTENSION = fileURLToPath(new URL('./pi-tui-extension.ts', import.meta.url))
+const QUIT_TERMINAL_EXTENSION = fileURLToPath(
+  new URL('./quit-terminal-extension.ts', import.meta.url)
+)
 
 export interface RuntimeParts {
   readonly api: PiApi
@@ -387,7 +389,7 @@ const createRuntime = Effect.fnUntraced(function* (
       modelRuntime,
       resourceLoaderOptions: {
         additionalSkillPaths: [...resources.skillPaths],
-        additionalExtensionPaths: [PI_TUI_EXTENSION],
+        additionalExtensionPaths: [QUIT_TERMINAL_EXTENSION],
         appendSystemPrompt: [profile.guidance],
         extensionFactories: [...(parts.extensions?.(extensions, cwd) ?? extensions)],
       },
