@@ -566,6 +566,9 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     Effect.sync(() => ({
       eligible: attempts.filter(attempt => canDeliverUnsafe(attempt)).map(attempt => attempt.id),
       agentsBlocked: state.exhausted,
+      outstanding: [...active.values()].some(
+        job => job.parent === undefined && !Deferred.isDoneUnsafe(job.settled)
+      ),
     }))
 
   const recordDeliveryFailure = Effect.fnUntraced(function* (
@@ -1083,7 +1086,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       return Deferred.succeed(job.settled, viewOf(job.lifecycle.snapshot()))
     }).pipe(
       Effect.andThen(job.inbox === undefined ? Effect.void : Queue.shutdown(job.inbox)),
-      Effect.ignore
+      Effect.ignore,
+      Effect.andThen(Effect.sync(onChange))
     )
 
   const commitCurrentBestEffort = Effect.fnUntraced(function* (
@@ -1596,7 +1600,6 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       if (cause instanceof WorkPersistenceError) yield* notePersistenceFailure(job, cause)
       yield* Queue.shutdown(job.events).pipe(Effect.ignore)
       yield* settle(job)
-      onChange()
       return
     }
     if (job.lifecycle.isUnknown()) {
@@ -1613,7 +1616,6 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     )
     if (Result.isFailure(outcome)) yield* notePersistenceFailure(job, outcome.failure)
     yield* settle(job)
-    onChange()
   })
 
   const finish = Effect.fnUntraced(function* (job: Job): Effect.fn.Return<void, WorkFailure> {
@@ -1656,12 +1658,12 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       return
     }
     yield* Queue.shutdown(job.events).pipe(Effect.ignore)
-    routeLeaf(job)
-    active.delete(saved.success.snapshot.id)
-    const completed = viewOf(job.lifecycle.snapshot())
-    yield* settle(job)
-    onChange()
-    if (job.parent === undefined && canDeliverUnsafe(completed)) onOutcome(completed)
+    yield* Effect.sync(() => {
+      routeLeaf(job)
+      active.delete(saved.success.snapshot.id)
+      const completed = viewOf(job.lifecycle.snapshot())
+      if (job.parent === undefined && canDeliverUnsafe(completed)) onOutcome(completed)
+    }).pipe(Effect.ensuring(settle(job)))
   })
 
   const canDeliverUnsafe = (attempt: AttemptView): boolean =>

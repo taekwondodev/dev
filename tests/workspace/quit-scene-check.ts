@@ -3,8 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
-import type { QuitTerminal } from '../../src/quit-terminal.ts'
-import { loadQuitGraphics } from '../../src/quit-animation.ts'
+import { loadQuitGraphics, type QuitTerminal } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {
   type BranchState,

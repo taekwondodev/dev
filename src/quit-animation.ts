@@ -25,7 +25,12 @@ import {
   stripColumns,
   toRgba,
 } from './quit-scene.ts'
-import type { QuitTerminal } from './quit-terminal.ts'
+import type { TerminalModule } from './terminal-module.ts'
+
+export type QuitTerminal = Pick<
+  TerminalModule,
+  'getCapabilities' | 'getCellDimensions' | 'allocateImageId'
+>
 
 const FRAME_MS = 16
 const HOLD_MS = 250

@@ -327,6 +327,7 @@ export interface WorkSnapshot {
 export interface WorkDeliveryStatus {
   readonly eligible: readonly AttemptId[]
   readonly agentsBlocked: boolean
+  readonly outstanding: boolean
 }
 
 export interface LogRequest {
