@@ -31,6 +31,7 @@ import { openLead, type Lead, type LeadRequest } from './work-extension-support.
 
 const OUTCOME = 'dev/work-outcome'
 const INSPECTION = 'dev/work-inspection'
+const QUIET = 'dev/work-quiet'
 
 const installed = await loadInstalledPi()
 const { claim, passed } = makeClaims()
@@ -79,6 +80,7 @@ let gates = 0
 const gate = () => {
   const path = join(fixture.root, `gate-${++gates}`)
   return {
+    path,
     command: `while [ ! -e '${path}' ]; do sleep 0.05; done`,
     open: () => writeFileSync(path, ''),
   }
@@ -173,6 +175,21 @@ const readOutcomes = async (lead: Lead, from: number, expected: number): Promise
     if (request === null) break
     request.reply(text('outcome read'))
   }
+}
+
+const QUIET_AFTER_MS = 1200
+const sentQuiet = (lead: Lead) => lead.customMessages(QUIET)
+const quietIn = (request: LeadRequest): boolean =>
+  JSON.stringify(request.context.messages).includes('Quiet commands: still running')
+const quietView = (lead: Lead, quiet: boolean, from = 0) =>
+  lead.view(
+    quiet ? 'a quiet command' : 'no quiet command',
+    view => view.commands.quiet.length > 0 === quiet,
+    from
+  )
+const noRequestBeyond = async (lead: Lead, count: number): Promise<void> => {
+  await new Promise(resolve => setTimeout(resolve, QUIET_AFTER_MS * 2))
+  assert.equal(lead.requests.length, count)
 }
 
 const userTurn = async (lead: Lead, index: number, prompt: string): Promise<void> => {
@@ -770,6 +787,361 @@ return JSON.stringify({
         }
       )
     }
+  )
+
+  await claim(
+    'a silent command wakes a resting lead on a warm cache once, with its runtime, quiet time and latest output',
+    () =>
+      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+        const held = gate()
+        const { run, next, started } = await launch(lead, 0, [
+          `echo before-silence; ${held.command}`,
+        ])
+        const [attempt] = started
+        assert.ok(attempt)
+        next.reply(text('launched'))
+        await run
+        await lead.idle()
+        const woken = await lead.request(2)
+        assert.ok(quietIn(woken), seen(woken))
+        const [notice] = sentQuiet(lead)
+        assert.ok(notice !== undefined)
+        const [entry] = modelEntries(String(notice.content)) as {
+          id: string
+          taskId: string
+          status: string
+          stdout?: string
+          quietSeconds: number
+          runningSeconds: number
+        }[]
+        assert.equal(entry?.id, attempt.id)
+        assert.equal(entry?.taskId, 'task-0-0')
+        assert.equal(entry?.status, 'running')
+        assert.ok(entry?.stdout?.includes('before-silence'))
+        assert.ok(entry !== undefined && entry.runningSeconds >= entry.quietSeconds)
+        woken.reply(text('keep waiting'))
+        await lead.idle()
+        assert.deepEqual(lead.work.restingState(), { state: 'working' })
+        await noRequestBeyond(lead, 3)
+        held.open()
+        await readOutcomes(lead, 3, 1)
+        assert.equal(sentQuiet(lead).length, 1)
+        assert.deepEqual(delivered(lead), [attempt.id])
+      })
+  )
+
+  await claim('a command that goes quiet during a run reaches that run at its next step', () =>
+    withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+      const held = gate()
+      const { run, next, from } = await launch(lead, 0, [held.command])
+      let settled = false
+      void run.then(() => {
+        settled = true
+      })
+      await quietView(lead, true, from)
+      next.reply(text('still working'))
+      const continued = await lead.request(2)
+      assert.ok(quietIn(continued), seen(continued))
+      assert.equal(settled, false, 'the notice continued the same run')
+      continued.reply(text('keep waiting'))
+      await run
+      await lead.idle()
+      await noRequestBeyond(lead, 3)
+      held.open()
+      await readOutcomes(lead, 3, 1)
+      assert.equal(sentQuiet(lead).length, 1)
+    })
+  )
+
+  await claim(
+    'a notice waiting for the next step is dropped when its command prints again before it',
+    () =>
+      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+        const first = gate()
+        const second = gate()
+        const ticking = `while [ ! -e '${second.path}' ]; do echo tick; sleep 0.2; done`
+        const { run, next, from } = await launch(lead, 0, [`${first.command}; ${ticking}`])
+        await quietView(lead, true, from)
+        const resumedFrom = lead.views.length
+        first.open()
+        await quietView(lead, false, resumedFrom)
+        next.reply(text('still working'))
+        await run
+        await lead.idle()
+        await noRequestBeyond(lead, 2)
+        second.open()
+        await readOutcomes(lead, 2, 1)
+        assert.deepEqual(sentQuiet(lead), [])
+        assert.ok(!lead.requests.some(quietIn))
+      })
+  )
+
+  await claim(
+    'a notice waiting for the next step is dropped when its command finishes before it, and only the outcome follows',
+    () =>
+      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+        const held = gate()
+        const { run, next, started, from } = await launch(lead, 0, [held.command])
+        const [attempt] = started
+        assert.ok(attempt)
+        await quietView(lead, true, from)
+        const openedFrom = lead.views.length
+        held.open()
+        await lead.view('the command settled', view => view.commands.running === 0, openedFrom)
+        next.reply(text('still working'))
+        await readOutcomes(lead, 2, 1)
+        await run
+        assert.deepEqual(delivered(lead), [attempt.id])
+        assert.deepEqual(sentQuiet(lead), [])
+        assert.ok(!lead.requests.some(quietIn))
+      })
+  )
+
+  await claim(
+    'Esc while a notice waits for the next step drops it, and the next user run carries no quiet notice',
+    () =>
+      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+        const held = gate()
+        const { run, next, from } = await launch(lead, 0, [held.command])
+        await quietView(lead, true, from)
+        const typed = lead.views.length
+        lead.typeTerminal('\u001b')
+        await lead.view('the attempt cancelled', view => view.commands.running === 0, typed)
+        next.reply(text('launched'))
+        await run
+        await lead.idle()
+        await userTurn(lead, lead.requests.length, 'anything new?')
+        assert.deepEqual(sentQuiet(lead), [])
+        assert.ok(!lead.requests.some(quietIn))
+        assert.deepEqual(lead.work.restingState(), { state: 'done' })
+      })
+  )
+
+  await claim(
+    'on a cold cache a quiet command starts no model request, reports blocked over working, and joins the next user turn',
+    () =>
+      withLead(
+        { quietAfterMs: QUIET_AFTER_MS, now: () => Date.now() + 10 * 60 * 1000 },
+        async lead => {
+          const held = gate()
+          const { run, next, from } = await launch(lead, 0, [held.command])
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          await quietView(lead, true, from)
+          await noRequestBeyond(lead, 2)
+          assert.equal(lead.work.willReactivate(), true)
+          assert.deepEqual(lead.work.restingState(), {
+            state: 'blocked',
+            message: 'Quiet command: task-0-0',
+          })
+          const turn = lead.session.prompt('what is happening?')
+          const request = await lead.request(2)
+          const messages = JSON.stringify(request.context.messages)
+          assert.ok(messages.includes('what is happening?'))
+          assert.ok(quietIn(request), messages)
+          request.reply(text('a command is quiet'))
+          await turn
+          await lead.idle()
+          assert.deepEqual(lead.work.restingState(), { state: 'working' })
+          held.open()
+          await readOutcomes(lead, 3, 1)
+          assert.equal(sentQuiet(lead).length, 1)
+        }
+      )
+  )
+
+  await claim(
+    'a later silence of a command that already reached the model is reported only to the user',
+    () =>
+      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+        const first = gate()
+        const second = gate()
+        const { run, next, from } = await launch(lead, 0, [
+          `${first.command}; echo resumed; ${second.command}`,
+        ])
+        next.reply(text('launched'))
+        await run
+        await lead.idle()
+        const woken = await lead.request(2)
+        assert.ok(quietIn(woken))
+        woken.reply(text('keep waiting'))
+        await lead.idle()
+        const resumedFrom = lead.views.length
+        first.open()
+        await quietView(lead, false, resumedFrom)
+        assert.deepEqual(lead.work.restingState(), { state: 'working' })
+        await quietView(lead, true, lead.views.length)
+        await noRequestBeyond(lead, 3)
+        assert.deepEqual(lead.work.restingState(), {
+          state: 'blocked',
+          message: 'Quiet command: task-0-0',
+        })
+        assert.ok(from < resumedFrom)
+        second.open()
+        await readOutcomes(lead, 3, 1)
+        assert.equal(sentQuiet(lead).length, 1)
+        assert.deepEqual(lead.work.restingState(), { state: 'done' })
+      })
+  )
+
+  await claim(
+    'a refused quiet notice is held for the next run without spending the command allowance',
+    async () => {
+      let refusals = 1
+      await withLead(
+        {
+          quietAfterMs: QUIET_AFTER_MS,
+          send: deliver => (message, options) => {
+            if (message.customType !== QUIET || refusals === 0) return deliver(message, options)
+            refusals -= 1
+            return Promise.reject(new Error('conversation transport down'))
+          },
+        },
+        async lead => {
+          const held = gate()
+          const { run, next } = await launch(lead, 0, [held.command])
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          await lead.wait('the refused notice to be reported', () => lead.notices[0])
+          assert.deepEqual(lead.notices, [
+            { message: 'Background work: conversation transport down', level: 'error' },
+          ])
+          assert.deepEqual(lead.work.restingState(), {
+            state: 'blocked',
+            message: 'Quiet command: task-0-0',
+          })
+          assert.equal(lead.requests.length, 2)
+          const turn = lead.session.prompt('anything new?')
+          const request = await lead.request(2)
+          assert.ok(quietIn(request))
+          request.reply(text('a command is quiet'))
+          await turn
+          await lead.idle()
+          assert.equal(sentQuiet(lead).length, 1)
+          held.open()
+          await readOutcomes(lead, 3, 1)
+        }
+      )
+    }
+  )
+
+  await claim(
+    'when a delayed send is refused after the command resumed and fell silent again, only the newer notice reaches the next run',
+    async () => {
+      let refuse: ((cause: Error) => void) | undefined
+      await withLead(
+        {
+          quietAfterMs: QUIET_AFTER_MS,
+          send: deliver => (message, options) => {
+            if (message.customType !== QUIET || refuse !== undefined)
+              return deliver(message, options)
+            return new Promise<void>((_resolve, reject) => {
+              refuse = reject
+            })
+          },
+        },
+        async lead => {
+          const first = gate()
+          const second = gate()
+          const { run, next } = await launch(lead, 0, [
+            `${first.command}; echo resumed; ${second.command}`,
+          ])
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          const pendingSend = await lead.wait('the first notice to be sent', () => refuse)
+          const resumedFrom = lead.views.length
+          first.open()
+          await quietView(lead, false, resumedFrom)
+          await quietView(lead, true, lead.views.length)
+          pendingSend(new Error('conversation transport down'))
+          await lead.wait('the refused send to be reported', () => lead.notices[0])
+          assert.equal(lead.requests.length, 2)
+          assert.equal(lead.work.restingState().state, 'blocked')
+          const turn = lead.session.prompt('anything new?')
+          const request = await lead.request(2)
+          assert.ok(quietIn(request))
+          request.reply(text('a command is quiet'))
+          await turn
+          await lead.idle()
+          const [notice] = sentQuiet(lead)
+          assert.equal(sentQuiet(lead).length, 1)
+          const [entry] = modelEntries(String(notice?.content)) as { stdout?: string }[]
+          assert.ok(entry?.stdout?.includes('resumed'), 'the newer silence was delivered')
+          second.open()
+          await readOutcomes(lead, 3, 1)
+        }
+      )
+    }
+  )
+
+  await claim(
+    'a wake that fails after its notice reached the model still spends the command allowance',
+    () =>
+      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
+        const first = gate()
+        const second = gate()
+        const { run, next } = await launch(lead, 0, [
+          `${first.command}; echo resumed; ${second.command}`,
+        ])
+        next.reply(text('launched'))
+        await run
+        await lead.idle()
+        const woken = await lead.request(2)
+        assert.ok(quietIn(woken))
+        let armed = true
+        const unsubscribe = lead.session.subscribe(event => {
+          if (event.type !== 'agent_settled' || !armed) return
+          armed = false
+          throw new Error('settlement listener failed')
+        })
+        try {
+          const resumedFrom = lead.views.length
+          first.open()
+          await quietView(lead, false, resumedFrom)
+          await quietView(lead, true, lead.views.length)
+          woken.reply(text('keep waiting'))
+          await lead.wait('the late rejection to be reported', () => lead.notices[0])
+        } finally {
+          unsubscribe()
+        }
+        await lead.idle()
+        assert.deepEqual(lead.work.restingState(), {
+          state: 'blocked',
+          message: 'Quiet command: task-0-0',
+        })
+        await userTurn(lead, 3, 'anything new?')
+        assert.equal(sentQuiet(lead).length, 1, 'the newer silence stayed with the user')
+        second.open()
+        await readOutcomes(lead, 4, 1)
+      })
+  )
+
+  await claim(
+    'a held notice is discarded when its command settles first, and its outcome carries no quiet notice',
+    () =>
+      withLead(
+        { quietAfterMs: QUIET_AFTER_MS, now: () => Date.now() + 10 * 60 * 1000 },
+        async lead => {
+          const held = gate()
+          const { run, next, started, from } = await launch(lead, 0, [held.command])
+          const [attempt] = started
+          assert.ok(attempt)
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          await quietView(lead, true, from)
+          assert.equal(lead.work.restingState().state, 'blocked')
+          held.open()
+          await readOutcomes(lead, 2, 1)
+          assert.deepEqual(delivered(lead), [attempt.id])
+          assert.deepEqual(sentQuiet(lead), [])
+          assert.ok(!lead.requests.some(quietIn))
+          assert.deepEqual(lead.work.restingState(), { state: 'done' })
+        }
+      )
   )
 
   await claim('outcomes that complete together at idle each arrive once', () =>

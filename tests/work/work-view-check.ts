@@ -91,6 +91,7 @@ const view = (
   options: {
     readonly batchStart?: number
     readonly live?: ReadonlyMap<AttemptId, ChildLive>
+    readonly quiet?: ReadonlyMap<AttemptId, number>
     readonly agentsBlocked?: boolean
     readonly reactivationSuspended?: boolean
   } = {}
@@ -99,6 +100,7 @@ const view = (
     sessionId: 'session',
     snapshot: snapshot(records, options.agentsBlocked),
     live: options.live ?? new Map(),
+    quiet: options.quiet ?? new Map(),
     batchStart: options.batchStart ?? 0,
     reactivationSuspended: options.reactivationSuspended ?? false,
   })
@@ -217,8 +219,38 @@ await claim(
       { agentsBlocked: true, reactivationSuspended: true }
     )
     assert.deepEqual(ids(built), ['task-4'])
-    assert.deepEqual(built.commands, { running: 2 })
+    assert.deepEqual(built.commands, { running: 2, quiet: [] })
     assert.deepEqual(built.blocks, { agentsBlocked: true, reactivationSuspended: true })
+  }
+)
+
+await claim(
+  'quiet commands list active commands in start order with task key and quiet-since time; settled ones drop out',
+  () => {
+    const first = record({ index: 1, kind: 'process', taskId: 'tests', startedAt: 20 })
+    const second = record({ index: 2, kind: 'process', taskId: 'build', startedAt: 10 })
+    const settled = record({
+      index: 3,
+      kind: 'process',
+      taskId: 'done',
+      status: 'completed',
+      completedAt: 30,
+    })
+    const loud = record({ index: 4, kind: 'process', taskId: 'server', startedAt: 5 })
+    const built = view([first, second, settled, loud], {
+      quiet: new Map([
+        [first.id, 500],
+        [second.id, 400],
+        [settled.id, 300],
+      ]),
+    })
+    assert.deepEqual(built.commands, {
+      running: 3,
+      quiet: [
+        { id: second.id, taskId: 'build', since: 400 },
+        { id: first.id, taskId: 'tests', since: 500 },
+      ],
+    })
   }
 )
 
@@ -227,7 +259,7 @@ await claim('the empty view has no children, no commands and no blocks', () => {
   assert.deepEqual(emptyWorkView('session'), {
     sessionId: 'session',
     children: [],
-    commands: { running: 0 },
+    commands: { running: 0, quiet: [] },
     blocks: { agentsBlocked: false, reactivationSuspended: false },
   })
 })

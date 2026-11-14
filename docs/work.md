@@ -70,6 +70,8 @@ While background work runs, do independent work or end the turn and let outcome 
 
 Outcomes carry a child's whole answer when it fits the result read and the tail of command output, so the common case needs no `inspect`; a longer answer is read from offset 0. They arrive when the current run settles, or at idle when late. An eligible batch can continue a successful lead run without another user message; workflow checkpoints still apply. Compaction and context edits do not erase delivery acknowledgment. Failed or unconfirmed delivery remains visible in `/work`; retries do not start model calls.
 
+A command can hang without exiting. When a running `process` attempt adds nothing to stdout or stderr for 2 minutes, dev raises a quiet notice with its runtime, quiet time and output tails, recognized credentials redacted; it never stops the command. The first notice of a command reaches the model only when that is cheap: an active lead run receives it at its next step, and a resting lead wakes for it only when its last model request is under 5 minutes old, the footer's warm-cache rule, and automatic continuation is allowed. Otherwise no model request starts: the notice waits for the lead's next run, whoever starts it, and the [program status](#program-status) asks for the user. A command that prints again, settles or is stopped drops its waiting notice, even while the notice is being prepared. Inside a run, dev adds the notice at the next turn boundary rather than queueing it, so a notice is never sent after its command changed. A notice whose preparation or send fails waits for the next run; only a notice recorded in the conversation counts. Later silences of a command whose notice already reached the model are reported only to the user. Two accepted limits remain. A wake can still deliver a superseded notice if Pi runs a blocking compaction before sending it and the command changes meanwhile. And a notice proposed at a turn boundary counts as delivered once dev proposes it, so a later extension handler that delayed the boundary or removed the entry could deliver a superseded notice or drop the command's only model notice; dev's own boundary handlers and the global footer are synchronous and keep entries.
+
 A completed process or child report is not artifact verification. Tracked Git changes are compared for inspection; untracked files and external dependencies are not. Review the real artifact and account for retained workspaces before delivery.
 
 ### Cancellation and session changes
@@ -88,6 +90,8 @@ Subscription exhaustion from any attempt, including a leaf, blocks new agents an
 
 Pi reports the lead's state to terminals that support the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status): `working` during a run and `done` when it settles. Dev changes one case. While the lead rests and outcome delivery will start its next run without a user message, the terminal receives `working` instead of `done`: a command or child the lead started has not settled, or one of their outcomes still awaits a delivery that can continue the lead.
 
+While the lead rests with a quiet notice waiting for the user, dev reports `blocked` with the quiet commands' task keys instead, until the commands print again, settle or stop, or the lead starts a run.
+
 `done` follows as soon as nothing will resume the lead: the resumed run settles with no work left, the work is stopped, or automatic continuation ends under the [delivery](#delivery-and-verification) or [failure](#failures-and-visibility) rules. `blocked`, `error` and the `idle` of a cancelled run arrive as Pi sends them, and the application name and message are always Pi's.
 
 Commands and children count alike. A command that never exits, such as a server or a watcher, keeps the status at `working` until `/work stop` ends it. [ADR 0006](adr/0006-global-visual-layer.md) records why this rule lives in dev rather than in a global extension.
@@ -96,7 +100,7 @@ Commands and children count alike. A command that never exits, such as a server 
 
 Dev publishes `dev/work-view` on Pi's event bus only when a UI is present. Each emission replaces the session's previous view; closing work emits an empty view. Global extensions own presentation under [ADR 0006](adr/0006-global-visual-layer.md). The [view declaration](../src/work-view.ts) owns its exact fields.
 
-A batch includes active children and children that settled since the owner's last message. Outcome deliveries and other extension input do not close it; the owner's next message drops settled children. Leaves retain their coordinator in the view. Local commands contribute a running count rather than child rows.
+A batch includes active children and children that settled since the owner's last message. Outcome deliveries and other extension input do not close it; the owner's next message drops settled children. Leaves retain their coordinator in the view. Local commands contribute a running count rather than child rows, and the running commands currently quiet with their task keys and quiet-since times.
 
 Live activity is transient: it stays in controller memory, never in the attempt store or model context. Updates are coalesced without reading the store on each tick. [SECURITY](../SECURITY.md#credentials) owns target disclosure and redaction limits.
 
