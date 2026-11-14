@@ -32,10 +32,16 @@ export interface WorkChildView {
   readonly orb?: AttemptSummary['orb']
 }
 
+export interface QuietCommandView {
+  readonly id: AttemptId
+  readonly taskId: string
+  readonly since: number
+}
+
 export interface WorkView {
   readonly sessionId: string
   readonly children: readonly WorkChildView[]
-  readonly commands: { readonly running: number }
+  readonly commands: { readonly running: number; readonly quiet: readonly QuietCommandView[] }
   readonly blocks: { readonly agentsBlocked: boolean; readonly reactivationSuspended: boolean }
 }
 
@@ -43,6 +49,7 @@ export interface WorkViewInput {
   readonly sessionId: string
   readonly snapshot: WorkSnapshot
   readonly live: ReadonlyMap<AttemptId, ChildLive>
+  readonly quiet: ReadonlyMap<AttemptId, number>
   readonly batchStart: number
   readonly reactivationSuspended: boolean
 }
@@ -96,6 +103,7 @@ export const workView = ({
   sessionId,
   snapshot,
   live,
+  quiet,
   batchStart,
   reactivationSuspended,
 }: WorkViewInput): WorkView => {
@@ -119,12 +127,16 @@ export const workView = ({
         parent !== undefined && visible.has(parent) ? parent : undefined
       )
     })
+  const commands = snapshot.records.filter(record => record.kind === 'process' && isActive(record))
   return {
     sessionId,
     children,
     commands: {
-      running: snapshot.records.filter(record => record.kind === 'process' && isActive(record))
-        .length,
+      running: commands.length,
+      quiet: commands.toSorted(byStart).flatMap(record => {
+        const since = quiet.get(record.id)
+        return since === undefined ? [] : [{ id: record.id, taskId: record.owner.taskId, since }]
+      }),
     },
     blocks: { agentsBlocked: snapshot.agentsBlocked, reactivationSuspended },
   }
@@ -133,6 +145,6 @@ export const workView = ({
 export const emptyWorkView = (sessionId: string): WorkView => ({
   sessionId,
   children: [],
-  commands: { running: 0 },
+  commands: { running: 0, quiet: [] },
   blocks: { agentsBlocked: false, reactivationSuspended: false },
 })

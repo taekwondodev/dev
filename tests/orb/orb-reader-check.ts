@@ -124,6 +124,7 @@ try {
         sessionId: provisioning.owner.sessionId,
         snapshot: { records: [provisioning], unavailable: [], agentsBlocked: false },
         live: new Map(),
+        quiet: new Map(),
         batchStart: Number.POSITIVE_INFINITY,
         reactivationSuspended: false,
       })
