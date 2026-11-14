@@ -772,24 +772,6 @@ return JSON.stringify({
     }
   )
 
-  await claim('a command still running after a failed turn will not reactivate the lead', () =>
-    withLead({}, async lead => {
-      const held = gate()
-      const { run, next, started } = await launch(lead, 0, [held.command])
-      const [attempt] = started
-      assert.ok(attempt)
-      next.fail('upstream connection reset')
-      await run
-      await lead.idle()
-      assert.equal(lead.work.willReactivate(), false)
-      held.open()
-      await lead.wait('the outcome to arrive without a model call', () =>
-        delivered(lead).includes(attempt.id) ? true : undefined
-      )
-      assert.equal(lead.requests.length, 2)
-    })
-  )
-
   await claim('outcomes that complete together at idle each arrive once', () =>
     withLead({}, async lead => {
       const held = gate()
@@ -959,6 +941,7 @@ return JSON.stringify({
         next.fail('upstream connection reset')
         await run
         await lead.idle()
+        assert.equal(lead.work.willReactivate(), false)
         first.open()
         await lead.wait('the outcome to arrive without a model call', () =>
           delivered(lead).includes(suspended.id) ? true : undefined
