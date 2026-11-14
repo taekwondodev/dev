@@ -39,6 +39,7 @@ export const openLead = async (
     readonly tools?: readonly string[]
     readonly codemode?: boolean
     readonly children?: boolean
+    readonly onReactivationChange?: () => void
     readonly onToolResult?: (event: {
       readonly toolName: string
       readonly structuredContent?: unknown
@@ -100,6 +101,9 @@ export const openLead = async (
       },
     },
     isWorkspaceParked: () => false,
+    ...(options.onReactivationChange === undefined
+      ? {}
+      : { onReactivationChange: options.onReactivationChange }),
     ...(options.children === true
       ? { childEntry: new URL('./work-child-entry.ts', import.meta.url) }
       : {}),
