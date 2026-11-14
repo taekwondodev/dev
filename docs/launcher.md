@@ -91,6 +91,10 @@ Profiles are personal configuration. The installation's `profiles/` directory is
 
 A missing, unreadable or invalid manifest, a default that is not a defined profile, an unknown profile name, a missing SOUL or skill directory of the selected profile, or a Pi resource/extension error stops startup and names the file or resource; no other profile is substituted. Resources of unselected profiles are neither checked nor loaded. Profiles share private state and sessions; they are guidance selection, not isolation.
 
+### Tool output toggle
+
+Ctrl+O still expands and collapses tool output, but dev drops Pi's `Tool output: expanded` and `Tool output: collapsed` status lines; Pi's other status messages are unchanged. The filter replaces a private `InteractiveMode` method, so a Pi release that renames it brings the line back without failing startup.
+
 ### Resume and quit
 
 `--continue` selects by session-file modification time and the cwd in Pi's header. If the selected conversation is refused, it does not try an older one. Both resume forms refuse a conversation open in another dev installation or one whose workspace path, Git metadata or persistent identity no longer matches the authority.
