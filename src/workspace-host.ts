@@ -84,6 +84,7 @@ export interface WorkspaceHostOptions {
   readonly openSessionManager: (sessionFile: string, cwdOverride?: string) => SessionManager
   readonly resolveImportPath: (input: string) => string
   readonly orbMode?: boolean
+  readonly onParkingChange?: () => void
 }
 
 export interface RuntimeWorkspace {
@@ -473,6 +474,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let currentApi: ExtensionAPI | undefined
 
   let parked: false | 'switch' = false
+  const setParked = (next: false | 'switch'): void => {
+    if (parked === next) return
+    parked = next
+    options.onParkingChange?.()
+  }
   let closed = false
   let pending: PendingTransition | undefined
   let armedRunEnd: PendingTransition | undefined
@@ -751,7 +757,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const runHostHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (transition.transitionSource !== activeAttachment) {
       pending = undefined
-      parked = false
+      setParked(false)
       return yield* withdrawOrReport(transition.transitionSource, transition.handoff)
     }
     const performed = yield* Effect.exit(
@@ -775,7 +781,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         pendingReopen = undefined
         if (callbackResult === 'cancelled') {
           pending = undefined
-          parked = false
+          setParked(false)
           if (quitting) return
           restoreInput(transition.surface)
           notify(
@@ -792,7 +798,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         if (transition.transitionSource !== activeAttachment)
           yield* closeAttachmentOnce(transition.transitionSource)
         pending = undefined
-        parked = false
+        setParked(false)
         queueReevaluation(transition)
       })
     )
@@ -819,7 +825,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
     pendingReopen = undefined
     pending = undefined
-    parked = false
+    setParked(false)
     restoreInput(transition.surface)
     notify(
       transition.surface,
@@ -872,7 +878,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
       return
     }
-    parked = 'switch'
+    setParked('switch')
     const transition = makeTransition(handoff, origin, context, 'requested')
     pending = transition
     if (immediate) scheduleHandoff(transition)
@@ -981,7 +987,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const scoped = scopedGrantOf(admitted.scoped)
     const mismatch = validateNativeGrant(admitted.grant, context, 'write')
     if (mismatch) {
-      parked = 'switch'
+      setParked('switch')
       if (within !== undefined && scoped !== undefined && !(scoped instanceof WorkspaceError))
         yield* settleRefusedWrite(admitted.attachment, scoped, context, within.toolName)
       return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
@@ -996,7 +1002,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         if (admitted.kind === 'refused') return refusalOf(admitted)
         const mismatch = validateNativeGrant(admitted.grant, context, 'read')
         if (mismatch) {
-          parked = 'switch'
+          setParked('switch')
           return { block: true, terminate: true, reason: mismatch }
         }
         if (admitted.warning === undefined) writerWarned = false
@@ -1232,7 +1238,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       staged ?? (canReuse ? activeAttachment : undefined)
     )
     if (staged) stagedAttachments.delete(key)
-    if (!canReuse && activeConversation.sessionId !== identity.sessionId) parked ||= 'switch'
+    if (!canReuse && activeConversation.sessionId !== identity.sessionId) setParked('switch')
     return {
       attachment: resolved.attachment,
       sessionManager: resolved.manager,
@@ -1291,7 +1297,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
             activeConversation.sessionId === expectedId &&
             runtime?.session.sessionManager.getSessionId() === expectedId
           )
-            parked = false
+            setParked(false)
         })
       )
     }
@@ -1406,7 +1412,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const prepared = attached.value
       staged = prepared
       stagedAttachments.set(stagedKey, prepared)
-      parked = 'switch'
+      setParked('switch')
       replacementStarted = true
       const result = yield* fromPi(() =>
         rawSwitch(sessionFile, {
@@ -1420,13 +1426,13 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         if (runtimePreparationSerial === previousSerial && staged) {
           stagedAttachments.delete(stagedKey)
           yield* closeAttachmentOnce(staged)
-          parked = false
+          setParked(false)
           clearReopen()
         } else {
-          parked = 'switch'
+          setParked('switch')
         }
       } else if (!pending) {
-        parked = false
+        setParked(false)
         clearReopen()
       }
       return result
@@ -1434,17 +1440,17 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       Effect.tapError(() =>
         Effect.gen(function* () {
           if (replacementStarted) {
-            parked = 'switch'
+            setParked('switch')
           } else if (runtimePreparationSerial === previousSerial && staged && stagedKey) {
             stagedAttachments.delete(stagedKey)
             yield* Effect.ignore(closeAttachmentOnce(staged))
-            parked = false
+            setParked(false)
             clearReopen()
           } else if (runtimePreparationSerial === previousSerial) {
-            parked = false
+            setParked(false)
             clearReopen()
           } else {
-            parked = 'switch'
+            setParked('switch')
           }
         })
       ),
@@ -1484,7 +1490,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (pending) {
       const withdrawn = yield* Effect.exit(withdraw(pending.transitionSource, pending.handoff))
       if (Exit.isFailure(withdrawn)) {
-        parked = 'switch'
+        setParked('switch')
         notify(
           currentContext,
           `Pending workspace handoff could not be cancelled safely. ${errorText(Cause.squash(withdrawn.cause))}`,
@@ -1493,7 +1499,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return
       }
       pending = undefined
-      parked = false
+      setParked(false)
     }
     yield* closeAttachmentOnce(activeAttachment)
   })

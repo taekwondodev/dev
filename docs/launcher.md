@@ -96,6 +96,10 @@ A missing, unreadable or invalid manifest, a default that is not a defined profi
 
 Ctrl+O still expands and collapses tool output, but dev drops Pi's `Tool output: expanded` and `Tool output: collapsed` status lines; Pi's other status messages are unchanged. The filter replaces a private `InteractiveMode` method, so a Pi release that renames it brings the line back without failing startup.
 
+### Program status
+
+The lead's TUI runs on a terminal the launcher builds from Pi's own terminal module and passes through `InteractiveMode`'s `terminal` option, so that dev can [report `working` instead of `done` while background work will resume the lead](work.md#program-status). If the module does not arrive ([ADR 0002](adr/0002-session-owned-background-work.md#pi-build)), Pi creates its default terminal and reports as plain Pi does.
+
 ### Resume and quit
 
 `--continue` selects by session-file modification time and the cwd in Pi's header. If the selected conversation is refused, it does not try an older one. Both resume forms refuse a conversation open in another dev installation or one whose workspace path, Git metadata or persistent identity no longer matches the authority.
