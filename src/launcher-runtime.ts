@@ -438,7 +438,7 @@ const createRuntime = Effect.fnUntraced(function* (
   yield* Effect.sync(() => {
     compaction.bindSession(result.session)
     work.bindSession(result.session)
-    parts.programStatus.observe(work.willReactivate)
+    parts.programStatus.observe(work.restingState)
   })
   return { ...result, services, diagnostics: services.diagnostics }
 })

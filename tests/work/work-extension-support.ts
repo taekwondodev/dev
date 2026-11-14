@@ -40,6 +40,8 @@ export const openLead = async (
     readonly codemode?: boolean
     readonly children?: boolean
     readonly onReactivationChange?: () => void
+    readonly quietAfterMs?: number
+    readonly now?: () => number
     readonly onToolResult?: (event: {
       readonly toolName: string
       readonly structuredContent?: unknown
@@ -107,6 +109,8 @@ export const openLead = async (
     ...(options.children === true
       ? { childEntry: new URL('./work-child-entry.ts', import.meta.url) }
       : {}),
+    ...(options.quietAfterMs === undefined ? {} : { quietAfterMs: options.quietAfterMs }),
+    ...(options.now === undefined ? {} : { now: options.now }),
   })
   const views: WorkView[] = []
   const services = await pi.createAgentSessionServices({

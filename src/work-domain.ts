@@ -555,6 +555,7 @@ export type WorkFailure =
 export interface WorkOwnerService {
   readonly snapshot: Effect.Effect<WorkSnapshot, WorkFailure>
   readonly live: Effect.Effect<ReadonlyMap<AttemptId, ChildLive>>
+  readonly quiet: Effect.Effect<ReadonlyMap<AttemptId, number>>
   readonly startProcess: (request: ProcessStartRequest) => Effect.Effect<AttemptView, WorkFailure>
   readonly startAgent: (request: AgentStartRequest) => Effect.Effect<AttemptView, WorkFailure>
   readonly cancel: (id: AttemptId, reason?: string) => Effect.Effect<AttemptView, WorkFailure>

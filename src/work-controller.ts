@@ -103,6 +103,7 @@ import {
 import { commandRunner, type RunCommand } from './command.ts'
 import { makeOwnerBootstrap } from './web-browser-owner.ts'
 import { errorText } from './error-text.ts'
+import { QUIET_AFTER_MS, watchQuiet, type QuietChange } from './work-quiet.ts'
 
 type ProcessEvent =
   | { readonly type: 'message'; readonly raw: unknown }
@@ -133,6 +134,7 @@ interface Job {
   readonly undelivered: Map<AttemptId, AttemptView>
   readonly leaves: Set<Job>
   live?: ChildLive
+  quietSince?: number
 }
 
 type CoordinationRequest = Exclude<CoordinationMessage, { readonly type: 'work-outcomes-ack' }>
@@ -178,6 +180,8 @@ interface WorkOwnerOptions {
   readonly onChange?: () => void
   readonly onLive?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
+  readonly onQuiet?: (change: QuietChange) => void
+  readonly quietAfterMs?: number
   readonly childEntry?: URL
   readonly browserOwnerEntry?: URL
 }
@@ -439,6 +443,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const onChange = options.onChange ?? (() => undefined)
   const onLive = options.onLive ?? (() => undefined)
   const onOutcome = options.onOutcome ?? (() => undefined)
+  const onQuiet = options.onQuiet ?? (() => undefined)
+  const quietAfterMs = options.quietAfterMs ?? QUIET_AFTER_MS
   const childEntry = options.childEntry ?? PI_CHILD_ENTRY
   const browserOwner = makeOwnerBootstrap({
     dataHome,
@@ -473,6 +479,43 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         })
       )
   )
+
+  const quietAttempts = Effect.sync(
+    (): ReadonlyMap<AttemptId, number> =>
+      new Map(
+        [...active].flatMap(([id, job]) =>
+          job.quietSince === undefined || !job.lifecycle.isActive()
+            ? []
+            : [[id, job.quietSince] as const]
+        )
+      )
+  )
+
+  const logSize = (id: AttemptId): Effect.Effect<number> =>
+    Effect.forEach(['stdout', 'stderr'] as const, stream =>
+      fs.stat(store.logPath(id, stream)).pipe(
+        Effect.map(info => Number(info.size)),
+        Effect.orElseSucceed(() => 0)
+      )
+    ).pipe(Effect.map(([stdout = 0, stderr = 0]) => stdout + stderr))
+
+  const watchJobQuiet = (job: Job): Effect.Effect<void> => {
+    const { attemptId: id } = job.lifecycle.token
+    const { taskId } = job.task
+    return watchQuiet({
+      size: logSize(id),
+      active: () => job.lifecycle.isActive(),
+      quietAfterMs,
+      onQuiet: since => {
+        job.quietSince = since
+        onQuiet({ kind: 'quiet', id, taskId, since })
+      },
+      onResumed: () => {
+        job.quietSince = undefined
+        onQuiet({ kind: 'resumed', id })
+      },
+    })
+  }
 
   const dispatch: Effect.Effect<DispatchConfig, WorkFailure> = readDispatch.pipe(
     Effect.provideService(FileSystem.FileSystem, fs),
@@ -1289,6 +1332,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         Effect.gen(function* () {
           yield* store.save(job.lifecycle.snapshot())
           yield* Effect.forkIn(scope)(waitForOwnedExit(job))
+          if (request.kind === 'process') yield* Effect.forkIn(scope)(watchJobQuiet(job))
           if (job.inbox !== undefined) yield* Effect.forkIn(scope)(serveCoordinator(job, job.inbox))
         })
       )
@@ -1856,6 +1900,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   return WorkOwner.of({
     snapshot,
     live: liveAttempts,
+    quiet: quietAttempts,
     dispatch,
     startProcess,
     startAgent,

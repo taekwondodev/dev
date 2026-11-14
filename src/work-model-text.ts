@@ -8,6 +8,7 @@ import type {
   WorkResult,
   WorkSnapshotView,
 } from './work-domain.ts'
+import { redactSecrets } from './error-text.ts'
 
 export const OUTPUT_PREVIEW = 512
 export const TRUNCATED_RESULT = 'truncated: read from offset 0'
@@ -142,3 +143,23 @@ export const workResultText = (result: WorkResult): string => JSON.stringify(res
 
 export const outcomeText = (outcomes: readonly AttemptOutcome[], guidance: string): string =>
   `${guidance}\n${JSON.stringify(outcomes.map(outcomeObject))}`
+
+export interface QuietOutcome {
+  readonly outcome: AttemptOutcome
+  readonly quietSeconds: number
+  readonly runningSeconds: number
+}
+
+export const quietText = (notices: readonly QuietOutcome[], guidance: string): string =>
+  `${guidance}\n${JSON.stringify(
+    notices.map(({ outcome, quietSeconds, runningSeconds }) => ({
+      ...outcomeObject({
+        ...outcome,
+        logs: outcome.logs.map(log =>
+          log.text === undefined ? log : { ...log, text: redactSecrets(log.text) }
+        ),
+      }),
+      runningSeconds,
+      quietSeconds,
+    }))
+  )}`
