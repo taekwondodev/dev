@@ -170,6 +170,7 @@ const openLeadHost = (input: {
   readonly lifecycle?: WorkspaceLifecycle
   readonly dataHome?: string
   readonly cwd?: string
+  readonly onParkingChange?: () => void
 }) =>
   openHostRuntime({
     coordination: { installationPath: fixture, namespacePath: join(fixture, 'authority') },
@@ -184,6 +185,7 @@ const openLeadHost = (input: {
     offline: input.offline,
     lifecycle: input.lifecycle ?? lifecycle.effect,
     dataHome: input.dataHome ?? dataHome,
+    ...(input.onParkingChange === undefined ? {} : { onParkingChange: input.onParkingChange }),
   })
 const overriding = <T extends object>(target: T, overrides: Partial<T>): T =>
   new Proxy(target, {
@@ -464,7 +466,13 @@ try {
     ],
   ])
   const { manager, attached } = await attachLeadConversation()
-  const opened = await openLeadHost({ attachment: attached.effect, manager, offline })
+  const parking: boolean[] = []
+  const opened = await openLeadHost({
+    attachment: attached.effect,
+    manager,
+    offline,
+    onParkingChange: () => parking.push(opened.host.isParked()),
+  })
   const { host, runtime } = opened
   const result = toolResults(runtime)
   await runtime.session.prompt('Run the tests in the background.')
@@ -485,6 +493,14 @@ try {
       assert.deepEqual(await pendingAtLead(), [], 'no switch is left pending')
     }
   )
+  await claim('the host notifies each time it parks and each time it stops being parked', () => {
+    assert.equal(parking[0], true, 'parking for the switch was not notified')
+    assert.equal(parking.at(-1), false, 'the completed switch was not notified')
+    assert.ok(
+      parking.every((state, index) => index === 0 || state !== parking[index - 1]),
+      `a notification without a change: ${JSON.stringify(parking)}`
+    )
+  })
   await claim(
     'the refused work call ends the batch as an error, so Pi makes no request in the old context: the next one reads and writes in the managed worktree',
     () => {

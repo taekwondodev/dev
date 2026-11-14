@@ -726,6 +726,70 @@ return JSON.stringify({
       })
   )
 
+  await claim(
+    'a completed turn that leaves a command running will be reactivated until the turn its outcome starts, and no longer once that turn settles',
+    async () => {
+      const samples: { readonly resting: boolean; readonly answer: boolean }[] = []
+      let sampled: Lead | undefined
+      const takeSample = (): void => {
+        if (sampled !== undefined)
+          samples.push({
+            resting: sampled.session.isIdle,
+            answer: sampled.work.willReactivate(),
+          })
+      }
+      await withLead(
+        {
+          onReactivationChange: () => {
+            takeSample()
+            setImmediate(takeSample)
+          },
+        },
+        async lead => {
+          sampled = lead
+          assert.equal(lead.work.willReactivate(), false)
+          const held = gate()
+          const { run, next } = await launch(lead, 0, [held.command])
+          next.reply(text('launched'))
+          await run
+          await lead.idle()
+          assert.equal(lead.work.willReactivate(), true)
+          const opened = samples.length
+          held.open()
+          const continued = await lead.request(2)
+          const untilContinuation = samples.slice(opened)
+          assert.ok(untilContinuation.length > 0, 'the outcome notified no listener')
+          assert.deepEqual(
+            untilContinuation.filter(sample => sample.resting && !sample.answer),
+            []
+          )
+          continued.reply(text('outcome read'))
+          await lead.idle()
+          assert.equal(lead.work.willReactivate(), false)
+          sampled = undefined
+        }
+      )
+    }
+  )
+
+  await claim('a command still running after a failed turn will not reactivate the lead', () =>
+    withLead({}, async lead => {
+      const held = gate()
+      const { run, next, started } = await launch(lead, 0, [held.command])
+      const [attempt] = started
+      assert.ok(attempt)
+      next.fail('upstream connection reset')
+      await run
+      await lead.idle()
+      assert.equal(lead.work.willReactivate(), false)
+      held.open()
+      await lead.wait('the outcome to arrive without a model call', () =>
+        delivered(lead).includes(attempt.id) ? true : undefined
+      )
+      assert.equal(lead.requests.length, 2)
+    })
+  )
+
   await claim('outcomes that complete together at idle each arrive once', () =>
     withLead({}, async lead => {
       const held = gate()

@@ -84,6 +84,14 @@ A local command that exits normally is `completed`, even with a nonzero exit cod
 
 Subscription exhaustion from any attempt, including a leaf, blocks new agents and automatic continuation and disables the lead's provider retries. A user message alone does not clear it. The block lifts and retries return to their prior setting when a lead run that started after the last exhaustion completes; exhaustion reported during a run outlasts that run. Existing commands finish and their outcomes are recorded. A final lead provider or transport failure after Pi retries suspends automatic reactivation until the next user message. Tool, build, test and child failures are not lead-run failures.
 
+### Program status
+
+Pi reports the lead's state to terminals that support the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status): `working` during a run and `done` when it settles. Dev changes one case. While the lead rests and outcome delivery will start its next run without a user message, the terminal receives `working` instead of `done`: a command or child the lead started has not settled, or one of their outcomes still awaits a delivery that can continue the lead.
+
+`done` follows as soon as nothing will resume the lead: the resumed run settles with no work left, the work is stopped, or automatic continuation is no longer possible after a failed lead run, subscription exhaustion or a failed delivery. `blocked`, `error` and the `idle` of a cancelled run arrive as Pi sends them, and the application name and message are always Pi's.
+
+Commands and children count alike. A command that never exits, such as a server or a watcher, keeps the status at `working` until `/work stop` ends it. [ADR 0006](adr/0006-global-visual-layer.md) records why this rule lives in dev rather than in a global extension.
+
 ### Live view
 
 Dev publishes `dev/work-view` on Pi's event bus only when a UI is present. Each emission replaces the session's previous view; closing work emits an empty view. Global extensions own presentation under [ADR 0006](adr/0006-global-visual-layer.md). The [view declaration](../src/work-view.ts) owns its exact fields.

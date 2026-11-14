@@ -117,13 +117,10 @@ import {
   type TaskReleasePlan,
   type TerminalStyle,
 } from './quit-display.ts'
-import { loadQuitGraphics } from './quit-animation.ts'
-import {
-  makeQuitTerminalSource,
-  type QuitTerminal,
-  type QuitTerminalSource,
-} from './quit-terminal.ts'
+import { loadQuitGraphics, type QuitTerminal } from './quit-animation.ts'
 import { makeSessionEnd, type SessionEnd, type SignalCode } from './session-end.ts'
+import { makeLeadProgramStatus, type LeadProgramStatus } from './program-status.ts'
+import { makeTerminalModuleSource, type TerminalModuleSource } from './terminal-module.ts'
 import {
   SETTLED_AT,
   type BranchState,
@@ -307,7 +304,8 @@ export interface RuntimeParts {
   readonly workspaceHost: WorkspaceHost
   readonly lifecycle: WorkspaceLifecycle
   readonly webReader: WebReader
-  readonly quitTerminal: QuitTerminalSource
+  readonly terminalModule: TerminalModuleSource
+  readonly programStatus: LeadProgramStatus
   readonly modelRuntime?: Effect.Effect<ModelRuntime, LauncherError>
   readonly model?: SessionModel
   readonly extensions?: (dev: readonly NamedExtension[], cwd: string) => readonly InlineExtension[]
@@ -352,6 +350,7 @@ const createRuntime = Effect.fnUntraced(function* (
       profile: profile.name,
       workspace: { lifecycle, attachment, requestRebind: workspaceHost.requestRebind },
       isWorkspaceParked: workspaceHost.isParked,
+      onReactivationChange: parts.programStatus.changed,
     })
   )
   const trustResolver: typeof PiProjectTrust = yield* fromPromise(
@@ -382,7 +381,7 @@ const createRuntime = Effect.fnUntraced(function* (
     { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
     { name: 'dev:web', factory: createWebExtension(webReader).factory },
     { name: 'dev:codemode', factory: api.createCodemodeExtension({ mode: 'on' }) },
-    { name: 'dev:quit-terminal', factory: parts.quitTerminal.askingExtension },
+    { name: 'dev:terminal-module', factory: parts.terminalModule.askingExtension },
   ]
   const services = yield* fromPromise('Cannot create Pi session services', () =>
     api.createAgentSessionServices({
@@ -392,7 +391,7 @@ const createRuntime = Effect.fnUntraced(function* (
       modelRuntime,
       resourceLoaderOptions: {
         additionalSkillPaths: [...resources.skillPaths],
-        additionalExtensionPaths: [parts.quitTerminal.answeringExtensionPath],
+        additionalExtensionPaths: [parts.terminalModule.answeringExtensionPath],
         appendSystemPrompt: [profile.guidance],
         extensionFactories: [...(parts.extensions?.(extensions, cwd) ?? extensions)],
       },
@@ -439,6 +438,7 @@ const createRuntime = Effect.fnUntraced(function* (
   yield* Effect.sync(() => {
     compaction.bindSession(result.session)
     work.bindSession(result.session)
+    parts.programStatus.observe(work.willReactivate)
   })
   return { ...result, services, diagnostics: services.diagnostics }
 })
@@ -456,6 +456,10 @@ export const makeRuntimeFactory = (
     }
   })
 
+type InteractiveTerminal = NonNullable<
+  NonNullable<ConstructorParameters<PiApi['InteractiveMode']>[1]>['terminal']
+>
+
 const toolExpansionStatus = /^Tool output: (?:expanded|collapsed)$/
 
 const silenceToolExpansionStatus = (mode: object): void => {
@@ -470,9 +474,13 @@ const silenceToolExpansionStatus = (mode: object): void => {
 const runInteractive = Effect.fnUntraced(function* (
   api: PiApi,
   runtime: AgentRuntime,
-  ending: SessionEnd
+  ending: SessionEnd,
+  terminal: InteractiveTerminal | undefined
 ): Effect.fn.Return<void, LauncherError> {
-  const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
+  const mode = new api.InteractiveMode(runtime, {
+    startupDiagnostics: [...runtime.diagnostics],
+    ...(terminal === undefined ? {} : { terminal }),
+  })
   silenceToolExpansionStatus(mode)
   yield* Effect.raceFirst(
     fromPromise('Pi interactive mode failed', () => mode.run()),
@@ -1203,6 +1211,7 @@ const run = Effect.fnUntraced(function* (
       })
   }
   const resolveImportPath = yield* loadPiPathResolver(packageInfo.root)
+  const programStatus = makeLeadProgramStatus()
   const workspaceHost = yield* makeWorkspaceHost({
     lifecycle: workspaceLifecycle,
     attachment,
@@ -1210,6 +1219,7 @@ const run = Effect.fnUntraced(function* (
     openSessionManager: (file, cwdOverride) =>
       api.SessionManager.open(file, sessionsPath, cwdOverride),
     resolveImportPath,
+    onParkingChange: programStatus.changed,
   })
   const effectiveSelection =
     resolve(effectiveCwd) === resolve(launchCwd)
@@ -1256,7 +1266,7 @@ const run = Effect.fnUntraced(function* (
       renderer => makeWebReader({ renderer })
     )
   )
-  const quitTerminal = makeQuitTerminalSource()
+  const terminalModule = makeTerminalModuleSource()
   const createRuntimeFactory = yield* makeRuntimeFactory(
     {
       api,
@@ -1267,7 +1277,8 @@ const run = Effect.fnUntraced(function* (
       workspaceHost,
       lifecycle: workspaceLifecycle,
       webReader,
-      quitTerminal,
+      terminalModule,
+      programStatus,
     },
     { cwd: effectiveCwd, resources }
   )
@@ -1318,7 +1329,13 @@ const run = Effect.fnUntraced(function* (
         return
       }
       yield* Scope.provide(outerScope)(ending.watchSignals)
-      yield* runInteractive(api, runtime, ending)
+      const tui = terminalModule.current()
+      yield* runInteractive(
+        api,
+        runtime,
+        ending,
+        tui === undefined ? undefined : programStatus.attach(new tui.ProcessTerminal())
+      )
     })
   )
   return yield* Effect.gen(function* () {
@@ -1344,7 +1361,7 @@ const run = Effect.fnUntraced(function* (
               occupiedPaths: [returnCwd, process.cwd(), binding.conversation.sessionFile],
               detached: workspaceHost.isDetached(),
               proceed: interruption.proceed,
-              terminal: { hold: interruption.hold, module: quitTerminal.current() },
+              terminal: { hold: interruption.hold, module: terminalModule.current() },
             })
       })
     )

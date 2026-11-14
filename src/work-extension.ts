@@ -1,6 +1,7 @@
 import { join, resolve as resolvePath } from 'node:path'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as FiberSet from 'effect/FiberSet'
 import * as Latch from 'effect/Latch'
 import * as Layer from 'effect/Layer'
@@ -82,6 +83,12 @@ interface PublicationReservation {
   readonly publication: PendingOutcome['publication']
 }
 
+const canStillReactivate = ({ attempt, publication }: PendingOutcome): boolean =>
+  !attempt.deliveryError &&
+  (publication.state === 'ready' ||
+    publication.state === 'sending' ||
+    publication.state === 'submitted')
+
 const reserve = (
   reservations: readonly PublicationReservation[],
   state: PendingOutcome['publication']['state']
@@ -136,6 +143,7 @@ export const LEAD_TOOL_DESCRIPTION =
 export interface WorkExtension {
   readonly factory: Pi.ExtensionFactory
   readonly bindSession: (session: WorkSession) => void
+  readonly willReactivate: () => boolean
   readonly close: (reason?: string) => Promise<void>
 }
 
@@ -144,6 +152,7 @@ export const createWorkExtension = ({
   profile,
   workspace,
   isWorkspaceParked,
+  onReactivationChange = () => undefined,
   childEntry,
 }: {
   readonly dataHome: string
@@ -158,6 +167,7 @@ export const createWorkExtension = ({
     ) => void
   }
   readonly isWorkspaceParked: () => boolean
+  readonly onReactivationChange?: () => void
   readonly childEntry?: URL
 }): WorkExtension => {
   let sessionOwner: OwnerState | undefined
@@ -223,7 +233,10 @@ export const createWorkExtension = ({
                       workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
                   },
                   ...(childEntry === undefined ? {} : { childEntry }),
-                  onChange: () => scheduleView(true),
+                  onChange: () => {
+                    scheduleView(true)
+                    onReactivationChange()
+                  },
                   onLive: () => scheduleView(false),
                   onOutcome: attempt => {
                     if (
@@ -354,7 +367,8 @@ export const createWorkExtension = ({
           withOwner(owner => owner.interrupt(reason))
         )
       ),
-      Effect.andThen(Effect.sync(() => scheduleView(true)))
+      Effect.andThen(Effect.sync(() => scheduleView(true))),
+      Effect.ensuring(Effect.sync(onReactivationChange))
     )
   const interrupt = (ctx: Pi.ExtensionContext, reason: string): Promise<void> =>
     Effect.runPromise(interruptOwned(ctx, reason))
@@ -531,7 +545,8 @@ export const createWorkExtension = ({
       confirmations,
       Effect.promise(() => sent.refusal).pipe(
         Effect.flatMap(cause => confirmSend(scope, sent.sending, cause)),
-        Effect.catchCauseIf(isFailure, reportFailure)
+        Effect.catchCauseIf(isFailure, reportFailure),
+        Effect.ensuring(Effect.sync(onReactivationChange))
       )
     )
   })
@@ -543,6 +558,7 @@ export const createWorkExtension = ({
       Effect.andThen(Effect.sync(() => Latch.closeUnsafe(wake))),
       Effect.andThen(flush(confirmations)),
       Effect.catchCauseIf(isFailure, reportFailure),
+      Effect.ensuring(Effect.sync(onReactivationChange)),
       Effect.forever,
       Effect.forkScoped
     )
@@ -594,6 +610,18 @@ export const createWorkExtension = ({
     if (scope !== undefined) yield* reconcileSubmitted(scope)
   })
 
+  const willReactivate = (): boolean => {
+    const scope = deliveryScope()
+    if (scope === undefined || !isCurrent(scope) || reactivation !== 'ready' || isWorkspaceParked())
+      return false
+    const status = scope.owner.runtime.runSyncExit(withOwner(owner => owner.deliveryStatus([])))
+    return (
+      Exit.isSuccess(status) &&
+      !status.value.agentsBlocked &&
+      (status.value.outstanding || [...pending.values()].some(canStillReactivate))
+    )
+  }
+
   const close = (reason = 'session ended'): Promise<void> => {
     if (sessionOwner?._tag === 'closed') return sessionOwner.shutdown
     pending.clear()
@@ -614,6 +642,7 @@ export const createWorkExtension = ({
             )
           )
     sessionOwner = { _tag: 'closed', shutdown }
+    onReactivationChange()
     return shutdown
   }
 
@@ -760,6 +789,7 @@ export const createWorkExtension = ({
         reactivation = 'awaiting-success'
         view.batchStart = Date.now()
         scheduleView(false)
+        onReactivationChange()
       }
       scheduleDelivery()
     })
@@ -866,6 +896,7 @@ export const createWorkExtension = ({
   return {
     factory,
     bindSession,
+    willReactivate,
     close,
   }
 }

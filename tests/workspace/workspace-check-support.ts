@@ -22,7 +22,8 @@ import type { WorkFailure, WorkOwnerService } from '../../src/work-domain.ts'
 import { loadPi, loadPiPathResolver, type PiApi } from '../../src/pi-runtime.ts'
 import { loadCatalog } from '../../src/profiles.ts'
 import { acquireRuntime, type CoordinationOptions } from '../../src/runtime-coordination.ts'
-import { makeQuitTerminalSource } from '../../src/quit-terminal.ts'
+import { makeLeadProgramStatus } from '../../src/program-status.ts'
+import { makeTerminalModuleSource } from '../../src/terminal-module.ts'
 import type { SessionEnd } from '../../src/session-end.ts'
 import { createSessionGuard } from '../../src/session-guard.ts'
 import type { WorkspaceAttachment, WorkspaceLifecycle } from '../../src/workspace-domain.ts'
@@ -308,6 +309,7 @@ export const openHostRuntime = async (input: {
   readonly webReader?: WebReader
   readonly ending?: SessionEnd
   readonly mode?: 'headless' | 'tui'
+  readonly onParkingChange?: () => void
 }) => {
   const resolveImportPath = await loadImportPathResolver(input.packageRoot)
   const scope = Scope.makeUnsafe()
@@ -321,6 +323,9 @@ export const openHostRuntime = async (input: {
           openSessionManager: (file, cwd) =>
             input.pi.SessionManager.open(file, input.sessionDir, cwd),
           resolveImportPath,
+          ...(input.onParkingChange === undefined
+            ? {}
+            : { onParkingChange: input.onParkingChange }),
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -354,7 +359,8 @@ export const openHostRuntime = async (input: {
           workspaceHost: host,
           lifecycle: input.lifecycle,
           webReader,
-          quitTerminal: makeQuitTerminalSource(),
+          terminalModule: makeTerminalModuleSource(),
+          programStatus: makeLeadProgramStatus(),
           extensions: input.extensions,
           ...(input.offline === undefined
             ? {}
