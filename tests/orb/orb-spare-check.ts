@@ -48,13 +48,11 @@ const KEYSTONE = {
 const CONFIG: OrbConfig = {
   path: '/unused/orb.json',
   size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
-  image: 'ubuntu-24.04-arm64-dev',
   sshAllowedCidr: '192.0.2.1/32',
 }
 
 const SHAPE: SpareShape = {
   size: CONFIG.size,
-  image: CONFIG.image,
   sshAllowedCidr: CONFIG.sshAllowedCidr,
 }
 
@@ -64,7 +62,6 @@ const orbitTime = (minutesAgo: number): string =>
 const view = (id: string, minutesAgo: number, status: OrbView['status'] = 'ACTIVE'): OrbView => ({
   id,
   status,
-  image: CONFIG.image,
   ssh_host: null,
   ssh_user: null,
   ssh_host_keys: null,
@@ -182,7 +179,6 @@ await claim(
       /orbit reports it ERROR \(No valid host was found\)/
     )
     for (const other of [
-      { ...SHAPE, image: 'cirros' },
       { ...SHAPE, sshAllowedCidr: '198.51.100.7/32' },
       { ...SHAPE, size: { ...SHAPE.size, vcpus: 4 } },
     ])
@@ -240,7 +236,7 @@ await claim(
       {
         name: 'shape',
         orb: view('orb-shape', 5),
-        shape: { ...SHAPE, image: 'cirros' },
+        shape: { ...SHAPE, sshAllowedCidr: '198.51.100.7/32' },
         reason: /another orb\.json/,
       },
     ]

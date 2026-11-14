@@ -36,7 +36,6 @@ export type OrbSize = typeof OrbSizeSchema.Type
 export const OrbViewSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: OrbStatusSchema,
-  image: Schema.String,
   ssh_host: Schema.NullOr(Schema.String),
   ssh_user: Schema.NullOr(Schema.String),
   ssh_host_keys: Schema.NullOr(Schema.Array(Schema.String)),
@@ -59,14 +58,12 @@ export type OrbCredentials = typeof OrbCredentialsSchema.Type
 
 export const OrbConfigSchema = Schema.Struct({
   size: Schema.optional(OrbSizeSchema),
-  image: Schema.optional(Schema.NonEmptyString),
   ssh_allowed_cidr: Schema.NonEmptyString,
 })
 
 export interface OrbConfig {
   readonly path: string
   readonly size: OrbSize
-  readonly image: string
   readonly sshAllowedCidr: string
 }
 
@@ -106,7 +103,6 @@ export type AssignedRecord = typeof AssignedRecordSchema.Type
 
 export const SpareShapeSchema = Schema.Struct({
   size: OrbSizeSchema,
-  image: Schema.NonEmptyString,
   sshAllowedCidr: Schema.NonEmptyString,
 })
 export type SpareShape = typeof SpareShapeSchema.Type

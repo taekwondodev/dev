@@ -136,6 +136,8 @@ Stop affected runtimes and maintenance operations before deleting state, then re
 | Workspace authority, including managed worktrees | `~/Library/Application Support/dev/workspace-authority/`, then `git worktree prune` in each repository that had managed worktrees |
 | Attempt state                                    | `<data-home>/work/attempts.sqlite` and its `-wal`, `-shm`, `-journal` sidecars, plus `<data-home>/work/attempts/`                 |
 | Dev metadata in conversations                    | `<data-home>/sessions/` and `<data-home>/child-sessions/`                                                                         |
+| Orb configuration                                | `<data-home>/orb.json`                                                                                                            |
+| Spare orb records                                | The affected `<data-home>/orbs/<record-id>/` directories, including keys and owner locks; this does not delete the cloud orbs     |
 | Profile preferences                              | `<data-home>/preferences/`                                                                                                        |
 | Usage reports                                    | `<data-home>/usage/`                                                                                                              |
 | Installation and conversation locks              | `<installation>/.dev/coordination/`, independent of data-home overrides                                                           |

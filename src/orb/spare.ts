@@ -56,12 +56,10 @@ const failureText = (cause: Cause.Cause<unknown>): string => errorText(Cause.squ
 
 export const spareShape = (config: OrbConfig): SpareShape => ({
   size: config.size,
-  image: config.image,
   sshAllowedCidr: config.sshAllowedCidr,
 })
 
 const sameShape = (left: SpareShape, right: SpareShape): boolean =>
-  left.image === right.image &&
   left.sshAllowedCidr === right.sshAllowedCidr &&
   left.size.vcpus === right.size.vcpus &&
   left.size.memory_mb === right.size.memory_mb &&
@@ -232,7 +230,6 @@ const requestSpare = Effect.fnUntraced(function* (
         size: shape.size,
         publicKey: record.publicKey,
         sshAllowedCidr: shape.sshAllowedCidr,
-        image: shape.image,
       })
       .pipe(
         Effect.flatMap(answer =>

@@ -16,6 +16,7 @@ import {
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -26,7 +27,13 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import { identityTokensUrl, parseToken, type Keystone, type Orbit } from '../../src/orb/cloud.ts'
+import {
+  identityTokensUrl,
+  makeOrbit,
+  parseToken,
+  type Keystone,
+  type Orbit,
+} from '../../src/orb/cloud.ts'
 import {
   isSpare,
   orbFailure,
@@ -39,7 +46,7 @@ import { readOrbConfig, readOrbCredentials } from '../../src/orb/config.ts'
 import { deleteOrbById, isCidr, setupOrb, type Prompt } from '../../src/orb/command.ts'
 import { deleteRecorded } from '../../src/orb/deletion.ts'
 import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/recovery.ts'
-import { claimRecord, createRecord } from '../../src/orb/registry.ts'
+import { claimRecord, createRecord, readRecord } from '../../src/orb/registry.ts'
 import {
   branchingReturn,
   openOrbSession,
@@ -198,13 +205,12 @@ const returnFrom = (mac: string, orb: string, record: string) =>
   )
 
 await claim(
-  'the orb configuration lives in the data home, defaults size and image, and its absence names the file to create',
+  'the orb configuration lives in the data home, defaults size, and its absence names the file to create',
   async () => {
     const dataHome = orbDataHome('config-data')
     assert.deepEqual(await run(readOrbConfig(dataHome)), {
       path: join(dataHome, 'orb.json'),
       size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
-      image: 'ubuntu-24.04-arm64-dev',
       sshAllowedCidr: '192.0.2.1/32',
     })
     const empty = join(sandbox, 'config-missing')
@@ -215,6 +221,112 @@ await claim(
         error.message ===
         `No orb configuration at ${join(empty, 'orb.json')}. Create it with: dev --data-home '${empty}' orb setup`
     )
+  }
+)
+
+await claim(
+  'obsolete orb configuration and spare records are refused without rewriting or deleting them',
+  async () => {
+    const dataHome = orbDataHome('obsolete-config')
+    const path = join(dataHome, 'orb.json')
+    const contents = JSON.stringify({ ssh_allowed_cidr: '192.0.2.1/32', image: 'obsolete' })
+    writeFileSync(path, contents)
+    await assert.rejects(run(readOrbConfig(dataHome)), /image/)
+    assert.equal(readFileSync(path, 'utf8'), contents)
+    const record = await run(
+      createRecord(dataHome, {
+        keystone: { authUrl: CREDENTIALS.auth_url, projectId: 'project', projectName: 'demo' },
+        spare: { size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 }, sshAllowedCidr: '192.0.2.1/32' },
+      })
+    )
+    const recordPath = join(record.directory, 'record.json')
+    const stored = JSON.parse(readFileSync(recordPath, 'utf8'))
+    stored.spare.image = 'obsolete'
+    const obsolete = JSON.stringify(stored)
+    writeFileSync(recordPath, obsolete)
+    await run(record.release)
+    await assert.rejects(run(readRecord(record.directory)), /Invalid orb record/)
+    await assert.rejects(run(claimRecord(record.directory)), /Invalid orb record/)
+    assert.equal(readFileSync(recordPath, 'utf8'), obsolete)
+  }
+)
+
+await claim(
+  'orbit create, get, list and delete decode responses with no image, and creation sends only the current fields',
+  async () => {
+    const view = {
+      id: 'orb-api',
+      status: 'ACTIVE',
+      ssh_host: '192.0.2.2',
+      ssh_user: 'ubuntu',
+      ssh_host_keys: ['ssh-ed25519 key'],
+      fault: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    const requests: { method: string | undefined; path: string | undefined; body: string }[] = []
+    const server = createServer((request, response) => {
+      let body = ''
+      request.setEncoding('utf8')
+      request.on('data', chunk => {
+        body += chunk
+      })
+      request.on('end', () => {
+        requests.push({ method: request.method, path: request.url, body })
+        response.writeHead(request.method === 'POST' || request.method === 'DELETE' ? 202 : 200, {
+          'Content-Type': 'application/json',
+        })
+        response.end(
+          JSON.stringify(
+            request.method === 'GET' && request.url === '/v1/orbs' ? { orbs: [view] } : view
+          )
+        )
+      })
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address()
+      assert.ok(address && typeof address !== 'string')
+      const orbit = makeOrbit(
+        {
+          authUrl: CREDENTIALS.auth_url,
+          token: Effect.succeed({
+            id: 'token',
+            project: { id: 'project', name: 'demo' },
+            expiresAt: Date.now() + 3600000,
+            orbitUrl: `http://127.0.0.1:${address.port}`,
+          }),
+          invalidate: Effect.void,
+        },
+        undefined
+      )
+      const input = {
+        size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
+        publicKey: 'ssh-ed25519 public',
+        sshAllowedCidr: '192.0.2.1/32',
+      }
+      assert.deepEqual(await run(orbit.create(input)), view)
+      assert.deepEqual(await run(orbit.get(view.id)), view)
+      assert.deepEqual(await run(orbit.list), [view])
+      assert.deepEqual(await run(orbit.remove(view.id)), view)
+      assert.deepEqual(JSON.parse(requests[0]!.body), {
+        size: input.size,
+        public_key: input.publicKey,
+        ssh_allowed_cidr: input.sshAllowedCidr,
+      })
+      assert.deepEqual(
+        requests.map(({ method, path }) => [method, path]),
+        [
+          ['POST', '/v1/orbs'],
+          ['GET', '/v1/orbs/orb-api'],
+          ['GET', '/v1/orbs'],
+          ['DELETE', '/v1/orbs/orb-api'],
+        ]
+      )
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close(error => (error ? reject(error) : resolve()))
+      )
+    }
   }
 )
 
@@ -1721,7 +1833,6 @@ await claim(
 const orbView = (id: string, created: string, status: OrbView['status'] = 'ACTIVE'): OrbView => ({
   id,
   status,
-  image: 'ubuntu-24.04-arm64-dev',
   ssh_host: null,
   ssh_user: null,
   ssh_host_keys: null,
@@ -1957,7 +2068,6 @@ const spareLaunch = async (name: string, spareStatus: OrbView['status'], spareAg
           keystone: KEYSTONE,
           spare: {
             size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
-            image: 'ubuntu-24.04-arm64-dev',
             sshAllowedCidr: '192.0.2.1/32',
           },
         })
@@ -2160,7 +2270,6 @@ await claim(
           config: {
             path: join(dataHome, 'orb.json'),
             size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
-            image: 'ubuntu-24.04-arm64-dev',
             sshAllowedCidr: '192.0.2.0/24',
           },
           conversation: join(dataHome, 'session.jsonl'),
@@ -2243,7 +2352,6 @@ await claim(
         keystone: KEYSTONE,
         spare: {
           size: { vcpus: 2, memory_mb: 2048, disk_gb: 10 },
-          image: 'ubuntu-24.04-arm64-dev',
           sshAllowedCidr: '192.0.2.0/24',
         },
       })
@@ -2662,7 +2770,6 @@ await claim(
       '',
       'secret',
       '',
-      '',
       'two',
       '4',
       '',
@@ -2690,7 +2797,6 @@ await claim(
       mode: 0o600,
       json: {
         size: { vcpus: 4, memory_mb: 2048, disk_gb: 10 },
-        image: 'ubuntu-24.04-arm64-dev',
         ssh_allowed_cidr: '192.0.2.50/32',
       },
     })
@@ -2706,7 +2812,6 @@ await claim(
       'hidden Password: ',
       'hidden Password: ',
       'Network the orbs admit SSH from [192.0.2.50/32]: ',
-      'Orb image [ubuntu-24.04-arm64-dev]: ',
       'Orb vCPUs [2]: ',
       'Orb vCPUs [2]: ',
       'Orb memory in MB [2048]: ',

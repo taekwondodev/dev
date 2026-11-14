@@ -235,7 +235,6 @@ export interface OrbCreation {
   readonly size: OrbSize
   readonly publicKey: string
   readonly sshAllowedCidr: string
-  readonly image: string
 }
 
 export interface Orbit {
@@ -295,7 +294,6 @@ export const makeOrbit = (keystone: Keystone, ca: Buffer | undefined): Orbit => 
         size: input.size,
         public_key: input.publicKey,
         ssh_allowed_cidr: input.sshAllowedCidr,
-        image: input.image,
       }).pipe(Effect.flatMap(decoded)),
     get: id => call('GET', `/v1/orbs/${encodeURIComponent(id)}`, 200).pipe(Effect.flatMap(decoded)),
     remove: id =>

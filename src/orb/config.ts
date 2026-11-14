@@ -16,7 +16,6 @@ import {
 } from './domain.ts'
 
 export const DEFAULT_SIZE = { vcpus: 2, memory_mb: 2048, disk_gb: 10 }
-export const DEFAULT_IMAGE = 'ubuntu-24.04-arm64-dev'
 
 const PRIVATE_MODE = 0o600
 
@@ -55,7 +54,6 @@ export const readOrbConfig = (
     return {
       path,
       size: config.size ?? DEFAULT_SIZE,
-      image: config.image ?? DEFAULT_IMAGE,
       sshAllowedCidr: config.ssh_allowed_cidr,
     }
   })

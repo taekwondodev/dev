@@ -201,7 +201,6 @@ export const makeChildOrbs = (
                     size: input.config.size,
                     publicKey: created.publicKey,
                     sshAllowedCidr: input.config.sshAllowedCidr,
-                    image: input.config.image,
                   }),
                 })
               )

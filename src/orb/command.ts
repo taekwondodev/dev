@@ -7,13 +7,7 @@ import * as Effect from 'effect/Effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type { WorkspaceLifecycle } from '../workspace-domain.ts'
 import { openCloud, type Keystone, type Orbit } from './cloud.ts'
-import {
-  DEFAULT_IMAGE,
-  DEFAULT_SIZE,
-  readOrbCredentials,
-  readStoredOrbFiles,
-  writeOrbFiles,
-} from './config.ts'
+import { DEFAULT_SIZE, readOrbCredentials, readStoredOrbFiles, writeOrbFiles } from './config.ts'
 import { deleteOrb, deleteRecorded } from './deletion.ts'
 import {
   holdsWork,
@@ -180,7 +174,6 @@ export const setupOrb = Effect.fnUntraced(function* (
     config?.sshAllowedCidr ?? (routed === undefined ? undefined : `${routed}/32`),
     answer => (isCidr(answer) ? undefined : 'Enter an address with a prefix, such as 192.0.2.1/32.')
   )
-  const image = yield* ask(options, 'Orb image', config?.image ?? DEFAULT_IMAGE)
   const size = config?.size ?? DEFAULT_SIZE
   const vcpus = yield* askCount(options, 'Orb vCPUs', size.vcpus)
   const memory = yield* askCount(options, 'Orb memory in MB', size.memory_mb)
@@ -189,7 +182,6 @@ export const setupOrb = Effect.fnUntraced(function* (
     credentials,
     config: {
       size: { vcpus, memory_mb: memory, disk_gb: disk },
-      image,
       ssh_allowed_cidr: cidr,
     },
   })

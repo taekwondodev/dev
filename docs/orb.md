@@ -33,17 +33,17 @@ Outside a session:
 Two private, unversioned files in the data home hold the configuration, and `dev orb setup` prompts for and writes both:
 
 - `<data-home>/openstack.json` holds the OpenStack credentials and endpoint settings. dev reads it only with mode `600` and prints the `chmod` that fixes it otherwise.
-- `<data-home>/orb.json` selects the image and size and requires `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH.
+- `<data-home>/orb.json` selects the size and requires `ssh_allowed_cidr`, the network orbit lets reach the orb over SSH.
 
 The [configuration schemas](../src/orb/domain.ts) own the accepted fields; [configuration loading](../src/orb/config.ts) owns defaults.
 
-Without either file, or with an excess or missing required field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home.
+Without either file, or with an excess or missing required field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home. Obsolete configuration and spare records are not migrated or reset at startup; follow [discard obsolete state](DEVELOPMENT.md#discard-obsolete-state) before restarting on a changed format.
 
 `dev orb setup` proposes the stored value of each field, Enter keeps it and `-` clears an optional one. The password is read without echo, and Enter keeps the stored one. dev authenticates with the answers and writes nothing unless Keystone accepts them. For `ssh_allowed_cidr` it proposes the stored value, otherwise the Mac's own address on its route to the Keystone host, as `<address>/32`. Each file is replaced through a temporary file and a rename, with mode `600`.
 
 The Mac must route to orbit's floating IPs. Follow orbit's [deployment instructions](https://github.com/taekwondodev/orbit#installation) to make them reachable.
 
-The image needs `bash`, `git`, `rg` and `grep`, passwordless `sudo` for its SSH user, and an entry in orbit's `[orbs] ssh_users`. It must also meet orbit's [proxy initialization requirements](https://github.com/taekwondodev/orbit/blob/main/docs/architecture.md#images-other-than-cirros) for external network access.
+Every orb boots orbit's single image; dev does not choose one. See orbit's [ADR 0010](https://github.com/taekwondodev/orbit/blob/main/docs/adr/0010-one-orb-image.md) and [the orb image](https://github.com/taekwondodev/orbit/blob/main/docs/architecture.md#the-orb-image) for its tools and proxy initialization.
 
 ### Network access
 
@@ -77,7 +77,7 @@ Once its own orb is ready, a session requests a spare with the current `orb.json
 
 At quit, dev lets an in-flight spare request finish, so its record names the orb, and does not wait for `ACTIVE`. It prints the spare's id, the time until which it stays valid and its `dev orb delete` command, or why no spare was left.
 
-The next launch takes the spare, through the record's owner lock, when its Keystone URL and project match the credentials, its size, image and `ssh_allowed_cidr` equal the current `orb.json`, orbit reports it `RESERVING`, `BUILDING` or `ACTIVE`, and it has not expired. It assigns the spare's record to the checkout in place and prints the spare's id, status and age; a spare still booting is awaited like a new orb. Any other spare is deleted, and `DELETED` awaited before the launch requests its own orb, because the spare would take the capacity it needs: a spare whose machine stopped is in `ERROR`. A spare that orbit no longer has loses its record; one orbit cannot read, one of another project and one a running session holds are left as they are.
+The next launch takes the spare, through the record's owner lock, when its Keystone URL and project match the credentials, its size and `ssh_allowed_cidr` equal the current `orb.json`, orbit reports it `RESERVING`, `BUILDING` or `ACTIVE`, and it has not expired. It assigns the spare's record to the checkout in place and prints the spare's id, status and age; a spare still booting is awaited like a new orb. Any other spare is deleted, and `DELETED` awaited before the launch requests its own orb, because the spare would take the capacity it needs: a spare whose machine stopped is in `ERROR`. A spare that orbit no longer has loses its record; one orbit cannot read, one of another project and one a running session holds are left as they are.
 
 No dev process runs between sessions, so a spare holds its reservation until a launch takes or deletes it, or `dev orb delete` removes it.
 
@@ -170,14 +170,14 @@ A session that ended while returning work may have left the checkout half-writte
 
 ## State
 
-| Location                                  | Content                                                                                                                                                                                                                   |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<data-home>/openstack.json`              | The OpenStack [credentials](#configuration), mode `600`                                                                                                                                                                   |
-| `<data-home>/orb.json`                    | The [configuration](#configuration) of new orbs                                                                                                                                                                           |
-| `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`; a spare's `record.json` holds its size, image and SSH network in place of the checkout until a launch or a child takes it |
-| `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository                                                                                                                                     |
-| `refs/dev/orb/<record-id>/fork/<attempt>` | The lead orb's commit a [writing child](#writing-children) starts from, until its worktree exists                                                                                                                         |
-| `dev/orb-return/<record-id>[-<n>]`        | The orb's work after a [divergent return](#divergence), a local branch dev never deletes                                                                                                                                  |
-| `dev/orb-recovery/<record-id>`            | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted                                                                                                                              |
+| Location                                  | Content                                                                                                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `<data-home>/openstack.json`              | The OpenStack [credentials](#configuration), mode `600`                                                                                                                                                            |
+| `<data-home>/orb.json`                    | The [configuration](#configuration) of new orbs                                                                                                                                                                    |
+| `<data-home>/orbs/<record-id>/`           | The orb record: `record.json`, the private `key`, `known_hosts`, the owner lock `owner.sqlite`; a spare's `record.json` holds its size and SSH network in place of the checkout until a launch or a child takes it |
+| `refs/dev/orb/<record-id>/base`, `/end`   | The last synchronized snapshot and the orb's latest snapshot, in the local repository                                                                                                                              |
+| `refs/dev/orb/<record-id>/fork/<attempt>` | The lead orb's commit a [writing child](#writing-children) starts from, until its worktree exists                                                                                                                  |
+| `dev/orb-return/<record-id>[-<n>]`        | The orb's work after a [divergent return](#divergence), a local branch dev never deletes                                                                                                                           |
+| `dev/orb-recovery/<record-id>`            | The work of an orb left by an ended session, written at [recovery](#recovery), never deleted                                                                                                                       |
 
 The record exists from before the creation request until orbit reports `DELETED`. The owning `dev --orb` holds its lock for the whole session, and a recovering `dev --orb` while it recovers the record.

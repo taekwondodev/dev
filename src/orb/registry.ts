@@ -195,7 +195,9 @@ export const readRecord = (directory: string): Effect.Effect<OrbRecord, OrbError
     readFileSync(join(directory, 'record.json'), 'utf8')
   ).pipe(
     Effect.flatMap(text =>
-      Schema.decodeEffect(Schema.fromJsonString(OrbRecordSchema))(text).pipe(
+      Schema.decodeEffect(Schema.fromJsonString(OrbRecordSchema))(text, {
+        onExcessProperty: 'error',
+      }).pipe(
         Effect.mapError(cause => orbFailure(`Invalid orb record in ${directory}: ${cause.message}`))
       )
     )

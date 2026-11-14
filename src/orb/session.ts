@@ -273,7 +273,6 @@ export const openOrbSession = Effect.fnUntraced(function* (
               size: config.size,
               publicKey: created.publicKey,
               sshAllowedCidr: config.sshAllowedCidr,
-              image: config.image,
             }),
           })),
           Effect.onError(() => withdraw)
@@ -303,7 +302,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
   const prepared = yield* Effect.gen(function* () {
     yield* phase(
       spare === undefined
-        ? `requesting an orb (${config.size.vcpus} vCPU, ${config.size.memory_mb} MB, ${config.size.disk_gb} GB, ${config.image}) from ${token.orbitUrl}`
+        ? `requesting an orb (${config.size.vcpus} vCPU, ${config.size.memory_mb} MB, ${config.size.disk_gb} GB) from ${token.orbitUrl}`
         : `taking the spare orb ${shortId(spare.view.id)} (${spare.view.status}, created ${spareAge(spare.view, yield* Clock.currentTimeMillis)})`
     )
     const created = yield* request.pipe(
