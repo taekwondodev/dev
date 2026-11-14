@@ -8,7 +8,7 @@ import {
   type LogView,
   type WorkResult,
 } from '../../src/work-domain.ts'
-import { outcomeText, outputPreview, workResultText } from '../../src/work-model-text.ts'
+import { outcomeText, outputPreview, quietText, workResultText } from '../../src/work-model-text.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
@@ -354,6 +354,71 @@ await claim(
     assert.equal(quiet !== undefined && 'stderr' in quiet, false)
   }
 )
+
+await claim(
+  'a quiet notice is the running command outcome with its tails cut like outcomes, plus running and quiet seconds',
+  () => {
+    const long = `${'y'.repeat(700)}TAIL`
+    const text = quietText(
+      [
+        {
+          outcome: outcome({
+            kind: 'process',
+            taskId: 'tests',
+            status: 'running',
+            exitCode: undefined,
+            completedAt: undefined,
+            logs: [log({ stream: 'stdout', text: long }), log({ stream: 'stderr' })],
+          }),
+          quietSeconds: 125,
+          runningSeconds: 610,
+        },
+      ],
+      'Quiet guidance.'
+    )
+    assert.ok(text.startsWith('Quiet guidance.\n'))
+    assert.deepEqual(entries(text), [
+      {
+        id: ID,
+        taskId: 'tests',
+        kind: 'process',
+        status: 'running',
+        stdout: `…${long.slice(-512)}`,
+        runningSeconds: 610,
+        quietSeconds: 125,
+      },
+    ])
+  }
+)
+
+await claim('a quiet notice redacts credentials in both output tails', () => {
+  const text = quietText(
+    [
+      {
+        outcome: outcome({
+          kind: 'process',
+          status: 'running',
+          logs: [
+            log({ stream: 'stdout', text: 'export API_KEY=abc123secret\nready' }),
+            log({
+              stream: 'stderr',
+              text: 'auth with sk-abcdefghijklmnop failed; password: hunter2',
+            }),
+          ],
+        }),
+        quietSeconds: 120,
+        runningSeconds: 130,
+      },
+    ],
+    'Quiet guidance.'
+  )
+  assert.ok(!text.includes('abc123secret'))
+  assert.ok(!text.includes('sk-abcdefghijklmnop'))
+  assert.ok(!text.includes('hunter2'))
+  const [entry] = entries(text) as { stdout?: string; stderr?: string }[]
+  assert.equal(entry?.stdout, 'export API_KEY=[redacted]\nready')
+  assert.equal(entry?.stderr, 'auth with [redacted] failed; password: [redacted]')
+})
 
 await claim(
   'the coordinator work tool sends the same model text as the projection, with the full result in details',
