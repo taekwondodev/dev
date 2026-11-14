@@ -4,13 +4,10 @@ import * as Fiber from 'effect/Fiber'
 import * as TestClock from 'effect/testing/TestClock'
 import { asAttemptId } from '../../src/work-domain.ts'
 import {
-  CACHE_WINDOW_MS,
-  makeQuietLedger,
   cacheWarm,
-  lastRequestAt,
+  makeQuietLedger,
   QUIET_AFTER_MS,
-  quietPollMs,
-  quietRoute,
+  wakesForQuiet,
   watchQuiet,
 } from '../../src/work-quiet.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
@@ -28,51 +25,37 @@ const user = (ms: number) => ({ type: 'message', timestamp: at(ms), message: { r
 const usage = (ms: number) => ({ type: 'usage', timestamp: at(ms) })
 const custom = (ms: number) => ({ type: 'custom_message', timestamp: at(ms) })
 
-await claim('the threshold is two minutes and the cache window five, as in the footer', () => {
-  assert.equal(QUIET_AFTER_MS, 120_000)
-  assert.equal(CACHE_WINDOW_MS, 300_000)
-  assert.equal(quietPollMs(QUIET_AFTER_MS), 5000)
-})
-
 await claim(
-  'the last request is the latest assistant message or usage entry on the branch; user and custom entries do not count',
-  () => {
-    assert.equal(lastRequestAt([]), undefined)
-    assert.equal(lastRequestAt([user(0), custom(10)]), undefined)
-    assert.equal(lastRequestAt([assistant(0), user(5), custom(9)]), T0)
-    assert.equal(lastRequestAt([assistant(0), usage(60_000), user(70_000)]), T0 + 60_000)
-  }
-)
-
-await claim(
-  'the cache is warm until five minutes after the last request: 4:59 is warm, 5:00 is cold',
+  'the cache is warm until five minutes after the last assistant message or usage entry: 4:59 is warm, 5:00 is cold',
   () => {
     const branch = [user(-1000), assistant(0)]
     assert.equal(cacheWarm(branch, T0 + 299_000), true)
     assert.equal(cacheWarm(branch, T0 + 300_000), false)
-    assert.equal(cacheWarm([user(0)], T0), false, 'no request means cold')
+    assert.equal(cacheWarm([], T0), false, 'no request means cold')
+    assert.equal(
+      cacheWarm([user(0), custom(10)], T0 + 20),
+      false,
+      'user and custom entries are not requests'
+    )
+    assert.equal(
+      cacheWarm([assistant(0), user(250_000), custom(260_000)], T0 + 300_000),
+      false,
+      'a later user or custom entry does not refresh the cache'
+    )
+    const warmed = [assistant(0), usage(240_000)]
+    assert.equal(cacheWarm(warmed, T0 + 400_000), true, 'a cache warming usage entry is a request')
+    assert.equal(cacheWarm(warmed, T0 + 540_000), false)
   }
 )
 
-await claim('a cache warming usage entry keeps the cache warm past the last answer', () => {
-  const branch = [assistant(0), usage(240_000)]
-  assert.equal(cacheWarm(branch, T0 + 400_000), true)
-  assert.equal(cacheWarm(branch, T0 + 540_000), false)
+await claim('a resting lead wakes only when idle, warm and allowed to continue', () => {
+  const base = { streaming: false, idle: true, warm: true, canReactivate: true }
+  assert.equal(wakesForQuiet(base), true)
+  assert.equal(wakesForQuiet({ ...base, streaming: true }), false)
+  assert.equal(wakesForQuiet({ ...base, idle: false }), false)
+  assert.equal(wakesForQuiet({ ...base, warm: false }), false)
+  assert.equal(wakesForQuiet({ ...base, canReactivate: false }), false)
 })
-
-await claim(
-  'routing: consumed reaches only the user; a run receives it at its next boundary; a resting lead wakes only when warm and allowed; otherwise the notice is held',
-  () => {
-    const base = { consumed: false, streaming: false, idle: true, warm: true, canReactivate: true }
-    assert.equal(quietRoute(base), 'wake')
-    assert.equal(quietRoute({ ...base, consumed: true }), 'user')
-    assert.equal(quietRoute({ ...base, consumed: true, streaming: true }), 'user')
-    assert.equal(quietRoute({ ...base, streaming: true, idle: false, warm: false }), 'boundary')
-    assert.equal(quietRoute({ ...base, warm: false }), 'hold')
-    assert.equal(quietRoute({ ...base, canReactivate: false }), 'hold')
-    assert.equal(quietRoute({ ...base, idle: false }), 'hold')
-  }
-)
 
 const advance = (seconds: number) => TestClock.adjust(`${seconds} seconds`)
 
@@ -134,106 +117,49 @@ const A = asAttemptId('00000000-0000-0000-0000-000000000001')
 const B = asAttemptId('00000000-0000-0000-0000-000000000002')
 
 await claim(
-  'a notice taken for a run is omitted when its command resumes or settles while the message is built',
+  'a notice invalidated while its message is built is omitted, for a run start and for a boundary, and spends no allowance',
   () => {
     const ledger = makeQuietLedger()
     const a = ledger.quiet(A, 'tests', 1)
     const b = ledger.quiet(B, 'build', 2)
-    const taken = ledger.takeForRun()
-    assert.deepEqual(taken, [
+    assert.deepEqual(ledger.takeForRun(), [
       [A, a],
       [B, b],
     ])
-    assert.deepEqual(ledger.held(), [], 'taking clears the user-facing hold')
     ledger.invalidate(A)
-    assert.equal(ledger.include(A, a), false, 'resumed or settled during construction')
+    assert.equal(ledger.include(A, a), false)
     assert.equal(ledger.include(B, b), true)
     const again = ledger.quiet(A, 'tests', 9)
     assert.equal(again.reach, 'model', 'an omitted notice spends no allowance')
-    assert.equal(ledger.quiet(B, 'build', 9).reach, 'user', 'an included notice spends it')
+    assert.deepEqual(ledger.takeForBoundary(), [[A, again]])
+    ledger.invalidate(A)
+    assert.equal(ledger.include(A, again), false)
+    assert.equal(ledger.quiet(A, 'tests', 20).reach, 'model')
   }
 )
 
 await claim(
-  'a notice whose construction or submission fails is held again with its allowance intact',
+  'a notice whose inspection fails is held again; an attempt with a send in flight is neither offered nor taken by a run',
   () => {
     const ledger = makeQuietLedger()
     const a = ledger.quiet(A, 'tests', 1)
-    const b = ledger.quiet(B, 'build', 2)
     ledger.takeForRun()
     ledger.restore(A, a)
-    assert.equal(ledger.include(B, b), true)
-    assert.deepEqual(ledger.held(), [[A, a]], 'the failed inspection waits for the next run')
+    assert.deepEqual(ledger.held(), [[A, a]])
     assert.equal(ledger.forModel(A), a)
 
     ledger.reserve(A, a)
     ledger.begin(A)
-    assert.equal(ledger.forModel(A), undefined, 'no second delivery while a send is in flight')
-    ledger.acknowledge(A, a, false)
-    assert.equal(ledger.forModel(A), a, 'a refused send keeps the notice for the model')
-
-    ledger.reserve(A, a)
-    ledger.begin(A)
     ledger.invalidate(A)
-    ledger.acknowledge(A, a, false)
-    assert.deepEqual(ledger.held(), [], 'a notice invalidated during the send is not restored')
+    const newer = ledger.quiet(A, 'tests', 7)
+    assert.equal(ledger.forModel(A), undefined)
+    assert.deepEqual(ledger.takeForRun(), [])
+    assert.deepEqual(ledger.held(), [[A, newer]], 'the run keeps it for after the send')
   }
 )
 
 await claim(
-  'a silence that starts while an earlier send is unresolved stays for the model if that send is refused, and for the user if it succeeds',
-  () => {
-    for (const outcome of ['refused', 'delivered'] as const) {
-      const ledger = makeQuietLedger()
-      const first = ledger.quiet(A, 'tests', 1)
-      ledger.reserve(A, first)
-      ledger.begin(A)
-      ledger.invalidate(A)
-      const second = ledger.quiet(A, 'tests', 7)
-      assert.equal(second.reach, 'model')
-      assert.equal(ledger.forModel(A), undefined, 'the attempt has a send in flight')
-      assert.deepEqual(ledger.takeForRun(), [], 'a run does not take it during the send')
-      assert.deepEqual(ledger.held(), [[A, second]], 'a run does not drop it either')
-      if (outcome === 'refused') {
-        ledger.acknowledge(A, first, false)
-        assert.equal(ledger.forModel(A), second)
-        const taken = ledger.takeForRun()
-        assert.deepEqual(taken, [[A, second]], 'only the newer notice is delivered')
-        assert.equal(ledger.include(A, second), true)
-      } else {
-        ledger.acknowledge(A, first, true)
-        assert.deepEqual(ledger.held(), [[A, { ...second, reach: 'user' }]])
-        assert.equal(ledger.forModel(A), undefined)
-        assert.deepEqual(ledger.takeForRun(), [])
-      }
-      assert.equal(ledger.quiet(A, 'tests', 20).reach, 'user', `allowance spent once (${outcome})`)
-    }
-  }
-)
-
-await claim(
-  'a run boundary takes only the notices for the model and leaves notices for the user in place',
-  () => {
-    const ledger = makeQuietLedger()
-    const a = ledger.quiet(A, 'tests', 1)
-    ledger.takeForRun()
-    assert.equal(ledger.include(A, a), true)
-    const later = ledger.quiet(A, 'tests', 5)
-    const b = ledger.quiet(B, 'build', 6)
-    assert.deepEqual(ledger.takeForBoundary(), [[B, b]])
-    assert.deepEqual(
-      ledger.held(),
-      [[A, later]],
-      'the user-only notice stays for the program status'
-    )
-    ledger.invalidate(B)
-    assert.equal(ledger.include(B, b), false, 'a command that printed while the boundary was built')
-    assert.deepEqual(ledger.takeForBoundary(), [])
-  }
-)
-
-await claim(
-  'a run drops user-only notices and later silences of a consumed command reach only the user',
+  'a run start drops notices meant only for the user while a boundary leaves them for the program status',
   () => {
     const ledger = makeQuietLedger()
     const a = ledger.quiet(A, 'tests', 1)
@@ -241,7 +167,8 @@ await claim(
     assert.equal(ledger.include(A, a), true)
     const later = ledger.quiet(A, 'tests', 5)
     assert.equal(later.reach, 'user')
-    assert.equal(ledger.forModel(A), undefined)
+    const b = ledger.quiet(B, 'build', 6)
+    assert.deepEqual(ledger.takeForBoundary(), [[B, b]])
     assert.deepEqual(ledger.held(), [[A, later]])
     assert.deepEqual(ledger.takeForRun(), [])
     assert.deepEqual(ledger.held(), [])

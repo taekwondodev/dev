@@ -26,7 +26,7 @@ import {
 } from './work-domain.ts'
 import { quotaExhausted } from './work-dispatch.ts'
 import { quietText, workResultText, type QuietOutcome } from './work-model-text.ts'
-import { cacheWarm, makeQuietLedger, quietRoute, type QuietNotice } from './work-quiet.ts'
+import { cacheWarm, makeQuietLedger, wakesForQuiet, type QuietNotice } from './work-quiet.ts'
 import type { RestingState } from './program-status.ts'
 import { emptyWorkView, WORK_VIEW_EVENT, workView } from './work-view.ts'
 import { leadingLongSleep, sleepRefusal, waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
@@ -720,9 +720,8 @@ export const createWorkExtension = ({
     return Exit.isSuccess(status) && !status.value.agentsBlocked
   }
 
-  const currentQuietRoute = (scope: DeliveryScope) =>
-    quietRoute({
-      consumed: false,
+  const canWakeForQuiet = (scope: DeliveryScope): boolean =>
+    wakesForQuiet({
       streaming: scope.session.isStreaming,
       idle: idleDeliveryReady && scope.context.isIdle(),
       warm: cacheWarm(scope.session.sessionManager.getBranch(), now()),
@@ -767,7 +766,7 @@ export const createWorkExtension = ({
     const scope = deliveryScope()
     const notice = quietLedger.forModel(id)
     if (scope === undefined || notice === undefined) return
-    if (currentQuietRoute(scope) !== 'wake') return
+    if (!canWakeForQuiet(scope)) return
     quietLedger.reserve(id, notice)
     Effect.runFork(
       describeQuiet(scope.owner, [[id, notice]]).pipe(
@@ -786,7 +785,7 @@ export const createWorkExtension = ({
             quietLedger.release(id, notice)
             return Effect.void
           }
-          if (currentQuietRoute(scope) !== 'wake') {
+          if (!canWakeForQuiet(scope)) {
             quietLedger.restore(id, notice)
             return Effect.void
           }

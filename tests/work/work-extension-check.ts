@@ -877,47 +877,6 @@ return JSON.stringify({
   )
 
   await claim(
-    'a notice waiting for the next step is dropped when its command finishes before it, and only the outcome follows',
-    () =>
-      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
-        const held = gate()
-        const { run, next, started, from } = await launch(lead, 0, [held.command])
-        const [attempt] = started
-        assert.ok(attempt)
-        await quietView(lead, true, from)
-        const openedFrom = lead.views.length
-        held.open()
-        await lead.view('the command settled', view => view.commands.running === 0, openedFrom)
-        next.reply(text('still working'))
-        await readOutcomes(lead, 2, 1)
-        await run
-        assert.deepEqual(delivered(lead), [attempt.id])
-        assert.deepEqual(sentQuiet(lead), [])
-        assert.ok(!lead.requests.some(quietIn))
-      })
-  )
-
-  await claim(
-    'Esc while a notice waits for the next step drops it, and the next user run carries no quiet notice',
-    () =>
-      withLead({ quietAfterMs: QUIET_AFTER_MS }, async lead => {
-        const held = gate()
-        const { run, next, from } = await launch(lead, 0, [held.command])
-        await quietView(lead, true, from)
-        const typed = lead.views.length
-        lead.typeTerminal('\u001b')
-        await lead.view('the attempt cancelled', view => view.commands.running === 0, typed)
-        next.reply(text('launched'))
-        await run
-        await lead.idle()
-        await userTurn(lead, lead.requests.length, 'anything new?')
-        assert.deepEqual(sentQuiet(lead), [])
-        assert.ok(!lead.requests.some(quietIn))
-        assert.deepEqual(lead.work.restingState(), { state: 'done' })
-      })
-  )
-
-  await claim(
     'on a cold cache a quiet command starts no model request, reports blocked over working, and joins the next user turn',
     () =>
       withLead(

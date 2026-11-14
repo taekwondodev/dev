@@ -75,21 +75,26 @@ await claim('a reactivation that begins after done turns the report to working',
   assert.deepEqual(reports, [DONE, { ...DONE, state: 'working' }])
 })
 
-await claim('idle, working, blocked and error pass unchanged whatever the answer', async () => {
+await claim('idle, working, blocked and error pass unchanged whatever the lead rest', async () => {
   const others: ProgramStatus[] = [
     { state: 'idle', app: 'pi' },
     { state: 'working', app: 'pi', message: 'session name' },
     { state: 'blocked', app: 'pi', kind: 'question', message: 'Pick one' },
     { state: 'error', app: 'pi', message: 'provider failed' },
   ]
-  for (const answer of [true, false]) {
-    const { reports, terminal, rule } = open(() => answer)
+  const rests: RestingState[] = [
+    { state: 'working' },
+    { state: 'done' },
+    { state: 'blocked', message: 'Quiet command: tests' },
+  ]
+  for (const rest of rests) {
+    const { reports, terminal, rule } = openResting(() => rest)
     for (const status of others) {
       terminal.setProgramStatus(status)
       rule.changed()
       await nextMacrotask()
     }
-    assert.deepEqual(reports, others, `answer ${answer}`)
+    assert.deepEqual(reports, others, rest.state)
   }
 })
 
@@ -124,23 +129,6 @@ await claim('a blocked report follows its message and clears to working, then do
     { ...DONE, state: 'working' },
     DONE,
   ])
-})
-
-await claim('a quiet notice does not change a running or failed lead', async () => {
-  const others: ProgramStatus[] = [
-    { state: 'working', app: 'pi', message: 'session name' },
-    { state: 'error', app: 'pi', message: 'provider failed' },
-  ]
-  const { reports, terminal, rule } = openResting(() => ({
-    state: 'blocked',
-    message: 'Quiet command: tests',
-  }))
-  for (const status of others) {
-    terminal.setProgramStatus(status)
-    rule.changed()
-    await nextMacrotask()
-  }
-  assert.deepEqual(reports, others)
 })
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

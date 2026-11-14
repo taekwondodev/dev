@@ -4,7 +4,7 @@ import * as Effect from 'effect/Effect'
 import type { AttemptId } from './work-domain.ts'
 
 export const QUIET_AFTER_MS = 2 * 60 * 1000
-export const CACHE_WINDOW_MS = 5 * 60 * 1000
+const CACHE_WINDOW_MS = 5 * 60 * 1000
 
 export type QuietChange =
   | {
@@ -15,18 +15,15 @@ export type QuietChange =
     }
   | { readonly kind: 'resumed'; readonly id: AttemptId }
 
-export type QuietRoute = 'boundary' | 'wake' | 'hold' | 'user'
-
 interface BranchEntry {
   readonly type: string
   readonly timestamp: string
   readonly message?: { readonly role: string }
 }
 
-export const quietPollMs = (quietAfterMs: number): number =>
-  Math.max(10, Math.floor(quietAfterMs / 24))
+const quietPollMs = (quietAfterMs: number): number => Math.max(10, Math.floor(quietAfterMs / 24))
 
-export const lastRequestAt = (branch: readonly BranchEntry[]): number | undefined => {
+const lastRequestAt = (branch: readonly BranchEntry[]): number | undefined => {
   for (let index = branch.length - 1; index >= 0; index -= 1) {
     const entry = branch[index]
     if (
@@ -45,17 +42,12 @@ export const cacheWarm = (branch: readonly BranchEntry[], now: number): boolean 
   return at !== undefined && now - at < CACHE_WINDOW_MS
 }
 
-export const quietRoute = (facts: {
-  readonly consumed: boolean
+export const wakesForQuiet = (facts: {
   readonly streaming: boolean
   readonly idle: boolean
   readonly warm: boolean
   readonly canReactivate: boolean
-}): QuietRoute => {
-  if (facts.consumed) return 'user'
-  if (facts.streaming) return 'boundary'
-  return facts.idle && facts.warm && facts.canReactivate ? 'wake' : 'hold'
-}
+}): boolean => !facts.streaming && facts.idle && facts.warm && facts.canReactivate
 
 export const watchQuiet = Effect.fnUntraced(function* (options: {
   readonly size: Effect.Effect<number>
