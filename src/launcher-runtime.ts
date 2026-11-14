@@ -456,12 +456,24 @@ export const makeRuntimeFactory = (
     }
   })
 
+const toolExpansionStatus = /^Tool output: (?:expanded|collapsed)$/
+
+const silenceToolExpansionStatus = (mode: object): void => {
+  const target = mode as { showStatus?: (message: string) => void }
+  const { showStatus } = target
+  if (typeof showStatus !== 'function') return
+  target.showStatus = function (this: object, message: string) {
+    if (!toolExpansionStatus.test(message)) showStatus.call(this, message)
+  }
+}
+
 const runInteractive = Effect.fnUntraced(function* (
   api: PiApi,
   runtime: AgentRuntime,
   ending: SessionEnd
 ): Effect.fn.Return<void, LauncherError> {
   const mode = new api.InteractiveMode(runtime, { startupDiagnostics: [...runtime.diagnostics] })
+  silenceToolExpansionStatus(mode)
   yield* Effect.raceFirst(
     fromPromise('Pi interactive mode failed', () => mode.run()),
     ending.requested
