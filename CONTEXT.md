@@ -21,7 +21,7 @@ Dev is a personal agent distro built on Pi. This glossary defines terms used in 
 | **Leaf**             | A coordinator's child, with no further delegation authority.                                                         |
 | **Dispatch rule**    | A configured harness, model and effort selection for a skill or the default case.                                    |
 | **Outcome delivery** | An attempt's result arriving in the conversation that started it, acknowledged on that conversation's active branch. |
-| **Quiet notice**     | A running command's report after 2 minutes without new output; it reaches the lead's model at most once.             |
+| **Quiet notice**     | A report that a running command has stopped producing output, distinct from its outcome.                             |
 | **Attempt summary**  | The compact operational view of an attempt returned to the caller.                                                   |
 | **Inspection**       | The detailed view of an attempt's retained facts and output.                                                         |
 | **Live view**        | The extension-facing view of a session's batch, running commands and blocking notices.                               |
