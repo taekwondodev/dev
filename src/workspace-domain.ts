@@ -159,7 +159,11 @@ export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
 export const WorkspaceHeadSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('branch'), name: Schema.NonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal('detached'), commit: Schema.NonEmptyString }),
+  Schema.Struct({
+    kind: Schema.Literal('detached'),
+    commit: Schema.NonEmptyString,
+    subject: Schema.optional(Schema.NonEmptyString),
+  }),
 ])
 export type WorkspaceHead = typeof WorkspaceHeadSchema.Type
 

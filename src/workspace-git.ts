@@ -425,18 +425,50 @@ const listedHead = (fields: readonly string[]): WorkspaceHead | undefined => {
     : undefined
 }
 
+const commitSubjects = (
+  repositoryPath: string,
+  commits: readonly string[]
+): ReadonlyMap<string, string> => {
+  if (commits.length === 0) return new Map()
+  const listed = gitResult(repositoryPath, [
+    'rev-list',
+    '--no-walk',
+    '--format=%H%x00%s',
+    ...new Set(commits),
+  ])
+  if (listed.status !== 0) return new Map()
+  return new Map(
+    listed.stdout.split('\n').flatMap((line): [string, string][] => {
+      const [commit, subject] = line.split('\0')
+      return commit === undefined || subject === undefined || subject.length === 0
+        ? []
+        : [[commit, subject]]
+    })
+  )
+}
+
 export const worktreeHeads = (repositoryPath: string): ReadonlyMap<string, WorkspaceHead> => {
-  const heads = new Map<string, WorkspaceHead>()
+  const listed: (readonly [path: string, head: WorkspaceHead])[] = []
   for (const entry of listedWorktrees(repositoryPath).split('\0\0')) {
     const fields = entry.split('\0')
-    const listed = fields.find(field => field.startsWith('worktree '))?.slice('worktree '.length)
+    const path = fields.find(field => field.startsWith('worktree '))?.slice('worktree '.length)
     const head = listedHead(fields)
-    if (listed === undefined || head === undefined) continue
+    if (path === undefined || head === undefined) continue
     try {
-      heads.set(realpathSync(listed), head)
+      listed.push([realpathSync(path), head])
     } catch {}
   }
-  return heads
+  const subjects = commitSubjects(
+    repositoryPath,
+    listed.flatMap(([, head]) => (head.kind === 'detached' ? [head.commit] : []))
+  )
+  return new Map(
+    listed.map(([path, head]): [string, WorkspaceHead] => {
+      if (head.kind !== 'detached') return [path, head]
+      const subject = subjects.get(head.commit)
+      return [path, subject === undefined ? head : { ...head, subject }]
+    })
+  )
 }
 
 export const removeWorktree = (repositoryPath: string, path: string): GitResult =>

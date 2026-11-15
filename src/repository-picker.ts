@@ -328,6 +328,7 @@ export const chooseRepository = Effect.fnUntraced(function* (
 
 export interface ResumableRow {
   readonly head: string | undefined
+  readonly subject: string | undefined
   readonly path: string
   readonly lastUsed: number | undefined
 }
@@ -348,6 +349,7 @@ export const chooseWorkspace = Effect.fnUntraced(function* (
       value: String(index),
       label: row.head === undefined ? NO_BRANCH : withoutControls(row.head),
       description: [
+        row.subject === undefined ? undefined : withoutControls(row.subject),
         row.lastUsed === undefined ? undefined : muted(ago(now, row.lastUsed)),
         theme.fg('success', `${theme.bold(ICON.folder)} ${paths[index] ?? ''}`),
       ]
@@ -355,7 +357,12 @@ export const chooseWorkspace = Effect.fnUntraced(function* (
         .join(theme.fg('dim', ' • ')),
     })),
     filter: {
-      text: item => `${item.label} ${paths[Number(item.value)] ?? ''}`,
+      text: item => {
+        const index = Number(item.value)
+        return [item.label, rows[index]?.subject, paths[index]]
+          .filter(part => part !== undefined)
+          .join(' ')
+      },
       noMatch: 'No matching paused work',
     },
     hints: [

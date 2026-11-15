@@ -189,7 +189,7 @@ await claim(
 )
 
 await claim(
-  'a view gives the model its head as the branch name, or as the detached commit, and never its last use time',
+  'a view gives the model its head as the branch name, or as the detached commit with its subject when it has one, and never its last use time',
   () => {
     const commit = '0123456789abcdef0123456789abcdef01234567'
     const text = reportText({
@@ -198,13 +198,17 @@ await claim(
       views: [
         view({ head: { kind: 'branch', name: 'feat/resume' }, lastUsedAt: 1_700_000_000_000 }),
         view({ workspaceId: OTHER, head: { kind: 'detached', commit }, lastUsedAt: 1 }),
+        view({
+          workspaceId: OTHER,
+          head: { kind: 'detached', commit, subject: 'Resume the parser' },
+        }),
       ],
     })
     assert.ok(!text.includes('lastUsedAt') && !text.includes('1700000000000'), text)
     const { workspaces } = parse(text) as { workspaces: { head?: string; path?: string }[] }
     assert.deepEqual(
       workspaces.map(workspace => workspace.head),
-      ['feat/resume', 'detached 0123456789ab']
+      ['feat/resume', 'detached 0123456789ab', 'detached 0123456789ab (Resume the parser)']
     )
     assert.deepEqual(Object.keys(workspaces[0] ?? {}).slice(0, 4), [
       'taskId',

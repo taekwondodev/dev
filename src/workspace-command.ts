@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import { ago, displayPath } from './display-text.ts'
+import { ago, displayPath, withoutControls } from './display-text.ts'
 import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import {
   isResumable,
@@ -176,11 +176,26 @@ export const headText = (head: WorkspaceHead | undefined): string | undefined =>
   return head.kind === 'branch' ? head.name : `detached ${head.commit.slice(0, SHORT_COMMIT)}`
 }
 
+const SUBJECT_WIDTH = 60
+
+export const headSubject = (head: WorkspaceHead | undefined): string | undefined => {
+  if (head?.kind !== 'detached' || head.subject === undefined) return undefined
+  const characters = [...withoutControls(head.subject)]
+  return characters.length > SUBJECT_WIDTH
+    ? `${characters.slice(0, SUBJECT_WIDTH - 1).join('')}…`
+    : characters.join('')
+}
+
+export const describedHead = (head: WorkspaceHead | undefined): string | undefined => {
+  const subject = headSubject(head)
+  return subject === undefined ? headText(head) : `${headText(head)} (${subject})`
+}
+
 const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] => [
   `task ${view.taskId ?? '(unassigned)'} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current binding]' : ''}`,
   `  repository: ${view.repositoryId}`,
   `  path: ${view.path}`,
-  ...(view.head === undefined ? [] : [`  head: ${headText(view.head)}`]),
+  ...(view.head === undefined ? [] : [`  head: ${describedHead(view.head)}`]),
   `  origin: ${view.origin}`,
   `  reservation: ${view.reservationId ?? 'none reported'}`,
   `  outcome: ${view.outcome}`,
@@ -242,13 +257,16 @@ export const resumableWorkspaces = (views: readonly WorkspaceView[]): readonly R
 
 const NO_BRANCH = 'no branch'
 
-export const resumableRowText = ({ view }: ResumeCandidate, now: number): string =>
-  [
+export const resumableRowText = ({ view }: ResumeCandidate, now: number): string => {
+  const subject = headSubject(view.head)
+  return [
     headText(view.head) ?? NO_BRANCH,
+    ...(subject === undefined ? [] : [subject]),
     ...(view.lastUsedAt === undefined ? [] : [ago(now, view.lastUsedAt)]),
     displayPath(view.path),
     `task ${view.taskId}`,
   ].join(' · ')
+}
 
 export const notResumableText = (
   scope: { readonly repositoryRoot?: string; readonly taskId?: WorkspaceId },
@@ -292,6 +310,15 @@ export const pausedTaskQuestion = (task: PausedTask, now: number): PausedTaskQue
 
 export const joinedTaskNotice = (task: PausedTask): string =>
   `This conversation now continues task ${task.taskId} in ${displayPath(task.path)}${task.head === undefined ? '' : ` on ${headText(task.head)}`}.`
+
+export const joinedTaskNote = (task: PausedTask): string => {
+  const { changedFiles } = task
+  const earlier =
+    changedFiles === undefined || changedFiles === 0
+      ? 'This conversation does not hold the history of its earlier work.'
+      : `Its ${changedFiles} changed file${changedFiles === 1 ? ' comes' : 's come'} from earlier work, whose history this conversation does not hold.`
+  return `${joinedTaskNotice(task)} The user chose to continue it here. ${earlier}`
+}
 
 const sortedAssessments = (assessments: readonly WorkspaceAssessment[]) =>
   assessments.toSorted(

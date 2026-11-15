@@ -7,6 +7,7 @@ import * as Effect from 'effect/Effect'
 import { displayPath } from '../../src/display-text.ts'
 import { findRepositories } from '../../src/repository-picker.ts'
 import {
+  joinedTaskNote,
   pausedTaskQuestion,
   resumableRowText,
   resumableWorkspaces,
@@ -152,7 +153,7 @@ try {
   )
 
   await claim(
-    'a row of paused work names its branch, or its commit when detached, then its age, path and task, with control characters replaced',
+    "a row of paused work names its branch, or its commit and that commit's subject when detached, then its age, path and task, with control characters replaced and a long subject cut",
     () => {
       const now = 10 * 3_600_000
       const row = (view: WorkspaceView) =>
@@ -178,6 +179,21 @@ try {
           })
         ),
         `detached 0123456789ab · /opt/a?]0;x?b · task ${fixtureId(1)}`
+      )
+      const commit = '0123456789abcdef0123456789abcdef01234567'
+      assert.equal(
+        row(
+          paused(1, { head: { kind: 'detached', commit, subject: 'Resume\u001b[2J the parser' } })
+        ),
+        `detached 0123456789ab · Resume?[2J the parser · /opt/area/work-1 · task ${fixtureId(1)}`
+      )
+      assert.equal(
+        row(paused(1, { head: { kind: 'detached', commit, subject: 'x'.repeat(61) } })),
+        `detached 0123456789ab · ${'x'.repeat(59)}… · /opt/area/work-1 · task ${fixtureId(1)}`
+      )
+      assert.equal(
+        row(paused(1, { head: { kind: 'detached', commit, subject: 'y'.repeat(60) } })),
+        `detached 0123456789ab · ${'y'.repeat(60)} · /opt/area/work-1 · task ${fixtureId(1)}`
       )
       assert.equal(row(paused(1)), `no branch · /opt/area/work-1 · task ${fixtureId(1)}`)
     }
@@ -215,6 +231,34 @@ try {
         pausedTaskQuestion({ ...task, changedFiles: 0 }, now).title,
         'This checkout holds a paused task on no branch (0 changed files). Continue it, or work separately?'
       )
+    }
+  )
+
+  await claim(
+    'the note of a continued task tells the model who chose it and that the changed files, when there are any, come from work whose history it does not hold',
+    () => {
+      const task = {
+        taskId: fixtureId(1),
+        reservationId: fixtureId(41),
+        reservationRevision: 3,
+        workspaceId: fixtureId(21),
+        path: '/opt/area/repo',
+        head: { kind: 'branch' as const, name: 'feat/resume' },
+      }
+      const joined = `This conversation now continues task ${fixtureId(1)} in /opt/area/repo on feat/resume. The user chose to continue it here.`
+      assert.equal(
+        joinedTaskNote({ ...task, changedFiles: 3 }),
+        `${joined} Its 3 changed files come from earlier work, whose history this conversation does not hold.`
+      )
+      assert.equal(
+        joinedTaskNote({ ...task, changedFiles: 1 }),
+        `${joined} Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
+      )
+      for (const changedFiles of [0, undefined])
+        assert.equal(
+          joinedTaskNote({ ...task, ...(changedFiles === undefined ? {} : { changedFiles }) }),
+          `${joined} This conversation does not hold the history of its earlier work.`
+        )
     }
   )
 

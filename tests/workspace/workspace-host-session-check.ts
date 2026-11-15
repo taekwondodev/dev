@@ -529,15 +529,29 @@ try {
     }
   )
   await claim(
-    'with a UI, the first write in a checkout a paused task holds asks once before isolating: continuing runs that call in the same session and checkout for that task, with a notification and no model message',
+    'with a UI, the first write in a checkout a paused task holds asks once before isolating: continuing runs that call in the same session and checkout for that task, and one message after the results of its batch tells the user and the next model request of the join and of the changed file left by earlier work',
     async () => {
       const paused = await pausedCheckout('ask-continue')
-      const { offline: model, script } = await offlineScript('ask-continue', [
+      const script = scripted([
         [
           toolCall('ask-write', 'write', { path: 'asked.txt', content: 'continued\n' }),
           toolCall('ask-bash', 'bash', { command: 'cat draft.txt > seen.txt' }),
         ],
       ])
+      const requests: string[] = []
+      const model = await makeOfflineModel({
+        pi,
+        importFromPi,
+        fixture,
+        id: 'ask-continue',
+        stream: parts => {
+          const reply = replay(script.next)(parts)
+          return (requested, context, options) => {
+            requests.push(JSON.stringify(context.messages))
+            return reply(requested, context, options)
+          }
+        },
+      })
       const dialog = interactive((_title, options) => options[0])
       const opened = await openLeadHost({
         attachment: paused.attached.effect,
@@ -566,9 +580,18 @@ try {
         )
         assert.equal(dialog.asked[0]?.options[0], CONTINUE_HERE)
         assert.equal(dialog.asked[0]?.options.length, 2)
-        assert.deepEqual(dialog.notices, [
-          `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-continue.`,
-        ])
+        const note = `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-continue. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
+        assert.deepEqual(shown(opened.runtime), [note])
+        assert.deepEqual(dialog.notices, [], 'the message is the only announcement')
+        assert.ok(!requests[0]?.includes(note), 'the request that asked did not know of the join')
+        const second = requests[1] ?? ''
+        const noteAt = second.indexOf(note)
+        assert.equal(second.split(note).length - 1, 1, 'the next request holds the join once')
+        for (const call of ['ask-write', 'ask-bash']) {
+          const resultAt = second.lastIndexOf(`"toolCallId":"${call}"`)
+          assert.ok(resultAt !== -1 && resultAt < noteAt, `the join follows the result of ${call}`)
+        }
+        assert.ok(!result('ask-write').text.includes(paused.taskId), result('ask-write').text)
         assert.equal(opened.runtime.cwd, paused.checkout)
         assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
         assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
@@ -580,6 +603,66 @@ try {
           ['pre-existing'],
           'no worktree was allocated'
         )
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'a second writer admitted while the question is open waits for the answer: a ! command asks nothing more, runs for the continued task, and the join is announced once',
+    async () => {
+      const paused = await pausedCheckout('ask-overlap')
+      const { offline: model } = await offlineScript('ask-overlap', [
+        [toolCall('overlap-write', 'write', { path: 'asked.txt', content: 'continued\n' })],
+      ])
+      const asked: string[] = []
+      let answer: (() => void) | undefined
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: {
+          select: (title, options) => {
+            asked.push(title)
+            if (asked.length > 1) return Promise.resolve(options[0])
+            return new Promise(resolveChoice => {
+              answer = () => resolveChoice(options[0])
+            })
+          },
+          notify: () => undefined,
+        },
+      })
+      try {
+        const turn = opened.runtime.session.prompt('Write the file.')
+        await waitFor(
+          'the question of the tool call',
+          () => (asked.length === 1 ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        const command = opened.runtime.session.extensionRunner.emitUserBash({
+          type: 'user_bash',
+          command: 'true',
+          excludeFromContext: false,
+          cwd: paused.checkout,
+        })
+        await sleep(250)
+        answer?.()
+        const admitted = await command
+        if (admitted?.operations === undefined)
+          throw new Error(`the ! command was refused: ${admitted?.result?.output}`)
+        const ran = await admitted.operations.exec('true', paused.checkout, {
+          onData: () => undefined,
+        })
+        assert.equal(ran.exitCode, 0)
+        await turn
+        await opened.runtime.session.waitForIdle()
+        assert.equal(asked.length, 1, 'one answer admitted both writers')
+        assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
+        assert.equal(readFileSync(join(paused.checkout, 'asked.txt'), 'utf8'), 'continued\n')
+        assert.deepEqual(shown(opened.runtime), [
+          `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-overlap. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`,
+        ])
       } finally {
         await opened.close()
       }

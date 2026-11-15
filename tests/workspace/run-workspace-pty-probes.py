@@ -39,6 +39,7 @@ class Probe:
 
 
     expect: tuple[str, ...] = ()
+    expect_flowed: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
     expect_raw_order: tuple[str, ...] = ()
     reject_raw_after: tuple[str, tuple[str, ...]] = ('', ())
@@ -270,8 +271,8 @@ PROBES = {
             Action('decline', '[y = release, Enter = keep]', '\r', delay=0.5),
         ),
         expect=('Exit 0: done.',),
-        expect_raw_order=('holds paused work. Resume:', 'detached {COMMIT}', 'main', '\x1b[J',
-                          'Press ctrl+o'),
+        expect_raw_order=('holds paused work. Resume:', 'detached {COMMIT}', 'fixture', 'main',
+                          '\x1b[J', 'Press ctrl+o'),
         reject_raw_after=('Resume:', ('\x1b[3J', 'Continue that task here')),
         env=(('LAUNCHER_PICKER', 'task'),),
     ),
@@ -289,6 +290,8 @@ PROBES = {
         ),
         expect=('This checkout holds a paused task on feat/paused', 'Work separately',
                 'Exit 0: done.'),
+        expect_flowed=('on feat/paused. The user chose to continue it here. Its 1 changed file '
+                       'comes from earlier work, whose history this conversation does not hold.',),
         env=(('LAUNCHER_PICKER', 'ask'),),
     ),
 
@@ -585,7 +588,9 @@ def run(name: str, probe: Probe) -> bool:
                      if action.name not in sent)
     missing_output = []
     plain = ESCAPES.sub('', text)
-    for needles, haystack in ((probe.expect, plain), (probe.expect_raw, text)):
+    flowed = re.sub(r'\s+', ' ', plain)
+    for needles, haystack in ((probe.expect, plain), (probe.expect_flowed, flowed),
+                              (probe.expect_raw, text)):
         for needle in needles:
             try:
                 expected = needle.format_map(inputs)

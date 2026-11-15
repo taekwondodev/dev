@@ -8,6 +8,7 @@ import * as FiberSet from 'effect/FiberSet'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
+import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import {
@@ -40,6 +41,7 @@ import {
   WorkspaceCommandError,
   formatSweepReceipt,
   isReleaseCommand,
+  joinedTaskNote,
   joinedTaskNotice,
   notResumableText,
   parseWorkspaceCommand,
@@ -66,6 +68,7 @@ import {
   scopedGrantOf,
   WorkspaceError,
   type WorkspaceId,
+  type PausedTask,
   type ScopedContinuation,
   type ScopedOutcome,
   type SweepReceipt,
@@ -552,6 +555,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let armedRunEnd: PendingTransition | undefined
   let armedReviewEnd: RefusalDetails | undefined
   let armedDismissalEnd = false
+  const pausedQuestion = yield* Semaphore.make(1)
   let invokingHandoffSwitch = false
   let replacing = false
   let quitting = false
@@ -965,6 +969,16 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     endRun(context, 'the workspace rebind')
   }
 
+  const showJoin = (context: ExtensionContext, task: PausedTask): void => {
+    const api = currentApi
+    if (api !== undefined)
+      try {
+        display(api, context, { text: joinedTaskNote(task) })
+        return
+      } catch {}
+    notify(context, joinedTaskNotice(task))
+  }
+
   const endRunForDismissal = (context: ExtensionContext): void => {
     if (!armedDismissalEnd) return
     armedDismissalEnd = false
@@ -979,13 +993,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     endRun(context, 'the workspace review')
   }
 
-  const authorizeWriter = Effect.fnUntraced(function* (
+  const answerPausedTask = Effect.fnUntraced(function* (
     attachment: WorkspaceAttachment,
     operation: WriteOperation,
     context: ExtensionContext,
     origin: 'tool-call' | 'user-bash'
   ): Effect.fn.Return<WorkspaceAuthorization | RefusedAdmission, WorkspaceError> {
-    if (!context.hasUI) return yield* attachment.authorize(operation)
     let admitted = yield* attachment.authorizeWriter(operation, { kind: 'ask' })
     while (admitted.kind === 'paused') {
       const { task } = admitted
@@ -1006,9 +1019,23 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         reservationRevision: task.reservationRevision,
       })
       if (admitted.kind === 'ready' && admitted.grant.taskId === task.taskId)
-        notify(context, joinedTaskNotice(task))
+        showJoin(context, task)
     }
     return admitted
+  })
+
+  const authorizeWriter = Effect.fnUntraced(function* (
+    attachment: WorkspaceAttachment,
+    operation: WriteOperation,
+    context: ExtensionContext,
+    origin: 'tool-call' | 'user-bash'
+  ): Effect.fn.Return<WorkspaceAuthorization | RefusedAdmission, WorkspaceError> {
+    if (!context.hasUI) return yield* attachment.authorize(operation)
+    const admitted = yield* attachment.authorizeWriter(operation, { kind: 'ask' })
+    if (admitted.kind !== 'paused') return admitted
+    return yield* pausedQuestion.withPermit(
+      answerPausedTask(attachment, operation, context, origin)
+    )
   })
 
   const authorization = Effect.fnUntraced(
@@ -1878,7 +1905,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
 
       api.registerCommand('workspace', {
-        description: 'List workspaces, resume [task-id], or inspect, check or release <task-id>',
+        description:
+          'List workspaces, resume [task-id] (paused work, not its conversation), or inspect, check or release <task-id>',
         handler: (args, context) => runPromise(workspaceCommand(api, args, context)),
       })
       api.registerTool(

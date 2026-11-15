@@ -840,7 +840,7 @@ try {
   )
 
   await claim(
-    'a view carries the head of its checkout, the branch when attached and the commit when detached, for pre-existing and managed workspaces alike, with its last recorded use; a missing directory has no head',
+    'a view carries the head of its checkout, the branch when attached and the commit with its subject when detached, for pre-existing and managed workspaces alike, with its last recorded use; a missing directory has no head',
     async () => {
       const headRepo = join(sandbox, 'head-repo')
       const headCommit = initRepository(headRepo, 'file.txt', 'fixture\n')
@@ -869,10 +869,14 @@ try {
       assert.deepEqual((await viewOf(managed.workspaceId)).head, {
         kind: 'detached',
         commit: headCommit,
+        subject: 'fixture',
       })
+      git(['commit', '--quiet', '--allow-empty', '-m', 'Resume the parser\n\nbody line'], linked)
+      const linkedCommit = git(['rev-parse', 'HEAD'], linked)
       assert.deepEqual((await viewOf(linkedGrant.workspaceId)).head, {
         kind: 'detached',
-        commit: headCommit,
+        commit: linkedCommit,
+        subject: 'Resume the parser',
       })
       assert.deepEqual((await viewOf(branchedGrant.workspaceId)).head, {
         kind: 'branch',
@@ -884,7 +888,7 @@ try {
       }
       assert.deepEqual(
         (await asks.inspect({ taskId: linkedGrant.taskId })).map(view => view.head),
-        [{ kind: 'detached', commit: headCommit }],
+        [{ kind: 'detached', commit: linkedCommit, subject: 'Resume the parser' }],
         'an exact-task inspection carries the same head'
       )
       await detached.close()
