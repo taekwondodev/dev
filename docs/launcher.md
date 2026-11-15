@@ -82,9 +82,9 @@ Profiles are personal configuration. The installation's `profiles/` directory is
   "default": "general",
   "profiles": {
     "general": { "soul": "general/SOUL.md", "skills": [] },
-    "apple": {
-      "soul": "apple/SOUL.md",
-      "skills": ["apple/skills/swiftui-pro", "apple/skills/swift-concurrency-pro"]
+    "designer": {
+      "soul": "designer/SOUL.md",
+      "skills": ["designer/skills/swiftui-pro", "designer/skills/swift-concurrency-pro"]
     }
   }
 }
