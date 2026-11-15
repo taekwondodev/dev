@@ -1282,6 +1282,7 @@ try {
     withdrawOrbPresence: grant => base.withdrawOrbPresence(grant),
     sweeps: base.sweeps,
     close: base.close,
+    authorizeWriter: (operation, paused) => base.authorizeWriter(operation, paused),
     authorize: operation => {
       const admitted = base.authorize(operation).pipe(
         Effect.tap(authorization =>

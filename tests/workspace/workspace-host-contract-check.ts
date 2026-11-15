@@ -149,17 +149,19 @@ const unchanged: SweepReceipt = makeFixtureReceipt({
 })
 const receipts = await Effect.runPromise(Queue.make<SweepReceipt, Cause.Done>())
 const authorized: string[] = []
+const refuseAdmission: WorkspaceAttachment['authorize'] = operation => {
+  authorized.push(operation.kind)
+  if (operation.kind === 'write') {
+    Queue.offerUnsafe(receipts, receipt)
+    Queue.offerUnsafe(receipts, unchanged)
+  }
+  return Effect.fail(admissionFailure)
+}
 const attachment: WorkspaceAttachment = {
   binding: makeFixtureBinding({ conversation, descriptor: current }),
   delegatedCwds: [],
-  authorize: operation => {
-    authorized.push(operation.kind)
-    if (operation.kind === 'write') {
-      Queue.offerUnsafe(receipts, receipt)
-      Queue.offerUnsafe(receipts, unchanged)
-    }
-    return Effect.fail(admissionFailure)
-  },
+  authorize: refuseAdmission,
+  authorizeWriter: refuseAdmission,
   select: selection => {
     selections.push(selection)
     return Effect.fail(refused)
@@ -285,6 +287,7 @@ try {
     const description = runtime.session.extensionRunner.getCommand('workspace')?.description ?? ''
     assert.deepEqual(description.toLowerCase().match(/\b(list|inspect|check|release|resume)\b/g), [
       'list',
+      'resume',
       'inspect',
       'check',
       'release',

@@ -48,10 +48,11 @@ import {
   resolvePiPackage,
   type PiApi,
 } from './pi-runtime.ts'
+import { displayPath } from './display-text.ts'
 import {
   chooseRepository,
+  chooseWorkspace,
   confirmInitialization,
-  displayPath,
   findRepositories,
 } from './repository-picker.ts'
 import { createWorkExtension } from './work-extension.ts'
@@ -84,7 +85,12 @@ import {
   type WorkspaceHost,
 } from './workspace-host.ts'
 import {
+  exactId,
+  headSubject,
+  headText,
+  notResumableText,
   parseWorkspaceCommand,
+  resumableWorkspaces,
   runReadOnlyWorkspaceCommand,
   existingTaskArtifacts,
   formatReleaseResults,
@@ -95,6 +101,7 @@ import {
   reservedViews,
   unreservedCheckoutViews,
   sweepExitCode,
+  type ResumeCandidate,
 } from './workspace-command.ts'
 import {
   formatExitLine,
@@ -156,6 +163,7 @@ interface LaunchOptions {
   readonly workspaceArgs?: readonly string[]
   readonly browserArgs?: readonly string[]
   readonly orbArgs?: readonly string[]
+  readonly task?: { readonly id?: string }
 }
 
 type RuntimeFactory = Parameters<PiApi['createAgentSessionRuntime']>[0]
@@ -200,6 +208,8 @@ const nextArgument = (argv: readonly string[], index: number, option: string): s
   return value
 }
 
+const SUBCOMMANDS: ReadonlySet<string> = new Set(['workspace', 'browser', 'orb'])
+
 const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, LauncherError> =>
   Effect.try({
     try: () => {
@@ -217,6 +227,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         workspaceArgs?: readonly string[]
         browserArgs?: readonly string[]
         orbArgs?: readonly string[]
+        task?: { readonly id?: string }
       } = {
         cwd: process.cwd(),
         continueSession: false,
@@ -237,7 +248,12 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         else if (arg === '--probe-runtime') values.probeRuntime = true
         else if (arg === '--help') values.help = true
         else if (arg === '--orb') values.orb = true
-        else if (arg === 'workspace') {
+        else if (arg === '--task') {
+          const id = argv[index + 1]
+          const named = id !== undefined && !id.startsWith('--') && !SUBCOMMANDS.has(id)
+          values.task = named ? { id } : {}
+          if (named) index += 1
+        } else if (arg === 'workspace') {
           values.workspaceArgs = argv.slice(index + 1)
           break
         } else if (arg === 'browser') {
@@ -261,7 +277,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -1148,12 +1164,94 @@ const launchDirectory = Effect.fnUntraced(function* (
   return options.cwd
 })
 
+const usageError = (message: string): Effect.Effect<void> =>
+  Effect.sync(() => {
+    process.stderr.write(`${message}\n`)
+    process.exitCode = 2
+  })
+
+const taskUsageRefusal = (options: LaunchOptions): string | undefined => {
+  if (
+    options.resume !== undefined ||
+    options.continueSession ||
+    options.diagnostics ||
+    options.probeRuntime ||
+    options.saveProfile !== undefined ||
+    options.orb ||
+    options.workspaceArgs !== undefined ||
+    options.browserArgs !== undefined ||
+    options.orbArgs !== undefined
+  )
+    return '--task opens a new conversation in paused work; it cannot be combined with --resume, --continue, --diagnostics, --probe-runtime, --save-profile, --orb or a workspace, browser or orb command.'
+  if (
+    options.task?.id === undefined &&
+    (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
+  )
+    return '--task without a task ID lists paused work and needs an interactive terminal; name the task instead: dev --task <task-id> (dev workspace lists them).'
+  return undefined
+}
+
+type TaskChoice =
+  | { readonly kind: 'chosen'; readonly candidate: ResumeCandidate }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'cancelled' }
+
+const chooseTask = Effect.fnUntraced(function* (
+  lifecycle: WorkspaceLifecycle,
+  repositoryRoot: string,
+  taskId: WorkspaceId | undefined,
+  packageRoot: string
+): Effect.fn.Return<TaskChoice, LauncherError> {
+  const views = yield* lifecycle
+    .inspect({ cwd: repositoryRoot })
+    .pipe(Effect.mapError(error => toLauncherError(error, 'Workspace inspection failed')))
+  const resumable = resumableWorkspaces(views)
+  const candidates =
+    taskId === undefined
+      ? resumable
+      : resumable.filter(candidate => candidate.selection.taskId === taskId)
+  const [only] = candidates
+  if (only === undefined)
+    return {
+      kind: 'refused',
+      reason:
+        taskId === undefined
+          ? notResumableText({ repositoryRoot }, views)
+          : notResumableText(
+              { repositoryRoot, taskId },
+              views.filter(view => view.taskId === taskId)
+            ),
+    }
+  if (taskId !== undefined && candidates.length === 1) return { kind: 'chosen', candidate: only }
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
+    return {
+      kind: 'refused',
+      reason: `Task ${taskId} retains several workspaces of ${repositoryRoot}; choosing one needs an interactive terminal.`,
+    }
+  const index = yield* chooseWorkspace(
+    packageRoot,
+    repositoryRoot,
+    candidates.map(({ view }) => ({
+      head: headText(view.head),
+      subject: headSubject(view.head),
+      path: view.path,
+      lastUsed: view.lastUsedAt,
+    }))
+  ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot open the list of paused work')))
+  const candidate = index === undefined ? undefined : candidates[index]
+  return candidate === undefined ? { kind: 'cancelled' } : { kind: 'chosen', candidate }
+})
+
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
   dependencies: LauncherDependencies
 ) {
   const options = yield* parseArgs(argv)
   if (options.help) return yield* printHelp(yield* manifestPath)
+  const taskRefusal = options.task === undefined ? undefined : taskUsageRefusal(options)
+  if (taskRefusal !== undefined) return yield* usageError(taskRefusal)
+  const requestedTaskId =
+    options.task?.id === undefined ? undefined : yield* exactId(options.task.id, 'Task')
 
   if (options.workspaceArgs !== undefined) {
     const command = yield* parseWorkspaceCommand(options.workspaceArgs)
@@ -1286,6 +1384,24 @@ const run = Effect.fnUntraced(function* (
   const sessionsPath = yield* sessionDir(dataHome).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
   )
+  let pausedWork: ResumeCandidate | undefined
+  if (options.task !== undefined) {
+    const choice = yield* chooseTask(
+      yield* prepareLifecycle,
+      (yield* rootOf(launchCwd)) ?? launchCwd,
+      requestedTaskId,
+      packageInfo.root
+    )
+    if (choice.kind === 'cancelled') return
+    if (choice.kind === 'refused') {
+      yield* Effect.sync(() => {
+        process.stderr.write(`${choice.reason}\n`)
+        process.exitCode = 1
+      })
+      return
+    }
+    pausedWork = choice.candidate
+  }
   const resumedPath =
     options.resume ??
     (options.continueSession
@@ -1296,7 +1412,7 @@ const run = Effect.fnUntraced(function* (
       yield* lease.protect({ path: resumedPath })
     const opened = yield* fromSync('Cannot create Pi session manager', () =>
       resumedPath === undefined
-        ? api.SessionManager.create(launchCwd, sessionsPath)
+        ? api.SessionManager.create(pausedWork?.view.path ?? launchCwd, sessionsPath)
         : api.SessionManager.open(resumedPath, sessionsPath, launchCwd)
     )
     if (!options.diagnostics) yield* guard.protect(opened)
@@ -1351,6 +1467,7 @@ const run = Effect.fnUntraced(function* (
     .attach({
       conversation: { sessionId, sessionFile, dataHome },
       cwd: sessions.getCwd(),
+      ...(pausedWork === undefined ? {} : { selection: pausedWork.selection }),
     })
     .pipe(
       Effect.mapError(

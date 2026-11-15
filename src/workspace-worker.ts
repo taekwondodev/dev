@@ -5,8 +5,10 @@ import * as Option from 'effect/Option'
 import {
   authorizeOperation,
   authorizeScopedWithin,
+  authorizeWriter,
   reportExecutionFact,
   validateDurableGrant,
+  type AdmittedOperation,
 } from './workspace-admission.ts'
 import type { AllocationSweep } from './workspace-allocation.ts'
 import { inDb, type WorkspaceAuthority } from './workspace-authority.ts'
@@ -16,11 +18,13 @@ import {
   attachmentClosed,
   invalid,
   WorkspaceError,
+  type ScopedContinuation,
   type ScopedOutcome,
   type SweepReceipt,
   type SweepRequest,
   type SweepRow,
   type WorkspaceId,
+  type WriterAdmission,
 } from './workspace-domain.ts'
 import { WorkspaceEngine, type EngineAttachment } from './workspace-engine.ts'
 import { inspectWorkspaces } from './workspace-inspect.ts'
@@ -213,6 +217,58 @@ if (port !== null && engine !== undefined) {
     send({ type: 'bindings', updates })
   }
 
+  const allocationSweep =
+    (attachmentId: number, sentAt: number): AllocationSweep =>
+    (authority, repositoryId, state) => {
+      const deadline = sweepDeadline('allocation', sentAt)
+      let receipt: SweepReceipt
+      try {
+        receipt = sweepRepositoryForAllocation(
+          authority,
+          {
+            repositoryId,
+            moment: 'allocation',
+            deadline,
+            occupiedPaths: [resolvePath(process.cwd())],
+            excluded: conversationWorkspaces(state),
+          },
+          readersUntil(deadline)
+        )
+      } catch (cause) {
+        receipt = {
+          moment: 'allocation',
+          rows: [
+            {
+              kind: 'sweep-failure',
+              reason: `The sweep before this allocation failed; nothing was released: ${errorText(cause)}`,
+            },
+          ],
+        }
+      }
+      if (receipt.rows.length > 0) send({ type: 'sweep-receipt', attachmentId, receipt })
+    }
+
+  const withScoped = async <Authorization extends WriterAdmission>(
+    attachment: EngineAttachment,
+    { authorization, observed }: AdmittedOperation<Authorization>,
+    scoped: ScopedContinuation | undefined
+  ): Promise<Authorization> => {
+    if (authorization.kind !== 'ready' || scoped === undefined) return authorization
+    const outcome = await engine
+      .run(authority =>
+        authorizeScopedWithin(authority, attachment, authorization.grant, scoped, observed)
+      )
+      .then(
+        (grant): ScopedOutcome => ({ kind: 'ready', grant }),
+        (cause: unknown): ScopedOutcome => ({
+          kind: 'refused',
+          outcome: outcomeOf(cause),
+          message: errorText(cause),
+        })
+      )
+    return { ...authorization, scoped: outcome }
+  }
+
   const execute = async (request: WorkspaceRpcInput, sentAt: number): Promise<RpcReply> => {
     switch (request.op) {
       case 'attach': {
@@ -228,56 +284,33 @@ if (port !== null && engine !== undefined) {
       }
       case 'authorize': {
         const attachment = requireAttachment(request.attachmentId)
-        const sweep: AllocationSweep = (authority, repositoryId, state) => {
-          const deadline = sweepDeadline('allocation', sentAt)
-          let receipt: SweepReceipt
-          try {
-            receipt = sweepRepositoryForAllocation(
-              authority,
-              {
-                repositoryId,
-                moment: 'allocation',
-                deadline,
-                occupiedPaths: [resolvePath(process.cwd())],
-                excluded: conversationWorkspaces(state),
-              },
-              readersUntil(deadline)
-            )
-          } catch (cause) {
-            receipt = {
-              moment: 'allocation',
-              rows: [
-                {
-                  kind: 'sweep-failure',
-                  reason: `The sweep before this allocation failed; nothing was released: ${errorText(cause)}`,
-                },
-              ],
-            }
-          }
-          if (receipt.rows.length > 0)
-            send({ type: 'sweep-receipt', attachmentId: request.attachmentId, receipt })
-        }
         const { operation } = request
-        const { authorization, observed } = await engine.run(authority =>
-          authorizeOperation(authority, attachment, operation, sweep)
+        const sweep = allocationSweep(request.attachmentId, sentAt)
+        return replyTo(
+          'authorize',
+          await withScoped(
+            attachment,
+            await engine.run(authority =>
+              authorizeOperation(authority, attachment, operation, sweep)
+            ),
+            operation.kind === 'write' ? operation.scoped : undefined
+          )
         )
-        if (authorization.kind !== 'ready' || operation.kind !== 'write')
-          return replyTo('authorize', authorization)
-        const { scoped } = operation
-        if (scoped === undefined) return replyTo('authorize', authorization)
-        const outcome = await engine
-          .run(authority =>
-            authorizeScopedWithin(authority, attachment, authorization.grant, scoped, observed)
+      }
+      case 'authorize-writer': {
+        const attachment = requireAttachment(request.attachmentId)
+        const { operation, paused } = request
+        const sweep = allocationSweep(request.attachmentId, sentAt)
+        return replyTo(
+          'authorize-writer',
+          await withScoped(
+            attachment,
+            await engine.run(authority =>
+              authorizeWriter(authority, attachment, operation, paused, sweep)
+            ),
+            operation.scoped
           )
-          .then(
-            (grant): ScopedOutcome => ({ kind: 'ready', grant }),
-            (cause: unknown): ScopedOutcome => ({
-              kind: 'refused',
-              outcome: outcomeOf(cause),
-              message: errorText(cause),
-            })
-          )
-        return replyTo('authorize', { ...authorization, scoped: outcome })
+        )
       }
       case 'select': {
         const attachment = requireAttachment(request.attachmentId)

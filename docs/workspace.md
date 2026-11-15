@@ -14,7 +14,9 @@ dev workspace release <task-id>  # interactively confirm clearing every workspac
 dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts and forgetting deleted ones
 ```
 
-In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing.
+In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing. `/workspace resume [task-id]` moves the conversation onto [paused work](#resume-paused-work).
+
+Every listed workspace shows its head: the branch its checkout is on, or the commit and its subject when detached. A workspace whose directory is gone has none.
 
 The lead's `workspace` tool supports these operations:
 
@@ -27,11 +29,31 @@ The lead's `workspace` tool supports these operations:
 
 The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 
+### Resume paused work
+
+Paused work is a [resumable workspace](../CONTEXT.md#workspace), shown with the outcome `preserved-for-resume`. Three ways lead back to it, each by explicit selection; the two that list it show the most recently used first. Only the workspace and its task are resumed, never the history of the conversation that worked there; `dev --continue` and `dev --resume` reopen history.
+
+| Entry                         | Effect                                                                                                                                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev --task [task-id]`        | Open a new conversation in a resumable workspace of the repository: the choice from the [launch list](launcher.md#resume-paused-work), or the exact task                                        |
+| `/workspace resume [task-id]` | Switch this conversation there. Without an ID it lists the repository's resumable workspaces; an exact ID selects directly, and lists that task's workspaces when it retains several            |
+| The first write               | Before a write would [isolate](#admission-and-isolation) the lead from its own checkout because a paused task holds it, dev asks once whether to continue that task there or to work separately |
+
+`/workspace resume` is refused while a turn is running, a workspace switch is pending, or the conversation has live shells or work, and the list needs an interactive session. The switch starts no turn: the model reads the `dev/workspace-handoff` message on its next one.
+
+The question names the paused task's head, its count of changed files and its last use. It waits for an answer without a timeout, so an unattended turn stays on it, and another write of the conversation admitted meanwhile waits for that answer instead of asking again. It appears only for a lead with an interactive UI, on a native write, a `bash` call or a `!` command, when the holder is resumable; children, delegated writers, the `workspace` and `work` tools and native writes into another repository are never asked.
+
+- **Continue that task here** binds the conversation to the task and admits it as that task's writer under a new acquisition, in place: same checkout, same session, uncommitted files included, and the call that asked proceeds. A [message](#model-visible-messages) announces the join to the user and the model. It follows the results of the batch that asked, so the model reads it on its next request, also when the call that asked was then refused or cancelled; after a `!` command with no turn running it appears at once.
+- **Work separately** isolates exactly as an unasked write does.
+- Dismissing the question refuses the call, ends the turn and changes nothing; the next write asks again. A `!` command is not run.
+
+If the reservation changed while the question was open, nothing is attached and the write is admitted afresh: another question for a task paused again, the checkout itself once released, or isolation from a task in use. A change during the admission itself refuses the call with a request to retry.
+
 ## Behavior
 
 ### Admission and isolation
 
-Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files. Readers share presence with a writer and receive a warning. Independent checkouts and linked worktrees progress concurrently; only dev's structural Git effects serialize across a repository.
+Project writes, shells and work launches are admitted before execution. The first writer keeps its checkout. Another task's reservation causes allocation from the exact current commit, without copying modified, untracked or ignored files, unless the lead [continues that paused task](#resume-paused-work) instead. Readers share presence with a writer and receive a warning. Independent checkouts and linked worktrees progress concurrently; only dev's structural Git effects serialize across a repository.
 
 A live process prevents switching or isolation until it is stopped or finishes.
 
@@ -109,9 +131,10 @@ The same conversation cannot attach in two dev sessions, even across installatio
 
 | Source                                | Model-visible form                                                                                                                                                                                     | `details`                                             |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| `/workspace` list and `inspect`       | `{repository, current, artifacts, workspaces}` or `{taskId, artifacts, workspaces}`; each workspace with task, path, origin, outcome, reason, `next`, and its uses and pending operations when present | the `list` or `inspect` report with its views         |
+| `/workspace` list and `inspect`       | `{repository, current, artifacts, workspaces}` or `{taskId, artifacts, workspaces}`; each workspace with task, path, head, origin, outcome, reason, `next`, and its uses and pending operations if any | the `list` or `inspect` report with its views         |
 | `/workspace check`                    | one guidance sentence, then `{taskId, workspaces}` with each verdict as one string such as `finished (no-residue)`, its reasons, target, evidence, inventory, residue and next actions                 | the `check` report with its assessments               |
 | Other `/workspace` answers and errors | the text itself                                                                                                                                                                                        | none                                                  |
+| Continuing a paused task              | one `dev/workspace` message: the join, that the user chose it, and the changed files left by earlier work, whose history the conversation does not hold                                                | none                                                  |
 | Allocation or replacement sweep       | the moment, then only rows that changed something: removed or released workspaces, task artifacts and review-required failures; a reason only where review is required                                 | `{kind: 'sweep', receipt}`                            |
 | Workspace switch                      | the `dev/workspace-handoff` follow-up described under [admission and isolation](#admission-and-isolation)                                                                                              | `{kind: 'switch', resumed, workspaceId, cwd, reason}` |
 

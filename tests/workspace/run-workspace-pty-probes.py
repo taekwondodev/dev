@@ -39,6 +39,7 @@ class Probe:
 
 
     expect: tuple[str, ...] = ()
+    expect_flowed: tuple[str, ...] = ()
     expect_raw: tuple[str, ...] = ()
     expect_raw_order: tuple[str, ...] = ()
     reject_raw_after: tuple[str, tuple[str, ...]] = ('', ())
@@ -265,6 +266,61 @@ PROBES = {
         expect=('is not a Git repository and contains none.',),
         reject_raw_after=('DEV_PICKER_INPUTS ', ('Initialize a repository here',)),
         env=(('LAUNCHER_PICKER', 'init-orb'),),
+    ),
+
+    'task-picker': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('filter', 'Resume:', 'main', delay=0.5),
+            Action('open', 'filter', '\r', delay=0.5),
+            Action('write', 'Press ctrl+o to show full startup help',
+                   "\x15!printf 'dev-task-%s' written > bound.txt; cat bound.txt\r", delay=2.0),
+            Action('quit', 'dev-task-written', '\x15/quit\r', delay=1.0),
+            Action('decline', '[y = release, Enter = keep]', '\r', delay=0.5),
+        ),
+        expect=('Exit 0: done.',),
+        expect_raw_order=('holds paused work. Resume:', 'detached {COMMIT}', 'fixture', 'main',
+                          '\x1b[J', 'Press ctrl+o'),
+        reject_raw_after=('Resume:', ('\x1b[3J', 'Continue that task here')),
+        env=(('LAUNCHER_PICKER', 'task'),),
+    ),
+
+    'ask-continue': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('write', 'Press ctrl+o to show full startup help',
+                   "\x15!printf 'dev-task-%s' written > bound.txt; cat bound.txt\r", delay=2.0),
+            Action('continue', 'Continue that task here', '\r', delay=0.5),
+            Action('quit', 'dev-task-written', '\x15/quit\r', delay=1.0),
+            Action('decline', '[y = release, Enter = keep]', '\r', delay=0.5),
+        ),
+        expect=('This checkout holds a paused task on feat/paused', 'Work separately',
+                'Exit 0: done.'),
+        expect_flowed=('on feat/paused. The user chose to continue it here. Its 1 changed file '
+                       'comes from earlier work, whose history this conversation does not hold.',),
+        env=(('LAUNCHER_PICKER', 'ask'),),
+    ),
+
+    'workspace-resume': Probe(
+        script='tests/workspace/workspace-launcher-picker-probe.ts',
+        passed_marker='DEV_PICKER_PROBE_PASSED ',
+        inputs_marker='DEV_PICKER_INPUTS ',
+        actions=(
+            Action('resume', 'Press ctrl+o to show full startup help', '\x15/workspace resume\r',
+                   delay=2.0),
+            Action('choose', 'Resume paused work in:', '\r', delay=0.5),
+            Action('write', 'The user resumed this conversation',
+                   "\x15!printf 'dev-task-%s' written > bound.txt; cat bound.txt\r", delay=1.0),
+            Action('quit', 'dev-task-written', '\x15/quit\r', delay=1.0),
+            Action('decline', '[y = release, Enter = keep]', '\r', delay=0.5),
+        ),
+        expect=('feat/paused', 'Exit 0: done.'),
+        reject_raw_after=('Resume paused work in:', ('Continue that task here',)),
+        env=(('LAUNCHER_PICKER', 'resume'),),
     ),
 
     'quit-release-declined': Probe(
@@ -542,7 +598,9 @@ def run(name: str, probe: Probe) -> bool:
                      if action.name not in sent)
     missing_output = []
     plain = ESCAPES.sub('', text)
-    for needles, haystack in ((probe.expect, plain), (probe.expect_raw, text)):
+    flowed = re.sub(r'\s+', ' ', plain)
+    for needles, haystack in ((probe.expect, plain), (probe.expect_flowed, flowed),
+                              (probe.expect_raw, text)):
         for needle in needles:
             try:
                 expected = needle.format_map(inputs)
