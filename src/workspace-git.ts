@@ -3,7 +3,7 @@ import { execFile, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { basename, delimiter, isAbsolute, join, resolve } from 'node:path'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import { WorkspaceError } from './workspace-domain.ts'
+import { WorkspaceError, type WorkspaceHead } from './workspace-domain.ts'
 import { FileIdentitySchema, observePhysicalIdentities } from './workspace-identity.ts'
 
 const GitWorkspaceSchema = Schema.Struct({
@@ -299,14 +299,20 @@ export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
 const nulSeparated = (output: string): readonly string[] =>
   output.split('\0').filter(entry => entry.length > 0)
 
+const untrackedFiles = (checkout: string): readonly string[] =>
+  nulSeparated(git(checkout, ['ls-files', '--others', '--exclude-standard', '-z']))
+
 export const untrackedPaths = (
   checkout: string
 ): { readonly untracked: readonly string[]; readonly ignored: readonly string[] } => ({
-  untracked: nulSeparated(git(checkout, ['ls-files', '--others', '--exclude-standard', '-z'])),
+  untracked: untrackedFiles(checkout),
   ignored: nulSeparated(
     git(checkout, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])
   ),
 })
+
+export const changedFileCount = (checkout: string): number =>
+  trackedChanges(checkout).length + untrackedFiles(checkout).length
 
 export const symbolicBranch = (checkout: string): string | undefined => {
   const result = gitResult(checkout, ['symbolic-ref', '--quiet', 'HEAD'])
@@ -393,11 +399,45 @@ export const remoteTip = (checkout: string, remote: string, ref: string): Remote
   return sha === undefined || sha.length === 0 ? 'missing' : { sha }
 }
 
-export const registeredWorktrees = (repositoryPath: string): readonly string[] =>
+const listedWorktrees = (repositoryPath: string): string =>
   git(repositoryPath, ['worktree', 'list', '--porcelain', '-z'])
+
+export const registeredWorktrees = (repositoryPath: string): readonly string[] =>
+  listedWorktrees(repositoryPath)
     .split('\0')
     .filter(line => line.startsWith('worktree '))
     .map(line => line.slice('worktree '.length))
+
+const BRANCH_PREFIX = 'refs/heads/'
+
+const listedHead = (fields: readonly string[]): WorkspaceHead | undefined => {
+  const value = (name: string): string | undefined =>
+    fields.find(field => field.startsWith(`${name} `))?.slice(name.length + 1)
+  const branch = value('branch')
+  if (branch !== undefined)
+    return {
+      kind: 'branch',
+      name: branch.startsWith(BRANCH_PREFIX) ? branch.slice(BRANCH_PREFIX.length) : branch,
+    }
+  const commit = value('HEAD')
+  return fields.includes('detached') && commit !== undefined
+    ? { kind: 'detached', commit }
+    : undefined
+}
+
+export const worktreeHeads = (repositoryPath: string): ReadonlyMap<string, WorkspaceHead> => {
+  const heads = new Map<string, WorkspaceHead>()
+  for (const entry of listedWorktrees(repositoryPath).split('\0\0')) {
+    const fields = entry.split('\0')
+    const listed = fields.find(field => field.startsWith('worktree '))?.slice('worktree '.length)
+    const head = listedHead(fields)
+    if (listed === undefined || head === undefined) continue
+    try {
+      heads.set(realpathSync(listed), head)
+    } catch {}
+  }
+  return heads
+}
 
 export const removeWorktree = (repositoryPath: string, path: string): GitResult =>
   gitResult(repositoryPath, ['worktree', 'remove', '--force', '--', path])

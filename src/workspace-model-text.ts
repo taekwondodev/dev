@@ -1,4 +1,4 @@
-import { SWEEP_MOMENT_TEXT, type WorkspaceReport } from './workspace-command.ts'
+import { headText, SWEEP_MOMENT_TEXT, type WorkspaceReport } from './workspace-command.ts'
 import type {
   SweepReceipt,
   SweepRow,
@@ -45,6 +45,7 @@ const viewObject = (view: WorkspaceView): ModelObject =>
     ['taskId', view.taskId],
     ['workspaceId', view.workspaceId],
     ['path', view.path],
+    ['head', headText(view.head)],
     ['origin', view.origin],
     ['outcome', view.outcome],
     ['reason', view.reason],

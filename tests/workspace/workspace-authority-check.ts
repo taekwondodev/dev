@@ -241,7 +241,7 @@ const endProcessUse = async (attachment: TestAttachment, grant: WorkspaceGrant) 
 }
 const findUse = async (lifecycleValue: TestLifecycle, useId: string) =>
   (await lifecycleValue.inspect({})).flatMap(view => view.uses).find(use => use.id === useId)
-const ready = (result: Awaited<ReturnType<TestAttachment['authorize']>>) => {
+const ready = (result: Awaited<ReturnType<TestAttachment['authorizeWriter']>>) => {
   if (result.kind !== 'ready') throw new Error(`Expected a ready grant, got ${result.kind}`)
   return result.grant
 }
@@ -658,6 +658,248 @@ try {
       await pausedContender.close()
     }
   )
+
+  const asks = await openLifecycle({ root: join(sandbox, 'ask-authority') })
+  await claim(
+    'a write that can ask, in a checkout a resumable task holds, is answered with that task, its head, changed files and last use and records nothing; joining then writes the same checkout for that task under a new acquisition, working separately is the exact-HEAD rebind, and a write that declares nothing isolates as before',
+    async () => {
+      const askRepo = join(sandbox, 'ask-repo')
+      const askCommit = initRepository(askRepo, 'file.txt', 'fixture\n')
+      git(['switch', '--quiet', '-c', 'feat/paused'], askRepo)
+      writeFileSync(join(askRepo, 'file.txt'), 'changed\n')
+      writeFileSync(join(askRepo, 'new.txt'), 'untracked\n')
+      const startedAt = Date.now()
+      const owner = await asks.attach({
+        conversation: conversation('ask-owner'),
+        cwd: askRepo,
+      })
+      const owned = ready(await owner.authorize({ kind: 'write' }))
+      await owner.close()
+      const recorded = async () => ({
+        views: await asks.inspect({ cwd: askRepo }),
+        worktrees: git(['worktree', 'list', '--porcelain'], askRepo),
+      })
+      const before = await recorded()
+
+      const asking = await asks.attach({
+        conversation: conversation('ask-joiner'),
+        cwd: askRepo,
+      })
+      const asked = await asking.authorizeWriter({ kind: 'write' }, { kind: 'ask' })
+      if (asked.kind !== 'paused') throw new Error(`The asking write was ${asked.kind}`)
+      assert.equal(asked.task.taskId, owned.taskId)
+      assert.equal(asked.task.workspaceId, owned.workspaceId)
+      assert.equal(asked.task.reservationId, owned.reservationId)
+      assert.equal(asked.task.path, askRepo)
+      assert.deepEqual(asked.task.head, { kind: 'branch', name: 'feat/paused' })
+      assert.equal(asked.task.changedFiles, 2)
+      assert.ok(
+        asked.task.lastUsedAt !== undefined &&
+          asked.task.lastUsedAt >= startedAt &&
+          asked.task.lastUsedAt <= Date.now(),
+        String(asked.task.lastUsedAt)
+      )
+      assert.deepEqual(await recorded(), before, 'the question recorded nothing')
+      assert.equal(asking.binding.taskId, undefined)
+      assert.deepEqual(
+        await asking.authorizeWriter({ kind: 'write' }, { kind: 'ask' }),
+        asked,
+        'asking again changes nothing'
+      )
+
+      const joined = ready(
+        await asking.authorizeWriter(
+          { kind: 'write' },
+          {
+            kind: 'join',
+            taskId: asked.task.taskId,
+            reservationId: asked.task.reservationId,
+            reservationRevision: asked.task.reservationRevision,
+          }
+        )
+      )
+      assert.equal(joined.checkout, askRepo)
+      assert.equal(joined.origin, 'pre-existing')
+      assert.equal(joined.workspaceId, owned.workspaceId)
+      assert.equal(joined.taskId, owned.taskId)
+      assert.equal(joined.reservationId, owned.reservationId)
+      assert.notEqual(joined.acquisitionId, owned.acquisitionId)
+      assert.equal(asking.binding.taskId, owned.taskId)
+      assert.equal(asking.binding.cwd, askRepo)
+      assert.equal((await recorded()).worktrees, before.worktrees, 'joining allocated nothing')
+      assert.equal(ready(await asking.authorize({ kind: 'write' })).useId, joined.useId)
+      await asking.close()
+
+      const separate = await asks.attach({
+        conversation: conversation('ask-separate'),
+        cwd: askRepo,
+      })
+      const again = await separate.authorizeWriter({ kind: 'write' }, { kind: 'ask' })
+      if (again.kind !== 'paused') throw new Error(`The second asking write was ${again.kind}`)
+      assert.notEqual(again.task.reservationRevision, asked.task.reservationRevision)
+      const isolated = await separate.authorize({ kind: 'write' })
+      if (isolated.kind !== 'rebind') throw new Error('Working separately did not isolate')
+      assert.equal(isolated.handoff.target.origin, 'managed')
+      assert.notEqual(isolated.handoff.target.taskId, owned.taskId)
+      assert.equal(git(['rev-parse', 'HEAD'], isolated.handoff.target.checkout), askCommit)
+      assert.ok(!existsSync(join(isolated.handoff.target.checkout, 'new.txt')))
+      await separate.handoff(isolated.handoff, async () => 'confirmed')
+      await separate.close()
+
+      const silent = await asks.attach({
+        conversation: conversation('ask-silent'),
+        cwd: askRepo,
+      })
+      assert.equal((await silent.authorize({ kind: 'write' })).kind, 'rebind')
+      await silent.close()
+    }
+  )
+
+  await claim(
+    'a live or unsettled use of the holder never yields the paused answer, and a join whose reservation was taken or released meanwhile attaches nothing: admission is evaluated afresh',
+    async () => {
+      const liveRepo = join(sandbox, 'ask-live-repo')
+      initRepository(liveRepo, 'file.txt', 'fixture\n')
+      const holder = await asks.attach({
+        conversation: conversation('ask-live-holder'),
+        cwd: liveRepo,
+      })
+      ready(await holder.authorize({ kind: 'write' }))
+      const contender = await asks.attach({
+        conversation: conversation('ask-live-contender'),
+        cwd: liveRepo,
+      })
+      const whileLive = await contender.authorizeWriter({ kind: 'write' }, { kind: 'ask' })
+      if (whileLive.kind !== 'rebind') throw new Error(`A live holder answered ${whileLive.kind}`)
+      await contender.handoff(whileLive.handoff, async () => 'cancelled')
+      await contender.close()
+
+      const running = ready(
+        await holder.authorize({ kind: 'write', execution: processExecution('ask-unsettled') })
+      )
+      await startProcessUse(holder, running, processExecution('ask-unsettled'))
+      await holder.close()
+      const afterUnsettled = await asks.attach({
+        conversation: conversation('ask-unsettled-contender'),
+        cwd: liveRepo,
+      })
+      const whileUnsettled = await afterUnsettled.authorizeWriter(
+        { kind: 'write' },
+        { kind: 'ask' }
+      )
+      if (whileUnsettled.kind !== 'rebind')
+        throw new Error(`An unsettled holder answered ${whileUnsettled.kind}`)
+      await afterUnsettled.handoff(whileUnsettled.handoff, async () => 'cancelled')
+      await afterUnsettled.close()
+
+      const takenRepo = join(sandbox, 'ask-taken-repo')
+      initRepository(takenRepo, 'file.txt', 'fixture\n')
+      const takenOwner = await asks.attach({
+        conversation: conversation('ask-taken-owner'),
+        cwd: takenRepo,
+      })
+      const takenGrant = ready(await takenOwner.authorize({ kind: 'write' }))
+      if (takenGrant.taskId === undefined) throw new Error('The fixture write has no task')
+      await takenOwner.close()
+      const late = await asks.attach({
+        conversation: conversation('ask-taken-late'),
+        cwd: takenRepo,
+      })
+      const question = await late.authorizeWriter({ kind: 'write' }, { kind: 'ask' })
+      if (question.kind !== 'paused') throw new Error(`The late write was ${question.kind}`)
+      const answer = {
+        kind: 'join',
+        taskId: question.task.taskId,
+        reservationId: question.task.reservationId,
+        reservationRevision: question.task.reservationRevision,
+      } as const
+
+      const resumer = await asks.attach({
+        conversation: conversation('ask-taken-resumer'),
+        cwd: takenRepo,
+        selection: { taskId: takenGrant.taskId, workspaceId: takenGrant.workspaceId },
+      })
+      ready(await resumer.authorize({ kind: 'write' }))
+      const taken = await late.authorizeWriter({ kind: 'write' }, answer)
+      if (taken.kind !== 'rebind') throw new Error(`A taken task answered ${taken.kind}`)
+      assert.equal(late.binding.taskId, undefined, 'the join attached nothing')
+      await late.handoff(taken.handoff, async () => 'cancelled')
+      await resumer.close()
+
+      const repaused = await late.authorizeWriter({ kind: 'write' }, answer)
+      if (repaused.kind !== 'paused') throw new Error(`A re-paused task answered ${repaused.kind}`)
+      assert.notEqual(repaused.task.reservationRevision, question.task.reservationRevision)
+      assert.equal(late.binding.taskId, undefined, 'a stale answer attached nothing')
+
+      assert.ok((await asks.release(takenGrant.taskId)).length > 0)
+      const released = ready(await late.authorizeWriter({ kind: 'write' }, answer))
+      assert.equal(released.checkout, takenRepo)
+      assert.notEqual(released.taskId, takenGrant.taskId, 'the released task was not joined')
+      await late.close()
+    }
+  )
+
+  await claim(
+    'a view carries the head of its checkout, the branch when attached and the commit when detached, for pre-existing and managed workspaces alike, with its last recorded use; a missing directory has no head',
+    async () => {
+      const headRepo = join(sandbox, 'head-repo')
+      const headCommit = initRepository(headRepo, 'file.txt', 'fixture\n')
+      const linked = join(sandbox, 'head-linked')
+      git(['worktree', 'add', '--quiet', '--detach', linked, 'HEAD'], headRepo)
+      const startedAt = Date.now()
+      const main = await asks.attach({ conversation: conversation('head-main'), cwd: headRepo })
+      const mainGrant = ready(await main.authorize({ kind: 'write' }))
+      const managed = ready(await main.authorize({ kind: 'delegated-write' }))
+      const detached = await asks.attach({ conversation: conversation('head-linked'), cwd: linked })
+      const linkedGrant = ready(await detached.authorize({ kind: 'write' }))
+      const branched = await asks.attach({
+        conversation: conversation('head-branched'),
+        cwd: headRepo,
+      })
+      const branchedGrant = ready(await branched.authorize({ kind: 'delegated-write' }))
+      git(['switch', '--quiet', '-c', 'feat/managed'], branchedGrant.checkout)
+      const viewOf = async (workspaceId: string) => {
+        const view = (await asks.inspect({ cwd: headRepo })).find(
+          candidate => candidate.workspaceId === workspaceId
+        )
+        if (view === undefined) throw new Error(`No view of workspace ${workspaceId}`)
+        return view
+      }
+      assert.deepEqual((await viewOf(mainGrant.workspaceId)).head, { kind: 'branch', name: 'main' })
+      assert.deepEqual((await viewOf(managed.workspaceId)).head, {
+        kind: 'detached',
+        commit: headCommit,
+      })
+      assert.deepEqual((await viewOf(linkedGrant.workspaceId)).head, {
+        kind: 'detached',
+        commit: headCommit,
+      })
+      assert.deepEqual((await viewOf(branchedGrant.workspaceId)).head, {
+        kind: 'branch',
+        name: 'feat/managed',
+      })
+      for (const grant of [mainGrant, managed, linkedGrant, branchedGrant]) {
+        const used = (await viewOf(grant.workspaceId)).lastUsedAt
+        assert.ok(used !== undefined && used >= startedAt && used <= Date.now(), String(used))
+      }
+      assert.deepEqual(
+        (await asks.inspect({ taskId: linkedGrant.taskId })).map(view => view.head),
+        [{ kind: 'detached', commit: headCommit }],
+        'an exact-task inspection carries the same head'
+      )
+      await detached.close()
+      await branched.close()
+      await main.close()
+      rmSync(linked, { recursive: true, force: true })
+      rmSync(managed.checkout, { recursive: true, force: true })
+      const gone = await viewOf(linkedGrant.workspaceId)
+      assert.equal(gone.directoryMissing, true)
+      assert.equal(gone.head, undefined)
+      assert.equal((await viewOf(managed.workspaceId)).head, undefined)
+      assert.deepEqual((await viewOf(mainGrant.workspaceId)).head, { kind: 'branch', name: 'main' })
+    }
+  )
+  await asks.close()
 
   await claim(
     'in a repository with no commits a paused foreign reservation does not isolate: the next conversation writes the same checkout under its own task and the release names the admission, and a resumed conversation takes it back; a contender of a live or killed writer is refused with the release command and a delegated writer with the first commit, without a sweep',

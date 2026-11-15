@@ -48,6 +48,7 @@ const withReport = (
     return base.delegatedCwds
   },
   authorize: operation => base.authorize(operation),
+  authorizeWriter: (operation, paused) => base.authorizeWriter(operation, paused),
   select: selection => base.select(selection),
   handoff: (transition, replace) => base.handoff(transition, replace),
   sweeps: base.sweeps,

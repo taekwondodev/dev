@@ -2,10 +2,13 @@ import { existsSync } from 'node:fs'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
+import { ago, displayPath } from './display-text.ts'
 import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import {
+  isResumable,
   WorkspaceId,
   type CompletionVerdict,
+  type PausedTask,
   type SweepMoment,
   type SweepReceipt,
   type SweepRow,
@@ -13,6 +16,7 @@ import {
   type WorkspaceAssessment,
   type WorkspaceConversation,
   type WorkspaceError,
+  type WorkspaceHead,
   type WorkspaceLifecycle,
   type WorkspaceReleaseResult,
   type WorkspaceSelection,
@@ -97,7 +101,7 @@ const usage = (message: string): WorkspaceCommandError =>
   new WorkspaceCommandError({ message, exitCode: 2 })
 
 const decodeId = Schema.decodeUnknownOption(WorkspaceId)
-const exactId = Effect.fnUntraced(function* (
+export const exactId = Effect.fnUntraced(function* (
   value: string | undefined,
   name: string
 ): Effect.fn.Return<WorkspaceId, WorkspaceCommandError> {
@@ -165,10 +169,18 @@ const usesText = (view: WorkspaceView): string[] => {
   })
 }
 
+const SHORT_COMMIT = 12
+
+export const headText = (head: WorkspaceHead | undefined): string | undefined => {
+  if (head === undefined) return undefined
+  return head.kind === 'branch' ? head.name : `detached ${head.commit.slice(0, SHORT_COMMIT)}`
+}
+
 const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] => [
   `task ${view.taskId ?? '(unassigned)'} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current binding]' : ''}`,
   `  repository: ${view.repositoryId}`,
   `  path: ${view.path}`,
+  ...(view.head === undefined ? [] : [`  head: ${headText(view.head)}`]),
   `  origin: ${view.origin}`,
   `  reservation: ${view.reservationId ?? 'none reported'}`,
   `  outcome: ${view.outcome}`,
@@ -214,6 +226,72 @@ export const resumeCandidates = (
   sortedViews(exactTaskViews)
     .filter(view => view.outcome === 'preserved-for-resume')
     .map(view => ({ selection: { taskId, workspaceId: view.workspaceId }, view }))
+
+export const resumableWorkspaces = (views: readonly WorkspaceView[]): readonly ResumeCandidate[] =>
+  views
+    .flatMap(view =>
+      view.taskId !== undefined && isResumable(view.reservationId !== undefined, view.outcome)
+        ? [{ selection: { taskId: view.taskId, workspaceId: view.workspaceId }, view }]
+        : []
+    )
+    .toSorted(
+      (left, right) =>
+        (right.view.lastUsedAt ?? 0) - (left.view.lastUsedAt ?? 0) ||
+        left.view.path.localeCompare(right.view.path)
+    )
+
+const NO_BRANCH = 'no branch'
+
+export const resumableRowText = ({ view }: ResumeCandidate, now: number): string =>
+  [
+    headText(view.head) ?? NO_BRANCH,
+    ...(view.lastUsedAt === undefined ? [] : [ago(now, view.lastUsedAt)]),
+    displayPath(view.path),
+    `task ${view.taskId}`,
+  ].join(' · ')
+
+export const notResumableText = (
+  scope: { readonly repositoryRoot?: string; readonly taskId?: WorkspaceId },
+  views: readonly WorkspaceView[]
+): string => {
+  const reserved = views.filter(view => view.taskId !== undefined)
+  const within =
+    scope.repositoryRoot === undefined ? '' : ` in the repository at ${scope.repositoryRoot}`
+  if (reserved.length === 0)
+    return scope.taskId === undefined
+      ? `No task reserves a workspace${within}.`
+      : `Task ${scope.taskId} reserves no workspace${within}.`
+  return [
+    `No workspace${scope.taskId === undefined ? '' : ` of task ${scope.taskId}`}${within} is resumable:`,
+    ...sortedViews(reserved).map(
+      view =>
+        `- task ${view.taskId} at ${view.path} is ${view.outcome}: ${view.reason} ${view.nextAction}`
+    ),
+  ].join('\n')
+}
+
+export interface PausedTaskQuestion {
+  readonly title: string
+  readonly continueHere: string
+  readonly separately: string
+}
+
+export const pausedTaskQuestion = (task: PausedTask, now: number): PausedTaskQuestion => {
+  const facts = [
+    ...(task.changedFiles === undefined
+      ? []
+      : [`${task.changedFiles} changed file${task.changedFiles === 1 ? '' : 's'}`]),
+    ...(task.lastUsedAt === undefined ? [] : [`last used ${ago(now, task.lastUsedAt)}`]),
+  ]
+  return {
+    title: `This checkout holds a paused task on ${headText(task.head) ?? NO_BRANCH}${facts.length === 0 ? '' : ` (${facts.join(', ')})`}. Continue it, or work separately?`,
+    continueHere: 'Continue that task here',
+    separately: 'Work separately: a new worktree from this commit, without uncommitted files',
+  }
+}
+
+export const joinedTaskNotice = (task: PausedTask): string =>
+  `This conversation now continues task ${task.taskId} in ${displayPath(task.path)}${task.head === undefined ? '' : ` on ${headText(task.head)}`}.`
 
 const sortedAssessments = (assessments: readonly WorkspaceAssessment[]) =>
   assessments.toSorted(

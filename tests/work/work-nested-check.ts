@@ -1281,6 +1281,7 @@ try {
     handoff: (transition, replace) => base.handoff(transition, replace),
     sweeps: base.sweeps,
     close: base.close,
+    authorizeWriter: (operation, paused) => base.authorizeWriter(operation, paused),
     authorize: operation => {
       const admitted = base.authorize(operation).pipe(
         Effect.tap(authorization =>
