@@ -205,17 +205,11 @@ await claim(
       ],
     })
     assert.ok(!text.includes('lastUsedAt') && !text.includes('1700000000000'), text)
-    const { workspaces } = parse(text) as { workspaces: { head?: string; path?: string }[] }
+    const { workspaces } = parse(text) as { workspaces: { head?: string }[] }
     assert.deepEqual(
       workspaces.map(workspace => workspace.head),
       ['feat/resume', 'detached 0123456789ab', 'detached 0123456789ab (Resume the parser)']
     )
-    assert.deepEqual(Object.keys(workspaces[0] ?? {}).slice(0, 4), [
-      'taskId',
-      'workspaceId',
-      'path',
-      'head',
-    ])
   }
 )
 

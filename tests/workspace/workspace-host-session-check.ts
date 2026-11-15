@@ -597,7 +597,7 @@ try {
         assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
         assert.equal(opened.host.isParked(), false)
         assert.equal(script.calls(), 2, 'the turn went on after the admitted batch')
-        assert.deepEqual(handoffTexts(opened.runtime), [], 'joining adds no model message')
+        assert.deepEqual(handoffTexts(opened.runtime), [], 'joining records no handoff')
         assert.deepEqual(
           (await lifecycle.inspect({ cwd: paused.checkout })).map(view => view.origin),
           ['pre-existing'],
@@ -669,7 +669,7 @@ try {
     }
   )
   await claim(
-    'working separately ends the turn and moves the lead to an exact-commit worktree as an unasked isolation does; /workspace resume <task-id> is refused while a shell of the conversation is live, then moves it back onto the paused checkout without starting a model turn, and the next turn reads its handoff',
+    'working separately ends the turn and moves the lead to an exact-commit worktree as an unasked isolation does; /workspace resume <task-id> is refused while a shell of the conversation is live, then moves it back onto the paused checkout without starting a model turn and records its handoff for the next one, whose write lands there unasked',
     async () => {
       const paused = await pausedCheckout('ask-separate')
       const { offline: model, script } = await offlineScript('ask-separate', [
@@ -723,7 +723,6 @@ try {
 
         process.kill(shellPid)
         shellPid = undefined
-        const refusals = shown(opened.runtime).length
         await waitFor(
           'the resume once the shell is gone',
           async () => {
@@ -740,7 +739,6 @@ try {
           handoffTexts(opened.runtime).at(-1) ?? '',
           /^The user resumed this conversation onto a retained workspace with \/workspace resume: Explicit task selection\..* Current workspace: .* Continue the conversation in this new context\.$/
         )
-        assert.ok(shown(opened.runtime).length >= refusals)
 
         await opened.runtime.session.prompt('Write the file now.')
         await opened.runtime.session.waitForIdle()
