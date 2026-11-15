@@ -174,7 +174,8 @@ try {
         lifecycle.attach(input).pipe(
           Effect.tap(attachment =>
             Effect.sync(() => {
-              process.stdout.write(JSON.stringify({ workspaceId: attachment.binding.workspaceId }) + '\\n')
+              const { workspaceId, taskId, cwd } = attachment.binding
+              process.stdout.write(JSON.stringify({ workspaceId, taskId, cwd }) + '\\n')
             })
           ),
           Effect.tap(attachment => attachment.close),
@@ -351,6 +352,7 @@ try {
       assert.match(withdrawal.stderr, /launcher check stops after attach/)
       assert.deepEqual(JSON.parse(withdrawal.stdout.trim().split('\n').at(-1) ?? '{}'), {
         workspaceId: switchSource,
+        cwd: repo,
       })
       const afterWithdrawal = await openLifecycle({ root: authorityRoot })
       try {
@@ -709,6 +711,92 @@ try {
         jsonlBefore,
         'no read-only command created a Pi session file'
       )
+    }
+  )
+  await claim(
+    'dev --task <task-id> binds a new conversation to that task in its workspace path, wherever in the repository it is launched; a task nothing can resume here exits 1 with the reasons; a malformed ID, a missing ID without a terminal and a combination with --resume or --continue are usage errors',
+    async () => {
+      const taskHome = join(sandbox, 'task-home')
+      mkdirSync(join(taskHome, '.agents', 'skills'), { recursive: true })
+      const fixtures = await openLifecycle({ root: inspectRoot })
+      const pausedAllocator = await fixtures.attach({
+        conversation: {
+          sessionId: 'task-allocator',
+          sessionFile: join(sandbox, 'task-allocator.jsonl'),
+          dataHome,
+        },
+        cwd: repo,
+      })
+      const paused = await pausedAllocator.authorize({ kind: 'delegated-write' })
+      if (paused.kind !== 'ready' || paused.grant.taskId === undefined)
+        throw new Error('The fixture could not allocate paused work')
+      await pausedAllocator.close()
+      const { taskId, workspaceId, checkout } = paused.grant
+      const withTask = (args: readonly string[], env: Readonly<Record<string, string>> = {}) =>
+        runLauncher(
+          [...args, '--cwd', repo, '--data-home', dataHome, '--profile', profiles.defaultProfile],
+          { LAUNCHER_CHECK_ROOT: inspectRoot, HOME: taskHome, ...env }
+        )
+      try {
+        const sessionsBefore = pathsUnder(join(dataHome, 'sessions'))
+        const launched = await withTask(['--task', taskId], { STOP_AFTER_ATTACH: '1' })
+        assert.match(launched.stderr, /launcher check stops after attach/)
+        assert.deepEqual(JSON.parse(launched.stdout.trim().split('\n').at(-1) ?? '{}'), {
+          workspaceId,
+          taskId,
+          cwd: checkout,
+        })
+        assert.deepEqual(
+          pathsUnder(join(dataHome, 'sessions')),
+          sessionsBefore,
+          'the launched conversation is new: no earlier history was reopened or written'
+        )
+
+        const elsewhere = await withTask(['--task', secondGrant.taskId])
+        assert.equal(elsewhere.code, 1, elsewhere.stderr)
+        assert.equal(
+          elsewhere.stderr,
+          `Task ${secondGrant.taskId} reserves no workspace in the repository at ${repo}.\n`
+        )
+        const holder = await fixtures.attach({
+          conversation: {
+            sessionId: 'task-holder',
+            sessionFile: join(sandbox, 'task-holder.jsonl'),
+            dataHome,
+          },
+          cwd: repo,
+          selection: { taskId, workspaceId },
+        })
+        const held = await holder.authorize({ kind: 'write' })
+        assert.equal(held.kind, 'ready')
+        const inUse = await withTask(['--task', taskId])
+        await holder.close()
+        assert.equal(inUse.code, 1, inUse.stderr)
+        assert.equal(
+          inUse.stderr,
+          `No workspace of task ${taskId} in the repository at ${repo} is resumable:\n- task ${taskId} at ${checkout} is active: A persisted workspace use is still active. Do not take this workspace from its current user.\n`
+        )
+
+        const malformed = await withTask(['--task', 'not-a-task'])
+        assert.equal(malformed.code, 2, malformed.stderr)
+        assert.ok(malformed.stderr.includes('not-a-task'), malformed.stderr)
+        const listed = await withTask(['--task'])
+        assert.equal(listed.code, 2, listed.stderr)
+        assert.match(
+          listed.stderr,
+          /^--task without a task ID lists paused work and needs an interactive terminal/
+        )
+        for (const combined of [['--continue'], ['--resume', sessionFile]]) {
+          const refused = await withTask(['--task', taskId, ...combined])
+          assert.equal(refused.code, 2, refused.stderr)
+          assert.match(
+            refused.stderr,
+            /^--task opens a new conversation in paused work; it cannot be combined with --resume, --continue/
+          )
+        }
+      } finally {
+        await fixtures.close()
+      }
     }
   )
   await claim(

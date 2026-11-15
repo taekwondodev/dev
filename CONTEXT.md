@@ -39,6 +39,7 @@ A `work` **task key** (`taskId`) is local to the controller. It is not the durab
 | **Workspace reservation**                                       | The durable association retaining a workspace for a task, independently of executions using it.         |
 | **[Task artifact directory](docs/workspace.md#task-artifacts)** | The authority-owned directory for a task's files outside any checkout.                                  |
 | **Write acquisition**                                           | An execution's exclusive right to write a workspace, with an identity distinct from prior acquisitions. |
+| **[Resumable workspace](docs/workspace.md#resume-paused-work)** | A workspace a task reserves that nothing uses or leaves unresolved, offered for explicit resume.        |
 | **[Workspace use](docs/workspace.md#process-uses-and-gates)**   | The recorded presence of a conversation, operation or process.                                          |
 | **Completion verdict**                                          | A workspace's assessed role and either a finished rule or a retained reason.                            |
 | **Sweep**                                                       | Dev's budgeted assessment and release of finished workspaces in a repository.                           |

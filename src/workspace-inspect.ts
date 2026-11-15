@@ -4,11 +4,12 @@ import { inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-au
 import {
   requireReview,
   type ReleaseDecider,
+  type WorkspaceHead,
   type WorkspaceId,
   type WorkspaceView,
 } from './workspace-domain.ts'
 import { incarnationHeld } from './workspace-gates.ts'
-import { canonicalGitWorkspace } from './workspace-git.ts'
+import { canonicalGitWorkspace, worktreeHeads } from './workspace-git.ts'
 import {
   getWorkspace,
   getReservation,
@@ -18,6 +19,7 @@ import {
   isActiveUse,
   openOperations,
   type ReleaseOperationRecord,
+  type ReservationRecord,
   type UseRecord,
   type WorkspaceRecord,
 } from './workspace-records.ts'
@@ -169,6 +171,71 @@ const receiptView = (
   }
 }
 
+type PendingOperation = WorkspaceView['pending'][number]
+
+export interface WorkspaceStanding extends Pick<
+  WorkspaceView,
+  'outcome' | 'reason' | 'nextAction'
+> {
+  readonly missing: boolean
+  readonly pending: readonly PendingOperation[]
+}
+
+export const workspaceStanding = (
+  authority: WorkspaceAuthority,
+  db: DatabaseSync,
+  workspace: WorkspaceRecord,
+  reserved: boolean,
+  uses: readonly UseRecord[]
+): WorkspaceStanding => {
+  const pending = openOperations(db, workspace.id).map(value => ({
+    id: value.id,
+    kind: value.kind,
+    stage: value.phase,
+  }))
+  const missing = checkoutMissing(workspace)
+  let identityReason: string | undefined = missing ? MISSING_REASON : undefined
+  if (!missing)
+    try {
+      validateWorkspace(authority, workspace)
+    } catch (cause) {
+      identityReason = errorText(cause)
+    }
+  return {
+    ...assessWorkspace({
+      identityReason,
+      missing,
+      pending: pending[0],
+      unresolved: pending.some(operation => operation.stage !== 'intent'),
+      unknown: uses.some(use => use.stage === 'unknown'),
+      live: uses.some(use => isActiveUse(use)),
+      abandoned: () => abandonedUseIds(authority, db, uses),
+      reserved,
+    }),
+    missing,
+    pending,
+  }
+}
+
+export const lastUsedAt = (
+  reservation: ReservationRecord | undefined,
+  uses: readonly UseRecord[]
+): number | undefined => {
+  const times = [
+    ...(reservation === undefined ? [] : [reservation.createdAt]),
+    ...uses.map(use => use.updatedAt),
+  ]
+  return times.length === 0 ? undefined : Math.max(...times)
+}
+
+export const repositoryHeads = (commonPath: string): ReadonlyMap<string, WorkspaceHead> => {
+  try {
+    return worktreeHeads(commonPath)
+  } catch {
+    return new Map()
+  }
+}
+
 export const inspectWorkspaces = (
   authority: WorkspaceAuthority,
   input: { readonly cwd?: string; readonly taskId?: WorkspaceId }
@@ -187,6 +254,7 @@ export const inspectWorkspaces = (
   const views: WorkspaceView[] = []
   const visibleOperationIds = new Set<string>()
   for (const repository of repositories) {
+    let heads: ReadonlyMap<string, WorkspaceHead> | undefined
     inDb(authority, repository.id, db => {
       const workspaceRows =
         input.taskId === undefined
@@ -211,31 +279,17 @@ export const inspectWorkspaces = (
 
         if (workspace.status === 'removed') continue
         const uses = getUseRows(db, id)
-        const pending = openOperations(db, id).map(value => {
-          visibleOperationIds.add(value.id)
-          return { id: value.id, kind: value.kind, stage: value.phase }
-        })
-        const missing = checkoutMissing(workspace)
-        let identityReason: string | undefined = missing ? MISSING_REASON : undefined
-        if (!missing)
-          try {
-            validateWorkspace(authority, workspace)
-          } catch (cause) {
-            identityReason = errorText(cause)
-          }
-        const unresolved = pending.some(operation => operation.stage !== 'intent')
-        const unknown = uses.some(use => use.stage === 'unknown')
-        const live = uses.some(use => isActiveUse(use))
-        const { outcome, reason, nextAction } = assessWorkspace({
-          identityReason,
-          missing,
-          pending: pending[0],
-          unresolved,
-          unknown,
-          live,
-          abandoned: () => abandonedUseIds(authority, db, uses),
-          reserved: reservation !== undefined,
-        })
+        const { outcome, reason, nextAction, missing, pending } = workspaceStanding(
+          authority,
+          db,
+          workspace,
+          reservation !== undefined,
+          uses
+        )
+        for (const operation of pending) visibleOperationIds.add(operation.id)
+        heads ??= repositoryHeads(repository.commonPath)
+        const head = heads.get(workspace.path)
+        const usedAt = lastUsedAt(reservation, uses)
         views.push({
           repositoryId: repository.id,
           ...(reservation === undefined
@@ -248,6 +302,8 @@ export const inspectWorkspaces = (
           reason,
           nextAction,
           ...(missing ? { directoryMissing: true } : {}),
+          ...(head === undefined ? {} : { head }),
+          ...(usedAt === undefined ? {} : { lastUsedAt: usedAt }),
           uses: uses.map(use => ({
             id: use.id,
             access: use.access,

@@ -309,6 +309,8 @@ export const openHostRuntime = async (input: {
   readonly webReader?: WebReader
   readonly ending?: SessionEnd
   readonly mode?: 'headless' | 'tui'
+  readonly ui?: Partial<Pi.ExtensionUIContext>
+  readonly reopening?: (sessionFile: string) => void
   readonly onParkingChange?: () => void
 }) => {
   const resolveImportPath = await loadImportPathResolver(input.packageRoot)
@@ -320,8 +322,10 @@ export const openHostRuntime = async (input: {
           lifecycle: input.lifecycle,
           attachment: input.attachment,
           dataHome: input.dataHome,
-          openSessionManager: (file, cwd) =>
-            input.pi.SessionManager.open(file, input.sessionDir, cwd),
+          openSessionManager: (file, cwd) => {
+            input.reopening?.(file)
+            return input.pi.SessionManager.open(file, input.sessionDir, cwd)
+          },
           resolveImportPath,
           ...(input.onParkingChange === undefined
             ? {}
@@ -384,6 +388,9 @@ export const openHostRuntime = async (input: {
       const bindHeadless = (session: typeof runtime.session) =>
         session.bindExtensions({
           mode: 'print',
+          ...(input.ui === undefined
+            ? {}
+            : { uiContext: { ...session.extensionRunner.getUIContext(), ...input.ui } }),
           commandContextActions: {
             waitForIdle: () => session.waitForIdle(),
             newSession: options => runtime.newSession(options),

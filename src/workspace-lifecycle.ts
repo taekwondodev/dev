@@ -359,6 +359,8 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
             return request({ op: 'authorize', attachmentId, operation })
           })
         ),
+      authorizeWriter: (operation, paused) =>
+        open(request({ op: 'authorize-writer', attachmentId, operation, paused })),
       select: selection => open(request({ op: 'select', attachmentId, selection })),
       reportExecution: (grant, fact) =>
         open(request({ op: 'report-execution', attachmentId, grant, fact })),

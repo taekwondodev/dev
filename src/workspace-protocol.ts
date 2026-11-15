@@ -2,6 +2,7 @@ import type * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import {
   AbsolutePath,
+  PausedTaskDecisionSchema,
   PublicationReferenceSchema,
   SweepReceiptSchema,
   SweepRequestSchema,
@@ -20,6 +21,8 @@ import {
   WorkspaceReleaseResultSchema,
   WorkspaceSelectionSchema,
   WorkspaceViewSchema,
+  WriteOperationSchema,
+  WriterAdmissionSchema,
 } from './workspace-domain.ts'
 
 const RpcId = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
@@ -37,6 +40,12 @@ const AuthorizeRequestSchema = Schema.Struct({
   op: Schema.Literal('authorize'),
   attachmentId: AttachmentId,
   operation: WorkspaceOperationSchema,
+})
+const AuthorizeWriterRequestSchema = Schema.Struct({
+  op: Schema.Literal('authorize-writer'),
+  attachmentId: AttachmentId,
+  operation: WriteOperationSchema,
+  paused: PausedTaskDecisionSchema,
 })
 const SelectRequestSchema = Schema.Struct({
   op: Schema.Literal('select'),
@@ -100,6 +109,7 @@ const RecordPublicationRequestSchema = Schema.Struct({
 const WorkspaceRpcInputSchema = Schema.Union([
   AttachRequestSchema,
   AuthorizeRequestSchema,
+  AuthorizeWriterRequestSchema,
   SelectRequestSchema,
   ReportRequestSchema,
   HandoffRequestSchema,
@@ -121,6 +131,7 @@ export type WorkspaceRpcOperation = WorkspaceRpcInput['op']
 const RpcReplySchemas = {
   attach: Schema.Struct({ attachmentId: AttachmentId, binding: WorkspaceBindingSchema }),
   authorize: WorkspaceAuthorizationSchema,
+  'authorize-writer': WriterAdmissionSchema,
   select: WorkspaceHandoffSchema,
   'report-execution': WorkspaceExecutionReportSchema,
   handoff: Schema.Null,
@@ -144,6 +155,7 @@ export const decodeWorkspaceRpcReply: {
 } = {
   attach: Schema.decodeUnknownOption(RpcReplySchemas.attach),
   authorize: Schema.decodeUnknownOption(RpcReplySchemas.authorize),
+  'authorize-writer': Schema.decodeUnknownOption(RpcReplySchemas['authorize-writer']),
   select: Schema.decodeUnknownOption(RpcReplySchemas.select),
   'report-execution': Schema.decodeUnknownOption(RpcReplySchemas['report-execution']),
   handoff: Schema.decodeUnknownOption(RpcReplySchemas.handoff),
@@ -166,6 +178,7 @@ const SuccessSchema = Schema.Struct({
   op: Schema.Literals([
     'attach',
     'authorize',
+    'authorize-writer',
     'select',
     'report-execution',
     'handoff',

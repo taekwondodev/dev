@@ -14,6 +14,7 @@ dev --cwd PATH                    # use PATH as the working project
 dev --profile NAME                # select a profile of profiles/manifest.json for this session
 dev --save-profile NAME           # save this repository's profile preference
 dev --continue                    # resume the newest session for this launch directory
+dev --task [TASK-ID]              # open a new conversation in paused work of this repository
 dev --resume PATH.jsonl           # resume a specific Pi session
 dev --data-home PATH              # select private storage, also DEV_DATA_HOME
 dev --diagnostics                 # print resolved paths, Pi installation and resources
@@ -66,6 +67,12 @@ Help, diagnostics, save-only and browser commands do not start the workspace wor
 
 Dev works in Git repositories. A new conversation launched from a directory outside any repository checks this before loading profiles or Pi, then offers the repositories directly inside it: visible subdirectories holding `.git`, the most recently used in a dev conversation first, then by name. Type to filter, Enter opens dev there as if launched with `--cwd`, Esc exits with status 0. The picker uses Pi's theme from `~/.pi/agent/settings.json` and erases itself before dev starts. A directory with no repository inside offers to initialize one there instead: Enter runs `git init` and opens dev in it, Esc exits with status 0, and typing is ignored. Dev adds no commit, `.gitignore` or branch name, so Git's `init.defaultBranch` applies and admission follows the [rules for a repository with no commits](workspace.md#admission-and-isolation). The home directory, the filesystem root and a launch without a terminal are never offered and exit 1 naming the directory. `--resume`, `--continue`, `--diagnostics`, `--probe-runtime` and `--save-profile` keep their own handling.
 
+### Resume paused work
+
+`dev --task` lists the [paused work](workspace.md#resume-paused-work) of the repository at the launch directory, each with its [head](workspace.md#use), its last use and its path. Type to filter, Enter opens a new conversation in that workspace's path, bound to its task, and Esc exits with status 0. The list looks and handles typed control characters like the [repository picker](#outside-a-git-repository). `dev --task TASK-ID` selects that task's resumable workspace in the repository without a list, unless the task retains several.
+
+The conversation is new and starts in the workspace's directory with its uncommitted files. When nothing is resumable, or the named task is not, dev exits 1 with each workspace's outcome and next action. `--task` with `--resume`, `--continue`, `--diagnostics`, `--probe-runtime`, `--save-profile` or a `workspace` or `browser` command, a malformed ID, and a missing ID without a terminal are usage errors that exit 2. Outside a repository, that picker runs first.
+
 ### Profiles and resources
 
 Profiles are personal configuration. The installation's `profiles/` directory is ignored by Git and holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Dev knows the manifest format, not profile or skill names:
@@ -101,7 +108,7 @@ The lead's TUI runs on a terminal the launcher builds from Pi's own terminal mod
 
 ### Resume and quit
 
-`--continue` selects by session-file modification time and the cwd in Pi's header. If the selected conversation is refused, it does not try an older one. Both resume forms refuse a conversation open in another dev installation or one whose workspace path, Git metadata or persistent identity no longer matches the authority.
+`--continue` selects by session-file modification time and the cwd in Pi's header. A conversation opened with `--task` records its workspace's path there, so `--continue` finds it from that path, not from the directory `--task` was launched in. If the selected conversation is refused, it does not try an older one. Both resume forms refuse a conversation open in another dev installation or one whose workspace path, Git metadata or persistent identity no longer matches the authority.
 
 A refused existing regular session file and its history remain unchanged. An absent path is reported as absent, without inferring whether history existed. Follow the reported reason: a conversation-specific refusal need not block another conversation, but starting fresh cannot bypass repository identity checks. A workspace switch that never reached the host is withdrawn on resume.
 

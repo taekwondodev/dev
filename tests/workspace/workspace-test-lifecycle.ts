@@ -7,6 +7,7 @@ import * as Scope from 'effect/Scope'
 import { errorText } from '../../src/error-text.ts'
 import {
   WorkspaceError,
+  type PausedTaskDecision,
   type PublicationReference,
   type SweepReceipt,
   type SweepRequest,
@@ -26,6 +27,8 @@ import {
   type WorkspaceReleaseResult,
   type WorkspaceSelection,
   type WorkspaceView,
+  type WriteOperation,
+  type WriterAdmission,
 } from '../../src/workspace-domain.ts'
 import { makeWorkspaceLifecycle, type StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
 import { makeWorkspaceShell, type WorkspaceAdmission } from '../../src/workspace-shell.ts'
@@ -87,6 +90,7 @@ export interface TestAttachment {
   readonly effect: WorkspaceAttachment
   readonly binding: WorkspaceBinding
   authorize(operation: WorkspaceOperation): Promise<WorkspaceAuthorization>
+  authorizeWriter(operation: WriteOperation, paused: PausedTaskDecision): Promise<WriterAdmission>
   select(selection: WorkspaceSelection): Promise<WorkspaceHandoff>
   reportExecution(
     grant: WorkspaceGrant,
@@ -129,6 +133,8 @@ const promisedAttachment = (attachment: WorkspaceAttachment): TestAttachment => 
     return attachment.binding
   },
   authorize: operation => Effect.runPromise(attachment.authorize(operation)),
+  authorizeWriter: (operation, paused) =>
+    Effect.runPromise(attachment.authorizeWriter(operation, paused)),
   select: selection => Effect.runPromise(attachment.select(selection)),
   reportExecution: (grant, fact) => Effect.runPromise(attachment.reportExecution(grant, fact)),
   handoff: (transition, replace) =>
