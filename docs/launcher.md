@@ -69,9 +69,9 @@ Dev works in Git repositories. A new conversation launched from a directory outs
 
 ### Resume paused work
 
-`dev --task` lists the [resumable workspaces](workspace.md#resume-paused-work) of the repository at the launch directory, most recently used first, each with its branch, or its commit and that commit's subject when detached, its last use and its path. Type to filter, Enter opens a new conversation in that workspace's path, bound to its task, and Esc exits with status 0. The list looks and handles typed control characters like the repository picker. `dev --task TASK-ID` selects that task's resumable workspace in the repository without a list, unless the task retains several.
+`dev --task` lists the [paused work](workspace.md#resume-paused-work) of the repository at the launch directory, each with its [head](workspace.md#use), its last use and its path. Type to filter, Enter opens a new conversation in that workspace's path, bound to its task, and Esc exits with status 0. The list looks and handles typed control characters like the [repository picker](#outside-a-git-repository). `dev --task TASK-ID` selects that task's resumable workspace in the repository without a list, unless the task retains several.
 
-The conversation is new: it starts in the workspace's directory with its uncommitted files and carries no earlier history. When nothing is resumable, or the named task is not, dev exits 1 with each workspace's outcome and next action. `--task` with `--resume`, `--continue`, `--diagnostics`, `--probe-runtime`, `--save-profile` or a `workspace` or `browser` command, a malformed ID, and a missing ID without a terminal are usage errors that exit 2. Outside a repository, the [repository picker](#outside-a-git-repository) runs first.
+The conversation is new and starts in the workspace's directory with its uncommitted files. When nothing is resumable, or the named task is not, dev exits 1 with each workspace's outcome and next action. `--task` with `--resume`, `--continue`, `--diagnostics`, `--probe-runtime`, `--save-profile` or a `workspace` or `browser` command, a malformed ID, and a missing ID without a terminal are usage errors that exit 2. Outside a repository, that picker runs first.
 
 ### Profiles and resources
 
