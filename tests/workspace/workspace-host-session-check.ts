@@ -22,6 +22,7 @@ import {
   WorkspaceError,
   type WorkspaceAttachment,
   type WorkspaceAuthorization,
+  type WorkspaceId,
   type WorkspaceLifecycle,
 } from '../../src/workspace-domain.ts'
 import {
@@ -170,6 +171,9 @@ const openLeadHost = (input: {
   readonly lifecycle?: WorkspaceLifecycle
   readonly dataHome?: string
   readonly cwd?: string
+  readonly ui?: Partial<Pi.ExtensionUIContext>
+  readonly extensions?: readonly { readonly name: string; readonly factory: Pi.ExtensionFactory }[]
+  readonly reopening?: (sessionFile: string) => void
   readonly onParkingChange?: () => void
 }) =>
   openHostRuntime({
@@ -185,6 +189,11 @@ const openLeadHost = (input: {
     offline: input.offline,
     lifecycle: input.lifecycle ?? lifecycle.effect,
     dataHome: input.dataHome ?? dataHome,
+    ...(input.ui === undefined ? {} : { ui: input.ui }),
+    ...(input.extensions === undefined
+      ? {}
+      : { extensions: dev => [...dev, ...(input.extensions ?? [])] }),
+    ...(input.reopening === undefined ? {} : { reopening: input.reopening }),
     ...(input.onParkingChange === undefined ? {} : { onParkingChange: input.onParkingChange }),
   })
 const overriding = <T extends object>(target: T, overrides: Partial<T>): T =>
@@ -205,6 +214,67 @@ const unparked = (
 ) => waitFor(what, () => (host.isParked() ? undefined : true), timing)
 const pendingAtLead = async () =>
   (await lifecycle.inspect({ cwd: lead })).flatMap(view => view.pending)
+
+const CONTINUE_HERE = 'Continue that task here'
+const RESUME_LIST = 'Resume paused work in:'
+const pausedCheckout = async (name: string) => {
+  const checkout = join(fixture, name)
+  mkdirSync(checkout)
+  git(['init', '--quiet', '-b', 'main'], checkout)
+  git(['config', 'user.email', 'host-session@example.invalid'], checkout)
+  git(['config', 'user.name', 'host session check'], checkout)
+  writeFileSync(join(checkout, 'AGENTS.md'), `${name}\n`)
+  git(['add', 'AGENTS.md'], checkout)
+  git(['commit', '--quiet', '-m', 'paused fixture'], checkout)
+  const commit = git(['rev-parse', 'HEAD'], checkout)
+  git(['switch', '--quiet', '-c', `feat/${name}`], checkout)
+  writeFileSync(join(checkout, 'draft.txt'), 'uncommitted work\n')
+  const seed = await lifecycle.attach({
+    conversation: conversationAt(pi.SessionManager.create(checkout, sessionDir)),
+    cwd: checkout,
+  })
+  const admitted = await seed.authorize({ kind: 'write' })
+  if (admitted.kind !== 'ready' || admitted.grant.taskId === undefined)
+    throw new Error('the fixture requires a task that wrote the checkout')
+  await seed.close()
+  const manager = pi.SessionManager.create(checkout, sessionDir)
+  const attached = await lifecycle.attach({ conversation: conversationAt(manager), cwd: checkout })
+  return { checkout, commit, taskId: admitted.grant.taskId, manager, attached }
+}
+type Answer = (title: string, options: readonly string[]) => string | undefined
+const interactive = (answer: Answer) => {
+  const asked: { readonly title: string; readonly options: readonly string[] }[] = []
+  const notices: string[] = []
+  const ui: Partial<Pi.ExtensionUIContext> = {
+    select: async (title, options) => {
+      asked.push({ title, options })
+      return answer(title, options)
+    },
+    notify: message => {
+      notices.push(message)
+    },
+  }
+  return { asked, notices, ui }
+}
+const shown = (runtime: Pi.AgentSessionRuntime): string[] =>
+  runtime.session.sessionManager
+    .getEntries()
+    .flatMap(entry =>
+      entry.type === 'custom_message' && entry.customType === 'dev/workspace'
+        ? [String(entry.content)]
+        : []
+    )
+const lifecycleEntries = (manager: Pi.SessionManager): unknown[] =>
+  manager
+    .getEntries()
+    .flatMap(entry =>
+      entry.type === 'custom' && entry.customType === 'test/lifecycle' ? [entry.data] : []
+    )
+const handoffTexts = (runtime: Pi.AgentSessionRuntime): string[] =>
+  runtime.session.sessionManager.getEntries().flatMap(entry => {
+    const text = handoffText(entry)
+    return text === undefined ? [] : [text]
+  })
 
 try {
   await claim(
@@ -453,6 +523,571 @@ try {
         assert.match(endedTurns[0]?.errorMessage ?? '', /aborted/i)
         assert.equal(opened.host.isParked(), false, 'the host completed the switch')
         assert.deepEqual(await pendingAtLead(), [])
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'with a UI, the first write in a checkout a paused task holds asks once before isolating: continuing runs that call in the same session and checkout for that task, and one message after the results of its batch tells the user and the next model request of the join and of the changed file left by earlier work',
+    async () => {
+      const paused = await pausedCheckout('ask-continue')
+      const script = scripted([
+        [
+          toolCall('ask-write', 'write', { path: 'asked.txt', content: 'continued\n' }),
+          toolCall('ask-bash', 'bash', { command: 'cat draft.txt > seen.txt' }),
+        ],
+      ])
+      const requests: string[] = []
+      const model = await makeOfflineModel({
+        pi,
+        importFromPi,
+        fixture,
+        id: 'ask-continue',
+        stream: parts => {
+          const reply = replay(script.next)(parts)
+          return (requested, context, options) => {
+            requests.push(JSON.stringify(context.messages))
+            return reply(requested, context, options)
+          }
+        },
+      })
+      const dialog = interactive((_title, options) => options[0])
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+      })
+      try {
+        const sessionId = opened.runtime.session.sessionManager.getSessionId()
+        await opened.runtime.session.prompt('Write the file and read the draft.')
+        await opened.runtime.session.waitForIdle()
+        const result = toolResults(opened.runtime)
+        assert.equal(result('ask-write').isError, false, result('ask-write').text)
+        assert.equal(result('ask-bash').isError, false, result('ask-bash').text)
+        assert.equal(readFileSync(join(paused.checkout, 'asked.txt'), 'utf8'), 'continued\n')
+        assert.equal(
+          readFileSync(join(paused.checkout, 'seen.txt'), 'utf8'),
+          'uncommitted work\n',
+          'the uncommitted files stayed with the conversation'
+        )
+        assert.equal(dialog.asked.length, 1, JSON.stringify(dialog.asked))
+        assert.match(
+          dialog.asked[0]?.title ?? '',
+          /^This checkout holds a paused task on feat\/ask-continue \(1 changed file, last used 1m ago\)\. Continue it, or work separately\?$/
+        )
+        assert.equal(dialog.asked[0]?.options[0], CONTINUE_HERE)
+        assert.equal(dialog.asked[0]?.options.length, 2)
+        const note = `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-continue. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
+        assert.deepEqual(shown(opened.runtime), [note])
+        assert.deepEqual(dialog.notices, [], 'the message is the only announcement')
+        assert.ok(!requests[0]?.includes(note), 'the request that asked did not know of the join')
+        const second = requests[1] ?? ''
+        const noteAt = second.indexOf(note)
+        assert.equal(second.split(note).length - 1, 1, 'the next request holds the join once')
+        for (const call of ['ask-write', 'ask-bash']) {
+          const resultAt = second.lastIndexOf(`"toolCallId":"${call}"`)
+          assert.ok(resultAt !== -1 && resultAt < noteAt, `the join follows the result of ${call}`)
+        }
+        assert.ok(!result('ask-write').text.includes(paused.taskId), result('ask-write').text)
+        assert.equal(opened.runtime.cwd, paused.checkout)
+        assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
+        assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
+        assert.equal(opened.host.isParked(), false)
+        assert.equal(script.calls(), 2, 'the turn went on after the admitted batch')
+        assert.deepEqual(handoffTexts(opened.runtime), [], 'joining records no handoff')
+        assert.deepEqual(
+          (await lifecycle.inspect({ cwd: paused.checkout })).map(view => view.origin),
+          ['pre-existing'],
+          'no worktree was allocated'
+        )
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'a second writer admitted while the question is open waits for the answer: a ! command asks nothing more, runs for the continued task, and the join is announced once',
+    async () => {
+      const paused = await pausedCheckout('ask-overlap')
+      const { offline: model } = await offlineScript('ask-overlap', [
+        [toolCall('overlap-write', 'write', { path: 'asked.txt', content: 'continued\n' })],
+      ])
+      const asked: string[] = []
+      let answer: (() => void) | undefined
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: {
+          select: (title, options) => {
+            asked.push(title)
+            if (asked.length > 1) return Promise.resolve(options[0])
+            return new Promise(resolveChoice => {
+              answer = () => resolveChoice(options[0])
+            })
+          },
+          notify: () => undefined,
+        },
+      })
+      try {
+        const turn = opened.runtime.session.prompt('Write the file.')
+        await waitFor(
+          'the question of the tool call',
+          () => (asked.length === 1 ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        const command = opened.runtime.session.extensionRunner.emitUserBash({
+          type: 'user_bash',
+          command: 'true',
+          excludeFromContext: false,
+          cwd: paused.checkout,
+        })
+        await sleep(250)
+        answer?.()
+        const admitted = await command
+        if (admitted?.operations === undefined)
+          throw new Error(`the ! command was refused: ${admitted?.result?.output}`)
+        const ran = await admitted.operations.exec('true', paused.checkout, {
+          onData: () => undefined,
+        })
+        assert.equal(ran.exitCode, 0)
+        await turn
+        await opened.runtime.session.waitForIdle()
+        assert.equal(asked.length, 1, 'one answer admitted both writers')
+        assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
+        assert.equal(readFileSync(join(paused.checkout, 'asked.txt'), 'utf8'), 'continued\n')
+        assert.deepEqual(shown(opened.runtime), [
+          `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-overlap. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`,
+        ])
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'working separately ends the turn and moves the lead to an exact-commit worktree as an unasked isolation does; /workspace resume <task-id> is refused while a shell of the conversation is live, then moves it back onto the paused checkout without starting a model turn and records its handoff for the next one, whose write lands there unasked',
+    async () => {
+      const paused = await pausedCheckout('ask-separate')
+      const { offline: model, script } = await offlineScript('ask-separate', [
+        [toolCall('separate-write', 'write', { path: 'asked.txt', content: 'held\n' })],
+        [
+          toolCall('separate-shell', 'bash', {
+            command: 'sleep 600 >/dev/null 2>&1 & echo $! > shell.pid',
+          }),
+        ],
+        [{ type: 'text', text: 'isolated' }],
+        [toolCall('back-write', 'write', { path: 'back.txt', content: 'back\n' })],
+      ])
+      const dialog = interactive((_title, options) => options[1])
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+      })
+      let shellPid: number | undefined
+      try {
+        await opened.runtime.session.prompt('Write the file.')
+        await waitFor(
+          'the turns after the isolation',
+          () => (script.calls() >= 3 ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        await opened.runtime.session.waitForIdle()
+        const result = toolResults(opened.runtime)
+        assert.equal(dialog.asked.length, 1, JSON.stringify(dialog.asked))
+        assert.equal(result('separate-write').isError, true)
+        assert.match(result('separate-write').text, /requires a host rebind: Another task owns/)
+        assert.ok(!existsSync(join(paused.checkout, 'asked.txt')), 'the paused checkout was kept')
+        const isolated = opened.runtime.cwd
+        assert.notEqual(resolve(isolated), resolve(paused.checkout))
+        assert.equal(git(['rev-parse', 'HEAD'], isolated), paused.commit)
+        assert.ok(!existsSync(join(isolated, 'draft.txt')), 'uncommitted files were not copied')
+        assert.notEqual(opened.host.attachment.binding.taskId, paused.taskId)
+        assert.equal(handoffTexts(opened.runtime).length, 1)
+        assert.equal(result('separate-shell').isError, false, result('separate-shell').text)
+        shellPid = Number(readFileSync(join(isolated, 'shell.pid'), 'utf8'))
+
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        assert.match(
+          shown(opened.runtime).at(-1) ?? '',
+          /^The conversation was not switched: This conversation still runs lead-shell \(.*\) in its workspace, so it cannot be switched yet\./
+        )
+        assert.equal(opened.runtime.cwd, isolated)
+        assert.equal(opened.host.isParked(), false)
+
+        process.kill(shellPid)
+        shellPid = undefined
+        await waitFor(
+          'the resume once the shell is gone',
+          async () => {
+            await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+            await unparked(opened.host, 'the resume to settle')
+            return resolve(opened.runtime.cwd) === resolve(paused.checkout) ? true : undefined
+          },
+          { attempts: 40, intervalMs: 250 }
+        )
+        assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
+        assert.equal(script.calls(), 3, 'the user-initiated switch started no model turn')
+        assert.equal(dialog.asked.length, 1, 'an exact task id selects without a list')
+        assert.match(
+          handoffTexts(opened.runtime).at(-1) ?? '',
+          /^The user resumed this conversation onto a retained workspace with \/workspace resume: Explicit task selection\..* Current workspace: .* Continue the conversation in this new context\.$/
+        )
+
+        await opened.runtime.session.prompt('Write the file now.')
+        await opened.runtime.session.waitForIdle()
+        const back = toolResults(opened.runtime)('back-write')
+        assert.equal(back.isError, false, back.text)
+        assert.equal(readFileSync(join(paused.checkout, 'back.txt'), 'utf8'), 'back\n')
+        assert.equal(dialog.asked.length, 1, 'the resumed task writes its checkout unasked')
+      } finally {
+        if (shellPid !== undefined) process.kill(shellPid)
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'dismissing the question blocks the call, ends the turn before the rest of its batch is asked or run and without another model request, and leaves every record unchanged; the next write asks again',
+    async () => {
+      const paused = await pausedCheckout('ask-dismiss')
+      const { offline: model, script } = await offlineScript('ask-dismiss', [
+        [
+          toolCall('dismissed-write', 'write', { path: 'asked.txt', content: 'never\n' }),
+          toolCall('dismissed-bash', 'bash', { command: 'touch bash.txt' }),
+        ],
+        [toolCall('asked-again', 'write', { path: 'asked.txt', content: 'second answer\n' })],
+      ])
+      const answers: (0 | undefined)[] = [undefined, 0]
+      const dialog = interactive((_title, options) => {
+        const index = answers.shift()
+        return index === undefined ? undefined : options[index]
+      })
+      const before = await lifecycle.inspect({ cwd: paused.checkout })
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+      })
+      try {
+        await opened.runtime.session.prompt('Write the file and touch another.')
+        await opened.runtime.session.waitForIdle()
+        const result = toolResults(opened.runtime)
+        assert.equal(dialog.asked.length, 1, 'the batch asked once')
+        assert.equal(result('dismissed-write').isError, true)
+        assert.equal(
+          result('dismissed-write').text,
+          'The question about the paused task in this checkout was dismissed, so the operation was not executed and nothing changed. The next write asks again.'
+        )
+        assert.notEqual(result('dismissed-bash').isError, false, 'the sibling call did not run')
+        assert.equal(script.calls(), 1, 'the dismissal ended the turn')
+        assert.ok(!existsSync(join(paused.checkout, 'asked.txt')))
+        assert.ok(!existsSync(join(paused.checkout, 'bash.txt')))
+        assert.equal(opened.runtime.cwd, paused.checkout)
+        assert.equal(opened.host.isParked(), false)
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        assert.deepEqual(await lifecycle.inspect({ cwd: paused.checkout }), before)
+        assert.deepEqual(handoffTexts(opened.runtime), [])
+
+        await opened.runtime.session.prompt('Write the file after all.')
+        await opened.runtime.session.waitForIdle()
+        assert.equal(dialog.asked.length, 2, 'the next write asked again')
+        const second = toolResults(opened.runtime)('asked-again')
+        assert.equal(second.isError, false, second.text)
+        assert.equal(readFileSync(join(paused.checkout, 'asked.txt'), 'utf8'), 'second answer\n')
+        assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'without a UI nothing is asked: the first write in a checkout a paused task holds isolates as before',
+    async () => {
+      const paused = await pausedCheckout('ask-headless')
+      const { offline: model, script } = await offlineScript('ask-headless', [
+        [toolCall('headless-write', 'write', { path: 'asked.txt', content: 'isolated\n' })],
+      ])
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+      })
+      try {
+        await opened.runtime.session.prompt('Write the file.')
+        await waitFor(
+          'the turn after the isolation',
+          () => (script.calls() >= 2 ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        await opened.runtime.session.waitForIdle()
+        const refused = toolResults(opened.runtime)('headless-write')
+        assert.equal(refused.isError, true)
+        assert.match(refused.text, /requires a host rebind: Another task owns/)
+        assert.notEqual(resolve(opened.runtime.cwd), resolve(paused.checkout))
+        assert.ok(!existsSync(join(paused.checkout, 'asked.txt')))
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    '/workspace resume lists the paused work of the repository with its branch; dismissing the list changes nothing, and a choice moves the conversation onto it without a model turn',
+    async () => {
+      const paused = await pausedCheckout('ask-list')
+      const { offline: model, script } = await offlineScript('ask-list', [])
+      const answers: (0 | undefined)[] = [undefined, 0]
+      const dialog = interactive((_title, options) => {
+        const index = answers.shift()
+        return index === undefined ? undefined : options[index]
+      })
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+      })
+      try {
+        await opened.runtime.session.prompt('/workspace resume')
+        assert.equal(dialog.asked.length, 1)
+        assert.equal(dialog.asked[0]?.title, RESUME_LIST)
+        assert.deepEqual(dialog.asked[0]?.options, [
+          `feat/ask-list · 1m ago · ${paused.checkout} · task ${paused.taskId}`,
+        ])
+        assert.equal(opened.host.isParked(), false)
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        assert.deepEqual(shown(opened.runtime), [], 'a dismissed list says nothing')
+
+        await opened.runtime.session.prompt('/workspace resume')
+        await waitFor(
+          'the switch onto the chosen workspace',
+          () => (opened.host.attachment.binding.taskId === paused.taskId ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        await unparked(opened.host, 'the resume to settle')
+        assert.equal(opened.runtime.cwd, paused.checkout)
+        assert.equal(script.calls(), 0, 'no model turn started')
+        assert.equal(handoffTexts(opened.runtime).length, 1)
+
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        assert.equal(
+          shown(opened.runtime).at(-1),
+          `This conversation already works for task ${paused.taskId} in ${paused.checkout}.`
+        )
+        await opened.runtime.session.prompt('/workspace resume not-a-task')
+        assert.match(shown(opened.runtime).at(-1) ?? '', /^Task must be an exact ID/)
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'a /workspace resume cancelled before Pi replaces a conversation that has no message yet leaves that conversation as it was: no session file is written, its first prompt is saved and answered in the same conversation, and a later resume still switches',
+    async () => {
+      const paused = await pausedCheckout('ask-cancel')
+      const { offline: model, script } = await offlineScript('ask-cancel', [
+        [{ type: 'text', text: 'answered in place' }],
+      ])
+      let cancelNext = true
+      const dialog = interactive(() => undefined)
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+        extensions: [
+          {
+            name: 'test:cancel-switch',
+            factory: api => {
+              api.on('session_before_switch', () => {
+                if (!cancelNext) return undefined
+                cancelNext = false
+                return { cancel: true }
+              })
+            },
+          },
+        ],
+      })
+      try {
+        const { sessionFile, sessionId } = conversationAt(paused.manager)
+        assert.ok(!existsSync(sessionFile), 'Pi has not written the conversation yet')
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        await waitFor(
+          'the cancelled switch to be reported',
+          () =>
+            dialog.notices.includes(
+              'Workspace switch was cancelled; the current binding was preserved.'
+            )
+              ? true
+              : undefined,
+          IN_MEMORY_POLL
+        )
+        assert.equal(opened.host.isParked(), false)
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        assert.equal(opened.runtime.cwd, paused.checkout)
+        assert.ok(!existsSync(sessionFile), 'a cancelled switch wrote no session file')
+
+        await opened.runtime.session.prompt('Answer in place.')
+        await opened.runtime.session.waitForIdle()
+        assert.equal(script.calls(), 1, 'the prompt reached the model')
+        assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
+        const saved = readFileSync(sessionFile, 'utf8')
+        assert.ok(saved.includes('Answer in place.') && saved.includes('answered in place'), saved)
+        assert.equal(JSON.parse(saved.split('\n')[0] ?? '{}').id, sessionId)
+
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        await waitFor(
+          'the switch once nothing cancels it',
+          () => (opened.host.attachment.binding.taskId === paused.taskId ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        await unparked(opened.host, 'the resume to settle')
+        assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'a conversation with no message yet keeps, across /workspace resume, the entries extensions append while Pi replaces the session: the replacement and a fresh reopen of its file both hold them',
+    async () => {
+      const paused = await pausedCheckout('ask-entries')
+      const { offline: model } = await offlineScript('ask-entries', [])
+      const dialog = interactive(() => undefined)
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+        extensions: [
+          {
+            name: 'test:lifecycle-entries',
+            factory: api => {
+              api.on('session_before_switch', () => {
+                api.appendEntry('test/lifecycle', { at: 'before-switch' })
+              })
+              api.on('session_shutdown', event => {
+                if (event.reason !== 'quit') api.appendEntry('test/lifecycle', { at: 'shutdown' })
+              })
+            },
+          },
+        ],
+      })
+      try {
+        const { sessionFile, sessionId } = conversationAt(paused.manager)
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        await waitFor(
+          'the switch onto the paused task',
+          () => (opened.host.attachment.binding.taskId === paused.taskId ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        await unparked(opened.host, 'the resume to settle')
+        const expected = [{ at: 'before-switch' }, { at: 'shutdown' }]
+        assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
+        assert.deepEqual(lifecycleEntries(opened.runtime.session.sessionManager), expected)
+        const reopened = pi.SessionManager.open(sessionFile, sessionDir)
+        assert.equal(reopened.getSessionId(), sessionId)
+        assert.deepEqual(lifecycleEntries(reopened), expected)
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    'a conversation with no message yet whose file cannot be reopened during /workspace resume fails the switch: the file written for it is removed again, and the session stays parked with the handoff reported unresolved',
+    async () => {
+      const paused = await pausedCheckout('ask-unwritable')
+      const { offline: model } = await offlineScript('ask-unwritable', [])
+      const dialog = interactive(() => undefined)
+      const { sessionFile } = conversationAt(paused.manager)
+      let written = false
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+        reopening: file => {
+          if (resolve(file) !== resolve(sessionFile)) return
+          written = existsSync(sessionFile)
+          throw new Error('reopen refused by the probe')
+        },
+      })
+      const output = mock.method(process.stderr, 'write')
+      const reported = () => output.mock.calls.map(call => String(call.arguments[0])).join('')
+      try {
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        await waitFor(
+          'the failed switch to be reported',
+          () => (reported().includes('Workspace handoff is unresolved') ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        assert.ok(written, 'the file existed when Pi was asked to reopen it')
+        assert.ok(!existsSync(sessionFile), 'the file written for the switch was removed')
+        assert.equal(opened.host.isParked(), true)
+      } finally {
+        output.mock.restore()
+        await opened.close()
+      }
+    }
+  )
+  await claim(
+    '/workspace resume <task-id> for a task retaining several workspaces lists them most recently used first, whatever their identifiers',
+    async () => {
+      const paused = await pausedCheckout('ask-order')
+      const resumeIn = async (workspaceId: WorkspaceId) => {
+        await sleep(5)
+        const toucher = await lifecycle.attach({
+          conversation: conversationAt(pi.SessionManager.create(paused.checkout, sessionDir)),
+          cwd: paused.checkout,
+          selection: { taskId: paused.taskId, workspaceId },
+        })
+        assert.equal((await toucher.authorize({ kind: 'write' })).kind, 'ready')
+        await toucher.close()
+      }
+      const checkoutWorkspace = paused.attached.binding.workspaceId
+      const owner = await lifecycle.attach({
+        conversation: conversationAt(pi.SessionManager.create(paused.checkout, sessionDir)),
+        cwd: paused.checkout,
+        selection: { taskId: paused.taskId, workspaceId: checkoutWorkspace },
+      })
+      const child = await owner.authorize({ kind: 'delegated-write' })
+      await owner.close()
+      if (child.kind !== 'ready') throw new Error('the fixture requires a second workspace')
+      assert.equal(child.grant.taskId, paused.taskId)
+      const { offline: model } = await offlineScript('ask-order', [])
+      const dialog = interactive(() => undefined)
+      const opened = await openLeadHost({
+        attachment: paused.attached.effect,
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: dialog.ui,
+      })
+      try {
+        const offeredPaths = async () => {
+          await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+          return (dialog.asked.at(-1)?.options ?? []).map(option =>
+            option.includes(` · ${child.grant.checkout} · `) ? 'worktree' : 'checkout'
+          )
+        }
+        await resumeIn(checkoutWorkspace)
+        assert.deepEqual(await offeredPaths(), ['checkout', 'worktree'])
+        await resumeIn(child.grant.workspaceId)
+        assert.deepEqual(await offeredPaths(), ['worktree', 'checkout'])
+        assert.equal(dialog.asked.length, 2)
+        assert.ok(dialog.asked.every(question => question.title === RESUME_LIST))
       } finally {
         await opened.close()
       }

@@ -99,7 +99,7 @@ A delegated agent that can write gets [its own orb](#writing-children). A read-o
 
 When the orb cannot be reached, a tool call fails with SSH's error, which reaches the model, and the footer reads `orb <id>: unreachable` until a call reaches the orb again. Git transfers for delegation, upload, return and copying child work also update reachability; after a failed Git transfer, dev probes SSH so a Git error alone does not mark the orb unreachable. `/orb sync` fails with the reason. The session stays usable, and dev never recreates the orb. The Keystone token serves only orbit's API, so a token that can no longer be renewed fails only the deletion at quit, which then keeps the orb as below. Commands with a terminal use a pseudo-terminal on the orb, so `work process` logs merge standard error into standard output. Paging commands print their output without waiting for terminal input; [orb execution](../SECURITY.md#orb-execution) defines the environment controls. Stopping a command ends its SSH client, which hangs up the orb's terminal.
 
-Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool, a delegation whose `cwd` lies outside the orb's checkout, and `work process` outside the session's directory. Quit and relaunch instead.
+Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspace switch through the `workspace` tool or `/workspace resume`, a delegation whose `cwd` lies outside the orb's checkout, and `work process` outside the session's directory. Quit and relaunch instead.
 
 ### Writing children
 

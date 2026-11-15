@@ -27,10 +27,14 @@ import {
 import {
   blocked,
   invalid,
+  isResumable,
   requireReview,
   WorkspaceError,
   sameExecution,
   sameGrant,
+  type PausedAuthorization,
+  type PausedTask,
+  type PausedTaskDecision,
   type WorkspaceAuthorization,
   type WorkspaceExecution,
   type WorkspaceExecutionFact,
@@ -40,9 +44,17 @@ import {
   type ScopedOperation,
   type ScopedContinuation,
   type WorkspaceOperation,
+  type WriteOperation,
+  type WriterAdmission,
 } from './workspace-domain.ts'
 import { acquirePathGates, releaseGates, type PathGates } from './workspace-gates.ts'
-import { canonicalGitWorkspace, hasNoCommits, type GitWorkspace } from './workspace-git.ts'
+import {
+  canonicalGitWorkspace,
+  changedFileCount,
+  hasNoCommits,
+  type GitWorkspace,
+} from './workspace-git.ts'
+import { lastUsedAt, repositoryHeads, workspaceStanding } from './workspace-inspect.ts'
 import {
   assertDestinationUnchanged,
   assertNonAdministrativePath,
@@ -62,9 +74,11 @@ import {
   getBinding,
   putBinding,
   getUse,
+  getUseRows,
   putUse,
   saveUse,
   getActiveUseRows,
+  openOperations,
   assertWithinLiveInDb,
   type WorkspaceRecord,
   type BindingRecord,
@@ -150,6 +164,25 @@ const assertNoCommitArrived = (authority: WorkspaceAuthority, workspace: Workspa
     )
 }
 
+const assertStillPaused = (
+  db: DatabaseSync,
+  state: ConversationState,
+  workspace: WorkspaceRecord,
+  holder: ReservationRecord
+): void => {
+  const recorded = getReservation(db, workspace.id)
+  if (
+    recorded === undefined ||
+    recorded.id !== holder.id ||
+    recorded.revision !== holder.revision ||
+    getActiveUseRows(db, workspace.id).some(use => !state.leases.has(use.id)) ||
+    openOperations(db, workspace.id).some(operation => operation.phase !== 'intent')
+  )
+    blocked(
+      `The paused task of ${workspace.path} changed while this write was being admitted; retry the operation.`
+    )
+}
+
 const reserveForTask = (
   db: DatabaseSync,
   source: WorkspaceSource,
@@ -198,18 +231,30 @@ const reserveForTask = (
   })
 }
 
-export interface AdmittedOperation {
-  readonly authorization: WorkspaceAuthorization
+export interface AdmittedOperation<Authorization = WorkspaceAuthorization> {
+  readonly authorization: Authorization
   readonly observed?: GitWorkspace
 }
 
-export const authorizeOperation = (
+type HeldCheckoutDecision<Reply> =
+  | { readonly kind: 'isolate' }
+  | { readonly kind: 'join' }
+  | { readonly kind: 'reply'; readonly reply: Reply }
+type OnHeldCheckout<Reply> = (
+  source: CurrentSource,
+  holder: ReservationRecord
+) => HeldCheckoutDecision<Reply>
+
+const isolateFromHolder: OnHeldCheckout<never> = () => ({ kind: 'isolate' })
+
+const authorizeHeld = <Reply extends PausedAuthorization>(
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
   operation: WorkspaceOperation,
-  sweep: AllocationSweep
-): AdmittedOperation => {
-  const admitted = admit(authority, attachment, operation, sweep)
+  sweep: AllocationSweep,
+  onHeld: OnHeldCheckout<Reply>
+): AdmittedOperation<WorkspaceAuthorization | Reply> => {
+  const admitted = admit(authority, attachment, operation, sweep, onHeld)
   const { authorization } = admitted
   if (authorization.kind !== 'ready') return { authorization }
   claimGrant(attachment, authorization.grant)
@@ -217,6 +262,75 @@ export const authorizeOperation = (
     ? { authorization, observed: admitted.source.git }
     : { authorization }
 }
+
+export const authorizeOperation = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  operation: WorkspaceOperation,
+  sweep: AllocationSweep
+): AdmittedOperation => authorizeHeld(authority, attachment, operation, sweep, isolateFromHolder)
+
+const resumableHolderUses = (
+  authority: WorkspaceAuthority,
+  state: ConversationState,
+  source: CurrentSource
+): readonly UseRecord[] | undefined =>
+  inDb(authority, source.repo, db => {
+    const others = getUseRows(db, source.workspace.id).filter(use => !state.leases.has(use.id))
+    const { outcome } = workspaceStanding(authority, db, source.workspace, true, others)
+    return isResumable(true, outcome) ? others : undefined
+  })
+
+const changedFilesIn = (checkout: string): number | undefined => {
+  try {
+    return changedFileCount(checkout)
+  } catch {
+    return undefined
+  }
+}
+
+const describePausedTask = (
+  source: CurrentSource,
+  holder: ReservationRecord,
+  uses: readonly UseRecord[]
+): PausedTask => {
+  const head = repositoryHeads(source.git.commonPath).get(source.workspace.path)
+  const changedFiles = changedFilesIn(source.workspace.path)
+  const usedAt = lastUsedAt(holder, uses)
+  return {
+    taskId: holder.taskId,
+    reservationId: holder.id,
+    reservationRevision: holder.revision,
+    workspaceId: source.workspace.id,
+    path: source.workspace.path,
+    ...(head === undefined ? {} : { head }),
+    ...(changedFiles === undefined ? {} : { changedFiles }),
+    ...(usedAt === undefined ? {} : { lastUsedAt: usedAt }),
+  }
+}
+
+const joins = (decision: PausedTaskDecision, holder: ReservationRecord): boolean =>
+  decision.kind === 'join' &&
+  decision.taskId === holder.taskId &&
+  decision.reservationId === holder.id &&
+  decision.reservationRevision === holder.revision
+
+export const authorizeWriter = (
+  authority: WorkspaceAuthority,
+  attachment: AttachmentHandle,
+  operation: WriteOperation,
+  decision: PausedTaskDecision,
+  sweep: AllocationSweep
+): AdmittedOperation<WriterAdmission> =>
+  authorizeHeld(authority, attachment, operation, sweep, (source, holder) => {
+    const uses = resumableHolderUses(authority, attachment.state, source)
+    if (uses === undefined) return { kind: 'isolate' }
+    if (joins(decision, holder)) return { kind: 'join' }
+    return {
+      kind: 'reply',
+      reply: { kind: 'paused', task: describePausedTask(source, holder, uses) },
+    }
+  })
 
 export const authorizeScopedWithin = (
   authority: WorkspaceAuthority,
@@ -245,12 +359,13 @@ type OrdinaryOperation = Exclude<
   { readonly kind: 'native-file-write' | 'orb-return' | 'opaque' | 'leaf-read' }
 >
 
-const admit = (
+const admit = <Reply>(
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
   operation: WorkspaceOperation,
-  sweep: AllocationSweep
-): { readonly authorization: WorkspaceAuthorization; readonly source?: CurrentSource } => {
+  sweep: AllocationSweep,
+  onHeld: OnHeldCheckout<Reply>
+): { readonly authorization: WorkspaceAuthorization | Reply; readonly source?: CurrentSource } => {
   assertAdmitting(authority, attachment)
   if (
     operation.kind === 'native-file-write' ||
@@ -270,16 +385,20 @@ const admit = (
   if (operation.kind === 'delegated-write' && operation.coordinator !== undefined)
     assertLocalCoordinator(attachment, operation.coordinator)
   const source = currentSource(authority, attachment.state)
-  return { authorization: admitFrom(authority, attachment, operation, source, sweep), source }
+  return {
+    authorization: admitFrom(authority, attachment, operation, source, sweep, onHeld),
+    source,
+  }
 }
 
-const admitFrom = (
+const admitFrom = <Reply>(
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
   operation: OrdinaryOperation,
   source: CurrentSource,
-  sweep: AllocationSweep
-): WorkspaceAuthorization => {
+  sweep: AllocationSweep,
+  onHeld: OnHeldCheckout<Reply>
+): WorkspaceAuthorization | Reply => {
   const { state } = attachment
   const cwd =
     operation.cwd === undefined ? source.binding.cwd : realpathSync(resolve(operation.cwd))
@@ -329,17 +448,27 @@ const admitFrom = (
   }
   const reservation = inDb(authority, source.repo, db => getReservation(db, source.workspace.id))
   const writers = foreignWriters(state, source.workspace.id)
+  const unborn = hasNoCommits(source.git)
+  let boundTaskId = source.binding.taskId
+  let joined: ReservationRecord | undefined
+  if (reservation !== undefined && reservation.taskId !== boundTaskId && !unborn) {
+    const held = onHeld(source, reservation)
+    if (held.kind === 'reply') return held.reply
+    if (held.kind === 'join') {
+      joined = reservation
+      boundTaskId = reservation.taskId
+    }
+  }
   const takeover: Takeover | undefined =
-    reservation !== undefined && reservation.taskId !== source.binding.taskId
+    reservation !== undefined && reservation.taskId !== boundTaskId
       ? { from: reservation, foreignWriters: writers }
       : undefined
-  const unborn = hasNoCommits(source.git)
-  const ownTaskContended = source.binding.taskId !== undefined && takeover === undefined
+  const ownTaskContended = boundTaskId !== undefined && takeover === undefined
   const isolate = (taskId: WorkspaceId): WorkspaceAuthorization =>
     unborn
       ? refuseWithoutCommits(source.workspace.path, reservation?.taskId)
       : isolateContendedWriter(authority, state, source, taskId, sweep)
-  if (takeover !== undefined && !unborn) return isolate(source.binding.taskId ?? newId())
+  if (takeover !== undefined && !unborn) return isolate(boundTaskId ?? newId())
   if (inDb(authority, source.repo, writers)) {
     if (ownTaskContended)
       blocked(`The selected task has an unresolved writer use: ${source.workspace.path}`)
@@ -355,14 +484,15 @@ const admitFrom = (
   }
   try {
     if (takeover !== undefined) assertNoCommitArrived(authority, source.workspace)
-    const taskId = source.binding.taskId ?? newId()
+    const taskId = boundTaskId ?? newId()
     const useId = newId()
     const reservationId = takeover === undefined ? (reservation?.id ?? newId()) : newId()
     const acquisitionId = newId()
+    const rebound = source.binding.taskId !== taskId
     const updatedBinding = {
       ...source.binding,
-      ...(source.binding.taskId === undefined ? { taskId } : {}),
-      revision: source.binding.revision + (source.binding.taskId === undefined ? 1 : 0),
+      ...(rebound ? { taskId } : {}),
+      revision: source.binding.revision + (rebound ? 1 : 0),
     } satisfies BindingRecord
     const use = {
       id: useId,
@@ -388,6 +518,7 @@ const admitFrom = (
           currentBinding.workspaceId !== source.workspace.id
         )
           requireReview('Conversation binding changed during write admission')
+        if (joined !== undefined) assertStillPaused(db, state, source.workspace, joined)
         reserveForTask(
           db,
           source,
@@ -397,11 +528,7 @@ const admitFrom = (
         )
         if (getTask(db, taskId) === undefined)
           putTask(db, { id: taskId, repositoryId: source.repo, revision: 0, createdAt: now() })
-        if (
-          updatedBinding.revision !== source.binding.revision ||
-          updatedBinding.taskId !== source.binding.taskId
-        )
-          putBinding(db, updatedBinding)
+        if (rebound) putBinding(db, updatedBinding)
         putUse(db, use)
       })
     )

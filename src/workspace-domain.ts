@@ -163,6 +163,48 @@ export const StartCommitSchema = Schema.Struct({
 })
 export type StartCommit = typeof StartCommitSchema.Type
 
+export const WorkspaceHeadSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('branch'), name: Schema.NonEmptyString }),
+  Schema.Struct({
+    kind: Schema.Literal('detached'),
+    commit: Schema.NonEmptyString,
+    subject: Schema.optional(Schema.NonEmptyString),
+  }),
+])
+export type WorkspaceHead = typeof WorkspaceHeadSchema.Type
+
+const PausedTaskFenceFields = {
+  taskId: WorkspaceId,
+  reservationId: WorkspaceId,
+  reservationRevision: Revision,
+}
+export const PausedTaskSchema = Schema.Struct({
+  ...PausedTaskFenceFields,
+  workspaceId: WorkspaceId,
+  path: Schema.NonEmptyString,
+  head: Schema.optional(WorkspaceHeadSchema),
+  changedFiles: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  lastUsedAt: Schema.optional(Schema.Finite),
+})
+export type PausedTask = typeof PausedTaskSchema.Type
+
+export const PausedTaskDecisionSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('ask') }),
+  Schema.Struct({ kind: Schema.Literal('join'), ...PausedTaskFenceFields }),
+])
+export type PausedTaskDecision = typeof PausedTaskDecisionSchema.Type
+
+const PausedAuthorizationSchema = Schema.Struct({
+  kind: Schema.Literal('paused'),
+  task: PausedTaskSchema,
+})
+export type PausedAuthorization = typeof PausedAuthorizationSchema.Type
+export const WriterAdmissionSchema = Schema.Union([
+  ...WorkspaceAuthorizationSchema.members,
+  PausedAuthorizationSchema,
+])
+export type WriterAdmission = typeof WriterAdmissionSchema.Type
+
 const ScopedContinuationSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal('native-file-write'),
@@ -177,18 +219,21 @@ const ScopedContinuationSchema = Schema.Union([
 ])
 export type ScopedContinuation = typeof ScopedContinuationSchema.Type
 
+export const WriteOperationSchema = Schema.Struct({
+  kind: Schema.Literal('write'),
+  cwd: Schema.optional(AbsolutePath),
+  execution: Schema.optional(WorkspaceExecutionSchema),
+  scoped: Schema.optional(ScopedContinuationSchema),
+})
+export type WriteOperation = typeof WriteOperationSchema.Type
+
 export const WorkspaceOperationSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal('read'),
     cwd: Schema.optional(AbsolutePath),
     execution: Schema.optional(WorkspaceExecutionSchema),
   }),
-  Schema.Struct({
-    kind: Schema.Literal('write'),
-    cwd: Schema.optional(AbsolutePath),
-    execution: Schema.optional(WorkspaceExecutionSchema),
-    scoped: Schema.optional(ScopedContinuationSchema),
-  }),
+  WriteOperationSchema,
   Schema.Struct({
     kind: Schema.Literal('delegated-write'),
     cwd: Schema.optional(AbsolutePath),
@@ -275,6 +320,8 @@ export const WorkspaceViewSchema = Schema.Struct({
   reason: Schema.NonEmptyString,
   nextAction: Schema.NonEmptyString,
   directoryMissing: Schema.optional(Schema.Boolean),
+  head: Schema.optional(WorkspaceHeadSchema),
+  lastUsedAt: Schema.optional(Schema.Finite),
   uses: Schema.Array(
     Schema.Struct({
       id: WorkspaceId,
@@ -292,6 +339,9 @@ export const WorkspaceViewSchema = Schema.Struct({
   ),
 })
 export type WorkspaceView = typeof WorkspaceViewSchema.Type
+
+export const isResumable = (reserved: boolean, outcome: WorkspaceView['outcome']): boolean =>
+  reserved && outcome === 'preserved-for-resume'
 
 const FullRef = Schema.NonEmptyString.check(
   Schema.makeFilter(value =>
@@ -568,6 +618,10 @@ export interface WorkspaceAttachment {
   readonly binding: WorkspaceBinding
   readonly delegatedCwds: readonly string[]
   authorize(operation: WorkspaceOperation): Effect.Effect<WorkspaceAuthorization, WorkspaceError>
+  authorizeWriter(
+    operation: WriteOperation,
+    paused: PausedTaskDecision
+  ): Effect.Effect<WriterAdmission, WorkspaceError>
   select(selection: WorkspaceSelection): Effect.Effect<WorkspaceHandoff, WorkspaceError>
   reportExecution(
     grant: WorkspaceGrant,

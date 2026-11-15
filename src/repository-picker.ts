@@ -1,4 +1,3 @@
-import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as Clock from 'effect/Clock'
@@ -9,6 +8,7 @@ import * as Schema from 'effect/Schema'
 import type * as PiSettings from '../node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.js'
 import type * as PiTheme from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js'
 import type * as PiTui from '../node_modules/@earendil-works/pi-tui/dist/index.js'
+import { ago, displayPath, dropControls, printable, withoutControls } from './display-text.ts'
 import { errorText } from './error-text.ts'
 import { globalPiAgentDir } from './preferences.ts'
 
@@ -46,15 +46,9 @@ const NAVIGATION = [
 ] as const
 const ICON = { folder: '\u{f07b}', branch: '\u{f418}' }
 const NOT_A_REPOSITORY = ' is not a Git repository.'
+const PAUSED_WORK = ' holds paused work.'
+const NO_BRANCH = 'no branch'
 const INITIALIZE = 'initialize'
-
-const control = (character: string): boolean =>
-  character < ' ' || (character >= '\u007F' && character <= '\u009F')
-const printable = (text: string): boolean => ![...text].some(control)
-const dropControls = (text: string): string =>
-  [...text].filter(character => !control(character)).join('')
-const withoutControls = (text: string): string =>
-  [...text].map(character => (control(character) ? '?' : character)).join('')
 
 const sessionUse = Effect.fnUntraced(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
@@ -129,13 +123,6 @@ export const findRepositories = Effect.fnUntraced(function* (
     .toSorted((a, b) => (b.lastUsed ?? 0) - (a.lastUsed ?? 0) || a.name.localeCompare(b.name))
 })
 
-export const displayPath = (path: string): string => {
-  const home = homedir()
-  return withoutControls(
-    path === home || path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path
-  )
-}
-
 const tailToWidth = (text: string, budget: number, width: (text: string) => number): string => {
   if (width(text) <= budget) return text
   const kept: string[] = []
@@ -146,15 +133,6 @@ const tailToWidth = (text: string, budget: number, width: (text: string) => numb
     kept.unshift(character)
   }
   return `…${kept.join('')}`
-}
-
-const ago = (now: number, at: number): string => {
-  const minutes = Math.round((now - at) / 60_000)
-  if (minutes < 60) return `${Math.max(1, minutes)}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.round(hours / 24)
-  return days === 1 ? 'yesterday' : `${days}d ago`
 }
 
 interface PickerModules {
@@ -183,7 +161,10 @@ const loadModules = (packageRoot: string): Effect.Effect<PickerModules, Reposito
 interface Menu {
   readonly heading: string
   readonly items: readonly PiTui.SelectItem[]
-  readonly filterable: boolean
+  readonly filter?: {
+    readonly text: (item: PiTui.SelectItem) => string
+    readonly noMatch: string
+  }
   readonly hints: readonly (readonly [key: string, action: string])[]
 }
 
@@ -247,7 +228,8 @@ const present = (
     }
     const rebuild = () => {
       const filter = query.getValue()
-      const matches = tui.fuzzyFilter(items, filter, item => item.value)
+      const matches =
+        menu.filter === undefined ? items : tui.fuzzyFilter(items, filter, menu.filter.text)
       list = new tui.SelectList(matches, visible, listTheme, layout)
       list.onSelect = item => finish(item.value)
       list.onCancel = () => finish(undefined)
@@ -255,7 +237,7 @@ const present = (
         header,
         new tui.Spacer(1),
         matches.length === 0
-          ? new tui.TruncatedText(muted('  No matching repositories'), 0, 0)
+          ? new tui.TruncatedText(muted(`  ${menu.filter?.noMatch ?? ''}`), 0, 0)
           : list,
         ...(filter.length === 0
           ? []
@@ -270,7 +252,7 @@ const present = (
       handleInput: data => {
         const keys = tui.getKeybindings()
         if (NAVIGATION.some(action => keys.matches(data, action))) list.handleInput(data)
-        else if (menu.filterable) {
+        else if (menu.filter !== undefined) {
           const before = query.getValue()
           query.handleInput(data)
           const typed = query.getValue()
@@ -333,7 +315,7 @@ export const chooseRepository = Effect.fnUntraced(function* (
         .filter(part => part !== undefined)
         .join(theme.fg('dim', ' • ')),
     })),
-    filterable: true,
+    filter: { text: item => item.value, noMatch: 'No matching repositories' },
     hints: [
       ['↑↓', 'select'],
       ['type', 'filter'],
@@ -342,6 +324,55 @@ export const chooseRepository = Effect.fnUntraced(function* (
     ],
   })
   return name === undefined ? undefined : join(directory, name)
+})
+
+export interface ResumableRow {
+  readonly head: string | undefined
+  readonly subject: string | undefined
+  readonly path: string
+  readonly lastUsed: number | undefined
+}
+
+export const chooseWorkspace = Effect.fnUntraced(function* (
+  packageRoot: string,
+  directory: string,
+  rows: readonly ResumableRow[]
+): Effect.fn.Return<number | undefined, RepositoryPickerError> {
+  const modules = yield* prepare(packageRoot, directory)
+  const { theme } = modules.theme
+  const muted = (text: string) => theme.fg('muted', text)
+  const now = yield* Clock.currentTimeMillis
+  const paths = rows.map(row => displayPath(row.path))
+  const chosen = yield* present(modules, directory, {
+    heading: `${PAUSED_WORK} Resume:`,
+    items: rows.map((row, index) => ({
+      value: String(index),
+      label: row.head === undefined ? NO_BRANCH : withoutControls(row.head),
+      description: [
+        row.subject === undefined ? undefined : withoutControls(row.subject),
+        row.lastUsed === undefined ? undefined : muted(ago(now, row.lastUsed)),
+        theme.fg('success', `${theme.bold(ICON.folder)} ${paths[index] ?? ''}`),
+      ]
+        .filter(part => part !== undefined)
+        .join(theme.fg('dim', ' • ')),
+    })),
+    filter: {
+      text: item => {
+        const index = Number(item.value)
+        return [item.label, rows[index]?.subject, paths[index]]
+          .filter(part => part !== undefined)
+          .join(' ')
+      },
+      noMatch: 'No matching paused work',
+    },
+    hints: [
+      ['↑↓', 'select'],
+      ['type', 'filter'],
+      ['enter', 'resume'],
+      ['esc', 'quit'],
+    ],
+  })
+  return chosen === undefined ? undefined : Number(chosen)
 })
 
 export const confirmInitialization = Effect.fnUntraced(function* (
@@ -358,7 +389,6 @@ export const confirmInitialization = Effect.fnUntraced(function* (
         description: modules.theme.theme.fg('muted', 'git init'),
       },
     ],
-    filterable: false,
     hints: [
       ['enter', 'initialize'],
       ['esc', 'quit'],

@@ -477,6 +477,7 @@ const makeAttachment = (
     },
     delegatedCwds: [],
     authorize: operation => fromAsync(() => rules.authorize(operation)),
+    authorizeWriter: operation => fromAsync(() => rules.authorize(operation)),
     select: selection => fromAsync(() => rules.select(selection)),
     reportExecution: (grant, fact) =>
       fromAsync(() => rules.reportExecution(grant, fact)).pipe(Effect.as({})),
