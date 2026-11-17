@@ -11,21 +11,25 @@ import {
   type Scene,
   type SceneShape,
   ROWS,
+  SCAN_DRAW_MS,
+  SCAN_PERIOD,
   SCAN_SHAPE,
   SETTLED_AT,
   VANISH_MS,
   drawRelease,
   drawSweep,
+  encodeClip,
   encodeFrame,
   fadeAway,
   fitsStrip,
   makeCanvas,
   releaseEnd,
+  releasePeriod,
   settleDuration,
   stripColumns,
   toRgba,
 } from '../../src/quit-scene.ts'
-import { makeClaims } from './workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims, observed } from './workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -389,6 +393,156 @@ await claim('the graphical sweep animates in place and always restores the termi
   assert.ok(frames >= 5, String(frames))
   assertNothingLeft(await runSweep(live, graphics, undefined))
 })
+
+const scanAt = (t: number) => {
+  const canvas = makeCanvas(stripColumns(graphics, SCAN_SHAPE) * graphics.cellWidth, H)
+  drawSweep(canvas, t)
+  return toRgba(canvas)
+}
+const releaseAt = (scene: Scene, t: number) => {
+  const canvas = makeCanvas(
+    stripColumns(graphics, { dots: scene.dots, branches: scene.branches.length }) *
+      graphics.cellWidth,
+    H
+  )
+  drawRelease(canvas, scene, t)
+  return toRgba(canvas)
+}
+
+await claim(
+  'a settled scan and a release with a branch in progress repeat exactly, and a release with none stands still',
+  () => {
+    const active: Scene = {
+      dots: 1,
+      branches: [{ kind: 'merged', at: 100 }, { kind: 'active', since: 300 }, { kind: 'waiting' }],
+    }
+    const waiting: Scene = { dots: 0, branches: [{ kind: 'failed', at: 100 }, { kind: 'waiting' }] }
+    assert.equal(releasePeriod(active), 820)
+    assert.equal(releasePeriod(waiting), 0)
+    for (const offset of [0, 137, 611]) {
+      const t = SCAN_DRAW_MS + offset
+      assert.ok(scanAt(t).equals(scanAt(t + SCAN_PERIOD)), `scan at +${offset}`)
+      const settled = releaseEnd(active) + offset
+      assert.ok(releaseAt(active, settled).equals(releaseAt(active, settled + 820)))
+      const still = releaseEnd(waiting) + offset
+      assert.ok(releaseAt(waiting, still).equals(releaseAt(waiting, still + 700)))
+    }
+    assert.ok(
+      !scanAt(SCAN_DRAW_MS).equals(scanAt(SCAN_DRAW_MS + 400)),
+      'the settled scan still moves'
+    )
+  }
+)
+
+await claim(
+  'a sweep that lasts sends its scan once as frames and then only names the frame to show, and still leaves nothing behind',
+  async () => {
+    const out = collector()
+    let settled = ''
+    let named = ''
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const indicator = yield* sweepIndicator(live, out.stream, graphics)
+          yield* observed(
+            'the scan sent as frames',
+            () => kittyCommandsSent(out.text(), 'a=f,') >= 40
+          )
+          settled = out.text()
+          yield* observed(
+            'frames named',
+            () => kittyCommandsSent(out.text().slice(settled.length), 'a=a,') >= 12
+          )
+          named = out.text()
+          yield* indicator.sweepDone
+          yield* indicator.settle(found, SUMMARY)
+        })
+      )
+    )
+    const whileSettled = named.slice(settled.length)
+    assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
+    assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+    assert.ok(whileSettled.includes('\x1b[2mSweeping workspaces… '), 'the time still runs')
+    assertNothingLeft(out.text())
+  }
+)
+
+const kittyCommands = (text: string): (readonly [string, string])[] =>
+  text
+    .split('\x1b_G')
+    .slice(1)
+    .map(part => {
+      const body = part.slice(0, part.indexOf('\x1b\\'))
+      const separator = body.indexOf(';')
+      return separator === -1 ? [body, ''] : [body.slice(0, separator), body.slice(separator + 1)]
+    })
+const controlKeys = (control: string): Record<string, string> =>
+  Object.fromEntries(control.split(',').map(pair => pair.split('=') as [string, string]))
+
+const playClip = (text: string, widthPx: number): Buffer[] => {
+  const frames: Buffer[] = []
+  let open: { readonly keys: Record<string, string>; data: string } | undefined
+  for (const [control, data] of kittyCommands(text)) {
+    const keys = controlKeys(control)
+    if (keys.a === 'd') continue
+    open = open === undefined ? { keys, data } : { keys: open.keys, data: open.data + data }
+    if (keys.m === '1') continue
+    const pixels = inflateSync(Buffer.from(open.data, 'base64'))
+    if (open.keys.a === 'T') frames.push(pixels)
+    else {
+      assert.equal(open.keys.a, 'f')
+      assert.equal(open.keys.X, '1', 'the changed pixels replace the old ones')
+      const frame = Buffer.from(frames[Number(open.keys.c) - 1] as Buffer)
+      const [x, y, width, height] = ['x', 'y', 's', 'v'].map(key => Number(open?.keys[key]))
+      for (let row = 0; row < (height as number); row += 1)
+        pixels.copy(
+          frame,
+          (((y as number) + row) * widthPx + (x as number)) * 4,
+          row * (width as number) * 4,
+          (row + 1) * (width as number) * 4
+        )
+      frames.push(frame)
+    }
+    open = undefined
+  }
+  return frames
+}
+
+await claim(
+  'a settled loop goes to the terminal once, as animation frames that carry only what changed, and the terminal rebuilds every frame from them',
+  () => {
+    const scene: Scene = {
+      dots: 1,
+      branches: [{ kind: 'active', since: 0 }, { kind: 'waiting' }],
+    }
+    const columns = stripColumns(graphics, { dots: 1, branches: 2 })
+    const widthPx = columns * graphics.cellWidth
+    const frames = Array.from({ length: 24 }, (_, index) =>
+      releaseAt(scene, 2000 + (index * 820) / 24)
+    )
+    const text = encodeClip({
+      frames,
+      widthPx,
+      heightPx: H,
+      columns,
+      id: 7,
+      previousId: 6,
+      before: '',
+      after: '',
+    })
+    const rebuilt = playClip(text, widthPx)
+    assert.equal(rebuilt.length, frames.length)
+    for (const [index, frame] of frames.entries())
+      assert.ok(frame.equals(rebuilt[index] as Buffer), `frame ${index + 1}`)
+    const changed = kittyCommands(text)
+      .map(([control]) => controlKeys(control))
+      .filter(keys => keys.a === 'f' && keys.c !== undefined)
+    assert.equal(changed.length, frames.length - 1)
+    for (const keys of changed)
+      assert.ok(Number(keys.s) * Number(keys.v) < (widthPx * H) / 4, JSON.stringify(keys))
+    assert.ok(text.includes('\x1b_Ga=d,d=I,i=6,'), 'the image it replaces is removed')
+  }
+)
 
 const beside = (columns: number) => `\x1b8\x1b[${ROWS - 1}B\x1b[K\x1b[${columns + 2}C`
 const lastFrame = (text: string) => text.slice(text.lastIndexOf('\x1b[?2026h'))
