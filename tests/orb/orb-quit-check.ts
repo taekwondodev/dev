@@ -12,6 +12,7 @@ import {
   drawOrb,
   makeCanvas,
   orbEnd,
+  orbPeriod,
   stripColumns,
   toRgba,
   type OrbScene,
@@ -29,7 +30,7 @@ import {
   type OrbQuitTerminal,
   type OrbQuitView,
 } from '../../src/orb/quit-view.ts'
-import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims, observed } from '../workspace/workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -355,6 +356,74 @@ const imageIds = (text: string, command: string) =>
         .find(key => key.startsWith('i='))
     )
 const RESTORED = '\x1b[?25h'
+
+const rgbaAt = (shown: OrbScene, t: number) => {
+  const canvas = makeCanvas(stripColumns(graphics, ORB_SHAPE) * CELL.widthPx, H)
+  drawOrb(canvas, shown, t)
+  return toRgba(canvas)
+}
+
+await claim(
+  'a return in progress and a deletion in progress repeat exactly once settled, and an orb that is kept stands still',
+  () => {
+    const steady: readonly (readonly [OrbScene, number])[] = [
+      [{ work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare: true }, 820],
+      [
+        {
+          work: { kind: 'returned', at: 500 },
+          fate: { kind: 'deleting', since: 900 },
+          spare: false,
+        },
+        1100,
+      ],
+      [{ work: { kind: 'failed', at: 500 }, fate: { kind: 'present' }, spare: false }, 0],
+    ]
+    for (const [steadyScene, period] of steady) {
+      assert.equal(orbPeriod(steadyScene), period, JSON.stringify(steadyScene))
+      for (const offset of [0, 137, 611]) {
+        const t = orbEnd(steadyScene) + offset
+        assert.ok(
+          rgbaAt(steadyScene, t).equals(rgbaAt(steadyScene, t + (period === 0 ? 700 : period))),
+          `${JSON.stringify(steadyScene)} at +${offset}`
+        )
+      }
+    }
+  }
+)
+
+await claim(
+  'while orbit deletes the orb the quit sends the fading orb once as frames and then only names the frame to show',
+  async () => {
+    let settled = ''
+    let named = ''
+    const { text } = await viewRun(
+      (view, log) =>
+        Effect.gen(function* () {
+          const since = (from: string) => log.join('').slice(from.length)
+          yield* view.show({ kind: 'returning' })
+          yield* view.show(returned)
+          yield* view.show({
+            kind: 'deletion',
+            progress: { kind: 'status', status: 'DELETING', spentMs: 0 },
+          })
+          yield* observed(
+            'the fading orb sent as frames',
+            () => kittyCommandsSent(log.join(''), 'a=f,') >= 40
+          )
+          settled = log.join('')
+          yield* observed('frames named', () => kittyCommandsSent(since(settled), 'a=a,') >= 12)
+          named = log.join('')
+          yield* view.show({ kind: 'deletion', progress: { kind: 'deleted' } })
+        }),
+      { style: live, module: kitty }
+    )
+    const whileSettled = named.slice(settled.length)
+    assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
+    assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+    assert.ok(whileSettled.includes('\x1b[2mDeleting orb abcd1234 · DELETING '))
+    assert.deepEqual(imageIds(text, 'a=d,').toSorted(), imageIds(text, 'a=T,').toSorted())
+  }
+)
 
 await claim(
   'with Kitty graphics the orb quit animates one strip under a terminal hold, removes every image, then prints the receipt',

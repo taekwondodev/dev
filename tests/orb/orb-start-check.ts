@@ -28,7 +28,7 @@ import {
   type OrbStartView,
 } from '../../src/orb/start-view.ts'
 import { loadStartupTerminalModule } from '../../src/terminal-module.ts'
-import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims, observed } from '../workspace/workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -195,7 +195,6 @@ const kittyCommands = (text: string): (readonly [string, string])[] =>
       const separator = body.indexOf(';')
       return separator === -1 ? [body, ''] : [body.slice(0, separator), body.slice(separator + 1)]
     })
-const sent = (text: string, command: string) => text.split(`\x1b_G${command}`).length - 1
 const controlKeys = (control: string): Record<string, string> =>
   Object.fromEntries(control.split(',').map(pair => pair.split('=') as [string, string]))
 
@@ -435,15 +434,6 @@ await claim(
   }
 )
 
-const observed = (what: string, seen: () => boolean) =>
-  Effect.gen(function* () {
-    const deadline = performance.now() + 15_000
-    while (!seen()) {
-      if (performance.now() > deadline) return yield* Effect.fail(`never observed: ${what}`)
-      yield* Effect.sleep(10)
-    }
-  })
-
 await claim(
   'while a phase is settled dev only names the frame to show, and sends images again when the phase changes or a note redraws the strip',
   async () => {
@@ -455,25 +445,31 @@ await claim(
         Effect.gen(function* () {
           const since = (from: string) => log.join('').slice(from.length)
           yield* play(view, happy.slice(0, 1))
-          yield* observed('the loop sent as frames', () => sent(log.join(''), 'a=f,') >= 100)
+          yield* observed(
+            'the loop sent as frames',
+            () => kittyCommandsSent(log.join(''), 'a=f,') >= 100
+          )
           settled = log.join('')
-          yield* observed('frames named', () => sent(since(settled), 'a=a,') >= 12)
+          yield* observed('frames named', () => kittyCommandsSent(since(settled), 'a=a,') >= 12)
           named = log.join('')
           view.print('orb: a note')
-          yield* observed('the strip redrawn', () => sent(since(named), 'a=f,') >= 100)
+          yield* observed('the strip redrawn', () => kittyCommandsSent(since(named), 'a=f,') >= 100)
           noted = log.join('')
           yield* view.show({ kind: 'status', orbId: ORB, status: 'BUILDING' })
-          yield* observed('the new phase streamed', () => sent(since(noted), 'a=T,') >= 2)
+          yield* observed(
+            'the new phase streamed',
+            () => kittyCommandsSent(since(noted), 'a=T,') >= 2
+          )
         }),
       { style: live, module: kitty }
     )
     assert.ok(Exit.isSuccess(exit), JSON.stringify(exit))
     const whileSettled = named.slice(settled.length)
-    assert.equal(sent(whileSettled, 'a=T,'), 0, 'no image while settled')
-    assert.equal(sent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+    assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
+    assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
     assert.ok(whileSettled.includes('\x1b[2mAuthenticating with Keystone… '), 'the time still runs')
     assert.equal(
-      sent(noted.slice(named.length), 'a=T,'),
+      kittyCommandsSent(noted.slice(named.length), 'a=T,'),
       1,
       'the note redraws the strip from the frames it has'
     )

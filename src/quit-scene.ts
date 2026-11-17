@@ -87,8 +87,8 @@ export const ORB_SHAPE: SceneShape = { dots: 0, branches: 1 }
 
 const WAITING = 0.6
 const STAGGER = 60
-const SCAN_PERIOD = 1100
-const SCAN_DRAW_MS = 320
+export const SCAN_PERIOD = 1100
+export const SCAN_DRAW_MS = 320
 export const VANISH_MS = 180
 const PULSE_PERIOD = 820
 const SLIDE_MS = 420
@@ -99,6 +99,8 @@ const FAILED_TAIL = 360
 const RETRACT_MS = 300
 const BREATH_PERIOD = 1100
 const SPARE_DELAY = 180
+const NODE_MS = 380
+const LOOP_LIMIT_MS = 2000
 const ORBIT_PERIOD = 2000
 const ORBIT_IN_MS = 320
 const DOCK_MS = 320
@@ -442,6 +444,22 @@ export const fadeAway = (canvas: Canvas, elapsed: number): void => {
     }
 }
 
+const commonPeriod = (a: number, b: number): number => {
+  let x = a
+  let y = b
+  while (y !== 0) [x, y] = [y, x % y]
+  return (a / x) * b
+}
+
+const loopOf = (periods: readonly number[]): number | undefined => {
+  if (periods.length === 0) return 0
+  const period = periods.reduce(commonPeriod)
+  return period > LOOP_LIMIT_MS ? undefined : period
+}
+
+export const releasePeriod = (scene: Scene): number | undefined =>
+  loopOf(scene.branches.some(branch => branch.kind === 'active') ? [PULSE_PERIOD] : [])
+
 const settledTimes = (scene: Scene): readonly number[] =>
   scene.branches.flatMap(branch =>
     branch.kind === 'merged' || branch.kind === 'failed' ? [branch.at] : []
@@ -557,10 +575,17 @@ const orbFinale = (scene: OrbScene): number | undefined =>
     ? Math.max(workEnd(scene.work), fateEnd(scene.fate)) + FINALE_GAP
     : undefined
 
+export const orbPeriod = (scene: OrbScene): number | undefined =>
+  loopOf([
+    ...(scene.work.kind === 'returning' ? [PULSE_PERIOD] : []),
+    ...(scene.fate.kind === 'deleting' ? [BREATH_PERIOD] : []),
+  ])
+
 export const orbEnd = (scene: OrbScene): number => {
   const finale = orbFinale(scene)
   return Math.max(
     SCAN_DRAW_MS,
+    NODE_MS,
     scene.spare ? SPARE_DELAY + RING_MS : 0,
     workEnd(scene.work),
     fateEnd(scene.fate),
@@ -646,7 +671,7 @@ const drawOrbNode = (canvas: Canvas, scene: OrbScene, head: Point, t: number): v
   const failedAt = orbFailedAt(scene)
   const rgb = failedAt === undefined ? PALETTE.blue : PALETTE.red
   const x = head[0] + (failedAt === undefined ? 0 : shake(t - failedAt, 0.07 * H))
-  const grown = spring(t, 0.7, 380)
+  const grown = spring(t, 0.7, NODE_MS)
   switch (fate.kind) {
     case 'deleting': {
       const breath = 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / BREATH_PERIOD)
@@ -725,26 +750,16 @@ export const orbStartEnd = (scene: OrbStartScene): number => {
   )
 }
 
-const commonPeriod = (a: number, b: number): number => {
-  let x = a
-  let y = b
-  while (y !== 0) [x, y] = [y, x % y]
-  return (a / x) * b
-}
-
 export const orbStartPeriod = (scene: OrbStartScene): number | undefined => {
   const { arrival, fate, launch } = scene
   const orbShown = arrival.kind !== 'awaited' && fate.kind !== 'deleted'
-  const periods = [
+  return loopOf([
     ...(orbitGone(scene) === undefined ? [ORBIT_PERIOD] : []),
     ...(orbShown && (arrival.kind === 'building' || fate.kind === 'deleting')
       ? [START_BREATH_PERIOD]
       : []),
     ...(scene.upload !== undefined && launch.kind === 'pending' ? [PULSE_PERIOD] : []),
-  ]
-  const period = periods.reduce(commonPeriod, 1)
-  if (periods.length === 0) return 0
-  return period > ORBIT_PERIOD ? undefined : period
+  ])
 }
 
 interface OrbitView {

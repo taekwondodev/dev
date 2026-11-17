@@ -14,6 +14,8 @@ import {
   type TerminalHold,
   ORB_SHAPE,
   ROWS,
+  SCAN_DRAW_MS,
+  SCAN_PERIOD,
   SCAN_SHAPE,
   VANISH_MS,
   deleteImage,
@@ -27,9 +29,11 @@ import {
   fitsStrip,
   makeCanvas,
   orbEnd,
+  orbPeriod,
   orbStartEnd,
   orbStartPeriod,
   releaseEnd,
+  releasePeriod,
   selectFrame,
   settleDuration,
   stripColumns,
@@ -233,6 +237,7 @@ export const sweepStrip = Effect.fnUntraced(function* (
   const started = yield* Clock.currentTimeMillis
   const strip = yield* openStrip(out, graphics)
   const scanColumns = stripColumns(graphics, SCAN_SHAPE)
+  const play = loopPlayer(strip, scanColumns)
   let origin: number | undefined
   const scan = yield* Effect.forkScoped(
     Effect.gen(function* () {
@@ -241,9 +246,11 @@ export const sweepStrip = Effect.fnUntraced(function* (
       origin = shown
       for (let index = 0; ; index += 1) {
         const now = yield* Clock.currentTimeMillis
-        yield* strip.frame(
-          scanColumns,
-          canvas => drawSweep(canvas, now - shown),
+        const t = now - shown
+        yield* play(
+          t,
+          t < SCAN_DRAW_MS ? undefined : { key: SCAN_SHAPE, period: SCAN_PERIOD },
+          drawSweep,
           progress(now - started)
         )
         if (index % PROGRESS_KEEPALIVE_FRAMES === 0)
@@ -308,16 +315,49 @@ interface SceneStripOptions<S> {
   readonly end: (scene: S) => number
   readonly label: (elapsedMs: number) => string
   readonly progress: boolean
+  readonly period: (scene: S) => number | undefined
   readonly origin?: number
-  readonly period?: (scene: S) => number | undefined
 }
 
-interface Loop<S> {
-  readonly scene: S
-  readonly from: number
+interface Settled {
+  readonly key: unknown
   readonly period: number
+}
+
+interface Loop extends Settled {
+  readonly from: number
   readonly count: number
   readonly frames: Buffer[]
+}
+
+const loopPlayer = (strip: Strip, columns: number) => {
+  let loop: Loop | undefined
+  const held = (t: number, settled: Settled): Loop =>
+    loop !== undefined && loop.key === settled.key && loop.period === settled.period
+      ? loop
+      : {
+          ...settled,
+          from: t,
+          count: Math.max(1, Math.round(settled.period / CLIP_FRAME_MS)),
+          frames: [],
+        }
+  return (
+    t: number,
+    settled: Settled | undefined,
+    draw: (canvas: Canvas, at: number) => void,
+    label: string
+  ): Effect.Effect<void> => {
+    loop = settled === undefined ? undefined : held(t, settled)
+    if (loop === undefined) return strip.frame(columns, canvas => draw(canvas, t), label)
+    const { from, period, count, frames } = loop
+    for (let made = 0; frames.length < count && made < CLIP_FRAMES_PER_TICK; made += 1) {
+      const moment = from + (frames.length * period) / count
+      frames.push(strip.raster(columns, canvas => draw(canvas, moment)))
+    }
+    if (frames.length < count) return strip.frame(columns, canvas => draw(canvas, t), label)
+    const turn = period === 0 ? 0 : ((t - from) % period) / period
+    return strip.clip(columns, frames, (Math.floor(turn * count) % count) + 1, label)
+  }
 }
 
 const sceneStrip = Effect.fnUntraced(function* <S>(
@@ -329,32 +369,15 @@ const sceneStrip = Effect.fnUntraced(function* <S>(
   const columns = stripColumns(graphics, options.shape)
   let scene = options.initial
   let result: string | undefined
-  let loop: Loop<S> | undefined
-  const looping = (t: number): Loop<S> | undefined => {
-    const cycle = period === undefined || t < end(scene) ? undefined : period(scene)
-    if (cycle === undefined) return undefined
-    if (loop?.scene === scene) return loop
-    return {
-      scene,
-      from: t,
-      period: cycle,
-      count: Math.max(1, Math.round(cycle / CLIP_FRAME_MS)),
-      frames: [],
-    }
-  }
+  const play = loopPlayer(strip, columns)
   const render = (t: number) => {
-    const text = result ?? label(t)
-    const current = looping(t)
-    loop = current
-    if (current === undefined) return strip.frame(columns, canvas => draw(canvas, scene, t), text)
-    const { from, count, frames } = current
-    for (let made = 0; frames.length < count && made < CLIP_FRAMES_PER_TICK; made += 1) {
-      const moment = from + (frames.length * current.period) / count
-      frames.push(strip.raster(columns, canvas => draw(canvas, current.scene, moment)))
-    }
-    if (frames.length < count) return strip.frame(columns, canvas => draw(canvas, scene, t), text)
-    const turn = current.period === 0 ? 0 : ((t - from) % current.period) / current.period
-    return strip.clip(columns, frames, (Math.floor(turn * count) % count) + 1, text)
+    const cycle = t < end(scene) ? undefined : period(scene)
+    return play(
+      t,
+      cycle === undefined ? undefined : { key: scene, period: cycle },
+      (canvas, at) => draw(canvas, scene, at),
+      result ?? label(t)
+    )
   }
   const loopFiber = yield* Effect.forkScoped(
     Effect.gen(function* () {
@@ -407,6 +430,7 @@ export const releaseStrip = Effect.fnUntraced(function* (
     initial,
     draw: drawRelease,
     end: releaseEnd,
+    period: releasePeriod,
     label,
     progress: false,
   })
@@ -437,6 +461,7 @@ export const orbStrip = (
     initial: { work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare },
     draw: drawOrb,
     end: orbEnd,
+    period: orbPeriod,
     label,
     progress: true,
   })

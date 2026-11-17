@@ -11,6 +11,8 @@ import {
   type Scene,
   type SceneShape,
   ROWS,
+  SCAN_DRAW_MS,
+  SCAN_PERIOD,
   SCAN_SHAPE,
   SETTLED_AT,
   VANISH_MS,
@@ -21,11 +23,12 @@ import {
   fitsStrip,
   makeCanvas,
   releaseEnd,
+  releasePeriod,
   settleDuration,
   stripColumns,
   toRgba,
 } from '../../src/quit-scene.ts'
-import { makeClaims } from './workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims, observed } from './workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -389,6 +392,79 @@ await claim('the graphical sweep animates in place and always restores the termi
   assert.ok(frames >= 5, String(frames))
   assertNothingLeft(await runSweep(live, graphics, undefined))
 })
+
+const scanAt = (t: number) => {
+  const canvas = makeCanvas(stripColumns(graphics, SCAN_SHAPE) * graphics.cellWidth, H)
+  drawSweep(canvas, t)
+  return toRgba(canvas)
+}
+const releaseAt = (scene: Scene, t: number) => {
+  const canvas = makeCanvas(
+    stripColumns(graphics, { dots: scene.dots, branches: scene.branches.length }) *
+      graphics.cellWidth,
+    H
+  )
+  drawRelease(canvas, scene, t)
+  return toRgba(canvas)
+}
+
+await claim(
+  'a settled scan and a release with a branch in progress repeat exactly, and a release with none stands still',
+  () => {
+    const active: Scene = {
+      dots: 1,
+      branches: [{ kind: 'merged', at: 100 }, { kind: 'active', since: 300 }, { kind: 'waiting' }],
+    }
+    const waiting: Scene = { dots: 0, branches: [{ kind: 'failed', at: 100 }, { kind: 'waiting' }] }
+    assert.equal(releasePeriod(active), 820)
+    assert.equal(releasePeriod(waiting), 0)
+    for (const offset of [0, 137, 611]) {
+      const t = SCAN_DRAW_MS + offset
+      assert.ok(scanAt(t).equals(scanAt(t + SCAN_PERIOD)), `scan at +${offset}`)
+      const settled = releaseEnd(active) + offset
+      assert.ok(releaseAt(active, settled).equals(releaseAt(active, settled + 820)))
+      const still = releaseEnd(waiting) + offset
+      assert.ok(releaseAt(waiting, still).equals(releaseAt(waiting, still + 700)))
+    }
+    assert.ok(
+      !scanAt(SCAN_DRAW_MS).equals(scanAt(SCAN_DRAW_MS + 400)),
+      'the settled scan still moves'
+    )
+  }
+)
+
+await claim(
+  'a sweep that lasts sends its scan once as frames and then only names the frame to show, and still leaves nothing behind',
+  async () => {
+    const out = collector()
+    let settled = ''
+    let named = ''
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const indicator = yield* sweepIndicator(live, out.stream, graphics)
+          yield* observed(
+            'the scan sent as frames',
+            () => kittyCommandsSent(out.text(), 'a=f,') >= 40
+          )
+          settled = out.text()
+          yield* observed(
+            'frames named',
+            () => kittyCommandsSent(out.text().slice(settled.length), 'a=a,') >= 12
+          )
+          named = out.text()
+          yield* indicator.sweepDone
+          yield* indicator.settle(found, SUMMARY)
+        })
+      )
+    )
+    const whileSettled = named.slice(settled.length)
+    assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
+    assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+    assert.ok(whileSettled.includes('\x1b[2mSweeping workspaces… '), 'the time still runs')
+    assertNothingLeft(out.text())
+  }
+)
 
 const beside = (columns: number) => `\x1b8\x1b[${ROWS - 1}B\x1b[K\x1b[${columns + 2}C`
 const lastFrame = (text: string) => text.slice(text.lastIndexOf('\x1b[?2026h'))
