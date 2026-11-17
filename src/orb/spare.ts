@@ -298,7 +298,7 @@ export const makeSpareSlot = (
   const claim = Effect.suspend(() => {
     const current = state
     state = { kind: 'empty' }
-    return current.kind === 'requesting' ? Fiber.join(current.fiber) : Effect.succeed(undefined)
+    return current.kind === 'requesting' ? Fiber.join(current.fiber) : Effect.undefined
   })
   return {
     request: Effect.suspend(() => {
@@ -329,7 +329,7 @@ export const makeSpareSlot = (
             reason: requested.reason,
           } satisfies SpareLeft)
         default:
-          return Effect.succeed(undefined)
+          return Effect.undefined
       }
     }),
   }
