@@ -71,7 +71,7 @@ A failed step refuses the launch without retrying it: orbit's refusal (`401`, `4
 
 #### Start display
 
-The start uses the presentation of the [quit display](#quit-display), on the same two-row strip, when Pi's terminal detection reports Kitty graphics and the terminal answers the cell-size query. The orb takes the place where the quit finds it, at the head of a branch above the checkout's line:
+The start uses the presentation of the [quit display](#quit-display), on the same two-row strip, when Pi's terminal detection reports Kitty graphics and the terminal answers the cell-size query. That detection reads the environment alone: Pi's `terminal.images` setting, which the quit display follows, does not reach the start ([ADR 0002](adr/0002-session-owned-background-work.md#pi-build)). The orb takes the place where the quit finds it, at the head of a branch above the checkout's line:
 
 | Phase                      | Strip                                                                                    |
 | -------------------------- | ---------------------------------------------------------------------------------------- |
