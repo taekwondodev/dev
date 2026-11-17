@@ -3,6 +3,8 @@ import { randomBytes } from 'node:crypto'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as TestClock from 'effect/testing/TestClock'
 import { loadQuitGraphics, type QuitTerminal } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {
@@ -29,7 +31,7 @@ import {
   stripColumns,
   toRgba,
 } from '../../src/quit-scene.ts'
-import { kittyCommandsSent, makeClaims, observed } from './workspace-check-support.ts'
+import { makeClaims } from './workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -434,35 +436,35 @@ await claim(
   }
 )
 
+const kittyCommandsSent = (text: string, command: string): number =>
+  text.split(`\x1b_G${command}`).length - 1
+
 await claim(
-  'a sweep that lasts sends its scan once as frames and then only names the frame to show, and still leaves nothing behind',
+  'a sweep streams its opening, uploads its settled scan once, and leaves nothing behind',
   async () => {
     const out = collector()
-    let settled = ''
-    let named = ''
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const indicator = yield* sweepIndicator(live, out.stream, graphics)
-          yield* observed(
-            'the scan sent as frames',
-            () => kittyCommandsSent(out.text(), 'a=f,') >= 40
-          )
-          settled = out.text()
-          yield* observed(
-            'frames named',
-            () => kittyCommandsSent(out.text().slice(settled.length), 'a=a,') >= 12
-          )
-          named = out.text()
-          yield* indicator.sweepDone
-          yield* indicator.settle(found, SUMMARY)
+          yield* TestClock.adjust(300)
+          assert.ok(placedIds(out.text()).length > 1, 'the scan opening streams full images')
+          assert.equal(kittyCommandsSent(out.text(), 'a=f,'), 0, 'no loop during the opening')
+          yield* TestClock.adjust(450)
+          assert.ok(kittyCommandsSent(out.text(), 'a=f,') > 0, 'the settled loop was uploaded')
+          const settled = out.chunks.length
+          yield* TestClock.adjust(300)
+          const whileSettled = out.chunks.slice(settled).join('')
+          assert.ok(kittyCommandsSent(whileSettled, 'a=a,') > 1, 'dev selects frames')
+          assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
+          assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+          assert.ok(whileSettled.includes('\x1b[2mSweeping workspaces… '), 'the time still runs')
+          const finish = yield* Effect.forkChild(indicator.settle(found, SUMMARY))
+          yield* TestClock.adjust(2_000)
+          yield* Fiber.join(finish)
         })
-      )
+      ).pipe(Effect.provide(TestClock.layer()))
     )
-    const whileSettled = named.slice(settled.length)
-    assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
-    assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
-    assert.ok(whileSettled.includes('\x1b[2mSweeping workspaces… '), 'the time still runs')
     assertNothingLeft(out.text())
   }
 )
@@ -712,63 +714,49 @@ await claim(
     const initial: Scene = { dots: 1, branches: [{ kind: 'waiting' }, { kind: 'waiting' }] }
     const out = collector()
     const { holds, held: holding } = counted()
-    const since = (from: string) => out.text().slice(from.length)
-    let waiting = ''
-    let still = ''
-    let begun = ''
-    let moving = ''
-    let joined = ''
-    let both = ''
-    let ended = ''
-    await Effect.runPromise(
+    const since = (from: number) => out.chunks.slice(from).join('')
+    const { loop: singleBranch, replacement: twoBranches } = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const strip = yield* releaseIndicator(live, out.stream, holding, initial, 1)
           assert.ok(strip !== undefined)
-          yield* observed('the waiting release shown', () => releaseLabels(out.text()) >= 3)
-          waiting = out.text()
-          yield* observed('the time running on', () => releaseLabels(since(waiting)) >= 3)
-          still = out.text()
+          yield* TestClock.adjust(600)
+          const waiting = out.text()
+          assert.ok(releaseLabels(waiting) > 1, 'the label advances while waiting')
+          assert.equal(placedIds(waiting).length, 1, 'one still image while waiting')
+          assert.equal(kittyCommandsSent(waiting, 'a=f,'), 0)
+          assert.deepEqual(selectedFrames(waiting), [], 'a still image needs no frame selection')
+          const begun = out.chunks.length
           yield* strip.begin(0)
-          begun = out.text()
-          yield* observed(
-            'the loop sent as frames',
-            () => kittyCommandsSent(since(begun), 'a=f,') >= 40
-          )
-          yield* observed('frames named', () => selectedFrames(since(begun)).length >= 12)
-          moving = out.text()
+          yield* TestClock.adjust(300)
+          const loop = since(begun)
+          const joined = out.chunks.length
           yield* strip.begin(1)
-          joined = out.text()
-          yield* observed(
-            'the loop of both branches sent',
-            () => kittyCommandsSent(since(joined), 'a=f,') >= 40
-          )
-          both = out.text()
+          yield* TestClock.adjust(300)
+          const replacement = since(joined)
+          assert.ok(kittyCommandsSent(replacement, 'a=f,') > 0, 'a new loop for both branches')
+          const ended = out.chunks.length
           yield* strip.end(0, true)
-          ended = out.text()
-          yield* observed(
-            'the landing streamed',
-            () => kittyCommandsSent(since(ended), 'a=T,') >= 3
-          )
-          yield* strip.finish(RESULT)
+          yield* TestClock.adjust(250)
+          const landing = since(ended)
+          assert.ok(placedIds(landing).length > 1, 'the landing streams full images')
+          assert.equal(kittyCommandsSent(landing, 'a=f,'), 0, 'no loop while the branch lands')
+          const finish = yield* Effect.forkChild(strip.finish(RESULT))
+          yield* TestClock.adjust(2_000)
+          yield* Fiber.join(finish)
+          return { loop, replacement }
         })
-      )
+      ).pipe(Effect.provide(TestClock.layer()))
     )
-    const whileStill = still.slice(waiting.length)
-    assert.equal(kittyCommandsSent(whileStill, 'a=T,'), 0, 'no image while it waits')
-    assert.equal(kittyCommandsSent(whileStill, 'a=f,'), 0)
-    assert.deepEqual(selectedFrames(whileStill), [], 'a still image has one frame')
-    assert.equal(kittyCommandsSent(since(ended), 'a=f,'), 0, 'no loop while the branch lands')
     const widthPx = stripColumns(graphics, { dots: 1, branches: 2 }) * graphics.cellWidth
     const held = (text: string) => playClip(text.slice(text.lastIndexOf('\x1b_Ga=T,')), widthPx)
-    const loop = moving.slice(begun.length)
-    const frames = held(loop)
+    const frames = held(singleBranch)
     const shown = new Set(
-      selectedFrames(loop).map(frame => (frames[frame - 1] as Buffer).toString('latin1'))
+      selectedFrames(singleBranch).map(frame => (frames[frame - 1] as Buffer).toString('latin1'))
     )
     assert.ok(shown.size >= 2, 'the frames shown differ')
     const secondHead = (Math.round(0.22 * H) * widthPx + Math.round(2.35 * H)) * 4 + 3
-    const together = held(both.slice(joined.length))
+    const together = held(twoBranches)
     assert.equal(together.length, frames.length, 'the same period')
     assert.ok(
       frames.every(frame => (frame[secondHead] ?? 0) < 240),
@@ -792,9 +780,10 @@ await claim(
       Effect.scoped(
         Effect.gen(function* () {
           yield* sweepIndicator(live, out.stream, held)
-          yield* observed('the scan held', () => selectedFrames(out.text()).length >= 3)
+          yield* TestClock.adjust(750)
+          assert.ok(selectedFrames(out.text()).length > 1, 'the scan is selecting held frames')
         })
-      )
+      ).pipe(Effect.provide(TestClock.layer()))
     )
     assertNothingLeft(out.text())
     assert.deepEqual(holds, ['begin', 'end'])
