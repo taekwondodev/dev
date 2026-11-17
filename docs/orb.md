@@ -83,6 +83,8 @@ The start uses the presentation of the [quit display](#quit-display), on the sam
 | Ready                      | The orb and its branch stay blue, the scene the quit starts from                         |
 | Failed or cancelled start  | A failure turns the orb red; the orb fades in and out while it is deleted, then vanishes |
 
+A settled phase repeats, so dev sends its loop to the terminal once, as Kitty animation frames that carry only the pixels that changed, and from then on only names the frame to show; it sends images again while a phase changes. The terminal must therefore support Kitty animation frames, as Rex, kitty and Ghostty 1.4 do. dev names each frame itself and does not let the terminal run the loop, because Rex shows a terminal-run loop at about half the frame rate.
+
 Beside the strip stand the current phase, orbit's status and the time since launch. Messages of recovery and of the spare step print above the strip, and a recovery prompt removes the strip until it is answered. The strip is transient: it leaves no image or empty rows, then one line remains, such as `✓ orb <id> ready · main at <commit> on <user>@<host> · 74.2s`, or what happened to the orb of a failed or cancelled start. A ready start fades the strip at once, so the TUI opens without waiting; a failed or cancelled start holds its last frame as the quit does. Without graphics a live terminal shows a spinner line and the same receipt; without a terminal dev prints one line per phase with the elapsed time.
 
 ### Spare orb

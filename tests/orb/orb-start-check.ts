@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { Writable } from 'node:stream'
 import { stripVTControlCharacters } from 'node:util'
+import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -12,8 +13,10 @@ import {
   ORB_SHAPE,
   ROWS,
   drawOrbStart,
+  encodeClip,
   makeCanvas,
   orbStartEnd,
+  orbStartPeriod,
   stripColumns,
   toRgba,
   type OrbStartScene,
@@ -132,6 +135,127 @@ await claim(
       const where = satellite(1000)
       assert.ok(!isWhite(pixel(ready, t, where.x, where.y)), 'the orbit is gone')
     }
+  }
+)
+
+const rgbaAt = (scene: OrbStartScene, t: number): Buffer => {
+  const canvas = makeCanvas(stripColumns(graphics, ORB_SHAPE) * CELL.widthPx, H)
+  drawOrbStart(canvas, scene, t)
+  return toRgba(canvas)
+}
+
+await claim(
+  'once a phase has settled it repeats exactly: with the orbit every two seconds, a breathing orb twice in that, the upload on its own beat, and a finished start stands still',
+  () => {
+    const steady: readonly (readonly [OrbStartScene, number])[] = [
+      [awaiting, 2000],
+      [at({ arrival: { kind: 'reserved', at: 100 } }), 2000],
+      [at({ arrival: { kind: 'building', since: 100 } }), 2000],
+      [at({ arrival: { kind: 'active', at: 100 } }), 2000],
+      [at({ arrival: { kind: 'active', at: 100 }, upload: 900 }), 820],
+      [
+        at({
+          arrival: { kind: 'building', since: 100 },
+          launch: { kind: 'cancelled', at: 900 },
+          fate: { kind: 'deleting', since: 950 },
+        }),
+        1000,
+      ],
+      [
+        at({
+          arrival: { kind: 'active', at: 100 },
+          launch: { kind: 'failed', at: 900 },
+          fate: { kind: 'undeleted', at: 1500 },
+        }),
+        0,
+      ],
+    ]
+    for (const [scene, period] of steady) {
+      assert.equal(orbStartPeriod(scene), period, JSON.stringify(scene))
+      const settled = orbStartEnd(scene) + 400
+      for (const offset of [0, 137, 611]) {
+        const again = settled + offset + (period === 0 ? 700 : period)
+        assert.ok(
+          rgbaAt(scene, settled + offset).equals(rgbaAt(scene, again)),
+          `${JSON.stringify(scene)} at +${offset}`
+        )
+      }
+    }
+    const moving = rgbaAt(awaiting, 1000)
+    assert.ok(!moving.equals(rgbaAt(awaiting, 1500)), 'the settled orbit still moves')
+  }
+)
+
+const kittyCommands = (text: string): (readonly [string, string])[] =>
+  text
+    .split('\x1b_G')
+    .slice(1)
+    .map(part => {
+      const body = part.slice(0, part.indexOf('\x1b\\'))
+      const separator = body.indexOf(';')
+      return separator === -1 ? [body, ''] : [body.slice(0, separator), body.slice(separator + 1)]
+    })
+const sent = (text: string, command: string) => text.split(`\x1b_G${command}`).length - 1
+const controlKeys = (control: string): Record<string, string> =>
+  Object.fromEntries(control.split(',').map(pair => pair.split('=') as [string, string]))
+
+const playClip = (text: string, widthPx: number): Buffer[] => {
+  const frames: Buffer[] = []
+  let open: { readonly keys: Record<string, string>; data: string } | undefined
+  for (const [control, data] of kittyCommands(text)) {
+    const keys = controlKeys(control)
+    if (keys.a === 'd') continue
+    open = open === undefined ? { keys, data } : { keys: open.keys, data: open.data + data }
+    if (keys.m === '1') continue
+    const pixels = inflateSync(Buffer.from(open.data, 'base64'))
+    if (open.keys.a === 'T') frames.push(pixels)
+    else {
+      assert.equal(open.keys.a, 'f')
+      assert.equal(open.keys.X, '1', 'the changed pixels replace the old ones')
+      const frame = Buffer.from(frames[Number(open.keys.c) - 1] as Buffer)
+      const [x, y, width, height] = ['x', 'y', 's', 'v'].map(key => Number(open?.keys[key]))
+      for (let row = 0; row < (height as number); row += 1)
+        pixels.copy(
+          frame,
+          (((y as number) + row) * widthPx + (x as number)) * 4,
+          row * (width as number) * 4,
+          (row + 1) * (width as number) * 4
+        )
+      frames.push(frame)
+    }
+    open = undefined
+  }
+  return frames
+}
+
+await claim(
+  'a settled phase goes to the terminal once, as animation frames that carry only what changed, and the terminal rebuilds every frame from them',
+  () => {
+    const widthPx = stripColumns(graphics, ORB_SHAPE) * CELL.widthPx
+    const frames = Array.from({ length: 24 }, (_, index) =>
+      rgbaAt(at({ arrival: { kind: 'building', since: 0 } }), 3000 + (index * 2000) / 24)
+    )
+    const text = encodeClip({
+      frames,
+      widthPx,
+      heightPx: H,
+      columns: stripColumns(graphics, ORB_SHAPE),
+      id: 7,
+      previousId: 6,
+      before: '',
+      after: '',
+    })
+    const rebuilt = playClip(text, widthPx)
+    assert.equal(rebuilt.length, frames.length)
+    for (const [index, frame] of frames.entries())
+      assert.ok(frame.equals(rebuilt[index] as Buffer), `frame ${index + 1}`)
+    const changed = kittyCommands(text)
+      .map(([control]) => controlKeys(control))
+      .filter(keys => keys.a === 'f' && keys.c !== undefined)
+    assert.equal(changed.length, frames.length - 1)
+    for (const keys of changed)
+      assert.ok(Number(keys.s) * Number(keys.v) < (widthPx * H) / 4, JSON.stringify(keys))
+    assert.ok(text.includes('\x1b_Ga=d,d=I,i=6,'), 'the image it replaces is removed')
   }
 )
 
@@ -308,6 +432,52 @@ await claim(
       'the terminal progress ends before the TUI opens'
     )
     assert.ok(text.includes('\x1b]9;4;3\x07'), 'the terminal shows progress')
+  }
+)
+
+const observed = (what: string, seen: () => boolean) =>
+  Effect.gen(function* () {
+    const deadline = performance.now() + 15_000
+    while (!seen()) {
+      if (performance.now() > deadline) return yield* Effect.fail(`never observed: ${what}`)
+      yield* Effect.sleep(10)
+    }
+  })
+
+await claim(
+  'while a phase is settled dev only names the frame to show, and sends images again when the phase changes or a note redraws the strip',
+  async () => {
+    let settled = ''
+    let named = ''
+    let noted = ''
+    const { text, exit } = await viewRun(
+      (view, log) =>
+        Effect.gen(function* () {
+          const since = (from: string) => log.join('').slice(from.length)
+          yield* play(view, happy.slice(0, 1))
+          yield* observed('the loop sent as frames', () => sent(log.join(''), 'a=f,') >= 100)
+          settled = log.join('')
+          yield* observed('frames named', () => sent(since(settled), 'a=a,') >= 12)
+          named = log.join('')
+          view.print('orb: a note')
+          yield* observed('the strip redrawn', () => sent(since(named), 'a=f,') >= 100)
+          noted = log.join('')
+          yield* view.show({ kind: 'status', orbId: ORB, status: 'BUILDING' })
+          yield* observed('the new phase streamed', () => sent(since(noted), 'a=T,') >= 2)
+        }),
+      { style: live, module: kitty }
+    )
+    assert.ok(Exit.isSuccess(exit), JSON.stringify(exit))
+    const whileSettled = named.slice(settled.length)
+    assert.equal(sent(whileSettled, 'a=T,'), 0, 'no image while settled')
+    assert.equal(sent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+    assert.ok(whileSettled.includes('\x1b[2mAuthenticating with Keystone… '), 'the time still runs')
+    assert.equal(
+      sent(noted.slice(named.length), 'a=T,'),
+      1,
+      'the note redraws the strip from the frames it has'
+    )
+    assert.deepEqual(imageIds(text, 'a=d,').toSorted(), imageIds(text, 'a=T,').toSorted())
   }
 )
 

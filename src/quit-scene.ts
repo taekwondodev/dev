@@ -103,6 +103,7 @@ const ORBIT_PERIOD = 2000
 const ORBIT_IN_MS = 320
 const DOCK_MS = 320
 const ORBIT_TILT = (-18 * Math.PI) / 180
+const START_BREATH_PERIOD = ORBIT_PERIOD / 2
 
 const bezier = (x1: number, y1: number, x2: number, y2: number) => {
   const cx = (t: number): number => 3 * x1 * t * (1 - t) ** 2 + 3 * x2 * t * t * (1 - t) + t ** 3
@@ -724,6 +725,28 @@ export const orbStartEnd = (scene: OrbStartScene): number => {
   )
 }
 
+const commonPeriod = (a: number, b: number): number => {
+  let x = a
+  let y = b
+  while (y !== 0) [x, y] = [y, x % y]
+  return (a / x) * b
+}
+
+export const orbStartPeriod = (scene: OrbStartScene): number | undefined => {
+  const { arrival, fate, launch } = scene
+  const orbShown = arrival.kind !== 'awaited' && fate.kind !== 'deleted'
+  const periods = [
+    ...(orbitGone(scene) === undefined ? [ORBIT_PERIOD] : []),
+    ...(orbShown && (arrival.kind === 'building' || fate.kind === 'deleting')
+      ? [START_BREATH_PERIOD]
+      : []),
+    ...(scene.upload !== undefined && launch.kind === 'pending' ? [PULSE_PERIOD] : []),
+  ]
+  const period = periods.reduce(commonPeriod, 1)
+  if (periods.length === 0) return 0
+  return period > ORBIT_PERIOD ? undefined : period
+}
+
 interface OrbitView {
   readonly scale: number
   readonly alpha: number
@@ -822,7 +845,7 @@ const drawArrival = (canvas: Canvas, scene: OrbStartScene, head: Point, t: numbe
   }
   const shown =
     fate.kind === 'deleting'
-      ? mix(0.35, 1, 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / BREATH_PERIOD))
+      ? mix(0.35, 1, 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / START_BREATH_PERIOD))
       : 1
   switch (arrival.kind) {
     case 'reserved':
@@ -837,7 +860,7 @@ const drawArrival = (canvas: Canvas, scene: OrbStartScene, head: Point, t: numbe
       )
       return
     case 'building': {
-      const breath = 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - arrival.since)) / BREATH_PERIOD)
+      const breath = 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - arrival.since)) / START_BREATH_PERIOD)
       ring(canvas, x, head[1], 0.13 * H, 0.04 * H, rgb, 0.9 * shown)
       circle(canvas, x, head[1], 0.13 * H, rgb, mix(0.15, 0.55, breath) * shown)
       return
@@ -894,17 +917,87 @@ export interface KittyFrame {
 
 export const deleteImage = (id: number): string => `\x1b_Ga=d,d=I,i=${id},q=2\x1b\\`
 
-export const encodeFrame = (frame: KittyFrame): string => {
-  const data = deflateSync(frame.rgba, { level: 1 }).toString('base64')
+export const selectFrame = (id: number, frame: number): string =>
+  `\x1b_Ga=a,i=${id},c=${frame},q=2\x1b\\`
+
+const transmit = (first: string, rest: string, pixels: Buffer): string => {
+  const data = deflateSync(pixels, { level: 1 }).toString('base64')
   let chunks = ''
   for (let i = 0; i < data.length; i += CHUNK) {
     const more = i + CHUNK < data.length ? 1 : 0
-    const head =
-      i === 0
-        ? `a=T,f=32,o=z,s=${frame.widthPx},v=${frame.heightPx},i=${frame.id},p=1,c=${frame.columns},r=${ROWS},C=1,q=2,m=${more}`
-        : `m=${more}`
-    chunks += `\x1b_G${head};${data.slice(i, i + CHUNK)}\x1b\\`
+    chunks += `\x1b_G${i === 0 ? `${first},` : rest}m=${more};${data.slice(i, i + CHUNK)}\x1b\\`
   }
+  return chunks
+}
+
+interface Rect {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+const changedRect = (a: Buffer, b: Buffer, widthPx: number, heightPx: number): Rect => {
+  let left = widthPx
+  let top = heightPx
+  let right = -1
+  let bottom = -1
+  for (let y = 0; y < heightPx; y += 1) {
+    const row = y * widthPx * 4
+    if (a.compare(b, row, row + widthPx * 4, row, row + widthPx * 4) === 0) continue
+    if (y < top) top = y
+    bottom = y
+    for (let x = 0; x < widthPx; x += 1) {
+      if (a.readUInt32LE(row + x * 4) === b.readUInt32LE(row + x * 4)) continue
+      if (x < left) left = x
+      if (x > right) right = x
+    }
+  }
+  return right < 0
+    ? { x: 0, y: 0, width: 1, height: 1 }
+    : { x: left, y: top, width: right - left + 1, height: bottom - top + 1 }
+}
+
+const cut = (rgba: Buffer, widthPx: number, rect: Rect): Buffer => {
+  const out = Buffer.alloc(rect.width * rect.height * 4)
+  for (let y = 0; y < rect.height; y += 1) {
+    const from = ((rect.y + y) * widthPx + rect.x) * 4
+    rgba.copy(out, y * rect.width * 4, from, from + rect.width * 4)
+  }
+  return out
+}
+
+export interface KittyClip extends Omit<KittyFrame, 'rgba'> {
+  readonly frames: readonly Buffer[]
+}
+
+export const encodeClip = (clip: KittyClip): string => {
+  const { widthPx, heightPx, id } = clip
+  const root = clip.frames[0] as Buffer
+  let chunks = transmit(
+    `a=T,f=32,o=z,s=${widthPx},v=${heightPx},i=${id},p=1,c=${clip.columns},r=${ROWS},C=1,q=2`,
+    '',
+    root
+  )
+  for (let index = 1; index < clip.frames.length; index += 1) {
+    const frame = clip.frames[index] as Buffer
+    const rect = changedRect(clip.frames[index - 1] as Buffer, frame, widthPx, heightPx)
+    chunks += transmit(
+      `a=f,f=32,o=z,i=${id},c=${index},x=${rect.x},y=${rect.y},s=${rect.width},v=${rect.height},X=1,q=2`,
+      'a=f,',
+      cut(frame, widthPx, rect)
+    )
+  }
+  const removal = clip.previousId === undefined ? '' : deleteImage(clip.previousId)
+  return `${SYNC_BEGIN}${clip.before}${chunks}${removal}${clip.after}${SYNC_END}`
+}
+
+export const encodeFrame = (frame: KittyFrame): string => {
+  const chunks = transmit(
+    `a=T,f=32,o=z,s=${frame.widthPx},v=${frame.heightPx},i=${frame.id},p=1,c=${frame.columns},r=${ROWS},C=1,q=2`,
+    '',
+    frame.rgba
+  )
   const removal = frame.previousId === undefined ? '' : deleteImage(frame.previousId)
   return `${SYNC_BEGIN}${frame.before}${chunks}${removal}${frame.after}${SYNC_END}`
 }

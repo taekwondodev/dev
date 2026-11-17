@@ -21,13 +21,16 @@ import {
   drawOrbStart,
   drawRelease,
   drawSweep,
+  encodeClip,
   encodeFrame,
   fadeAway,
   fitsStrip,
   makeCanvas,
   orbEnd,
   orbStartEnd,
+  orbStartPeriod,
   releaseEnd,
+  selectFrame,
   settleDuration,
   stripColumns,
   toRgba,
@@ -40,6 +43,8 @@ export type QuitTerminal = Pick<
 >
 
 const FRAME_MS = 16
+const CLIP_FRAME_MS = 1000 / 60
+const CLIP_FRAMES_PER_TICK = 10
 export const HOLD_MS = 250
 const NOTHING: SceneShape = { dots: 0, branches: 0 }
 const DEFAULT_COLUMNS = 80
@@ -78,6 +83,13 @@ export const stripFits = (
 
 interface Strip {
   readonly note: (text: string) => void
+  readonly raster: (columns: number, draw: (canvas: Canvas) => void) => Buffer
+  readonly clip: (
+    columns: number,
+    frames: readonly Buffer[],
+    frame: number,
+    label: string
+  ) => Effect.Effect<void>
   readonly frame: (
     columns: number,
     draw: (canvas: Canvas) => void,
@@ -99,6 +111,9 @@ const openStrip = Effect.fnUntraced(function* (
   let previousId: number | undefined
   let opened = false
   let finished = false
+  let held:
+    | { readonly frames: readonly Buffer[]; readonly id: number; shown: number; label?: string }
+    | undefined
   const close = Effect.sync(() => {
     if (finished) return
     finished = true
@@ -107,33 +122,69 @@ const openStrip = Effect.fnUntraced(function* (
     graphics.hold.end()
   })
   yield* Effect.addFinalizer(() => close)
+  const open = (): void => {
+    if (opened) return
+    opened = true
+    graphics.hold.begin()
+    out.write(`${RESERVE_ROWS}\x1b[?25l\x1b7`)
+  }
+  const beside = (columns: number, label: string): string => {
+    const shown =
+      columns + 2 + stripVTControlCharacters(label).length <= graphics.columns ? label : ''
+    return `\x1b8${BOTTOM_ROW}\x1b[K${shown.length === 0 ? '' : `\x1b[${columns + 2}C${shown}`}\x1b8`
+  }
+  const raster: Strip['raster'] = (columns, draw) => {
+    const canvas = makeCanvas(columns * graphics.cellWidth, heightPx)
+    draw(canvas)
+    return toRgba(canvas)
+  }
   const frame: Strip['frame'] = (columns, draw, label) =>
     Effect.sync(() => {
       if (finished) return
-      if (!opened) {
-        opened = true
-        graphics.hold.begin()
-        out.write(`${RESERVE_ROWS}\x1b[?25l\x1b7`)
-      }
-      const shown =
-        columns + 2 + stripVTControlCharacters(label).length <= graphics.columns ? label : ''
-      const widthPx = columns * graphics.cellWidth
-      const canvas = makeCanvas(widthPx, heightPx)
-      draw(canvas)
+      open()
+      held = undefined
       const id = graphics.allocateImageId()
       out.write(
         encodeFrame({
-          rgba: toRgba(canvas),
-          widthPx,
+          rgba: raster(columns, draw),
+          widthPx: columns * graphics.cellWidth,
           heightPx,
           columns,
           id,
           ...(previousId === undefined ? {} : { previousId }),
           before: '\x1b8',
-          after: `\x1b8${BOTTOM_ROW}\x1b[K${shown.length === 0 ? '' : `\x1b[${columns + 2}C${shown}`}\x1b8`,
+          after: beside(columns, label),
         })
       )
       previousId = id
+    })
+  const clip: Strip['clip'] = (columns, frames, shown, label) =>
+    Effect.sync(() => {
+      if (finished) return
+      open()
+      if (held?.frames !== frames) {
+        const id = graphics.allocateImageId()
+        out.write(
+          encodeClip({
+            frames,
+            widthPx: columns * graphics.cellWidth,
+            heightPx,
+            columns,
+            id,
+            ...(previousId === undefined ? {} : { previousId }),
+            before: '\x1b8',
+            after: '\x1b8',
+          })
+        )
+        previousId = id
+        held = { frames, id, shown: 1 }
+      }
+      const text = beside(columns, label)
+      out.write(
+        `${held.shown === shown ? '' : selectFrame(held.id, shown)}${held.label === text ? '' : text}`
+      )
+      held.shown = shown
+      held.label = text
     })
   const note: Strip['note'] = text => {
     if (finished || !opened) {
@@ -144,6 +195,7 @@ const openStrip = Effect.fnUntraced(function* (
       `${previousId === undefined ? '' : deleteImage(previousId)}${CLEAR_ROWS}${text}\n${RESERVE_ROWS}\x1b7`
     )
     previousId = undefined
+    held = undefined
   }
   const leave: Strip['leave'] = Effect.fnUntraced(function* (columns, draw, holdMs, label) {
     if (opened) {
@@ -165,7 +217,7 @@ const openStrip = Effect.fnUntraced(function* (
     }
     yield* close
   })
-  return { note, frame, leave }
+  return { note, raster, clip, frame, leave }
 })
 
 export interface SweepStrip {
@@ -247,25 +299,64 @@ interface SceneStrip<S> {
   readonly finish: (summary: string, holdMs?: number) => Effect.Effect<void>
 }
 
+interface SceneStripOptions<S> {
+  readonly out: NodeJS.WritableStream
+  readonly graphics: QuitGraphics
+  readonly shape: SceneShape
+  readonly initial: S
+  readonly draw: (canvas: Canvas, scene: S, t: number) => void
+  readonly end: (scene: S) => number
+  readonly label: (elapsedMs: number) => string
+  readonly progress: boolean
+  readonly origin?: number
+  readonly period?: (scene: S) => number | undefined
+}
+
+interface Loop<S> {
+  readonly scene: S
+  readonly from: number
+  readonly period: number
+  readonly count: number
+  readonly frames: Buffer[]
+}
+
 const sceneStrip = Effect.fnUntraced(function* <S>(
-  out: NodeJS.WritableStream,
-  graphics: QuitGraphics,
-  shape: SceneShape,
-  initial: S,
-  draw: (canvas: Canvas, scene: S, t: number) => void,
-  end: (scene: S) => number,
-  label: (elapsedMs: number) => string,
-  progress: boolean,
-  origin?: number
+  options: SceneStripOptions<S>
 ): Effect.fn.Return<SceneStrip<S>, never, Scope.Scope> {
-  const started = origin ?? (yield* Clock.currentTimeMillis)
+  const { out, graphics, draw, end, label, progress, period } = options
+  const started = options.origin ?? (yield* Clock.currentTimeMillis)
   const strip = yield* openStrip(out, graphics)
-  const columns = stripColumns(graphics, shape)
-  let scene = initial
+  const columns = stripColumns(graphics, options.shape)
+  let scene = options.initial
   let result: string | undefined
-  const render = (t: number) =>
-    strip.frame(columns, canvas => draw(canvas, scene, t), result ?? label(t))
-  const loop = yield* Effect.forkScoped(
+  let loop: Loop<S> | undefined
+  const looping = (t: number): Loop<S> | undefined => {
+    const cycle = period === undefined || t < end(scene) ? undefined : period(scene)
+    if (cycle === undefined) return undefined
+    if (loop?.scene === scene) return loop
+    return {
+      scene,
+      from: t,
+      period: cycle,
+      count: Math.max(1, Math.round(cycle / CLIP_FRAME_MS)),
+      frames: [],
+    }
+  }
+  const render = (t: number) => {
+    const text = result ?? label(t)
+    const current = looping(t)
+    loop = current
+    if (current === undefined) return strip.frame(columns, canvas => draw(canvas, scene, t), text)
+    const { from, count, frames } = current
+    for (let made = 0; frames.length < count && made < CLIP_FRAMES_PER_TICK; made += 1) {
+      const moment = from + (frames.length * current.period) / count
+      frames.push(strip.raster(columns, canvas => draw(canvas, current.scene, moment)))
+    }
+    if (frames.length < count) return strip.frame(columns, canvas => draw(canvas, scene, t), text)
+    const turn = current.period === 0 ? 0 : ((t - from) % current.period) / current.period
+    return strip.clip(columns, frames, (Math.floor(turn * count) % count) + 1, text)
+  }
+  const loopFiber = yield* Effect.forkScoped(
     Effect.gen(function* () {
       for (let index = 0; ; index += 1) {
         yield* render((yield* Clock.currentTimeMillis) - started)
@@ -289,7 +380,7 @@ const sceneStrip = Effect.fnUntraced(function* <S>(
       if (t >= end(scene)) break
       yield* Effect.sleep(FRAME_MS)
     }
-    yield* Fiber.interrupt(loop)
+    yield* Fiber.interrupt(loopFiber)
     const last = Math.max((yield* Clock.currentTimeMillis) - started, end(scene))
     yield* render(last)
     yield* strip.leave(columns, canvas => draw(canvas, scene, last), holdMs, summary)
@@ -309,16 +400,16 @@ export const releaseStrip = Effect.fnUntraced(function* (
   initial: Scene,
   label: (elapsedMs: number) => string
 ): Effect.fn.Return<ReleaseStrip, never, Scope.Scope> {
-  const strip = yield* sceneStrip(
+  const strip = yield* sceneStrip({
     out,
     graphics,
-    { dots: initial.dots, branches: initial.branches.length },
+    shape: { dots: initial.dots, branches: initial.branches.length },
     initial,
-    drawRelease,
-    releaseEnd,
+    draw: drawRelease,
+    end: releaseEnd,
     label,
-    false
-  )
+    progress: false,
+  })
   const mark = (index: number, next: (t: number) => BranchState) =>
     strip.update((scene, t) => ({
       dots: scene.dots,
@@ -339,16 +430,16 @@ export const orbStrip = (
   spare: boolean,
   label: (elapsedMs: number) => string
 ): Effect.Effect<OrbStrip, never, Scope.Scope> =>
-  sceneStrip<OrbScene>(
+  sceneStrip<OrbScene>({
     out,
     graphics,
-    ORB_SHAPE,
-    { work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare },
-    drawOrb,
-    orbEnd,
+    shape: ORB_SHAPE,
+    initial: { work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare },
+    draw: drawOrb,
+    end: orbEnd,
     label,
-    true
-  )
+    progress: true,
+  })
 
 export type OrbStartStrip = SceneStrip<OrbStartScene>
 
@@ -359,4 +450,15 @@ export const orbStartStrip = (
   origin: number,
   label: (elapsedMs: number) => string
 ): Effect.Effect<OrbStartStrip, never, Scope.Scope> =>
-  sceneStrip(out, graphics, ORB_SHAPE, scene, drawOrbStart, orbStartEnd, label, true, origin)
+  sceneStrip({
+    out,
+    graphics,
+    shape: ORB_SHAPE,
+    initial: scene,
+    draw: drawOrbStart,
+    end: orbStartEnd,
+    label,
+    progress: true,
+    origin,
+    period: orbStartPeriod,
+  })
