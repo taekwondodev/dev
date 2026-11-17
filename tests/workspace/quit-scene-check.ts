@@ -484,7 +484,7 @@ const playClip = (text: string, widthPx: number): Buffer[] => {
   let open: { readonly keys: Record<string, string>; data: string } | undefined
   for (const [control, data] of kittyCommands(text)) {
     const keys = controlKeys(control)
-    if (keys.a === 'd') continue
+    if (keys.a === 'd' || keys.a === 'a') continue
     open = open === undefined ? { keys, data } : { keys: open.keys, data: open.data + data }
     if (keys.m === '1') continue
     const pixels = inflateSync(Buffer.from(open.data, 'base64'))
@@ -690,5 +690,124 @@ await claim('release strips show progress and result, then leave nothing', async
     assert.equal(hidden.text, '')
   }
 })
+
+const counted = () => {
+  const holds: string[] = []
+  const held: QuitGraphics = {
+    ...graphics,
+    hold: { begin: () => holds.push('begin'), end: () => holds.push('end') },
+  }
+  return { holds, held }
+}
+const releaseLabels = (text: string) => text.split('Releasing 1 task… ').length - 1
+const selectedFrames = (text: string) =>
+  kittyCommands(text)
+    .map(([control]) => controlKeys(control))
+    .filter(keys => keys.a === 'a')
+    .map(keys => Number(keys.c))
+
+await claim(
+  'a waiting release is held as one still image, a branch in progress replaces it with a moving loop, its end streams again, and nothing is left',
+  async () => {
+    const initial: Scene = { dots: 1, branches: [{ kind: 'waiting' }, { kind: 'waiting' }] }
+    const out = collector()
+    const { holds, held } = counted()
+    const since = (from: string) => out.text().slice(from.length)
+    let waiting = ''
+    let still = ''
+    let begun = ''
+    let moving = ''
+    let ended = ''
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const strip = yield* releaseIndicator(live, out.stream, held, initial, 1)
+          assert.ok(strip !== undefined)
+          yield* observed('the waiting release shown', () => releaseLabels(out.text()) >= 3)
+          waiting = out.text()
+          yield* observed('the time running on', () => releaseLabels(since(waiting)) >= 3)
+          still = out.text()
+          yield* strip.begin(0)
+          begun = out.text()
+          yield* observed(
+            'the loop sent as frames',
+            () => kittyCommandsSent(since(begun), 'a=f,') >= 40
+          )
+          yield* observed('frames named', () => selectedFrames(since(begun)).length >= 12)
+          moving = out.text()
+          yield* strip.end(0, true)
+          ended = out.text()
+          yield* observed(
+            'the landing streamed',
+            () => kittyCommandsSent(since(ended), 'a=T,') >= 3
+          )
+          yield* strip.finish(RESULT)
+        })
+      )
+    )
+    const whileStill = still.slice(waiting.length)
+    assert.equal(kittyCommandsSent(whileStill, 'a=T,'), 0, 'no image while it waits')
+    assert.equal(kittyCommandsSent(whileStill, 'a=f,'), 0)
+    assert.deepEqual(selectedFrames(whileStill), [], 'a still image has one frame')
+    const loop = moving.slice(begun.length)
+    const frames = playClip(
+      loop.slice(loop.lastIndexOf('\x1b_Ga=T,')),
+      stripColumns(graphics, { dots: 1, branches: 2 }) * graphics.cellWidth
+    )
+    const shown = new Set(
+      selectedFrames(loop).map(frame => (frames[frame - 1] as Buffer).toString('latin1'))
+    )
+    assert.ok(shown.size >= 6, `${shown.size} different frames shown`)
+    assertNothingLeft(out.text())
+    assert.deepEqual(holds, ['begin', 'end'])
+  }
+)
+
+await claim(
+  'a strip that ends while its loop is held, by interruption or with nothing to show, deletes the loop and frees the terminal',
+  async () => {
+    const heldScan = (finish: 'leave' | 'empty') => {
+      const out = collector()
+      const { holds, held } = counted()
+      return Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const indicator = yield* sweepIndicator(live, out.stream, held)
+            yield* observed('the scan held', () => selectedFrames(out.text()).length >= 3)
+            if (finish === 'empty') {
+              yield* indicator.sweepDone
+              yield* indicator.settle(empty, SUMMARY)
+            }
+          })
+        )
+      ).then(() => ({ text: out.text(), holds }))
+    }
+    for (const finish of ['leave', 'empty'] as const) {
+      const scan = await heldScan(finish)
+      assertNothingLeft(scan.text)
+      assert.deepEqual(scan.holds, ['begin', 'end'], finish)
+    }
+    const out = collector()
+    const { holds, held } = counted()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const strip = yield* releaseIndicator(
+            live,
+            out.stream,
+            held,
+            { dots: 0, branches: [{ kind: 'waiting' }] },
+            1
+          )
+          assert.ok(strip !== undefined)
+          yield* strip.begin(0)
+          yield* observed('the release held', () => selectedFrames(out.text()).length >= 3)
+        })
+      )
+    )
+    assertNothingLeft(out.text())
+    assert.deepEqual(holds, ['begin', 'end'])
+  }
+)
 
 process.stdout.write(`${JSON.stringify({ result: 'passed', checks: passed }, null, 2)}\n`)
