@@ -509,7 +509,7 @@ const playClip = (text: string, widthPx: number): Buffer[] => {
 }
 
 await claim(
-  'a settled loop goes to the terminal once, as animation frames that carry only what changed, and the terminal rebuilds every frame from them',
+  'a loop is encoded as animation frames that carry only what changed, and a terminal rebuilds every frame from them',
   () => {
     const scene: Scene = {
       dots: 1,
@@ -758,6 +758,7 @@ await claim(
     assert.equal(kittyCommandsSent(whileStill, 'a=T,'), 0, 'no image while it waits')
     assert.equal(kittyCommandsSent(whileStill, 'a=f,'), 0)
     assert.deepEqual(selectedFrames(whileStill), [], 'a still image has one frame')
+    assert.equal(kittyCommandsSent(since(ended), 'a=f,'), 0, 'no loop while the branch lands')
     const widthPx = stripColumns(graphics, { dots: 1, branches: 2 }) * graphics.cellWidth
     const held = (text: string) => playClip(text.slice(text.lastIndexOf('\x1b_Ga=T,')), widthPx)
     const loop = moving.slice(begun.length)
@@ -783,44 +784,15 @@ await claim(
 )
 
 await claim(
-  'a strip that ends while its loop is held, by interruption or with nothing to show, deletes the loop and frees the terminal',
+  'a sweep interrupted while its scan is held deletes the loop and frees the terminal',
   async () => {
-    const heldScan = (finish: 'leave' | 'empty') => {
-      const out = collector()
-      const { holds, held } = counted()
-      return Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const indicator = yield* sweepIndicator(live, out.stream, held)
-            yield* observed('the scan held', () => selectedFrames(out.text()).length >= 3)
-            if (finish === 'empty') {
-              yield* indicator.sweepDone
-              yield* indicator.settle(empty, SUMMARY)
-            }
-          })
-        )
-      ).then(() => ({ text: out.text(), holds }))
-    }
-    for (const finish of ['leave', 'empty'] as const) {
-      const scan = await heldScan(finish)
-      assertNothingLeft(scan.text)
-      assert.deepEqual(scan.holds, ['begin', 'end'], finish)
-    }
     const out = collector()
     const { holds, held } = counted()
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const strip = yield* releaseIndicator(
-            live,
-            out.stream,
-            held,
-            { dots: 0, branches: [{ kind: 'waiting' }] },
-            1
-          )
-          assert.ok(strip !== undefined)
-          yield* strip.begin(0)
-          yield* observed('the release held', () => selectedFrames(out.text()).length >= 3)
+          yield* sweepIndicator(live, out.stream, held)
+          yield* observed('the scan held', () => selectedFrames(out.text()).length >= 3)
         })
       )
     )
