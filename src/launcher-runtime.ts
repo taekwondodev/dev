@@ -898,10 +898,11 @@ const cancelOnSignal = <A, E, R>(
 ): Effect.Effect<A, E | LauncherError, R> =>
   Effect.gen(function* () {
     const starting = yield* Effect.forkDetach(start)
+    const runFork = Effect.runForkWith(yield* Effect.context<never>())
     const onSignal = (): void => {
       stopListening()
       latchSignal(secondInterrupt)
-      Effect.runFork(Fiber.interrupt(starting))
+      runFork(Fiber.interrupt(starting))
     }
     const stopListening = (): void => {
       process.removeListener('SIGINT', onSignal)
