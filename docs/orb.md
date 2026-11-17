@@ -55,7 +55,7 @@ Git clone, fetch and push, package installation and dependency downloads need de
 
 ### Startup
 
-Before the TUI opens, dev prints one line per phase with the elapsed time:
+Before the TUI opens, dev goes through these phases, shown as the [start display](#start-display):
 
 1. It authenticates to Keystone with `openstack.json` and finds orbit as the public endpoint of catalog type `orbit`.
 2. It [recovers](#recovery) the orbs that ended sessions left behind.
@@ -68,6 +68,24 @@ Before the TUI opens, dev prints one line per phase with the elapsed time:
 The checkout must be on a branch with at least one commit. The footer shows the orb's id and state for the whole session.
 
 A failed step refuses the launch without retrying it: orbit's refusal (`401`, `403`, `409`, `502`, `503`), an orb that reaches `ERROR` (orbit's fault is printed; this includes orbit's ready timeout) or a failed upload. dev deletes the orb it created, waits for `DELETED`, removes the record, [withdraws](#recovery) the session's writer use and, on a pre-existing checkout, the reservation the launch took, prints the cause and exits with code 1. The next launch therefore writes the same checkout. For a `409`, the message also lists the project's orbs that are not being deleted and the command that deletes one. Only the SSH connection after `ACTIVE` gets bounded retries, because the orb's SSH server may not be listening yet.
+
+#### Start display
+
+The start uses the presentation of the [quit display](#quit-display), on the same two-row strip, when Pi's terminal detection reports Kitty graphics and the terminal answers the cell-size query. That detection reads the environment alone: Pi's `terminal.images` setting, which the quit display follows, does not reach the start ([ADR 0002](adr/0002-session-owned-background-work.md#pi-build)). The orb takes the place where the quit finds it, at the head of a branch above the checkout's line:
+
+| Phase                      | Strip                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------- |
+| Until orbit assigns an orb | A white satellite circles an empty tilted orbit, after orbit's logo                      |
+| `RESERVING`                | A hollow blue ring appears inside the orbit                                              |
+| `BUILDING`                 | The ring fills while it breathes                                                         |
+| `ACTIVE`, SSH connection   | The orb turns solid blue; the satellite keeps circling until SSH answers                 |
+| Upload                     | The orbit docks and the branch grows from the line up to the orb, carrying the checkout  |
+| Ready                      | The orb and its branch stay blue, the scene the quit starts from                         |
+| Failed or cancelled start  | A failure turns the orb red; the orb fades in and out while it is deleted, then vanishes |
+
+A settled phase repeats, so dev sends its loop to the terminal once, as Kitty animation frames that carry only the pixels that changed, and from then on only names the frame to show; it sends images again while a phase changes. The terminal must therefore support Kitty animation frames, as Rex, kitty and Ghostty 1.4 do. [ADR 0008](adr/0008-terminal-held-animation-loops.md) holds the reasons and the rules for a new animation.
+
+Beside the strip stand the current phase, orbit's status and the time since launch. Messages of recovery and of the spare step print above the strip, and a recovery prompt removes the strip until it is answered. The strip is transient: it leaves no image or empty rows, then one line remains, such as `✓ orb <id> ready · main at <commit> on <user>@<host> · 74.2s`, or what happened to the orb of a failed or cancelled start. A ready start fades the strip at once, so the TUI opens without waiting; a failed or cancelled start holds its last frame as the quit does. Without graphics a live terminal shows a spinner line and the same receipt; without a terminal dev prints one line per phase with the elapsed time.
 
 ### Spare orb
 
@@ -159,7 +177,7 @@ The orb step precedes the [workspace sweep](workspace.md#quit-and-interruption) 
 | Deleting                | The orb fades in and out until orbit reports `DELETED`, then vanishes  |
 | Deletion not confirmed  | The orb turns red                                                      |
 
-The line turns green when the work returned, or had nothing to return, and the orb was deleted. A spare left for the next launch is a hollow ring beside the line. Without graphics a live terminal shows a spinner line; without a terminal dev prints one line per step.
+The line turns green when the work returned, or had nothing to return, and the orb was deleted. A spare left for the next launch is a hollow ring beside the line. A return or a deletion in progress reaches the terminal as the [start display](#start-display) does: its loop once, then the frame to show. Without graphics a live terminal shows a spinner line; without a terminal dev prints one line per step.
 
 The strip is transient, like the sweep's: it leaves no image or empty rows, and an interrupt notice waits until it is gone. A failed return that dev offers to retry ends its strip before the prompt, and a retry starts a new one. The receipt follows: one summary line with the return, the deletion and the elapsed time, then each command left to run with its reason, such as `git merge dev/orb-return/<record-id>` for diverged work.
 

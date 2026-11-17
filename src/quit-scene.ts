@@ -64,14 +64,31 @@ export interface OrbScene {
   readonly spare: boolean
 }
 
+export type OrbArrival =
+  | { readonly kind: 'awaited' }
+  | { readonly kind: 'reserved'; readonly at: number }
+  | { readonly kind: 'building'; readonly since: number }
+  | { readonly kind: 'active'; readonly at: number }
+
+export type OrbLaunch =
+  | { readonly kind: 'pending' }
+  | { readonly kind: 'ready' | 'failed' | 'cancelled'; readonly at: number }
+
+export interface OrbStartScene {
+  readonly arrival: OrbArrival
+  readonly upload: number | undefined
+  readonly launch: OrbLaunch
+  readonly fate: OrbFate
+}
+
 export const SETTLED_AT = -1_000_000
 export const SCAN_SHAPE: SceneShape = { dots: 2, branches: 2 }
 export const ORB_SHAPE: SceneShape = { dots: 0, branches: 1 }
 
 const WAITING = 0.6
 const STAGGER = 60
-const SCAN_PERIOD = 1100
-const SCAN_DRAW_MS = 320
+export const SCAN_PERIOD = 1100
+export const SCAN_DRAW_MS = 320
 export const VANISH_MS = 180
 const PULSE_PERIOD = 820
 const SLIDE_MS = 420
@@ -82,6 +99,13 @@ const FAILED_TAIL = 360
 const RETRACT_MS = 300
 const BREATH_PERIOD = 1100
 const SPARE_DELAY = 180
+const NODE_MS = 380
+const LOOP_LIMIT_MS = 2000
+const ORBIT_PERIOD = 2000
+const ORBIT_IN_MS = 320
+const DOCK_MS = 320
+const ORBIT_TILT = (-18 * Math.PI) / 180
+const START_BREATH_PERIOD = ORBIT_PERIOD / 2
 
 const bezier = (x1: number, y1: number, x2: number, y2: number) => {
   const cx = (t: number): number => 3 * x1 * t * (1 - t) ** 2 + 3 * x2 * t * t * (1 - t) + t ** 3
@@ -420,6 +444,22 @@ export const fadeAway = (canvas: Canvas, elapsed: number): void => {
     }
 }
 
+const commonPeriod = (a: number, b: number): number => {
+  let x = a
+  let y = b
+  while (y !== 0) [x, y] = [y, x % y]
+  return (a / x) * b
+}
+
+const loopOf = (periods: readonly number[]): number | undefined => {
+  if (periods.length === 0) return 0
+  const period = periods.reduce(commonPeriod)
+  return period > LOOP_LIMIT_MS ? undefined : period
+}
+
+export const releasePeriod = (scene: Scene): number | undefined =>
+  loopOf(scene.branches.some(branch => branch.kind === 'active') ? [PULSE_PERIOD] : [])
+
 const settledTimes = (scene: Scene): readonly number[] =>
   scene.branches.flatMap(branch =>
     branch.kind === 'merged' || branch.kind === 'failed' ? [branch.at] : []
@@ -535,10 +575,17 @@ const orbFinale = (scene: OrbScene): number | undefined =>
     ? Math.max(workEnd(scene.work), fateEnd(scene.fate)) + FINALE_GAP
     : undefined
 
+export const orbPeriod = (scene: OrbScene): number | undefined =>
+  loopOf([
+    ...(scene.work.kind === 'returning' ? [PULSE_PERIOD] : []),
+    ...(scene.fate.kind === 'deleting' ? [BREATH_PERIOD] : []),
+  ])
+
 export const orbEnd = (scene: OrbScene): number => {
   const finale = orbFinale(scene)
   return Math.max(
     SCAN_DRAW_MS,
+    NODE_MS,
     scene.spare ? SPARE_DELAY + RING_MS : 0,
     workEnd(scene.work),
     fateEnd(scene.fate),
@@ -624,7 +671,7 @@ const drawOrbNode = (canvas: Canvas, scene: OrbScene, head: Point, t: number): v
   const failedAt = orbFailedAt(scene)
   const rgb = failedAt === undefined ? PALETTE.blue : PALETTE.red
   const x = head[0] + (failedAt === undefined ? 0 : shake(t - failedAt, 0.07 * H))
-  const grown = spring(t, 0.7, 380)
+  const grown = spring(t, 0.7, NODE_MS)
   switch (fate.kind) {
     case 'deleting': {
       const breath = 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / BREATH_PERIOD)
@@ -671,6 +718,191 @@ export const drawOrb = (canvas: Canvas, scene: OrbScene, t: number): void => {
   drawOrbNode(canvas, scene, head, t)
 }
 
+const GROW_MS = 340
+const READY_MS = 200
+
+const orbitGone = (scene: OrbStartScene): number | undefined =>
+  scene.upload ?? (scene.launch.kind === 'pending' ? undefined : scene.launch.at)
+
+const launchEnd = (launch: OrbLaunch): number => {
+  switch (launch.kind) {
+    case 'pending':
+      return 0
+    case 'ready':
+      return launch.at + READY_MS
+    case 'failed':
+      return launch.at + FAILED_TAIL
+    case 'cancelled':
+      return launch.at
+  }
+}
+
+export const orbStartEnd = (scene: OrbStartScene): number => {
+  const gone = orbitGone(scene)
+  const { arrival } = scene
+  return Math.max(
+    SCAN_DRAW_MS,
+    gone === undefined ? 0 : gone + DOCK_MS,
+    scene.upload === undefined ? 0 : scene.upload + GROW_MS,
+    arrival.kind === 'active' || arrival.kind === 'reserved' ? arrival.at + RING_MS : 0,
+    launchEnd(scene.launch),
+    fateEnd(scene.fate)
+  )
+}
+
+export const orbStartPeriod = (scene: OrbStartScene): number | undefined => {
+  const { arrival, fate, launch } = scene
+  const orbShown = arrival.kind !== 'awaited' && fate.kind !== 'deleted'
+  return loopOf([
+    ...(orbitGone(scene) === undefined ? [ORBIT_PERIOD] : []),
+    ...(orbShown && (arrival.kind === 'building' || fate.kind === 'deleting')
+      ? [START_BREATH_PERIOD]
+      : []),
+    ...(scene.upload !== undefined && launch.kind === 'pending' ? [PULSE_PERIOD] : []),
+  ])
+}
+
+interface OrbitView {
+  readonly scale: number
+  readonly alpha: number
+  readonly theta: number
+  readonly failed: boolean
+}
+
+const orbitView = (scene: OrbStartScene, t: number): OrbitView | undefined => {
+  const gone = orbitGone(scene)
+  const dock = gone === undefined ? 0 : easeOut(progress(t, gone, DOCK_MS))
+  if (dock >= 1) return undefined
+  const appear = easeOut(progress(t, 0, ORBIT_IN_MS))
+  return {
+    scale: mix(0.6, 1, appear) * mix(1, 0.55, dock),
+    alpha: appear * (1 - dock),
+    theta: (2 * Math.PI * Math.min(t, gone ?? t)) / ORBIT_PERIOD,
+    failed: scene.launch.kind === 'failed',
+  }
+}
+
+const orbitPoint = (center: Point, H: number, scale: number, theta: number): Point => {
+  const x = -0.3 * H * scale * Math.cos(theta)
+  const y = 0.09 * H * scale * Math.sin(theta)
+  const c = Math.cos(ORBIT_TILT)
+  const s = Math.sin(ORBIT_TILT)
+  return [center[0] + x * c - y * s, center[1] + x * s + y * c]
+}
+
+const drawOrbitHalf = (
+  canvas: Canvas,
+  center: Point,
+  orbit: OrbitView,
+  half: 'behind' | 'ahead'
+): void => {
+  const H = canvas.height
+  const from = half === 'ahead' ? 0 : Math.PI
+  const arc = Array.from({ length: 25 }, (_, i) =>
+    orbitPoint(center, H, orbit.scale, from + (Math.PI * i) / 24)
+  )
+  polyline(canvas, arc, 0.03 * H, PALETTE.gray, 0.55 * orbit.alpha)
+  if (Math.sin(orbit.theta) < 0 !== (half === 'behind')) return
+  const [x, y] = orbitPoint(center, H, orbit.scale, orbit.theta)
+  const rgb = orbit.failed ? PALETTE.red : PALETTE.white
+  circle(canvas, x, y, 0.1 * H * orbit.scale, rgb, 0.18 * orbit.alpha)
+  circle(canvas, x, y, 0.05 * H * orbit.scale, rgb, 0.95 * orbit.alpha)
+}
+
+const drawUpload = (
+  canvas: Canvas,
+  scene: OrbStartScene,
+  path: readonly Point[],
+  t: number
+): void => {
+  if (scene.upload === undefined) return
+  const H = canvas.height
+  const since = t - scene.upload
+  const grown = easeOut(progress(since, 0, GROW_MS))
+  const { launch } = scene
+  if (launch.kind === 'failed') {
+    const dx = shake(t - launch.at, 0.07 * H)
+    polyline(
+      canvas,
+      subPath(path, 1 - grown, 1).map((point): Point => [point[0] + dx, point[1]]),
+      0.065 * H,
+      PALETTE.red,
+      1
+    )
+    return
+  }
+  polyline(canvas, subPath(path, 1 - grown, 1), 0.065 * H, PALETTE.blue, 1)
+  if (launch.kind !== 'pending' || since < GROW_MS) return
+  const [px, py] = pointAt(path, 1 - ((since - GROW_MS) % PULSE_PERIOD) / PULSE_PERIOD)
+  circle(canvas, px, py, 0.13 * H, PALETTE.white, 0.18)
+  circle(canvas, px, py, 0.065 * H, PALETTE.white, 0.95)
+}
+
+const startFailedAt = (scene: OrbStartScene): number | undefined => {
+  if (scene.launch.kind === 'failed') return scene.launch.at
+  if (scene.fate.kind === 'undeleted') return scene.fate.at
+  return undefined
+}
+
+const drawArrival = (canvas: Canvas, scene: OrbStartScene, head: Point, t: number): void => {
+  const H = canvas.height
+  const { arrival, launch, fate } = scene
+  if (arrival.kind === 'awaited') return
+  const failedAt = startFailedAt(scene)
+  const rgb = failedAt === undefined ? PALETTE.blue : PALETTE.red
+  const x = head[0] + (failedAt === undefined ? 0 : shake(t - failedAt, 0.07 * H))
+  if (fate.kind === 'deleted') {
+    const k = easeOut(progress(t - fate.at, 0, VANISH_MS))
+    if (k < 1) circle(canvas, x, head[1], 0.15 * H * mix(1, 0.9, k), rgb, 1 - k)
+    const r = easeOut(progress(t - fate.at, 0, RING_MS))
+    if (r < 1) ring(canvas, x, head[1], mix(0.15, 0.32, r) * H, 0.035 * H, rgb, 0.5 * (1 - r))
+    return
+  }
+  const shown =
+    fate.kind === 'deleting'
+      ? mix(0.35, 1, 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / START_BREATH_PERIOD))
+      : 1
+  switch (arrival.kind) {
+    case 'reserved':
+      ring(
+        canvas,
+        x,
+        head[1],
+        0.13 * H * spring(t - arrival.at, 0.7, 380),
+        0.04 * H,
+        rgb,
+        0.9 * shown
+      )
+      return
+    case 'building': {
+      const breath = 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - arrival.since)) / START_BREATH_PERIOD)
+      ring(canvas, x, head[1], 0.13 * H, 0.04 * H, rgb, 0.9 * shown)
+      circle(canvas, x, head[1], 0.13 * H, rgb, mix(0.15, 0.55, breath) * shown)
+      return
+    }
+    case 'active': {
+      const r = easeOut(progress(t - arrival.at, 0, RING_MS))
+      if (r < 1)
+        ring(canvas, x, head[1], mix(0.15, 0.32, r) * H, 0.035 * H, rgb, 0.5 * (1 - r) * shown)
+      if (launch.kind === 'ready')
+        ring(canvas, x, head[1], 0.21 * H * spring(t - launch.at, 0.7, 380), 0.035 * H, rgb, 0.35)
+      circle(canvas, x, head[1], 0.15 * H * spring(t - arrival.at, 0.85, 380), rgb, shown)
+    }
+  }
+}
+
+export const drawOrbStart = (canvas: Canvas, scene: OrbStartScene, t: number): void => {
+  const L = layout(canvas.height, ORB_SHAPE)
+  const path = L.branches[0] as readonly Point[]
+  const head = path[0] as Point
+  mainLine(canvas, L, scanReach(L, t), L.lineEnd, PALETTE.gray, 0.55)
+  drawUpload(canvas, scene, path, t)
+  const orbit = orbitView(scene, t)
+  if (orbit !== undefined) drawOrbitHalf(canvas, head, orbit, 'behind')
+  drawArrival(canvas, scene, head, t)
+  if (orbit !== undefined) drawOrbitHalf(canvas, head, orbit, 'ahead')
+}
+
 export const toRgba = (canvas: Canvas): Buffer => {
   const out = Buffer.alloc(canvas.width * canvas.height * 4)
   for (let i = 0; i < canvas.width * canvas.height; i += 1) {
@@ -700,17 +932,87 @@ export interface KittyFrame {
 
 export const deleteImage = (id: number): string => `\x1b_Ga=d,d=I,i=${id},q=2\x1b\\`
 
-export const encodeFrame = (frame: KittyFrame): string => {
-  const data = deflateSync(frame.rgba, { level: 1 }).toString('base64')
+export const selectFrame = (id: number, frame: number): string =>
+  `\x1b_Ga=a,i=${id},c=${frame},q=2\x1b\\`
+
+const transmit = (first: string, rest: string, pixels: Buffer): string => {
+  const data = deflateSync(pixels, { level: 1 }).toString('base64')
   let chunks = ''
   for (let i = 0; i < data.length; i += CHUNK) {
     const more = i + CHUNK < data.length ? 1 : 0
-    const head =
-      i === 0
-        ? `a=T,f=32,o=z,s=${frame.widthPx},v=${frame.heightPx},i=${frame.id},p=1,c=${frame.columns},r=${ROWS},C=1,q=2,m=${more}`
-        : `m=${more}`
-    chunks += `\x1b_G${head};${data.slice(i, i + CHUNK)}\x1b\\`
+    chunks += `\x1b_G${i === 0 ? `${first},` : rest}m=${more};${data.slice(i, i + CHUNK)}\x1b\\`
   }
+  return chunks
+}
+
+interface Rect {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+const changedRect = (a: Buffer, b: Buffer, widthPx: number, heightPx: number): Rect => {
+  let left = widthPx
+  let top = heightPx
+  let right = -1
+  let bottom = -1
+  for (let y = 0; y < heightPx; y += 1) {
+    const row = y * widthPx * 4
+    if (a.compare(b, row, row + widthPx * 4, row, row + widthPx * 4) === 0) continue
+    if (y < top) top = y
+    bottom = y
+    for (let x = 0; x < widthPx; x += 1) {
+      if (a.readUInt32LE(row + x * 4) === b.readUInt32LE(row + x * 4)) continue
+      if (x < left) left = x
+      if (x > right) right = x
+    }
+  }
+  return right < 0
+    ? { x: 0, y: 0, width: 1, height: 1 }
+    : { x: left, y: top, width: right - left + 1, height: bottom - top + 1 }
+}
+
+const cut = (rgba: Buffer, widthPx: number, rect: Rect): Buffer => {
+  const out = Buffer.alloc(rect.width * rect.height * 4)
+  for (let y = 0; y < rect.height; y += 1) {
+    const from = ((rect.y + y) * widthPx + rect.x) * 4
+    rgba.copy(out, y * rect.width * 4, from, from + rect.width * 4)
+  }
+  return out
+}
+
+export interface KittyClip extends Omit<KittyFrame, 'rgba'> {
+  readonly frames: readonly Buffer[]
+}
+
+export const encodeClip = (clip: KittyClip): string => {
+  const { widthPx, heightPx, id } = clip
+  const root = clip.frames[0] as Buffer
+  let chunks = transmit(
+    `a=T,f=32,o=z,s=${widthPx},v=${heightPx},i=${id},p=1,c=${clip.columns},r=${ROWS},C=1,q=2`,
+    '',
+    root
+  )
+  for (let index = 1; index < clip.frames.length; index += 1) {
+    const frame = clip.frames[index] as Buffer
+    const rect = changedRect(clip.frames[index - 1] as Buffer, frame, widthPx, heightPx)
+    chunks += transmit(
+      `a=f,f=32,o=z,i=${id},c=${index},x=${rect.x},y=${rect.y},s=${rect.width},v=${rect.height},X=1,q=2`,
+      'a=f,',
+      cut(frame, widthPx, rect)
+    )
+  }
+  const removal = clip.previousId === undefined ? '' : deleteImage(clip.previousId)
+  return `${SYNC_BEGIN}${clip.before}${chunks}${removal}${clip.after}${SYNC_END}`
+}
+
+export const encodeFrame = (frame: KittyFrame): string => {
+  const chunks = transmit(
+    `a=T,f=32,o=z,s=${frame.widthPx},v=${frame.heightPx},i=${frame.id},p=1,c=${frame.columns},r=${ROWS},C=1,q=2`,
+    '',
+    frame.rgba
+  )
   const removal = frame.previousId === undefined ? '' : deleteImage(frame.previousId)
   return `${SYNC_BEGIN}${frame.before}${chunks}${removal}${frame.after}${SYNC_END}`
 }

@@ -25,10 +25,11 @@ import {
   type OrbCredentials,
   type OrbError,
 } from './domain.ts'
-import { clock, deleteRecorded, printDeletion } from './deletion.ts'
+import { deleteRecorded } from './deletion.ts'
 import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { makeChildOrbs } from './children.ts'
 import { divergenceText, openOrbQuitView, type OrbQuitTerminal } from './quit-view.ts'
+import { openOrbStartView, type OrbStartTerminal, type OrbStartView } from './start-view.ts'
 import { recoverOrbs } from './recovery.ts'
 import { createRecord, type OrbRecordHandle } from './registry.ts'
 import { makeSpareSlot, spareAge, takeSpare } from './spare.ts'
@@ -49,6 +50,7 @@ export interface OrbSessionOptions {
   readonly print: (line: string) => void
   readonly confirm?: (prompt: string) => Effect.Effect<boolean>
   readonly secondInterrupt?: Effect.Effect<void>
+  readonly terminal?: OrbStartTerminal
   readonly cloud?: (credentials: OrbCredentials) => {
     readonly keystone: Keystone
     readonly orbit: Orbit
@@ -174,27 +176,36 @@ export const capacityFailure = (
     )
   })
 
-const unconfirmed = (dataHome: string, orbId: string, reason: string): string =>
-  `Orb ${orbId} could not be confirmed deleted: ${reason}\nIts record stays, and the next dev --orb deletes the orb and removes it.\nDelete it now with: ${deleteCommand(dataHome, orbId)}`
-
-export const openOrbSession = Effect.fnUntraced(function* (
+export const openOrbSession = (
   options: OrbSessionOptions,
   input: OrbOpenInput
+): Effect.Effect<OrbSession, OrbError, Services> =>
+  Effect.scoped(
+    Effect.flatMap(openOrbStartView(options.terminal, options.print, options.dataHome), startView =>
+      startOrbSession(options, input, startView)
+    )
+  )
+
+const startOrbSession = Effect.fnUntraced(function* (
+  options: OrbSessionOptions,
+  input: OrbOpenInput,
+  startView: OrbStartView
 ): Effect.fn.Return<OrbSession, OrbError, Services> {
-  const { print } = options
+  const { print } = startView
+  const { confirm } = options
   const services = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>()
   const runPromise = Effect.runPromiseWith(services)
-  const started = yield* Clock.currentTimeMillis
-  const elapsed = Effect.map(Clock.currentTimeMillis, now => clock(now - started))
-  const phase = (text: string) =>
-    Effect.flatMap(elapsed, time => Effect.sync(() => print(`orb: ${text} (${time})`)))
 
   const config = yield* readOrbConfig(options.dataHome)
   const checkout = yield* inspectCheckout(input.cwd)
   const credentials = yield* readOrbCredentials(options.dataHome)
   const { keystone, orbit } =
     options.cloud === undefined ? yield* openCloud(credentials) : options.cloud(credentials)
-  yield* phase(`authenticating as ${credentials.username} with Keystone at ${credentials.auth_url}`)
+  yield* startView.show({
+    kind: 'authenticating',
+    user: credentials.username,
+    url: credentials.auth_url,
+  })
   const token = yield* keystone.token
   yield* recoverOrbs({
     dataHome: options.dataHome,
@@ -203,7 +214,9 @@ export const openOrbSession = Effect.fnUntraced(function* (
     orbit,
     lifecycle: input.lifecycle,
     print,
-    ...(options.confirm === undefined ? {} : { confirm: options.confirm }),
+    ...(confirm === undefined
+      ? {}
+      : { confirm: (prompt: string) => startView.pause(confirm(prompt)) }),
   })
   const presence = yield* input.attachment
     .authorize({ kind: 'write', cwd: input.cwd })
@@ -270,28 +283,43 @@ export const openOrbSession = Effect.fnUntraced(function* (
   const spares = makeSpareSlot(spareContext, sessionScope, services)
   let reachable = true
 
-  const discard = (orbId: string | undefined, reason: string) =>
+  const discard = (orbId: string | undefined, interrupted: boolean) =>
     Effect.gen(function* () {
       yield* Scope.close(sessionScope, Exit.void)
       if (orbId === undefined) {
         yield* Effect.ignore(record.remove)
         return
       }
-      print(`Deleting orb ${shortId(orbId)} after ${reason}…`)
+      yield* startView.show({ kind: 'discarding', orbId, interrupted })
       const deleted = yield* Effect.exit(
-        deleteRecorded(orbit, record, orbId, printDeletion(orbId, print), options.secondInterrupt)
+        deleteRecorded(
+          orbit,
+          record,
+          orbId,
+          progress => startView.show({ kind: 'deletion', orbId, progress }),
+          options.secondInterrupt
+        )
       )
       if (Exit.isFailure(deleted)) {
         yield* record.release
-        print(unconfirmed(options.dataHome, orbId, errorText(Cause.squash(deleted.cause))))
+        yield* startView.show({
+          kind: 'undeleted',
+          orbId,
+          reason: errorText(Cause.squash(deleted.cause)),
+        })
       }
     })
 
   const prepared = yield* Effect.gen(function* () {
-    yield* phase(
+    yield* startView.show(
       spare === undefined
-        ? `requesting an orb (${config.size.vcpus} vCPU, ${config.size.memory_mb} MB, ${config.size.disk_gb} GB) from ${token.orbitUrl}`
-        : `taking the spare orb ${shortId(spare.view.id)} (${spare.view.status}, created ${spareAge(spare.view, yield* Clock.currentTimeMillis)})`
+        ? { kind: 'requesting', size: config.size, url: token.orbitUrl }
+        : {
+            kind: 'taking-spare',
+            orbId: spare.view.id,
+            status: spare.view.status,
+            age: spareAge(spare.view, yield* Clock.currentTimeMillis),
+          }
     )
     const created = yield* request.pipe(
       Effect.catchIf(
@@ -302,9 +330,9 @@ export const openOrbSession = Effect.fnUntraced(function* (
       Effect.uninterruptible
     )
     const label = shortId(created.id)
-    yield* phase(`orb ${label} ${created.status}`)
+    yield* startView.show({ kind: 'status', orbId: created.id, status: created.status })
     const active = yield* awaitActive(orbit, created, label, status =>
-      phase(`orb ${label} ${status}`)
+      startView.show({ kind: 'status', orbId: created.id, status })
     )
     const { host, user, keys } = yield* sshAddress(active, label)
     yield* record.writeKnownHosts(host, keys)
@@ -320,14 +348,17 @@ export const openOrbSession = Effect.fnUntraced(function* (
         reachable = observed
       }
     )
-    yield* phase(`connecting to ${user}@${host} over SSH`)
+    yield* startView.show({ kind: 'connecting', destination: `${user}@${host}` })
     yield* connect(ssh)
     yield* Scope.provide(sessionScope)(ssh.master).pipe(
-      Effect.catch(error => phase(`continuing without a shared SSH connection: ${error.message}`))
+      Effect.catch(error => startView.show({ kind: 'unshared', reason: error.message }))
     )
-    yield* phase(
-      `uploading ${checkout.branch} at ${checkout.head.slice(0, 7)} with its uncommitted changes to ${checkout.root}`
-    )
+    yield* startView.show({
+      kind: 'uploading',
+      branch: checkout.branch,
+      head: checkout.head,
+      root: checkout.root,
+    })
     yield* upload({
       checkout,
       orbPath: checkout.root,
@@ -335,15 +366,14 @@ export const openOrbSession = Effect.fnUntraced(function* (
       baseRef: record.current().baseRef,
     })
     yield* record.update({ phase: 'active', uploadedHead: checkout.head })
-    yield* phase(`orb ${label} is ready`)
+    yield* startView.show({ kind: 'ready', orbId: created.id })
     yield* spares.request
     return { ssh, label, host, orbId: created.id }
   }).pipe(
     Effect.onError(cause =>
-      discard(
-        record.current().orbId,
-        Cause.hasInterruptsOnly(cause) ? 'the interrupted start' : 'the failed start'
-      ).pipe(Effect.ensuring(withdraw))
+      discard(record.current().orbId, Cause.hasInterruptsOnly(cause)).pipe(
+        Effect.ensuring(withdraw)
+      )
     )
   )
   const { ssh, label, host, orbId } = prepared

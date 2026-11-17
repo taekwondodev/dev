@@ -2264,7 +2264,7 @@ await claim(
     const services = await run(Effect.context<ChildProcessSpawner.ChildProcessSpawner>())
     const provision = async (
       orbit: Orbit,
-      spares: ChildOrbsInput['spares'] = { request: Effect.void, take: Effect.succeed(undefined) }
+      spares: ChildOrbsInput['spares'] = { request: Effect.void, take: Effect.undefined }
     ) => {
       const reports: AttemptOrb[] = []
       let adopted = false
