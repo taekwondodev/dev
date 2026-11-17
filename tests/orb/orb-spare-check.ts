@@ -28,7 +28,13 @@ import {
 } from '../../src/orb/domain.ts'
 import { recoverOrbs } from '../../src/orb/recovery.ts'
 import { claimRecord, createRecord, readRecord } from '../../src/orb/registry.ts'
-import { makeSpareSlot, spareProblem, takeSpare, type SpareContext } from '../../src/orb/spare.ts'
+import {
+  makeSpareSlot,
+  spareProblem,
+  takeSpare,
+  type SpareContext,
+  type SpareLeft,
+} from '../../src/orb/spare.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 
@@ -415,8 +421,8 @@ await claim(
     await slotScenario(rebuilt, fresh.orbit, slot =>
       Effect.gen(function* () {
         yield* slot.request
-        const line = yield* slot.leave
-        assert.match(line ?? '', /^Spare orb orb-fresh stays ready/)
+        const left = yield* slot.leave
+        assert.equal(left?.kind === 'ready' ? left.orbId : left, 'orb-fresh')
       })
     )
     assert.equal(fresh.created(), 1, "another project's spare does not count")
@@ -431,10 +437,10 @@ await claim(
     await slotScenario(full, refusing.orbit, slot =>
       Effect.gen(function* () {
         yield* slot.request
-        assert.equal(
-          yield* slot.leave,
-          'No spare orb was left for the next dev --orb: orbit had no capacity for it'
-        )
+        assert.deepEqual(yield* slot.leave, {
+          kind: 'refused',
+          reason: 'orbit had no capacity for it',
+        })
       })
     )
     assert.deepEqual(records(full), [], 'a refused request leaves no record')
@@ -454,7 +460,7 @@ await claim(
         Effect.as(view('orb-quit', 0, 'RESERVING'))
       )
     )
-    let line: string | undefined
+    let left: SpareLeft | undefined
     await slotScenario(home, cloud.orbit, slot =>
       Effect.gen(function* () {
         yield* slot.request
@@ -462,14 +468,14 @@ await claim(
         yield* Effect.forkChild(
           Effect.andThen(Effect.sleep('20 millis'), Deferred.succeed(answer, undefined))
         )
-        line = yield* slot.leave
+        left = yield* slot.leave
       })
     )
-    assert.match(
-      line ?? '',
-      /^Spare orb orb-quit stays ready for the next dev --orb until \d{2}[.:]\d{2}\.\n/
-    )
-    assert.match(line ?? '', /Delete it with: dev --data-home '.*' orb delete orb-quit$/)
+    assert.equal(left?.kind, 'ready')
+    if (left?.kind !== 'ready') return
+    assert.equal(left.orbId, 'orb-quit')
+    assert.match(left.until, /^\d{2}[.:]\d{2}$/)
+    assert.match(left.deleteCommand, /^dev --data-home '.*' orb delete orb-quit$/)
     const [directory] = records(home)
     assert.ok(directory !== undefined)
     const claimed = await run(claimRecord(directory))

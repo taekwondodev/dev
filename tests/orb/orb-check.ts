@@ -44,7 +44,7 @@ import {
 import { errorText } from '../../src/error-text.ts'
 import { readOrbConfig, readOrbCredentials } from '../../src/orb/config.ts'
 import { deleteOrbById, isCidr, setupOrb, type Prompt } from '../../src/orb/command.ts'
-import { deleteRecorded } from '../../src/orb/deletion.ts'
+import { deleteRecorded, printDeletion } from '../../src/orb/deletion.ts'
 import { recoverOrbs, settlePresence, unregisteredOrbs } from '../../src/orb/recovery.ts'
 import { claimRecord, createRecord, readRecord } from '../../src/orb/registry.ts'
 import {
@@ -826,12 +826,11 @@ const quitScenario = async (input: {
       attempt,
       {
         proceed: () => input.interrupted !== true,
-        interrupted: Effect.never,
         ...(answers === undefined
           ? {}
           : { askRetry: Effect.sync(() => answers[asked++] ?? false) }),
       },
-      () => undefined
+      () => Effect.void
     )
   )
   return { kind: outcome.kind, attempts, asked }
@@ -908,7 +907,7 @@ await claim(
 )
 
 await claim(
-  "a signal during a quit step of the session end prints the step's notice, completes its interruption and keeps the sweep from starting; after the step a signal prints nothing",
+  "a signal during a quit step of the session end prints the step's notice, after any strip holding the terminal, completes its interruption and keeps the sweep from starting; after the step a signal prints nothing",
   async () => {
     const ending = makeSessionEnd()
     const scope = await Effect.runPromise(Scope.make())
@@ -934,6 +933,14 @@ await claim(
       step.end()
       process.emit('SIGTERM')
       assert.deepEqual(written, ['\nstep notice\n'])
+      const held = ending.beginQuitStep('held notice')
+      assert.ok(held !== undefined)
+      held.hold.begin()
+      process.emit('SIGINT')
+      assert.deepEqual(written, ['\nstep notice\n'], 'a strip holds the notice back')
+      held.hold.end()
+      assert.deepEqual(written, ['\nstep notice\n', 'held notice\n'])
+      held.end()
       assert.equal(ending.beginSweep('sweep notice'), undefined)
     } finally {
       process.stderr.write = write
@@ -2220,7 +2227,7 @@ await claim(
           stuck.orbit,
           record,
           'orb-quitting',
-          line => lines.push(line),
+          printDeletion('orb-quitting', line => lines.push(line)),
           stuck.deleteSent
         )
       )

@@ -58,7 +58,7 @@ export interface ChildOrbsInput {
 
 type Services = ChildProcessSpawner.ChildProcessSpawner
 
-const quiet = (): void => undefined
+const quiet = (): Effect.Effect<void> => Effect.void
 
 const failureText = (cause: Cause.Cause<unknown>): string => errorText(Cause.squash(cause))
 

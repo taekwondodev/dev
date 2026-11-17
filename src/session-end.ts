@@ -30,7 +30,14 @@ export interface SweepInterruption {
 export interface QuitStep {
   readonly proceed: () => boolean
   readonly interrupted: Effect.Effect<void>
+  readonly hold: TerminalHold
   readonly end: () => void
+}
+
+interface NoticeHold {
+  readonly notice: string
+  held: boolean
+  deferred: boolean
 }
 
 export type DisposeForDev = () => Promise<void>
@@ -49,7 +56,7 @@ export const makeSessionEnd = (): SessionEnd => {
   let ending: Phase = { phase: 'running' }
   let disposingForDev = false
   const quitInterrupted = Deferred.makeUnsafe<void>()
-  let quitStepNotice: string | undefined
+  let quitStep: NoticeHold | undefined
   const leaveRunning = (next: Extract<Phase, { phase: 'signalled' | 'quitting' }>): void => {
     ending = next
     Deferred.doneUnsafe(requested, Effect.void)
@@ -64,7 +71,9 @@ export const makeSessionEnd = (): SessionEnd => {
       case 'quitting':
         ending.interrupted = true
         Deferred.doneUnsafe(quitInterrupted, Effect.void)
-        if (quitStepNotice !== undefined) process.stderr.write(`\n${quitStepNotice}\n`)
+        if (quitStep === undefined) return
+        if (quitStep.held) quitStep.deferred = true
+        else process.stderr.write(`\n${quitStep.notice}\n`)
         return
       case 'sweeping':
         ending.interrupted = true
@@ -114,12 +123,23 @@ export const makeSessionEnd = (): SessionEnd => {
     beginQuitStep: interruptNotice => {
       if (ending.phase !== 'quitting') return undefined
       const quitting = ending
-      quitStepNotice = interruptNotice
+      const step: NoticeHold = { notice: interruptNotice, held: false, deferred: false }
+      quitStep = step
       return {
         proceed: () => !quitting.interrupted,
         interrupted: Deferred.await(quitInterrupted),
+        hold: {
+          begin: () => {
+            step.held = true
+          },
+          end: () => {
+            step.held = false
+            if (step.deferred) process.stderr.write(`${interruptNotice}\n`)
+            step.deferred = false
+          },
+        },
         end: () => {
-          quitStepNotice = undefined
+          quitStep = undefined
         },
       }
     },

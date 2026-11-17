@@ -46,8 +46,27 @@ type Rgb = readonly [number, number, number]
 type Point = readonly [number, number]
 type Shade = (x: number, y: number) => readonly [Rgb, number]
 
+export type OrbWork =
+  | { readonly kind: 'returning'; readonly since: number }
+  | {
+      readonly kind: 'returned' | 'unchanged' | 'diverged' | 'failed'
+      readonly at: number
+    }
+
+export type OrbFate =
+  | { readonly kind: 'present' }
+  | { readonly kind: 'deleting'; readonly since: number }
+  | { readonly kind: 'deleted' | 'undeleted'; readonly at: number }
+
+export interface OrbScene {
+  readonly work: OrbWork
+  readonly fate: OrbFate
+  readonly spare: boolean
+}
+
 export const SETTLED_AT = -1_000_000
 export const SCAN_SHAPE: SceneShape = { dots: 2, branches: 2 }
+export const ORB_SHAPE: SceneShape = { dots: 0, branches: 1 }
 
 const WAITING = 0.6
 const STAGGER = 60
@@ -60,6 +79,9 @@ const RING_MS = 460
 const FINALE_MS = 520
 const FINALE_GAP = 60
 const FAILED_TAIL = 360
+const RETRACT_MS = 300
+const BREATH_PERIOD = 1100
+const SPARE_DELAY = 180
 
 const bezier = (x1: number, y1: number, x2: number, y2: number) => {
   const cx = (t: number): number => 3 * x1 * t * (1 - t) ** 2 + 3 * x2 * t * t * (1 - t) + t ** 3
@@ -105,6 +127,8 @@ export const PALETTE = {
   gray: hex('#8B949E'),
   red: hex('#F85149'),
   white: hex('#F0F6FC'),
+  blue: hex('#58A6FF'),
+  yellow: hex('#D29922'),
 }
 
 export const makeCanvas = (width: number, height: number): Canvas => ({
@@ -477,6 +501,174 @@ export const drawRelease = (canvas: Canvas, scene: Scene, t: number): void => {
       circle(canvas, merge[0], merge[1], 0.13 * H * spring(landed, 0.7, SLIDE_MS), PALETTE.green, 1)
     }
   })
+}
+
+const workEnd = (work: OrbWork): number => {
+  switch (work.kind) {
+    case 'returning':
+      return 0
+    case 'returned':
+    case 'diverged':
+      return work.at + SLIDE_MS + RING_MS
+    case 'unchanged':
+      return work.at + RETRACT_MS
+    case 'failed':
+      return work.at + FAILED_TAIL
+  }
+}
+
+const fateEnd = (fate: OrbFate): number => {
+  switch (fate.kind) {
+    case 'present':
+    case 'deleting':
+      return 0
+    case 'deleted':
+      return fate.at + RING_MS
+    case 'undeleted':
+      return fate.at + FAILED_TAIL
+  }
+}
+
+const orbFinale = (scene: OrbScene): number | undefined =>
+  (scene.work.kind === 'returned' || scene.work.kind === 'unchanged') &&
+  scene.fate.kind === 'deleted'
+    ? Math.max(workEnd(scene.work), fateEnd(scene.fate)) + FINALE_GAP
+    : undefined
+
+export const orbEnd = (scene: OrbScene): number => {
+  const finale = orbFinale(scene)
+  return Math.max(
+    SCAN_DRAW_MS,
+    scene.spare ? SPARE_DELAY + RING_MS : 0,
+    workEnd(scene.work),
+    fateEnd(scene.fate),
+    finale === undefined ? 0 : finale + FINALE_MS + FINALE_GAP
+  )
+}
+
+const landing = (canvas: Canvas, at: Point, landed: number, rgb: Rgb): void => {
+  if (landed < 0) return
+  const H = canvas.height
+  const r = easeOut(progress(landed, 0, RING_MS))
+  if (r < 1) ring(canvas, at[0], at[1], mix(0.12, 0.3, r) * H, 0.045 * H, rgb, 0.85 * (1 - r))
+  circle(canvas, at[0], at[1], 0.13 * H * spring(landed, 0.7, SLIDE_MS), rgb, 1)
+}
+
+const drawOrbWork = (canvas: Canvas, scene: OrbScene, path: readonly Point[], t: number): void => {
+  const H = canvas.height
+  const width = 0.065 * H
+  const head = path[0] as Point
+  const merge = path[path.length - 1] as Point
+  const { work } = scene
+  switch (work.kind) {
+    case 'returning': {
+      polyline(canvas, path, width, PALETTE.blue, 1)
+      const [px, py] = pointAt(path, Math.max(0, (t - work.since) % PULSE_PERIOD) / PULSE_PERIOD)
+      circle(canvas, px, py, 0.13 * H, PALETTE.white, 0.18)
+      circle(canvas, px, py, 0.065 * H, PALETTE.white, 0.95)
+      return
+    }
+    case 'failed': {
+      const dx = shake(t - work.at, 0.07 * H)
+      polyline(
+        canvas,
+        path.map((point): Point => [point[0] + dx, point[1]]),
+        width,
+        PALETTE.red,
+        1
+      )
+      return
+    }
+    case 'unchanged':
+      polyline(
+        canvas,
+        subPath(path, 0, 1 - easeOut(progress(t - work.at, 0, RETRACT_MS))),
+        width,
+        PALETTE.blue,
+        1
+      )
+      return
+    case 'returned': {
+      const k = easeInOut(progress(t - work.at, 0, SLIDE_MS))
+      if (k < 1) {
+        polyline(canvas, subPath(path, k, 1), width, PALETTE.blue, 1)
+        const [px, py] = pointAt(path, k)
+        circle(canvas, px, py, 0.12 * H, PALETTE.blue, 1)
+      }
+      landing(canvas, merge, t - work.at - SLIDE_MS, PALETTE.green)
+      return
+    }
+    case 'diverged': {
+      const k = easeInOut(progress(t - work.at, 0, SLIDE_MS))
+      const parallel: readonly Point[] = [head, [merge[0], head[1]]]
+      if (k < 1) polyline(canvas, path, width, PALETTE.blue, 1 - k)
+      polyline(canvas, subPath(parallel, 0, k), width, PALETTE.yellow, 1)
+      if (k < 1) {
+        const [px, py] = pointAt(parallel, k)
+        circle(canvas, px, py, 0.12 * H, PALETTE.yellow, 1)
+      }
+      landing(canvas, parallel[1] as Point, t - work.at - SLIDE_MS, PALETTE.yellow)
+    }
+  }
+}
+
+const orbFailedAt = (scene: OrbScene): number | undefined => {
+  if (scene.work.kind === 'failed') return scene.work.at
+  if (scene.fate.kind === 'undeleted') return scene.fate.at
+  return undefined
+}
+
+const drawOrbNode = (canvas: Canvas, scene: OrbScene, head: Point, t: number): void => {
+  const H = canvas.height
+  const { fate } = scene
+  const failedAt = orbFailedAt(scene)
+  const rgb = failedAt === undefined ? PALETTE.blue : PALETTE.red
+  const x = head[0] + (failedAt === undefined ? 0 : shake(t - failedAt, 0.07 * H))
+  const grown = spring(t, 0.7, 380)
+  switch (fate.kind) {
+    case 'deleting': {
+      const breath = 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / BREATH_PERIOD)
+      circle(canvas, x, head[1], 0.15 * H * grown, rgb, mix(0.35, 1, breath))
+      return
+    }
+    case 'deleted': {
+      const k = easeOut(progress(t - fate.at, 0, VANISH_MS))
+      if (k < 1) circle(canvas, x, head[1], 0.15 * H * mix(1, 0.9, k), rgb, 1 - k)
+      const r = easeOut(progress(t - fate.at, 0, RING_MS))
+      if (r < 1) ring(canvas, x, head[1], mix(0.15, 0.32, r) * H, 0.035 * H, rgb, 0.5 * (1 - r))
+      return
+    }
+    case 'present':
+    case 'undeleted':
+      ring(canvas, x, head[1], 0.21 * H * grown, 0.035 * H, rgb, 0.35)
+      circle(canvas, x, head[1], 0.15 * H * grown, rgb, 1)
+  }
+}
+
+export const drawOrb = (canvas: Canvas, scene: OrbScene, t: number): void => {
+  const H = canvas.height
+  const L = layout(H, ORB_SHAPE)
+  const path = L.branches[0] as readonly Point[]
+  const head = path[0] as Point
+  const merge = path[path.length - 1] as Point
+  mainLine(canvas, L, scanReach(L, t), L.lineEnd, PALETTE.gray, 0.55)
+  const finale = orbFinale(scene)
+  if (finale !== undefined && t >= finale) {
+    const f = easeInOut(progress(t, finale, FINALE_MS))
+    mainLine(canvas, L, mix(L.left, L.lineEnd, f), L.lineEnd, PALETTE.green, 0.9)
+  }
+  if (scene.spare && t >= SPARE_DELAY)
+    ring(
+      canvas,
+      merge[0] + 0.6 * H,
+      head[1],
+      0.11 * H * spring(t - SPARE_DELAY, 0.7, 380),
+      0.04 * H,
+      PALETTE.blue,
+      0.6
+    )
+  drawOrbWork(canvas, scene, path, t)
+  drawOrbNode(canvas, scene, head, t)
 }
 
 export const toRgba = (canvas: Canvas): Buffer => {

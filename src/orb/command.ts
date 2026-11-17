@@ -8,7 +8,7 @@ import type * as FileSystem from 'effect/FileSystem'
 import type { WorkspaceLifecycle } from '../workspace-domain.ts'
 import { openCloud, type Keystone, type Orbit } from './cloud.ts'
 import { DEFAULT_SIZE, readOrbCredentials, readStoredOrbFiles, writeOrbFiles } from './config.ts'
-import { deleteOrb, deleteRecorded } from './deletion.ts'
+import { deleteOrb, deleteRecorded, printDeletion } from './deletion.ts'
 import {
   holdsWork,
   isSpare,
@@ -224,7 +224,7 @@ export const deleteOrbById = Effect.fnUntraced(function* (
   const token = yield* keystone.token
   const found = yield* findRecord(options.dataHome, orbId)
   if (found === undefined) {
-    yield* deleteOrb(orbit, orbId, print).pipe(
+    yield* deleteOrb(orbit, orbId, printDeletion(orbId, print)).pipe(
       Effect.catchIf(gone, () =>
         Effect.fail(
           orbFailure(`orbit has no orb ${orbId} in project ${token.project.name}`, undefined, 404)
@@ -257,7 +257,7 @@ export const deleteOrbById = Effect.fnUntraced(function* (
     print(
       `Orb ${label} holds work that has not returned to ${fields.checkout}; deleting the orb discards it.`
     )
-  yield* deleteRecorded(orbit, record, orbId, print).pipe(
+  yield* deleteRecorded(orbit, record, orbId, printDeletion(orbId, print)).pipe(
     Effect.catchIf(gone, () =>
       Effect.sync(() => print(`orb ${label} no longer exists in orbit`)).pipe(
         Effect.andThen(record.remove)

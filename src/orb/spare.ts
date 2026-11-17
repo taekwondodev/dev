@@ -10,7 +10,7 @@ import type * as Scope from 'effect/Scope'
 import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { errorText } from '../error-text.ts'
 import type { Orbit } from './cloud.ts'
-import { deleteRecorded } from './deletion.ts'
+import { deleteRecorded, printDeletion } from './deletion.ts'
 import {
   deleteCommand,
   isSpare,
@@ -131,7 +131,9 @@ const examineSpare = Effect.fnUntraced(function* (
   )
   if (problem === undefined) return { kind: 'valid', spare: { record, view } }
   print(`orb: deleting the spare orb ${label}: ${problem}`)
-  const deleted = yield* Effect.exit(deleteRecorded(orbit, record, orbId, print))
+  const deleted = yield* Effect.exit(
+    deleteRecorded(orbit, record, orbId, printDeletion(orbId, print))
+  )
   if (Exit.isFailure(deleted)) {
     yield* record.release
     print(
@@ -268,10 +270,19 @@ const expiry = (view: OrbView, record: OrbRecordHandle): string => {
   })
 }
 
+export type SpareLeft =
+  | {
+      readonly kind: 'ready'
+      readonly orbId: string
+      readonly until: string
+      readonly deleteCommand: string
+    }
+  | { readonly kind: 'refused'; readonly reason: string }
+
 export interface SpareSlot {
   readonly request: Effect.Effect<void>
   readonly take: Effect.Effect<Spare | undefined>
-  readonly leave: Effect.Effect<string | undefined>
+  readonly leave: Effect.Effect<SpareLeft | undefined>
 }
 
 type SlotState =
@@ -301,17 +312,22 @@ export const makeSpareSlot = (
     take: Effect.map(claim, requested =>
       requested?.kind === 'requested' ? requested.spare : undefined
     ),
-    leave: Effect.flatMap(claim, requested => {
+    leave: Effect.flatMap(claim, (requested): Effect.Effect<SpareLeft | undefined> => {
       switch (requested?.kind) {
         case 'requested': {
           const { record, view } = requested.spare
-          return Effect.as(
-            record.release,
-            `Spare orb ${view.id} stays ready for the next dev --orb until ${expiry(view, record)}.\nDelete it with: ${deleteCommand(context.dataHome, view.id)}`
-          )
+          return Effect.as(record.release, {
+            kind: 'ready',
+            orbId: view.id,
+            until: expiry(view, record),
+            deleteCommand: deleteCommand(context.dataHome, view.id),
+          } satisfies SpareLeft)
         }
         case 'refused':
-          return Effect.succeed(`No spare orb was left for the next dev --orb: ${requested.reason}`)
+          return Effect.succeed({
+            kind: 'refused',
+            reason: requested.reason,
+          } satisfies SpareLeft)
         default:
           return Effect.succeed(undefined)
       }

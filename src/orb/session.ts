@@ -25,9 +25,10 @@ import {
   type OrbCredentials,
   type OrbError,
 } from './domain.ts'
-import { clock, deleteRecorded } from './deletion.ts'
+import { clock, deleteRecorded, printDeletion } from './deletion.ts'
 import { activeOrbs, awaitActive, connect, sshAddress } from './provision.ts'
 import { makeChildOrbs } from './children.ts'
+import { divergenceText, openOrbQuitView, type OrbQuitTerminal } from './quit-view.ts'
 import { recoverOrbs } from './recovery.ts'
 import { createRecord, type OrbRecordHandle } from './registry.ts'
 import { makeSpareSlot, spareAge, takeSpare } from './spare.ts'
@@ -77,6 +78,7 @@ export interface OrbQuit {
   readonly proceed: () => boolean
   readonly interrupted: Effect.Effect<void>
   readonly askRetry?: Effect.Effect<boolean>
+  readonly terminal?: OrbQuitTerminal
 }
 
 export type SettledReturn =
@@ -86,19 +88,6 @@ export type SettledReturn =
 type Services = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 
 const FORWARDED_GIT_SETTINGS = ['GIT_OPTIONAL_LOCKS', 'GIT_TERMINAL_PROMPT', 'GIT_NO_LAZY_FETCH']
-
-const divergenceText = (reason: Divergence, branch: string): string => {
-  switch (reason) {
-    case 'branch-moved':
-      return `${branch} moved on the Mac, so the orb's commits cannot fast-forward it.`
-    case 'history-rewritten':
-      return `The orb rewrote the commit it was given (an amend or a rebase), so its commits cannot fast-forward ${branch}.`
-    case 'branch-switched':
-      return `The checkout is no longer on ${branch}.`
-    case 'overlap':
-      return "Local edits overlap the orb's changes."
-  }
-}
 
 const outcomeText = (orb: string, branch: string, outcome: SettledReturn): string => {
   switch (outcome.kind) {
@@ -140,8 +129,8 @@ export const branchingReturn = (
 
 export const returnAtQuit = <A>(
   attempt: Effect.Effect<A, OrbError>,
-  quit: OrbQuit,
-  print: (line: string) => void
+  quit: Pick<OrbQuit, 'proceed' | 'askRetry'>,
+  failed: (reason: string) => Effect.Effect<void>
 ): Effect.Effect<
   | { readonly kind: 'returned'; readonly value: A }
   | { readonly kind: 'kept'; readonly reason: string }
@@ -152,9 +141,8 @@ export const returnAtQuit = <A>(
       if (Exit.isSuccess(returned)) return { kind: 'returned', value: returned.value } as const
       const reason = errorText(Cause.squash(returned.cause))
       if (!quit.proceed() || quit.askRetry === undefined) return { kind: 'kept', reason } as const
-      print(`The return failed: ${reason}`)
-      if (!(yield* quit.askRetry)) return { kind: 'kept', reason } as const
-      print('Retrying the return…')
+      yield* failed(reason)
+      if (!quit.proceed() || !(yield* quit.askRetry)) return { kind: 'kept', reason } as const
     }
   })
 
@@ -291,7 +279,7 @@ export const openOrbSession = Effect.fnUntraced(function* (
       }
       print(`Deleting orb ${shortId(orbId)} after ${reason}…`)
       const deleted = yield* Effect.exit(
-        deleteRecorded(orbit, record, orbId, print, options.secondInterrupt)
+        deleteRecorded(orbit, record, orbId, printDeletion(orbId, print), options.secondInterrupt)
       )
       if (Exit.isFailure(deleted)) {
         yield* record.release
@@ -413,39 +401,44 @@ export const openOrbSession = Effect.fnUntraced(function* (
 
   const sync = Effect.map(settled, outcome => outcomeText(label, checkout.branch, outcome))
 
-  const closeLead = (quit: OrbQuit) =>
+  const close = (quit: OrbQuit) =>
     Effect.gen(function* () {
-      print(`Returning work from orb ${label}…`)
-      const returned = yield* returnAtQuit(settled, quit, print)
+      const left = yield* spares.leave
+      const view = yield* openOrbQuitView(quit.terminal, print, {
+        label,
+        branch: checkout.branch,
+        location: `${checkout.root} (${host})`,
+        recoveryBranch: `dev/orb-recovery/${record.id}`,
+        deleteCommand: deleteCommand(options.dataHome, orbId),
+        spare: left,
+      })
+      const returned = yield* returnAtQuit(
+        Effect.andThen(view.show({ kind: 'returning' }), settled),
+        quit,
+        reason => view.show({ kind: 'return-failed', reason })
+      )
       if (returned.kind === 'kept') {
         yield* Scope.close(sessionScope, Exit.void)
         yield* record.release
-        print(
-          `Orb ${orbId} was kept: ${returned.reason}\nIts work is still on the orb at ${checkout.root} (${host}); the next dev --orb returns it to the branch dev/orb-recovery/${record.id} and deletes the orb.\nTo discard its work and delete it instead: ${deleteCommand(options.dataHome, orbId)}`
-        )
+        yield* view.show({ kind: 'kept', reason: returned.reason })
         return
       }
-      print(outcomeText(label, checkout.branch, returned.value))
+      yield* view.show({ kind: 'returned', outcome: returned.value })
       yield* Scope.close(sessionScope, Exit.void)
       const deleted = yield* Effect.exit(
-        deleteRecorded(orbit, record, orbId, print, quit.interrupted)
+        deleteRecorded(
+          orbit,
+          record,
+          orbId,
+          progress => view.show({ kind: 'deletion', progress }),
+          quit.interrupted
+        )
       )
       if (Exit.isFailure(deleted)) {
         yield* record.release
-        print(unconfirmed(options.dataHome, orbId, errorText(Cause.squash(deleted.cause))))
+        yield* view.show({ kind: 'undeleted', reason: errorText(Cause.squash(deleted.cause)) })
       }
-    }).pipe(Effect.provideContext(services))
-
-  const close = (quit: OrbQuit) =>
-    Effect.flatMap(spares.leave, spareLine =>
-      closeLead(quit).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (spareLine !== undefined) print(spareLine)
-          })
-        )
-      )
-    )
+    }).pipe(Effect.scoped, Effect.provideContext(services))
 
   const children = makeChildOrbs(
     {

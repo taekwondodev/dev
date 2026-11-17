@@ -31,7 +31,7 @@ export const terminalStyle = (
 
 type Tone = 'ok' | 'fail' | 'warn' | 'dim' | 'bold'
 const TONE: Record<Tone, string> = { ok: '32', fail: '31', warn: '33', dim: '2', bold: '1' }
-const paint = (style: TerminalStyle, tone: Tone, text: string): string =>
+export const paint = (style: TerminalStyle, tone: Tone, text: string): string =>
   style.color ? `\x1b[${TONE[tone]}m${text}\x1b[0m` : text
 
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
@@ -47,23 +47,55 @@ const FRAME_MS = 80
 const PROGRESS_KEEPALIVE_FRAMES = 12
 const CLEAR_LINE = '\r\x1b[2K'
 
-const seconds = (elapsedMs: number): string => `${(elapsedMs / 1000).toFixed(1)}s`
+export const seconds = (elapsedMs: number): string => `${(elapsedMs / 1000).toFixed(1)}s`
 
 const spin = Effect.fnUntraced(function* (
   style: TerminalStyle,
   out: NodeJS.WritableStream,
-  started: number
+  label: (now: number) => string
 ): Effect.fn.Return<never> {
   for (let frame = 0; ; frame += 1) {
     const now = yield* Clock.currentTimeMillis
     const progress = frame % PROGRESS_KEEPALIVE_FRAMES === 0 ? PROGRESS_ACTIVE : ''
     yield* Effect.sync(() => {
       out.write(
-        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Sweeping workspaces… ${paint(style, 'dim', seconds(now - started))}`
+        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} ${label(now)}`
       )
     })
     yield* Effect.sleep(FRAME_MS)
   }
+})
+
+export interface Spinner {
+  readonly stop: Effect.Effect<void>
+}
+
+export const spinner = Effect.fnUntraced(function* (
+  style: TerminalStyle,
+  out: NodeJS.WritableStream,
+  label: (now: number) => string,
+  delayMs = 0
+): Effect.fn.Return<Spinner, never, Scope.Scope> {
+  let shown = false
+  let cleared = false
+  const clear = Effect.sync(() => {
+    if (!shown || cleared) return
+    cleared = true
+    out.write(CLEAR_LINE)
+  })
+  yield* Effect.addFinalizer(() => clear)
+  const fiber = yield* Effect.forkScoped(
+    Effect.sleep(delayMs).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          shown = true
+        })
+      ),
+      Effect.andThen(spin(style, out, label))
+    ),
+    { uninterruptible: false }
+  )
+  return { stop: Fiber.interrupt(fiber).pipe(Effect.andThen(clear)) }
 })
 
 export interface SweepIndicator {
@@ -71,7 +103,7 @@ export interface SweepIndicator {
   readonly settle: (shape: SceneShape, label: string) => Effect.Effect<void>
 }
 
-const LABEL_COLUMNS = 32
+export const LABEL_COLUMNS = 32
 const INDICATOR_DELAY_MS = 150
 
 const idle: SweepIndicator = { sweepDone: Effect.void, settle: () => Effect.void }
@@ -94,29 +126,13 @@ export const sweepIndicator = Effect.fnUntraced(function* (
     )
     return { sweepDone: Effect.void, settle: strip.settle }
   }
-  let shown = false
-  let cleared = false
-  const clear = Effect.sync(() => {
-    if (!shown || cleared) return
-    cleared = true
-    out.write(CLEAR_LINE)
-  })
-  yield* Effect.addFinalizer(() => clear)
-  const spinner = yield* Effect.forkScoped(
-    Effect.sleep(INDICATOR_DELAY_MS).pipe(
-      Effect.andThen(
-        Effect.sync(() => {
-          shown = true
-        })
-      ),
-      Effect.andThen(spin(style, out, started))
-    ),
-    { uninterruptible: false }
+  const sweeping = yield* spinner(
+    style,
+    out,
+    now => `Sweeping workspaces… ${paint(style, 'dim', seconds(now - started))}`,
+    INDICATOR_DELAY_MS
   )
-  return {
-    sweepDone: Fiber.interrupt(spinner).pipe(Effect.andThen(clear)),
-    settle: () => Effect.void,
-  }
+  return { sweepDone: sweeping.stop, settle: () => Effect.void }
 })
 
 export const releaseIndicator = Effect.fnUntraced(function* (
@@ -235,10 +251,11 @@ const statusOf = (row: WorkspaceRow): string => {
     : 'A cleanup guard blocked removal after completion was verified.'
 }
 
-const commandStatus = (style: TerminalStyle, command: string, status: string): string =>
+export const commandStatus = (style: TerminalStyle, command: string, status: string): string =>
   `${paint(style, 'warn', command)}  ${paint(style, 'dim', status)}`
 
-const count = (value: number, noun: string): string => `${value} ${noun}${value === 1 ? '' : 's'}`
+export const count = (value: number, noun: string): string =>
+  `${value} ${noun}${value === 1 ? '' : 's'}`
 
 const successes = (
   rows: readonly { readonly kind: string; readonly outcome?: string }[],
@@ -425,6 +442,9 @@ export const formatQuitTaskReleasePlan = (
 
 export const formatQuitReleasePrompt = (style: TerminalStyle): string =>
   paint(style, 'warn', '[y = release, Enter = keep] ')
+
+export const formatQuitRetryPrompt = (style: TerminalStyle): string =>
+  `${paint(style, 'bold', 'Retry the return?')} ${paint(style, 'warn', '[y = retry, Enter = keep the orb] ')}`
 
 export const formatQuitSweepFailure = (style: TerminalStyle): string =>
   commandStatus(

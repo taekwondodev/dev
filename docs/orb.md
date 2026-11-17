@@ -75,7 +75,7 @@ To avoid waiting for a fresh boot, dev keeps one spare orb per data home, create
 
 Once its own orb is ready, a session requests a spare with the current `orb.json` when no orb record of the data home is a spare. It prints nothing while the TUI is open; a `409` or another refusal leaves the session without one. The check and the request are not atomic: two sessions whose orbs become ready together can each leave a spare, and a later launch takes one and leaves the other until it expires. A [writing child](#writing-children) takes the session's spare, still booting or ready, instead of creating an orb; after a child's orb is deleted, the session requests a spare again if it holds none.
 
-At quit, dev lets an in-flight spare request finish, so its record names the orb, and does not wait for `ACTIVE`. It prints the spare's id, the time until which it stays valid and its `dev orb delete` command, or why no spare was left.
+At quit, dev lets an in-flight spare request finish, so its record names the orb, and does not wait for `ACTIVE`. The [quit receipt](#quit-display) ends with the spare's `dev orb delete` command, its id and the time until which it stays valid, or why no spare was left.
 
 The next launch takes the spare, through the record's owner lock, when its Keystone URL and project match the credentials, its size and `ssh_allowed_cidr` equal the current `orb.json`, orbit reports it `RESERVING`, `BUILDING` or `ACTIVE`, and it has not expired. It assigns the spare's record to the checkout in place and prints the spare's id, status and age; a spare still booting is awaited like a new orb. Any other spare is deleted, and `DELETED` awaited before the launch requests its own orb, because the spare would take the capacity it needs: a spare whose machine stopped is in `ERROR`. A spare that orbit no longer has loses its record; one orbit cannot read, one of another project and one a running session holds are left as they are.
 
@@ -138,13 +138,30 @@ Every later `/orb sync`, and the quit-time return, first retries the normal retu
 
 dev deletes the orb once the return completed or its work is on a `dev/orb-return/` branch. A failed return (orb unreachable or in `ERROR`, a local Git error, a refused admission or entry) never deletes the orb:
 
-- With an interactive terminal, dev asks whether to retry: `y` retries the return; anything else, Ctrl-C at the prompt or a `SIGTERM` while it waits quits and keeps the orb.
+- With an interactive terminal, dev prints the failure and asks `Retry the return? [y = retry, Enter = keep the orb]`: `y` retries the return; anything else, Ctrl-C at the prompt or a `SIGTERM` while it waits quits and keeps the orb.
 - Without one, dev keeps the orb.
 - Ctrl-C during the return lets the started step finish, so the checkout is never half-written. If the return then failed, dev keeps the orb without asking.
 
-For a kept orb dev prints its id, where its work is, its `dev orb delete` command and that the next `dev --orb` [recovers](#recovery) it.
+For a kept orb the receipt names where its work is, that the next `dev --orb` [recovers](#recovery) it, and its `dev orb delete` command.
 
-Once the work has returned, dev sends `DELETE` and waits a bounded time for orbit to report `DELETED`, printing each state. If the wait ends first, or Ctrl-C stops it, dev exits, printing the orb's id and delete command and leaving the record to the next `dev --orb`, which deletes the orb.
+Once the work has returned, dev sends `DELETE` and waits a bounded time for orbit to report `DELETED`, showing the current state. If the wait ends first, or Ctrl-C stops it, dev exits; the receipt gives the orb's delete command and leaves the record to the next `dev --orb`, which deletes the orb.
+
+#### Quit display
+
+The orb step precedes the [workspace sweep](workspace.md#quit-and-interruption) and uses its presentation. When Pi reports Kitty graphics support and the terminal has room, a two-row strip shows the orb as a blue node whose branch carries the work toward the checkout's line, with the step and its elapsed time beside it:
+
+| Outcome                 | Strip                                                                  |
+| ----------------------- | ---------------------------------------------------------------------- |
+| Returned                | The work slides into the line and lands green                          |
+| Nothing to return       | The branch retracts                                                    |
+| Diverged                | The work lands yellow on a parallel line, the `dev/orb-return/` branch |
+| Return failed, orb kept | The orb and its branch turn red                                        |
+| Deleting                | The orb fades in and out until orbit reports `DELETED`, then vanishes  |
+| Deletion not confirmed  | The orb turns red                                                      |
+
+The line turns green when the work returned, or had nothing to return, and the orb was deleted. A spare left for the next launch is a hollow ring beside the line. Without graphics a live terminal shows a spinner line; without a terminal dev prints one line per step.
+
+The strip is transient, like the sweep's: it leaves no image or empty rows, and an interrupt notice waits until it is gone. A failed return that dev offers to retry ends its strip before the prompt, and a retry starts a new one. The receipt follows: one summary line with the return, the deletion and the elapsed time, then each command left to run with its reason, such as `git merge dev/orb-return/<record-id>` for diverged work.
 
 ### Recovery
 

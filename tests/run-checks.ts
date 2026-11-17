@@ -92,6 +92,7 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
   'orb:check': files(
     'tests/orb/orb-check.ts',
     'tests/orb/orb-spare-check.ts',
+    'tests/orb/orb-quit-check.ts',
     'tests/orb/orb-reader-check.ts',
     'tests/orb/orb-pager-check.ts',
     'tests/orb/orb-reachability-check.ts'

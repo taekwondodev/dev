@@ -6,20 +6,24 @@ import type * as Scope from 'effect/Scope'
 import {
   type BranchState,
   type Canvas,
+  type OrbScene,
   type QuitGraphics,
   type Scene,
   type SceneShape,
   type TerminalHold,
+  ORB_SHAPE,
   ROWS,
   SCAN_SHAPE,
   VANISH_MS,
   deleteImage,
+  drawOrb,
   drawRelease,
   drawSweep,
   encodeFrame,
   fadeAway,
   fitsStrip,
   makeCanvas,
+  orbEnd,
   releaseEnd,
   settleDuration,
   stripColumns,
@@ -222,6 +226,60 @@ export const sweepStrip = Effect.fnUntraced(function* (
   return { settle }
 })
 
+interface SceneStrip<S> {
+  readonly update: (change: (scene: S, t: number) => S) => Effect.Effect<void>
+  readonly finish: (summary: string) => Effect.Effect<void>
+}
+
+const sceneStrip = Effect.fnUntraced(function* <S>(
+  out: NodeJS.WritableStream,
+  graphics: QuitGraphics,
+  shape: SceneShape,
+  initial: S,
+  draw: (canvas: Canvas, scene: S, t: number) => void,
+  end: (scene: S) => number,
+  label: (elapsedMs: number) => string,
+  progress: boolean
+): Effect.fn.Return<SceneStrip<S>, never, Scope.Scope> {
+  const started = yield* Clock.currentTimeMillis
+  const strip = yield* openStrip(out, graphics)
+  const columns = stripColumns(graphics, shape)
+  let scene = initial
+  let result: string | undefined
+  const render = (t: number) =>
+    strip.frame(columns, canvas => draw(canvas, scene, t), result ?? label(t))
+  const loop = yield* Effect.forkScoped(
+    Effect.gen(function* () {
+      for (let index = 0; ; index += 1) {
+        yield* render((yield* Clock.currentTimeMillis) - started)
+        if (progress && index % PROGRESS_KEEPALIVE_FRAMES === 0)
+          yield* Effect.sync(() => {
+            out.write(PROGRESS_ACTIVE)
+          })
+        yield* Effect.sleep(FRAME_MS)
+      }
+    }),
+    { uninterruptible: false }
+  )
+  const update: SceneStrip<S>['update'] = change =>
+    Effect.map(Clock.currentTimeMillis, now => {
+      scene = change(scene, now - started)
+    })
+  const finish: SceneStrip<S>['finish'] = Effect.fnUntraced(function* (summary) {
+    result = summary
+    for (;;) {
+      const t = (yield* Clock.currentTimeMillis) - started
+      if (t >= end(scene)) break
+      yield* Effect.sleep(FRAME_MS)
+    }
+    yield* Fiber.interrupt(loop)
+    const last = Math.max((yield* Clock.currentTimeMillis) - started, end(scene))
+    yield* render(last)
+    yield* strip.leave(columns, canvas => draw(canvas, scene, last), HOLD_MS, summary)
+  })
+  return { update, finish }
+})
+
 export interface ReleaseStrip {
   readonly begin: (index: number) => Effect.Effect<void>
   readonly end: (index: number, merged: boolean) => Effect.Effect<void>
@@ -234,44 +292,43 @@ export const releaseStrip = Effect.fnUntraced(function* (
   initial: Scene,
   label: (elapsedMs: number) => string
 ): Effect.fn.Return<ReleaseStrip, never, Scope.Scope> {
-  const started = yield* Clock.currentTimeMillis
-  const strip = yield* openStrip(out, graphics)
-  const columns = stripColumns(graphics, { dots: initial.dots, branches: initial.branches.length })
-  const states: BranchState[] = [...initial.branches]
-  let result: string | undefined
-  const sceneNow = (): Scene => ({ dots: initial.dots, branches: states })
-  const render = (t: number) =>
-    strip.frame(columns, canvas => drawRelease(canvas, sceneNow(), t), result ?? label(t))
-  const loop = yield* Effect.forkScoped(
-    Effect.gen(function* () {
-      for (;;) {
-        yield* render((yield* Clock.currentTimeMillis) - started)
-        yield* Effect.sleep(FRAME_MS)
-      }
-    }),
-    { uninterruptible: false }
+  const strip = yield* sceneStrip(
+    out,
+    graphics,
+    { dots: initial.dots, branches: initial.branches.length },
+    initial,
+    drawRelease,
+    releaseEnd,
+    label,
+    false
   )
   const mark = (index: number, next: (t: number) => BranchState) =>
-    Effect.gen(function* () {
-      const t = (yield* Clock.currentTimeMillis) - started
-      yield* Effect.sync(() => {
-        states[index] = next(t)
-      })
-    })
-  const begin: ReleaseStrip['begin'] = index => mark(index, since => ({ kind: 'active', since }))
-  const end: ReleaseStrip['end'] = (index, merged) =>
-    mark(index, at => ({ kind: merged ? 'merged' : 'failed', at }))
-  const finish: ReleaseStrip['finish'] = Effect.fnUntraced(function* (summary) {
-    result = summary
-    for (;;) {
-      const t = (yield* Clock.currentTimeMillis) - started
-      if (t >= releaseEnd(sceneNow())) break
-      yield* Effect.sleep(FRAME_MS)
-    }
-    yield* Fiber.interrupt(loop)
-    const last = Math.max((yield* Clock.currentTimeMillis) - started, releaseEnd(sceneNow()))
-    yield* render(last)
-    yield* strip.leave(columns, canvas => drawRelease(canvas, sceneNow(), last), HOLD_MS, summary)
-  })
-  return { begin, end, finish }
+    strip.update((scene, t) => ({
+      dots: scene.dots,
+      branches: scene.branches.map((state, i) => (i === index ? next(t) : state)),
+    }))
+  return {
+    begin: index => mark(index, since => ({ kind: 'active', since })),
+    end: (index, merged) => mark(index, at => ({ kind: merged ? 'merged' : 'failed', at })),
+    finish: strip.finish,
+  }
 })
+
+export type OrbStrip = SceneStrip<OrbScene>
+
+export const orbStrip = (
+  out: NodeJS.WritableStream,
+  graphics: QuitGraphics,
+  spare: boolean,
+  label: (elapsedMs: number) => string
+): Effect.Effect<OrbStrip, never, Scope.Scope> =>
+  sceneStrip<OrbScene>(
+    out,
+    graphics,
+    ORB_SHAPE,
+    { work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare },
+    drawOrb,
+    orbEnd,
+    label,
+    true
+  )

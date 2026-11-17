@@ -9,7 +9,7 @@ import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { errorText } from '../error-text.ts'
 import { WorkspaceId, type WorkspaceLifecycle } from '../workspace-domain.ts'
 import type { KeystoneToken, Orbit } from './cloud.ts'
-import { deleteOrb, deleteRecorded } from './deletion.ts'
+import { deleteOrb, deleteRecorded, printDeletion } from './deletion.ts'
 import {
   deleteCommand,
   holdsWork,
@@ -187,7 +187,9 @@ const recoverOrb = Effect.fnUntraced(function* (
         : `orb: the work of orb ${label} is on the branch ${returned.value} of ${fields.checkout}; merge it with: git merge ${returned.value}`
     )
   } else print(`orb: orb ${label} holds no work (phase ${fields.phase}); deleting it`)
-  const deleted = yield* Effect.exit(deleteRecorded(orbit, record, orbId, print))
+  const deleted = yield* Effect.exit(
+    deleteRecorded(orbit, record, orbId, printDeletion(orbId, print))
+  )
   if (Exit.isSuccess(deleted)) return 'removed'
   print(
     `orb: orb ${label} could not be confirmed deleted: ${failureText(deleted.cause)}\nThe next dev --orb checks it again. Delete it with: ${command}`
@@ -359,7 +361,7 @@ const recoverRequested = Effect.fnUntraced(function* (
       print(`orb: orb ${shortId(view.id)} was kept: a running dev --orb recorded it meanwhile`)
       continue
     }
-    const deleted = yield* Effect.exit(deleteOrb(orbit, view.id, print))
+    const deleted = yield* Effect.exit(deleteOrb(orbit, view.id, printDeletion(view.id, print)))
     if (Exit.isFailure(deleted)) {
       failed = true
       print(

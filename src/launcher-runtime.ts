@@ -117,6 +117,7 @@ import {
   formatQuitSweepFailure,
   progressDone,
   quitReleaseExclusion,
+  formatQuitRetryPrompt,
   releaseIndicator,
   sweepIndicator,
   sweptWorktrees,
@@ -854,7 +855,7 @@ const askConfirmation = (prompt: string): Effect.Effect<Confirmation> =>
   })
 
 export const orbQuit = (
-  cancel: Pick<OrbQuit, 'proceed' | 'interrupted'>,
+  cancel: Pick<OrbQuit, 'proceed' | 'interrupted' | 'terminal'>,
   terminal: {
     readonly stdin: { readonly isTTY?: boolean }
     readonly stdout: { readonly isTTY?: boolean }
@@ -866,7 +867,7 @@ export const orbQuit = (
         ...cancel,
         askRetry: Effect.raceFirst(
           Effect.map(
-            ask('Type y to retry the return, anything else to quit and keep the orb: '),
+            ask(formatQuitRetryPrompt(cancel.terminal?.style ?? { live: true, color: false })),
             answer => answer === 'confirmed'
           ),
           Effect.as(cancel.interrupted, false)
@@ -875,7 +876,7 @@ export const orbQuit = (
     : cancel
 
 const ORB_INTERRUPT_NOTICE =
-  'Interrupt received: the started orb step runs on until it ends, so the checkout is never left half-written; an orb whose work has not returned is kept, a returned orb is deleted without waiting for orbit to confirm it, and dev exits 130 afterwards.'
+  'Interrupt received: the started orb step finishes, so the checkout is never half-written; an orb whose work has not returned is kept, a returned orb is deleted without waiting for orbit to confirm it, and dev exits 130 afterwards.'
 
 const latchSignal = (signalled: Deferred.Deferred<void>): void => {
   const onSignal = (): void => {
@@ -1682,7 +1683,21 @@ const run = Effect.fnUntraced(function* (
         const stop = stopWork
         if (stop !== undefined)
           yield* Effect.ignore(fromPromise('Cannot stop background work', stop))
-        yield* Effect.uninterruptible(closing.close(orbQuit(step, process))).pipe(
+        const quit = orbQuit(
+          {
+            proceed: step.proceed,
+            interrupted: step.interrupted,
+            terminal: {
+              style: terminalStyle(process.stdout, process.env),
+              out: process.stdout,
+              columns: process.stdout.columns,
+              hold: step.hold,
+              module: terminalModule.current(),
+            },
+          },
+          process
+        )
+        yield* Effect.uninterruptible(closing.close(quit)).pipe(
           Effect.ensuring(Effect.sync(step.end))
         )
       }
