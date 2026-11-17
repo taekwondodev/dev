@@ -7,6 +7,7 @@ import {
   type BranchState,
   type Canvas,
   type OrbScene,
+  type OrbStartScene,
   type QuitGraphics,
   type Scene,
   type SceneShape,
@@ -17,6 +18,7 @@ import {
   VANISH_MS,
   deleteImage,
   drawOrb,
+  drawOrbStart,
   drawRelease,
   drawSweep,
   encodeFrame,
@@ -24,6 +26,7 @@ import {
   fitsStrip,
   makeCanvas,
   orbEnd,
+  orbStartEnd,
   releaseEnd,
   settleDuration,
   stripColumns,
@@ -43,6 +46,7 @@ const DEFAULT_COLUMNS = 80
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
 const PROGRESS_KEEPALIVE_FRAMES = 60
 const BOTTOM_ROW = `\x1b[${ROWS - 1}B`
+const RESERVE_ROWS = `${'\n'.repeat(ROWS)}\x1b[${ROWS}A`
 const CLEAR_ROWS = `\x1b8${Array.from({ length: ROWS }, () => '\x1b[2K').join('\x1b[1B')}\x1b8\r`
 
 export const loadQuitGraphics = (
@@ -73,6 +77,7 @@ export const stripFits = (
 ): graphics is QuitGraphics => graphics !== undefined && fitsStrip(graphics, shape, labelColumns)
 
 interface Strip {
+  readonly note: (text: string) => void
   readonly frame: (
     columns: number,
     draw: (canvas: Canvas) => void,
@@ -108,7 +113,7 @@ const openStrip = Effect.fnUntraced(function* (
       if (!opened) {
         opened = true
         graphics.hold.begin()
-        out.write(`${'\n'.repeat(ROWS)}\x1b[${ROWS}A\x1b[?25l\x1b7`)
+        out.write(`${RESERVE_ROWS}\x1b[?25l\x1b7`)
       }
       const shown =
         columns + 2 + stripVTControlCharacters(label).length <= graphics.columns ? label : ''
@@ -130,6 +135,16 @@ const openStrip = Effect.fnUntraced(function* (
       )
       previousId = id
     })
+  const note: Strip['note'] = text => {
+    if (finished || !opened) {
+      out.write(`${text}\n`)
+      return
+    }
+    out.write(
+      `${previousId === undefined ? '' : deleteImage(previousId)}${CLEAR_ROWS}${text}\n${RESERVE_ROWS}\x1b7`
+    )
+    previousId = undefined
+  }
   const leave: Strip['leave'] = Effect.fnUntraced(function* (columns, draw, holdMs, label) {
     if (opened) {
       yield* Effect.sleep(holdMs)
@@ -150,7 +165,7 @@ const openStrip = Effect.fnUntraced(function* (
     }
     yield* close
   })
-  return { frame, leave }
+  return { note, frame, leave }
 })
 
 export interface SweepStrip {
@@ -228,6 +243,7 @@ export const sweepStrip = Effect.fnUntraced(function* (
 
 interface SceneStrip<S> {
   readonly update: (change: (scene: S, t: number) => S) => Effect.Effect<void>
+  readonly note: (text: string) => void
   readonly finish: (summary: string) => Effect.Effect<void>
 }
 
@@ -239,9 +255,10 @@ const sceneStrip = Effect.fnUntraced(function* <S>(
   draw: (canvas: Canvas, scene: S, t: number) => void,
   end: (scene: S) => number,
   label: (elapsedMs: number) => string,
-  progress: boolean
+  progress: boolean,
+  origin?: number
 ): Effect.fn.Return<SceneStrip<S>, never, Scope.Scope> {
-  const started = yield* Clock.currentTimeMillis
+  const started = origin ?? (yield* Clock.currentTimeMillis)
   const strip = yield* openStrip(out, graphics)
   const columns = stripColumns(graphics, shape)
   let scene = initial
@@ -277,7 +294,7 @@ const sceneStrip = Effect.fnUntraced(function* <S>(
     yield* render(last)
     yield* strip.leave(columns, canvas => draw(canvas, scene, last), HOLD_MS, summary)
   })
-  return { update, finish }
+  return { update, note: strip.note, finish }
 })
 
 export interface ReleaseStrip {
@@ -332,3 +349,14 @@ export const orbStrip = (
     label,
     true
   )
+
+export type OrbStartStrip = SceneStrip<OrbStartScene>
+
+export const orbStartStrip = (
+  out: NodeJS.WritableStream,
+  graphics: QuitGraphics,
+  scene: OrbStartScene,
+  origin: number,
+  label: (elapsedMs: number) => string
+): Effect.Effect<OrbStartStrip, never, Scope.Scope> =>
+  sceneStrip(out, graphics, ORB_SHAPE, scene, drawOrbStart, orbStartEnd, label, true, origin)

@@ -37,10 +37,13 @@ export const paint = (style: TerminalStyle, tone: Tone, text: string): string =>
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
 const PROGRESS_FAILED = '\x1b]9;4;2;100\x07'
 const PROGRESS_SUCCEEDED = '\x1b]9;4;1;100\x07'
+const PROGRESS_CLEARED = '\x1b]9;4;0\x07'
 export const progressDone = (style: TerminalStyle, failed: boolean): string => {
   if (!style.live) return ''
   return failed ? PROGRESS_FAILED : PROGRESS_SUCCEEDED
 }
+export const progressCleared = (style: TerminalStyle): string =>
+  style.live ? PROGRESS_CLEARED : ''
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 const FRAME_MS = 80

@@ -55,7 +55,7 @@ Git clone, fetch and push, package installation and dependency downloads need de
 
 ### Startup
 
-Before the TUI opens, dev prints one line per phase with the elapsed time:
+Before the TUI opens, dev goes through these phases, shown as the [start display](#start-display):
 
 1. It authenticates to Keystone with `openstack.json` and finds orbit as the public endpoint of catalog type `orbit`.
 2. It [recovers](#recovery) the orbs that ended sessions left behind.
@@ -68,6 +68,22 @@ Before the TUI opens, dev prints one line per phase with the elapsed time:
 The checkout must be on a branch with at least one commit. The footer shows the orb's id and state for the whole session.
 
 A failed step refuses the launch without retrying it: orbit's refusal (`401`, `403`, `409`, `502`, `503`), an orb that reaches `ERROR` (orbit's fault is printed; this includes orbit's ready timeout) or a failed upload. dev deletes the orb it created, waits for `DELETED`, removes the record, [withdraws](#recovery) the session's writer use and, on a pre-existing checkout, the reservation the launch took, prints the cause and exits with code 1. The next launch therefore writes the same checkout. For a `409`, the message also lists the project's orbs that are not being deleted and the command that deletes one. Only the SSH connection after `ACTIVE` gets bounded retries, because the orb's SSH server may not be listening yet.
+
+#### Start display
+
+The start uses the presentation of the [quit display](#quit-display), on the same two-row strip, when Pi's terminal detection reports Kitty graphics and the terminal answers the cell-size query. The orb takes the place where the quit finds it, at the head of a branch above the checkout's line:
+
+| Phase                      | Strip                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------- |
+| Until orbit assigns an orb | A white satellite circles an empty tilted orbit, after orbit's logo                      |
+| `RESERVING`                | A hollow blue ring appears inside the orbit                                              |
+| `BUILDING`                 | The ring fills while it breathes                                                         |
+| `ACTIVE`, SSH connection   | The orb turns solid blue; the satellite keeps circling until SSH answers                 |
+| Upload                     | The orbit docks and the branch grows from the line up to the orb, carrying the checkout  |
+| Ready                      | The orb and its branch stay blue, the scene the quit starts from                         |
+| Failed or cancelled start  | A failure turns the orb red; the orb fades in and out while it is deleted, then vanishes |
+
+Beside the strip stand the current phase, orbit's status and the time since launch. Messages of recovery and of the spare step print above the strip, and a recovery prompt removes the strip until it is answered. The strip is transient: it leaves no image or empty rows, then one line remains, such as `✓ orb <id> ready · main at <commit> on <user>@<host> · 74.2s`, or what happened to the orb of a failed or cancelled start. Without graphics a live terminal shows a spinner line and the same receipt; without a terminal dev prints one line per phase with the elapsed time.
 
 ### Spare orb
 

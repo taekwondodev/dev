@@ -131,7 +131,11 @@ import {
 import { loadQuitGraphics, type QuitTerminal } from './quit-animation.ts'
 import { makeSessionEnd, type SessionEnd, type SignalCode } from './session-end.ts'
 import { makeLeadProgramStatus, type LeadProgramStatus } from './program-status.ts'
-import { makeTerminalModuleSource, type TerminalModuleSource } from './terminal-module.ts'
+import {
+  loadStartupTerminalModule,
+  makeTerminalModuleSource,
+  type TerminalModuleSource,
+} from './terminal-module.ts'
 import {
   SETTLED_AT,
   type BranchState,
@@ -1554,6 +1558,10 @@ const run = Effect.fnUntraced(function* (
   const orbModule = options.orb
     ? yield* fromPromise('Cannot load orb mode', () => import('./orb/session.ts'))
     : undefined
+  const startupTerminal =
+    orbModule === undefined
+      ? undefined
+      : yield* loadStartupTerminalModule(packageInfo.root, process.stdin, process.stdout)
   let orbSession: OrbSession | undefined
   const secondInterrupt = Deferred.makeUnsafe<void>()
   let stopWork: (() => Promise<void>) | undefined
@@ -1572,6 +1580,12 @@ const run = Effect.fnUntraced(function* (
                         process.stdout.write(`${line}\n`)
                       },
                       secondInterrupt: Deferred.await(secondInterrupt),
+                      terminal: {
+                        style: terminalStyle(process.stdout, process.env),
+                        out: process.stdout,
+                        columns: process.stdout.columns,
+                        module: startupTerminal,
+                      },
                       ...(process.stdin.isTTY && process.stdout.isTTY
                         ? {
                             confirm: (prompt: string) =>

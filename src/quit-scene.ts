@@ -64,6 +64,23 @@ export interface OrbScene {
   readonly spare: boolean
 }
 
+export type OrbArrival =
+  | { readonly kind: 'awaited' }
+  | { readonly kind: 'reserved'; readonly at: number }
+  | { readonly kind: 'building'; readonly since: number }
+  | { readonly kind: 'active'; readonly at: number }
+
+export type OrbLaunch =
+  | { readonly kind: 'pending' }
+  | { readonly kind: 'ready' | 'failed' | 'cancelled'; readonly at: number }
+
+export interface OrbStartScene {
+  readonly arrival: OrbArrival
+  readonly upload: number | undefined
+  readonly launch: OrbLaunch
+  readonly fate: OrbFate
+}
+
 export const SETTLED_AT = -1_000_000
 export const SCAN_SHAPE: SceneShape = { dots: 2, branches: 2 }
 export const ORB_SHAPE: SceneShape = { dots: 0, branches: 1 }
@@ -82,6 +99,10 @@ const FAILED_TAIL = 360
 const RETRACT_MS = 300
 const BREATH_PERIOD = 1100
 const SPARE_DELAY = 180
+const ORBIT_PERIOD = 2000
+const ORBIT_IN_MS = 320
+const DOCK_MS = 320
+const ORBIT_TILT = (-18 * Math.PI) / 180
 
 const bezier = (x1: number, y1: number, x2: number, y2: number) => {
   const cx = (t: number): number => 3 * x1 * t * (1 - t) ** 2 + 3 * x2 * t * t * (1 - t) + t ** 3
@@ -669,6 +690,178 @@ export const drawOrb = (canvas: Canvas, scene: OrbScene, t: number): void => {
     )
   drawOrbWork(canvas, scene, path, t)
   drawOrbNode(canvas, scene, head, t)
+}
+
+const GROW_MS = 340
+
+const orbitGone = (scene: OrbStartScene): number | undefined =>
+  scene.upload ?? (scene.launch.kind === 'pending' ? undefined : scene.launch.at)
+
+const launchEnd = (launch: OrbLaunch): number => {
+  switch (launch.kind) {
+    case 'pending':
+      return 0
+    case 'ready':
+      return launch.at + RING_MS
+    case 'failed':
+      return launch.at + FAILED_TAIL
+    case 'cancelled':
+      return launch.at
+  }
+}
+
+export const orbStartEnd = (scene: OrbStartScene): number => {
+  const gone = orbitGone(scene)
+  const { arrival } = scene
+  return Math.max(
+    SCAN_DRAW_MS,
+    gone === undefined ? 0 : gone + DOCK_MS,
+    scene.upload === undefined ? 0 : scene.upload + GROW_MS,
+    arrival.kind === 'active' || arrival.kind === 'reserved' ? arrival.at + RING_MS : 0,
+    launchEnd(scene.launch),
+    fateEnd(scene.fate)
+  )
+}
+
+interface OrbitView {
+  readonly scale: number
+  readonly alpha: number
+  readonly theta: number
+  readonly failed: boolean
+}
+
+const orbitView = (scene: OrbStartScene, t: number): OrbitView | undefined => {
+  const gone = orbitGone(scene)
+  const dock = gone === undefined ? 0 : easeOut(progress(t, gone, DOCK_MS))
+  if (dock >= 1) return undefined
+  const appear = easeOut(progress(t, 0, ORBIT_IN_MS))
+  return {
+    scale: mix(0.6, 1, appear) * mix(1, 0.55, dock),
+    alpha: appear * (1 - dock),
+    theta: (2 * Math.PI * Math.min(t, gone ?? t)) / ORBIT_PERIOD,
+    failed: scene.launch.kind === 'failed',
+  }
+}
+
+const orbitPoint = (center: Point, H: number, scale: number, theta: number): Point => {
+  const x = -0.3 * H * scale * Math.cos(theta)
+  const y = 0.09 * H * scale * Math.sin(theta)
+  const c = Math.cos(ORBIT_TILT)
+  const s = Math.sin(ORBIT_TILT)
+  return [center[0] + x * c - y * s, center[1] + x * s + y * c]
+}
+
+const drawOrbitHalf = (
+  canvas: Canvas,
+  center: Point,
+  orbit: OrbitView,
+  half: 'behind' | 'ahead'
+): void => {
+  const H = canvas.height
+  const from = half === 'ahead' ? 0 : Math.PI
+  const arc = Array.from({ length: 25 }, (_, i) =>
+    orbitPoint(center, H, orbit.scale, from + (Math.PI * i) / 24)
+  )
+  polyline(canvas, arc, 0.03 * H, PALETTE.gray, 0.55 * orbit.alpha)
+  if (Math.sin(orbit.theta) < 0 !== (half === 'behind')) return
+  const [x, y] = orbitPoint(center, H, orbit.scale, orbit.theta)
+  const rgb = orbit.failed ? PALETTE.red : PALETTE.white
+  circle(canvas, x, y, 0.1 * H * orbit.scale, rgb, 0.18 * orbit.alpha)
+  circle(canvas, x, y, 0.05 * H * orbit.scale, rgb, 0.95 * orbit.alpha)
+}
+
+const drawUpload = (
+  canvas: Canvas,
+  scene: OrbStartScene,
+  path: readonly Point[],
+  t: number
+): void => {
+  if (scene.upload === undefined) return
+  const H = canvas.height
+  const since = t - scene.upload
+  const grown = easeOut(progress(since, 0, GROW_MS))
+  const { launch } = scene
+  if (launch.kind === 'failed') {
+    const dx = shake(t - launch.at, 0.07 * H)
+    polyline(
+      canvas,
+      subPath(path, 1 - grown, 1).map((point): Point => [point[0] + dx, point[1]]),
+      0.065 * H,
+      PALETTE.red,
+      1
+    )
+    return
+  }
+  polyline(canvas, subPath(path, 1 - grown, 1), 0.065 * H, PALETTE.blue, 1)
+  if (launch.kind !== 'pending' || since < GROW_MS) return
+  const [px, py] = pointAt(path, 1 - ((since - GROW_MS) % PULSE_PERIOD) / PULSE_PERIOD)
+  circle(canvas, px, py, 0.13 * H, PALETTE.white, 0.18)
+  circle(canvas, px, py, 0.065 * H, PALETTE.white, 0.95)
+}
+
+const startFailedAt = (scene: OrbStartScene): number | undefined => {
+  if (scene.launch.kind === 'failed') return scene.launch.at
+  if (scene.fate.kind === 'undeleted') return scene.fate.at
+  return undefined
+}
+
+const drawArrival = (canvas: Canvas, scene: OrbStartScene, head: Point, t: number): void => {
+  const H = canvas.height
+  const { arrival, launch, fate } = scene
+  if (arrival.kind === 'awaited') return
+  const failedAt = startFailedAt(scene)
+  const rgb = failedAt === undefined ? PALETTE.blue : PALETTE.red
+  const x = head[0] + (failedAt === undefined ? 0 : shake(t - failedAt, 0.07 * H))
+  if (fate.kind === 'deleted') {
+    const k = easeOut(progress(t - fate.at, 0, VANISH_MS))
+    if (k < 1) circle(canvas, x, head[1], 0.15 * H * mix(1, 0.9, k), rgb, 1 - k)
+    const r = easeOut(progress(t - fate.at, 0, RING_MS))
+    if (r < 1) ring(canvas, x, head[1], mix(0.15, 0.32, r) * H, 0.035 * H, rgb, 0.5 * (1 - r))
+    return
+  }
+  const shown =
+    fate.kind === 'deleting'
+      ? mix(0.35, 1, 0.5 + 0.5 * Math.cos((2 * Math.PI * (t - fate.since)) / BREATH_PERIOD))
+      : 1
+  switch (arrival.kind) {
+    case 'reserved':
+      ring(
+        canvas,
+        x,
+        head[1],
+        0.13 * H * spring(t - arrival.at, 0.7, 380),
+        0.04 * H,
+        rgb,
+        0.9 * shown
+      )
+      return
+    case 'building': {
+      const breath = 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - arrival.since)) / BREATH_PERIOD)
+      ring(canvas, x, head[1], 0.13 * H, 0.04 * H, rgb, 0.9 * shown)
+      circle(canvas, x, head[1], 0.13 * H, rgb, mix(0.15, 0.55, breath) * shown)
+      return
+    }
+    case 'active': {
+      const r = easeOut(progress(t - arrival.at, 0, RING_MS))
+      if (r < 1)
+        ring(canvas, x, head[1], mix(0.15, 0.32, r) * H, 0.035 * H, rgb, 0.5 * (1 - r) * shown)
+      if (launch.kind === 'ready')
+        ring(canvas, x, head[1], 0.21 * H * spring(t - launch.at, 0.7, 380), 0.035 * H, rgb, 0.35)
+      circle(canvas, x, head[1], 0.15 * H * spring(t - arrival.at, 0.85, 380), rgb, shown)
+    }
+  }
+}
+
+export const drawOrbStart = (canvas: Canvas, scene: OrbStartScene, t: number): void => {
+  const L = layout(canvas.height, ORB_SHAPE)
+  const path = L.branches[0] as readonly Point[]
+  const head = path[0] as Point
+  mainLine(canvas, L, scanReach(L, t), L.lineEnd, PALETTE.gray, 0.55)
+  drawUpload(canvas, scene, path, t)
+  const orbit = orbitView(scene, t)
+  if (orbit !== undefined) drawOrbitHalf(canvas, head, orbit, 'behind')
+  drawArrival(canvas, scene, head, t)
+  if (orbit !== undefined) drawOrbitHalf(canvas, head, orbit, 'ahead')
 }
 
 export const toRgba = (canvas: Canvas): Buffer => {
