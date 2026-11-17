@@ -124,7 +124,7 @@ await claim(
       launch: { kind: 'ready', at: 2000 },
     })
     const end = orbStartEnd(ready)
-    assert.ok(end >= 2000 + 460, String(end))
+    assert.ok(end > 2000 && end <= 2000 + 200, String(end))
     assert.ok(isBlue(pixel(ready, end, head.x, head.y)))
     assert.ok(isBlue(pixel(ready, end, near.x, near.y)))
     assert.ok(isBlue(pixel(ready, end, far.x, far.y)))
@@ -308,6 +308,35 @@ await claim(
       'the terminal progress ends before the TUI opens'
     )
     assert.ok(text.includes('\x1b]9;4;3\x07'), 'the terminal shows progress')
+  }
+)
+
+const settleTime = async (last: readonly Step[]) => {
+  let shown = 0
+  await viewRun(
+    view =>
+      play(view, [...happy.slice(0, 12), 400, ...last]).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            shown = performance.now()
+          })
+        )
+      ),
+    { style: live, module: kitty }
+  )
+  return performance.now() - shown
+}
+
+await claim(
+  'a ready start fades at once so the TUI opens without waiting, and a failed start holds its last frame like the quit',
+  async () => {
+    const ready = await settleTime([{ kind: 'ready', orbId: ORB }])
+    const failed = await settleTime([
+      { kind: 'discarding', orbId: ORB, interrupted: false },
+      { kind: 'deletion', orbId: ORB, progress: { kind: 'deleted' } },
+    ])
+    assert.ok(failed >= 750, String(failed))
+    assert.ok(failed - ready >= 250, `ready ${ready}, failed ${failed}`)
   }
 )
 

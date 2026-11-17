@@ -4,6 +4,7 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
 import {
+  HOLD_MS,
   loadQuitGraphics,
   orbStartStrip,
   stripFits,
@@ -279,9 +280,11 @@ export const openOrbStartView = Effect.fnUntraced(function* (
         case 'spinner':
           return current.spinner.stop.pipe(Effect.andThen(Scope.close(current.scope, Exit.void)))
         case 'strip':
-          return (summary === undefined ? Effect.void : current.strip.finish(summary)).pipe(
-            Effect.ensuring(Scope.close(current.scope, Exit.void))
-          )
+          return (
+            summary === undefined
+              ? Effect.void
+              : current.strip.finish(summary, result.outcome.kind === 'ready' ? 0 : HOLD_MS)
+          ).pipe(Effect.ensuring(Scope.close(current.scope, Exit.void)))
       }
     })
 

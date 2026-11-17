@@ -693,6 +693,7 @@ export const drawOrb = (canvas: Canvas, scene: OrbScene, t: number): void => {
 }
 
 const GROW_MS = 340
+const READY_MS = 200
 
 const orbitGone = (scene: OrbStartScene): number | undefined =>
   scene.upload ?? (scene.launch.kind === 'pending' ? undefined : scene.launch.at)
@@ -702,7 +703,7 @@ const launchEnd = (launch: OrbLaunch): number => {
     case 'pending':
       return 0
     case 'ready':
-      return launch.at + RING_MS
+      return launch.at + READY_MS
     case 'failed':
       return launch.at + FAILED_TAIL
     case 'cancelled':

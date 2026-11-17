@@ -40,7 +40,7 @@ export type QuitTerminal = Pick<
 >
 
 const FRAME_MS = 16
-const HOLD_MS = 250
+export const HOLD_MS = 250
 const NOTHING: SceneShape = { dots: 0, branches: 0 }
 const DEFAULT_COLUMNS = 80
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
@@ -244,7 +244,7 @@ export const sweepStrip = Effect.fnUntraced(function* (
 interface SceneStrip<S> {
   readonly update: (change: (scene: S, t: number) => S) => Effect.Effect<void>
   readonly note: (text: string) => void
-  readonly finish: (summary: string) => Effect.Effect<void>
+  readonly finish: (summary: string, holdMs?: number) => Effect.Effect<void>
 }
 
 const sceneStrip = Effect.fnUntraced(function* <S>(
@@ -282,7 +282,7 @@ const sceneStrip = Effect.fnUntraced(function* <S>(
     Effect.map(Clock.currentTimeMillis, now => {
       scene = change(scene, now - started)
     })
-  const finish: SceneStrip<S>['finish'] = Effect.fnUntraced(function* (summary) {
+  const finish: SceneStrip<S>['finish'] = Effect.fnUntraced(function* (summary, holdMs = HOLD_MS) {
     result = summary
     for (;;) {
       const t = (yield* Clock.currentTimeMillis) - started
@@ -292,7 +292,7 @@ const sceneStrip = Effect.fnUntraced(function* <S>(
     yield* Fiber.interrupt(loop)
     const last = Math.max((yield* Clock.currentTimeMillis) - started, end(scene))
     yield* render(last)
-    yield* strip.leave(columns, canvas => draw(canvas, scene, last), HOLD_MS, summary)
+    yield* strip.leave(columns, canvas => draw(canvas, scene, last), holdMs, summary)
   })
   return { update, note: strip.note, finish }
 })
