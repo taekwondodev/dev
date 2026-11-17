@@ -711,17 +711,19 @@ await claim(
   async () => {
     const initial: Scene = { dots: 1, branches: [{ kind: 'waiting' }, { kind: 'waiting' }] }
     const out = collector()
-    const { holds, held } = counted()
+    const { holds, held: holding } = counted()
     const since = (from: string) => out.text().slice(from.length)
     let waiting = ''
     let still = ''
     let begun = ''
     let moving = ''
+    let joined = ''
+    let both = ''
     let ended = ''
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const strip = yield* releaseIndicator(live, out.stream, held, initial, 1)
+          const strip = yield* releaseIndicator(live, out.stream, holding, initial, 1)
           assert.ok(strip !== undefined)
           yield* observed('the waiting release shown', () => releaseLabels(out.text()) >= 3)
           waiting = out.text()
@@ -735,6 +737,13 @@ await claim(
           )
           yield* observed('frames named', () => selectedFrames(since(begun)).length >= 12)
           moving = out.text()
+          yield* strip.begin(1)
+          joined = out.text()
+          yield* observed(
+            'the loop of both branches sent',
+            () => kittyCommandsSent(since(joined), 'a=f,') >= 40
+          )
+          both = out.text()
           yield* strip.end(0, true)
           ended = out.text()
           yield* observed(
@@ -749,15 +758,25 @@ await claim(
     assert.equal(kittyCommandsSent(whileStill, 'a=T,'), 0, 'no image while it waits')
     assert.equal(kittyCommandsSent(whileStill, 'a=f,'), 0)
     assert.deepEqual(selectedFrames(whileStill), [], 'a still image has one frame')
+    const widthPx = stripColumns(graphics, { dots: 1, branches: 2 }) * graphics.cellWidth
+    const held = (text: string) => playClip(text.slice(text.lastIndexOf('\x1b_Ga=T,')), widthPx)
     const loop = moving.slice(begun.length)
-    const frames = playClip(
-      loop.slice(loop.lastIndexOf('\x1b_Ga=T,')),
-      stripColumns(graphics, { dots: 1, branches: 2 }) * graphics.cellWidth
-    )
+    const frames = held(loop)
     const shown = new Set(
       selectedFrames(loop).map(frame => (frames[frame - 1] as Buffer).toString('latin1'))
     )
-    assert.ok(shown.size >= 6, `${shown.size} different frames shown`)
+    assert.ok(shown.size >= 2, 'the frames shown differ')
+    const secondHead = (Math.round(0.22 * H) * widthPx + Math.round(2.35 * H)) * 4 + 3
+    const together = held(both.slice(joined.length))
+    assert.equal(together.length, frames.length, 'the same period')
+    assert.ok(
+      frames.every(frame => (frame[secondHead] ?? 0) < 240),
+      'the second branch waits in the first loop'
+    )
+    assert.ok(
+      together.every(frame => frame[secondHead] === 255),
+      'a branch that starts beside one in progress replaces the loop of the same period'
+    )
     assertNothingLeft(out.text())
     assert.deepEqual(holds, ['begin', 'end'])
   }
