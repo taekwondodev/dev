@@ -368,6 +368,7 @@ await claim(
   () => {
     const steady: readonly (readonly [OrbScene, number])[] = [
       [{ work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare: true }, 820],
+      [{ work: { kind: 'returning', since: 0 }, fate: { kind: 'present' }, spare: false }, 820],
       [
         {
           work: { kind: 'returned', at: 500 },
