@@ -3,6 +3,8 @@ import { randomBytes } from 'node:crypto'
 import { Writable } from 'node:stream'
 import { inflateSync } from 'node:zlib'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as TestClock from 'effect/testing/TestClock'
 import { loadQuitGraphics, type QuitTerminal } from '../../src/quit-animation.ts'
 import { releaseIndicator, sweepIndicator, terminalStyle } from '../../src/quit-display.ts'
 import {
@@ -11,16 +13,20 @@ import {
   type Scene,
   type SceneShape,
   ROWS,
+  SCAN_DRAW_MS,
+  SCAN_PERIOD,
   SCAN_SHAPE,
   SETTLED_AT,
   VANISH_MS,
   drawRelease,
   drawSweep,
+  encodeClip,
   encodeFrame,
   fadeAway,
   fitsStrip,
   makeCanvas,
   releaseEnd,
+  releasePeriod,
   settleDuration,
   stripColumns,
   toRgba,
@@ -390,6 +396,156 @@ await claim('the graphical sweep animates in place and always restores the termi
   assertNothingLeft(await runSweep(live, graphics, undefined))
 })
 
+const scanAt = (t: number) => {
+  const canvas = makeCanvas(stripColumns(graphics, SCAN_SHAPE) * graphics.cellWidth, H)
+  drawSweep(canvas, t)
+  return toRgba(canvas)
+}
+const releaseAt = (scene: Scene, t: number) => {
+  const canvas = makeCanvas(
+    stripColumns(graphics, { dots: scene.dots, branches: scene.branches.length }) *
+      graphics.cellWidth,
+    H
+  )
+  drawRelease(canvas, scene, t)
+  return toRgba(canvas)
+}
+
+await claim(
+  'a settled scan and a release with a branch in progress repeat exactly, and a release with none stands still',
+  () => {
+    const active: Scene = {
+      dots: 1,
+      branches: [{ kind: 'merged', at: 100 }, { kind: 'active', since: 300 }, { kind: 'waiting' }],
+    }
+    const waiting: Scene = { dots: 0, branches: [{ kind: 'failed', at: 100 }, { kind: 'waiting' }] }
+    assert.equal(releasePeriod(active), 820)
+    assert.equal(releasePeriod(waiting), 0)
+    for (const offset of [0, 137, 611]) {
+      const t = SCAN_DRAW_MS + offset
+      assert.ok(scanAt(t).equals(scanAt(t + SCAN_PERIOD)), `scan at +${offset}`)
+      const settled = releaseEnd(active) + offset
+      assert.ok(releaseAt(active, settled).equals(releaseAt(active, settled + 820)))
+      const still = releaseEnd(waiting) + offset
+      assert.ok(releaseAt(waiting, still).equals(releaseAt(waiting, still + 700)))
+    }
+    assert.ok(
+      !scanAt(SCAN_DRAW_MS).equals(scanAt(SCAN_DRAW_MS + 400)),
+      'the settled scan still moves'
+    )
+  }
+)
+
+const kittyCommandsSent = (text: string, command: string): number =>
+  text.split(`\x1b_G${command}`).length - 1
+
+await claim(
+  'a sweep streams its opening, uploads its settled scan once, and leaves nothing behind',
+  async () => {
+    const out = collector()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const indicator = yield* sweepIndicator(live, out.stream, graphics)
+          yield* TestClock.adjust(300)
+          assert.ok(placedIds(out.text()).length > 1, 'the scan opening streams full images')
+          assert.equal(kittyCommandsSent(out.text(), 'a=f,'), 0, 'no loop during the opening')
+          yield* TestClock.adjust(450)
+          assert.ok(kittyCommandsSent(out.text(), 'a=f,') > 0, 'the settled loop was uploaded')
+          const settled = out.chunks.length
+          yield* TestClock.adjust(300)
+          const whileSettled = out.chunks.slice(settled).join('')
+          assert.ok(kittyCommandsSent(whileSettled, 'a=a,') > 1, 'dev selects frames')
+          assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
+          assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
+          assert.ok(whileSettled.includes('\x1b[2mSweeping workspaces… '), 'the time still runs')
+          const finish = yield* Effect.forkChild(indicator.settle(found, SUMMARY))
+          yield* TestClock.adjust(2_000)
+          yield* Fiber.join(finish)
+        })
+      ).pipe(Effect.provide(TestClock.layer()))
+    )
+    assertNothingLeft(out.text())
+  }
+)
+
+const kittyCommands = (text: string): (readonly [string, string])[] =>
+  text
+    .split('\x1b_G')
+    .slice(1)
+    .map(part => {
+      const body = part.slice(0, part.indexOf('\x1b\\'))
+      const separator = body.indexOf(';')
+      return separator === -1 ? [body, ''] : [body.slice(0, separator), body.slice(separator + 1)]
+    })
+const controlKeys = (control: string): Record<string, string> =>
+  Object.fromEntries(control.split(',').map(pair => pair.split('=') as [string, string]))
+
+const playClip = (text: string, widthPx: number): Buffer[] => {
+  const frames: Buffer[] = []
+  let open: { readonly keys: Record<string, string>; data: string } | undefined
+  for (const [control, data] of kittyCommands(text)) {
+    const keys = controlKeys(control)
+    if (keys.a === 'd' || keys.a === 'a') continue
+    open = open === undefined ? { keys, data } : { keys: open.keys, data: open.data + data }
+    if (keys.m === '1') continue
+    const pixels = inflateSync(Buffer.from(open.data, 'base64'))
+    if (open.keys.a === 'T') frames.push(pixels)
+    else {
+      assert.equal(open.keys.a, 'f')
+      assert.equal(open.keys.X, '1', 'the changed pixels replace the old ones')
+      const frame = Buffer.from(frames[Number(open.keys.c) - 1] as Buffer)
+      const [x, y, width, height] = ['x', 'y', 's', 'v'].map(key => Number(open?.keys[key]))
+      for (let row = 0; row < (height as number); row += 1)
+        pixels.copy(
+          frame,
+          (((y as number) + row) * widthPx + (x as number)) * 4,
+          row * (width as number) * 4,
+          (row + 1) * (width as number) * 4
+        )
+      frames.push(frame)
+    }
+    open = undefined
+  }
+  return frames
+}
+
+await claim(
+  'a loop is encoded as animation frames that carry only what changed, and a terminal rebuilds every frame from them',
+  () => {
+    const scene: Scene = {
+      dots: 1,
+      branches: [{ kind: 'active', since: 0 }, { kind: 'waiting' }],
+    }
+    const columns = stripColumns(graphics, { dots: 1, branches: 2 })
+    const widthPx = columns * graphics.cellWidth
+    const frames = Array.from({ length: 24 }, (_, index) =>
+      releaseAt(scene, 2000 + (index * 820) / 24)
+    )
+    const text = encodeClip({
+      frames,
+      widthPx,
+      heightPx: H,
+      columns,
+      id: 7,
+      previousId: 6,
+      before: '',
+      after: '',
+    })
+    const rebuilt = playClip(text, widthPx)
+    assert.equal(rebuilt.length, frames.length)
+    for (const [index, frame] of frames.entries())
+      assert.ok(frame.equals(rebuilt[index] as Buffer), `frame ${index + 1}`)
+    const changed = kittyCommands(text)
+      .map(([control]) => controlKeys(control))
+      .filter(keys => keys.a === 'f' && keys.c !== undefined)
+    assert.equal(changed.length, frames.length - 1)
+    for (const keys of changed)
+      assert.ok(Number(keys.s) * Number(keys.v) < (widthPx * H) / 4, JSON.stringify(keys))
+    assert.ok(text.includes('\x1b_Ga=d,d=I,i=6,'), 'the image it replaces is removed')
+  }
+)
+
 const beside = (columns: number) => `\x1b8\x1b[${ROWS - 1}B\x1b[K\x1b[${columns + 2}C`
 const lastFrame = (text: string) => text.slice(text.lastIndexOf('\x1b[?2026h'))
 
@@ -536,5 +692,102 @@ await claim('release strips show progress and result, then leave nothing', async
     assert.equal(hidden.text, '')
   }
 })
+
+const counted = () => {
+  const holds: string[] = []
+  const held: QuitGraphics = {
+    ...graphics,
+    hold: { begin: () => holds.push('begin'), end: () => holds.push('end') },
+  }
+  return { holds, held }
+}
+const releaseLabels = (text: string) => text.split('Releasing 1 task… ').length - 1
+const selectedFrames = (text: string) =>
+  kittyCommands(text)
+    .map(([control]) => controlKeys(control))
+    .filter(keys => keys.a === 'a')
+    .map(keys => Number(keys.c))
+
+await claim(
+  'a waiting release is held as one still image, a branch in progress replaces it with a moving loop, its end streams again, and nothing is left',
+  async () => {
+    const initial: Scene = { dots: 1, branches: [{ kind: 'waiting' }, { kind: 'waiting' }] }
+    const out = collector()
+    const { holds, held: holding } = counted()
+    const since = (from: number) => out.chunks.slice(from).join('')
+    const { loop: singleBranch, replacement: twoBranches } = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const strip = yield* releaseIndicator(live, out.stream, holding, initial, 1)
+          assert.ok(strip !== undefined)
+          yield* TestClock.adjust(600)
+          const waiting = out.text()
+          assert.ok(releaseLabels(waiting) > 1, 'the label advances while waiting')
+          assert.equal(placedIds(waiting).length, 1, 'one still image while waiting')
+          assert.equal(kittyCommandsSent(waiting, 'a=f,'), 0)
+          assert.deepEqual(selectedFrames(waiting), [], 'a still image needs no frame selection')
+          const begun = out.chunks.length
+          yield* strip.begin(0)
+          yield* TestClock.adjust(300)
+          const loop = since(begun)
+          const joined = out.chunks.length
+          yield* strip.begin(1)
+          yield* TestClock.adjust(300)
+          const replacement = since(joined)
+          assert.ok(kittyCommandsSent(replacement, 'a=f,') > 0, 'a new loop for both branches')
+          const ended = out.chunks.length
+          yield* strip.end(0, true)
+          yield* TestClock.adjust(250)
+          const landing = since(ended)
+          assert.ok(placedIds(landing).length > 1, 'the landing streams full images')
+          assert.equal(kittyCommandsSent(landing, 'a=f,'), 0, 'no loop while the branch lands')
+          const finish = yield* Effect.forkChild(strip.finish(RESULT))
+          yield* TestClock.adjust(2_000)
+          yield* Fiber.join(finish)
+          return { loop, replacement }
+        })
+      ).pipe(Effect.provide(TestClock.layer()))
+    )
+    const widthPx = stripColumns(graphics, { dots: 1, branches: 2 }) * graphics.cellWidth
+    const held = (text: string) => playClip(text.slice(text.lastIndexOf('\x1b_Ga=T,')), widthPx)
+    const frames = held(singleBranch)
+    const shown = new Set(
+      selectedFrames(singleBranch).map(frame => (frames[frame - 1] as Buffer).toString('latin1'))
+    )
+    assert.ok(shown.size >= 2, 'the frames shown differ')
+    const secondHead = (Math.round(0.22 * H) * widthPx + Math.round(2.35 * H)) * 4 + 3
+    const together = held(twoBranches)
+    assert.equal(together.length, frames.length, 'the same period')
+    assert.ok(
+      frames.every(frame => (frame[secondHead] ?? 0) < 240),
+      'the second branch waits in the first loop'
+    )
+    assert.ok(
+      together.every(frame => frame[secondHead] === 255),
+      'a branch that starts beside one in progress replaces the loop of the same period'
+    )
+    assertNothingLeft(out.text())
+    assert.deepEqual(holds, ['begin', 'end'])
+  }
+)
+
+await claim(
+  'a sweep interrupted while its scan is held deletes the loop and frees the terminal',
+  async () => {
+    const out = collector()
+    const { holds, held } = counted()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* sweepIndicator(live, out.stream, held)
+          yield* TestClock.adjust(750)
+          assert.ok(selectedFrames(out.text()).length > 1, 'the scan is selecting held frames')
+        })
+      ).pipe(Effect.provide(TestClock.layer()))
+    )
+    assertNothingLeft(out.text())
+    assert.deepEqual(holds, ['begin', 'end'])
+  }
+)
 
 process.stdout.write(`${JSON.stringify({ result: 'passed', checks: passed }, null, 2)}\n`)

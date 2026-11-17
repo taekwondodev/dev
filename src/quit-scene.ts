@@ -51,10 +51,11 @@ export const SCAN_SHAPE: SceneShape = { dots: 2, branches: 2 }
 
 const WAITING = 0.6
 const STAGGER = 60
-const SCAN_PERIOD = 1100
-const SCAN_DRAW_MS = 320
+export const SCAN_PERIOD = 1100
+export const SCAN_DRAW_MS = 320
 export const VANISH_MS = 180
 const PULSE_PERIOD = 820
+const LOOP_LIMIT_MS = 2000
 const SLIDE_MS = 420
 const RING_MS = 460
 const FINALE_MS = 520
@@ -396,6 +397,22 @@ export const fadeAway = (canvas: Canvas, elapsed: number): void => {
     }
 }
 
+const commonPeriod = (a: number, b: number): number => {
+  let x = a
+  let y = b
+  while (y !== 0) [x, y] = [y, x % y]
+  return (a / x) * b
+}
+
+const loopOf = (periods: readonly number[]): number | undefined => {
+  if (periods.length === 0) return 0
+  const period = periods.reduce(commonPeriod)
+  return period > LOOP_LIMIT_MS ? undefined : period
+}
+
+export const releasePeriod = (scene: Scene): number | undefined =>
+  loopOf(scene.branches.some(branch => branch.kind === 'active') ? [PULSE_PERIOD] : [])
+
 const settledTimes = (scene: Scene): readonly number[] =>
   scene.branches.flatMap(branch =>
     branch.kind === 'merged' || branch.kind === 'failed' ? [branch.at] : []
@@ -508,17 +525,87 @@ export interface KittyFrame {
 
 export const deleteImage = (id: number): string => `\x1b_Ga=d,d=I,i=${id},q=2\x1b\\`
 
-export const encodeFrame = (frame: KittyFrame): string => {
-  const data = deflateSync(frame.rgba, { level: 1 }).toString('base64')
+export const selectFrame = (id: number, frame: number): string =>
+  `\x1b_Ga=a,i=${id},c=${frame},q=2\x1b\\`
+
+const transmit = (first: string, rest: string, pixels: Buffer): string => {
+  const data = deflateSync(pixels, { level: 1 }).toString('base64')
   let chunks = ''
   for (let i = 0; i < data.length; i += CHUNK) {
     const more = i + CHUNK < data.length ? 1 : 0
-    const head =
-      i === 0
-        ? `a=T,f=32,o=z,s=${frame.widthPx},v=${frame.heightPx},i=${frame.id},p=1,c=${frame.columns},r=${ROWS},C=1,q=2,m=${more}`
-        : `m=${more}`
-    chunks += `\x1b_G${head};${data.slice(i, i + CHUNK)}\x1b\\`
+    chunks += `\x1b_G${i === 0 ? `${first},` : rest}m=${more};${data.slice(i, i + CHUNK)}\x1b\\`
   }
+  return chunks
+}
+
+interface Rect {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+const changedRect = (a: Buffer, b: Buffer, widthPx: number, heightPx: number): Rect => {
+  let left = widthPx
+  let top = heightPx
+  let right = -1
+  let bottom = -1
+  for (let y = 0; y < heightPx; y += 1) {
+    const row = y * widthPx * 4
+    if (a.compare(b, row, row + widthPx * 4, row, row + widthPx * 4) === 0) continue
+    if (y < top) top = y
+    bottom = y
+    for (let x = 0; x < widthPx; x += 1) {
+      if (a.readUInt32LE(row + x * 4) === b.readUInt32LE(row + x * 4)) continue
+      if (x < left) left = x
+      if (x > right) right = x
+    }
+  }
+  return right < 0
+    ? { x: 0, y: 0, width: 1, height: 1 }
+    : { x: left, y: top, width: right - left + 1, height: bottom - top + 1 }
+}
+
+const cut = (rgba: Buffer, widthPx: number, rect: Rect): Buffer => {
+  const out = Buffer.alloc(rect.width * rect.height * 4)
+  for (let y = 0; y < rect.height; y += 1) {
+    const from = ((rect.y + y) * widthPx + rect.x) * 4
+    rgba.copy(out, y * rect.width * 4, from, from + rect.width * 4)
+  }
+  return out
+}
+
+export interface KittyClip extends Omit<KittyFrame, 'rgba'> {
+  readonly frames: readonly Buffer[]
+}
+
+export const encodeClip = (clip: KittyClip): string => {
+  const { widthPx, heightPx, id } = clip
+  const root = clip.frames[0] as Buffer
+  let chunks = transmit(
+    `a=T,f=32,o=z,s=${widthPx},v=${heightPx},i=${id},p=1,c=${clip.columns},r=${ROWS},C=1,q=2`,
+    '',
+    root
+  )
+  for (let index = 1; index < clip.frames.length; index += 1) {
+    const frame = clip.frames[index] as Buffer
+    const rect = changedRect(clip.frames[index - 1] as Buffer, frame, widthPx, heightPx)
+    chunks += transmit(
+      `a=f,f=32,o=z,i=${id},c=${index},x=${rect.x},y=${rect.y},s=${rect.width},v=${rect.height},X=1,q=2`,
+      'a=f,',
+      cut(frame, widthPx, rect)
+    )
+  }
+  const removal = clip.previousId === undefined ? '' : deleteImage(clip.previousId)
+  return `${SYNC_BEGIN}${clip.before}${chunks}${removal}${clip.after}${SYNC_END}`
+}
+
+export const encodeFrame = (frame: KittyFrame): string => {
+  const chunks = transmit(
+    `a=T,f=32,o=z,s=${frame.widthPx},v=${frame.heightPx},i=${frame.id},p=1,c=${frame.columns},r=${ROWS},C=1,q=2`,
+    '',
+    frame.rgba
+  )
   const removal = frame.previousId === undefined ? '' : deleteImage(frame.previousId)
   return `${SYNC_BEGIN}${frame.before}${chunks}${removal}${frame.after}${SYNC_END}`
 }
