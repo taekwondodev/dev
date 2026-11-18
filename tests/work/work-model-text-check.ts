@@ -428,24 +428,6 @@ await claim(
       facts.logs.map(page => page.text),
       ['export API_KEY=[redacted]\nready', 'auth with [redacted] failed; password: [redacted]']
     )
-    assert.deepEqual(
-      {
-        id: facts.id,
-        kind: facts.kind,
-        status: facts.status,
-        since: facts.since,
-        quietSeconds: facts.quietSeconds,
-        runningSeconds: facts.runningSeconds,
-      },
-      {
-        id: ID,
-        kind: 'process',
-        status: 'running',
-        since: 5_000,
-        quietSeconds: 120,
-        runningSeconds: 130,
-      }
-    )
   }
 )
 

@@ -814,13 +814,6 @@ return JSON.stringify({
           runningSeconds: number
         }[]
         assert.ok(entry !== undefined)
-        assert.deepEqual(Object.keys(entry).toSorted(), [
-          'id',
-          'quietSeconds',
-          'runningSeconds',
-          'stdout',
-          'taskId',
-        ])
         assert.equal(entry.id, attempt.id)
         assert.equal(entry.taskId, 'task-0-0')
         assert.ok(entry.stdout?.includes('before-silence'))

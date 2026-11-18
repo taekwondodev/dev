@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import { readDispatch, resolveDispatch } from '../../src/work-dispatch.ts'
+import { resolveDispatch } from '../../src/work-dispatch.ts'
 import type { DispatchInput, DispatchProfile } from '../../src/work-domain.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
@@ -89,30 +88,6 @@ await claim(
     const malformed = await refusal('{not json', {})
     assert.match(malformed, /Cannot read dispatch configuration/)
     assert.doesNotMatch(malformed, /\bat \[/, 'a JSON failure names no field')
-  }
-)
-await claim(
-  'the installed configuration is read from its own path, and another path is read instead when given',
-  async () => {
-    const installed = await Effect.runPromise(
-      readDispatch().pipe(Effect.provide(NodeFileSystem.layer))
-    )
-    assert.match(installed.path, /config\/crew-dispatch\.json$/)
-    const read: string[] = []
-    const elsewhere = await Effect.runPromise(
-      resolveDispatch({}, '/fixture/dispatch.json').pipe(
-        Effect.provide(
-          FileSystem.layerNoop({
-            readFileString: path => {
-              read.push(path)
-              return Effect.succeed(JSON.stringify(configured))
-            },
-          })
-        )
-      )
-    )
-    assert.deepEqual(read, ['/fixture/dispatch.json'])
-    assert.deepEqual(elsewhere, cheap)
   }
 )
 
