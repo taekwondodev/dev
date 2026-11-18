@@ -326,7 +326,7 @@ try {
     async () => {
       const outcome = await runLauncher(resumeArgs(sessionFile))
       assert.equal(outcome.code, 1, outcome.stderr)
-      assert.match(outcome.stderr, /no longer exists and is not recreated/)
+      assert.match(outcome.stderr, /gone and will not be recreated/)
       assert.ok(outcome.stderr.includes(sessionFile), outcome.stderr)
       assert.match(
         outcome.stderr,
@@ -652,7 +652,7 @@ try {
       )
       assert.ok(
         checked.stdout.includes('role: pre-existing checkout') &&
-          checked.stdout.includes('sweep verdict: finished (clean-checkout)'),
+          checked.stdout.includes('verdict: finished (clean-checkout)'),
         checked.stdout
       )
       const malformed = await readOnly(inspectRoot, ['workspace', 'check', 'not-a-task'])
@@ -690,7 +690,7 @@ try {
         const views = await still.inspect({ taskId: firstGrant.taskId })
         assert.deepEqual(
           views.map(view => [view.workspaceId, view.reservationId, view.outcome]),
-          [[firstGrant.workspaceId, firstGrant.reservationId, 'preserved-for-resume']]
+          [[firstGrant.workspaceId, firstGrant.reservationId, 'paused']]
         )
       } finally {
         await still.close()
@@ -756,7 +756,7 @@ try {
         assert.equal(elsewhere.code, 1, elsewhere.stderr)
         assert.equal(
           elsewhere.stderr,
-          `Task ${secondGrant.taskId} reserves no workspace in the repository at ${repo}.\n`
+          `No checkout kept for task ${secondGrant.taskId} in the repository at ${repo}.\n`
         )
         const holder = await fixtures.attach({
           conversation: {
@@ -774,7 +774,7 @@ try {
         assert.equal(inUse.code, 1, inUse.stderr)
         assert.equal(
           inUse.stderr,
-          `No workspace of task ${taskId} in the repository at ${repo} is resumable:\n- task ${taskId} at ${checkout} is active: A persisted workspace use is still active. Do not take this workspace from its current user.\n`
+          `Cannot resume a checkout for task ${taskId} in the repository at ${repo}:\n- task ${taskId} at ${checkout} is active: A session or process is using this checkout. Wait until it is no longer in use.\n`
         )
 
         const malformed = await withTask(['--task', 'not-a-task'])

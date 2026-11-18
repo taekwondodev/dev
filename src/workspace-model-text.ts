@@ -1,4 +1,11 @@
-import { describedHead, SWEEP_MOMENT_TEXT, type WorkspaceReport } from './workspace-command.ts'
+import {
+  checkoutUseStage,
+  describedHead,
+  pendingOperationText,
+  SWEEP_MOMENT_TEXT,
+  verdictLabel,
+  type WorkspaceReport,
+} from './workspace-command.ts'
 import type {
   SweepReceipt,
   SweepRow,
@@ -47,7 +54,7 @@ const viewObject = (view: WorkspaceView): ModelObject =>
     ['path', view.path],
     ['head', describedHead(view.head)],
     ['origin', view.origin],
-    ['outcome', view.outcome],
+    ['result', view.outcome],
     ['reason', view.reason],
     ['next', view.nextAction],
     ['directoryMissing', view.directoryMissing === true ? true : undefined],
@@ -57,13 +64,13 @@ const viewObject = (view: WorkspaceView): ModelObject =>
         view.uses.map(use =>
           present([
             ['access', use.access],
-            ['stage', use.stage],
-            ['attempt', use.execution?.attemptId],
+            ['stage', checkoutUseStage(use.stage)],
+            ['run', use.execution?.attemptId],
           ])
         )
       ),
     ],
-    ['pending', nonEmpty(view.pending.map(item => `${item.kind} (${item.stage})`))],
+    ['pending', nonEmpty(view.pending.map(pendingOperationText))],
   ])
 
 const assessmentObject = ({ completion, ...assessment }: WorkspaceAssessment): ModelObject =>
@@ -72,18 +79,13 @@ const assessmentObject = ({ completion, ...assessment }: WorkspaceAssessment): M
     ['path', assessment.path],
     ['origin', assessment.origin],
     ['role', completion.role],
-    [
-      'verdict',
-      completion.kind === 'finished'
-        ? `finished (${completion.rule})`
-        : `retained (${completion.retained})`,
-    ],
+    ['verdict', verdictLabel(completion)],
     ['reason', completion.reason],
     ['target', assessment.target.description],
     ['reasons', nonEmpty(assessment.reasons)],
     ['evidence', assessment.evidence?.verdict],
     ['inventory', assessment.inventory],
-    ['residual', nonEmpty(assessment.residual)],
+    ['remaining', nonEmpty(assessment.residual)],
     ['next', nonEmpty(assessment.nextActions)],
   ])
 
@@ -115,7 +117,7 @@ export const reportText = (report: WorkspaceReport): string => {
         ])
       )
     case 'check':
-      return `A check changes nothing; the next sweep rechecks everything.\n${JSON.stringify({
+      return `Read-only check. Dev checks again before cleanup.\n${JSON.stringify({
         taskId: report.taskId,
         workspaces: report.assessments.map(assessmentObject),
       })}`
@@ -142,31 +144,31 @@ const sweepRowObject = (row: SweepRow): ModelObject => {
         ['taskId', row.taskId],
         ['workspaceId', row.workspaceId],
         ['path', row.path],
-        ['outcome', row.outcome],
+        ['result', row.outcome],
         ['reason', row.outcome === 'review-required' ? row.reason : undefined],
       ])
     case 'task-artifacts':
       return present([
         ['taskId', row.taskId],
         ['artifacts', row.path],
-        ['outcome', row.outcome],
+        ['result', row.outcome],
         ['reason', row.outcome === 'review-required' ? row.reason : undefined],
       ])
     case 'task-failure':
       return {
         taskId: row.taskId,
-        outcome: 'review-required',
+        result: 'review-required',
         reason: row.reason,
       }
     case 'task-deferred':
-      return { taskId: row.taskId, outcome: 'deferred' }
+      return { taskId: row.taskId, result: 'deferred' }
     case 'sweep-failure':
-      return { outcome: 'review-required', reason: row.reason }
+      return { result: 'review-required', reason: row.reason }
   }
 }
 
 export const sweepText = (receipt: SweepReceipt): string | undefined => {
   const rows = receipt.rows.filter(changesSomething)
   if (rows.length === 0) return undefined
-  return `Workspace sweep ${SWEEP_MOMENT_TEXT[receipt.moment]}: ${JSON.stringify(rows.map(sweepRowObject))}`
+  return `Automatic cleanup ${SWEEP_MOMENT_TEXT[receipt.moment]}: ${JSON.stringify(rows.map(sweepRowObject))}`
 }

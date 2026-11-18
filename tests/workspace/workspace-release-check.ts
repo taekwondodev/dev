@@ -281,7 +281,7 @@ try {
       const managed = only(assessments, m1.workspaceId)
       assert.deepEqual(
         [verdictName(managed.completion), managed.completion.role, managed.target.source],
-        ['retained:integration-unknown', 'child', 'none']
+        ['retained:integration-unknown', 'agent', 'none']
       )
       assert.ok(
         managed.reasons.some(reason => reason.includes('no origin remote')),
@@ -318,11 +318,11 @@ try {
   )
   await lifecycle.recordTarget(taskB, localMain)
   await claim(
-    'a clean managed worktree at its base is finished as no-residue with the recorded target shown as an override, and a check removes nothing and leaves no live use',
+    'a clean managed worktree at its base is finished as nothing-left with the recorded target shown as an override, and a check removes nothing and leaves no live use',
     async () => {
       const managed = only(await lifecycle.check(taskB), m1.workspaceId)
       assert.equal(managed.evidence?.verdict, 'valid')
-      assert.equal(verdictName(managed.completion), 'no-residue')
+      assert.equal(verdictName(managed.completion), 'nothing-left')
       assert.equal(managed.target.source, 'override')
       assert.ok(existsSync(m1.checkout), 'the check removed nothing')
       const uses = (await lifecycle.inspect({ taskId: taskB })).flatMap(view => view.uses)
@@ -1005,7 +1005,7 @@ try {
         const { row } = await sweepRow(source.managed.workspaceId, source.managed.workspaceId)
         assert.equal(row.verdict.kind, 'finished', row.reason)
         assert.equal(row.outcome, 'retained', row.reason)
-        assert.match(row.reason, /Target installation coordination/)
+        assert.match(row.reason, /could not confirm the installation was idle/)
         assert.ok(existsSync(link), 'the sweep deleted nothing')
         const results = await lifecycle.release(source.taskId)
         assert.equal(resultOf(results, source.managed.workspaceId).outcome, 'removed')
@@ -1069,7 +1069,7 @@ try {
         )
         const blocked = await sourceRow()
         assert.equal(blocked.outcome, 'retained', blocked.reason)
-        assert.match(blocked.reason, /Target installation coordination/)
+        assert.match(blocked.reason, /could not confirm the installation was idle/)
         assert.ok(existsSync(database))
       } finally {
         await Effect.runPromise(Scope.close(unexpectedScope, Exit.void))
@@ -1318,7 +1318,7 @@ try {
         worktree,
         {
           target: explicit,
-          completionRole: 'child',
+          completionRole: 'agent',
           head: extendedSource,
           base: githubMain,
           allocatedAt: Date.parse(MERGED_AT) - 60_000,
@@ -1754,29 +1754,30 @@ try {
         base: githubMain,
         siblings: [feature],
       })
-      assert.equal(verdictName(sibling), 'child-delivered', sibling.reason)
+      assert.equal(verdictName(sibling), 'agent-delivered', sibling.reason)
       assert.ok(
-        sibling.reason.includes('owner/repo#7') && sibling.reason.includes('sibling'),
+        sibling.reason.includes('owner/repo#7') &&
+          sibling.reason.includes('another checkout of this task'),
         sibling.reason
       )
       const base = childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
         base: githubMain,
         siblings: [],
       })
-      assert.equal(verdictName(base), 'child-delivered', base.reason)
-      assert.ok(base.reason.includes('base seed'), base.reason)
+      assert.equal(verdictName(base), 'agent-delivered', base.reason)
+      assert.ok(base.reason.includes('starting commit'), base.reason)
       const recorded = childVerdict(
         reader({ mergedPullRequestsForCommit: () => [] }),
         { base: githubMain, siblings: [] },
         { ...target, pullRequest: 7 }
       )
-      assert.equal(verdictName(recorded), 'child-delivered', recorded.reason)
+      assert.equal(verdictName(recorded), 'agent-delivered', recorded.reason)
       const patched = childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
         base: githubMain,
         head: extendedSource,
         siblings: [],
       })
-      assert.equal(verdictName(patched), 'child-delivered', patched.reason)
+      assert.equal(verdictName(patched), 'agent-delivered', patched.reason)
       const cases = [
         [
           'no seed finds a merged pull request',
@@ -2085,7 +2086,7 @@ try {
       active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
       const contended = await call()
       assert.equal(contended.terminate, true, 'the refused call ends the turn for a rebind')
-      assert.equal(value(contended).artifacts, 'rebind-requested')
+      assert.equal(value(contended).artifacts, 'switching')
       assert.equal(value(contended).path, undefined, 'no directory is announced before rebinding')
       assert.equal(requested.length, 1)
       const handoff = requested[0]!
@@ -2254,7 +2255,7 @@ try {
         destination: { repository: 'owner/repo', number: 37, commentId: 9 },
       })
       assert.ok(!sensitive.ok)
-      assert.ok(sensitive.text.includes('sensitive name'), sensitive.text)
+      assert.ok(sensitive.text.includes('File name looks sensitive'), sensitive.text)
 
       const artifactsDirectory = join(root, 'artifacts', allocated.taskId)
       mkdirSync(artifactsDirectory, { recursive: true })
@@ -2319,10 +2320,12 @@ try {
           'a workspace in use by another conversation is not resumable'
         )
         assert.ok(
-          occupied.includes('with or without workspaceId') &&
+          occupied.includes(`Task ${allocated.taskId} has no checkout you can resume:`) &&
             occupied.includes(allocated.managed.workspaceId) &&
             occupied.includes('is active: ') &&
-            occupied.includes('Do not take this workspace from its current user.'),
+            occupied.includes(
+              'A session or process is using this checkout. Wait until it is no longer in use.'
+            ),
           `the refusal carries the outcome, reason and next action the authority already knows: ${occupied}`
         )
       }

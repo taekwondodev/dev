@@ -305,7 +305,7 @@ const toolsHome = join(root, 'tools')
       isError: true,
     }),
     lead.result('r-dev-blocked', 'r-blocked', 12, devBlocked, {
-      text: 'Child workspace is read-only',
+      text: 'This agent has read-only access',
       isError: true,
     }),
     lead.result('r-odd', 'r-dev-blocked', 12, odd, { text: 'Something unexpected', isError: true }),
@@ -884,77 +884,54 @@ const edgesHome = join(root, 'edges')
 }
 
 const DEV_TEXTS = [
+  ['src/workspace-host.ts', ["'Switching checkouts; the tool did not run.'"], 'read', 'blocked'],
+  ['src/workspace-host.ts', ["'Switching checkouts. This call did not run.'"], 'read', 'blocked'],
   [
     'src/workspace-host.ts',
-    ["'Workspace host is parked; stale tools are blocked.'"],
-    'read',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ["'Workspace host is parked during a transition; no operation started.'"],
-    'read',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ['`Workspace admission requires a host rebind: ', '. The operation was not executed.`'],
+    ['`Switching checkouts; the call did not run. ', '.`'],
     'bash',
     'blocked',
   ],
-  ['src/workspace-host.ts', ['`Workspace admission failed closed: ', '`'], 'edit', 'blocked'],
-  ['src/workspace-host.ts', ['`Native ', ' was not executed: ', '`'], 'write', 'blocked'],
+  ['src/workspace-host.ts', ['`The call did not run: ', '`'], 'edit', 'blocked'],
+  ['src/workspace-host.ts', ['`', ' did not run: ', '`'], 'write', 'blocked'],
   [
     'src/workspace-host.ts',
-    [
-      '`Tool ',
-      ' has no verified workspace effect in dev, so it was not executed. A supported extension must have its project effects reviewed and recorded first (ADR 0005).`',
-    ],
+    ['`', ' did not run. Dev has not verified what this tool can do to project files.`'],
     'extension_tool',
     'blocked',
   ],
   [
     'src/workspace-host.ts',
-    [
-      '`Workspace authority returned ',
-      ' access for a ',
-      ' operation; the Pi tool was not executed.`',
-    ],
+    ['`This call needs ', ' access but got ', '. It did not run.`'],
     'read',
     'blocked',
   ],
   [
     'src/workspace-host.ts',
-    [
-      '`Workspace authority returned ',
-      ' at ',
-      ', but Pi is still bound to ',
-      ' at ',
-      '; the native tool was not executed.`',
-    ],
+    ['`Permission was for ', ', not ', '. The call did not run.`'],
     'grep',
     'blocked',
   ],
-  ['src/work-child-workspace.ts', ["'Child workspace is read-only'"], 'bash', 'blocked'],
+  ['src/work-child-workspace.ts', ["'This agent has read-only access'"], 'bash', 'blocked'],
   [
     'src/workspace-host.ts',
-    ["'Workspace admission requires a host rebind; the command was not executed.'"],
+    ["'Dev must switch checkouts first; the command did not run.'"],
     'bash',
     'blocked',
   ],
   ['src/workspace-shell.ts', ["'the shell did not start'"], 'bash', 'execution'],
   [
     'src/workspace-shell.ts',
-    ["'The shell exited before its identity was available'"],
+    ["'The shell exited before dev could identify it'"],
     'bash',
     'execution',
   ],
-  ['src/workspace-shell.ts', ["'the shell identity could not be captured'"], 'bash', 'execution'],
+  ['src/workspace-shell.ts', ["'dev could not identify the new shell'"], 'bash', 'execution'],
   [
     'src/work-controller.ts',
     [
-      '`Workspace handoff required before starting work: ',
-      '. No command was executed; obtain a fresh host tool decision.`',
+      '`Dev must switch checkouts first: ',
+      '. No work started. Check the new checkout before retrying.`',
     ],
     'work',
     'blocked',
@@ -963,17 +940,17 @@ const DEV_TEXTS = [
   ['src/work-controller.ts', ["'prompt is required'"], 'work', 'invocation'],
   [
     'src/workspace-shell.ts',
-    ["'Workspace admission changed before the shell started; the command was not executed.'"],
+    ["'The checkout changed before start. The command did not run.'"],
     'bash',
     'blocked',
   ],
   [
     'src/workspace-shell.ts',
-    ["'The workspace shell is stopping; the command was not executed.'"],
+    ["'The shell is stopping. The command did not run.'"],
     'bash',
     'blocked',
   ],
-  ['src/workspace-shell.ts', ["'the host is stopping its shells'"], 'bash', 'blocked'],
+  ['src/workspace-shell.ts', ["'this conversation is stopping its commands'"], 'bash', 'blocked'],
 ] as const
 
 const DEV_ANCHORS = [

@@ -207,7 +207,7 @@ try {
         'nothing of a deferred task is assessed'
       )
       assert.ok(existsSync(kept.managed.checkout))
-      assert.ok(formatSweepReceipt(receipt).includes('deferred to the next sweep'))
+      assert.ok(formatSweepReceipt(receipt).includes('deferred to the next cleanup'))
       assert.equal(sweepExitCode(receipt), 0, 'a deferred task is not a failed attempt')
       assert.ok(existsSync(orphan), 'an expired budget leaves orphan artifacts for a later sweep')
 
@@ -334,7 +334,7 @@ try {
         assert.throws(
           () => classify(writeScope, path),
           (cause: unknown) =>
-            cause instanceof WorkspaceError && cause.message.includes('dev authority metadata'),
+            cause instanceof WorkspaceError && cause.message.includes('Dev private storage'),
           `${reason} is refused`
         )
       }
@@ -368,7 +368,7 @@ try {
           rowOf(released, sibling.workspaceId).outcome,
           verdictName(rowOf(released, sibling.workspaceId).verdict),
         ],
-        ['removed', 'no-residue']
+        ['removed', 'nothing-left']
       )
       const artifactsRow = artifactsRowOf(released, owner.taskId)
       assert.equal(artifactsRow?.outcome, 'removed', JSON.stringify(released.rows))

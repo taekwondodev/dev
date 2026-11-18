@@ -79,13 +79,13 @@ const ToolParametersSchema = Schema.Struct({
 
 const fieldDescriptions: { readonly [Field in keyof typeof InputFields]: string } = {
   taskId:
-    "Exact task id. Required by resume; set-target and record-publication default to this conversation's task.",
-  workspaceId: 'resume only: exact workspace id, required when the task retains several.',
+    "Saved task ID. Required for resume; set-target and record-publication default to this conversation's task.",
+  workspaceId: 'resume only: checkout ID, required if several are paused.',
   target:
-    'set-target only, required: a full ref such as refs/heads/main (a bare branch name is refused) under a local, remote or github authority; github may name the source repository and a pull request number.',
-  path: "record-publication only, required: the published file, as a workspace-relative path or as the absolute path of a file inside this task's artifact directory.",
+    'set-target only, required: a destination of kind local, remote or github with a full ref like refs/heads/main, not a bare branch. github also accepts a source repository and PR number.',
+  path: 'record-publication only, required: published file, relative to the checkout or absolute inside the folder returned by artifacts.',
   destination:
-    'record-publication only, required: the issue or pull request holding the artifact, with commentId when it is in a comment.',
+    'record-publication only, required: GitHub issue or PR containing the file; set commentId for a comment.',
 }
 
 const describeFields = (schema: JsonSchema.JsonSchema): JsonSchema.JsonSchema => {
@@ -151,17 +151,13 @@ const readDestinationBody = (
     )
   ).pipe(
     Effect.mapError(error =>
-      refuse(`Publication destination could not be read back: ${errorText(error)}`)
+      refuse(`Could not read the issue, PR or comment: ${errorText(error)}`)
     ),
     Effect.flatMap(({ stdout }) => {
       const payload = decodeBody(stdout)
       return Result.isSuccess(payload)
         ? Effect.succeed({ body: payload.success.body ?? '', url: payload.success.html_url })
-        : Effect.fail(
-            refuse(
-              `Publication destination answered an unexpected shape: ${errorText(payload.failure)}`
-            )
-          )
+        : Effect.fail(refuse(`Unexpected GitHub response: ${errorText(payload.failure)}`))
     })
   )
 
@@ -172,10 +168,10 @@ const readAttachment = (url: string) =>
         redirect: 'follow',
         signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
       })
-      if (!response.ok) throw new Error(`attachment ${url} answered ${response.status}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`)
       return new Uint8Array(await response.arrayBuffer())
     },
-    catch: cause => refuse(`Attachment ${url} could not be read back: ${errorText(cause)}`),
+    catch: cause => refuse(`Could not download ${url}: ${errorText(cause)}`),
   })
 
 const readHead = (cwd: string): Effect.Effect<string, WorkspaceToolError> =>
@@ -187,8 +183,7 @@ const readHead = (cwd: string): Effect.Effect<string, WorkspaceToolError> =>
       (error, stdout) => {
         if (error === null) resume(Effect.succeed(stdout.trim()))
         else if (error.code === 1) resume(Effect.succeed(''))
-        else
-          resume(Effect.fail(refuse(`Workspace revision could not be read: ${errorText(error)}`)))
+        else resume(Effect.fail(refuse(`Could not read checkout HEAD: ${errorText(error)}`)))
       }
     )
   })
@@ -252,13 +247,16 @@ interface ToolReply {
   readonly terminate: boolean
 }
 
+export const WORKSPACE_TOOL_DESCRIPTION =
+  "Manage this conversation's checkout and task. artifacts returns a folder outside Git for PR text, reports, logs or notes. Dev first checks permission to write, and deletes the folder when the last checkout kept for the task is freed or removed. resume switches to a paused checkout at turn end. set-target sets the destination branch instead of inferring it from origin. record-publication verifies a file already posted to a GitHub issue or PR (complete text or an exact uploaded file), and saves the proof. Nothing is uploaded or released. Dev checks for automatic cleanup at quit or before creating a worktree."
+
 export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition => {
   const boundWorkspace = Effect.fnUntraced(function* (requestedTaskId: WorkspaceId | undefined) {
     const { binding } = options.attachment()
     const taskId = requestedTaskId ?? binding.taskId
     if (taskId === undefined)
       return yield* refuse(
-        'This conversation has no task yet: a task exists once a write was admitted for it. Pass taskId explicitly for another task.'
+        'This conversation gets a task when dev first allows a write. Pass taskId to select another task.'
       )
     const views = yield* options.lifecycle
       .inspect({ taskId })
@@ -284,21 +282,21 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       const resumable = candidates.map(entry => viewText(entry.view)).join(' | ')
       if (candidates.length === 0)
         return yield* refuse(
-          `Task ${input.taskId} has no workspace that resume can select, with or without workspaceId: ${views.map(viewText).join(' | ') || 'no workspace records exist'}`
+          `Task ${input.taskId} has no checkout you can resume: ${views.map(viewText).join(' | ') || 'no saved checkouts'}`
         )
       if (input.workspaceId === undefined)
         return yield* refuse(
-          `Task ${input.taskId} has several retained workspaces; pass workspaceId, one of: ${resumable}`
+          `Task ${input.taskId} has several paused checkouts; pass one workspaceId: ${resumable}`
         )
       const selected = views.filter(view => view.workspaceId === input.workspaceId).map(viewText)
       return yield* refuse(
-        `Workspace ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'no such workspace record'}. Resumable: ${resumable}`
+        `Workspace ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'checkout not found'}. Resumable: ${resumable}`
       )
     }
     const { binding } = attachment
     if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId) {
       const value = {
-        resumed: 'already-bound',
+        resumed: 'already-here',
         taskId: input.taskId,
         workspaceId: binding.workspaceId,
       }
@@ -306,7 +304,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
     const handoff = yield* attachment
       .select(candidate.selection)
-      .pipe(Effect.mapError(error => refuse(`Workspace selection was refused: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(`Could not switch checkouts: ${error.message}`)))
     options.requestResume(handoff, context)
     const value = {
       resumed: 'requested',
@@ -318,7 +316,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       value,
       model: {
         ...value,
-        note: 'The conversation switches to this workspace when the current turn ends; no other tool runs before then.',
+        note: 'Switches checkouts at turn end. No other calls run meanwhile.',
       },
       terminate: true,
     }
@@ -328,26 +326,25 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const attachment = options.attachment()
     const admitted = yield* attachment
       .authorize({ kind: 'write', cwd: attachment.binding.cwd })
-      .pipe(Effect.mapError(error => refuse(`Workspace admission was refused: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(`No permission to write: ${error.message}`)))
     if (admitted.kind === 'rebind') {
       options.requestResume(admitted.handoff, context)
-      const value = { artifacts: 'rebind-requested', reason: admitted.handoff.reason }
+      const value = { artifacts: 'switching', reason: admitted.handoff.reason }
       return {
         value,
         model: {
           ...value,
-          note: 'The conversation switches workspace when the current turn ends; call artifacts again afterwards.',
+          note: 'Switches checkouts at turn end. Then call artifacts again.',
         },
         terminate: true,
       }
     }
     const { taskId } = admitted.grant
-    if (taskId === undefined)
-      return yield* refuse('Workspace admission returned a write grant without a task')
+    if (taskId === undefined) return yield* refuse('Dev could not find a task for this write')
     const path = taskArtifactsPath(authorityPaths(options.lifecycle.root), taskId)
     yield* Effect.try({
       try: () => mkdirSync(path, { recursive: true, mode: 0o700 }),
-      catch: cause => refuse(`Task artifact directory could not be created: ${errorText(cause)}`),
+      catch: cause => refuse(`Could not create the task folder: ${errorText(cause)}`),
     })
     return {
       value: { artifacts: 'ready', taskId, path },
@@ -362,7 +359,9 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const { taskId } = yield* boundWorkspace(input.taskId)
     yield* options.lifecycle
       .recordTarget({ taskId, target: input.target })
-      .pipe(Effect.mapError(error => refuse(`Target was not recorded: ${error.message}`)))
+      .pipe(
+        Effect.mapError(error => refuse(`Could not save the destination branch: ${error.message}`))
+      )
     const value = { recorded: 'target', taskId, target: input.target }
     return { value, model: value, terminate: false }
   })
@@ -373,7 +372,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const { taskId, binding, view } = yield* boundWorkspace(input.taskId)
     if (view === undefined)
       return yield* refuse(
-        `The current workspace ${binding.workspaceId} holds no reservation of task ${taskId}; a publication is recorded from a workspace of its task.`
+        `Checkout ${binding.workspaceId} is not held for task ${taskId}. Use a checkout of that task.`
       )
     let root: PublicationRoot = 'workspace'
     let relativePath = input.path
@@ -383,7 +382,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       absolute = resolve(input.path)
       if (absolute === artifactsDirectory || !isWithin(artifactsDirectory, absolute))
         return yield* refuse(
-          `An absolute path must name a file inside the task artifact directory ${artifactsDirectory}: ${input.path}`
+          `An absolute path must name a file inside the task folder ${artifactsDirectory}: ${input.path}`
         )
       const canonical = yield* Effect.try({
         try: () => realpathSync.native(absolute),
@@ -392,7 +391,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       })
       if (canonical !== absolute)
         return yield* refuse(
-          `Selected artifact must be reached without links inside the task artifact directory: ${input.path}`
+          `Selected artifact must be reached without links inside the task folder: ${input.path}`
         )
       root = 'artifacts'
       relativePath = relative(artifactsDirectory, absolute)
@@ -406,7 +405,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       return yield* refuse(`Selected artifact must be a regular file without links: ${input.path}`)
     if (sensitiveName(relativePath))
       return yield* refuse(
-        `Selected artifact has a sensitive name and is never certified for disposal: ${input.path}`
+        `File name looks sensitive; dev won't mark it safe to delete: ${input.path}`
       )
     const bytes = yield* Effect.tryPromise({
       try: signal => readFile(absolute, { signal }),
@@ -434,7 +433,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
     if (readBack === undefined)
       return yield* refuse(
-        `Publication of ${input.path} was not verified: ${destination.url} neither contains the file's complete text nor an attachment with its exact bytes (${bytes.byteLength} bytes, sha256 ${digest.slice(0, 12)}). Publish the actual artifact there first; dev uploads nothing.`
+        `${destination.url} lacks the complete text or exact attachment for ${input.path} (${bytes.byteLength} bytes, SHA-256 ${digest.slice(0, 12)}). Publish the file there first; dev uploads nothing.`
       )
     const head = yield* readHead(view.path)
     const reference: PublicationReference = {
@@ -459,7 +458,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
     yield* options.lifecycle
       .recordPublication({ reference })
-      .pipe(Effect.mapError(error => refuse(`Publication was not recorded: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(`Could not save publication proof: ${error.message}`)))
     return {
       value: { recorded: 'publication', reference },
       model: {
@@ -477,8 +476,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
   return {
     name: 'workspace',
     label: 'Workspace',
-    description:
-      "Operate this conversation's workspace task in the workspace authority. artifacts returns this task's artifact directory, the place for files that must stay outside the commit scope (PR bodies, reports, logs, handoffs); it admits this conversation as the writer of its checkout first, and dev deletes the directory when the task's last workspace reservation ends or the task is released. resume switches the conversation onto a workspace retained for a task; the switch happens when the current turn ends. set-target records an override of the integration target, which is otherwise derived from the origin remote. record-publication verifies that an artifact you already published in a GitHub issue or pull request (complete text in the body, or an attachment with the exact bytes) reads back, then records path, byte length and sha256 with that reference; it uploads nothing. Nothing here releases or removes a workspace: dev sweeps finished workspaces itself when it quits or allocates a worktree. Each field states which action uses it.",
+    description: WORKSPACE_TOOL_DESCRIPTION,
     parameters: workspaceToolParameters,
     async execute(_toolCallId, input, _signal, _onUpdate, context) {
       const run: Effect.Effect<ToolReply, WorkspaceToolError, PublicationDestinations> =

@@ -122,8 +122,8 @@ const receipt: SweepReceipt = makeFixtureReceipt({
       outcome: 'removed',
       verdict: {
         kind: 'finished',
-        role: 'child',
-        rule: 'child-delivered',
+        role: 'agent',
+        rule: 'agent-delivered',
         reason: 'fixture pull request descends from the base',
       },
       reason:
@@ -305,7 +305,7 @@ try {
     const before = displayed().length
     await runtime.session.prompt('/workspace release pre-existing')
     assert.deepEqual(displayed().slice(before), [
-      'Release runs only from a terminal: dev workspace release pre-existing. The task of this conversation is swept when dev quits.',
+      "Release runs only from a terminal: dev workspace release pre-existing. Dev checks the task's checkouts for cleanup at quit.",
     ])
   })
   await claim(
@@ -317,12 +317,12 @@ try {
       assert.deepEqual(
         shown,
         [
-          `Workspace sweep before a worktree allocation: ${JSON.stringify([
+          `Automatic cleanup before creating a worktree: ${JSON.stringify([
             {
               taskId: swept.taskId,
               workspaceId: swept.workspaceId,
               path: swept.path,
-              outcome: 'removed',
+              result: 'removed',
             },
           ])}`,
         ],
@@ -424,7 +424,7 @@ try {
       assert.notEqual(resultText('review-sibling'), '', 'the sibling call ran')
       assert.equal(
         resultText('review-write'),
-        'Workspace admission failed closed: fixture allocation did not finish'
+        'The call did not run: fixture allocation did not finish'
       )
       const refusals = () =>
         runtime.session.sessionManager

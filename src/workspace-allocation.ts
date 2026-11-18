@@ -96,7 +96,7 @@ const groupBySlot = (intents: readonly GateIntent[]): GateIntent[] => {
       current !== undefined &&
       (current.repositoryId !== intent.repositoryId || current.workspaceId !== intent.workspaceId)
     )
-      requireReview(`Conflicting workspace identities share one held path gate: ${path}`)
+      requireReview(`Two checkouts claim the locked path: ${path}`)
     groups.set(path, { ...intent, path, writer: intent.writer || current?.writer === true })
   }
   return [...groups.values()].toSorted((left, right) => left.path.localeCompare(right.path))
@@ -157,14 +157,14 @@ const orderedAllocationGates = (
     if (group.path === targetPath) continue
     const record = inDb(authority, group.repositoryId, db => getWorkspace(db, group.workspaceId))
     if (record === undefined || record.path !== group.path)
-      requireReview(`Workspace gate no longer matches its durable checkout: ${group.path}`)
+      requireReview(`Lock no longer matches its checkout: ${group.path}`)
     validateWorkspace(authority, record)
   }
   const acquired = acquireInOrder(authority, groups)
   const sourceGates = acquired.find(held => held.path === source.path)?.gates
   const targetGates = acquired.find(held => held.path === targetPath)?.gates
   if (sourceGates === undefined || targetGates === undefined)
-    requireReview('Workspace allocation gates were not acquired')
+    requireReview('Dev could not lock paths to create a worktree')
   return {
     source: sourceGates,
     target: targetGates,
@@ -283,7 +283,7 @@ const allocateWorktree = (
         binding.revision !== state.binding.revision ||
         binding.workspaceId !== state.binding.workspaceId
       )
-        requireReview('Conversation binding changed before worktree allocation')
+        requireReview('This conversation switched checkouts before worktree creation')
     })
     inDb(authority, source.repo, db =>
       transaction(db, () => {
@@ -319,7 +319,7 @@ const allocateWorktree = (
       actual.commonDevice !== source.git.commonDevice ||
       !sameIdentity(actual.commonIdentity, source.git.commonIdentity)
     )
-      requireReview(`Git did not publish the exact requested detached worktree: ${destination}`)
+      requireReview(`Git did not create the requested worktree: ${destination}`)
     return admitWriter({
       source,
       taskId,
@@ -352,13 +352,13 @@ const allocateWorktree = (
       const unresolved: TransitionOperationRecord = {
         ...operation,
         phase: 'review-required',
-        result: `Allocation outcome requires observation: ${errorText(cause)}`,
+        result: `Worktree creation may not have finished: ${errorText(cause)}`,
       }
       try {
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, unresolved)))
       } catch {}
       state.parked = true
-      state.review = `${errorText(cause)}. Worktree allocation ${operation.id} did not finish, so this session admits nothing more. Quit it and release the allocation when asked, or run: dev workspace release ${operation.taskId}.`
+      state.review = `Worktree creation did not finish. No more operations can start here. Quit and confirm release when asked, or ask the user to run dev workspace release ${operation.taskId}. ${errorText(cause)}`
       requireReview(state.review)
     }
 
@@ -366,7 +366,7 @@ const allocateWorktree = (
       const stopped: TransitionOperationRecord = {
         ...operation,
         phase: 'cancelled',
-        result: `Allocation stopped before any Git effect: ${errorText(cause)}`,
+        result: `Worktree creation stopped before Git ran: ${errorText(cause)}`,
       }
       try {
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, stopped)))
@@ -471,7 +471,7 @@ export const isolateContendedWriter = (
         from: toBinding(state.binding),
         target: grant,
         reason:
-          'Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied',
+          'Another task uses or needs the requested checkout. The new detached worktree starts at its current commit; local edits and untracked files were not copied',
       }
       const targetLease: GrantLease = {
         grant,
@@ -492,7 +492,7 @@ export const isolateContendedWriter = (
           putOperation(db, handoffOperation)
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('Conversation binding changed before handoff publication')
+            requireReview('The checkout changed during the switch')
           putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
         })
       )

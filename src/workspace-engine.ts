@@ -49,7 +49,7 @@ const asWorkspaceError = (cause: unknown): WorkspaceError =>
     ? cause
     : new WorkspaceError({
         outcome: 'unavailable',
-        message: `Workspace authority operation failed: ${errorText(cause)}`,
+        message: `Dev workspace operation failed: ${errorText(cause)}`,
       })
 
 const attempt = <A>(work: () => A | Promise<A>): Promise<A> => {

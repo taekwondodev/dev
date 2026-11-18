@@ -73,20 +73,18 @@ export const privateDirectory = (path: string, create: boolean): void => {
     }
     info = lstatIfExists(path)
   }
-  if (info === undefined) return unavailable(`Workspace authority directory is missing: ${path}`)
+  if (info === undefined) return unavailable(`Dev storage directory is missing: ${path}`)
   if (!info.isDirectory() || info.isSymbolicLink())
-    return unavailable(`Unsafe workspace authority directory: ${path}`)
+    return unavailable(`Unsafe dev storage directory: ${path}`)
   if (info.uid !== effectiveUid() || (info.mode & 0o077) !== 0)
-    return unavailable(
-      `Workspace authority directory is not private or is not owned by this account: ${path}`
-    )
+    return unavailable(`Dev storage directory is not private to this account: ${path}`)
 }
 
 export const ensureDirectoryPath = (path: string): void => {
   const info = lstatIfExists(path)
   if (info !== undefined) {
     if (!info.isDirectory() || info.isSymbolicLink())
-      unavailable(`Unsafe workspace authority parent: ${path}`)
+      unavailable(`Unsafe parent of dev storage: ${path}`)
     return
   }
   ensureDirectoryPath(dirname(path))
@@ -99,15 +97,13 @@ export const ensureDirectoryPath = (path: string): void => {
   }
   const created = lstatIfExists(path)
   if (created === undefined || !created.isDirectory() || created.isSymbolicLink())
-    unavailable(`Cannot create workspace authority directory: ${path}`)
+    unavailable(`Cannot create dev storage directory: ${path}`)
 }
 
 export const privateFile = (path: string): void => {
   const info = lstatIfExists(path)
   if (info === undefined || !info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
-    return unavailable(`Unsafe workspace authority file: ${path}`)
+    return unavailable(`Unsafe dev storage file: ${path}`)
   if (info.uid !== effectiveUid() || (info.mode & 0o077) !== 0)
-    return unavailable(
-      `Workspace authority file is not private or is not owned by this account: ${path}`
-    )
+    return unavailable(`Dev storage file is not private to this account: ${path}`)
 }

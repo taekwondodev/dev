@@ -133,7 +133,7 @@ try {
         const receipt = await sweepWith(sweeper, owner.write.workspaceId)
         for (const { grant } of children) {
           const row = rowOf(receipt, grant.workspaceId)
-          assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'no-residue'])
+          assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'nothing-left'])
           assert.equal(existsSync(grant.checkout), false)
           assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(grant.checkout))
           assert.equal(
@@ -157,7 +157,7 @@ try {
         const failedRow = rowOf(failedReceipt, failed.grant.workspaceId)
         assert.deepEqual(
           [failedRow.outcome, verdictName(failedRow.verdict)],
-          ['removed', 'no-residue']
+          ['removed', 'nothing-left']
         )
         assert.equal(sweepExitCode(failedReceipt), 0)
         assert.equal(existsSync(failed.grant.checkout), false)
@@ -210,7 +210,10 @@ try {
           reason: 'The child was not spawned',
         })
         assert.equal(existsSync(arm), false, 'the injected close failure fired')
-        assert.match(report.warning ?? '', /gate release deferred.*injected gate close failure/)
+        assert.match(
+          report.warning ?? '',
+          /could not close a checkout lock.*injected gate close failure/
+        )
         const views = await sweeper.inspect({ taskId: taskOf(child) })
         const use = views
           .find(view => view.workspaceId === child.workspaceId)
@@ -218,7 +221,7 @@ try {
         assert.equal(use?.stage, 'quiescent', 'the settlement is durable despite the warning')
 
         const held = await sweepWith(sweeper, anchor.workspaceId)
-        assert.match(rowOf(held, child.workspaceId).reason, /still uses this workspace/)
+        assert.match(rowOf(held, child.workspaceId).reason, /still use this checkout or repository/)
         assert.ok(existsSync(child.checkout), 'a held gate still protects the worktree')
 
         assert.equal(
@@ -227,7 +230,7 @@ try {
         )
         const swept = await sweepWith(sweeper, anchor.workspaceId)
         const row = rowOf(swept, child.workspaceId)
-        assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'no-residue'])
+        assert.deepEqual([row.outcome, verdictName(row.verdict)], ['removed', 'nothing-left'])
         assert.equal(existsSync(child.checkout), false)
         await assert.rejects(
           owner.reportExecution(child, {
@@ -387,7 +390,7 @@ try {
       })
       const receiptView = receipts.find(view => view.workspaceId === finished.workspaceId)
       assert.equal(receiptView?.outcome, 'removed')
-      assert.ok(receiptView?.reason.startsWith('By the sweep at quit'), receiptView?.reason)
+      assert.ok(receiptView?.reason.startsWith('By cleanup at quit'), receiptView?.reason)
     }
   )
   await liveOwner.owner.close()
@@ -552,7 +555,7 @@ try {
       const recovered = rowOf(recovery, child.workspaceId)
       assert.deepEqual(
         [recovered.outcome, verdictName(recovered.verdict)],
-        ['removed', 'no-residue']
+        ['removed', 'nothing-left']
       )
       assert.equal(existsSync(child.checkout), false)
     }
@@ -584,7 +587,7 @@ try {
       assert.equal(view?.completion.role, 'detached')
       assert.equal(view?.inventory?.files, 1, 'ignored files still undergo inventory checks')
       const removed = rowOf(await sweepAtQuit(detached.workspaceId), detached.workspaceId)
-      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'nothing-left'])
       assert.equal(existsSync(detached.checkout), false)
       assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(detached.checkout))
     }
@@ -866,7 +869,7 @@ try {
         assert.equal(row.outcome, 'removed', row.reason)
         assert.ok(!existsSync(child.checkout), 'the gated release removed the delivered worktree')
         const patchedRow = rowOf(receipt, patched.workspaceId)
-        assert.equal(verdictName(patchedRow.verdict), 'child-delivered', patchedRow.reason)
+        assert.equal(verdictName(patchedRow.verdict), 'agent-delivered', patchedRow.reason)
         assert.equal(patchedRow.outcome, 'removed', patchedRow.reason)
         assert.ok(!existsSync(patched.checkout), 'gated release discarded the original child work')
         assert.ok(!git(['worktree', 'list', '--porcelain'], asyncRepo).includes(patched.checkout))
@@ -879,7 +882,7 @@ try {
   )
 
   await claim(
-    'a finished worktree bound to another open dev conversation is retained as a live use naming that conversation, the bound conversation sees it as its own, and once that conversation closes the next sweep removes it',
+    'a finished worktree bound to another open conversation is retained as a live use naming that conversation, the bound conversation sees it as its own, and once that conversation closes the next sweep removes it',
     async () => {
       const boundCheckout = userCheckout('bound')
       const boundOwner = await reserve(boundCheckout)
@@ -897,7 +900,7 @@ try {
       const held = await sweepAtQuit(boundOwner.write.workspaceId)
       const kept = rowOf(held, bound.workspaceId)
       assert.deepEqual([kept.outcome, verdictName(kept.verdict)], ['retained', 'retained:use-live'])
-      assert.ok(kept.reason.includes('open dev conversation'), kept.reason)
+      assert.ok(kept.reason.includes('open conversation'), kept.reason)
       assert.ok(existsSync(bound.checkout))
       const view = (await lifecycle.check(boundOwner.taskId)).find(
         item => item.workspaceId === bound.workspaceId
@@ -915,16 +918,16 @@ try {
       )
       const ownView = own.find(item => item.workspaceId === bound.workspaceId)
       assert.ok(ownView?.completion.kind === 'finished', JSON.stringify(ownView?.completion))
-      assert.equal(ownView.completion.rule, 'no-residue')
+      assert.equal(ownView.completion.rule, 'nothing-left')
       assert.ok(
-        ownView.reasons.some(reason => reason.startsWith('This conversation is bound here')),
+        ownView.reasons.some(reason => reason.startsWith('This conversation uses this checkout')),
         JSON.stringify(ownView.reasons)
       )
 
       await attached.close()
       const swept = await sweepAtQuit(boundOwner.write.workspaceId)
       const removed = rowOf(swept, bound.workspaceId)
-      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'nothing-left'])
       assert.equal(existsSync(bound.checkout), false)
     }
   )
@@ -971,7 +974,7 @@ try {
       assert.deepEqual([clean.outcome, verdictName(clean.verdict)], ['skipped', 'retained:skipped'])
       assert.ok((await reservedTasks()).includes(exclusionOwner.taskId))
       const removed = rowOf(receipt, other.workspaceId)
-      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'nothing-left'])
       assert.equal(existsSync(other.checkout), false)
       assert.ok(existsSync(allocated.checkout), 'the allocation itself succeeded')
       git(['checkout', '--quiet', '--', 'tracked.txt'], own.checkout)
@@ -1029,7 +1032,7 @@ try {
       )
       assert.equal(readFileSync(join(cleanCheckout, 'tracked.txt'), 'utf8'), 'tracked\n')
       const removed = rowOf(receipt, finishedChild.workspaceId)
-      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'no-residue'])
+      assert.deepEqual([removed.outcome, verdictName(removed.verdict)], ['removed', 'nothing-left'])
       assert.equal(existsSync(finishedChild.checkout), false)
       const modified = rowOf(receipt, modifiedOwner.write.workspaceId)
       assert.deepEqual(
@@ -1045,14 +1048,14 @@ try {
       assert.ok(existsSync(activeChild.checkout), 'the live child worktree is untouched')
       assert.ok((await reservedTasks()).includes(activeOwner.taskId))
       assert.ok(
-        formatSweepReceipt(receipt).startsWith('Workspace sweep at the conversation replacement'),
+        formatSweepReceipt(receipt).startsWith('Automatic cleanup when switching conversations'),
         formatSweepReceipt(receipt)
       )
       const view = (await lifecycle.inspect({ taskId: cleanOwner.taskId })).find(
         entry => entry.workspaceId === finishedChild.workspaceId
       )
       assert.equal(view?.outcome, 'removed')
-      assert.ok(view?.reason.startsWith('By the sweep at a conversation replacement'), view?.reason)
+      assert.ok(view?.reason.startsWith('By cleanup when changing conversations'), view?.reason)
       await activeOwner.owner.close()
     }
   )

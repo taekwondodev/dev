@@ -321,7 +321,7 @@ try {
         assert.equal(late?.block, true)
         await assert.rejects(
           opened.host.writeOperations.writeFile(latePath, 'forbidden'),
-          /no admitted destination/
+          /No write permission for/
         )
         assert.ok(!existsSync(latePath))
       } finally {
@@ -438,7 +438,7 @@ try {
         await opened.runtime.session.waitForIdle()
         const blocked = toolResults(opened.runtime)('artifact-blocked')
         assert.equal(blocked.isError, true, blocked.text)
-        assert.match(blocked.text, /unresolved writer use/)
+        assert.match(blocked.text, /cannot confirm the previous writer stopped/)
         assert.equal(existsSync(path), false, 'refused admission must not write artifact bytes')
         assert.equal(opened.runtime.cwd, checkout)
         await holder.close()
@@ -485,7 +485,7 @@ try {
         assert.equal(result('mixed-bash').isError, true)
         assert.match(
           result('mixed-bash').text,
-          /requires a host rebind: .*The operation was not executed/,
+          /Switching checkouts; the call did not run/,
           'the refused call keeps its reason'
         )
         assert.deepEqual(result('mixed-read'), { isError: true, text: 'Operation aborted' })
@@ -505,7 +505,7 @@ try {
         assert.equal(handoffs.length, 1)
         assert.match(
           handoffs[0] ?? '',
-          /^Workspace admission changed after .*\. Dev ended that turn\. Current workspace: .*\. The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it\. Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed\.$/
+          /^Dev switched checkouts and ended that turn\. .*\. Current checkout: .*\. The blocked call did not run\. Check this checkout before deciding whether to retry\. Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed\.$/
         )
         const endedTurns = entries.flatMap(entry =>
           entry.type === 'message' &&
@@ -580,7 +580,7 @@ try {
         )
         assert.equal(dialog.asked[0]?.options[0], CONTINUE_HERE)
         assert.equal(dialog.asked[0]?.options.length, 2)
-        const note = `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-continue. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
+        const note = `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-continue. The user chose to continue it here. 1 changed file remains from earlier work. Earlier messages are not here.`
         assert.deepEqual(shown(opened.runtime), [note])
         assert.deepEqual(dialog.notices, [], 'the message is the only announcement')
         assert.ok(!requests[0]?.includes(note), 'the request that asked did not know of the join')
@@ -661,7 +661,7 @@ try {
         assert.equal(opened.host.attachment.binding.taskId, paused.taskId)
         assert.equal(readFileSync(join(paused.checkout, 'asked.txt'), 'utf8'), 'continued\n')
         assert.deepEqual(shown(opened.runtime), [
-          `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-overlap. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`,
+          `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-overlap. The user chose to continue it here. 1 changed file remains from earlier work. Earlier messages are not here.`,
         ])
       } finally {
         await opened.close()
@@ -702,7 +702,10 @@ try {
         const result = toolResults(opened.runtime)
         assert.equal(dialog.asked.length, 1, JSON.stringify(dialog.asked))
         assert.equal(result('separate-write').isError, true)
-        assert.match(result('separate-write').text, /requires a host rebind: Another task owns/)
+        assert.match(
+          result('separate-write').text,
+          /Switching checkouts; the call did not run.*Another task uses or needs/
+        )
         assert.ok(!existsSync(join(paused.checkout, 'asked.txt')), 'the paused checkout was kept')
         const isolated = opened.runtime.cwd
         assert.notEqual(resolve(isolated), resolve(paused.checkout))
@@ -716,7 +719,7 @@ try {
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         assert.match(
           shown(opened.runtime).at(-1) ?? '',
-          /^The conversation was not switched: This conversation still runs lead-shell \(.*\) in its workspace, so it cannot be switched yet\./
+          /^The conversation was not switched: Cannot be switched while a bash command may still be running here\. Wait or stop the process; \/work stop only stops background work\./
         )
         assert.equal(opened.runtime.cwd, isolated)
         assert.equal(opened.host.isParked(), false)
@@ -737,7 +740,7 @@ try {
         assert.equal(dialog.asked.length, 1, 'an exact task id selects without a list')
         assert.match(
           handoffTexts(opened.runtime).at(-1) ?? '',
-          /^The user resumed this conversation onto a retained workspace with \/workspace resume: Explicit task selection\..* Current workspace: .* Continue the conversation in this new context\.$/
+          /^The user chose \/workspace resume\. Using the selected checkout and its files\. Nothing is copied\. Current checkout: .*\.$/
         )
 
         await opened.runtime.session.prompt('Write the file now.')
@@ -831,7 +834,10 @@ try {
         await opened.runtime.session.waitForIdle()
         const refused = toolResults(opened.runtime)('headless-write')
         assert.equal(refused.isError, true)
-        assert.match(refused.text, /requires a host rebind: Another task owns/)
+        assert.match(
+          refused.text,
+          /Switching checkouts; the call did not run.*Another task uses or needs/
+        )
         assert.notEqual(resolve(opened.runtime.cwd), resolve(paused.checkout))
         assert.ok(!existsSync(join(paused.checkout, 'asked.txt')))
       } finally {
@@ -925,9 +931,7 @@ try {
         await waitFor(
           'the cancelled switch to be reported',
           () =>
-            dialog.notices.includes(
-              'Workspace switch was cancelled; the current binding was preserved.'
-            )
+            dialog.notices.includes('Checkout switch cancelled. Still using the previous checkout.')
               ? true
               : undefined,
           IN_MEMORY_POLL
@@ -1030,7 +1034,12 @@ try {
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         await waitFor(
           'the failed switch to be reported',
-          () => (reported().includes('Workspace handoff is unresolved') ? true : undefined),
+          () =>
+            reported().includes(
+              'Dev cannot confirm the switch finished. Checkout access is blocked.'
+            )
+              ? true
+              : undefined,
           IN_MEMORY_POLL
         )
         assert.ok(written, 'the file existed when Pi was asked to reopen it')
@@ -1120,7 +1129,7 @@ try {
       assert.equal(result('work-process').isError, true)
       assert.match(
         result('work-process').text,
-        /^Workspace handoff required before starting work: Another task owns or is using the requested checkout/
+        /^Dev must switch checkouts first: Another task uses or needs the requested checkout/
       )
       assert.notEqual(resolve(runtime.cwd), resolve(lead), 'the lead left the held checkout')
       assert.equal(git(['rev-parse', 'HEAD'], runtime.cwd), leadCommit)
@@ -1449,7 +1458,7 @@ try {
         output.mock.calls
           .map(call => String(call.arguments[0]))
           .join('')
-          .split('Workspace sweep at the conversation replacement')
+          .split('Automatic cleanup when switching conversations')
           .slice(1)
       const sessionId = () => freshHost.runtime.session.sessionManager.getSessionId()
       const replace = async (what: string) => {
@@ -1575,9 +1584,9 @@ try {
         assert.notEqual(heldHost.runtime.session.sessionManager.getSessionId(), previous)
         assert.equal(await checkoutTask(), firstTask, 'the reservation is untouched')
         const receipt = output.mock.calls.map(call => String(call.arguments[0])).join('')
-        assert.match(receipt, /Workspace sweep at the conversation replacement/)
+        assert.match(receipt, /Automatic cleanup when switching conversations/)
         assert.match(receipt, /close refused by the probe/)
-        assert.match(receipt, /nothing was swept or released/)
+        assert.match(receipt, /Automatic cleanup did not run/)
         await heldHost.runtime.session.prompt('Write another scratch file.')
         await heldHost.runtime.session.waitForIdle()
         assert.equal(toolResults(heldHost.runtime)('held-next').isError, true)

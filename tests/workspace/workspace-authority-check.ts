@@ -247,7 +247,7 @@ const ready = (result: Awaited<ReturnType<TestAttachment['authorizeWriter']>>) =
 }
 const refusedWithoutCommits = (checkout: string, holder: string | undefined) => ({
   outcome: 'blocked',
-  message: `Checkout ${checkout} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run: dev workspace release ${holder}. Files stay.`,
+  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. Quit that session, or after it ends ask the user to run: dev workspace release ${holder}. Files stay.`,
 })
 const resolveDefaultRoot = (
   installation: URL,
@@ -506,7 +506,7 @@ try {
         console.log(JSON.stringify({ readerWarning: read.warning, attemptedWriter }))
       `)
       ) as { readerWarning?: string; attemptedWriter: string }
-      assert.match(subprocessEvidence.readerWarning ?? '', /writer owns this live checkout/)
+      assert.match(subprocessEvidence.readerWarning ?? '', /Another session can write here/)
       assert.equal(subprocessEvidence.attemptedWriter, 'blocked')
     }
   )
@@ -936,7 +936,7 @@ try {
       )
       assert.equal(release?.outcome, 'released')
       assert.ok(
-        release?.reason.startsWith('By a write admitted in a checkout with no commits'),
+        release?.reason.startsWith('By allowing a write before the first commit'),
         release?.reason
       )
 
@@ -1068,15 +1068,17 @@ try {
         [['allocation', 'review-required']]
       )
       assert.ok(
-        refusal.message.startsWith('Git worktree failed: ') &&
-          refusal.message.endsWith(
-            `. Worktree allocation ${pending[0]?.id} did not finish, so this session admits nothing more. Quit it and release the allocation when asked, or run: dev workspace release ${unfinishedTask}.`
+        refusal.message.startsWith(
+          'Worktree creation did not finish. No more operations can start here.'
+        ) &&
+          refusal.message.includes(
+            `dev workspace release ${unfinishedTask}. Git worktree failed: `
           ),
         refusal.message
       )
       assert.ok(
         !refusal.message.includes('hint:'),
-        `the cause leads the reason without Git advice: ${refusal.message}`
+        `the refusal gives the Git error without advice: ${refusal.message}`
       )
       await assert.rejects(contender.authorize({ kind: 'read' }), {
         outcome: 'review-required',
@@ -1119,7 +1121,7 @@ try {
       })
       const readerOneResult = await firstReader.authorize({ kind: 'read' })
       assert.equal(readerOneResult.kind, 'ready')
-      assert.match(readerOneResult.warning ?? '', /writer owns this live checkout/)
+      assert.match(readerOneResult.warning ?? '', /Another session can write here/)
       const secondReader = await lifecycle.attach({
         conversation: conversation('reader-two'),
         cwd: repo,
@@ -1279,7 +1281,7 @@ try {
         error =>
           error instanceof WorkspaceError &&
           error.outcome === 'blocked' &&
-          /reserved by another task; delegate the change with work delegate/.test(error.message)
+          /Another task is keeping .*; delegate the change with work delegate/.test(error.message)
       )
       const leadRepo = join(sandbox, 'lead-write-repo')
       initRepository(leadRepo, 'lead.txt', 'lead fixture\n')
@@ -1346,11 +1348,23 @@ try {
         initRepository(nested, 'file.txt', 'nested\n')
         initRepository(otherNested, 'file.txt', 'other nested\n')
         for (const [cwd, grant, reason] of [
-          [nested, undefined, /outside the caller's authorized workspace.*ask the conversation/],
-          [otherNested, caller, /outside the caller's authorized workspace.*ask the conversation/],
-          [nested, reader, /no workspace writer grant.*writing lead or child/],
+          [
+            nested,
+            undefined,
+            /No permission to write in .*Ask the conversation using that checkout/,
+          ],
+          [
+            otherNested,
+            caller,
+            /No permission to write in .*Ask the conversation using that checkout/,
+          ],
+          [
+            nested,
+            reader,
+            /No permission to write; ask a conversation or delegated agent with write access/,
+          ],
           [caller.checkout, caller, /destination is in the caller's repository.*write the file/],
-          [scoped.effect.root, caller, /authority metadata.*select a project checkout/],
+          [scoped.effect.root, caller, /Dev private storage.*Select a project checkout/],
         ] as const)
           await assert.rejects(
             owner.authorize({
@@ -1362,7 +1376,7 @@ try {
           )
         await assert.rejects(
           stranger.authorize({ kind: 'foreign-write', cwd: nested, caller }),
-          /belongs to another attachment.*retry from the current workspace/
+          /Permission changed; retry from the current checkout/
         )
         await assert.rejects(
           owner.authorize({
@@ -1370,17 +1384,17 @@ try {
             cwd: otherNested,
             caller: { ...caller, checkout: other.checkout },
           }),
-          /stale or was not issued/
+          /No current permission in this conversation/
         )
         const metadata = join(caller.checkout, '.dev', 'coordination')
         mkdirSync(metadata, { recursive: true })
         await assert.rejects(
           owner.authorize({ kind: 'foreign-write', cwd: metadata, caller }),
-          /coordination metadata.*select a project file/
+          /Dev private storage.*Choose a project file/
         )
         await assert.rejects(
           owner.authorize({ kind: 'delegated-write', cwd: nested }),
-          /inside dev authority storage.*select a source checkout outside/
+          /Cannot delegate into dev private storage.*Choose a checkout outside it/
         )
         const execution = processExecution('native-scope-child')
         const unstarted = ready(await owner.authorize({ kind: 'delegated-write', execution }))
@@ -1388,7 +1402,7 @@ try {
         initRepository(childNested, 'file.txt', 'child nested\n')
         await assert.rejects(
           owner.authorize({ kind: 'foreign-write', cwd: childNested, caller: unstarted }),
-          /no longer active.*retry from the current authorized workspace/
+          /Checkout access ended; retry from the current checkout/
         )
         await startProcessUse(owner, unstarted, execution)
         const childGrant = ready(
@@ -1398,7 +1412,7 @@ try {
         await endProcessUse(owner, unstarted)
         await assert.rejects(
           owner.authorize({ kind: 'foreign-write', cwd: childNested, caller: unstarted }),
-          /no longer active|stale/
+          /Checkout access ended|No current permission in this conversation/
         )
         const admitted = ready(
           await owner.authorize({ kind: 'foreign-write', cwd: nested, caller })
@@ -1431,7 +1445,7 @@ try {
           [
             'lead-shell',
             'lead',
-            'Wait for it to finish or stop the process started through bash; /work stop does not stop lead shells.',
+            'Wait or stop the process; /work stop only stops background work.',
           ],
           ['work-task', 'work-generation', 'Wait for it to finish or stop it with /work stop.'],
           ['lead-shell', 'work-generation', 'Wait for it to finish or stop it with /work stop.'],
@@ -1448,7 +1462,7 @@ try {
               error instanceof WorkspaceError &&
               error.outcome === 'blocked' &&
               error.message ===
-                `This conversation still runs ${taskKey} (observed) in its workspace, so it cannot be switched yet. ${guidance}`
+                `Cannot be switched while ${generation === 'lead' ? 'a bash command' : taskKey} may still be running here. ${guidance}`
           )
           await endProcessUse(attachment, use)
         }
@@ -1603,9 +1617,9 @@ try {
       )
       assert.match(
         storage(`${home}/Library/Mobile Documents/com~apple~CloudDocs/a`) ?? '',
-        /synchronized/
+        /synced folder/
       )
-      assert.match(storage(`${home}/Library/CloudStorage/Dropbox/authority`) ?? '', /synchronized/)
+      assert.match(storage(`${home}/Library/CloudStorage/Dropbox/authority`) ?? '', /synced folder/)
       assert.equal(
         storage('/Volumes/HFS/authority', { type: 'hfs', local: true, mountPoint: '/Volumes/HFS' }),
         undefined
@@ -1732,9 +1746,7 @@ try {
       const retained = await reopened.inspect({ taskId: delegatedGrant.taskId })
       assert.ok(
         retained.some(
-          view =>
-            view.workspaceId === delegatedGrant.workspaceId &&
-            view.outcome === 'preserved-for-resume'
+          view => view.workspaceId === delegatedGrant.workspaceId && view.outcome === 'paused'
         )
       )
       const freshSession = await reopened.attach({
@@ -1776,7 +1788,7 @@ try {
       })
       assert.equal(
         transition.reason,
-        'Explicit task selection. The existing workspace and its contents will be used; no files are transferred'
+        'Using the selected checkout and its files. Nothing is copied'
       )
       await handoffSession.close()
       const reopenedHandoff = await reopened.attach({
@@ -2214,7 +2226,7 @@ try {
       assert.equal(shellReaderResult.kind, 'ready')
       assert.match(
         shellReaderResult.kind === 'ready' ? (shellReaderResult.warning ?? '') : '',
-        /writer owns/
+        /Another session can write here/
       )
       await shellReader.close()
       await startProcessUse(scopedPrimary, shell, primaryShellExecution)
@@ -2613,7 +2625,7 @@ try {
         error =>
           error instanceof WorkspaceError &&
           error.outcome === 'review-required' &&
-          /no longer exists and is not recreated/.test(error.message)
+          /gone and will not be recreated/.test(error.message)
       )
       assert.equal(readFileSync(removedConversation.sessionFile, 'utf8'), sessionBefore)
       assert.ok(!existsSync(removedTarget.checkout))
@@ -3178,7 +3190,7 @@ try {
           let inspections = 0
           while (!existsSync(${JSON.stringify(closingDone)})) {
             for (const view of await lifecycle.inspect({ cwd: ${JSON.stringify(closingRepo)} }))
-              if (view.reason.includes('left unsettled')) abandoned.push(view.reason)
+              if (view.reason.includes('may have left processes running')) abandoned.push(view.reason)
             inspections += 1
           }
           await lifecycle.close()
@@ -3270,8 +3282,8 @@ try {
         error =>
           error instanceof WorkspaceError &&
           error.outcome === 'unavailable' &&
-          error.message.includes('unsupported schema') &&
-          error.message.includes('Discard the workspace authority')
+          error.message.includes('wrong schema') &&
+          error.message.includes('Quit all dev sessions')
       )
       assert.deepEqual(readFileSync(catalog), before)
     }

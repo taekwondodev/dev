@@ -247,35 +247,31 @@ const assessUses = (
   if (ownUses.length > 0 || ownBound)
     reasons.push(
       ownUses.length > 0
-        ? `This conversation holds ${ownUses.length} use(s) here (${ownUses.map(describeUse).join(', ')}); they end when it quits, and the sweep then rechecks them.`
-        : 'This conversation is bound here; it stops counting as a use when it quits, and the sweep then rechecks the workspace.'
+        ? `This conversation uses this checkout (${ownUses.map(describeUse).join(', ')}). Dev checks again at quit.`
+        : 'This conversation uses this checkout until quit, when dev checks again.'
     )
   if (unknown.length > 0) {
-    reasons.push(
-      `Unresolved workspace use(s) ${unknown.map(use => use.id).join(', ')} keep the sweep away; explicit recovery is not available yet.`
+    reasons.push(`Dev cannot confirm all operations stopped, so it kept the checkout.`)
+    nextActions.push(
+      'Ask the user to release the task only after confirming its operations stopped.'
     )
-    nextActions.push('dev workspace release clears the task when you no longer need it.')
   } else if (abandoned.length > 0) {
-    reasons.push(
-      `Use(s) ${abandoned.join(', ')} were left unsettled by dev sessions that have ended; their processes may still run.`
-    )
-    nextActions.push('dev workspace release clears the task once those processes are gone.')
+    reasons.push(`Processes from closed dev sessions may still be running.`)
+    nextActions.push('Once the processes stop, ask the user to run dev workspace release.')
   } else if (live.length > 0 || conversations.length > 0) {
     if (live.length > 0)
       reasons.push(
-        `${live.length} live use(s) by participating dev session(s): ${live
+        `Other dev sessions still use this checkout: ${live
           .map(use => `${use.id} (${describeUse(use)})`)
           .join(', ')}`
       )
     if (conversations.length > 0)
       reasons.push(
-        `${conversations.length} open dev conversation(s) are bound here: ${conversations
+        `${conversations.length} open conversations use this checkout: ${conversations
           .map(binding => binding.conversation.sessionId)
           .join(', ')}`
       )
-    nextActions.push(
-      'End that use (finish or stop its work, close its conversation); the next sweep rechecks it.'
-    )
+    nextActions.push('Finish or stop that work, then close its conversation before cleanup.')
   }
   return {
     live,
@@ -402,7 +398,7 @@ const stageWorkspace = (
       .filter(operation => operation.kind !== 'release' && operation.phase === 'intent')
       .map(
         operation =>
-          `An unstarted ${operation.kind} intent ${operation.id} is recorded; the sweep neither waits for it nor replays it.`
+          `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} never started. Cleanup will not run it.`
       ),
     ...unfinishedReleases.map(
       operation =>
@@ -437,11 +433,11 @@ const stageWorkspace = (
     workspace.origin === 'pre-existing'
       ? {
           source: 'not-needed',
-          description: 'A pre-existing checkout needs no integration target.',
+          description: 'Pre-existing checkouts need no destination branch.',
         }
       : {
           source: 'not-assessed',
-          description: 'The target was not derived for this state.',
+          description: 'Dev did not check the destination branch.',
         }
   const shape = (shaping: Shaping, blockers: readonly string[] = []): Assessed => ({
     assessment: {
@@ -477,7 +473,7 @@ const stageWorkspace = (
     return shape({
       reasons: unresolvedTransitions.map(
         operation =>
-          `Operation ${operation.id} (${operation.kind}) is ${operation.phase}${operation.result === undefined ? '' : `: ${operation.result}`}`
+          `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
       ),
       nextActions: [CLEAR],
     })
@@ -492,7 +488,7 @@ const stageWorkspace = (
     try {
       inventory = readInventory(workspace.path, head)
     } catch (cause) {
-      reasons.push(`Residual changes could not be read: ${errorText(cause)}`)
+      reasons.push(`Could not read checkout changes: ${errorText(cause)}`)
     }
     const completion = decideCompletion({
       ...factsBase,
@@ -509,12 +505,12 @@ const stageWorkspace = (
     return shape({
       reasons: [
         ...reasons,
-        'Pre-existing checkout: release ends only the task reservation; files and commits stay untouched.',
+        'Releasing a pre-existing checkout leaves files and commits untouched.',
         completion.reason,
       ],
       nextActions:
         completion.kind === 'finished'
-          ? ['Quitting dev releases this reservation automatically; files and commits stay.']
+          ? ['At quit, dev frees this checkout for other work; files and commits stay.']
           : retainedActions(completion),
       residual,
       completion,
@@ -546,12 +542,11 @@ const stageWorkspace = (
       (uses.inUse
         ? {
             source: 'not-assessed',
-            description: 'The target is derived once no use holds the workspace.',
+            description: 'Dev checks the destination branch once the checkout is idle.',
           }
         : {
             source: 'not-needed',
-            description:
-              'No residue and no commits beyond its base, so no integration target is needed.',
+            description: 'No changes or commits to land; no destination needed.',
           })
     let integration: IntegrationFacts = integrationUnknown('Integration is not needed here.')
     if (!uses.inUse && needsIntegration(residue, ownCommits)) {
@@ -603,7 +598,7 @@ const stageWorkspace = (
           nextActions: [
             evidence.verdict === 'invalid'
               ? 'Resolve each blocker (publish the selected artifact again, resolve the conflict or remove the nested repository), then check again.'
-              : 'Resolve each unsupported or unreadable entry, then check again; the sweep never deletes what it cannot inspect.',
+              : 'Fix unreadable or unsupported files, then check again. Dev will not delete what it cannot inspect.',
             CLEAR,
           ],
         },
@@ -615,11 +610,9 @@ const stageWorkspace = (
         reasons: [
           ...uses.reasons,
           completion.reason,
-          'Finished at this check; nothing removed; the sweep rechecks before removing it.',
+          'Eligible for cleanup; nothing removed. Dev checks again before removal.',
         ],
-        nextActions: [
-          'Quitting dev, or the next managed worktree allocation, removes it automatically.',
-        ],
+        nextActions: ['Dev checks again at quit or before making another worktree.'],
       })
     return shape({
       ...common,
@@ -646,7 +639,7 @@ const siblingAt = (db: DatabaseSync, workspace: WorkspaceRecord, head: string): 
   if (own === undefined)
     return {
       kind: 'unknown',
-      reason: `Commits of sibling workspace ${workspace.id} beyond its base cannot be determined, so its pull requests were not searched.`,
+      reason: `Dev could not verify new commits in checkout ${workspace.id}, so it did not search its PRs.`,
     }
   return own ? { kind: 'seed', head } : NO_SIBLING
 }
@@ -662,7 +655,7 @@ const liveSibling = (
   } catch (cause) {
     return {
       kind: 'unknown',
-      reason: `The HEAD of sibling workspace ${workspace.id} could not be read, so its pull requests were not searched: ${errorText(cause)}`,
+      reason: `Could not read HEAD of checkout ${workspace.id}; dev skipped its PRs: ${errorText(cause)}`,
     }
   }
   const { head } = validated
@@ -836,7 +829,7 @@ const requireCurrentReservation = (
     current.id !== reservation.id ||
     current.revision !== reservation.revision
   )
-    requireReview(`Reservation changed ${moment}`)
+    requireReview(`The task keeping this checkout changed ${moment}`)
   return current
 }
 
@@ -863,7 +856,7 @@ const removeFinishedWorktree = (
   )
   inDb(authority, repo, db =>
     transaction(db, () => {
-      requireCurrentReservation(db, reservation, 'before the sweep recorded its removal')
+      requireCurrentReservation(db, reservation, 'before dev recorded removal')
       putOperation(db, started)
     })
   )
@@ -908,7 +901,7 @@ const removeFinishedWorktree = (
   }
   return {
     outcome: 'removed',
-    reason: 'The managed worktree, its Git registration and its reservation were removed.',
+    reason: 'Dev removed the worktree and its Git registration.',
     operationId: started.id,
   }
 }
@@ -923,7 +916,7 @@ const releaseFinishedReservation = (
   const operation: ReleaseOperationRecord = {
     ...startedRelease(repo, reservation, workspace, moment, 'release-reservation', assessed.head),
     phase: 'confirmed',
-    result: `Reservation ${reservation.id} released; files and commits unchanged.`,
+    result: 'Checkout freed for other work. Files and commits unchanged.',
   }
   inDb(authority, repo, db =>
     transaction(db, () => {
@@ -934,7 +927,7 @@ const releaseFinishedReservation = (
   )
   return {
     outcome: 'released',
-    reason: `Reservation ${reservation.id} was released; files and commits are unchanged.`,
+    reason: 'Checkout freed for other work. Files and commits unchanged.',
     operationId: operation.id,
   }
 }
@@ -957,7 +950,7 @@ const attemptUnderGates = (
   if (fresh === undefined)
     return {
       outcome: 'retained',
-      reason: 'The workspace is no longer reserved; nothing changed.',
+      reason: 'No task holds this checkout; nothing changed.',
     }
   const { completion } = fresh.assessment
   if (completion.kind !== 'finished')
@@ -984,7 +977,7 @@ const attemptUnderGates = (
   } catch (cause) {
     return {
       outcome: 'retained',
-      reason: `Target installation coordination is active or unverifiable (${errorText(cause)}); nothing changed.`,
+      reason: `Dev could not confirm the installation was idle (${errorText(cause)}). Nothing changed.`,
     }
   }
   try {
@@ -1015,7 +1008,7 @@ const attemptFinished = (
     if (cause instanceof WorkspaceError && cause.outcome === 'blocked')
       return {
         outcome: 'retained',
-        reason: `A participating dev session still uses this workspace or its repository structure (${cause.message}); nothing changed.`,
+        reason: `Another dev session can still use this checkout or repository (${cause.message}). Nothing changed.`,
       }
     throw cause
   }
@@ -1124,13 +1117,13 @@ export const removeTaskArtifacts = (
   if (info.isSymbolicLink() || !info.isDirectory())
     return row(
       'review-required',
-      'The task artifact entry is not a plain directory, so dev did not delete it; inspect and remove it by hand.'
+      'Dev kept the task files: the path is not a normal directory. Inspect it before removing.'
     )
   try {
     if (realpathSync(authority.paths.artifacts) !== authority.paths.artifacts)
       return row(
         'review-required',
-        'The artifacts root is reached through a symbolic link, so dev did not delete inside it.'
+        'Dev kept the task files because their parent folder uses a symlink.'
       )
     rmSync(path, { recursive: true, force: true })
   } catch (cause) {
@@ -1140,11 +1133,8 @@ export const removeTaskArtifacts = (
     )
   }
   if (lstatIfExists(path) !== undefined)
-    return row(
-      'review-required',
-      'The task artifact directory still exists after deletion; the next sweep at quit tries again.'
-    )
-  return row('removed', 'The task reserves no workspace, so its artifact directory was removed.')
+    return row('review-required', 'The task folder still exists. Cleanup at quit will retry.')
+  return row('removed', 'Dev removed the task folder: no checkout is kept for it.')
 }
 
 const reportTaskArtifacts = (
@@ -1234,7 +1224,7 @@ const removeForUser = (
     repo,
     workspace,
     'removed',
-    'The managed worktree, its Git registration and its reservation were removed.'
+    'Dev removed the worktree and its Git registration.'
   )
 }
 
@@ -1257,7 +1247,7 @@ const releaseForUser = (
           headOf(authority, workspace)
         ),
         phase: 'confirmed',
-        result: `Reservation ${reservation.id} released; files and commits unchanged.`,
+        result: 'Checkout freed for other work. Files and commits unchanged.',
       })
       forgetReservation(db, reservation)
     })
@@ -1266,7 +1256,7 @@ const releaseForUser = (
     repo,
     workspace,
     'released',
-    `Reservation ${reservation.id} was released; files and commits are unchanged.`
+    'Checkout freed for other work. Files and commits unchanged.'
   )
 }
 
@@ -1312,7 +1302,7 @@ const clearUnfinishedAllocation = (
     if (source === undefined)
       return result(
         'failed',
-        `The source checkout of the unfinished allocation is no longer recorded: ${operation.sourcePath}. Remove ${operation.targetPath} by hand.`
+        `The source checkout of the unfinished worktree creation is no longer recorded: ${operation.sourcePath}. Remove ${operation.targetPath} by hand.`
       )
     structure = acquireStructureGate(authority.paths, source, repo)
     const occupied = observeAbsence(operation.targetPath) !== 'absent'
@@ -1322,17 +1312,17 @@ const clearUnfinishedAllocation = (
       owner: occupied ? getWorkspaceByPath(db, operation.targetPath) : undefined,
     }))
     if (current === undefined)
-      return result('failed', 'The allocation finished meanwhile; release the task again.')
+      return result('failed', 'The worktree creation finished meanwhile; release the task again.')
     const closed = (detail: string): AllocationOperationRecord => ({
       ...current,
       phase: 'cancelled',
       result: `${current.result === undefined ? '' : `${current.result} `}Superseded by dev workspace release: ${detail}.`,
     })
     if (owner !== undefined) {
-      save(authority, repo, closed(`${current.targetPath} is now workspace ${owner.id}`))
+      save(authority, repo, closed(`${current.targetPath} is now checkout ${owner.id}`))
       return result(
         'released',
-        `The unfinished allocation was closed; its path is now workspace ${owner.id}, so nothing was removed.`
+        `The unfinished worktree creation was closed; its path is now checkout ${owner.id}, so nothing was removed.`
       )
     }
     const worktree: Worktree = {
@@ -1346,13 +1336,13 @@ const clearUnfinishedAllocation = (
     if (!after.complete)
       return result(
         'failed',
-        `The unfinished allocation was not cleared (${detail}): ${after.text}. Fix the cause and release again.`
+        `The unfinished worktree creation was not cleared (${detail}): ${after.text}. Fix the cause and release again.`
       )
     save(authority, repo, closed(detail))
     removeEmptyRepositoryDirectory(authority, repo)
     return result(
       'removed',
-      'The unfinished worktree allocation was cleared; nothing of the worktree remains.'
+      'The unfinished worktree creation was cleared; nothing of the worktree remains.'
     )
   } catch (cause) {
     return result('failed', `${errorText(cause)}. Fix the cause and release again.`)
@@ -1427,7 +1417,7 @@ const clearEndedUses = (
           repo,
           workspace,
           'failed',
-          `Task ${reservation.taskId} reserved this checkout; run dev workspace release ${reservation.taskId} instead.`
+          `This checkout is kept for a task. Run dev workspace release ${reservation.taskId} instead.`
         )
       const uses = getUseRows(db, workspace.id)
       const live = uses.filter(
@@ -1543,8 +1533,8 @@ const startSweep = (
         taskId,
         reason:
           started && offset === 0
-            ? `The sweep used its ${seconds}-second budget during this task, so its remaining workspaces were not attempted; the next sweep assesses them.`
-            : `The sweep used its ${seconds}-second budget before this task, so nothing of it was assessed or attempted; the next sweep assesses it.`,
+            ? `Cleanup reached its ${seconds}-second limit. Dev will check the remaining checkouts next time.`
+            : `Cleanup reached its ${seconds}-second limit before this task. Dev will check it next time.`,
       }))
     )
   }
@@ -1560,13 +1550,13 @@ const startSweep = (
       receipt.push({
         kind: 'task-failure',
         taskId,
-        reason: `The task could not be assessed, so nothing of it was attempted: ${errorText(cause)}`,
+        reason: `Could not check the task. Nothing changed: ${errorText(cause)}`,
       })
     },
     abort: cause => {
       receipt.push({
         kind: 'sweep-failure',
-        reason: `The sweep stopped before assessing every task of this repository; the rows above are its recorded outcomes and nothing else was attempted: ${errorText(cause)}`,
+        reason: `Automatic cleanup stopped early. Dev tried only the listed operations: ${errorText(cause)}`,
       })
     },
     settle: (index, taskId, assessed) => {
@@ -1634,7 +1624,7 @@ const startSweep = (
               cause instanceof WorkspaceError && cause.outcome === 'invalid'
                 ? 'retained'
                 : 'review-required',
-            reason: `The attempt was refused or its outcome is uncertain: ${errorText(cause)}`,
+            reason: `Dev refused the operation or cannot confirm its result: ${errorText(cause)}`,
           })
         }
       }
@@ -1643,7 +1633,7 @@ const startSweep = (
     unfinished: () => {
       if (authority.inspectExisting() === undefined) return
       const reason =
-        'A worktree allocation did not finish; releasing the task removes what Git created of it.'
+        'Worktree creation did not finish. Releasing the task removes what Git created.'
       receipt.push(
         ...inDb(authority, input.repositoryId, db => unfinishedAllocations(db)).map(operation => ({
           kind: 'workspace' as const,

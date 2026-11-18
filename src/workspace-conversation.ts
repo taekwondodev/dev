@@ -105,7 +105,7 @@ export const conversationWorkspaces = (state: ConversationState): ReadonlySet<Wo
 
 const assertPrunedLeaseSettled = (lease: GrantLease): void => {
   if (!lease.released && (lease.kind === 'execution' || lease.kind === 'opaque'))
-    requireReview(`Workspace use disappeared while its execution was live: ${lease.useId}`)
+    requireReview(`Dev lost track of an operation still running: ${lease.useId}`)
 }
 
 const forgetPrunedLease = (state: ConversationState, lease: GrantLease): void => {
@@ -142,7 +142,7 @@ const releaseQuiescentWorkspaceGates = (
         return true
       }
       if (use.workspaceId !== workspace.workspaceId || use.incarnation !== state.incarnation)
-        requireReview(`Workspace gate lost its owning use: ${lease.useId}`)
+        requireReview(`Dev lost track of the operation holding the lock: ${lease.useId}`)
       return !isActiveUse(use)
     })
   )
@@ -187,7 +187,7 @@ export const settleWorkspaceGates = (
     repositoryId: workspace.repositoryId,
     workspaceId: workspace.workspaceId,
   })
-  return `Workspace gate release deferred; the lead retries it at its next workspace admission or execution report and releases it at close: ${failures.map(errorText).join('; ')}`
+  return `Dev could not close a checkout lock yet. It retries on the next workspace operation and at close: ${failures.map(errorText).join('; ')}`
 }
 
 export const retryDeferredGateReleases = (
@@ -277,12 +277,11 @@ export const assertNoLiveExecution = (
   )
   if (live !== undefined) {
     const { execution } = live.use
-    const guidance =
-      execution?.taskKey === 'lead-shell' && execution.generation === 'lead'
-        ? 'Wait for it to finish or stop the process started through bash; /work stop does not stop lead shells.'
-        : 'Wait for it to finish or stop it with /work stop.'
-    blocked(
-      `This conversation still runs ${execution?.taskKey ?? 'a process'} (${live.use.stage}) in its workspace, so it cannot be ${action} yet. ${guidance}`
-    )
+    const shell = execution?.taskKey === 'lead-shell' && execution.generation === 'lead'
+    const label = shell ? 'a bash command' : (execution?.taskKey ?? 'a process')
+    const guidance = shell
+      ? 'Wait or stop the process; /work stop only stops background work.'
+      : 'Wait for it to finish or stop it with /work stop.'
+    blocked(`Cannot be ${action} while ${label} may still be running here. ${guidance}`)
   }
 }

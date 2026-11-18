@@ -188,7 +188,7 @@ type Admission =
 const parkedRefusal: RefusedAdmission = {
   kind: 'refused',
   endsTurn: true,
-  reason: 'Workspace host is parked during a transition; no operation started.',
+  reason: 'Switching checkouts. This call did not run.',
 }
 const dismissedQuestionRefusal: RefusedAdmission = {
   kind: 'refused',
@@ -209,7 +209,7 @@ const settleRefusedWrite = (
       Effect.sync(() =>
         notify(
           context,
-          `Refused native ${toolName} could not be settled: ${settleError.message}`,
+          `Dev could not close the refused ${toolName} call: ${settleError.message}`,
           'error'
         )
       )
@@ -249,7 +249,7 @@ interface ConversationIdentity {
 }
 
 const hostFailure = (message: string) => new WorkspaceHostError({ message })
-const WRITE_ADMISSION_CHANGED = 'the workspace changed before the native write was admitted'
+const WRITE_ADMISSION_CHANGED = 'the checkout changed before the write'
 const decodeSessionLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 const decodeSessionHeader = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -293,7 +293,7 @@ const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(c
 const pendingSwitchNotice =
   'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
 const unresolvedSwitchNotice =
-  'An earlier workspace switch is unresolved and needs explicit recovery, which dev does not offer yet, so the session was not replaced; quit dev to leave it.'
+  'Dev cannot confirm the earlier checkout switch. The session was not replaced. Quit to leave it unchanged.'
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
   Effect.tryPromise({
     try: operation,
@@ -393,7 +393,7 @@ const switchNotices = (
   { origin, handoff }: PendingTransition,
   binding: WorkspaceBinding
 ): { readonly details: SwitchDetails; readonly model: string; readonly unqueued: string } => {
-  const current = `Current workspace: ${handoff.target.workspaceId} at ${handoff.target.cwd}.`
+  const current = `Current checkout: ${handoff.target.cwd}.`
   const details: SwitchDetails = {
     kind: 'switch',
     resumed: origin === 'tool-resume' || origin === 'user-resume',
@@ -404,18 +404,18 @@ const switchNotices = (
   if (origin === 'user-resume')
     return {
       details,
-      model: `The user resumed this conversation onto a retained workspace with /workspace resume: ${handoff.reason}. ${current} Continue the conversation in this new context.`,
+      model: `The user chose /workspace resume. ${handoff.reason}. ${current}`,
       unqueued: 'Submit a new prompt.',
     }
   return origin === 'tool-resume'
     ? {
         details,
-        model: `This conversation resumed onto a retained workspace through the workspace tool: ${handoff.reason}. ${current} Dev ended the turn that requested it. ${cancelledSiblingsNotice} Continue the conversation in this new context.`,
+        model: `Dev switched checkouts and ended the requesting turn. ${handoff.reason}. ${current} ${cancelledSiblingsNotice}`,
         unqueued: 'Submit a new prompt.',
       }
     : {
         details,
-        model: `Workspace admission changed after ${handoff.reason}. Dev ended that turn. ${current} The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it. ${cancelledSiblingsNotice}`,
+        model: `Dev switched checkouts and ended that turn. ${handoff.reason}. ${current} The blocked call did not run. Check this checkout before deciding whether to retry. ${cancelledSiblingsNotice}`,
         unqueued: 'The blocked request was not replayed; submit a new prompt.',
       }
 }
@@ -424,7 +424,7 @@ const alreadyWorksFor = (taskId: WorkspaceId, binding: WorkspaceBinding): string
   `This conversation already works for task ${taskId} in ${binding.cwd}.`
 
 const rebindTurnEndNotice = (handoff: WorkspaceHandoff): string =>
-  `Ending this turn for a workspace rebind: ${handoff.reason}.`
+  `Ending the turn to switch checkouts: ${handoff.reason}.`
 
 export const keptConversationGuidance = (
   sessionFile: string,
@@ -487,9 +487,7 @@ const workspaceConversation = (
   Effect.suspend(() => {
     const sessionFile = manager.getSessionFile()
     if (!sessionFile)
-      return Effect.fail(
-        hostFailure('Workspace-bound conversations require a persisted Pi session file')
-      )
+      return Effect.fail(hostFailure('Dev needs a saved Pi session file for this conversation'))
     return Effect.succeed({ sessionId: manager.getSessionId(), sessionFile, dataHome })
   })
 
@@ -596,8 +594,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
               : Effect.fail(
                   new WorkspaceError({
                     outcome: 'blocked',
-                    message:
-                      'Workspace admission requires a host rebind; the command was not executed.',
+                    message: 'Dev must switch checkouts first; the command did not run.',
                   })
                 )
           )
@@ -646,7 +643,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
   }
   const showRefusal = (refusal: RefusalDetails): void => {
-    const plain = `Workspace admission requires review: ${refusal.reason}. ${refusal.endedTurn ? 'The turn ended' : 'The command did not run'}; ${refusal.next}`
+    const plain = `Dev could not verify checkout access: ${refusal.reason}. ${refusal.endedTurn ? 'The turn ended' : 'The command did not run'}; ${refusal.next}`
     if (currentApi === undefined || !currentContext?.hasUI) {
       process.stderr.write(`${plain}\n`)
       return
@@ -720,14 +717,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   }
 
   const assertSessionIdle = Effect.gen(function* () {
-    if (!runtime)
-      return yield* hostFailure('No active Pi runtime is available for workspace handoff')
+    if (!runtime) return yield* hostFailure('Dev could not switch checkouts: no active Pi session')
     const { session } = runtime
     yield* fromPi(() => session.waitForIdle())
     if (!session.isIdle || session.pendingMessageCount !== 0 || session.isBashRunning)
-      return yield* hostFailure(
-        'Pi did not reach an idle, settled boundary; workspace host remains parked'
-      )
+      return yield* hostFailure('Pi is not idle. Checkout access is still blocked')
   })
 
   const replaceSession = Effect.fnUntraced(function* (
@@ -753,9 +747,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         binding.workspaceId !== transition.handoff.target.workspaceId ||
         resolve(binding.cwd) !== resolve(fresh.cwd)
       ) {
-        throw new Error(
-          'Pi replacement context does not carry the authority-selected workspace attachment'
-        )
+        throw new Error('Pi did not open the selected checkout')
       }
     }
     invokingHandoffSwitch = true
@@ -783,9 +775,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       resolve(current.cwd) !== resolve(target.cwd) ||
       resolve(currentRuntime.cwd) !== resolve(target.cwd)
     )
-      return yield* hostFailure(
-        'Pi replacement completed without the authority-selected workspace binding'
-      )
+      return yield* hostFailure('Pi did not switch to the selected checkout')
     settle('confirmed')
     return 'confirmed' as const
   })
@@ -824,7 +814,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         Effect.sync(() =>
           notify(
             currentContext,
-            `Workspace handoff could not be withdrawn; the conversation stays parked in the authority. ${error.message}`,
+            `Dev could not cancel the switch. Checkout access is blocked. ${error.message}`,
             'error'
           )
         )
@@ -867,15 +857,13 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           restoreInput(transition.surface)
           notify(
             transition.surface,
-            'Workspace switch was cancelled; the current binding was preserved.',
+            'Checkout switch cancelled. Still using the previous checkout.',
             'info'
           )
           return
         }
         if (callbackResult !== 'confirmed')
-          return yield* hostFailure(
-            'Workspace authority returned without a confirmed replacement result'
-          )
+          return yield* hostFailure('Dev did not confirm the checkout switch')
         if (transition.transitionSource !== activeAttachment)
           yield* closeAttachmentOnce(transition.transitionSource)
         pending = undefined
@@ -887,7 +875,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const error = Cause.squash(performed.cause)
     if (reached(transition, 'switch-started')) {
       process.stderr.write(
-        `Workspace handoff is unresolved; this session remains parked. ${errorText(error)}\n`
+        `Dev cannot confirm the switch finished. Checkout access is blocked. ${errorText(error)}\n`
       )
       return
     }
@@ -900,7 +888,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     )
     if (Exit.isFailure(withdrawn)) {
       process.stderr.write(
-        `Workspace handoff could not be withdrawn; this session remains parked. ${errorText(Cause.squash(withdrawn.cause))}\n`
+        `Dev could not cancel the switch. Checkout access is blocked. ${errorText(Cause.squash(withdrawn.cause))}\n`
       )
       return
     }
@@ -967,7 +955,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     armedRunEnd = undefined
     if (pending !== transition) return
     notify(context, rebindTurnEndNotice(transition.handoff))
-    endRun(context, 'the workspace rebind')
+    endRun(context, 'switching checkouts')
   }
 
   const showJoin = (context: ExtensionContext, task: PausedTask): void => {
@@ -1064,7 +1052,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return {
           kind: 'refused',
           endsTurn: true,
-          reason: `Workspace admission requires a host rebind: ${result.handoff.reason}. The operation was not executed.`,
+          reason: `Switching checkouts; the call did not run. ${result.handoff.reason}.`,
         }
       }
       return {
@@ -1079,7 +1067,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       Effect.catchCause(effect, cause =>
         Effect.sync((): Admission => {
           const error = Cause.squash(cause)
-          const reason = `Workspace admission failed closed: ${errorText(error)}`
+          const reason = `The call did not run: ${errorText(error)}`
           const endsTurn = error instanceof WorkspaceError && error.outcome === 'review-required'
           if (endsTurn) {
             const refusal: RefusalDetails = {
@@ -1103,10 +1091,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   ): string | undefined => {
     const { binding } = activeAttachment
     if (grant.access !== access) {
-      return `Workspace authority returned ${grant.access} access for a ${access} operation; the Pi tool was not executed.`
+      return `This call needs ${access} access but got ${grant.access}. It did not run.`
     }
     if (grant.workspaceId !== binding.workspaceId || resolve(grant.cwd) !== resolve(context.cwd)) {
-      return `Workspace authority returned ${grant.workspaceId} at ${grant.cwd}, but Pi is still bound to ${binding.workspaceId} at ${context.cwd}; the native tool was not executed.`
+      return `Permission was for ${grant.cwd}, not ${context.cwd}. The call did not run.`
     }
     return undefined
   }
@@ -1186,7 +1174,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           : Effect.fail(
               new WorkspaceError({
                 outcome: 'blocked',
-                message: 'Native write belongs to a stale or parked workspace host',
+                message: 'This conversation changed checkouts or is switching',
               })
             )
       )
@@ -1216,7 +1204,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           ...(caller === undefined ? {} : { caller }),
         })
         if (foreign.kind !== 'ready')
-          return yield* hostFailure('the other checkout was not reserved for this conversation')
+          return yield* hostFailure('no permission to write in the other checkout')
         writeScope = { checkout: foreign.grant.checkout, authorityRoot: authority.root }
         const scopedCwd = foreign.grant.checkout
         admitted = yield* Effect.try({
@@ -1235,7 +1223,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         const writer = yield* admitWriter(context)
         if (writer.kind === 'refused') return writer.refusal
         if (writer.grant.taskId !== scope.taskId)
-          return yield* hostFailure('the task changed before the artifact write was admitted')
+          return yield* hostFailure('the task changed before writing the file')
         yield* nativeWrites.admit({
           toolCallId: event.toolCallId,
           scope,
@@ -1276,7 +1264,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       Effect.catchCause(effect, cause =>
         Effect.succeed<ToolCallEventResult | undefined>({
           block: true,
-          reason: `Native ${event.toolName} was not executed: ${errorText(Cause.squash(cause))}`,
+          reason: `${event.toolName} did not run: ${errorText(Cause.squash(cause))}`,
         })
       )
   )
@@ -1290,14 +1278,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       return Effect.succeed({
         block: true,
         terminate: true,
-        reason: 'Workspace host is parked; stale tools are blocked.',
+        reason: 'Switching checkouts; the tool did not run.',
       })
     const effect = toolEffect(getToolInfo(api, event.toolName))
     switch (effect) {
       case undefined:
         return Effect.succeed({
           block: true,
-          reason: `Tool ${event.toolName} has no verified workspace effect in dev, so it was not executed. A supported extension must have its project effects reviewed and recorded first (ADR 0005).`,
+          reason: `${event.toolName} did not run. Dev has not verified what this tool can do to project files.`,
         })
       case 'work-owner':
       case 'web-read':
@@ -1347,8 +1335,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     runtimePreparationSerial += 1
     const identity = identityOf(input.sessionManager)
     const file = identity.sessionFile
-    if (!file)
-      return yield* hostFailure('Workspace-bound runtime requires a persisted Pi session file')
+    if (!file) return yield* hostFailure('Dev needs a saved Pi session file for this conversation')
     let manager = input.sessionManager
     const key = sessionKey(file, identity.sessionId)
     const parent = manager.getHeader()?.parentSession
@@ -1377,9 +1364,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         !sameConversation(identityOf(manager), reopenTarget) ||
         manager.getEntries().length < reopenTarget.minimumEntries
       )
-        return yield* hostFailure(
-          'Same-file workspace rebind did not reopen the settled outgoing Pi session'
-        )
+        return yield* hostFailure('The switch did not reopen the same Pi conversation')
     }
     const staged = stagedAttachments.get(key)
     const canReuse = !reopen && !staged && isBoundTo(activeConversation, identity)
@@ -1405,7 +1390,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const closing = yield* Effect.exit(closeAttachmentOnce(leaving))
     if (Exit.isFailure(closing)) {
       replacementReceipt = replacementSweepFailure(
-        `The leaving conversation's workspace attachment could not be closed, so nothing was swept or released: ${errorText(Cause.squash(closing.cause))}`
+        `Could not close the previous conversation's checkout access. Automatic cleanup did not run: ${errorText(Cause.squash(closing.cause))}`
       )
       return
     }
@@ -1420,7 +1405,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         Effect.catch(error =>
           Effect.succeed(
             replacementSweepFailure(
-              `The sweep at the conversation replacement failed; nothing was released: ${error.message}`
+              `Automatic cleanup failed; nothing was released: ${error.message}`
             )
           )
         )
@@ -1533,10 +1518,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       target = { sessionId: id, sessionFile: file }
       stagedKey = sessionKey(file, id)
       if (isBoundTo(activeConversation, target)) {
-        notify(
-          currentContext,
-          'This Pi conversation is already active; its workspace binding is unchanged.'
-        )
+        notify(currentContext, 'This conversation is already active and kept its checkout.')
         return { cancelled: true }
       }
       if (activeConversation.sessionFile === conversationFile(file))
@@ -1646,7 +1628,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         setParked('switch')
         notify(
           currentContext,
-          `Pending workspace handoff could not be cancelled safely. ${errorText(Cause.squash(withdrawn.cause))}`,
+          `Dev could not safely cancel the checkout switch. ${errorText(Cause.squash(withdrawn.cause))}`,
           'error'
         )
         return
@@ -1740,7 +1722,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const command = yield* parseWorkspaceCommand(tokens)
       if (isReleaseCommand(command)) {
         display(api, context, {
-          text: `Release runs only from a terminal: ${terminalReleaseCommand(command)}. The task of this conversation is swept when dev quits.`,
+          text: `Release runs only from a terminal: ${terminalReleaseCommand(command)}. Dev checks the task's checkouts for cleanup at quit.`,
         })
         return
       }
@@ -1925,7 +1907,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           {
             verb: 'check',
             arguments: '<task-id>',
-            description: 'Whether a task is finished: target, blockers and evidence',
+            description: 'Whether a task is finished: destination branch, blockers and evidence',
           },
           {
             verb: 'release',

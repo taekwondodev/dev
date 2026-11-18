@@ -229,9 +229,7 @@ export const assertManagedCheckoutSupported = (source: GitWorkspace, commit: str
       (value, index) => index % 3 === 2 && value !== 'unspecified' && value !== 'unset'
     )
   )
-    throw gitBlocked(
-      'Managed allocation is unavailable for filtered files; checkout filter effects are not controlled'
-    )
+    throw gitBlocked('Dev will not create a worktree that would run Git checkout filters')
 }
 
 const failureText = (result: Pick<GitResult, 'stderr' | 'status'>): string =>

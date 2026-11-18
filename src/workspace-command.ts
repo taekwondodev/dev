@@ -153,10 +153,26 @@ const sortedViews = (views: readonly WorkspaceView[]): WorkspaceView[] =>
       left.workspaceId.localeCompare(right.workspaceId)
   )
 
+export const checkoutUseStage = (stage: string): string => {
+  switch (stage) {
+    case 'quiescent':
+      return 'ended'
+    case 'launch-intent':
+      return 'launch-planned'
+    default:
+      return stage
+  }
+}
+
+export const pendingOperationText = ({ kind, stage }: WorkspaceView['pending'][number]): string => {
+  const name = kind === 'handoff' ? 'switch' : kind
+  return `${name === 'allocation' ? 'create' : name} (${stage === 'intent' ? 'planned' : stage})`
+}
+
 const usesText = (view: WorkspaceView): string[] => {
   if (view.uses.length === 0) return ['  uses: none recorded']
   return view.uses.map(({ execution, id, access, stage, logsAvailable }) => {
-    const attempt = execution === undefined ? '' : `; attempt ${execution.attemptId}`
+    const attempt = execution === undefined ? '' : `; run ${execution.attemptId}`
     let logs = '; log availability not recorded'
     if (logsAvailable === true) {
       logs = `; logs available${execution?.logs === undefined ? '' : ` at ${execution.logs}`}`
@@ -165,7 +181,7 @@ const usesText = (view: WorkspaceView): string[] => {
     } else if (execution?.logs !== undefined) {
       logs = `; log availability unknown (reference ${execution.logs})`
     }
-    return `  use ${id}: ${access}, ${stage}${attempt}${logs}`
+    return `  use ${id}: ${access}, ${checkoutUseStage(stage)}${attempt}${logs}`
   })
 }
 
@@ -192,13 +208,13 @@ export const describedHead = (head: WorkspaceHead | undefined): string | undefin
 }
 
 const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] => [
-  `task ${view.taskId ?? '(unassigned)'} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current binding]' : ''}`,
+  `task ${view.taskId ?? '(unassigned)'} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current]' : ''}`,
   `  repository: ${view.repositoryId}`,
   `  path: ${view.path}`,
   ...(view.head === undefined ? [] : [`  head: ${describedHead(view.head)}`]),
   `  origin: ${view.origin}`,
-  `  reservation: ${view.reservationId ?? 'none reported'}`,
-  `  outcome: ${view.outcome}`,
+  `  kept for task: ${view.reservationId === undefined ? 'no' : 'yes'}`,
+  `  result: ${view.outcome}`,
   `  reason: ${view.reason}`,
   `  next: ${view.nextAction}`,
   ...usesText(view),
@@ -206,7 +222,7 @@ const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] =>
     ? ['  pending operations: none recorded']
     : [
         '  pending operations:',
-        ...view.pending.map(item => `    ${item.id}: ${item.kind} (${item.stage})`),
+        ...view.pending.map(item => `    ${item.id}: ${pendingOperationText(item)}`),
       ]),
 ]
 
@@ -227,7 +243,7 @@ const formatWorkspaceList = (
     `Workspace list for repository ${repositoryRoot}:`,
     ...(current === undefined
       ? []
-      : [`Current binding: ${current.workspaceId}`, `Effective cwd: ${current.effectiveCwd}`]),
+      : [`Current checkout: ${current.workspaceId}`, `Effective cwd: ${current.effectiveCwd}`]),
     ...(artifacts === undefined ? [] : [`Task artifacts: ${artifacts}`]),
   ]
   if (rows.length === 0) return `${header.join('\n')}\nNo workspace records were found.`
@@ -239,7 +255,7 @@ export const resumeCandidates = (
   taskId: WorkspaceId
 ): readonly ResumeCandidate[] =>
   sortedViews(exactTaskViews)
-    .filter(view => view.outcome === 'preserved-for-resume')
+    .filter(view => view.outcome === 'paused')
     .map(view => ({ selection: { taskId, workspaceId: view.workspaceId }, view }))
 
 export const resumableWorkspaces = (views: readonly WorkspaceView[]): readonly ResumeCandidate[] =>
@@ -277,10 +293,10 @@ export const notResumableText = (
     scope.repositoryRoot === undefined ? '' : ` in the repository at ${scope.repositoryRoot}`
   if (reserved.length === 0)
     return scope.taskId === undefined
-      ? `No task reserves a workspace${within}.`
-      : `Task ${scope.taskId} reserves no workspace${within}.`
+      ? `No checkouts kept for tasks${within}.`
+      : `No checkout kept for task ${scope.taskId}${within}.`
   return [
-    `No workspace${scope.taskId === undefined ? '' : ` of task ${scope.taskId}`}${within} is resumable:`,
+    `Cannot resume a checkout${scope.taskId === undefined ? '' : ` for task ${scope.taskId}`}${within}:`,
     ...sortedViews(reserved).map(
       view =>
         `- task ${view.taskId} at ${view.path} is ${view.outcome}: ${view.reason} ${view.nextAction}`
@@ -315,8 +331,8 @@ export const joinedTaskNote = (task: PausedTask): string => {
   const { changedFiles } = task
   const earlier =
     changedFiles === undefined || changedFiles === 0
-      ? 'This conversation does not hold the history of its earlier work.'
-      : `Its ${changedFiles} changed file${changedFiles === 1 ? ' comes' : 's come'} from earlier work, whose history this conversation does not hold.`
+      ? 'Earlier messages are not here.'
+      : `${changedFiles} changed file${changedFiles === 1 ? ' remains' : 's remain'} from earlier work. Earlier messages are not here.`
   return `${joinedTaskNotice(task)} The user chose to continue it here. ${earlier}`
 }
 
@@ -330,20 +346,23 @@ const sortedAssessments = (assessments: readonly WorkspaceAssessment[]) =>
 const ROLE_TEXT: Record<CompletionVerdict['role'], string> = {
   'pre-existing': 'pre-existing checkout',
   branch: 'branch worktree',
-  child: 'delegated child worktree',
+  agent: 'delegated agent worktree',
   detached: 'detached worktree',
 }
-const verdictText = (verdict: CompletionVerdict): string =>
+export const verdictLabel = (verdict: CompletionVerdict): string =>
   verdict.kind === 'finished'
-    ? `finished (${verdict.rule}): ${verdict.reason}`
-    : `retained (${verdict.retained}): ${verdict.reason}`
+    ? `finished (${verdict.rule})`
+    : `retained (${verdict.retained === 'residue-unreadable' ? 'files-unreadable' : verdict.retained})`
+
+const verdictText = (verdict: CompletionVerdict): string =>
+  `${verdictLabel(verdict)}: ${verdict.reason}`
 
 const assessmentText = (assessment: WorkspaceAssessment): string[] => [
   `workspace ${assessment.workspaceId} (${assessment.origin}) at ${assessment.path}`,
-  `  repository: ${assessment.repositoryId}; reservation: ${assessment.reservationId}`,
+  `  repository: ${assessment.repositoryId}`,
   `  role: ${ROLE_TEXT[assessment.completion.role]}`,
-  `  target: ${assessment.target.source}; ${assessment.target.description}`,
-  `  sweep verdict: ${verdictText(assessment.completion)}`,
+  `  destination branch: ${assessment.target.description}`,
+  `  verdict: ${verdictText(assessment.completion)}`,
   ...assessment.reasons.map(reason => `  - ${reason}`),
   ...(assessment.evidence === undefined ? [] : [`  evidence: ${assessment.evidence.verdict}`]),
   ...(assessment.inventory === undefined
@@ -351,7 +370,7 @@ const assessmentText = (assessment: WorkspaceAssessment): string[] => [
     : [
         `  inventory: ${assessment.inventory.trackedChanges} tracked change(s), ${assessment.inventory.files} untracked or ignored file(s); ${assessment.inventory.published} matched publication(s), ${assessment.inventory.disposable} disposable untracked file(s), ${assessment.inventory.blocking} blocking entry(s)`,
       ]),
-  ...assessment.residual.map(item => `  residual: ${item}`),
+  ...assessment.residual.map(item => `  remaining: ${item}`),
   ...assessment.nextActions.map(action => `  next: ${action}`),
 ]
 
@@ -361,7 +380,7 @@ export const formatAssessments = (
 ): string => {
   if (assessments.length === 0) return noTaskRecords(taskId)
   return [
-    `Sweep assessment for exact task ${taskId} (a check changes nothing; the sweep at quit, at a conversation replacement or before a worktree allocation rechecks everything):`,
+    `Read-only check for task ${taskId}. Dev checks again before cleanup:`,
     ...sortedAssessments(assessments).flatMap(assessmentText),
   ].join('\n')
 }
@@ -378,13 +397,13 @@ export const releasePlan = (
   artifacts: string | undefined
 ): string =>
   [
-    `dev workspace release clears every workspace of task ${taskId}, whatever the sweep verdict:`,
+    `dev workspace release clears all checkouts kept for task ${taskId}, finished or not:`,
     ...views.map(
       view =>
         `- ${view.workspaceId} (${view.origin}) at ${view.path}: ${
           view.origin === 'managed'
             ? 'the worktree and everything in it are deleted'
-            : 'only the reservation ends; files and commits stay'
+            : 'freed for other work; files and commits stay'
         }`
     ),
     ...(artifacts === undefined
@@ -485,21 +504,21 @@ export const sweepExitCode = (receipt: SweepReceipt): 0 | 1 =>
 
 export const SWEEP_MOMENT_TEXT: Record<SweepMoment, string> = {
   quit: 'at quit',
-  replacement: 'at the conversation replacement',
-  allocation: 'before a worktree allocation',
+  replacement: 'when switching conversations',
+  allocation: 'before creating a worktree',
 }
 
 export const formatSweepReceipt = (receipt: SweepReceipt): string => {
   const moment = SWEEP_MOMENT_TEXT[receipt.moment]
-  if (receipt.rows.length === 0) return `Workspace sweep ${moment}: no reserved workspace.`
+  if (receipt.rows.length === 0) return `Automatic cleanup ${moment}: no checkouts kept for tasks.`
   const attempted = attemptedRows(receipt)
   const terminal = attempted.filter(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)).length
   const deferred = receipt.rows.filter(row => row.kind === 'task-deferred').length
   const artifacts = receipt.rows.filter(row => row.kind === 'task-artifacts').length
   return [
-    `Workspace sweep ${moment} (automatic; decided by observable completion):`,
+    `Automatic cleanup ${moment}:`,
     ...receipt.rows.flatMap(sweepRowText),
-    `Summary: ${terminal}/${attempted.length} finished workspace(s) reached a terminal outcome; ${receipt.rows.length - attempted.length - deferred - artifacts} retained or skipped${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next sweep`}${artifacts === 0 ? '' : `; ${artifacts} task artifact director${artifacts === 1 ? 'y' : 'ies'} reported`}.`,
+    `Summary: ${terminal}/${attempted.length} eligible checkout(s) removed or freed; ${receipt.rows.length - attempted.length - deferred - artifacts} retained or skipped${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next cleanup`}${artifacts === 0 ? '' : `; ${artifacts} task artifact director${artifacts === 1 ? 'y' : 'ies'} reported`}.`,
   ].join('\n')
 }
 

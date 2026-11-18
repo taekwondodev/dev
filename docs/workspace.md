@@ -14,24 +14,24 @@ dev workspace release <task-id>  # interactively confirm clearing every workspac
 dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts and forgetting deleted ones
 ```
 
-In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing. `/workspace resume [task-id]` moves the conversation onto [paused work](#resume-paused-work). Typing `/workspace ` offers each subcommand with a one-line explanation.
+In a session, `/workspace` also shows the checkout this conversation uses and its working directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing. `/workspace resume [task-id]` moves the conversation onto [paused work](#resume-paused-work). Typing `/workspace ` offers each subcommand with a one-line explanation.
 
 Every listed workspace shows its head: the branch its checkout is on, or the commit and its subject when detached. A workspace whose directory is gone has none.
 
 The lead's `workspace` tool supports these operations:
 
-| Action               | Effect                                                                                                                                                                                           |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `artifacts`          | Create and return the [task artifact directory](#task-artifacts)                                                                                                                                 |
-| `resume`             | End the turn and switch to a retained workspace without moving files; refused while the conversation has live shells or work. A refusal reports each workspace's outcome, reason and next action |
-| `set-target`         | Override the conversation task's inferred integration target                                                                                                                                     |
-| `record-publication` | Verify exact readback of an already published issue/PR artifact, in the workspace or in the task artifact directory, and record the evidence                                                     |
+| Action               | Effect                                                                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `artifacts`          | Create and return the [task artifact directory](#task-artifacts)                                                                                                                             |
+| `resume`             | End the turn and switch to a retained workspace without moving files; refused while the conversation has live shells or work. A refusal reports each checkout's result, reason and next step |
+| `set-target`         | Set the destination branch dev checks for merged commits                                                                                                                                     |
+| `record-publication` | Verify exact readback of an already published issue/PR artifact, in the workspace or in the task artifact directory, and record the evidence                                                 |
 
 The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 
 ### Resume paused work
 
-Paused work is a [resumable workspace](../CONTEXT.md#workspace), shown with the outcome `preserved-for-resume`. Three ways lead back to it, each by explicit selection; the two that list it show the most recently used first. Only the workspace and its task are resumed, never the history of the conversation that worked there; `dev --continue` and `dev --resume` reopen history.
+Paused work is a [checkout kept for a task](../CONTEXT.md#workspace) that nothing is using, shown with the result `paused`. Three ways lead back to it, each by explicit selection; the two that list it show the most recently used first. Only the workspace and its task are resumed, never the history of the conversation that worked there; `dev --continue` and `dev --resume` reopen history.
 
 | Entry                         | Effect                                                                                                                                                                                          |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -126,18 +126,18 @@ The same conversation cannot attach in two dev sessions, even across installatio
 
 `/workspace` reports, sweep rows and tool results reach the model as minified JSON without repository, reservation, use or record identities, digests or timestamps. `details` carry the full facts for [presentation](adr/0006-global-visual-layer.md).
 
-| Source                                | Model-visible form                                                                                                                                                                                     | `details`                                             |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| `/workspace` list and `inspect`       | `{repository, current, artifacts, workspaces}` or `{taskId, artifacts, workspaces}`; each workspace with task, path, head, origin, outcome, reason, `next`, and its uses and pending operations if any | the `list` or `inspect` report with its views         |
-| `/workspace check`                    | one guidance sentence, then `{taskId, workspaces}` with each verdict as one string such as `finished (no-residue)`, its reasons, target, evidence, inventory, residue and next actions                 | the `check` report with its assessments               |
-| Other `/workspace` answers and errors | the text itself                                                                                                                                                                                        | none                                                  |
-| Continuing a paused task              | one `dev/workspace` message: the join, that the user chose it, and the changed files left by earlier work, whose history the conversation does not hold                                                | none                                                  |
-| Allocation or replacement sweep       | the moment, then only rows that changed something: removed or released workspaces, task artifacts and review-required failures; a reason only where review is required                                 | `{kind: 'sweep', receipt}`                            |
-| Workspace switch                      | the `dev/workspace-handoff` follow-up described under [admission and isolation](#admission-and-isolation)                                                                                              | `{kind: 'switch', resumed, workspaceId, cwd, reason}` |
+| Source                                | Model-visible form                                                                                                                                                                                                          | `details`                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `/workspace` list and `inspect`       | `{repository, current, artifacts, workspaces}` or `{taskId, artifacts, workspaces}`; each workspace with task, path, head, origin, `result`, reason, `next`, and any uses (with a `run` ID if known) and pending operations | the `list` or `inspect` report with its views         |
+| `/workspace check`                    | one guidance sentence, then `{taskId, workspaces}` with each verdict as one string such as `finished (nothing-left)`, its reasons, target (the destination branch), evidence, inventory, `remaining` and `next`             | the `check` report with its assessments               |
+| Other `/workspace` answers and errors | the text itself                                                                                                                                                                                                             | none                                                  |
+| Continuing a paused task              | one `dev/workspace` message: the join, that the user chose it, and the changed files left by earlier work, whose history the conversation does not hold                                                                     | none                                                  |
+| Allocation or replacement sweep       | the moment, then only rows that changed something: removed or released workspaces, task artifacts and review-required failures; a reason only where review is required                                                      | `{kind: 'sweep', receipt}`                            |
+| Workspace switch                      | the `dev/workspace-handoff` follow-up described under [admission and isolation](#admission-and-isolation)                                                                                                                   | `{kind: 'switch', resumed, workspaceId, cwd, reason}` |
 
 A receipt whose rows are all retained, skipped or deferred is a `dev/workspace-receipt` session entry with the same `details`, outside model context; only an extension's entry renderer draws it. An admission refused for review is likewise a `dev/workspace-refusal` entry `{kind: 'refusal', reason, endedTurn, next}`: the model already holds the reason in the refused call's result, which is all the transcript shows without an entry renderer. Without a UI, receipts, refusals and answers print as text on stderr.
 
-The `workspace` tool returns its full result in `details`. The model reads `artifacts` as `{artifacts, path}` and `record-publication` as the verified file, its root, size, readback method and URL; `resume` and an `artifacts` rebind add a next-step note.
+The `workspace` tool returns its full result in `details`. The model reads `artifacts` as `{artifacts, path}` and `record-publication` as the verified file, its root, size, readback method and URL; `resume` returns `already-here` or `requested`; `artifacts: switching` means no folder was created. After switching, call `artifacts` again.
 
 ### Completion evidence
 
@@ -146,10 +146,10 @@ The `workspace` tool returns its full result in `details`. The model reads `arti
 | Finished rule      | Meaning                                                                           |
 | ------------------ | --------------------------------------------------------------------------------- |
 | `clean-checkout`   | A pre-existing checkout has no completion residue                                 |
-| `no-residue`       | A managed workspace has no remaining work under the completion rules              |
+| `nothing-left`     | A managed workspace has no remaining work under the completion rules              |
 | `branch-merged`    | A bound merged PR's source includes the workspace HEAD                            |
 | `branch-in-target` | The workspace HEAD is included in its target                                      |
-| `child-delivered`  | Task PR evidence establishes a child's delivery; its own commits need not survive |
+| `agent-delivered`  | Task PR evidence establishes a child's delivery; its own commits need not survive |
 
 `branch-merged` and `branch-in-target` also require no tracked change and no untracked non-ignored file left in the worktree, except files whose exact bytes were recorded with `record-publication`. These are assessment labels, not manual deletion predicates. Ignored files alone do not block completion, but unsafe filesystem structure can. Nested repositories block automatic removal of the containing managed workspace even when ignored. Retained reasons include `no-commits`, `not-integrated`, `integration-unknown`, `directory-missing`, live or `unknown` uses, open conversation bindings and `release-review`.
 

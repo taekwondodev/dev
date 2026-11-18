@@ -42,7 +42,7 @@ const paused = (index: number, fields: Partial<WorkspaceView> = {}): WorkspaceVi
   reservationId: fixtureId(index + 40),
   path: `/opt/area/work-${index}`,
   origin: 'managed',
-  outcome: 'preserved-for-resume',
+  outcome: 'paused',
   reason: 'Task reservation is retained for explicit resume.',
   nextAction: 'Resume only by exact task/workspace selection.',
   uses: [],
@@ -248,16 +248,16 @@ try {
       const joined = `This conversation now continues task ${fixtureId(1)} in /opt/area/repo on feat/resume. The user chose to continue it here.`
       assert.equal(
         joinedTaskNote({ ...task, changedFiles: 3 }),
-        `${joined} Its 3 changed files come from earlier work, whose history this conversation does not hold.`
+        `${joined} 3 changed files remain from earlier work. Earlier messages are not here.`
       )
       assert.equal(
         joinedTaskNote({ ...task, changedFiles: 1 }),
-        `${joined} Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
+        `${joined} 1 changed file remains from earlier work. Earlier messages are not here.`
       )
       for (const changedFiles of [0, undefined])
         assert.equal(
           joinedTaskNote({ ...task, ...(changedFiles === undefined ? {} : { changedFiles }) }),
-          `${joined} This conversation does not hold the history of its earlier work.`
+          `${joined} Earlier messages are not here.`
         )
     }
   )

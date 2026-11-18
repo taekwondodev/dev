@@ -733,8 +733,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (admission.kind === 'rebind') {
           workspace.requestRebind(admission.handoff)
           return yield* new WorkRebindRequired({
-            message:
-              'Dev must switch checkouts first. No work started. Check the new checkout before retrying.',
+            message: `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. Check the new checkout before retrying.`,
           })
         }
         const { grant: selected } = admission

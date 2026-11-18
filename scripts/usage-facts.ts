@@ -44,14 +44,14 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'execution',
     pattern:
-      /^(?:Working directory does not exist: |the shell did not start$|The shell exited before its identity was available$|the shell identity could not be captured$)/,
+      /^(?:Working directory does not exist: |the shell did not start$|The shell exited before dev could identify it$|dev could not identify the new shell$)/,
     tools: BASH,
   },
   { outcome: 'invocation', pattern: /^Invalid timeout: /, tools: BASH },
   {
     outcome: 'blocked',
     pattern:
-      /^(?:Workspace admission changed before the shell started|Workspace admission requires a host rebind|The workspace shell is stopping); the command was not executed\.$|^the host is stopping its shells$/,
+      /^(?:The checkout changed before start|The shell is stopping)\. The command did not run\.$|^Dev must switch checkouts first; the command did not run\.$|^this conversation is stopping its commands$/,
     tools: BASH,
   },
   { outcome: 'invocation', pattern: /^Offset \d+ is beyond end of file/, tools: ['read'] },
@@ -82,23 +82,26 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^Workspace host is parked(?:; stale tools are blocked| during a transition; no operation started)\.$/,
+      /^Switching checkouts(?:; the tool did not run\.$|\. This call did not run\.$|; the call did not run\. )/,
+  },
+  {
+    outcome: 'blocked',
+    pattern: /^The call did not run: /,
+  },
+  {
+    outcome: 'blocked',
+    pattern: /^\S+ did not run\. Dev has not verified what this tool can do to project files\.$/,
   },
   {
     outcome: 'blocked',
     pattern:
-      /^Workspace admission (?:requires a host rebind: [\s\S]*\. The operation was not executed\.$|failed closed: )/,
+      /^(?:This call needs \S+ access but got \S+\. It|Permission was for [\s\S]*, not [\s\S]*\. The call) did not run\.$/,
   },
+  { outcome: 'blocked', pattern: /^\S+ did not run: / },
+  { outcome: 'blocked', pattern: /^This agent has read-only access$/ },
   {
     outcome: 'blocked',
-    pattern: /^Tool \S+ has no verified workspace effect in dev, so it was not executed\./,
-  },
-  { outcome: 'blocked', pattern: /; the (?:Pi|native) tool was not executed\.$/ },
-  { outcome: 'blocked', pattern: /^Native \S+ was not executed: / },
-  { outcome: 'blocked', pattern: /^Child workspace is read-only$/ },
-  {
-    outcome: 'blocked',
-    pattern: /^Workspace handoff required before starting work: [\s\S]*No command was executed/,
+    pattern: /^Dev must switch checkouts first: [\s\S]*No work started/,
   },
 ]
 

@@ -132,11 +132,11 @@ try {
         })
         await assert.rejects(
           validatePath(join(authority.effect.root, 'catalog.sqlite')),
-          /authority metadata/
+          /Dev private storage/
         )
         await assert.rejects(
           validatePath(join(outside, '.dev', 'coordination', 'installation.sqlite')),
-          /coordination metadata/
+          /Dev private storage/
         )
         const foreign = join(root, 'foreign')
         await exec('git', ['init', '--quiet', foreign])
@@ -314,7 +314,7 @@ try {
             ?.uses.find(use => use.id === started.workspaceUseId)
           assert.equal(settledUse?.effect, 'opaque')
           assert.equal(settledUse?.stage, 'quiescent')
-          assert.match(settledUse?.reason ?? '', /observed gone/)
+          assert.match(settledUse?.reason ?? '', /tracked descendants stopped/)
           const next = await attachment.authorize({ kind: 'write' })
           assert.equal(next.kind, 'ready', 'observed cessation leaves the checkout writable')
         }
@@ -645,7 +645,7 @@ try {
         await Effect.runPromise(nativeWrites.settle)
         await assert.rejects(
           nativeWrites.writeOperations.writeFile(join(grant.cwd, 'unused.txt'), 'late'),
-          /matches no admitted destination/
+          /No write permission for/
         )
         const nativeUses = (await authority.inspect({ taskId: grant.taskId })).flatMap(
           view => view.uses
@@ -736,7 +736,7 @@ try {
           }
           await assert.rejects(
             nativeWrites.writeOperations.writeFile(file, 'forbidden'),
-            /changed|now resolves elsewhere|no admitted destination/
+            /changed|now resolves elsewhere|No write permission for/
           )
           await Effect.runPromise(nativeWrites.finish(file))
           assert.equal(await readFile(sentinel, 'utf8'), 'two')
@@ -772,14 +772,14 @@ try {
         )
         await assert.rejects(
           nativeWrites.writeOperations.writeFile(disconnected, 'forbidden'),
-          /IPC is unavailable/
+          /cannot reach dev/
         )
         assert.ok(!existsSync(disconnected))
         await admit(sentinel)
         await Effect.runPromise(nativeWrites.settle)
         await assert.rejects(
           nativeWrites.writeOperations.writeFile(sentinel, 'forbidden'),
-          /no admitted destination/
+          /No write permission for/
         )
         assert.equal(await readFile(sentinel, 'utf8'), 'two')
       }

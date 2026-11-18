@@ -527,7 +527,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         }
         assert.throws(
           () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),
-          /another managed workspace; ask its owning conversation/
+          /Ask the conversation using this checkout to make the change/
         )
 
         const tree = await owner.run({
@@ -574,7 +574,10 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.equal(leafReader.cwd, coordinatorWorktree)
         assert.equal(count(await owner.result(leafReader.id), 'foreign committed'), 1)
         assert.match(refusal(fixture.dataHome, tree.view.id, 'leaf-cwd'), /\["cwd"\]/)
-        assert.match(refusal(fixture.dataHome, tree.view.id, 'leaf-writer'), /read-only leaves/)
+        assert.match(
+          refusal(fixture.dataHome, tree.view.id, 'leaf-writer'),
+          /delegate only read-only work/
+        )
         const records = await owner.records()
         for (const taskId of ['foreign-leaf-cwd', 'foreign-leaf-writer'])
           assert.ok(
@@ -1160,7 +1163,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         if (writer.kind !== 'ready') return
         await assert.rejects(
           fixture.attachment.authorize({ kind: 'leaf-read', coordinator: writer.grant, execution }),
-          /A leaf reads only the workspace of a delegated coordinator/
+          /A delegated reader uses the checkout of the agent that started it/
         )
         const idle = await fixture.attachment.authorize({
           kind: 'read',
@@ -1170,7 +1173,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         if (idle.kind !== 'ready') return
         await assert.rejects(
           fixture.attachment.authorize({ kind: 'leaf-read', coordinator: idle.grant, execution }),
-          /The coordinator is not running in its workspace/
+          /The delegating agent is not running in this checkout/
         )
         await assert.rejects(
           fixture.attachment.authorize({
@@ -1178,7 +1181,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
             coordinator: { ...idle.grant, useId: writer.grant.useId },
             execution,
           }),
-          /stale or was not issued/
+          /No current permission in this conversation/
         )
         await fixture.attachment.reportExecution(idle.grant, {
           kind: 'launch-failed',

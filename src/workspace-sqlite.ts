@@ -155,12 +155,12 @@ export const parseRecord = <S extends Schema.Constraint & Schema.ConstraintDecod
   raw: unknown,
   label: string
 ): S['Type'] => {
-  if (typeof raw !== 'string') return requireReview(`Corrupt ${label}: payload is not text`)
+  if (typeof raw !== 'string') return requireReview(`Corrupt ${label}: record is not text`)
   const decoded = recordDecoder(schema)(raw)
   if (Option.isSome(decoded)) return decoded.value
   return Option.isNone(decodeJsonText(raw))
-    ? requireReview(`Corrupt ${label}: payload is not valid JSON`)
-    : requireReview(`Corrupt ${label}: persisted record failed schema validation`)
+    ? requireReview(`Corrupt ${label}: invalid JSON`)
+    : requireReview(`Corrupt ${label}: invalid saved record`)
 }
 
 const syncNewFile = (path: string): void => {
@@ -169,7 +169,7 @@ const syncNewFile = (path: string): void => {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
     const info = lstatSync(path)
     if (!info.isFile() || info.isSymbolicLink() || info.uid !== effectiveUid())
-      unavailable(`Unsafe newly created authority file: ${path}`)
+      unavailable(`Unsafe new dev database: ${path}`)
     fchmodSync(fd, 0o600)
     fsyncSync(fd)
   } finally {
@@ -209,7 +209,7 @@ export const assertSqliteSafety = (): void => {
     !walResetSafe(sqlite)
   )
     unavailable(
-      `Unsupported Node/SQLite runtime for durable WAL authority (Node ${process.versions.node}, SQLite ${sqlite ?? 'unknown'})`
+      `Dev needs newer Node/SQLite for reliable checkout storage (Node ${process.versions.node}, SQLite ${sqlite ?? 'unknown'})`
     )
 }
 
@@ -237,13 +237,13 @@ export const first = (
 ): SqlRow | undefined => statement(db, sql).get(...params) as SqlRow | undefined
 export const textField = (row: SqlRow | undefined, key: string): string => {
   const value = row?.[key]
-  if (typeof value !== 'string') return requireReview(`Corrupt workspace authority column: ${key}`)
+  if (typeof value !== 'string') return requireReview(`Corrupt dev database field: ${key}`)
   return value
 }
 export const numberField = (row: SqlRow | undefined, key: string): number => {
   const value = row?.[key]
   if (typeof value !== 'number' || !Number.isFinite(value))
-    return requireReview(`Corrupt workspace authority column: ${key}`)
+    return requireReview(`Corrupt dev database field: ${key}`)
   return value
 }
 const normalizeSql = (sql: string): string => sql.replace(/\s+/g, ' ').trim()
@@ -321,7 +321,7 @@ export const createPublishedDatabase = (
     initialize(db)
     const check = first(db, 'PRAGMA integrity_check')
     if (textField(check, 'integrity_check') !== 'ok')
-      unavailable(`New SQLite authority failed integrity check: ${path}`)
+      unavailable(`New dev database failed its integrity check: ${path}`)
     db.close()
     db = undefined
     syncNewFile(candidate)
@@ -329,7 +329,7 @@ export const createPublishedDatabase = (
     fsyncParent(path)
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot durably publish workspace authority database ${path}: ${errorText(cause)}`)
+    unavailable(`Cannot save the dev workspace database ${path}: ${errorText(cause)}`)
   } finally {
     try {
       db?.close()
@@ -378,7 +378,7 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   if (!validatedFiles.has(identity)) {
     if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
       unavailable(
-        `Workspace ${kind} database has an unsupported schema: ${path}. dev never migrates it; quit every dev session and follow Discard the workspace authority in dev's docs/DEVELOPMENT.md.`
+        `Dev workspace database has the wrong schema: ${path}. Quit all dev sessions and ask the user to check the saved checkout data.`
       )
     if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
       requireReview(`Workspace ${kind} database is corrupt: ${path}`)
@@ -399,7 +399,7 @@ export const openRecordConnection = (
   try {
     const existed = lstatIfExists(path) !== undefined
     if (!existed) {
-      if (initialize === undefined) unavailable(`Workspace authority database is missing: ${path}`)
+      if (initialize === undefined) unavailable(`Dev workspace database is missing: ${path}`)
       createPublishedDatabase(path, kind, initialize)
     }
     databaseFile(path)
@@ -423,8 +423,8 @@ export const openRecordConnection = (
     }
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    if (sqliteBusy(cause)) blocked(`Workspace authority database is busy: ${path}`)
-    unavailable(`Cannot open workspace authority database ${path}: ${errorText(cause)}`)
+    if (sqliteBusy(cause)) blocked(`Dev workspace database is busy: ${path}`)
+    unavailable(`Cannot open the dev workspace database ${path}: ${errorText(cause)}`)
   }
 }
 export const recordConnectionCurrent = (
