@@ -541,6 +541,17 @@ try {
       assert.equal(seen[0]?.headers.cookie, undefined, 'static retrieval sends no cookies')
       const result = toResult({ kind: 'document', slice })
       assert.equal(result.outcome, 'document')
+      const text = toText({ kind: 'document', slice }, result)
+      assert.ok(
+        text.startsWith(`Source: ${origin}/doc.md · markdown\nCharacters 0-`),
+        'the heading that opens the text is not repeated as a title, and a successful status is not reported'
+      )
+      assert.ok(
+        text.includes(
+          `\n\nLinks resolved to absolute URLs:\n- the API: ${origin}/api.md\n- home: ${origin}/\n\nSuggestions:`
+        ),
+        'links the text shows only as relative paths are listed with their absolute URLs'
+      )
     }
   )
   await claim(
@@ -562,6 +573,16 @@ try {
         [`${origin}/relative/link`]
       )
       assert.ok(slice.document.suggestions.every(link => link.url !== slice.document.finalUrl))
+      const outcome = { kind: 'document', slice } as const
+      const text = toText(outcome, toResult(outcome))
+      assert.ok(
+        text.startsWith(`# Fixture Page\nSource: ${origin}/page.html · html\n`),
+        'a title the text does not open with is kept'
+      )
+      assert.ok(
+        !text.includes('Links resolved'),
+        'a link the text already shows with its absolute URL is not listed again'
+      )
     }
   )
   await claim(

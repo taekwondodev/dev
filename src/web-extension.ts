@@ -2,7 +2,12 @@ import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-age
 import * as Effect from 'effect/Effect'
 import type * as JsonSchema from 'effect/JsonSchema'
 import * as Schema from 'effect/Schema'
-import { DocumentLink, RetrievalMethod, type DocumentSlice } from './web-documents.ts'
+import {
+  DocumentLink,
+  RetrievalMethod,
+  type DocumentSlice,
+  type WebDocument,
+} from './web-documents.ts'
 import { READ_URL_TOOL } from './integrated-tools.ts'
 import type { ReadOutcome, WebReader } from './web-reader.ts'
 
@@ -133,16 +138,32 @@ const rangeNote = (result: ReadUrlResult): string => {
   return result.complete ? ' (complete)' : ' (size limit; no more text)'
 }
 
+const firstLine = (text: string): string => {
+  const end = text.indexOf('\n')
+  return end === -1 ? text : text.slice(0, end)
+}
+
 const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   const { document } = slice
+  const { title } = document
   const lines = [
-    `# ${document.title ?? document.finalUrl}`,
-    `Source: ${document.finalUrl}${document.finalUrl === document.requestedUrl ? '' : ` (requested ${document.requestedUrl})`} · ${document.method}${document.status === undefined ? '' : ` · HTTP ${document.status}`}`,
+    ...(title === undefined || firstLine(slice.text).includes(title) ? [] : [`# ${title}`]),
+    `Source: ${document.finalUrl}${document.finalUrl === document.requestedUrl ? '' : ` (requested ${document.requestedUrl})`} · ${document.method}`,
     `Characters ${slice.offset}-${slice.end} of ${document.text.length}${rangeNote(result)}`,
   ]
   if (document.limitations.length > 0)
     lines.push(...document.limitations.map(limitation => `Limitation: ${limitation}`))
   return lines.join('\n')
+}
+
+const linksTextOmits = (document: WebDocument): readonly DocumentLink[] => {
+  const omitted: DocumentLink[] = []
+  for (const link of document.links) {
+    if (document.text.includes(link.url)) continue
+    omitted.push(link)
+    if (omitted.length === LINKS_IN_TEXT) break
+  }
+  return omitted
 }
 
 export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
@@ -153,13 +174,12 @@ export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   const { slice } = outcome
   const parts = [header(slice, result), '', slice.text]
   if (slice.offset === 0) {
-    if (result.links.length > 0)
+    const links = linksTextOmits(slice.document)
+    if (links.length > 0)
       parts.push(
         '',
-        `Links (${Math.min(result.links.length, LINKS_IN_TEXT)} of ${slice.document.links.length}):`,
-        ...result.links
-          .slice(0, LINKS_IN_TEXT)
-          .map(link => `- ${link.text || link.url}: ${link.url}`)
+        `Links resolved to absolute URLs${links.length === LINKS_IN_TEXT ? ` (first ${LINKS_IN_TEXT})` : ''}:`,
+        ...links.map(link => (link.text === '' ? `- ${link.url}` : `- ${link.text}: ${link.url}`))
       )
     if (result.suggestions.length > 0)
       parts.push(

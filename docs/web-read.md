@@ -8,6 +8,8 @@ In codemode, call `tools.read_url({ url })`. Use `describeTool('read_url')` for 
 
 Results identify the source, method and limitations. `outcome` is `document` for the last part if nothing was cut, `partial` if there is more saved text or the page hit a size limit, and `failed` if nothing was read. Indexes such as `llms.txt` are suggestions, not substitutes.
 
+The text the model reads repeats nothing the page text already shows: a title is omitted when the text opens with it, a link is listed only when the text does not show its absolute URL, and an HTTP status appears only as a limitation. The structured result keeps `title`, `status` and every collected link.
+
 From a terminal:
 
 ```bash
