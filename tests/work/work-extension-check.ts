@@ -809,16 +809,47 @@ return JSON.stringify({
         const [entry] = modelEntries(String(notice.content)) as {
           id: string
           taskId: string
-          status: string
           stdout?: string
           quietSeconds: number
           runningSeconds: number
         }[]
-        assert.equal(entry?.id, attempt.id)
-        assert.equal(entry?.taskId, 'task-0-0')
-        assert.equal(entry?.status, 'running')
-        assert.ok(entry?.stdout?.includes('before-silence'))
-        assert.ok(entry !== undefined && entry.runningSeconds >= entry.quietSeconds)
+        assert.ok(entry !== undefined)
+        assert.deepEqual(Object.keys(entry).toSorted(), [
+          'id',
+          'quietSeconds',
+          'runningSeconds',
+          'stdout',
+          'taskId',
+        ])
+        assert.equal(entry.id, attempt.id)
+        assert.equal(entry.taskId, 'task-0-0')
+        assert.ok(entry.stdout?.includes('before-silence'))
+        assert.ok(entry.runningSeconds >= entry.quietSeconds)
+        const [facts] = (
+          notice.details as {
+            quiet: {
+              id: string
+              taskId: string
+              kind: string
+              status: string
+              since: number
+              quietSeconds: number
+              runningSeconds: number
+              logs: { stream: string; text?: string }[]
+            }[]
+          }
+        ).quiet
+        assert.ok(facts !== undefined)
+        assert.deepEqual(
+          { id: facts.id, taskId: facts.taskId, kind: facts.kind, status: facts.status },
+          { id: attempt.id, taskId: 'task-0-0', kind: 'process', status: 'running' }
+        )
+        assert.equal(facts.quietSeconds, entry.quietSeconds)
+        assert.equal(facts.runningSeconds, entry.runningSeconds)
+        assert.ok(Number.isFinite(facts.since) && facts.since <= Date.now())
+        assert.ok(
+          facts.logs.find(page => page.stream === 'stdout')?.text?.includes('before-silence')
+        )
         woken.reply(text('keep waiting'))
         await lead.idle()
         assert.deepEqual(lead.work.restingState(), { state: 'working' })

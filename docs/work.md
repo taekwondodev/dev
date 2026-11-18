@@ -74,7 +74,7 @@ A completed process or child report is not artifact verification. Tracked Git ch
 
 ### Quiet commands
 
-A command can hang without exiting. When a running `process` attempt adds nothing to stdout or stderr for 2 minutes, dev raises a quiet notice with the command's runtime, quiet time and output tails, with recognized credentials redacted. Dev never stops the command; the agent or the user decides whether to wait, inspect or cancel it.
+A command can hang without exiting. When a running `process` attempt adds nothing to stdout or stderr for 2 minutes, dev raises a quiet notice with the command's runtime, quiet time and output tails, with recognized credentials redacted in the model text and in `details` alike. Dev never stops the command; the agent or the user decides whether to wait, inspect or cancel it.
 
 The first notice of a command reaches the model only when that costs no cold request: a running lead receives it at its next turn, and a resting lead wakes for it only when its last model request is under 5 minutes old and automatic continuation is allowed. Otherwise the notice waits for the lead's next run, whoever starts it, and the [program status](#program-status) reports `blocked`. A notice is dropped when its command prints again, settles or is stopped first; a notice that fails to reach the conversation waits for the next run. After a command's notice reaches the model, its later silences are shown only to the user.
 
