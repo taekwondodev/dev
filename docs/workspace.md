@@ -59,7 +59,7 @@ A live process prevents switching or isolation until it is stopped or finishes.
 
 A repository with no commits yet has nothing to allocate from, so another task's reservation does not isolate there. When no session is writing the checkout, the next writer takes it, whether it works there or writes into it from another repository: the earlier reservation ends and files stay untouched. While another session writes it, or after an ended one left a write use unsettled, the write is refused and names the [release](#release) that clears it. Delegated writers are refused until the first commit.
 
-A refused admission returns its reason to the model, which continues the turn, unless it requests a handoff or requires review. One that requires review ends the turn and is recorded as a [refusal entry](#model-visible-messages). A worktree allocation that did not finish is one, and that session admits nothing more: quit it and [release](#release) the allocation.
+A refused admission returns its reason to the model, which continues the turn, unless it requests a [workspace handoff](../CONTEXT.md#workspace) or requires review. One that requires review ends the turn and is recorded as a [refusal entry](#model-visible-messages). A worktree allocation that did not finish is one, and that session admits nothing more: quit it and [release](#release) the allocation.
 
 Tools need a recorded effect classification. An unknown tool is refused visibly without ending the turn. Resource trust and pre-admission initialization are governed by [SECURITY](../SECURITY.md#trusted-base).
 

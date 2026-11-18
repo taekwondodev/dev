@@ -29,7 +29,7 @@ Checks and setup regenerate an ignored `node_modules/@earendil-works` link to th
 
 ### Pi integration limits
 
-Forking before the first user message can fail after a handoff. [Issue #98](https://github.com/taekwondodev/dev/issues/98) tracks that limit.
+Forking before the first user message can fail after a workspace handoff. [Issue #98](https://github.com/taekwondodev/dev/issues/98) tracks that limit.
 
 ## Find the owner
 
