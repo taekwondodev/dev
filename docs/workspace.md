@@ -35,8 +35,8 @@ Paused work is a [checkout kept for a task](../CONTEXT.md#workspace) that nothin
 
 | Entry                         | Effect                                                                                                                                                                                          |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dev --task [task-id]`        | Open a new conversation in a resumable workspace of the repository: the choice from the [launch list](launcher.md#resume-paused-work), or the exact task                                        |
-| `/workspace resume [task-id]` | Switch this conversation there. Without an ID it lists the repository's resumable workspaces; an exact ID selects directly, and lists that task's workspaces when it retains several            |
+| `dev --task [task-id]`        | Open a new conversation in a paused workspace of the repository: the choice from the [launch list](launcher.md#resume-paused-work), or the exact task                                           |
+| `/workspace resume [task-id]` | Switch this conversation there. Without an ID it lists the repository's paused workspaces; an exact ID selects directly, and lists that task's workspaces when it retains several               |
 | The first write               | Before a write would [isolate](#admission-and-isolation) the lead from its own checkout because a paused task holds it, dev asks once whether to continue that task there or to work separately |
 
 `/workspace resume` is refused while a turn is running, a workspace switch is pending, or the conversation has live shells or work, and the list needs an interactive session. The switch starts no turn: the model reads the `dev/workspace-handoff` message on its next one.
@@ -59,11 +59,11 @@ A live process prevents switching or isolation until it is stopped or finishes.
 
 A repository with no commits yet has nothing to allocate from, so another task's reservation does not isolate there. When no session is writing the checkout, the next writer takes it, whether it works there or writes into it from another repository: the earlier reservation ends and files stay untouched. While another session writes it, or after an ended one left a write use unsettled, the write is refused and names the [release](#release) that clears it. Delegated writers are refused until the first commit.
 
-A refused admission returns its reason to the model, which continues the turn, unless it requests a rebind or requires review. One that requires review ends the turn and is recorded as a [refusal entry](#model-visible-messages). A worktree allocation that did not finish is one, and that session admits nothing more: quit it and [release](#release) the allocation.
+A refused admission returns its reason to the model, which continues the turn, unless it requests a handoff or requires review. One that requires review ends the turn and is recorded as a [refusal entry](#model-visible-messages). A worktree allocation that did not finish is one, and that session admits nothing more: quit it and [release](#release) the allocation.
 
 Tools need a recorded effect classification. An unknown tool is refused visibly without ending the turn. Resource trust and pre-admission initialization are governed by [SECURITY](../SECURITY.md#trusted-base).
 
-A rebind requested by a tool call ends the turn, as Escape would: the refused call keeps its reason, sibling calls that had not run are cancelled, a notice names the rebind reason, and the conversation switches once the turn settles. After the switch, the follow-up tells the model to re-evaluate the refused operation in the new workspace rather than replay it, and that cancelled calls may be issued again. Queued messages and the editor draft are carried into the new session. [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) records why the run ends.
+A handoff requested by a tool call ends the turn, as Escape would: the refused call keeps its reason, sibling calls that had not run are cancelled, a notice names the handoff reason, and the conversation switches once the turn settles. After the switch, the follow-up tells the model to re-evaluate the refused operation in the new workspace rather than replay it, and that cancelled calls may be issued again. Queued messages and the editor draft are carried into the new session. [ADR 0005](adr/0005-scoped-runtime-coordination.md#scoped-workspace-operations) records why the run ends.
 
 #### Delegation into another checkout
 
@@ -79,9 +79,9 @@ Lead and writing-child write/edit classify destinations before writer admission:
 
 - Current-workspace files use scoped admission.
 - Files inside the bound task's [artifact directory](#task-artifacts) first admit the conversation as writer of its checkout, like a workspace write, then proceed as an external write. Another task's directory, the artifacts root and the rest of the authority stay refused.
-- Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or rebind.
+- Ordinary external files, including temporary files and configuration, need no extra consent, allowlist, reservation or handoff.
 - Another worktree of the bound repository, including its original checkout, is refused with the same file's path in the current workspace, or with a statement that the file does not exist there. The destination is never rewritten.
-- Another repository, including a checkout nested in the caller's own managed workspace, is reserved for the conversation's [foreign workflow task](#delegation-into-another-checkout) through that repository's authority and written in place, without a managed worktree or rebind. A checkout reserved or being written by another task is refused with guidance to delegate the change or wait; one with no commits is instead taken or refused as [admission](#admission-and-isolation) does for the conversation's own checkout.
+- Another repository, including a checkout nested in the caller's own managed workspace, is reserved for the conversation's [foreign workflow task](#delegation-into-another-checkout) through that repository's authority and written in place, without a managed worktree or handoff. A checkout reserved or being written by another task is refused with guidance to delegate the change or wait; one with no commits is instead taken or refused as [admission](#admission-and-isolation) does for the conversation's own checkout.
 - Git administration, dev authority/coordination metadata and other conversations' managed worktrees remain protected, including canonical aliases.
 
 A writing child follows the same policy: its controller reserves the other repository for the lead conversation. Inside managed storage, native writes require the caller to be an active writer in the containing workspace; [delegation selection](#delegation-into-another-checkout) remains separate. [SECURITY](../SECURITY.md#trusted-base) governs which repository resources load. Refusals state the reason and the next action at the failed call.
@@ -92,7 +92,7 @@ External permits provide neither cross-session file locking nor cleanup ownershi
 
 ### Task artifacts
 
-Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoffs. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [rebind](#admission-and-isolation) instead. A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task-id>` show the path while the directory exists.
+Use the task artifact directory for files that must stay outside the commit scope: PR bodies, reports, logs and handoff notes. The `artifacts` action first admits the lead as writer of its checkout, then creates and returns the directory; contention may request a [handoff](#admission-and-isolation) instead. A writing child whose grant carries the task may write there when the lead passes the path in its assignment; children receive no automatic announcement. `/workspace` and `dev workspace inspect <task-id>` show the path while the directory exists.
 
 The directory is retained while the task reserves any workspace across repositories. A [sweep](#sweep) removes it after the attempt ending the last reservation; quit and replacement sweeps also remove orphan directories within their budget. Explicit [task release](#release) lists the directory in its confirmation and removes it once no reservations remain.
 
