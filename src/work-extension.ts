@@ -198,7 +198,6 @@ export const createWorkExtension = ({
   isWorkspaceParked,
   onReactivationChange = () => undefined,
   childEntry,
-  dispatchPath,
   quietAfterMs,
   now = Date.now,
 }: {
@@ -216,7 +215,6 @@ export const createWorkExtension = ({
   readonly isWorkspaceParked: () => boolean
   readonly onReactivationChange?: () => void
   readonly childEntry?: URL
-  readonly dispatchPath?: string
   readonly quietAfterMs?: number
   readonly now?: () => number
 }): WorkExtension => {
@@ -284,7 +282,6 @@ export const createWorkExtension = ({
                       workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
                   },
                   ...(childEntry === undefined ? {} : { childEntry }),
-                  ...(dispatchPath === undefined ? {} : { dispatchPath }),
                   ...(quietAfterMs === undefined ? {} : { quietAfterMs }),
                   onQuiet: change => {
                     if (

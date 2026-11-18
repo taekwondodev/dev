@@ -25,7 +25,7 @@ import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
 import { installProfileFixture } from '../profile-fixture.ts'
 import { ownerEffect, waitFor, within } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
-import { CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
+import { CHILD_EFFORT, CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
 
 export const script = (steps: readonly unknown[]): string =>
   `${SCRIPT_MARKER}${JSON.stringify(steps)}`
@@ -77,11 +77,6 @@ export const openWorkFixture = async (name: string) => {
     mkdirSync(path, { recursive: true })
   mkdirSync(dataHome, { mode: 0o700 })
   const profiles = installProfileFixture(join(root, 'profiles'))
-  const dispatchPath = join(root, 'dispatch.json')
-  writeFileSync(
-    dispatchPath,
-    JSON.stringify({ rules: {}, default: { harness: 'pi', model: CHILD_MODEL } })
-  )
   process.env.HOME = home
   process.env.PI_OFFLINE = '1'
   process.env.PI_TELEMETRY_DISABLED = '1'
@@ -142,7 +137,6 @@ export const openWorkFixture = async (name: string) => {
           },
         },
         childEntry: new URL('./work-child-entry.ts', import.meta.url),
-        dispatchPath,
         browserOwnerEntry: new URL('../web/browser-owner-entry.ts', import.meta.url),
         onOutcome: attempt => {
           outcomes.set(attempt.id, attempt)
@@ -185,7 +179,14 @@ export const openWorkFixture = async (name: string) => {
       )
     }
     const delegate = (request: Assignment) =>
-      call(owner => owner.startAgent({ access: 'read-only', model: CHILD_MODEL, ...request }))
+      call(owner =>
+        owner.startAgent({
+          access: 'read-only',
+          model: CHILD_MODEL,
+          effort: CHILD_EFFORT,
+          ...request,
+        })
+      )
     const result = async (id: AttemptView['id']) =>
       (await call(owner => owner.readLog({ id, stream: 'result' }))).text ?? ''
     const run = async (request: Assignment) => {
@@ -220,7 +221,6 @@ export const openWorkFixture = async (name: string) => {
     repository,
     dataHome,
     profiles,
-    dispatchPath,
     git,
     writeSkill,
     lifecycle,

@@ -26,7 +26,12 @@ import { workResultText } from '../../src/work-model-text.ts'
 import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture, script } from './work-check-support.ts'
-import { CHILD_MODEL, RAW_AFTER_READY_MARKER, USAGE_MARKER } from './work-child-model.ts'
+import {
+  CHILD_EFFORT,
+  CHILD_MODEL,
+  RAW_AFTER_READY_MARKER,
+  USAGE_MARKER,
+} from './work-child-model.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
 const OUTCOME = 'dev/work-outcome'
@@ -655,6 +660,7 @@ return JSON.stringify({
                 script([{ delayMs: 1500, content: [{ type: 'text', text: 'LOOKED' }] }]),
               ].join('\n'),
               model: CHILD_MODEL,
+              effort: CHILD_EFFORT,
             }),
           ])
           const next = await lead.request(1)

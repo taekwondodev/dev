@@ -1274,7 +1274,7 @@ const run = Effect.fnUntraced(function* (
       gitRoot: yield* gitRoot(launchCwd),
       profile: diagnosticProfile,
     }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
-    const dispatch = yield* readDispatch().pipe(
+    const dispatch = yield* readDispatch.pipe(
       Effect.mapError(error => toLauncherError(error, 'Cannot read dispatch configuration'))
     )
     yield* Effect.sync(() => {
