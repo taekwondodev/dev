@@ -44,8 +44,8 @@ Agents read dev's text while working on other repositories, without dev's CONTEX
   | residue                                        | unfinished work                                           |
 
 - Never name a skill, workflow or ADR the agent may not have, such as `dev-cycle`.
-- Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition, at no more tokens than the value it replaces.
-- Spend no extra tokens: plain wording replaces jargon at the same length or shorter.
+- Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition.
+- Replace jargon with plain wording of about the same length; add words only for a fact the next action depends on.
 
 [The model text check](tests/model-text-check.ts) rejects internal terms in tool declarations, the guidance dev sends with every result and a sample of rendered results and checkout guidance. Refusals and results it does not sample follow the same rules by review.
 
