@@ -37,7 +37,7 @@ export const COORDINATOR_TOOL_DESCRIPTION =
 
 const decodeControllerMessage = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
 const decodeResult = Schema.decodeUnknownEffect(WorkResultSchema)
-const parameters = Schema.toJsonSchemaDocument(CoordinatorWorkInputSchema, {
+export const coordinatorWorkParameters = Schema.toJsonSchemaDocument(CoordinatorWorkInputSchema, {
   onExcessProperty: 'error',
 }).schema
 
@@ -152,12 +152,14 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
   return link
 })
 
+export const COORDINATOR_PROMPT_SNIPPET = 'Delegate subtasks and inspect results'
+
 export const createCoordinatorWorkTool = (link: CoordinatorLink): Pi.ToolDefinition => ({
   name: 'work',
   label: 'Delegated work',
   description: COORDINATOR_TOOL_DESCRIPTION,
-  promptSnippet: 'Delegate subtasks and inspect results',
-  parameters,
+  promptSnippet: COORDINATOR_PROMPT_SNIPPET,
+  parameters: coordinatorWorkParameters,
   outputSchema: workResultOutputSchema,
   execute: (_toolCallId, input, signal) =>
     Effect.runPromise(

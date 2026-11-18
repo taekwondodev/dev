@@ -46,7 +46,7 @@ import type {
 } from './workspace-domain.ts'
 import { errorText } from './error-text.ts'
 
-const parameters = Schema.toJsonSchemaDocument(LeadWorkInputSchema, {
+export const leadWorkParameters = Schema.toJsonSchemaDocument(LeadWorkInputSchema, {
   onExcessProperty: 'error',
 }).schema
 
@@ -1073,7 +1073,7 @@ export const createWorkExtension = ({
       name: 'work',
       label: 'Background work',
       description: LEAD_TOOL_DESCRIPTION,
-      parameters,
+      parameters: leadWorkParameters,
       outputSchema: workResultOutputSchema,
       execute: (toolCallId, input, _signal, _onUpdate, ctx) =>
         Effect.runPromise(

@@ -39,7 +39,7 @@ const describe = (
   }
 }
 
-const readUrlParameters = describe(
+export const readUrlParameters = describe(
   Schema.toJsonSchemaDocument(InputSchema, { onExcessProperty: 'error' }).schema,
   inputDescriptions
 )
@@ -84,7 +84,7 @@ const resultDescriptions: { readonly [Field in keyof ReadUrlResult]-?: string } 
   error: 'Why the read failed.',
 }
 
-const readUrlOutputSchema = describe(
+export const readUrlOutputSchema = describe(
   Schema.toJsonSchemaDocument(ReadUrlResultSchema).schema,
   resultDescriptions
 )

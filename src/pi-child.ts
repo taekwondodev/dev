@@ -508,7 +508,7 @@ function toolResult(text: string): Pi.AgentToolResult<undefined> {
   }
 }
 
-function createReviewGitTool(cwd: string): Pi.ToolDefinition {
+export function createReviewGitTool(cwd: string): Pi.ToolDefinition {
   return {
     name: 'git_inspect',
     label: 'git_inspect',
