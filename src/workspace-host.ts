@@ -291,7 +291,7 @@ const sessionFileCwd = (file: string): string => {
 
 const piCall = <A>(call: () => Promise<A>): Effect.Effect<A> => Effect.promise(call)
 const pendingSwitchNotice =
-  'A workspace switch is still in progress, so the session was not replaced; try again once it finishes.'
+  'A checkout switch is still in progress, so the session was not replaced; try again once it finishes.'
 const unresolvedSwitchNotice =
   'Dev cannot confirm the earlier checkout switch. The session was not replaced. Quit to leave it unchanged.'
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
