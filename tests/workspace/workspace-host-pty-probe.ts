@@ -1306,7 +1306,7 @@ const refusalNotice = await within(
   waitFor('the refused switch notice', () =>
     timeline.find(
       entry =>
-        entry.kind === 'notify' && entry.message.startsWith('Workspace switch was not performed')
+        entry.kind === 'notify' && entry.message.startsWith('Checkout switch was not performed')
     )
   ),
   90000,
@@ -1324,7 +1324,7 @@ assert.ok(refusalNotice.kind === 'notify', 'the refused switch was reported to t
 assert.equal(refusalNotice.level, 'warning')
 assert.match(
   refusalNotice.message,
-  /the current workspace is kept\. Dev did not switch checkouts: fixture target became unavailable/
+  /the current checkout is kept\. Dev did not switch checkouts: fixture target became unavailable/
 )
 
 attachFailures.add(resolve(targetFail))

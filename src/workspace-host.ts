@@ -784,7 +784,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const api = currentApi
     if (!api) {
       process.stderr.write(
-        'Workspace switch completed, but no active Pi extension API is available for fresh re-evaluation; submit a new prompt.\n'
+        'Checkout switch completed, but no active Pi extension API is available for fresh re-evaluation; submit a new prompt.\n'
       )
       return
     }
@@ -803,7 +803,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
     } catch (error) {
       process.stderr.write(
-        `Workspace switch completed, but fresh re-evaluation was not queued: ${errorText(error)}. ${notices.unqueued}\n`
+        `Checkout switch completed, but fresh re-evaluation was not queued: ${errorText(error)}. ${notices.unqueued}\n`
       )
     }
   }
@@ -898,7 +898,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     restoreInput(transition.surface)
     notify(
       transition.surface,
-      `Workspace switch was not performed; the current workspace is kept. ${errorText(error)}`,
+      `Checkout switch was not performed; the current checkout is kept. ${errorText(error)}`,
       'warning'
     )
   })
