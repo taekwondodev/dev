@@ -26,7 +26,12 @@ import { workResultText } from '../../src/work-model-text.ts'
 import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture, script } from './work-check-support.ts'
-import { CHILD_MODEL, RAW_AFTER_READY_MARKER, USAGE_MARKER } from './work-child-model.ts'
+import {
+  CHILD_EFFORT,
+  CHILD_MODEL,
+  RAW_AFTER_READY_MARKER,
+  USAGE_MARKER,
+} from './work-child-model.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
 const OUTCOME = 'dev/work-outcome'
@@ -655,6 +660,7 @@ return JSON.stringify({
                 script([{ delayMs: 1500, content: [{ type: 'text', text: 'LOOKED' }] }]),
               ].join('\n'),
               model: CHILD_MODEL,
+              effort: CHILD_EFFORT,
             }),
           ])
           const next = await lead.request(1)
@@ -809,16 +815,40 @@ return JSON.stringify({
         const [entry] = modelEntries(String(notice.content)) as {
           id: string
           taskId: string
-          status: string
           stdout?: string
           quietSeconds: number
           runningSeconds: number
         }[]
-        assert.equal(entry?.id, attempt.id)
-        assert.equal(entry?.taskId, 'task-0-0')
-        assert.equal(entry?.status, 'running')
-        assert.ok(entry?.stdout?.includes('before-silence'))
-        assert.ok(entry !== undefined && entry.runningSeconds >= entry.quietSeconds)
+        assert.ok(entry !== undefined)
+        assert.equal(entry.id, attempt.id)
+        assert.equal(entry.taskId, 'task-0-0')
+        assert.ok(entry.stdout?.includes('before-silence'))
+        assert.ok(entry.runningSeconds >= entry.quietSeconds)
+        const [facts] = (
+          notice.details as {
+            quiet: {
+              id: string
+              taskId: string
+              kind: string
+              status: string
+              since: number
+              quietSeconds: number
+              runningSeconds: number
+              logs: { stream: string; text?: string }[]
+            }[]
+          }
+        ).quiet
+        assert.ok(facts !== undefined)
+        assert.deepEqual(
+          { id: facts.id, taskId: facts.taskId, kind: facts.kind, status: facts.status },
+          { id: attempt.id, taskId: 'task-0-0', kind: 'process', status: 'running' }
+        )
+        assert.equal(facts.quietSeconds, entry.quietSeconds)
+        assert.equal(facts.runningSeconds, entry.runningSeconds)
+        assert.ok(Number.isFinite(facts.since) && facts.since <= Date.now())
+        assert.ok(
+          facts.logs.find(page => page.stream === 'stdout')?.text?.includes('before-silence')
+        )
         woken.reply(text('keep waiting'))
         await lead.idle()
         assert.deepEqual(lead.work.restingState(), { state: 'working' })

@@ -24,6 +24,7 @@ import { assertStatus, openWorkFixture, script, settled } from './work-check-sup
 import { CHROME_EXECUTABLES, findChrome } from '../../src/web-profile.ts'
 import { makeChromeSource, ownerPublished, selectOwnerFixture } from '../web/chrome-fixture.ts'
 import {
+  CHILD_EFFORT,
   CHILD_MODEL,
   DROP_FIRST_ACK,
   ipcLog,
@@ -100,6 +101,7 @@ const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): Tool
   taskId,
   prompt,
   model: CHILD_MODEL,
+  effort: CHILD_EFFORT,
   ...extra,
 })
 const phase = (title: string, ...steps: readonly unknown[]): string =>

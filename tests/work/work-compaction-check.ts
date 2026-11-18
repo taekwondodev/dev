@@ -8,7 +8,7 @@ import { ALL_TIME, profileUsage } from '../../scripts/usage-profile.ts'
 import { COMPACTION_OBSERVATION, CompactionObservation } from '../../src/compaction-observation.ts'
 import { loadInstalledPi, makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
 import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
-import { CHILD_MODEL, USAGE_MARKER } from './work-child-model.ts'
+import { CHILD_EFFORT, CHILD_MODEL, USAGE_MARKER } from './work-child-model.ts'
 
 const { pi } = await loadInstalledPi()
 const { claim, passed } = makeClaims()
@@ -133,6 +133,7 @@ try {
               taskId: 'compacting-leaf',
               prompt: childPrompt,
               model: CHILD_MODEL,
+              effort: CHILD_EFFORT,
               access: 'read-only',
             }),
           ],

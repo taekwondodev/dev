@@ -26,7 +26,7 @@ import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
 import { installProfileFixture } from '../profile-fixture.ts'
 import { ownerEffect, waitFor, within } from '../workspace/workspace-check-support.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
-import { CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
+import { CHILD_EFFORT, CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
 
 export const script = (steps: readonly unknown[]): string =>
   `${SCRIPT_MARKER}${JSON.stringify(steps)}`
@@ -182,7 +182,14 @@ export const openWorkFixture = async (name: string) => {
       )
     }
     const delegate = (request: Assignment) =>
-      call(owner => owner.startAgent({ access: 'read-only', model: CHILD_MODEL, ...request }))
+      call(owner =>
+        owner.startAgent({
+          access: 'read-only',
+          model: CHILD_MODEL,
+          effort: CHILD_EFFORT,
+          ...request,
+        })
+      )
     const result = async (id: AttemptView['id']) =>
       (await call(owner => owner.readLog({ id, stream: 'result' }))).text ?? ''
     const run = async (request: Assignment) => {

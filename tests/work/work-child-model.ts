@@ -15,6 +15,7 @@ import {
 } from '../workspace/workspace-check-support.ts'
 
 export const CHILD_MODEL = 'work-child-offline/work-child'
+export const CHILD_EFFORT = 'off'
 export const MODEL_CALLS = 'model-calls.log'
 export const SCRIPT_MARKER = 'SCRIPT '
 export const USAGE_MARKER = 'USAGE '
