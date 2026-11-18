@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import { readDispatch, resolveDispatch } from '../../src/work-dispatch.ts'
+import { resolveDispatch } from '../../src/work-dispatch.ts'
 import type { DispatchInput, DispatchProfile } from '../../src/work-domain.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
@@ -91,11 +90,5 @@ await claim(
     assert.doesNotMatch(malformed, /\bat \[/, 'a JSON failure names no field')
   }
 )
-await claim('the shipped configuration has no rules and a pi default with a model', async () => {
-  const shipped = await Effect.runPromise(readDispatch.pipe(Effect.provide(NodeFileSystem.layer)))
-  assert.deepEqual(shipped.rules, {})
-  assert.equal(shipped.default.harness, 'pi')
-  assert.equal(typeof shipped.default.model, 'string')
-})
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

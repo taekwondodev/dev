@@ -146,20 +146,26 @@ export const outcomeText = (outcomes: readonly AttemptOutcome[], guidance: strin
 
 export interface QuietOutcome {
   readonly outcome: AttemptOutcome
+  readonly since: number
   readonly quietSeconds: number
   readonly runningSeconds: number
 }
 
+export type QuietFacts = AttemptOutcome & Omit<QuietOutcome, 'outcome'>
+
+export const quietFacts = ({ outcome, ...times }: QuietOutcome): QuietFacts => ({
+  ...outcome,
+  logs: outcome.logs.map(log =>
+    log.text === undefined ? log : { ...log, text: redactSecrets(log.text) }
+  ),
+  ...times,
+})
+
+const quietObject = (quiet: QuietOutcome): ModelObject => {
+  const { since: _since, quietSeconds, runningSeconds, ...outcome } = quietFacts(quiet)
+  const { kind: _kind, status: _status, staleArtifact: _stale, ...facts } = outcomeObject(outcome)
+  return { ...facts, runningSeconds, quietSeconds }
+}
+
 export const quietText = (notices: readonly QuietOutcome[], guidance: string): string =>
-  `${guidance}\n${JSON.stringify(
-    notices.map(({ outcome, quietSeconds, runningSeconds }) => ({
-      ...outcomeObject({
-        ...outcome,
-        logs: outcome.logs.map(log =>
-          log.text === undefined ? log : { ...log, text: redactSecrets(log.text) }
-        ),
-      }),
-      runningSeconds,
-      quietSeconds,
-    }))
-  )}`
+  `${guidance}\n${JSON.stringify(notices.map(quietObject))}`

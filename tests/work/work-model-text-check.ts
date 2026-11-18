@@ -8,7 +8,13 @@ import {
   type LogView,
   type WorkResult,
 } from '../../src/work-domain.ts'
-import { outcomeText, outputPreview, quietText, workResultText } from '../../src/work-model-text.ts'
+import {
+  outcomeText,
+  outputPreview,
+  quietFacts,
+  quietText,
+  workResultText,
+} from '../../src/work-model-text.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
@@ -356,7 +362,7 @@ await claim(
 )
 
 await claim(
-  'a quiet notice is the running command outcome with its tails cut like outcomes, plus running and quiet seconds',
+  'a quiet notice is a running command without the facts every notice repeats (kind, status, an unknown stale artifact): tails cut like outcomes, plus running and quiet seconds',
   () => {
     const long = `${'y'.repeat(700)}TAIL`
     const text = quietText(
@@ -368,8 +374,10 @@ await claim(
             status: 'running',
             exitCode: undefined,
             completedAt: undefined,
+            staleArtifact: 'unknown',
             logs: [log({ stream: 'stdout', text: long }), log({ stream: 'stderr' })],
           }),
+          since: 1_000,
           quietSeconds: 125,
           runningSeconds: 610,
         },
@@ -381,8 +389,6 @@ await claim(
       {
         id: ID,
         taskId: 'tests',
-        kind: 'process',
-        status: 'running',
         stdout: `…${long.slice(-512)}`,
         runningSeconds: 610,
         quietSeconds: 125,
@@ -391,34 +397,39 @@ await claim(
   }
 )
 
-await claim('a quiet notice redacts credentials in both output tails', () => {
-  const text = quietText(
-    [
-      {
-        outcome: outcome({
-          kind: 'process',
-          status: 'running',
-          logs: [
-            log({ stream: 'stdout', text: 'export API_KEY=abc123secret\nready' }),
-            log({
-              stream: 'stderr',
-              text: 'auth with sk-abcdefghijklmnop failed; password: hunter2',
-            }),
-          ],
-        }),
-        quietSeconds: 120,
-        runningSeconds: 130,
-      },
-    ],
-    'Quiet guidance.'
-  )
-  assert.ok(!text.includes('abc123secret'))
-  assert.ok(!text.includes('sk-abcdefghijklmnop'))
-  assert.ok(!text.includes('hunter2'))
-  const [entry] = entries(text) as { stdout?: string; stderr?: string }[]
-  assert.equal(entry?.stdout, 'export API_KEY=[redacted]\nready')
-  assert.equal(entry?.stderr, 'auth with [redacted] failed; password: [redacted]')
-})
+await claim(
+  'a quiet notice redacts credentials in both output tails, in the model text and in its structured facts',
+  () => {
+    const quiet = {
+      outcome: outcome({
+        kind: 'process',
+        status: 'running',
+        logs: [
+          log({ stream: 'stdout', text: 'export API_KEY=abc123secret\nready' }),
+          log({
+            stream: 'stderr',
+            text: 'auth with sk-abcdefghijklmnop failed; password: hunter2',
+          }),
+        ],
+      }),
+      since: 5_000,
+      quietSeconds: 120,
+      runningSeconds: 130,
+    }
+    const text = quietText([quiet], 'Quiet guidance.')
+    assert.ok(!text.includes('abc123secret'))
+    assert.ok(!text.includes('sk-abcdefghijklmnop'))
+    assert.ok(!text.includes('hunter2'))
+    const [entry] = entries(text) as { stdout?: string; stderr?: string }[]
+    assert.equal(entry?.stdout, 'export API_KEY=[redacted]\nready')
+    assert.equal(entry?.stderr, 'auth with [redacted] failed; password: [redacted]')
+    const facts = quietFacts(quiet)
+    assert.deepEqual(
+      facts.logs.map(page => page.text),
+      ['export API_KEY=[redacted]\nready', 'auth with [redacted] failed; password: [redacted]']
+    )
+  }
+)
 
 await claim(
   'the coordinator work tool sends the same model text as the projection, with the full result in details',
