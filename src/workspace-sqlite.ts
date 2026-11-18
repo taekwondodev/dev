@@ -352,7 +352,7 @@ export const databaseFile = (path: string): void => {
         sidecar.uid !== effectiveUid() ||
         (sidecar.mode & 0o077) !== 0)
     )
-      unavailable(`Unsafe SQLite sidecar: ${path}${suffix}`)
+      unavailable(`Unsafe SQLite companion file: ${path}${suffix}`)
   }
 }
 const validatedFiles = new Set<string>()
@@ -360,20 +360,20 @@ const validatedIdentity = (path: string): string => {
   const info = lstatSync(path, { bigint: true })
   return `${path}\0${info.dev}:${info.ino}`
 }
-const requireWal = (db: DatabaseSync, path: string, kind: 'catalog' | 'shard'): void => {
+const requireWal = (db: DatabaseSync, path: string): void => {
   const journal = textField(first(db, 'PRAGMA journal_mode'), 'journal_mode')
   if (journal.toLowerCase() !== 'wal')
-    unavailable(`Workspace ${kind} database is not in WAL mode: ${path}`)
+    unavailable(`Dev's checkout database is not in WAL mode: ${path}`)
 }
 const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'shard'): string => {
   db.exec(
     `PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA fullfsync = ON; PRAGMA wal_autocheckpoint = 1000;`
   )
-  requireWal(db, path, kind)
+  requireWal(db, path)
   const synchronous = numberField(first(db, 'PRAGMA synchronous'), 'synchronous')
   const fullfsync = numberField(first(db, 'PRAGMA fullfsync'), 'fullfsync')
   if (synchronous !== 1 || fullfsync !== 1)
-    unavailable(`Workspace ${kind} database has unexpected durability settings: ${path}`)
+    unavailable(`Dev's checkout database has unsafe save settings: ${path}`)
   const identity = validatedIdentity(path)
   if (!validatedFiles.has(identity)) {
     if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
@@ -381,7 +381,7 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
         `Dev workspace database has the wrong schema: ${path}. Quit all dev sessions and ask the user to check the saved checkout data.`
       )
     if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
-      requireReview(`Workspace ${kind} database is corrupt: ${path}`)
+      requireReview(`Dev's checkout database is corrupt: ${path}`)
   }
   databaseFile(path)
   validatedFiles.add(identity)
@@ -413,7 +413,7 @@ export const openRecordConnection = (
       if (!existed) {
         const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
         if (mode.toLowerCase() !== 'wal')
-          unavailable(`Cannot enable WAL for new workspace database: ${path}`)
+          unavailable(`Cannot enable WAL for dev's new checkout database: ${path}`)
       }
       const identity = configureRecordDb(db, path, kind)
       return { db, identity: identity === opening ? identity : undefined }
@@ -427,15 +427,11 @@ export const openRecordConnection = (
     unavailable(`Cannot open the dev workspace database ${path}: ${errorText(cause)}`)
   }
 }
-export const recordConnectionCurrent = (
-  connection: RecordConnection,
-  path: string,
-  kind: 'catalog' | 'shard'
-): boolean => {
+export const recordConnectionCurrent = (connection: RecordConnection, path: string): boolean => {
   if (connection.identity === undefined || lstatIfExists(path) === undefined) return false
   if (validatedIdentity(path) !== connection.identity) return false
   databaseFile(path)
-  requireWal(connection.db, path, kind)
+  requireWal(connection.db, path)
   return true
 }
 export const transaction = <A>(db: DatabaseSync, operation: () => A): A => {

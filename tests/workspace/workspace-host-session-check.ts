@@ -719,7 +719,7 @@ try {
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         assert.match(
           shown(opened.runtime).at(-1) ?? '',
-          /^The conversation was not switched: Cannot be switched while a bash command may still be running here\. Wait or stop the process; \/work stop only stops background work\./
+          /^The conversation was not switched: Cannot be switched while a bash command may still be running here\. Wait for it, or ask the user to stop it; work cancel stops only background runs\./
         )
         assert.equal(opened.runtime.cwd, isolated)
         assert.equal(opened.host.isParked(), false)

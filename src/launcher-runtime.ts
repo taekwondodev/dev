@@ -917,11 +917,11 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
 const formatOwner = (owner: BrowserOwnerStatus['owner']): string => {
   switch (owner.kind) {
     case 'absent':
-      return 'browser owner: not running; the next render starts one'
+      return 'browser service: stopped; the next Chrome read starts it'
     case 'unavailable':
-      return `browser owner: ${owner.message}`
+      return `browser service: ${owner.message}`
     case 'live':
-      return `browser owner: running with ${owner.activity.clients} client(s), ${owner.activity.rendering} rendering, ${owner.activity.queued} queued, Chrome ${owner.activity.chrome ? 'live' : 'closed'}${owner.activity.draining ? ', shutting down' : ''}${owner.activity.unobserved === undefined ? '' : `; unverified Chrome shutdown: ${owner.activity.unobserved}`}`
+      return `browser service: running with ${owner.activity.clients} connection(s), ${owner.activity.rendering} rendering, ${owner.activity.queued} queued, Chrome ${owner.activity.chrome ? 'live' : 'closed'}${owner.activity.draining ? ', shutting down' : ''}${owner.activity.unobserved === undefined ? '' : `; unverified Chrome shutdown: ${owner.activity.unobserved}`}`
   }
 }
 
@@ -935,7 +935,7 @@ const formatBrowserStatus = (status: BrowserOwnerStatus): string =>
         ? 'absent'
         : `${status.profile.copy.complete ? 'complete' : 'incomplete'}, refreshed ${DateTime.formatIso(DateTime.makeUnsafe(status.profile.copy.refreshedAt))} from ${status.profile.copy.source}/${status.profile.copy.profileDirectory}`
     }`,
-    `in use: ${status.profile.inUse ? 'yes, a dev browser owner holds the copy for Chrome or pending shutdown verification' : 'no'}`,
+    `in use: ${status.profile.inUse ? 'yes, Chrome uses the copy or is not yet confirmed closed' : 'no'}`,
     formatOwner(status.owner),
   ].join('\n')
 

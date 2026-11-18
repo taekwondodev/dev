@@ -600,7 +600,7 @@ const foreignSource = (authority: WorkspaceAuthority, cwd: string): WorkspaceSou
     git = canonicalGitWorkspace(cwd)
   } catch (cause) {
     return invalid(
-      `Operation cwd is outside the selected workspace and not inside another Git checkout: ${cwd} (${errorText(cause)})`
+      `cwd is outside this checkout and not inside another Git checkout: ${cwd} (${errorText(cause)})`
     )
   }
   const repo = authority.registerRepository(git)

@@ -188,7 +188,7 @@ type Admission =
 const parkedRefusal: RefusedAdmission = {
   kind: 'refused',
   endsTurn: true,
-  reason: 'Switching checkouts. This call did not run.',
+  reason: 'Checkout access is blocked by a switch or mismatch. This call did not run.',
 }
 const dismissedQuestionRefusal: RefusedAdmission = {
   kind: 'refused',
@@ -1093,9 +1093,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (grant.access !== access) {
       return `This call needs ${access} access but got ${grant.access}. It did not run.`
     }
-    if (grant.workspaceId !== binding.workspaceId || resolve(grant.cwd) !== resolve(context.cwd)) {
+    if (resolve(grant.cwd) !== resolve(context.cwd))
       return `Permission was for ${grant.cwd}, not ${context.cwd}. The call did not run.`
-    }
+    if (grant.workspaceId !== binding.workspaceId)
+      return `Permission was for checkout ${grant.workspaceId}, not ${binding.workspaceId}. The call did not run.`
     return undefined
   }
 
@@ -1278,7 +1279,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       return Effect.succeed({
         block: true,
         terminate: true,
-        reason: 'Switching checkouts; the tool did not run.',
+        reason: 'Checkout access is blocked by a switch or mismatch; the tool did not run.',
       })
     const effect = toolEffect(getToolInfo(api, event.toolName))
     switch (effect) {

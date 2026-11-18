@@ -513,7 +513,7 @@ export function createReviewGitTool(cwd: string): Pi.ToolDefinition {
     name: 'git_inspect',
     label: 'git_inspect',
     description:
-      "Read Git status, diffs, history, refs or tracked files. Full output is in this run's logs.",
+      'Read Git status, diffs, history, refs or tracked files. Output past 64 KB is cut; the agent that started you can read it in full.',
     promptSnippet: 'Read Git state',
     parameters: gitInspectParameters,
     async execute(_toolCallId, params, signal) {

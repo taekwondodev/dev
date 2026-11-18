@@ -82,7 +82,7 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^Switching checkouts(?:; the tool did not run\.$|\. This call did not run\.$|; the call did not run\. )/,
+      /^Checkout access is blocked by a switch or mismatch(?:; the tool|\. This call) did not run\.$|^Switching checkouts; the call did not run\. /,
   },
   {
     outcome: 'blocked',

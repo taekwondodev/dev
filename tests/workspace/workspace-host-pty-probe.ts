@@ -1367,7 +1367,7 @@ const expectBlock = (
   assert.match(block.reason, reason)
   return block
 }
-const PARKED = /Switching checkouts; the tool did not run/
+const PARKED = /Checkout access is blocked by a switch or mismatch; the tool did not run/
 const REBIND = /Switching checkouts; the call did not run\. fixture/
 const UNVERIFIED = /did not run\. Dev has not verified what this tool can do to project files/
 expectBlock('stale-native-lead', lead, true, REBIND)

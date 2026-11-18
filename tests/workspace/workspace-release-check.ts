@@ -1103,7 +1103,7 @@ try {
       mkdirSync(source.managed.checkout, { recursive: true })
       await assert.rejects(
         Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))),
-        /authority record/
+        /no longer matches dev's record/
       )
       assert.equal(existsSync(join(source.managed.checkout, '.dev')), false)
       rmSync(source.managed.checkout, { recursive: true })

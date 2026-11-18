@@ -82,12 +82,12 @@ export const observeFamily = Effect.fnUntraced(function* <E>(
   const table = yield* processTable
   if (rootIdentityReused(table, family.root, options.rootExited))
     return yield* new ProcessObservationLost({
-      message: 'Root process identity was reused; cleanup is unknown',
+      message: 'The process ID was reused; dev cannot confirm the processes stopped',
     })
   const known = ownedProcesses(table, family.pid, family.known, family.root)
   const processes = yield* decodeFamily(known).pipe(
     Effect.mapError(
-      () => new ProcessObservationLost({ message: 'A tracked process has no birth identity' })
+      () => new ProcessObservationLost({ message: 'A tracked process has no recorded start time' })
     )
   )
   const signature = JSON.stringify(processes)

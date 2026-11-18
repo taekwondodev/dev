@@ -174,7 +174,7 @@ export const makeNativeWrites = (options: {
         if ([...writes.values()].some(write => write.identity === identity))
           return Effect.fail(
             new NativeWriteRefused({
-              message: `Another native write to ${destination} is still in flight`,
+              message: `Another write to ${destination} has not finished`,
             })
           )
         writes.set(input.toolCallId, { ...input, identity })

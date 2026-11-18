@@ -140,7 +140,7 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
     const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
     if (mode.toLowerCase() !== 'wal')
-      unavailable(`Cannot enable WAL for new workspace catalog: ${path}`)
+      unavailable(`Cannot enable WAL for dev's new checkout database: ${path}`)
     db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
     db.close()
     db = undefined
@@ -149,7 +149,9 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     databaseFile(path)
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot durably enable WAL for workspace catalog ${path}: ${errorText(cause)}`)
+    unavailable(
+      `Cannot durably enable WAL for dev's checkout database ${path}: ${errorText(cause)}`
+    )
   } finally {
     db?.close()
   }
@@ -183,7 +185,7 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
   const value = parseRecord(
     RepositoryCatalogSchema,
     row.payload,
-    `repository catalog entry ${textField(row, 'id')}`
+    `saved repository ${textField(row, 'id')}`
   )
   if (
     value.id !== textField(row, 'id') ||
@@ -383,7 +385,7 @@ export class WorkspaceAuthority {
   }
 
   private catalogCurrent(known: HeldCatalog): boolean {
-    if (!recordConnectionCurrent(known, this.paths.catalog, 'catalog')) return false
+    if (!recordConnectionCurrent(known, this.paths.catalog)) return false
     if (catalogNamespace(known.db) !== this.expectedNamespace())
       requireReview(`Dev's checkout records were replaced or moved: ${this.paths.catalog}`)
     return true
@@ -407,7 +409,7 @@ export class WorkspaceAuthority {
     if (record === undefined) return unavailable(`Dev has no record for repository ${repositoryId}`)
     if (record.state !== 'ready') return false
     privateDirectory(dirname(path), false)
-    if (!recordConnectionCurrent(known, path, 'shard')) return false
+    if (!recordConnectionCurrent(known, path)) return false
     this.validateShardMeta(known.db, record)
     known.record = record
     return true

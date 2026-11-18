@@ -884,8 +884,18 @@ const edgesHome = join(root, 'edges')
 }
 
 const DEV_TEXTS = [
-  ['src/workspace-host.ts', ["'Switching checkouts; the tool did not run.'"], 'read', 'blocked'],
-  ['src/workspace-host.ts', ["'Switching checkouts. This call did not run.'"], 'read', 'blocked'],
+  [
+    'src/workspace-host.ts',
+    ["'Checkout access is blocked by a switch or mismatch; the tool did not run.'"],
+    'read',
+    'blocked',
+  ],
+  [
+    'src/workspace-host.ts',
+    ["'Checkout access is blocked by a switch or mismatch. This call did not run.'"],
+    'read',
+    'blocked',
+  ],
   [
     'src/workspace-host.ts',
     ['`Switching checkouts; the call did not run. ', '.`'],
@@ -909,6 +919,12 @@ const DEV_TEXTS = [
   [
     'src/workspace-host.ts',
     ['`Permission was for ', ', not ', '. The call did not run.`'],
+    'grep',
+    'blocked',
+  ],
+  [
+    'src/workspace-host.ts',
+    ['`Permission was for checkout ', ', not ', '. The call did not run.`'],
     'grep',
     'blocked',
   ],

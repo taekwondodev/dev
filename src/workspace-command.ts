@@ -1,3 +1,4 @@
+import { checkoutUseStage } from './workspace-labels.ts'
 import { existsSync } from 'node:fs'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -152,17 +153,6 @@ const sortedViews = (views: readonly WorkspaceView[]): WorkspaceView[] =>
       left.repositoryId.localeCompare(right.repositoryId) ||
       left.workspaceId.localeCompare(right.workspaceId)
   )
-
-export const checkoutUseStage = (stage: string): string => {
-  switch (stage) {
-    case 'quiescent':
-      return 'ended'
-    case 'launch-intent':
-      return 'launch-planned'
-    default:
-      return stage
-  }
-}
 
 export const pendingOperationText = ({ kind, stage }: WorkspaceView['pending'][number]): string => {
   const name = kind === 'handoff' ? 'switch' : kind

@@ -67,7 +67,7 @@ const assessWorkspace = (input: {
   const operation =
     input.pending === undefined
       ? undefined
-      : `Earlier operation ${input.pending.id}: ${input.pending.stage}.`
+      : `Earlier operation ${input.pending.id}: ${input.pending.stage}; checking does not redo it.`
   if (input.missing && input.pending === undefined)
     return {
       outcome: 'review-required',
@@ -85,8 +85,10 @@ const assessWorkspace = (input: {
   if (input.unknown)
     return {
       outcome: 'blocked',
-      reason: operation ?? 'Dev could not confirm a process stopped.',
-      nextAction: 'Verify the process stopped before reuse.',
+      reason: operation ?? 'Dev could not confirm a process or file write stopped.',
+      nextAction: `Do not write here. Once it has stopped, the user clears it with ${
+        input.reserved ? 'dev workspace release <task-id>' : 'dev workspace release pre-existing'
+      }.`,
     }
   const abandoned = input.abandoned()
   if (abandoned.length > 0)
@@ -343,7 +345,7 @@ export const inspectWorkspaces = (
           nextAction:
             operation.kind === 'allocation'
               ? `dev workspace release ${operation.taskId} clears it and removes what Git created of the worktree.`
-              : 'Check what Git changed before retrying or using the checkout.',
+              : 'Check what Git changed. Do not retry or use the checkout; the user must resolve it.',
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],
           reservationId: operation.reservationId,

@@ -1202,7 +1202,7 @@ export const verifyInventory = (
   for (const file of [...inventory.trackedFiles, ...inventory.files]) {
     if (file.kind === 'nested-repository') {
       blocking += 1
-      invalid.push(`Nested repository is not entered or removed: ${file.path}/`)
+      invalid.push(`Nested Git repository blocks cleanup: ${file.path}/`)
       continue
     }
     if (file.kind === 'unreadable' || file.kind === 'absent') {

@@ -243,9 +243,9 @@ const allocateWorktree = (
     privateDirectory(authority.paths.worktrees, true)
     privateDirectory(destinationParent, true)
     if (lstatIfExists(destination) !== undefined)
-      requireReview(`Managed worktree destination already exists: ${destination}`)
+      requireReview(`The new worktree path already exists: ${destination}`)
     if (canonicalPathSlot(destination) !== destination)
-      requireReview(`Managed worktree destination is not canonical: ${destination}`)
+      requireReview(`The new worktree path is not its real path: ${destination}`)
     gateIntents = releaseLocalGates(state)
     pathGates = orderedAllocationGates(
       authority,

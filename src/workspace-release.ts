@@ -1,3 +1,4 @@
+import { checkoutUseStage, executionLabel } from './workspace-labels.ts'
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -215,7 +216,7 @@ interface UseAssessment {
   readonly nextActions: readonly string[]
 }
 const describeUse = (use: UseRecord): string =>
-  `${use.access}/${use.stage}${use.execution === undefined ? '' : `, ${use.execution.taskKey}`}`
+  `${use.access}/${checkoutUseStage(use.stage)}${use.execution === undefined ? '' : `, ${executionLabel(use.execution)}`}`
 
 const assessUses = (
   authority: WorkspaceAuthority,
@@ -1129,7 +1130,7 @@ export const removeTaskArtifacts = (
   } catch (cause) {
     return row(
       'review-required',
-      `The task artifact directory was not deleted: ${errorText(cause)}`
+      `The task's artifacts folder was not deleted: ${errorText(cause)}`
     )
   }
   if (lstatIfExists(path) !== undefined)
@@ -1149,7 +1150,7 @@ const reportTaskArtifacts = (
       taskId,
       path: taskArtifactsPath(authority.paths, taskId),
       outcome: 'review-required',
-      reason: `The task artifact directory could not be assessed: ${errorText(cause)}`,
+      reason: `Dev could not check the task's artifacts folder: ${errorText(cause)}`,
     }
   }
 }

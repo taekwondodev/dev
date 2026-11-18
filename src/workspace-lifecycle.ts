@@ -261,7 +261,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     Effect.suspend(() => {
       nextRequestId += 1
       if (Number.isSafeInteger(nextRequestId)) return Effect.succeed(nextRequestId)
-      const cause = unavailableError('Workspace RPC sequence exceeded its limit')
+      const cause = unavailableError('Dev cannot accept more checkout requests in this session')
       fail(cause)
       return Effect.fail(cause)
     })

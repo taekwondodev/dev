@@ -690,7 +690,7 @@ try {
                 lifecycle: { kind: 'workspace', attachment: attachment.effect, grant: refused },
               })
             ),
-            /still in flight/,
+            /has not finished/,
             `${second} names the file ${first} already being written`
           )
           await attachment.reportExecution(refused, { kind: 'operation-completed' })
@@ -717,7 +717,7 @@ try {
         const sentinel = join(external, 'sentinel')
         await writeFile(sentinel, 'two')
         await admit(sentinel)
-        await assert.rejects(admit(sentinel), /still in flight/)
+        await assert.rejects(admit(sentinel), /has not finished/)
         await Effect.runPromise(nativeWrites.finish(sentinel))
         for (const kind of ['ancestor', 'checkout', 'final-link', 'hard-link']) {
           const directory = join(external, kind)

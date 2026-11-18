@@ -1,3 +1,4 @@
+import { executionLabel, isConversationShell } from './workspace-labels.ts'
 import { inDb, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   blocked,
@@ -277,11 +278,11 @@ export const assertNoLiveExecution = (
   )
   if (live !== undefined) {
     const { execution } = live.use
-    const shell = execution?.taskKey === 'lead-shell' && execution.generation === 'lead'
-    const label = shell ? 'a bash command' : (execution?.taskKey ?? 'a process')
+    const shell = execution !== undefined && isConversationShell(execution)
+    const label = execution === undefined ? 'a process' : executionLabel(execution)
     const guidance = shell
-      ? 'Wait or stop the process; /work stop only stops background work.'
-      : 'Wait for it to finish or stop it with /work stop.'
+      ? 'Wait for it, or ask the user to stop it; work cancel stops only background runs.'
+      : 'Wait for it to finish, or call work cancel with that id.'
     blocked(`Cannot be ${action} while ${label} may still be running here. ${guidance}`)
   }
 }

@@ -266,7 +266,7 @@ export const assertUnfilteredIndex = (checkout: string, paths: readonly string[]
       (value, index) => index % 3 === 2 && value !== 'unspecified' && value !== 'unset'
     )
   )
-    throw gitBlocked('Tracked files use checkout filters; their read effects are not controlled')
+    throw gitBlocked('Tracked files use Git checkout filters, which dev does not run')
 }
 
 export const trackedChanges = (checkout: string): readonly TrackedChange[] => {
@@ -490,6 +490,6 @@ export const addDetachedWorktree = (
     created.objectFormat !== source.objectFormat ||
     created.head !== commit
   )
-    throw gitBlocked(`Created worktree does not match the recorded allocation: ${destination}`)
+    throw gitBlocked(`Git created a different worktree than requested: ${destination}`)
   return created
 }

@@ -30,7 +30,8 @@ export interface IntegrationFacts {
   readonly unknown: readonly string[]
 }
 
-export const CLEAR = 'Ask the user to discard it with dev workspace release.'
+export const CLEAR =
+  'If the task is no longer needed, the user can release the whole task with dev workspace release.'
 const DELIVER = ['Merge the PR or land its commits for cleanup. Only the user can release it.']
 export const RETAINED: Record<
   RetainedReason,

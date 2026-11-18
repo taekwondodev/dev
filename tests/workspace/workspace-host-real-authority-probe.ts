@@ -442,7 +442,7 @@ await claim(
   () => {
     const duplicate = persistedResult('duplicate-native-write')
     assert.equal(duplicate.isError, true)
-    assert.match(duplicate.text, /still in flight/)
+    assert.match(duplicate.text, /has not finished/)
     const duplicateUse = nativeUses.find(item => item.path === join(managed, 'NATIVE.txt'))
     assert.equal(duplicateUse?.stage, 'quiescent')
     assert.equal(duplicateUse?.reason, 'operation-ended-before-start:native-file-write')
@@ -632,7 +632,7 @@ await claim(
     assert.deepEqual([own?.origin, own?.verdict], ['managed', 'finished (nothing-left)'], shown)
     assert.ok(
       own?.reasons?.some(
-        reason => reason.includes('lead-shell') && reason.includes('Dev checks again at quit')
+        reason => reason.includes('a bash command') && reason.includes('Dev checks again at quit')
       ),
       shown
     )

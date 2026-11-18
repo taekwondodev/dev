@@ -1445,10 +1445,18 @@ try {
           [
             'lead-shell',
             'lead',
-            'Wait or stop the process; /work stop only stops background work.',
+            'Wait for it, or ask the user to stop it; work cancel stops only background runs.',
           ],
-          ['work-task', 'work-generation', 'Wait for it to finish or stop it with /work stop.'],
-          ['lead-shell', 'work-generation', 'Wait for it to finish or stop it with /work stop.'],
+          [
+            'work-task',
+            'work-generation',
+            'Wait for it to finish, or call work cancel with that id.',
+          ],
+          [
+            'lead-shell',
+            'work-generation',
+            'Wait for it to finish, or call work cancel with that id.',
+          ],
         ]) {
           const execution = { ...processExecution(taskKey), taskKey, generation }
           const use = ready(
@@ -1462,7 +1470,7 @@ try {
               error instanceof WorkspaceError &&
               error.outcome === 'blocked' &&
               error.message ===
-                `Cannot be switched while ${generation === 'lead' ? 'a bash command' : taskKey} may still be running here. ${guidance}`
+                `Cannot be switched while ${generation === 'lead' ? 'a bash command' : `run ${execution.attemptId}`} may still be running here. ${guidance}`
           )
           await endProcessUse(attachment, use)
         }

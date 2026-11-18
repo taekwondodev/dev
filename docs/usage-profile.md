@@ -63,6 +63,8 @@ Compaction consumption is already included in totals. Missing, unfinished and cr
 
 Calls and their outcomes belong to the call's period; read diagnostics and unmatched results belong to the result's period. A period containing only results is measurable without inventing requests or token usage. Different sample sizes, unknown data and activity crossing period boundaries limit comparisons.
 
+The profiler recognizes only dev's current refusal texts and `work` result shape. History recorded before dev's plain-language rewording (November 2026) reports dev's checkout refusals as unclassified errors, and its `work` launches (results with `kind: "attempt"`) are not counted as launches; child roles then come only from completion messages. Comparisons across that change measure the rewording, not a change in usage.
+
 ## Export for publication
 
 ```bash

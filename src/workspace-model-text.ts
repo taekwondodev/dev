@@ -1,17 +1,17 @@
+import { checkoutUseStage } from './workspace-labels.ts'
 import {
-  checkoutUseStage,
   describedHead,
   pendingOperationText,
   SWEEP_MOMENT_TEXT,
   verdictLabel,
   type WorkspaceReport,
 } from './workspace-command.ts'
-import type {
-  SweepReceipt,
-  SweepRow,
-  WorkspaceAssessment,
-  WorkspaceId,
-  WorkspaceView,
+import {
+  type SweepReceipt,
+  type SweepRow,
+  type WorkspaceAssessment,
+  type WorkspaceId,
+  type WorkspaceView,
 } from './workspace-domain.ts'
 
 export const WORKSPACE_MESSAGE = 'dev/workspace'
