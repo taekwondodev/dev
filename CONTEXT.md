@@ -12,6 +12,8 @@ Text an agent reads while working on another repository does not use these terms
 | **Shared workflow library** | Common development guidance owned by `~/Developer/skills`, exposed through `~/.agents/skills`. |
 | **Profile**                 | A selectable set of guidance and skills.                                                       |
 
+Outward values: none; text an agent reads does not name these.
+
 ## Background work
 
 | Term                 | Meaning                                                                                                               |
@@ -64,7 +66,7 @@ Outward values: an attempt is a `run` and a list of them is `runs`; a child, coo
 
 See [Workspace](docs/workspace.md) for admission, completion and release behavior.
 
-Outward values: a workspace handoff is a checkout switch (`switch`); a child's worktree has the role `agent` and the finished rule `agent-delivered`; a managed workspace without residue has the finished rule `nothing-left`, and residue is listed as `remaining`; a gate warning is `lockWarning`.
+Outward values: a workspace handoff is a checkout switch (`switch`). A checkout's result is `paused` when a task keeps it and nothing uses it, the state resume requires, and `idle` when no task keeps it. A child's managed worktree without a branch has the role `agent`; its finished rule is `agent-delivered` only when a task PR proves delivery from its starting commit. A managed workspace has the finished rule `nothing-left` only when it holds no residue and no commits still to land. Residue is listed as `remaining`; a gate warning is `lockWarning`.
 
 ## Document reading
 
@@ -76,3 +78,5 @@ Outward values: a workspace handoff is a checkout switch (`switch`); a child's w
 | **Profile copy**  | The dev-owned copy of the active Chrome profile used for authenticated rendering.                  |
 
 [Read URL](docs/web-read.md) owns retrieval, rendering and revocation behavior.
+
+Outward values: a reader is the `read_url` tool; renders and the profile copy appear as Chrome and a separate copy of the signed-in Chrome profile.

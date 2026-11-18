@@ -188,7 +188,7 @@ export const settleWorkspaceGates = (
     repositoryId: workspace.repositoryId,
     workspaceId: workspace.workspaceId,
   })
-  return `Dev could not close a checkout lock yet. It retries on the next workspace operation and at close: ${failures.map(errorText).join('; ')}`
+  return `Dev could not close a checkout lock yet. It retries on the next checkout operation and at close: ${failures.map(errorText).join('; ')}`
 }
 
 export const retryDeferredGateReleases = (

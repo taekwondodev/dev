@@ -247,7 +247,11 @@ const ready = (result: Awaited<ReturnType<TestAttachment['authorizeWriter']>>) =
 }
 const refusedWithoutCommits = (checkout: string, holder: string | undefined) => ({
   outcome: 'blocked',
-  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. Quit that session, or after it ends ask the user to run: dev workspace release ${holder}. Files stay.`,
+  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry after that session quits. If dev still blocks once its processes are confirmed stopped, the user may run ${
+    holder === undefined
+      ? 'dev workspace release pre-existing in that checkout, which keeps its files'
+      : `dev workspace release ${holder}, which releases that whole task and deletes its managed worktrees and artifacts`
+  }.`,
 })
 const resolveDefaultRoot = (
   installation: URL,

@@ -252,13 +252,17 @@ const assessUses = (
         : 'This conversation uses this checkout until quit, when dev checks again.'
     )
   if (unknown.length > 0) {
-    reasons.push(`Dev cannot confirm all operations stopped, so it kept the checkout.`)
+    reasons.push(
+      `Dev cannot confirm operations ${unknown.map(use => use.id).join(', ')} stopped, so it kept the checkout.`
+    )
     nextActions.push(
-      'Ask the user to release the task only after confirming its operations stopped.'
+      'Do not retry them. Once they are confirmed stopped, the user may release the whole task with dev workspace release.'
     )
   } else if (abandoned.length > 0) {
-    reasons.push(`Processes from closed dev sessions may still be running.`)
-    nextActions.push('Once the processes stop, ask the user to run dev workspace release.')
+    reasons.push(`Operations ${abandoned.join(', ')} of closed dev sessions may still be running.`)
+    nextActions.push(
+      'Do not retry them. Once they are confirmed stopped, the user may release the whole task with dev workspace release.'
+    )
   } else if (live.length > 0 || conversations.length > 0) {
     if (live.length > 0)
       reasons.push(
@@ -476,7 +480,7 @@ const stageWorkspace = (
         operation =>
           `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
       ),
-      nextActions: [CLEAR],
+      nextActions: ['Do not retry it.', CLEAR],
     })
   if (identity.kind === 'absent')
     return shape({

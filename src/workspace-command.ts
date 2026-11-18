@@ -589,7 +589,7 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
   Effect.catch(cause =>
     Effect.succeed<WorkspaceCommandResult>({
       exitCode: 1,
-      text: `Workspace inspection failed: ${cause.message}`,
+      text: `Checkout inspection failed: ${cause.message}`,
     })
   )
 )

@@ -1778,13 +1778,13 @@ assert.deepEqual(
 const listedForModel = JSON.parse(hostMessages[0]!.content) as {
   readonly repository: string
   readonly current: unknown
-  readonly workspaces: readonly Record<string, unknown>[]
+  readonly checkouts: readonly Record<string, unknown>[]
 }
 assert.deepEqual(
   [
     listedForModel.repository,
     listedForModel.current,
-    listedForModel.workspaces.map(item => item.workspaceId),
+    listedForModel.checkouts.map(item => item.workspaceId),
   ],
   [targetB, { workspaceId: WS_B, cwd: targetB }, [WS_B]],
   'the model reads the list as compact JSON'

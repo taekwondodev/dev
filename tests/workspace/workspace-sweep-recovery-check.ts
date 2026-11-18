@@ -439,7 +439,7 @@ try {
       assert.ok(git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
       assert.equal(
         unfinished.nextAction,
-        `dev workspace release ${unfinished.taskId} clears it and removes what Git created of the worktree.`
+        `Do not retry or use it. The user may run dev workspace release ${unfinished.taskId}, which removes what Git created of the worktree and releases the whole task.`
       )
 
       const quit = await sweepAtQuit(owner.write.workspaceId)

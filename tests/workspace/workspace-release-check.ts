@@ -2058,8 +2058,10 @@ try {
           ),
         requestResume: handoff => {
           requested.push(handoff)
+          return accept
         },
       })
+      let accept = true
       const call = () =>
         tool.execute('artifacts', { action: 'artifacts' }, undefined, undefined, {
           cwd: active.binding.cwd,
@@ -2084,6 +2086,19 @@ try {
       assert.equal(requested.length, 0)
 
       active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      accept = false
+      const declined = await call().then(
+        () => undefined,
+        (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+      )
+      assert.ok(
+        declined?.includes('so none was requested. No directory was created.'),
+        `a switch the host declines is reported as not requested: ${declined}`
+      )
+      assert.equal(requested.length, 1)
+      await active.handoff(requested[0]!, async () => 'cancelled').catch(() => undefined)
+      requested.length = 0
+      accept = true
       const contended = await call()
       assert.equal(contended.terminate, true, 'the refused call ends the turn for a handoff')
       assert.equal(value(contended).artifacts, 'switching')
@@ -2297,6 +2312,7 @@ try {
           Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
         requestResume: handoff => {
           requested.push(handoff)
+          return true
         },
       })
       const resumeRefusal = async (input: JsonObject) => {

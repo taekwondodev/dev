@@ -558,7 +558,7 @@ export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: st
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)
     requireReview(
-      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on this workspace; dev workspace release completes it: ${workspaceIdValue}`
+      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry; the user may complete it with dev workspace release, which releases the whole task.`
     )
 }
 export const unresolvedReleases = (

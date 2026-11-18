@@ -238,7 +238,7 @@ export interface WorkspaceToolOptions {
   readonly lifecycle: WorkspaceLifecycle
   readonly attachment: () => WorkspaceAttachment
   readonly runPromise: <A>(effect: Effect.Effect<A, never, PublicationDestinations>) => Promise<A>
-  readonly requestResume: (handoff: WorkspaceHandoff, context: ExtensionContext) => void
+  readonly requestResume: (handoff: WorkspaceHandoff, context: ExtensionContext) => boolean
 }
 
 interface ToolReply {
@@ -260,7 +260,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       )
     const views = yield* options.lifecycle
       .inspect({ taskId })
-      .pipe(Effect.mapError(error => refuse(`Workspace inspection failed: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(`Checkout inspection failed: ${error.message}`)))
     const view = views.find(item => item.workspaceId === binding.workspaceId)
     return { taskId, binding, view, views }
   })
@@ -272,7 +272,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const attachment = options.attachment()
     const views = yield* options.lifecycle
       .inspect({ taskId: input.taskId })
-      .pipe(Effect.mapError(error => refuse(`Workspace inspection failed: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(`Checkout inspection failed: ${error.message}`)))
     const candidates = resumeCandidates(views, input.taskId)
     const candidate =
       input.workspaceId === undefined
@@ -290,7 +290,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
         )
       const selected = views.filter(view => view.workspaceId === input.workspaceId).map(viewText)
       return yield* refuse(
-        `Workspace ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'checkout not found'}. Resumable: ${resumable}`
+        `Checkout ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'checkout not found'}. Resumable: ${resumable}`
       )
     }
     const { binding } = attachment
@@ -305,7 +305,10 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const handoff = yield* attachment
       .select(candidate.selection)
       .pipe(Effect.mapError(error => refuse(`Could not switch checkouts: ${error.message}`)))
-    options.requestResume(handoff, context)
+    if (!options.requestResume(handoff, context))
+      return yield* refuse(
+        'Another checkout switch or session change is in progress, so this switch was not requested. Nothing changed.'
+      )
     const value = {
       resumed: 'requested',
       taskId: input.taskId,
@@ -316,7 +319,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       value,
       model: {
         ...value,
-        note: 'Switches checkouts at turn end. No other calls run meanwhile.',
+        note: 'Dev switches checkouts at turn end and reports where this conversation works. No other calls run meanwhile.',
       },
       terminate: true,
     }
@@ -328,13 +331,16 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       .authorize({ kind: 'write', cwd: attachment.binding.cwd })
       .pipe(Effect.mapError(error => refuse(`No permission to write: ${error.message}`)))
     if (admitted.kind === 'handoff') {
-      options.requestResume(admitted.handoff, context)
+      if (!options.requestResume(admitted.handoff, context))
+        return yield* refuse(
+          `Writing here needs a checkout switch (${admitted.handoff.reason}), but another switch or session change is in progress, so none was requested. No directory was created.`
+        )
       const value = { artifacts: 'switching', reason: admitted.handoff.reason }
       return {
         value,
         model: {
           ...value,
-          note: 'Switches checkouts at turn end. Then call artifacts again.',
+          note: 'Dev switches checkouts at turn end and reports where this conversation works. If it does, call artifacts again there.',
         },
         terminate: true,
       }

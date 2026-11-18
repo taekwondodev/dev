@@ -7,7 +7,7 @@ const USE_STAGE_LABELS: Record<UseRecord['stage'], string> = {
   'launch-intent': 'launch-planned',
   spawned: 'starting',
   started: 'running',
-  observed: 'running',
+  observed: 'observed',
   quiescent: 'ended',
   unknown: 'unknown',
 }

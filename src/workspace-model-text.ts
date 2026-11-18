@@ -105,7 +105,7 @@ export const reportText = (report: WorkspaceReport): string => {
                 },
           ],
           ['artifacts', report.artifacts],
-          ['workspaces', report.views.map(viewObject)],
+          ['checkouts', report.views.map(viewObject)],
         ])
       )
     case 'inspect':
@@ -113,13 +113,13 @@ export const reportText = (report: WorkspaceReport): string => {
         present([
           ['taskId', report.taskId],
           ['artifacts', report.artifacts],
-          ['workspaces', report.views.map(viewObject)],
+          ['checkouts', report.views.map(viewObject)],
         ])
       )
     case 'check':
       return `Read-only check. Dev checks again before cleanup.\n${JSON.stringify({
         taskId: report.taskId,
-        workspaces: report.assessments.map(assessmentObject),
+        checkouts: report.assessments.map(assessmentObject),
       })}`
   }
 }

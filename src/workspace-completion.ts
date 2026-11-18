@@ -41,7 +41,7 @@ export const RETAINED: Record<
   }
 > = {
   'identity-unverifiable': { sweep: 'retained', actions: [CLEAR] },
-  'transition-unresolved': { sweep: 'retained', actions: [CLEAR] },
+  'transition-unresolved': { sweep: 'retained', actions: ['Do not retry it.', CLEAR] },
   'release-review': { sweep: 'review-required', actions: [CLEAR] },
   excluded: { sweep: 'skipped', actions: [] },
   'use-unknown': { sweep: 'retained', actions: [] },
@@ -186,9 +186,12 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
         )
 
   if (facts.identity === 'unverifiable')
-    return retain('identity-unverifiable', 'The workspace identity cannot be verified.')
+    return retain('identity-unverifiable', 'The checkout identity cannot be verified.')
   if (facts.transitionUnresolved)
-    return retain('transition-unresolved', 'A checkout switch may be unfinished.')
+    return retain(
+      'transition-unresolved',
+      'An earlier worktree creation or checkout switch may be unfinished.'
+    )
   if (facts.releaseReview)
     return retain(
       'release-review',

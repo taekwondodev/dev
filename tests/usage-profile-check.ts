@@ -947,9 +947,33 @@ const DEV_TEXTS = [
     'src/work-controller.ts',
     [
       '`Dev must switch checkouts first: ',
-      '. No work started. Check the new checkout before retrying.`',
+      '. No work started. Dev switches at turn end and reports where this conversation works; if it does, check the request still applies there before retrying.`',
     ],
     'work',
+    'blocked',
+  ],
+  [
+    'src/work-controller.ts',
+    [
+      '`Dev must switch checkouts first: ',
+      '. No work started, and no switch was requested because another switch or session change is in progress.`',
+    ],
+    'work',
+    'blocked',
+  ],
+  [
+    'src/work-extension.ts',
+    ["'Checkout access is blocked by a switch or mismatch; no background work started.'"],
+    'work',
+    'blocked',
+  ],
+  [
+    'src/workspace-host.ts',
+    [
+      '`The call did not run: it needs a checkout switch (',
+      '), but another switch or session change is in progress, so none was requested.`',
+    ],
+    'write',
     'blocked',
   ],
   ['src/work-controller.ts', ['`', ' is required`'], 'work', 'invocation'],

@@ -153,7 +153,11 @@ interface Takeover {
 
 const refuseWithoutCommits = (path: string, holder: WorkspaceId | undefined): never =>
   blocked(
-    `Checkout ${path} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. Quit that session, or after it ends ask the user to run${holder === undefined ? ' in that checkout' : ''}: dev workspace release ${holder ?? 'pre-existing'}. Files stay.`
+    `Checkout ${path} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry after that session quits. If dev still blocks once its processes are confirmed stopped, the user may run ${
+      holder === undefined
+        ? 'dev workspace release pre-existing in that checkout, which keeps its files'
+        : `dev workspace release ${holder}, which releases that whole task and deletes its managed worktrees and artifacts`
+    }.`
   )
 
 const assertNoCommitArrived = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): void => {
@@ -344,7 +348,8 @@ const assertAdmitting = (authority: WorkspaceAuthority, attachment: AttachmentHa
   attachment.assertOpen()
   const { state } = attachment
   if (state.review !== undefined) requireReview(state.review)
-  if (state.closing || state.parked) blocked('This conversation is switching checkouts')
+  if (state.closing) blocked('This conversation is closing its checkout access')
+  if (state.parked) blocked('This conversation is switching checkouts')
   retryDeferredGateReleases(authority, state)
 }
 

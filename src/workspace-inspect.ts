@@ -54,7 +54,7 @@ export const checkoutMissing = (workspace: WorkspaceRecord): boolean => {
 
 const MISSING_REASON = 'The checkout directory no longer exists.'
 
-const assessWorkspace = (input: {
+export const assessWorkspace = (input: {
   readonly identityReason: string | undefined
   readonly missing: boolean
   readonly pending: { readonly id: string; readonly stage: string } | undefined
@@ -72,9 +72,11 @@ const assessWorkspace = (input: {
     return {
       outcome: 'review-required',
       reason: MISSING_REASON,
-      nextAction: `Restore it at this path, or if it was deleted on purpose, ${
-        input.reserved ? 'run dev workspace release <task-id>, then ' : ''
-      }dev workspace release pre-existing forgets it.`,
+      nextAction: `Restore it at this path. If it was deleted on purpose, the user may ${
+        input.reserved
+          ? 'release the whole task with dev workspace release <task-id>, which deletes its managed worktrees and artifacts, then '
+          : ''
+      }run dev workspace release pre-existing to forget it.`,
     }
   if (input.identityReason !== undefined || input.unresolved)
     return {
@@ -86,8 +88,10 @@ const assessWorkspace = (input: {
     return {
       outcome: 'blocked',
       reason: operation ?? 'Dev could not confirm a process or file write stopped.',
-      nextAction: `Do not write here. Once it has stopped, the user clears it with ${
-        input.reserved ? 'dev workspace release <task-id>' : 'dev workspace release pre-existing'
+      nextAction: `Do not write here or retry the operation. Once it is confirmed stopped, the user may clear it with ${
+        input.reserved
+          ? 'dev workspace release <task-id>, which releases the whole task'
+          : 'dev workspace release pre-existing'
       }.`,
     }
   const abandoned = input.abandoned()
@@ -96,9 +100,11 @@ const assessWorkspace = (input: {
       outcome: 'blocked',
       reason:
         operation ?? `Ended sessions may have left processes running (${abandoned.join(', ')}).`,
-      nextAction: `Do not reuse it for writing; once their processes are gone, ${
-        input.reserved ? 'dev workspace release <task-id>' : 'dev workspace release pre-existing'
-      } clears them.`,
+      nextAction: `Do not write here or retry those operations. Once their processes are confirmed gone, the user may clear them with ${
+        input.reserved
+          ? 'dev workspace release <task-id>, which releases the whole task'
+          : 'dev workspace release pre-existing'
+      }.`,
     }
   if (input.live)
     return {
@@ -113,7 +119,7 @@ const assessWorkspace = (input: {
       nextAction: 'Select the task and checkout to resume.',
     }
   return {
-    outcome: 'paused',
+    outcome: 'idle',
     reason: operation ?? 'No task holds this checkout.',
     nextAction: 'Select or create a task before requesting write access.',
   }
@@ -344,7 +350,7 @@ export const inspectWorkspaces = (
           reason: `No usable checkout after operation ${operation.id} (${operation.phase}).`,
           nextAction:
             operation.kind === 'allocation'
-              ? `dev workspace release ${operation.taskId} clears it and removes what Git created of the worktree.`
+              ? `Do not retry or use it. The user may run dev workspace release ${operation.taskId}, which removes what Git created of the worktree and releases the whole task.`
               : 'Check what Git changed. Do not retry or use the checkout; the user must resolve it.',
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],

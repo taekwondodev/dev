@@ -622,7 +622,7 @@ try {
         const reported = await readOnly(inspectRoot, args)
         assert.equal(reported.code, 1, `${args.join(' ')}: ${reported.stderr}`)
         assert.equal(reported.stdout, '', 'a damaged authority is not presented as a listing')
-        assert.match(reported.stderr, /^Workspace inspection failed: Corrupt saved repository/)
+        assert.match(reported.stderr, /^Checkout inspection failed: Corrupt saved repository/)
       }
       assert.deepEqual(
         authorityFiles(inspectRoot),

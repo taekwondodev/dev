@@ -624,7 +624,7 @@ await claim(
     )
     const checked = JSON.parse(shown.slice(shown.indexOf('\n') + 1)) as {
       readonly taskId: string
-      readonly workspaces: readonly {
+      readonly checkouts: readonly {
         readonly workspaceId: string
         readonly origin: string
         readonly verdict: string
@@ -632,7 +632,7 @@ await claim(
       }[]
     }
     assert.equal(checked.taskId, hostTask, shown)
-    const own = checked.workspaces.find(item => item.workspaceId === binding.workspaceId)
+    const own = checked.checkouts.find(item => item.workspaceId === binding.workspaceId)
     assert.deepEqual([own?.origin, own?.verdict], ['managed', 'finished (nothing-left)'], shown)
     assert.ok(
       own?.reasons?.some(

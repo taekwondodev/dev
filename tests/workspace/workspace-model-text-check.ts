@@ -163,7 +163,7 @@ await claim(
     assert.deepEqual(parse(text), {
       repository: '/repo',
       current: { workspaceId: WORKSPACE, cwd: PATH },
-      workspaces: [
+      checkouts: [
         {
           taskId: TASK,
           workspaceId: WORKSPACE,
@@ -205,9 +205,9 @@ await claim(
       ],
     })
     assert.ok(!text.includes('lastUsedAt') && !text.includes('1700000000000'), text)
-    const { workspaces } = parse(text) as { workspaces: { head?: string }[] }
+    const { checkouts } = parse(text) as { checkouts: { head?: string }[] }
     assert.deepEqual(
-      workspaces.map(workspace => workspace.head),
+      checkouts.map(checkout => checkout.head),
       ['feat/resume', 'detached 0123456789ab', 'detached 0123456789ab (Resume the parser)']
     )
   }
@@ -244,7 +244,7 @@ await claim('a check states that it changes nothing and gives each verdict as on
   assert.equal(guidance, 'Read-only check. Dev checks again before cleanup.')
   assert.deepEqual(parse(json!), {
     taskId: TASK,
-    workspaces: [
+    checkouts: [
       {
         workspaceId: WORKSPACE,
         path: PATH,
@@ -259,13 +259,13 @@ await claim('a check states that it changes nothing and gives each verdict as on
   })
 })
 
-await claim('an inspect or check without records is still a report, with no workspaces', () => {
+await claim('an inspect or check without records is still a report, with no checkouts', () => {
   assert.deepEqual(parse(reportText({ kind: 'inspect', taskId: TASK, views: [] })), {
     taskId: TASK,
-    workspaces: [],
+    checkouts: [],
   })
   const check = reportText({ kind: 'check', taskId: TASK, assessments: [] })
-  assert.deepEqual(parse(check.slice(check.indexOf('\n') + 1)), { taskId: TASK, workspaces: [] })
+  assert.deepEqual(parse(check.slice(check.indexOf('\n') + 1)), { taskId: TASK, checkouts: [] })
 })
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

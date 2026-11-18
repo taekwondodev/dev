@@ -303,6 +303,7 @@ export const WorkspaceViewSchema = Schema.Struct({
   outcome: Schema.Literals([
     'active',
     'paused',
+    'idle',
     'blocked',
     'review-required',
     'released',

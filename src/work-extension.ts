@@ -211,7 +211,7 @@ export const createWorkExtension = ({
       handoff: WorkspaceHandoff,
       source: WorkspaceAttachment,
       context: Pi.ExtensionContext
-    ) => void
+    ) => boolean
   }
   readonly isWorkspaceParked: () => boolean
   readonly onReactivationChange?: () => void
@@ -873,7 +873,12 @@ export const createWorkExtension = ({
   const execute = (input: WorkInput): Effect.Effect<WorkResult, WorkFailure, WorkOwner> =>
     withOwner(owner =>
       isWorkspaceParked() && (input.action === 'process' || input.action === 'delegate')
-        ? Effect.fail(new WorkError({ message: 'Switching checkouts; no background work started' }))
+        ? Effect.fail(
+            new WorkError({
+              message:
+                'Checkout access is blocked by a switch or mismatch; no background work started.',
+            })
+          )
         : executeWork(owner, input)
     )
 

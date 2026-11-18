@@ -175,7 +175,7 @@ interface WorkOwnerOptions {
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
-    readonly requestHandoff: (handoff: WorkspaceHandoff) => void
+    readonly requestHandoff: (handoff: WorkspaceHandoff) => boolean
   }
   readonly onChange?: () => void
   readonly onLive?: () => void
@@ -731,9 +731,11 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           return { kind: 'ready' as const, grant: scoped }
         }).pipe(Effect.mapError(toFailure))
         if (admission.kind === 'handoff') {
-          workspace.requestHandoff(admission.handoff)
+          const requested = workspace.requestHandoff(admission.handoff)
           return yield* new WorkHandoffRequired({
-            message: `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. Check the new checkout before retrying.`,
+            message: requested
+              ? `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. Dev switches at turn end and reports where this conversation works; if it does, check the request still applies there before retrying.`
+              : `Dev must switch checkouts first: ${admission.handoff.reason}. No work started, and no switch was requested because another switch or session change is in progress.`,
           })
         }
         const { grant: selected } = admission

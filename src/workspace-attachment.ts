@@ -104,7 +104,9 @@ export const attachConversation = (
         selection.reservation.taskId === live.binding.taskId
       )
         return { state: live }
-      requireReview('An active conversation must finish switching checkouts first')
+      requireReview(
+        'This conversation already works in another checkout and has no switch to the selected one pending. Nothing changed.'
+      )
     }
     return { state: live }
   }

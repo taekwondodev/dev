@@ -278,6 +278,69 @@ const handoffTexts = (runtime: Pi.AgentSessionRuntime): string[] =>
 
 try {
   await claim(
+    'a permission for the same path but another checkout ID blocks a native write and a native read with an ID-specific refusal, ends the turn and keeps later calls blocked without running them',
+    async () => {
+      const other = '00000000-0000-4000-8000-0000000000ff' as WorkspaceId
+      const target = join(lead, 'wrong-checkout.txt')
+      const wrongId = (attached: WorkspaceAttachment): WorkspaceAttachment =>
+        overriding(attached, {
+          authorize: operation =>
+            Effect.map(
+              attached.authorize({ kind: 'read', cwd: lead }),
+              (admitted): WorkspaceAuthorization =>
+                admitted.kind === 'ready'
+                  ? {
+                      kind: 'ready',
+                      grant: {
+                        ...admitted.grant,
+                        access: operation.kind === 'write' ? 'write' : 'read',
+                        workspaceId: other,
+                      },
+                    }
+                  : admitted
+            ),
+        })
+      for (const [name, call] of [
+        ['write', toolCall('wrong-id-write', 'write', { path: target, content: 'no' })],
+        ['read', toolCall('wrong-id-read', 'read', { path: join(lead, 'README.md') })],
+      ] as const) {
+        const { offline, script } = await offlineScript(`wrong-id-${name}`, [
+          [call],
+          [{ type: 'text', text: 'done' }],
+        ])
+        const { manager, attached } = await attachLeadConversation()
+        const opened = await openLeadHost({
+          attachment: wrongId(attached.effect),
+          manager,
+          offline,
+        })
+        try {
+          await opened.runtime.session.prompt(`Use ${name} once.`)
+          await opened.runtime.session.waitForIdle()
+          const result = toolResults(opened.runtime)(`wrong-id-${name}`)
+          assert.equal(result.isError, true, result.text)
+          assert.equal(
+            result.text,
+            `Permission was for checkout ${other}, not ${opened.host.attachment.binding.workspaceId}. The call did not run.`
+          )
+          assert.equal(script.calls(), 1, `the ${name} refusal ended the turn`)
+          assert.equal(opened.host.isParked(), true, 'later calls stay blocked')
+          const later = await opened.runtime.session.extensionRunner.emitToolCall({
+            type: 'tool_call',
+            toolName: 'read',
+            toolCallId: `after-${name}`,
+            input: { path: join(lead, 'README.md') },
+          })
+          assert.equal(later?.block, true)
+          assert.match(String(later?.reason), /^Checkout access is blocked by a switch or mismatch/)
+        } finally {
+          await opened.close()
+        }
+      }
+      assert.ok(!existsSync(target), 'the refused write wrote nothing')
+    }
+  )
+  await claim(
     'native external write/edit preserves checkout contention without allocating a workspace or a handoff',
     async () => {
       mkdirSync(join(fixture, 'configuration'))
