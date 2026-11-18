@@ -638,8 +638,8 @@ const periodsHome = join(root, 'periods')
     }),
     lead.result('res-d1', 'a1', 40, delegate, {
       details: {
-        kind: 'attempt',
-        attempt: {
+        kind: 'run',
+        run: {
           id: 'coord',
           taskId: 'review',
           kind: 'agent',

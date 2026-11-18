@@ -12,6 +12,7 @@ import {
 } from '../workspace/workspace-check-support.ts'
 import {
   createCoordinatorWorkTool,
+  LEAF_OUTCOME_GUIDANCE,
   type CoordinatorLink,
 } from '../../src/work-child-coordination.ts'
 import {
@@ -22,7 +23,9 @@ import {
   WorkResultSchema,
   type WorkResult,
 } from '../../src/work-domain.ts'
+import { LEAD_OUTCOME_GUIDANCE, QUIET_GUIDANCE } from '../../src/work-extension.ts'
 import { workResultText } from '../../src/work-model-text.ts'
+import { childBrief } from '../../src/pi-child.ts'
 import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture, script } from './work-check-support.ts'
@@ -157,10 +160,10 @@ const displayed = async (lead: Lead, command: string) => {
 }
 
 const listing = async (lead: Lead, command = '/work') => {
-  const { kind, snapshot } = await displayed(lead, command)
-  assert.equal(kind, 'snapshot')
-  assert.ok(snapshot !== undefined)
-  return snapshot
+  const { kind, runs } = await displayed(lead, command)
+  assert.equal(kind, 'runs')
+  assert.ok(runs !== undefined)
+  return runs
 }
 
 const pidOf = async (lead: Lead, id: string): Promise<number> => {
@@ -185,7 +188,7 @@ const readOutcomes = async (lead: Lead, from: number, expected: number): Promise
 const QUIET_AFTER_MS = 1200
 const sentQuiet = (lead: Lead) => lead.customMessages(QUIET)
 const quietIn = (request: LeadRequest): boolean =>
-  JSON.stringify(request.context.messages).includes('Quiet commands: still running')
+  JSON.stringify(request.context.messages).includes('Still running with no output')
 const quietView = (lead: Lead, quiet: boolean, from = 0) =>
   lead.view(
     quiet ? 'a quiet command' : 'no quiet command',
@@ -222,20 +225,19 @@ const assertWorkGuidance = (
 ): void => {
   assert.ok(tool?.description !== undefined)
   const { properties } = decodeParameters(tool.parameters)
-  assert.ok(properties.skill?.description?.includes('dispatch rule'), 'skill parameter')
+  assert.ok(
+    properties.skill?.description?.includes('configured model and effort'),
+    'skill parameter'
+  )
   assert.equal(properties.rule, undefined, 'rule parameter')
   assert.ok(!(properties.prompt?.description ?? '').includes('/skill:'), 'prompt description')
   const access = properties.access?.description ?? ''
   for (const name of [...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS])
     assert.ok(access.includes(name), name)
-  assert.ok(access.includes('no shell, no edits and no gh'))
-  assert.ok(access.includes('in the prompt or a workspace file'))
-  assert.ok(tool.description.includes('otherwise end your turn and let outcomes resume you'))
-  assert.ok(
-    tool.description.includes(
-      'Do not use sleep, wait loops, or repeated list/inspect calls just to await completion.'
-    )
-  )
+  assert.ok(access.includes('No shell, edits or gh'))
+  assert.ok(access.includes('in the prompt or a checkout file'))
+  assert.match(tool.description, /Do independent work or end your turn.*results/)
+  assert.match(tool.description, /Do not sleep, loop or poll for them\./)
   assert.ok(tool.description.length <= limit, `${tool.description.length} > ${limit}`)
 }
 
@@ -254,10 +256,10 @@ try {
       const [notice] = lead.notices
       assert.equal(notice?.level, 'error')
       const message = notice?.message ?? ''
-      assert.match(message, /^Work store database is corrupt\. Work is unavailable\./)
-      assert.match(message, /Stop all dev sessions and maintenance operations/)
+      assert.match(message, /^Saved runs database is corrupt\. Background work is unavailable\./)
+      assert.match(message, /Stop all dev sessions and maintenance using this data directory/)
       assert.match(message, /Restart dev/)
-      assert.match(message, /deletes stored work attempts and their logs and results/)
+      assert.match(message, /deletes saved runs, logs and results/)
       assert.doesNotMatch(message, /\n\s+at |file:\/\//)
       const command = message
         .split('\n')
@@ -301,6 +303,23 @@ try {
         const tool = lead.session.getAllTools().find(candidate => candidate.name === 'work')
         assertWorkGuidance(tool, 1500)
         assertWorkGuidance(createCoordinatorWorkTool(unusedLink), 800)
+        const readOnly = childBrief({ access: 'read-only' })
+        const writer = childBrief({ access: 'write', coordinate: true })
+        assert.match(readOnly, /Read-only.*git_inspect/)
+        assert.match(readOnly, /Do not delegate/)
+        assert.match(writer, /You may edit files/)
+        assert.match(writer, /Use work to delegate subtasks/)
+        for (const guidance of [
+          readOnly,
+          writer,
+          LEAD_OUTCOME_GUIDANCE,
+          LEAF_OUTCOME_GUIDANCE,
+          QUIET_GUIDANCE,
+        ])
+          assert.doesNotMatch(
+            guidance,
+            /\b(?:attempts?|lead|children?|child|coordinator|leaves|leaf|outcomes?|dev-cycle|ADR)\b/i
+          )
       })
   )
 
@@ -314,6 +333,8 @@ try {
         ['list', 'inspect', 'stop', 'dispatch']
       )
       assert.ok(items.every(item => (item.description ?? '').length > 0))
+      assert.equal(items[1]?.label, 'inspect <run> [stdout|stderr|result] [offset]')
+      assert.equal(items[2]?.label, 'stop [run]')
       assert.equal(await complete('stop '), null)
     })
   )
@@ -374,10 +395,10 @@ try {
           const results = byKind(structured.slice(-5).map(value => decodeStructured(value)))
           assert.deepEqual(
             results.map(result => result.kind),
-            ['attempt', 'dispatch', 'inspection', 'log', 'snapshot']
+            ['dispatch', 'inspection', 'log', 'run', 'runs']
           )
           assert.deepEqual(texts.toSorted(), results.map(workResultText).toSorted())
-          const [cancelled, dispatch, inspection, page, snapshot] = results
+          const [dispatch, inspection, page, cancelled, snapshot] = results
           assert.equal(dispatch?.dispatch?.configured, true)
           assert.throws(() => decodeStructured({ kind: 'dispatch', dispatch: {} }))
           assert.throws(() =>
@@ -387,7 +408,7 @@ try {
             })
           )
           assert.deepEqual(
-            snapshot?.snapshot?.records.map(record => record.id).toSorted(),
+            snapshot?.runs?.records.map(record => record.id).toSorted(),
             [slow.id, quick.id].toSorted()
           )
           assert.equal(inspection?.inspection?.status, 'completed')
@@ -405,8 +426,8 @@ try {
             truncated: false,
             text: '',
           })
-          assert.equal(cancelled?.attempt?.id, slow.id)
-          assert.equal(cancelled?.attempt?.status, 'cancelled')
+          assert.equal(cancelled?.run?.id, slow.id)
+          assert.equal(cancelled?.run?.status, 'cancelled')
           const [shownCancel, shownDispatch, shownInspection, shownPage, shownList] = [
             cancelled,
             dispatch,
@@ -447,10 +468,10 @@ const results = await Promise.allSettled([
 ])
 const declaration = String(await describeTool('work'))
 return JSON.stringify({
-  typed: declaration.includes('Promise<{') && declaration.includes('kind: "attempt" | "snapshot"'),
+  typed: declaration.includes('Promise<{') && declaration.includes('kind: "run" | "runs"'),
   typedDispatch: declaration.includes('dispatch?: { configured: true; default: {') && declaration.includes('rules: { [key: string]: {'),
   launched: results.map(result => result.status === 'fulfilled'
-    ? { kind: result.value.kind, id: result.value.attempt?.id, status: result.value.attempt?.status, shape: typeof result.value }
+    ? { kind: result.value.kind, id: result.value.run?.id, status: result.value.run?.status, shape: typeof result.value }
     : { error: String(result.reason) }),
 })
 `
@@ -480,7 +501,7 @@ return JSON.stringify({
         assert.equal(typedDispatch, true, 'describeTool shows the dispatch configuration fields')
         assert.equal(launched.length, 2)
         for (const item of launched) {
-          assert.equal(item.kind, 'attempt')
+          assert.equal(item.kind, 'run')
           assert.equal(item.shape, 'object')
           assert.ok(['running', 'waiting', 'completed'].includes(item.status), item.status)
         }
@@ -490,8 +511,8 @@ return JSON.stringify({
         assert.ok(declared !== undefined, 'no work tool in the model request')
         for (const fragment of [
           'Codemode: `tools.work(args)` resolves to `{ kind,',
-          'attempt?',
-          'snapshot?',
+          'run?',
+          'runs?',
           'dispatch?',
           'inspection?',
           'log?',
@@ -535,7 +556,7 @@ return JSON.stringify({
         const refused = await lead.request(2)
         assert.ok(Date.now() - started < 30_000)
         assert.ok(seen(refused).includes('task-0-0 running'), seen(refused))
-        assert.ok(seen(refused).includes('end your turn now'), seen(refused))
+        assert.ok(seen(refused).includes('end your turn to receive results'), seen(refused))
         refused.reply([toolCall('mixed', 'bash', { command: 'sleep 0; echo waiting' })])
         const mixed = await lead.request(3)
         assert.ok(seen(mixed).includes('Refused'), seen(mixed))
@@ -551,7 +572,7 @@ return JSON.stringify({
         continued.reply([toolCall('long', 'bash', { command: 'sleep 240; ls' })])
         const long = await lead.request(6)
         assert.ok(seen(long).includes('Refused'), seen(long))
-        assert.ok(seen(long).includes('work process'), seen(long))
+        assert.ok(toolResults(long).at(-1)?.includes('work (action: "process")'), seen(long))
         assert.ok(seen(long).includes('until <check>; do sleep 30; done'), seen(long))
         assert.ok(!seen(long).includes('task-0-0'), seen(long))
         long.reply([toolCall('idle', 'bash', { command: 'sleep 0; echo idle-ok' })])
@@ -585,7 +606,7 @@ return JSON.stringify({
       ])
       const long = await lead.request(4)
       assert.ok(seen(long).includes('Script failed'), seen(long))
-      assert.ok(seen(long).includes('work process'), seen(long))
+      assert.ok(toolResults(long).at(-1)?.includes('work (action: "process")'), seen(long))
       long.reply(text('done'))
       await lead.idle()
     })
@@ -629,9 +650,7 @@ return JSON.stringify({
         assert.equal(facts?.kind, 'process')
         assert.equal(typeof facts?.startedAt, 'number')
         assert.equal(typeof facts?.completedAt, 'number')
-        assert.ok(
-          outcome.content.startsWith('Work outcomes: producer observations, not verification.')
-        )
+        assert.ok(outcome.content.startsWith('Work results: verify against files or test output.'))
         assert.deepEqual(modelEntries(outcome.content), [
           { id: attempt.id, taskId: 'task-0-0', kind: 'process', status: 'completed', exitCode: 0 },
         ])
@@ -683,7 +702,7 @@ return JSON.stringify({
           assert.equal(attempt.status, 'running')
           assert.ok(!(shown ?? '').includes('requested') && !(shown ?? '').includes(CHILD_MODEL))
           const [result] = launched.map(value => decodeStructured(value))
-          assert.equal(result?.attempt?.requested?.model, CHILD_MODEL)
+          assert.equal(result?.run?.requested?.model, CHILD_MODEL)
           const child = (view: WorkView) => view.children.find(item => item.id === attempt.id)
           const active = await lead.view(
             'the last activity level',

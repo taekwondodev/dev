@@ -243,7 +243,7 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
     request.workspace.cwd !== request.cwd ||
     request.workspace.access !== (request.access === 'write' ? 'write' : 'read')
   )
-    return yield* new ChildError({ message: 'Child request does not match its workspace grant' })
+    return yield* new ChildError({ message: 'Request does not match checkout permissions' })
   yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
@@ -290,7 +290,7 @@ const resolveInitialPrompt = Effect.fn('resolveInitialPrompt')(function* (
   const skill = session.resourceLoader.getSkills().skills.find(candidate => candidate.name === name)
   if (skill === undefined)
     return yield* new ChildError({
-      message: `Skill "${name}" is not in this child's catalog; no model request was made`,
+      message: `Skill "${name}" is unavailable; no model request was made`,
     })
   const fs = yield* FileSystem.FileSystem
   yield* fs.access(skill.filePath, { readable: true }).pipe(
@@ -324,7 +324,7 @@ function assignedSkills(request: ChildRequest, skills: readonly Pi.Skill[]): Pi.
   )
 }
 
-function childBrief(request: ChildRequest, resources: Resources): string {
+export function childBrief(request: Pick<ChildRequest, 'access' | 'coordinate'>): string {
   const inspection = [
     ...READ_ONLY_CHILD_TOOLS,
     READ_URL_TOOL,
@@ -333,17 +333,17 @@ function childBrief(request: ChildRequest, resources: Resources): string {
   ].join(', ')
   const access =
     request.access === 'read-only'
-      ? `Review access is read-only. Use ${inspection} only.`
-      : 'Work access is enabled for this child. Make only changes required by the assignment.'
+      ? `Read-only. Use only ${inspection}.`
+      : 'You may edit files. Change only what the assignment requires.'
   const delegation =
     request.coordinate === true
-      ? 'The lead authorized you to coordinate this assignment: the work tool starts leaf children, whose outcomes reach you after your turn ends. Do not treat noninteractive UI absence as approval.'
-      : 'Do not delegate work, start a background fleet, or treat noninteractive UI absence as approval.'
+      ? 'Use work to delegate subtasks. Those agents cannot delegate. Results arrive after your turn.'
+      : 'Do not delegate or start other agents.'
   return [
-    'You are an independent Pi child process for one delegated attempt.',
+    'You are a delegated agent with one assignment.',
     access,
     delegation,
-    `Profile resources: ${resources.provenance.map(item => `${item.source}: ${item.path}`).join('; ')}`,
+    'If you cannot ask the user, do not assume approval.',
   ].join('\n')
 }
 
@@ -513,8 +513,8 @@ function createReviewGitTool(cwd: string): Pi.ToolDefinition {
     name: 'git_inspect',
     label: 'git_inspect',
     description:
-      "Inspect Git status, diffs, history, refs, or tracked files without changing the repository. Full raw output is retained in this attempt's stdout/stderr logs.",
-    promptSnippet: 'Inspect Git state without mutation',
+      "Read Git status, diffs, history, refs or tracked files. Full output is in this run's logs.",
+    promptSnippet: 'Read Git state',
     parameters: gitInspectParameters,
     async execute(_toolCallId, params, signal) {
       const result = await Effect.runPromise(
@@ -567,15 +567,14 @@ function finalAssistantOutcome(session: Pi.AgentSession): SessionOutcome {
   if (!assistant)
     return {
       text: '',
-      error:
-        'Native Pi run produced no assistant response; inspect the canonical session for preserved tool results.',
+      error: 'No assistant response. Check saved history for tool results.',
     }
   if (assistant.stopReason === 'error')
     return {
       text: '',
-      error: errorMessage(assistant.errorMessage ?? 'Native Pi provider returned an error.'),
+      error: errorMessage(assistant.errorMessage ?? 'Model provider error.'),
     }
-  if (assistant.stopReason === 'aborted') return { text: '', error: 'Native Pi run aborted.' }
+  if (assistant.stopReason === 'aborted') return { text: '', error: 'Run aborted.' }
   const text = assistant.content
     .filter(content => content.type === 'text')
     .map(content => content.text)
@@ -584,8 +583,7 @@ function finalAssistantOutcome(session: Pi.AgentSession): SessionOutcome {
   if (!text)
     return {
       text: '',
-      error:
-        'Native Pi run produced no non-empty assistant response; inspect the canonical session for preserved tool results.',
+      error: 'No written answer. Check saved history for tool results.',
     }
   return { text }
 }
@@ -785,7 +783,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
         settingsManager,
         resourceLoaderOptions: {
           additionalSkillPaths: [...resources.skillPaths],
-          appendSystemPrompt: [resources.guidance, childBrief(request, resources)].filter(Boolean),
+          appendSystemPrompt: [resources.guidance, childBrief(request)].filter(Boolean),
           skillsOverride: base => ({ ...base, skills: assignedSkills(request, base.skills) }),
           extensionFactories: [
             { name: 'dev:background-compaction', factory: compaction.factory },
@@ -832,7 +830,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
         })
         const path = manager.getSessionFile()
         if (path === undefined)
-          return yield* new ChildError({ message: 'Pi did not assign a child session file' })
+          return yield* new ChildError({ message: 'Pi did not assign a history file' })
         yield* lease.protect({ path, sessionId: manager.getSessionId() })
         return manager
       })
@@ -879,8 +877,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   state.session = session
   compaction.bindSession(session)
   const { sessionFile } = session
-  if (!sessionFile)
-    return yield* new ChildError({ message: 'Pi did not create a session file for the child run' })
+  if (!sessionFile) return yield* new ChildError({ message: 'Pi did not create a history file' })
   state.sessionFile = sessionFile
   yield* Effect.tryPromise({
     try: () => session.bindExtensions({ mode: 'json' }),
@@ -889,15 +886,14 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const runtime = yield* Effect.try({
     try: () =>
       new loaded.api.AgentSessionRuntime(session, services, async () => {
-        throw new Error('Session replacement is not available in a Pi child process')
+        throw new Error('Delegated agents cannot replace their conversation')
       }),
     catch: toChildError,
   })
   state.runtime = runtime
   fenceRuntimeDisposal(runtime)
   const { model } = session
-  if (!model)
-    return yield* new ChildError({ message: 'Pi did not select a model for the child run' })
+  if (!model) return yield* new ChildError({ message: 'Pi did not select a model for this run' })
   const modelText = modelReference(model)
   state.model = modelText
   const initialEffort = session.thinkingLevel
@@ -958,8 +954,7 @@ const runSession = Effect.fnUntraced(
     yield* Effect.acquireRelease(registerAbortSignal(state, resource.session, signal), cleanup =>
       Effect.sync(() => cleanup?.())
     )
-    if (signal?.aborted)
-      return yield* new ChildError({ message: 'Child run cancelled before ready' })
+    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled during startup' })
     yield* send({
       type: 'ready',
       model: resource.modelText,
@@ -1005,7 +1000,7 @@ const runSession = Effect.fnUntraced(
         })
     )
     if (signal?.aborted)
-      return yield* new ChildError({ message: 'Child run cancelled before prompt' })
+      return yield* new ChildError({ message: 'Run cancelled before sending prompt' })
     const { initialPrompt } = resource
     yield* Effect.tryPromise({
       try: () =>
@@ -1015,7 +1010,7 @@ const runSession = Effect.fnUntraced(
         }),
       catch: toChildError,
     })
-    if (signal?.aborted) return yield* new ChildError({ message: 'Child run cancelled' })
+    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled' })
     if (initialPrompt.skill !== undefined && !skillExpanded(resource.session, initialPrompt.skill))
       return yield* new ChildError({
         message: `Pi did not expand the invocation of skill "${initialPrompt.skill.name}"`,
@@ -1026,7 +1021,7 @@ const runSession = Effect.fnUntraced(
         link,
         () => signal?.aborted === true || turnFailed(resource.session)
       ).pipe(Effect.mapError(toChildError))
-    if (signal?.aborted) return yield* new ChildError({ message: 'Child run cancelled' })
+    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled' })
     const outcome = finalAssistantOutcome(resource.session)
     const current = telemetry(resource.session)
     state.telemetry = current
@@ -1074,17 +1069,13 @@ const runPiChild = Effect.fn('runPiChild')(function* (
   let exitCode = 1
   if (attempt._tag === 'Failure') {
     const cancelled = options.signal?.aborted === true
-    result = childResult(
-      state,
-      '',
-      cancelled ? 'Child run cancelled' : errorMessage(attempt.failure)
-    )
+    result = childResult(state, '', cancelled ? 'Run cancelled' : errorMessage(attempt.failure))
   } else if (attempt.success._tag === 'Failure') {
     const cancelled = options.signal?.aborted === true
     result = childResult(
       state,
       '',
-      cancelled ? 'Child run cancelled' : errorMessage(attempt.success.failure)
+      cancelled ? 'Run cancelled' : errorMessage(attempt.success.failure)
     )
   } else {
     const outcome = attempt.success.success
@@ -1095,7 +1086,7 @@ const runPiChild = Effect.fn('runPiChild')(function* (
       result = childResult(
         state,
         '',
-        `Pi child shutdown failed: ${errorMessage(state.shutdownError)}`
+        `Agent did not shut down cleanly: ${errorMessage(state.shutdownError)}`
       )
     } else {
       result = childResult(state, outcome.text)

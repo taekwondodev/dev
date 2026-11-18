@@ -59,9 +59,9 @@ const parse = (text: string): unknown => JSON.parse(text)
 const entries = (text: string): unknown => parse(text.slice(text.indexOf('\n') + 1))
 
 await claim(
-  'launch and cancel results are the flat attempt object without envelope, identities, telemetry or requested selection',
+  'launch and cancel results are the flat run object without envelope, identities, telemetry or requested selection',
   () => {
-    const text = workResultText({ kind: 'attempt', attempt: summary() })
+    const text = workResultText({ kind: 'run', run: summary() })
     assert.equal(text, JSON.stringify(parse(text)), 'minified')
     assert.deepEqual(parse(text), { id: ID, taskId: 'review', kind: 'agent', status: 'running' })
     for (const hidden of ['cwd', 'workflowTaskId', 'workspaceId', 'requested', 'usage', 'model'])
@@ -72,8 +72,8 @@ await claim(
 const exit = (exitCode: number | null | undefined) =>
   parse(
     workResultText({
-      kind: 'attempt',
-      attempt: summary({
+      kind: 'run',
+      run: summary({
         kind: 'process',
         status: 'completed',
         ...(exitCode === undefined ? {} : { exitCode }),
@@ -110,7 +110,7 @@ await claim(
     ] as const)
       assert.equal(
         (
-          parse(workResultText({ kind: 'attempt', attempt: summary({ status }) })) as {
+          parse(workResultText({ kind: 'run', run: summary({ status }) })) as {
             status: string
           }
         ).status,
@@ -123,12 +123,12 @@ await claim(
       error: 'provider failed',
       deliveryError: 'delivery failed',
       cleanupError: 'cleanup failed',
-      gateReleaseWarning: 'gate deferred',
+      lockWarning: 'Lock close deferred',
       processObservation: 'PID unavailable',
-      recovery: 'Retained facts only',
+      recovery: 'Saved record only',
       worktree: { path: WORKTREE, cleanup: 'review-required' },
     })
-    assert.deepEqual(parse(workResultText({ kind: 'attempt', attempt: warned })), {
+    assert.deepEqual(parse(workResultText({ kind: 'run', run: warned })), {
       id: ID,
       taskId: 'review',
       kind: 'agent',
@@ -138,16 +138,14 @@ await claim(
       error: 'provider failed',
       deliveryError: 'delivery failed',
       cleanupError: 'cleanup failed',
-      gateReleaseWarning: 'gate deferred',
+      lockWarning: 'Lock close deferred',
       processObservation: 'PID unavailable',
-      recovery: 'Retained facts only',
+      recovery: 'Saved record only',
       worktree: { path: WORKTREE, cleanup: 'review-required' },
     })
     assert.equal(
       'coordinator' in
-        (parse(
-          workResultText({ kind: 'attempt', attempt: summary({ coordinator: false }) })
-        ) as object),
+        (parse(workResultText({ kind: 'run', run: summary({ coordinator: false }) })) as object),
       false
     )
   }
@@ -157,8 +155,8 @@ await claim(
   'list and cancel-all keep records and paging, and show unavailable, blocked and cancellation only when present',
   () => {
     const quiet: WorkResult = {
-      kind: 'snapshot',
-      snapshot: {
+      kind: 'runs',
+      runs: {
         records: [summary()],
         unavailable: [],
         agentsBlocked: false,
@@ -171,8 +169,8 @@ await claim(
       nextOffset: null,
     })
     const loud: WorkResult = {
-      kind: 'snapshot',
-      snapshot: {
+      kind: 'runs',
+      runs: {
         records: [],
         unavailable: [{ id: 'broken', error: 'corrupt record' }],
         agentsBlocked: true,
@@ -319,7 +317,7 @@ await claim(
         status: 'completed',
         exitCode: 0,
         staleArtifact: true,
-        result: 'truncated: read from offset 0',
+        result: 'Inspect result from offset 0',
       },
     ])
     assert.ok(!truncated.includes('tail of a long answer'))
@@ -434,7 +432,7 @@ await claim(
 await claim(
   'the coordinator work tool sends the same model text as the projection, with the full result in details',
   async () => {
-    const result: WorkResult = { kind: 'attempt', attempt: summary() }
+    const result: WorkResult = { kind: 'run', run: summary() }
     const tool = createCoordinatorWorkTool({
       request: () => Effect.succeed(result),
       pending: Effect.die('unused'),

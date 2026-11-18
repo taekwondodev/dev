@@ -70,7 +70,7 @@ export const summarize = (record: AttemptView): AttemptSummary =>
           }),
     deliveryError: record.deliveryError,
     cleanupError: record.cleanupError,
-    gateReleaseWarning: record.gateReleaseWarning,
+    lockWarning: record.gateReleaseWarning,
     processObservation: record.processObservation,
     recovery: record.recovery,
   })
@@ -125,8 +125,8 @@ const snapshotResult = (
   offset: number,
   cancellationRequested?: true
 ): WorkResult => ({
-  kind: 'snapshot',
-  snapshot: defined<WorkSnapshotView>({
+  kind: 'runs',
+  runs: defined<WorkSnapshotView>({
     records: snapshot.records.slice(offset, offset + PAGE).map(summarize),
     unavailable: snapshot.unavailable,
     agentsBlocked: snapshot.agentsBlocked,
@@ -137,8 +137,8 @@ const snapshotResult = (
 })
 
 const attemptResult = (view: AttemptView): WorkResult => ({
-  kind: 'attempt',
-  attempt: summarize(view),
+  kind: 'run',
+  run: summarize(view),
 })
 
 const inspectionResult = (description: AttemptDescription): WorkResult => ({
@@ -158,7 +158,7 @@ const startProcess = (
   input: WorkInput
 ): Effect.Effect<WorkResult, WorkFailure> => {
   if (actions.startProcess === undefined)
-    return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
+    return Effect.fail(new WorkError({ message: 'This agent cannot run commands' }))
   const request: ProcessStartRequest = {
     taskId: input.taskId ?? '',
     command: input.command ?? '',
@@ -214,7 +214,7 @@ const cancel = (actions: WorkActions, input: WorkInput): Effect.Effect<WorkResul
 
 export const unavailableAttempt = (): WorkError =>
   new WorkError({
-    message: 'Result is unavailable in this session (unknown or expired attempt)',
+    message: 'No saved run with that id is available here',
   })
 
 const inspect = (

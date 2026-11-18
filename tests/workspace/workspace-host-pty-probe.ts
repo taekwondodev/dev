@@ -1055,12 +1055,12 @@ const observer =
       if (event.toolCallId.startsWith('work-owner-')) {
         const result = decodeWorkResult(event.details)
         assert.ok(
-          result.kind === 'attempt' && result.attempt !== undefined,
+          result.kind === 'run' && result.run !== undefined,
           `WorkOwner returned an unexpected result: ${JSON.stringify(event.details)}`
         )
         processResults.set(event.toolCallId, {
-          id: result.attempt.id,
-          status: result.attempt.status,
+          id: result.run.id,
+          status: result.run.status,
         })
         if (event.toolCallId === 'work-owner-process') workToolReturned.resolve()
       }

@@ -36,7 +36,7 @@ export const readDispatch: Effect.Effect<DispatchConfig, WorkDispatchError, File
     }
   }).pipe(
     Effect.mapError(cause =>
-      failure(`Cannot read dispatch configuration at ${DISPATCH_PATH}: ${errorText(cause)}`, cause)
+      failure(`Cannot read model settings at ${DISPATCH_PATH}: ${errorText(cause)}`, cause)
     )
   )
 
@@ -51,7 +51,7 @@ export const resolveDispatch = Effect.fnUntraced(function* (
   const config = yield* readDispatch
   const selected = select(config, input)
   if (input.harness !== undefined && input.harness !== 'pi') {
-    return yield* failure(`Unsupported harness: ${input.harness}; only pi is available`)
+    return yield* failure(`Only harness "pi" is supported, not ${input.harness}`)
   }
   return yield* decodeProfile({
     harness: 'pi',
