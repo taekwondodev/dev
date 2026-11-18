@@ -14,7 +14,7 @@ dev workspace release <task-id>  # interactively confirm clearing every workspac
 dev workspace release pre-existing  # interactively confirm clearing ended sessions' uses of unreserved checkouts and forgetting deleted ones
 ```
 
-In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing. `/workspace resume [task-id]` moves the conversation onto [paused work](#resume-paused-work).
+In a session, `/workspace` also shows the current binding and effective directory. `/workspace inspect` mirrors the terminal command. `/workspace check` treats this conversation's own uses as ending at quit. `/workspace release` only names the terminal command; it releases nothing. `/workspace resume [task-id]` moves the conversation onto [paused work](#resume-paused-work). Typing `/workspace ` offers each subcommand with a one-line explanation.
 
 Every listed workspace shows its head: the branch its checkout is on, or the commit and its subject when detached. A workspace whose directory is gone has none.
 

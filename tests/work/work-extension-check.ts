@@ -304,6 +304,20 @@ try {
       })
   )
 
+  await claim('/work completes exactly the verbs it accepts, each explained', () =>
+    withLead({}, async lead => {
+      const complete = lead.session.extensionRunner.getCommand('work')?.getArgumentCompletions
+      assert.ok(complete)
+      const items = (await complete('')) ?? []
+      assert.deepEqual(
+        items.map(item => item.value.trim()),
+        ['list', 'inspect', 'stop', 'dispatch']
+      )
+      assert.ok(items.every(item => (item.description ?? '').length > 0))
+      assert.equal(await complete('stop '), null)
+    })
+  )
+
   await claim(
     'a delegation carrying the removed rule field is refused as an unknown property before any attempt starts',
     () =>

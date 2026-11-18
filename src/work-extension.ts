@@ -8,6 +8,7 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import { verbCompletions } from './command-completions.ts'
 import { executeWork, factsOf, outcomeView } from './work-actions.ts'
 import { WorkOwner } from './work-controller.ts'
 import {
@@ -1110,8 +1111,27 @@ export const createWorkExtension = ({
       return reason === undefined ? undefined : { block: true, reason }
     })
     pi.registerCommand('work', {
-      description:
-        'Background work: list | dispatch | stop [attempt] | inspect <attempt> [stdout|stderr|result] [offset]',
+      description: 'Show background commands and children, read their output, or stop them',
+      getArgumentCompletions: verbCompletions([
+        {
+          verb: 'list',
+          description: "This session's attempts and their status (default)",
+        },
+        {
+          verb: 'inspect',
+          arguments: '<attempt> [stdout|stderr|result] [offset]',
+          description: "An attempt's details, or a page of its output or answer",
+        },
+        {
+          verb: 'stop',
+          arguments: '[attempt]',
+          description: 'Cancel one attempt, or all of them without an id',
+        },
+        {
+          verb: 'dispatch',
+          description: 'The model and effort chosen for each delegated skill',
+        },
+      ]),
       handler: async (args, ctx) => {
         const [action, id, stream, offset] = args.trim().split(/\s+/)
         const operation = action === 'stop' ? 'cancel' : action || 'list'

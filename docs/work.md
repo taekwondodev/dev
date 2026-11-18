@@ -24,7 +24,7 @@ Set `coordinate: true` only to delegate a whole phase. The child gets a scoped `
 /work stop                   cancel all owned attempts, including while the lead is idle
 ```
 
-The model reads [compact results](#model-visible-results); use `inspect` for an attempt's metadata, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the complete record on inspection; use `describeTool('work')` for its current declaration.
+Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for an attempt's metadata, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the complete record on inspection; use `describeTool('work')` for its current declaration.
 
 Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Neither status authorizes deletion. [Workspace](workspace.md) owns reservation and release.
 

@@ -35,6 +35,7 @@ import type {
   WriteOperations,
 } from '@earendil-works/pi-coding-agent'
 import type { ReplacedSessionContext } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.js'
+import { verbCompletions } from './command-completions.ts'
 import { errorText } from './error-text.ts'
 import {
   exactId,
@@ -1905,8 +1906,33 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
 
       api.registerCommand('workspace', {
-        description:
-          'List workspaces, resume [task-id] (paused work, not its conversation), or inspect, check or release <task-id>',
+        description: 'Show workspaces, or resume, inspect or check a task',
+        getArgumentCompletions: verbCompletions([
+          {
+            verb: 'list',
+            description: "This repository's tasks and where this conversation works (default)",
+          },
+          {
+            verb: 'resume',
+            arguments: '[task-id]',
+            description: 'Continue paused work here: its files and task, not its old chat',
+          },
+          {
+            verb: 'inspect',
+            arguments: '<task-id>',
+            description: "A task's workspaces and next safe action",
+          },
+          {
+            verb: 'check',
+            arguments: '<task-id>',
+            description: 'Whether a task is finished: target, blockers and evidence',
+          },
+          {
+            verb: 'release',
+            arguments: '<task-id>',
+            description: "Show the terminal command that discards a task's workspaces",
+          },
+        ]),
         handler: (args, context) => runPromise(workspaceCommand(api, args, context)),
       })
       api.registerTool(

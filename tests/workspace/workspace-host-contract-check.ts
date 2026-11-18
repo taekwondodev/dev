@@ -280,15 +280,20 @@ try {
           : []
       )
 
-  await claim('the /workspace description names only the verbs the command accepts', () => {
-    const description = runtime.session.extensionRunner.getCommand('workspace')?.description ?? ''
-    assert.deepEqual(description.toLowerCase().match(/\b(list|inspect|check|release|resume)\b/g), [
-      'list',
-      'resume',
-      'inspect',
-      'check',
-      'release',
-    ])
+  await claim('/workspace completes exactly the verbs it accepts, each explained', async () => {
+    const complete = runtime.session.extensionRunner.getCommand('workspace')?.getArgumentCompletions
+    assert.ok(complete)
+    const items = (await complete('')) ?? []
+    assert.deepEqual(
+      items.map(item => item.value.trim()),
+      ['list', 'resume', 'inspect', 'check', 'release']
+    )
+    assert.ok(items.every(item => (item.description ?? '').length > 0))
+    assert.deepEqual(
+      ((await complete('re')) ?? []).map(item => item.label),
+      ['resume [task-id]', 'release <task-id>']
+    )
+    assert.equal(await complete('inspect '), null)
   })
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')
