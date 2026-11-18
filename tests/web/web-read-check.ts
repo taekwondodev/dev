@@ -592,17 +592,16 @@ try {
         ['/long.md'],
         'continuation fetched nothing'
       )
-      assert.match(
-        failureOf(await read(reader, { continuation: 'not-a-token' })),
-        /not one this session issued/
-      )
+      const invalid = await read(reader, { continuation: 'not-a-token' })
+      assert.equal(toResult(invalid).outcome, 'failed')
+      assert.equal(failureOf(invalid), 'Invalid continuation token. Read the URL again.')
       assert.match(
         failureOf(
           await read(reader, {
             continuation: `${'0'.repeat(8)}-0000-0000-0000-${'0'.repeat(12)}@0`,
           })
         ),
-        /no longer held in session memory/
+        /No saved text for this token\. Read the URL again\./
       )
     }
   )
@@ -631,7 +630,11 @@ try {
       assert.equal(slice.document.bodyTruncated, true)
       assert.equal(slice.document.text.length, 96 * 1024)
       assert.match(slice.document.limitations.join('\n'), /cut at 98304 bytes/)
-      assert.equal(toResult({ kind: 'document', slice }).outcome, 'partial')
+      const readOutcome = { kind: 'document', slice } as const
+      const result = toResult(readOutcome)
+      assert.equal(result.outcome, 'partial')
+      assert.equal(result.continuation, undefined)
+      assert.match(toText(readOutcome, result), /\(size limit; no more text\)/)
       assert.match(
         failureOf(await read(reader, { url: `${origin}/redirect-private` })),
         /Redirect .* refused/
@@ -650,7 +653,7 @@ try {
         assert.equal(slice.document.method, 'html')
         assert.match(
           slice.document.limitations.join('\n'),
-          /browser rendering was unavailable: Google Chrome is not installed/
+          /Chrome unavailable: Google Chrome is not installed/
         )
       }
     )
@@ -669,11 +672,11 @@ try {
         )
         assert.match(
           slice.document.limitations.join('\n'),
-          /1 browser subrequest\(s\) to non-public destinations were blocked/
+          /Blocked requests to non-public addresses: 1\./
         )
         assert.match(
           slice.document.limitations.join('\n'),
-          /Static HTML extraction yielded too little readable text/
+          /Too little text without Chrome .*; Chrome loaded the page instead/
         )
         assert.equal(sha(cookiesPath), sourceBefore, 'the source cookie database is byte-identical')
         const state = JSON.parse(
@@ -698,7 +701,10 @@ try {
         assert.equal(status.inUse, true)
         const acquired = await Effect.runPromiseExit(other.acquire(Date.now()))
         assert.ok(Exit.isFailure(acquired))
-        assert.match(String(Cause.squash(acquired.cause)), /in use by its browser owner/)
+        assert.match(
+          String(Cause.squash(acquired.cause)),
+          /Dev still has the Chrome profile copy locked/
+        )
         assert.ok(
           existsSync(join(dataHome, 'browser', 'user-data', 'Default', 'Cookies')),
           'the live copy survived the refused acquisition'
@@ -729,7 +735,7 @@ try {
           assert.equal(slice.document.method, 'html')
           assert.match(
             slice.document.limitations.join('\n'),
-            /browser rendering was unavailable: .*could not be snapshotted coherently .*close Chrome or retry/
+            /Chrome unavailable: Couldn't copy Chrome's cookie database\. Close Chrome or retry/
           )
         } finally {
           holder.exec('ROLLBACK')
@@ -761,7 +767,7 @@ try {
         assert.equal(disabled.document.method, 'html')
         assert.match(
           disabled.document.limitations.join('\n'),
-          /browser rendering was unavailable: .*disabled .* `dev browser enable`/
+          /Chrome unavailable: Chrome reads are disabled\. Run `dev browser enable`/
         )
         const status = await Effect.runPromise(admin.status)
         assert.equal(status.profile.enabled, false)
@@ -786,7 +792,10 @@ try {
         assert.equal(slice.document.method, 'browser')
         assert.equal(slice.document.bodyTruncated, true)
         assert.ok(slice.document.text.length <= 96 * 1024)
-        assert.match(slice.document.limitations.join('\n'), /cut at 98304 characters of HTML/)
+        assert.match(
+          slice.document.limitations.join('\n'),
+          /Chrome cut the page at 98304 characters of HTML/
+        )
         assert.equal(toResult({ kind: 'document', slice }).outcome, 'partial')
       }
     )
@@ -810,7 +819,7 @@ try {
         )
         assert.match(
           slice.document.limitations.join('\n'),
-          /1 browser subrequest\(s\) to non-public destinations were blocked/
+          /Blocked requests to non-public addresses: 1\./
         )
       }
     )
@@ -830,7 +839,7 @@ try {
         )
         assert.match(
           slice.document.limitations.join('\n'),
-          /1 browser subrequest\(s\) to non-public destinations were blocked/
+          /Blocked requests to non-public addresses: 1\./
         )
       }
     )
@@ -887,7 +896,7 @@ try {
           documentOf(await read(reader, { url: `${origin}/account` })).document.limitations.join(
             '\n'
           ),
-          /browser rendering was unavailable: .*disabled/
+          /Chrome unavailable: Chrome reads are disabled/
         )
         assert.equal((await Effect.runPromise(admin.revoke(Duration.seconds(10)))).kind, 'removed')
         await Effect.runPromise(admin.enable)
@@ -932,7 +941,7 @@ try {
           Date.now() - started < 8000,
           'endSession returned without waiting for the render timeout'
         )
-        assert.match(failureOf(await pending), /session ended/)
+        assert.match(failureOf(await pending), /conversation ended/)
         for (const response of hanging.splice(0)) response.end('')
         assert.ok(ownerPublished(dataHome), 'the shared owner outlived the ended reader session')
         assert.match(
@@ -950,7 +959,7 @@ try {
         const pending = read(ending, { url: `${origin}/slow-app.html` })
         await sleep(200)
         await Effect.runPromise(ending.endSession('shutdown during static fetch'))
-        assert.match(failureOf(await pending), /session ended/)
+        assert.match(failureOf(await pending), /conversation ended/)
         await sleep(1500)
         assert.deepEqual(
           seen.map(item => item.url),
@@ -967,7 +976,10 @@ try {
         assert.equal(slice.document.method, 'browser')
         assert.equal(slice.document.status, 403)
         assert.match(slice.text, /Forbidden/)
-        assert.match(slice.document.limitations.join('\n'), /authenticated profile/)
+        assert.match(
+          slice.document.limitations.join('\n'),
+          /Chrome used a separate copy of your signed-in profile\. The site may have recorded the visit\./
+        )
         assert.equal(
           seen.filter(item => item.url === '/forbidden.html').length,
           2,

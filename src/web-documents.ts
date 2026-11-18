@@ -132,15 +132,13 @@ export const makeDocumentSnapshots = (
       if (parsed === undefined)
         return {
           kind: 'unavailable',
-          reason: `Continuation token is not one this session issued: ${continuation}`,
+          reason: 'Invalid continuation token. Read the URL again.',
         }
       const document = documents.get(parsed.documentId)
       if (document === undefined)
         return {
           kind: 'unavailable',
-          reason:
-            clearedReason ??
-            'This document snapshot is no longer held in session memory (evicted or from an earlier session); read the URL again to start a fresh snapshot.',
+          reason: clearedReason ?? 'No saved text for this token. Read the URL again.',
         }
       documents.delete(parsed.documentId)
       documents.set(parsed.documentId, document)

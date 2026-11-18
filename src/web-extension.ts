@@ -14,10 +14,9 @@ const InputSchema = Schema.Struct({
 type ReadUrlInput = typeof InputSchema.Type
 
 const inputDescriptions: { readonly [Field in keyof ReadUrlInput]-?: string } = {
-  url: 'Absolute http(s) URL of the page to read. Omit when passing continuation.',
-  continuation:
-    'Token from an earlier incomplete result; returns the next part of that same snapshot without fetching again.',
-  maxChars: 'Characters of text per result (default 16000, 1000-120000).',
+  url: 'Absolute http(s) URL. Omit with continuation.',
+  continuation: 'Token from a prior result. Read more of the same saved text without refetching.',
+  maxChars: 'Chars per part (default 16000; 1000–120000).',
 }
 
 const describe = (
@@ -67,24 +66,21 @@ export type ReadUrlResult = typeof ReadUrlResultSchema.Type
 
 const resultDescriptions: { readonly [Field in keyof ReadUrlResult]-?: string } = {
   outcome:
-    'document: the requested page, complete in this result; partial: more text follows via continuation or the snapshot is cut; failed: nothing was read.',
-  requestedUrl: 'URL as requested.',
-  finalUrl: 'URL that answered after validated redirects.',
-  title: 'Document title when the page declares one.',
-  method:
-    'markdown (origin served Markdown), text, html (local extraction) or browser (rendered in Chrome).',
+    'document: final part, no text cut; partial: more text via continuation or the page hit a size limit; failed: no text read.',
+  requestedUrl: 'URL requested.',
+  finalUrl: 'URL after redirects.',
+  title: 'Page title, if provided.',
+  method: 'markdown or text from the site, html extracted locally, or browser (Chrome).',
   status: 'HTTP status of the final response.',
-  text: 'Readable text of this part, Markdown-flavoured.',
-  offset: 'Character offset of this part within the whole document text.',
-  end: 'Character offset just past this part.',
-  totalChars: 'Characters in the whole document text held in this session.',
-  complete: 'True when this part ends the document and nothing was cut.',
-  continuation: 'Pass as continuation to read the next part of this same snapshot.',
-  links: 'Links found in the document with absolute URLs.',
-  suggestions:
-    'Related documents such as llms.txt indexes; never substituted for the requested page.',
-  limitations:
-    'Explicit limits of this result: truncation, status, blocked subrequests, rendering notes.',
+  text: 'Readable page text, often Markdown.',
+  offset: 'Starting character offset in the saved text.',
+  end: 'End offset (exclusive).',
+  totalChars: 'Total characters in the saved page text.',
+  complete: 'True for the last part if nothing was cut.',
+  continuation: 'Pass as continuation for the next part of the saved text.',
+  links: 'Page links with absolute URLs.',
+  suggestions: 'Other pages to try, such as llms.txt; not the requested page.',
+  limitations: 'Size limits, HTTP errors, blocked requests or notes about Chrome.',
   error: 'Why the read failed.',
 }
 
@@ -133,9 +129,8 @@ export const toResult = (outcome: ReadOutcome): ReadUrlResult => {
 }
 
 const rangeNote = (result: ReadUrlResult): string => {
-  if (result.continuation !== undefined)
-    return `; continue with continuation "${result.continuation}"`
-  return result.complete ? ' (complete)' : ' (snapshot cut by the byte limit)'
+  if (result.continuation !== undefined) return `; pass continuation: "${result.continuation}"`
+  return result.complete ? ' (complete)' : ' (size limit; no more text)'
 }
 
 const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
@@ -178,11 +173,13 @@ export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
 
 const decodeInput = Schema.decodeUnknownEffect(InputSchema)
 
+export const READ_URL_DESCRIPTION =
+  'Read a public documentation page and return text with sources. Prefer Markdown from the site, or extract HTML locally. If needed, use Chrome with a separate copy of your signed-in Chrome profile. Pass continuation to read more saved text in this conversation without refetching. Indexes such as llms.txt are suggestions, not substitutes. Public http(s) only; private addresses, URLs with credentials and unsafe redirects are blocked. In codemode, tools.read_url(...) returns the structured result.'
+
 const makeReadUrlTool = (reader: WebReader): ToolDefinition => ({
   name: READ_URL_TOOL,
   label: 'Read URL',
-  description:
-    'Read a public documentation page by URL and return its readable text with sources. Dev negotiates Markdown with the origin, otherwise extracts the HTML locally, and renders in the installed Chrome (with a dev-owned copy of your authenticated profile) only when static content is unusable. Results are bounded: an incomplete result carries a continuation token that returns the next part of the same snapshot; snapshots live only in this session. Indexes such as llms.txt appear as suggestions, never as substitutes. Only public http(s) destinations are read; private addresses, credential-bearing URLs and unsafe redirects are refused before connecting. In codemode, tools.read_url(...) resolves to the structured result.',
+  description: READ_URL_DESCRIPTION,
   parameters: readUrlParameters,
   outputSchema: readUrlOutputSchema,
   annotations: { readOnlyHint: true, openWorldHint: true },
@@ -212,9 +209,7 @@ export const createWebExtension = (
     api.registerTool(makeReadUrlTool(reader))
     api.on('session_shutdown', event =>
       Effect.runPromise(
-        reader.endSession(
-          `This document snapshot belonged to a session that ended (${event.reason}); read the URL again.`
-        )
+        reader.endSession(`The conversation ended (${event.reason}). Read the URL again.`)
       )
     )
   },
