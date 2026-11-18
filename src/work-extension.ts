@@ -44,6 +44,7 @@ import type {
   WorkspaceHandoff,
   WorkspaceLifecycle,
 } from './workspace-domain.ts'
+import type { SwitchRequest } from './workspace-model-text.ts'
 import { errorText } from './error-text.ts'
 
 export const leadWorkParameters = Schema.toJsonSchemaDocument(LeadWorkInputSchema, {
@@ -197,6 +198,7 @@ export const createWorkExtension = ({
   profile,
   workspace,
   isWorkspaceParked,
+  workspaceBlockedAccess,
   onReactivationChange = () => undefined,
   childEntry,
   quietAfterMs,
@@ -211,9 +213,10 @@ export const createWorkExtension = ({
       handoff: WorkspaceHandoff,
       source: WorkspaceAttachment,
       context: Pi.ExtensionContext
-    ) => boolean
+    ) => SwitchRequest
   }
   readonly isWorkspaceParked: () => boolean
+  readonly workspaceBlockedAccess: (didNotRun: string) => string
   readonly onReactivationChange?: () => void
   readonly childEntry?: URL
   readonly quietAfterMs?: number
@@ -874,10 +877,7 @@ export const createWorkExtension = ({
     withOwner(owner =>
       isWorkspaceParked() && (input.action === 'process' || input.action === 'delegate')
         ? Effect.fail(
-            new WorkError({
-              message:
-                'Checkout access is blocked by a switch or mismatch; no background work started.',
-            })
+            new WorkError({ message: workspaceBlockedAccess('no background work started') })
           )
         : executeWork(owner, input)
     )

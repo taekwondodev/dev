@@ -366,6 +366,7 @@ const createRuntime = Effect.fnUntraced(function* (
       profile: profile.name,
       workspace: { lifecycle, attachment, requestHandoff: workspaceHost.requestHandoff },
       isWorkspaceParked: workspaceHost.isParked,
+      workspaceBlockedAccess: workspaceHost.blockedAccess,
       onReactivationChange: parts.programStatus.changed,
     })
   )

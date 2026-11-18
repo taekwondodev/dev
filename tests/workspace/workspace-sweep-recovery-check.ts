@@ -439,11 +439,15 @@ try {
       assert.ok(git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
       assert.equal(
         unfinished.nextAction,
-        `Do not retry or use it. The user may run dev workspace release ${unfinished.taskId}, which removes what Git created of the worktree and releases the whole task.`
+        `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${unfinished.taskId}, which deletes all of that task's managed worktrees and artifacts, including what Git created of this one.`
       )
-
       const quit = await sweepAtQuit(owner.write.workspaceId)
       const row = rowOf(quit, unfinished.workspaceId)
+      assert.ok(
+        row.reason.startsWith('Worktree creation did not finish.') &&
+          !row.reason.includes('switch'),
+        `the receipt names the unfinished creation, not a checkout switch: ${row.reason}`
+      )
       assert.deepEqual(
         [row.taskId, row.outcome, verdictName(row.verdict), row.path],
         [unfinished.taskId, 'retained', 'retained:transition-unresolved', unfinished.path]

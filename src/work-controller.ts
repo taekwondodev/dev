@@ -100,6 +100,7 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
+import { SWITCH_REQUESTED, switchNotRequested, type SwitchRequest } from './workspace-model-text.ts'
 import { commandRunner, type RunCommand } from './command.ts'
 import { makeOwnerBootstrap } from './web-browser-owner.ts'
 import { errorText } from './error-text.ts'
@@ -175,7 +176,7 @@ interface WorkOwnerOptions {
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
-    readonly requestHandoff: (handoff: WorkspaceHandoff) => boolean
+    readonly requestHandoff: (handoff: WorkspaceHandoff) => SwitchRequest
   }
   readonly onChange?: () => void
   readonly onLive?: () => void
@@ -731,11 +732,13 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           return { kind: 'ready' as const, grant: scoped }
         }).pipe(Effect.mapError(toFailure))
         if (admission.kind === 'handoff') {
-          const requested = workspace.requestHandoff(admission.handoff)
+          const switchRequest = workspace.requestHandoff(admission.handoff)
           return yield* new WorkHandoffRequired({
-            message: requested
-              ? `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. Dev switches at turn end and reports where this conversation works; if it does, check the request still applies there before retrying.`
-              : `Dev must switch checkouts first: ${admission.handoff.reason}. No work started, and no switch was requested because another switch or session change is in progress.`,
+            message: `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. ${
+              switchRequest === 'requested'
+                ? `${SWITCH_REQUESTED} Then check the request still applies there before retrying.`
+                : switchNotRequested(switchRequest)
+            }`,
           })
         }
         const { grant: selected } = admission

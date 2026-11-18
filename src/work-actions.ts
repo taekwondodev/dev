@@ -113,9 +113,29 @@ export const outcomeView = (attempt: AttemptView | AttemptDescription): AttemptO
 
 const decodeRecord = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))
 
+const OUTWARD_RECORD_KEYS: Readonly<Record<string, string>> = {
+  attemptId: 'runId',
+  coordinator: 'coordinate',
+  controllerPid: 'devPid',
+  owner: 'startedBy',
+  gateReleaseWarning: 'lockWarning',
+  workspaceAcquisitionId: 'writePermissionId',
+}
+
+const outwardKeys = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(outwardKeys)
+  if (typeof value !== 'object' || value === null) return value
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [OUTWARD_RECORD_KEYS[key] ?? key, outwardKeys(item)])
+  )
+}
+
+export const outwardRecord = (record: object): AttemptInspection['record'] =>
+  decodeRecord(JSON.stringify(outwardKeys(record)))
+
 const inspectionView = (description: AttemptDescription): AttemptInspection => {
   const { staleArtifact: _stale, logs: _logs, worktree: _worktree, ...record } = description
-  return { ...outcomeView(description), record: decodeRecord(JSON.stringify(record)) }
+  return { ...outcomeView(description), record: outwardRecord(record) }
 }
 
 const PAGE = 20

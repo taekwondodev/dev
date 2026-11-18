@@ -1367,8 +1367,10 @@ const expectBlock = (
   assert.match(block.reason, reason)
   return block
 }
-const PARKED = /Checkout access is blocked by a switch or mismatch; the tool did not run/
-const HANDOFF_REFUSAL = /Switching checkouts; the call did not run\. fixture/
+const PARKED =
+  /Checkout access is blocked while this conversation switches checkouts; the tool did not run\. Retry after dev reports where it works\./
+const HANDOFF_REFUSAL =
+  /The call did not run: fixture.*\. Dev requested a checkout switch at turn end/
 const UNVERIFIED = /did not run\. Dev has not verified what this tool can do to project files/
 expectBlock('stale-native-lead', lead, true, HANDOFF_REFUSAL)
 for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])

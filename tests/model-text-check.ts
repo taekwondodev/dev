@@ -8,7 +8,8 @@ import {
 import * as Effect from 'effect/Effect'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { createCoordinatorWorkTool, LEAF_OUTCOME_GUIDANCE } from '../src/work-child-coordination.ts'
-import { asAttemptId, workResultOutputSchema } from '../src/work-domain.ts'
+import { asAttemptId, ATTEMPT_RECORD_KEYS, workResultOutputSchema } from '../src/work-domain.ts'
+import { outwardRecord } from '../src/work-actions.ts'
 import { TRUNCATED_RESULT, workResultText } from '../src/work-model-text.ts'
 import { CLEAR, RETAINED } from '../src/workspace-completion.ts'
 import { assessWorkspace } from '../src/workspace-inspect.ts'
@@ -20,11 +21,9 @@ import {
 } from '../src/work-extension.ts'
 import { WORKSPACE_TOOL_DESCRIPTION, workspaceToolParameters } from '../src/workspace-tool.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
+import { INTERNAL, keyWords } from './model-text-terms.ts'
 
 const { claim, passed } = makeClaims()
-
-const INTERNAL =
-  /\b(lead|leaf|leaves|child|children|coordinat(?!e\b)\w*|attempts?|outcomes?|reservations?|reserve[sd]?|admission|admit\w*|grants?|attachments?|handoffs?|bindings?|bound|parked|sweep\w*|swept|gates?|authorit(?:y|ies)|controllers?|workers?|owners?|owned|producer|dispatch rules?|integration targets?|write acquisitions?|residue|dev-cycle|ADR)\b/i
 
 const descriptions = (schema: unknown): string[] => {
   if (Array.isArray(schema)) return schema.flatMap(descriptions)
@@ -58,7 +57,7 @@ const checkoutStates = [false, true].flatMap(reserved =>
   [
     { missing: true },
     { unresolved: true },
-    { unknown: true },
+    { unknown: ['use-2'] },
     { abandoned: () => ['use-1'] },
     { live: true },
     {},
@@ -68,7 +67,7 @@ const checkoutStates = [false, true].flatMap(reserved =>
       missing: false,
       pending: undefined,
       unresolved: false,
-      unknown: false,
+      unknown: [],
       live: false,
       abandoned: () => [],
       reserved,
@@ -93,6 +92,15 @@ const run = {
   lockWarning: 'Dev could not release a lock on the checkout.',
 } as const
 
+const recordKeys = (value: unknown, keys: string[] = []): string[] => {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value))
+    for (const [key, item] of Object.entries(value)) {
+      keys.push(key)
+      recordKeys(item, keys)
+    }
+  return keys
+}
+
 const surfaces: Record<string, readonly string[]> = {
   'work tool': [LEAD_TOOL_DESCRIPTION, ...descriptions(leadWorkParameters)],
   'delegated work tool': toolTexts(coordinatorTool),
@@ -116,6 +124,18 @@ const surfaces: Record<string, readonly string[]> = {
     ...Object.values(RETAINED).flatMap(retained => retained.actions),
     ...checkoutStates,
   ],
+  'inspected run record keys': recordKeys(
+    outwardRecord(
+      Object.fromEntries(
+        ATTEMPT_RECORD_KEYS.map(key => [
+          key,
+          key === 'owner'
+            ? { sessionId: 's', taskId: 't', attemptId: 'a', generation: 'g', parent: 'p' }
+            : true,
+        ])
+      )
+    )
+  ).map(keyWords),
 }
 
 await claim('each listed surface has text to check', () => {

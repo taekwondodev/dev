@@ -23,3 +23,14 @@ export const isConversationShell = (execution: WorkspaceExecution): boolean =>
 
 export const executionLabel = (execution: WorkspaceExecution): string =>
   isConversationShell(execution) ? 'a bash command' : `run ${execution.attemptId}`
+
+export const taskRelease = (taskId: string): string =>
+  `dev workspace release ${taskId}, which deletes all of that task's managed worktrees and artifacts`
+
+export const PRE_EXISTING_RELEASE =
+  'dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files'
+
+export const releaseOnceStopped = (taskId: string | undefined): string =>
+  taskId === undefined
+    ? `Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run ${PRE_EXISTING_RELEASE}.`
+    : `Once nothing still works in any of the task's checkouts, the user may run ${taskRelease(taskId)}.`

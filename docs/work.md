@@ -24,7 +24,7 @@ Set `coordinate: true` only to delegate a whole phase. The delegated agent can u
 /work stop                    stop all runs from this conversation, even while it is idle
 ```
 
-Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the complete record on inspection; use `describeTool('work')` for its current declaration.
+Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the saved record on inspection, with its internal field names replaced by outward ones; use `describeTool('work')` for its current declaration.
 
 Writing agents show their worktree path as `blocked` if it may still be in use, otherwise `review-required`. Neither status authorizes deletion. See [Workspace](workspace.md) for checkout cleanup.
 

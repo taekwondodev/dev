@@ -262,6 +262,12 @@ const attemptRecord = <
   completedAt: Completion
 ) => Schema.Struct({ ...AttemptRecordFactFields, status, completedAt })
 
+export const ATTEMPT_RECORD_KEYS: readonly string[] = [
+  ...Object.keys(AttemptRecordFactFields),
+  'status',
+  'completedAt',
+]
+
 export const AttemptRecordSchema = Schema.Union([
   attemptRecord(Schema.Literal('running'), NoCompletionTime),
   attemptRecord(Schema.Literal('waiting'), NoCompletionTime),

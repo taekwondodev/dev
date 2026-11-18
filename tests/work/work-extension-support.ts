@@ -103,6 +103,7 @@ export const openLead = async (
       },
     },
     isWorkspaceParked: () => false,
+    workspaceBlockedAccess: didNotRun => `blocked; ${didNotRun}`,
     ...(options.onReactivationChange === undefined
       ? {}
       : { onReactivationChange: options.onReactivationChange }),

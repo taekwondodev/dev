@@ -28,6 +28,7 @@ import { workResultText } from '../../src/work-model-text.ts'
 import { childBrief } from '../../src/pi-child.ts'
 import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
+import { classifyError } from '../../scripts/usage-facts.ts'
 import { openWorkFixture, script } from './work-check-support.ts'
 import {
   CHILD_EFFORT,
@@ -557,6 +558,7 @@ return JSON.stringify({
         assert.ok(Date.now() - started < 30_000)
         assert.ok(seen(refused).includes('task-0-0 running'), seen(refused))
         assert.ok(seen(refused).includes('end your turn to receive results'), seen(refused))
+        assert.equal(classifyError('bash', toolResults(refused).at(-1) ?? ''), 'blocked')
         refused.reply([toolCall('mixed', 'bash', { command: 'sleep 0; echo waiting' })])
         const mixed = await lead.request(3)
         assert.ok(seen(mixed).includes('Refused'), seen(mixed))
@@ -573,6 +575,7 @@ return JSON.stringify({
         const long = await lead.request(6)
         assert.ok(seen(long).includes('Refused'), seen(long))
         assert.ok(toolResults(long).at(-1)?.includes('work (action: "process")'), seen(long))
+        assert.equal(classifyError('bash', toolResults(long).at(-1) ?? ''), 'blocked')
         assert.ok(seen(long).includes('until <check>; do sleep 30; done'), seen(long))
         assert.ok(!seen(long).includes('task-0-0'), seen(long))
         long.reply([toolCall('idle', 'bash', { command: 'sleep 0; echo idle-ok' })])

@@ -88,6 +88,7 @@ import {
 import { transaction } from './workspace-sqlite.ts'
 import { newId, now } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
+import { releaseOnceStopped } from './workspace-labels.ts'
 
 const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<WorkspaceId>()
@@ -153,11 +154,7 @@ interface Takeover {
 
 const refuseWithoutCommits = (path: string, holder: WorkspaceId | undefined): never =>
   blocked(
-    `Checkout ${path} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry after that session quits. If dev still blocks once its processes are confirmed stopped, the user may run ${
-      holder === undefined
-        ? 'dev workspace release pre-existing in that checkout, which keeps its files'
-        : `dev workspace release ${holder}, which releases that whole task and deletes its managed worktrees and artifacts`
-    }.`
+    `Checkout ${path} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry once that session's work is confirmed stopped. ${releaseOnceStopped(holder)}`
   )
 
 const assertNoCommitArrived = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): void => {

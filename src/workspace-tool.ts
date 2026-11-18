@@ -31,6 +31,7 @@ import {
   type WorkspaceView,
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
+import { SWITCH_REQUESTED, switchNotRequested, type SwitchRequest } from './workspace-model-text.ts'
 import { isWithin } from './workspace-paths.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
@@ -238,7 +239,11 @@ export interface WorkspaceToolOptions {
   readonly lifecycle: WorkspaceLifecycle
   readonly attachment: () => WorkspaceAttachment
   readonly runPromise: <A>(effect: Effect.Effect<A, never, PublicationDestinations>) => Promise<A>
-  readonly requestResume: (handoff: WorkspaceHandoff, context: ExtensionContext) => boolean
+  readonly requestResume: (
+    handoff: WorkspaceHandoff,
+    source: WorkspaceAttachment,
+    context: ExtensionContext
+  ) => SwitchRequest
 }
 
 interface ToolReply {
@@ -305,10 +310,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const handoff = yield* attachment
       .select(candidate.selection)
       .pipe(Effect.mapError(error => refuse(`Could not switch checkouts: ${error.message}`)))
-    if (!options.requestResume(handoff, context))
-      return yield* refuse(
-        'Another checkout switch or session change is in progress, so this switch was not requested. Nothing changed.'
-      )
+    const request = options.requestResume(handoff, attachment, context)
+    if (request !== 'requested') return yield* refuse(switchNotRequested(request))
     const value = {
       resumed: 'requested',
       taskId: input.taskId,
@@ -319,7 +322,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       value,
       model: {
         ...value,
-        note: 'Dev switches checkouts at turn end and reports where this conversation works. No other calls run meanwhile.',
+        note: `${SWITCH_REQUESTED} No other calls run meanwhile.`,
       },
       terminate: true,
     }
@@ -331,16 +334,17 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       .authorize({ kind: 'write', cwd: attachment.binding.cwd })
       .pipe(Effect.mapError(error => refuse(`No permission to write: ${error.message}`)))
     if (admitted.kind === 'handoff') {
-      if (!options.requestResume(admitted.handoff, context))
+      const request = options.requestResume(admitted.handoff, attachment, context)
+      if (request !== 'requested')
         return yield* refuse(
-          `Writing here needs a checkout switch (${admitted.handoff.reason}), but another switch or session change is in progress, so none was requested. No directory was created.`
+          `No directory was created: ${admitted.handoff.reason}. ${switchNotRequested(request)}`
         )
-      const value = { artifacts: 'switching', reason: admitted.handoff.reason }
+      const value = { artifacts: 'switch-requested', reason: admitted.handoff.reason }
       return {
         value,
         model: {
           ...value,
-          note: 'Dev switches checkouts at turn end and reports where this conversation works. If it does, call artifacts again there.',
+          note: `No directory was created. ${SWITCH_REQUESTED} Then call artifacts again there.`,
         },
         terminate: true,
       }

@@ -31,7 +31,7 @@ export interface IntegrationFacts {
 }
 
 export const CLEAR =
-  'If the task is no longer needed, the user can release the whole task with dev workspace release.'
+  "If the task is no longer needed and nothing still works in its checkouts, the user may run dev workspace release <taskId>, which deletes all of the task's managed worktrees and artifacts."
 const DELIVER = ['Merge the PR or land its commits for cleanup. Only the user can release it.']
 export const RETAINED: Record<
   RetainedReason,

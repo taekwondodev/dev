@@ -1,4 +1,4 @@
-import { checkoutUseStage, executionLabel } from './workspace-labels.ts'
+import { checkoutUseStage, executionLabel, releaseOnceStopped } from './workspace-labels.ts'
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -222,7 +222,8 @@ const assessUses = (
   authority: WorkspaceAuthority,
   db: DatabaseSync,
   workspaceId: WorkspaceId,
-  own: OwnConversation | undefined
+  own: OwnConversation | undefined,
+  taskId: string | undefined
 ): UseAssessment => {
   const uses = getUseRows(db, workspaceId)
   const unknown = uses.filter(use => use.stage === 'unknown')
@@ -251,19 +252,19 @@ const assessUses = (
         ? `This conversation uses this checkout (${ownUses.map(describeUse).join(', ')}). Dev checks again at quit.`
         : 'This conversation uses this checkout until quit, when dev checks again.'
     )
-  if (unknown.length > 0) {
+  const unknownIds = new Set(unknown.map(use => use.id))
+  const abandonedOnly = abandoned.filter(id => !unknownIds.has(id))
+  if (unknown.length > 0)
     reasons.push(
-      `Dev cannot confirm operations ${unknown.map(use => use.id).join(', ')} stopped, so it kept the checkout.`
+      `Dev cannot confirm operations ${[...unknownIds].join(', ')} stopped, so it kept the checkout.`
     )
-    nextActions.push(
-      'Do not retry them. Once they are confirmed stopped, the user may release the whole task with dev workspace release.'
+  if (abandonedOnly.length > 0)
+    reasons.push(
+      `Operations ${abandonedOnly.join(', ')} of closed dev sessions may still be running.`
     )
-  } else if (abandoned.length > 0) {
-    reasons.push(`Operations ${abandoned.join(', ')} of closed dev sessions may still be running.`)
-    nextActions.push(
-      'Do not retry them. Once they are confirmed stopped, the user may release the whole task with dev workspace release.'
-    )
-  } else if (live.length > 0 || conversations.length > 0) {
+  if (unknown.length > 0 || abandonedOnly.length > 0)
+    nextActions.push(`Do not retry those operations. ${releaseOnceStopped(taskId)}`)
+  else if (live.length > 0 || conversations.length > 0) {
     if (live.length > 0)
       reasons.push(
         `Other dev sessions still use this checkout: ${live
@@ -411,7 +412,7 @@ const stageWorkspace = (
     ),
   ]
   const allocation = allocationOf(db, workspace)
-  const uses = assessUses(authority, db, workspace.id, context.own)
+  const uses = assessUses(authority, db, workspace.id, context.own, reservation?.taskId)
   const unknownIds = new Set(uses.unknown.map(use => use.id))
   const abandoned = uses.abandoned.filter(id => !unknownIds.has(id))
   const factsBase: CompletionFacts = {

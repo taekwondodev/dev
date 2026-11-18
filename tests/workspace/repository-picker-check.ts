@@ -11,8 +11,10 @@ import {
   pausedTaskQuestion,
   resumableRowText,
   resumableWorkspaces,
+  resumeCandidates,
 } from '../../src/workspace-command.ts'
-import type { WorkspaceView } from '../../src/workspace-domain.ts'
+import { assessWorkspace } from '../../src/workspace-inspect.ts'
+import { isResumable, type WorkspaceView } from '../../src/workspace-domain.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { fixtureId } from './workspace-host-fixture-shapes.ts'
 
@@ -49,6 +51,18 @@ const paused = (index: number, fields: Partial<WorkspaceView> = {}): WorkspaceVi
   pending: [],
   ...fields,
 })
+const standing = (reserved: boolean) =>
+  assessWorkspace({
+    identityReason: undefined,
+    missing: false,
+    pending: undefined,
+    unresolved: false,
+    unknown: [],
+    live: false,
+    abandoned: () => [],
+    reserved,
+  }).outcome
+
 try {
   const area = join(sandbox, 'area')
   const sessions = join(sandbox, 'sessions')
@@ -149,6 +163,20 @@ try {
         ['/opt/area/work-2', '/opt/area/work-1', '/opt/area/earlier', '/opt/area/work-3']
       )
       assert.deepEqual(listed[0]?.selection, { taskId: fixtureId(2), workspaceId: fixtureId(22) })
+    }
+  )
+
+  await claim(
+    'an unused checkout no task keeps is idle, not paused, and is never offered for resume',
+    () => {
+      assert.deepEqual([standing(true), standing(false)], ['paused', 'idle'])
+      assert.deepEqual(
+        [isResumable(true, 'paused'), isResumable(false, 'idle'), isResumable(true, 'idle')],
+        [true, false, false]
+      )
+      const idle = { ...unreserved, outcome: 'idle' as const }
+      assert.deepEqual(resumableWorkspaces([idle]), [])
+      assert.deepEqual(resumeCandidates([{ ...paused(9), outcome: 'idle' }], fixtureId(9)), [])
     }
   )
 

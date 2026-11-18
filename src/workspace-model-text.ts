@@ -19,6 +19,25 @@ export const HANDOFF_MESSAGE = 'dev/workspace-handoff'
 export const RECEIPT_ENTRY = 'dev/workspace-receipt'
 export const REFUSAL_ENTRY = 'dev/workspace-refusal'
 
+export type SwitchRequest = 'requested' | 'closing' | 'mismatch' | 'unresolved' | 'changed' | 'busy'
+
+const SWITCH_NOT_REQUESTED: Record<Exclude<SwitchRequest, 'requested'>, string> = {
+  closing: 'this conversation is closing',
+  mismatch:
+    "this conversation's permission no longer matches it, so checkout access stays blocked; ask the user to quit and reopen this conversation",
+  unresolved:
+    'dev cannot confirm an earlier session change, so checkout access stays blocked; ask the user to quit and reopen this conversation',
+  changed:
+    'this conversation changed checkouts meanwhile; check where it works now before retrying',
+  busy: 'another checkout switch or session change is in progress; retry after it ends',
+}
+
+export const switchNotRequested = (request: Exclude<SwitchRequest, 'requested'>): string =>
+  `No checkout switch was requested: ${SWITCH_NOT_REQUESTED[request]}.`
+
+export const SWITCH_REQUESTED =
+  'Dev requested a checkout switch at turn end and reports where this conversation works if it completes.'
+
 export interface SweepDetails {
   readonly kind: 'sweep'
   readonly receipt: SweepReceipt

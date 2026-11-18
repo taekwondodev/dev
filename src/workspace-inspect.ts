@@ -24,6 +24,7 @@ import {
   type WorkspaceRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
+import { PRE_EXISTING_RELEASE, releaseOnceStopped, taskRelease } from './workspace-labels.ts'
 import { rows, textField } from './workspace-sqlite.ts'
 import { effectiveUid, hasErrorCode, lstatIfExists } from './workspace-platform.ts'
 
@@ -59,24 +60,26 @@ export const assessWorkspace = (input: {
   readonly missing: boolean
   readonly pending: { readonly id: string; readonly stage: string } | undefined
   readonly unresolved: boolean
-  readonly unknown: boolean
+  readonly unknown: readonly string[]
   readonly live: boolean
   readonly abandoned: () => readonly string[]
   readonly reserved: boolean
+  readonly taskId?: string
 }): Pick<WorkspaceView, 'outcome' | 'reason' | 'nextAction'> => {
   const operation =
     input.pending === undefined
       ? undefined
       : `Earlier operation ${input.pending.id}: ${input.pending.stage}; checking does not redo it.`
+  const withOperation = (reason: string): string =>
+    operation === undefined ? reason : `${operation} ${reason}`
+  const release = releaseOnceStopped(input.reserved ? (input.taskId ?? '<taskId>') : undefined)
   if (input.missing && input.pending === undefined)
     return {
       outcome: 'review-required',
       reason: MISSING_REASON,
-      nextAction: `Restore it at this path. If it was deleted on purpose, the user may ${
-        input.reserved
-          ? 'release the whole task with dev workspace release <task-id>, which deletes its managed worktrees and artifacts, then '
-          : ''
-      }run dev workspace release pre-existing to forget it.`,
+      nextAction: `Restore it at this path. If it was deleted on purpose: ${
+        input.reserved ? `${release} Then the user may run ` : 'the user may run '
+      }${PRE_EXISTING_RELEASE}, which also forgets this checkout.`,
     }
   if (input.identityReason !== undefined || input.unresolved)
     return {
@@ -84,27 +87,21 @@ export const assessWorkspace = (input: {
       reason: input.identityReason ?? operation ?? 'An earlier operation may not have finished.',
       nextAction: 'Check what changed. Do not retry automatically.',
     }
-  if (input.unknown)
-    return {
-      outcome: 'blocked',
-      reason: operation ?? 'Dev could not confirm a process or file write stopped.',
-      nextAction: `Do not write here or retry the operation. Once it is confirmed stopped, the user may clear it with ${
-        input.reserved
-          ? 'dev workspace release <task-id>, which releases the whole task'
-          : 'dev workspace release pre-existing'
-      }.`,
-    }
   const abandoned = input.abandoned()
-  if (abandoned.length > 0)
+  if (input.unknown.length > 0 || abandoned.length > 0)
     return {
       outcome: 'blocked',
-      reason:
-        operation ?? `Ended sessions may have left processes running (${abandoned.join(', ')}).`,
-      nextAction: `Do not write here or retry those operations. Once their processes are confirmed gone, the user may clear them with ${
-        input.reserved
-          ? 'dev workspace release <task-id>, which releases the whole task'
-          : 'dev workspace release pre-existing'
-      }.`,
+      reason: withOperation(
+        [
+          ...(input.unknown.length > 0
+            ? [`Dev could not confirm operations ${input.unknown.join(', ')} stopped.`]
+            : []),
+          ...(abandoned.length > 0
+            ? [`Operations ${abandoned.join(', ')} of ended sessions may still be running.`]
+            : []),
+        ].join(' ')
+      ),
+      nextAction: `Do not write here or retry those operations. ${release}`,
     }
   if (input.live)
     return {
@@ -193,7 +190,8 @@ export const workspaceStanding = (
   db: DatabaseSync,
   workspace: WorkspaceRecord,
   reserved: boolean,
-  uses: readonly UseRecord[]
+  uses: readonly UseRecord[],
+  taskId?: string
 ): WorkspaceStanding => {
   const pending = openOperations(db, workspace.id).map(value => ({
     id: value.id,
@@ -214,10 +212,11 @@ export const workspaceStanding = (
       missing,
       pending: pending[0],
       unresolved: pending.some(operation => operation.stage !== 'intent'),
-      unknown: uses.some(use => use.stage === 'unknown'),
+      unknown: uses.filter(use => use.stage === 'unknown').map(use => use.id),
       live: uses.some(use => isActiveUse(use)),
       abandoned: () => abandonedUseIds(authority, db, uses),
       reserved,
+      ...(taskId === undefined ? {} : { taskId }),
     }),
     missing,
     pending,
@@ -291,7 +290,8 @@ export const inspectWorkspaces = (
           db,
           workspace,
           reservation !== undefined,
-          uses
+          uses,
+          reservation?.taskId
         )
         for (const operation of pending) visibleOperationIds.add(operation.id)
         heads ??= repositoryHeads(repository.commonPath)
@@ -350,7 +350,7 @@ export const inspectWorkspaces = (
           reason: `No usable checkout after operation ${operation.id} (${operation.phase}).`,
           nextAction:
             operation.kind === 'allocation'
-              ? `Do not retry or use it. The user may run dev workspace release ${operation.taskId}, which removes what Git created of the worktree and releases the whole task.`
+              ? `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run ${taskRelease(operation.taskId)}, including what Git created of this one.`
               : 'Check what Git changed. Do not retry or use the checkout; the user must resolve it.',
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],

@@ -38,6 +38,8 @@ import {
   type WaitTiming,
   within,
 } from './workspace-check-support.ts'
+import { INTERNAL } from '../model-text-terms.ts'
+import { classifyError } from '../../scripts/usage-facts.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
@@ -278,28 +280,31 @@ const handoffTexts = (runtime: Pi.AgentSessionRuntime): string[] =>
 
 try {
   await claim(
-    'a permission for the same path but another checkout ID blocks a native write and a native read with an ID-specific refusal, ends the turn and keeps later calls blocked without running them',
+    'a permission for the same path but another checkout ID blocks a native write and a native read with an ID-specific refusal, ends the turn and keeps later calls blocked without running them; /workspace resume and a cancelled session change keep the mismatch and say to quit rather than to wait',
     async () => {
       const other = '00000000-0000-4000-8000-0000000000ff' as WorkspaceId
       const target = join(lead, 'wrong-checkout.txt')
-      const wrongId = (attached: WorkspaceAttachment): WorkspaceAttachment =>
-        overriding(attached, {
-          authorize: operation =>
-            Effect.map(
-              attached.authorize({ kind: 'read', cwd: lead }),
-              (admitted): WorkspaceAuthorization =>
-                admitted.kind === 'ready'
-                  ? {
-                      kind: 'ready',
-                      grant: {
-                        ...admitted.grant,
-                        access: operation.kind === 'write' ? 'write' : 'read',
-                        workspaceId: other,
-                      },
-                    }
-                  : admitted
-            ),
+      const wrongId = (attached: WorkspaceAttachment): WorkspaceAttachment => {
+        const authorize: WorkspaceAttachment['authorize'] = operation =>
+          Effect.map(
+            attached.authorize({ kind: 'read', cwd: lead }),
+            (admitted): WorkspaceAuthorization =>
+              admitted.kind === 'ready'
+                ? {
+                    kind: 'ready',
+                    grant: {
+                      ...admitted.grant,
+                      access: operation.kind === 'write' ? 'write' : 'read',
+                      workspaceId: other,
+                    },
+                  }
+                : admitted
+          )
+        return overriding(attached, {
+          authorize,
+          authorizeWriter: operation => authorize(operation),
         })
+      }
       for (const [name, call] of [
         ['write', toolCall('wrong-id-write', 'write', { path: target, content: 'no' })],
         ['read', toolCall('wrong-id-read', 'read', { path: join(lead, 'README.md') })],
@@ -313,6 +318,15 @@ try {
           attachment: wrongId(attached.effect),
           manager,
           offline,
+          ui: interactive(() => undefined).ui,
+          extensions: [
+            {
+              name: 'test:cancel-switch',
+              factory: api => {
+                api.on('session_before_switch', () => ({ cancel: true }))
+              },
+            },
+          ],
         })
         try {
           await opened.runtime.session.prompt(`Use ${name} once.`)
@@ -321,7 +335,7 @@ try {
           assert.equal(result.isError, true, result.text)
           assert.equal(
             result.text,
-            `Permission was for checkout ${other}, not ${opened.host.attachment.binding.workspaceId}. The call did not run.`
+            `Permission was for checkout ${other}, not ${opened.host.attachment.binding.workspaceId}. The call did not run, and checkout access stays blocked. Ask the user to quit and reopen this conversation.`
           )
           assert.equal(script.calls(), 1, `the ${name} refusal ended the turn`)
           assert.equal(opened.host.isParked(), true, 'later calls stay blocked')
@@ -332,7 +346,38 @@ try {
             input: { path: join(lead, 'README.md') },
           })
           assert.equal(later?.block, true)
-          assert.match(String(later?.reason), /^Checkout access is blocked by a switch or mismatch/)
+          assert.match(
+            String(later?.reason),
+            /^Checkout access is blocked because this conversation's permission no longer matches it; the tool did not run\. Ask the user to quit and reopen this conversation\.$/
+          )
+          await opened.runtime.session.prompt('/workspace resume')
+          assert.equal(
+            shown(opened.runtime).at(-1),
+            "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged.",
+            'with no switch pending, resume names the mismatch instead of a switch to wait for'
+          )
+          assert.equal(opened.host.isParked(), true, 'resume does not clear the mismatch')
+          const elsewhere = storedConversation(offline, lead)
+          assert.deepEqual(await opened.runtime.switchSession(elsewhere.file), { cancelled: true })
+          assert.equal(opened.host.isParked(), true, 'a cancelled session change keeps the block')
+          for (const emitted of [
+            result.text,
+            String(later?.reason),
+            shown(opened.runtime).at(-1) ?? '',
+            opened.host.blockedAccess('nothing ran'),
+          ])
+            assert.doesNotMatch(emitted, INTERNAL, 'emitted refusals use outward wording')
+          for (const [tool, emitted] of [
+            [name, result.text],
+            ['read', String(later?.reason)],
+            ['work', opened.host.blockedAccess('no background work started')],
+          ] as const)
+            assert.equal(classifyError(tool, emitted), 'blocked', `the profiler reads ${emitted}`)
+          assert.match(
+            opened.host.blockedAccess('nothing ran'),
+            /^Checkout access is blocked because this conversation's permission no longer matches it/,
+            'a cancelled session change keeps the mismatch, not a switch to wait for'
+          )
         } finally {
           await opened.close()
         }
@@ -548,7 +593,7 @@ try {
         assert.equal(result('mixed-bash').isError, true)
         assert.match(
           result('mixed-bash').text,
-          /Switching checkouts; the call did not run/,
+          /^The call did not run: .*Dev requested a checkout switch at turn end/,
           'the refused call keeps its reason'
         )
         assert.deepEqual(result('mixed-read'), { isError: true, text: 'Operation aborted' })
@@ -767,7 +812,7 @@ try {
         assert.equal(result('separate-write').isError, true)
         assert.match(
           result('separate-write').text,
-          /Switching checkouts; the call did not run.*Another task uses or needs/
+          /^The call did not run: Another task uses or needs.*Dev requested a checkout switch/
         )
         assert.ok(!existsSync(join(paused.checkout, 'asked.txt')), 'the paused checkout was kept')
         const isolated = opened.runtime.cwd
@@ -899,8 +944,10 @@ try {
         assert.equal(refused.isError, true)
         assert.match(
           refused.text,
-          /Switching checkouts; the call did not run.*Another task uses or needs/
+          /^The call did not run: Another task uses or needs.*Dev requested a checkout switch/
         )
+        assert.doesNotMatch(refused.text, INTERNAL, 'the switch refusal uses outward wording')
+        assert.equal(classifyError('write', refused.text), 'blocked', refused.text)
         assert.notEqual(resolve(opened.runtime.cwd), resolve(paused.checkout))
         assert.ok(!existsSync(join(paused.checkout, 'asked.txt')))
       } finally {

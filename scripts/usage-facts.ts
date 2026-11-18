@@ -88,7 +88,12 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^Checkout access is blocked by a switch or mismatch(?:(?:; the tool|\. This call) did not run|; no background work started)\.$|^Switching checkouts; the call did not run\. /,
+      /^(?:Checkout access is blocked (?:while|because) [^;]+|This conversation (?:is closing|changed checkouts meanwhile)); (?:the (?:tool|call) did not run|no background work started)\./,
+  },
+  {
+    outcome: 'blocked',
+    pattern: /^(?:No checkout switch was requested|No directory was created): /,
+    tools: ['workspace'],
   },
   {
     outcome: 'blocked',
@@ -101,7 +106,7 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^(?:This call needs \S+ access but got \S+\. It|Permission was for [\s\S]*, not [\s\S]*\. The call) did not run\.$/,
+      /^(?:This call needs \S+ access but got \S+|Permission was for [\s\S]*, not [\s\S]*)\. The call did not run, and checkout access stays blocked\. /,
   },
   { outcome: 'blocked', pattern: /^\S+ did not run: / },
   { outcome: 'blocked', pattern: /^This agent has read-only access$/ },
@@ -124,15 +129,16 @@ const textBytes = (blocks: readonly Block[]): number =>
     0
   )
 
+export const classifyError = (tool: string, text: string): ResultOutcome =>
+  ERROR_TEXTS.find(
+    error => (error.tools === undefined || error.tools.includes(tool)) && error.pattern.test(text)
+  )?.outcome ?? 'unclassified'
+
 const classify = (result: ResultEntry): ResultOutcome => {
   if (!result.isError) return 'returned'
   const text = firstText(result.blocks)
   if (text === undefined) return 'unclassified'
-  const recognized = ERROR_TEXTS.find(
-    error =>
-      (error.tools === undefined || error.tools.includes(result.tool)) && error.pattern.test(text)
-  )
-  return recognized?.outcome ?? 'unclassified'
+  return classifyError(result.tool, text)
 }
 
 const recordedAttempts = (entry: Entry): readonly AttemptRecord[] => {

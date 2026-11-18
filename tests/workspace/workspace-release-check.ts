@@ -65,6 +65,8 @@ import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
+import { switchNotRequested, type SwitchRequest } from '../../src/workspace-model-text.ts'
+import { classifyError } from '../../scripts/usage-facts.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { managedFacts, verdictName } from './workspace-completion-fixtures.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -2056,12 +2058,14 @@ try {
               attachment: () => Effect.die('artifact discovery must not read an attachment'),
             })
           ),
-        requestResume: handoff => {
+        requestResume: (handoff, source) => {
           requested.push(handoff)
+          sources.push(source)
           return accept
         },
       })
-      let accept = true
+      const sources: unknown[] = []
+      let accept: SwitchRequest = 'requested'
       const call = () =>
         tool.execute('artifacts', { action: 'artifacts' }, undefined, undefined, {
           cwd: active.binding.cwd,
@@ -2086,22 +2090,29 @@ try {
       assert.equal(requested.length, 0)
 
       active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
-      accept = false
+      accept = 'busy'
       const declined = await call().then(
         () => undefined,
         (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
       )
       assert.ok(
-        declined?.includes('so none was requested. No directory was created.'),
-        `a switch the host declines is reported as not requested: ${declined}`
+        declined?.startsWith('No directory was created: ') &&
+          declined.endsWith(switchNotRequested('busy')),
+        `a switch the host declines is reported as not requested, with its cause: ${declined}`
       )
+      assert.equal(classifyError('workspace', String(declined)), 'blocked', String(declined))
       assert.equal(requested.length, 1)
+      assert.equal(sources[0], active.effect, 'the host gets the checkout the call started from')
       await active.handoff(requested[0]!, async () => 'cancelled').catch(() => undefined)
       requested.length = 0
-      accept = true
+      accept = 'requested'
       const contended = await call()
       assert.equal(contended.terminate, true, 'the refused call ends the turn for a handoff')
-      assert.equal(value(contended).artifacts, 'switching')
+      assert.equal(value(contended).artifacts, 'switch-requested')
+      assert.ok(
+        JSON.stringify(contended.content).includes('No directory was created.'),
+        'the model reads that nothing was created and that the switch is only requested'
+      )
       assert.equal(value(contended).path, undefined, 'no directory is announced before the handoff')
       assert.equal(requested.length, 1)
       const handoff = requested[0]!
@@ -2312,7 +2323,7 @@ try {
           Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
         requestResume: handoff => {
           requested.push(handoff)
-          return true
+          return 'requested'
         },
       })
       const resumeRefusal = async (input: JsonObject) => {

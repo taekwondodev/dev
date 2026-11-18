@@ -64,6 +64,9 @@ import {
   type RefusalDetails,
   type SweepDetails,
   type SwitchDetails,
+  SWITCH_REQUESTED,
+  switchNotRequested,
+  type SwitchRequest,
 } from './workspace-model-text.ts'
 import {
   scopedGrantOf,
@@ -123,13 +126,14 @@ export interface WorkspaceHost {
   readonly writeOperations: WriteOperations
   readonly editOperations: EditOperations
   isParked(): boolean
+  blockedAccess(didNotRun: string): string
 
   isDetached(): boolean
   requestHandoff(
     handoff: WorkspaceHandoff,
     source: WorkspaceAttachment,
     context: ExtensionContext
-  ): boolean
+  ): SwitchRequest
   prepareRuntime(input: {
     readonly sessionManager: SessionManager
     readonly cwd: string
@@ -185,10 +189,31 @@ type Admission =
     }
   | RefusedAdmission
 
-const parkedRefusal: RefusedAdmission = {
-  kind: 'refused',
-  endsTurn: true,
-  reason: 'Checkout access is blocked by a switch or mismatch. This call did not run.',
+type Parked = false | 'switch' | 'mismatch' | 'unresolved'
+
+type BlockedAccess = Exclude<Parked, false> | 'closing' | 'changed'
+
+const blockedByMismatch = (cause: string): string =>
+  `${cause}. The call did not run, and checkout access stays blocked. Ask the user to quit and reopen this conversation.`
+
+const BLOCKED_ACCESS: Record<BlockedAccess, readonly [string, string]> = {
+  switch: [
+    'Checkout access is blocked while this conversation switches checkouts',
+    ' Retry after dev reports where it works.',
+  ],
+  mismatch: [
+    "Checkout access is blocked because this conversation's permission no longer matches it",
+    ' Ask the user to quit and reopen this conversation.',
+  ],
+  unresolved: [
+    'Checkout access is blocked because dev cannot confirm an earlier session change',
+    ' Ask the user to quit and reopen this conversation.',
+  ],
+  closing: ['This conversation is closing', ''],
+  changed: [
+    'This conversation changed checkouts meanwhile',
+    ' Check where it works now before retrying.',
+  ],
 }
 const dismissedQuestionRefusal: RefusedAdmission = {
   kind: 'refused',
@@ -295,10 +320,12 @@ const pendingSwitchNotice =
 const sessionChangeNotice =
   'Another session change is still in progress, so the session was not replaced; try again once it finishes.'
 const mismatchNotice =
-  "This conversation's directory or checkout no longer matches its permission, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged."
+  "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged."
 const closingNotice = 'This conversation is closing, so the session was not replaced.'
 const changedMeanwhileNotice =
   'This conversation changed checkouts meanwhile, so it was not switched. Run /workspace resume again to choose from where it is now.'
+const unresolvedChangeNotice =
+  'Dev cannot confirm the earlier session change, so the session was not replaced. Quit to leave it unchanged.'
 const unresolvedSwitchNotice =
   'Dev cannot confirm the earlier checkout switch. The session was not replaced. Quit to leave it unchanged.'
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
@@ -550,12 +577,22 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let startedSessionId: string | undefined
   let currentApi: ExtensionAPI | undefined
 
-  let parked: false | 'switch' | 'mismatch' = false
-  const setParked = (next: false | 'switch' | 'mismatch'): void => {
+  let parked: Parked = false
+  const setParked = (next: Parked): void => {
     if (parked === next) return
     parked = next
     options.onParkingChange?.()
   }
+  const blockedAccess = (didNotRun: string, changed = false): string => {
+    const [cause, next] =
+      BLOCKED_ACCESS[closed || quitting ? 'closing' : parked || (changed ? 'changed' : 'switch')]
+    return `${cause}; ${didNotRun}.${next}`
+  }
+  const parkedRefusal = (changed = false): RefusedAdmission => ({
+    kind: 'refused',
+    endsTurn: true,
+    reason: blockedAccess('the call did not run', changed),
+  })
   let closed = false
   let pending: PendingTransition | undefined
   let armedRunEnd: PendingTransition | undefined
@@ -938,23 +975,32 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     capturedInput: false,
   })
 
+  const declinedSwitch = (source: WorkspaceAttachment): SwitchRequest | undefined => {
+    if (closed || quitting) return 'closing'
+    if (parked === 'mismatch' || parked === 'unresolved') return parked
+    if (source !== activeAttachment) return 'changed'
+    if (pending || parked || replacing) return 'busy'
+    return undefined
+  }
+
   const requestHandoff = (
     handoff: WorkspaceHandoff,
     origin: PendingTransition['origin'],
     context: ExtensionContext,
     immediate: boolean,
-    source: WorkspaceAttachment = activeAttachment
-  ): boolean => {
-    if (pending || parked || replacing || source !== activeAttachment) {
+    source: WorkspaceAttachment
+  ): SwitchRequest => {
+    const declined = declinedSwitch(source)
+    if (declined !== undefined) {
       withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
-      return false
+      return declined
     }
     setParked('switch')
     const transition = makeTransition(handoff, origin, context, 'requested')
     pending = transition
     if (immediate) scheduleHandoff(transition)
     else armedRunEnd = transition
-    return true
+    return 'requested'
   }
 
   const endRunForHandoff = (context: ExtensionContext): void => {
@@ -1003,7 +1049,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const choice = yield* piCall(() =>
         context.ui.select(question.title, [question.continueHere, question.separately])
       )
-      if (parked || closed || quitting || attachment !== activeAttachment) return parkedRefusal
+      if (parked || closed || quitting || attachment !== activeAttachment)
+        return parkedRefusal(attachment !== activeAttachment)
       if (choice === question.separately) return yield* attachment.authorize(operation)
       if (choice !== question.continueHere) {
         armedDismissalEnd = origin === 'tool-call'
@@ -1043,7 +1090,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       origin: 'tool-call' | 'user-bash',
       scoped: ScopedContinuation | undefined
     ): Effect.fn.Return<Admission, WorkspaceError> {
-      if (parked) return parkedRefusal
+      if (parked) return parkedRefusal()
       const attachment = activeAttachment
       const result =
         access === 'read' && scoped === undefined
@@ -1056,13 +1103,19 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
             )
       if (result.kind === 'refused') return result
       if (result.kind === 'handoff') {
-        const requested = requestHandoff(result.handoff, origin, context, origin === 'user-bash')
+        const request = requestHandoff(
+          result.handoff,
+          origin,
+          context,
+          origin === 'user-bash',
+          attachment
+        )
         return {
           kind: 'refused',
           endsTurn: true,
-          reason: requested
-            ? `Switching checkouts; the call did not run. ${result.handoff.reason}.`
-            : `The call did not run: it needs a checkout switch (${result.handoff.reason}), but another switch or session change is in progress, so none was requested.`,
+          reason: `The call did not run: ${result.handoff.reason}. ${
+            request === 'requested' ? SWITCH_REQUESTED : switchNotRequested(request)
+          }`,
         }
       }
       return {
@@ -1100,13 +1153,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     access: WorkspaceGrant['access']
   ): string | undefined => {
     const { binding } = activeAttachment
-    if (grant.access !== access) {
-      return `This call needs ${access} access but got ${grant.access}. It did not run.`
-    }
+    if (grant.access !== access)
+      return blockedByMismatch(`This call needs ${access} access but got ${grant.access}`)
     if (resolve(grant.cwd) !== resolve(context.cwd))
-      return `Permission was for ${grant.cwd}, not ${context.cwd}. The call did not run.`
+      return blockedByMismatch(`Permission was for ${grant.cwd}, not ${context.cwd}`)
     if (grant.workspaceId !== binding.workspaceId)
-      return `Permission was for checkout ${grant.workspaceId}, not ${binding.workspaceId}. The call did not run.`
+      return blockedByMismatch(
+        `Permission was for checkout ${grant.workspaceId}, not ${binding.workspaceId}`
+      )
     return undefined
   }
 
@@ -1289,7 +1343,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       return Effect.succeed({
         block: true,
         terminate: true,
-        reason: 'Checkout access is blocked by a switch or mismatch; the tool did not run.',
+        reason: blockedAccess('the tool did not run'),
       })
     const effect = toolEffect(getToolInfo(api, event.toolName))
     switch (effect) {
@@ -1506,6 +1560,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   ) {
     if (invokingHandoffSwitch) return yield* fromPi(() => rawSwitch(sessionFile, switchOptions))
     if (yield* refusedWhileSwitching) return { cancelled: true }
+    const before = parked
     replacing = true
     const previousSerial = runtimePreparationSerial
     let staged: WorkspaceAttachment | undefined
@@ -1572,10 +1627,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         if (runtimePreparationSerial === previousSerial && staged) {
           stagedAttachments.delete(stagedKey)
           yield* closeAttachmentOnce(staged)
-          setParked(false)
+          setParked(before)
           clearReopen()
         } else {
-          setParked('switch')
+          setParked('unresolved')
         }
       } else if (!pending) {
         setParked(false)
@@ -1586,17 +1641,17 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       Effect.tapError(() =>
         Effect.gen(function* () {
           if (replacementStarted) {
-            setParked('switch')
+            setParked('unresolved')
           } else if (runtimePreparationSerial === previousSerial && staged && stagedKey) {
             stagedAttachments.delete(stagedKey)
             yield* Effect.ignore(closeAttachmentOnce(staged))
-            setParked(false)
+            setParked(before)
             clearReopen()
           } else if (runtimePreparationSerial === previousSerial) {
-            setParked(false)
+            setParked(before)
             clearReopen()
           } else {
-            setParked('switch')
+            setParked('unresolved')
           }
         })
       ),
@@ -1683,12 +1738,13 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   })
 
   const switchingRefusal = (context: ExtensionCommandContext): string | undefined => {
+    if (closed || quitting) return closingNotice
+    if (pending !== undefined && reached(pending, 'switch-started')) return unresolvedSwitchNotice
+    if (parked === 'mismatch') return mismatchNotice
+    if (parked === 'unresolved') return unresolvedChangeNotice
     if (!context.isIdle())
       return 'A turn is still running, so the conversation was not switched; run /workspace resume again once it ends.'
-    if (pending !== undefined)
-      return reached(pending, 'switch-started') ? unresolvedSwitchNotice : pendingSwitchNotice
-    if (closed || quitting) return closingNotice
-    if (parked === 'mismatch') return mismatchNotice
+    if (pending !== undefined) return pendingSwitchNotice
     if (parked || replacing) return sessionChangeNotice
     return undefined
   }
@@ -1720,14 +1776,16 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         chosen.selection.taskId === binding.taskId
       )
         return alreadyWorksFor(chosen.selection.taskId, binding)
-      return requestHandoff(
+      const request = requestHandoff(
         yield* attachment.select(chosen.selection),
         'user-resume',
         context,
-        true
+        true,
+        attachment
       )
+      return request === 'requested'
         ? undefined
-        : 'Another switch or session change started meanwhile, so the conversation was not switched.'
+        : `The conversation was not switched. ${switchNotRequested(request)}`
     }).pipe(
       Effect.catch(error => Effect.succeed(`The conversation was not switched: ${error.message}`))
     )
@@ -1774,6 +1832,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
     isParked: () => parked !== false,
+    blockedAccess: didNotRun => blockedAccess(didNotRun),
     isDetached: () => detachedAttachments.has(activeAttachment),
     requestHandoff: (handoff, source, context) =>
       requestHandoff(handoff, 'tool-call', context, false, source),
@@ -1941,8 +2000,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           lifecycle: authority,
           attachment: () => activeAttachment,
           runPromise,
-          requestResume: (handoff, context) =>
-            requestHandoff(handoff, 'tool-resume', context, false),
+          requestResume: (handoff, source, context) =>
+            requestHandoff(handoff, 'tool-resume', context, false, source),
         })
       )
     },

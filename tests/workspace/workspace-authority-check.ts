@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { releaseOnceStopped } from '../../src/workspace-labels.ts'
 import { spawn, spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -247,11 +248,7 @@ const ready = (result: Awaited<ReturnType<TestAttachment['authorizeWriter']>>) =
 }
 const refusedWithoutCommits = (checkout: string, holder: string | undefined) => ({
   outcome: 'blocked',
-  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry after that session quits. If dev still blocks once its processes are confirmed stopped, the user may run ${
-    holder === undefined
-      ? 'dev workspace release pre-existing in that checkout, which keeps its files'
-      : `dev workspace release ${holder}, which releases that whole task and deletes its managed worktrees and artifacts`
-  }.`,
+  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry once that session's work is confirmed stopped. ${releaseOnceStopped(holder)}`,
 })
 const resolveDefaultRoot = (
   installation: URL,

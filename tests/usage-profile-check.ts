@@ -19,6 +19,8 @@ import * as Effect from 'effect/Effect'
 import { GIT_INSPECT_OPERATIONS } from '../scripts/usage-export.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from '../scripts/usage-profile.ts'
 import type { Period } from '../scripts/usage-report.ts'
+import { classifyError } from '../scripts/usage-facts.ts'
+import { SWITCH_REQUESTED, switchNotRequested } from '../src/workspace-model-text.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
 
 const checkout = join(import.meta.dirname, '..')
@@ -884,48 +886,12 @@ const edgesHome = join(root, 'edges')
 }
 
 const DEV_TEXTS = [
-  [
-    'src/workspace-host.ts',
-    ["'Checkout access is blocked by a switch or mismatch; the tool did not run.'"],
-    'read',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ["'Checkout access is blocked by a switch or mismatch. This call did not run.'"],
-    'read',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ['`Switching checkouts; the call did not run. ', '.`'],
-    'bash',
-    'blocked',
-  ],
   ['src/workspace-host.ts', ['`The call did not run: ', '`'], 'edit', 'blocked'],
   ['src/workspace-host.ts', ['`', ' did not run: ', '`'], 'write', 'blocked'],
   [
     'src/workspace-host.ts',
     ['`', ' did not run. Dev has not verified what this tool can do to project files.`'],
     'extension_tool',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ['`This call needs ', ' access but got ', '. It did not run.`'],
-    'read',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ['`Permission was for ', ', not ', '. The call did not run.`'],
-    'grep',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    ['`Permission was for checkout ', ', not ', '. The call did not run.`'],
-    'grep',
     'blocked',
   ],
   ['src/work-child-workspace.ts', ["'This agent has read-only access'"], 'bash', 'blocked'],
@@ -944,39 +910,6 @@ const DEV_TEXTS = [
   ],
   ['src/workspace-shell.ts', ["'dev could not identify the new shell'"], 'bash', 'execution'],
   [
-    'src/work-controller.ts',
-    [
-      '`Dev must switch checkouts first: ',
-      '. No work started. Dev switches at turn end and reports where this conversation works; if it does, check the request still applies there before retrying.`',
-    ],
-    'work',
-    'blocked',
-  ],
-  [
-    'src/work-controller.ts',
-    [
-      '`Dev must switch checkouts first: ',
-      '. No work started, and no switch was requested because another switch or session change is in progress.`',
-    ],
-    'work',
-    'blocked',
-  ],
-  [
-    'src/work-extension.ts',
-    ["'Checkout access is blocked by a switch or mismatch; no background work started.'"],
-    'work',
-    'blocked',
-  ],
-  [
-    'src/workspace-host.ts',
-    [
-      '`The call did not run: it needs a checkout switch (',
-      '), but another switch or session change is in progress, so none was requested.`',
-    ],
-    'write',
-    'blocked',
-  ],
-  [
     'src/work-wait-guard.ts',
     [
       '`Refused: this command only waits while background work is pending (',
@@ -992,6 +925,12 @@ const DEV_TEXTS = [
       ' seconds or more. Run the wait with work (action: "process"), e.g. \\`until <check>; do sleep 30; done\\`. Do independent work or end your turn; dev sends the result when ready.`',
     ],
     'bash',
+    'blocked',
+  ],
+  [
+    'src/work-controller.ts',
+    ['`Dev must switch checkouts first: ', '. No work started. '],
+    'work',
     'blocked',
   ],
   ['src/work-controller.ts', ['`', ' is required`'], 'work', 'invocation'],
@@ -2312,6 +2251,23 @@ try {
         'the plain git status after a subshell cd repeats only the later plain git status'
       )
       assert.equal(summary.tools.unmatchedResults, 2)
+    }
+  )
+
+  await claim(
+    'every reason dev gives for not requesting a checkout switch classifies as blocked in both workspace tool refusals',
+    () => {
+      const requests = ['closing', 'mismatch', 'unresolved', 'changed', 'busy'] as const
+      for (const request of requests) {
+        const declined = switchNotRequested(request)
+        assert.equal(classifyError('workspace', declined), 'blocked', declined)
+        const artifacts = `No directory was created: reason. ${declined}`
+        assert.equal(classifyError('workspace', artifacts), 'blocked', artifacts)
+        const work = `Dev must switch checkouts first: reason. No work started. ${declined}`
+        assert.equal(classifyError('work', work), 'blocked', work)
+      }
+      const requested = `Dev must switch checkouts first: reason. No work started. ${SWITCH_REQUESTED} Then check the request still applies there before retrying.`
+      assert.equal(classifyError('work', requested), 'blocked', requested)
     }
   )
 
