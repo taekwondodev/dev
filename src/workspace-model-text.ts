@@ -28,7 +28,7 @@ const SWITCH_NOT_REQUESTED: Record<Exclude<SwitchRequest, 'requested'>, string> 
   unresolved:
     'dev cannot confirm an earlier session change, so checkout access stays blocked; ask the user to quit and reopen this conversation',
   changed:
-    'this conversation changed checkouts meanwhile; check where it works now before retrying',
+    'this conversation changed sessions or checkouts meanwhile; check where it works now before retrying',
   busy: 'another checkout switch or session change is in progress; retry after it ends',
 }
 

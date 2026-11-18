@@ -2050,6 +2050,7 @@ try {
       const requested: WorkspaceHandoff[] = []
       const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
+        declinedSwitch: () => undefined,
         attachment: () => active.effect,
         runPromise: effect =>
           Effect.runPromise(
@@ -2185,6 +2186,7 @@ try {
       }
       const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
+        declinedSwitch: () => undefined,
         attachment: () => bound.effect,
         runPromise: effect =>
           Effect.runPromise(
@@ -2316,8 +2318,10 @@ try {
 
       const elsewhere = await lifecycle.attach({ conversation: conversation(), cwd: repo })
       const requested: WorkspaceHandoff[] = []
+      let declined: Exclude<SwitchRequest, 'requested'> | undefined
       const resumeTool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
+        declinedSwitch: () => declined,
         attachment: () => elsewhere.effect,
         runPromise: effect =>
           Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
@@ -2377,6 +2381,15 @@ try {
         'the same-path checkout file remains unselected despite the artifact publication'
       )
 
+      declined = 'mismatch'
+      const blocked = await resumeRefusal({ action: 'resume', taskId: allocated.taskId })
+      declined = undefined
+      assert.equal(
+        blocked,
+        switchNotRequested('mismatch'),
+        'a block the host reports after the lookup is returned before any checkout-dependent reply'
+      )
+      assert.equal(requested.length, 0, 'a blocked resume hands nothing to the host')
       const resumed = await resumeTool.execute(
         'resume',
         { action: 'resume', taskId: allocated.taskId } as never,

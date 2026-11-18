@@ -244,6 +244,9 @@ export interface WorkspaceToolOptions {
     source: WorkspaceAttachment,
     context: ExtensionContext
   ) => SwitchRequest
+  readonly declinedSwitch: (
+    source: WorkspaceAttachment
+  ) => Exclude<SwitchRequest, 'requested'> | undefined
 }
 
 interface ToolReply {
@@ -298,6 +301,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
         `Checkout ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'checkout not found'}. Resumable: ${resumable}`
       )
     }
+    const declined = options.declinedSwitch(attachment)
+    if (declined !== undefined) return yield* refuse(switchNotRequested(declined))
     const { binding } = attachment
     if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId) {
       const value = {

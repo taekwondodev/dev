@@ -189,9 +189,20 @@ type Admission =
     }
   | RefusedAdmission
 
-type Parked = false | 'switch' | 'mismatch' | 'unresolved'
+type Hold = 'mismatch' | 'unresolved'
 
-type BlockedAccess = Exclude<Parked, false> | 'closing' | 'changed'
+interface Replacement {
+  blocking: boolean
+}
+
+type ChangeOutcome = 'confirmed' | 'cancelled' | 'unconfirmed'
+
+const changeOutcome = (changed: boolean, unchanged: boolean): ChangeOutcome => {
+  if (changed) return 'confirmed'
+  return unchanged ? 'cancelled' : 'unconfirmed'
+}
+
+type BlockedAccess = Hold | 'closing' | 'changed' | 'switch' | 'replacing'
 
 const blockedByMismatch = (cause: string): string =>
   `${cause}. The call did not run, and checkout access stays blocked. Ask the user to quit and reopen this conversation.`
@@ -209,9 +220,13 @@ const BLOCKED_ACCESS: Record<BlockedAccess, readonly [string, string]> = {
     'Checkout access is blocked because dev cannot confirm an earlier session change',
     ' Ask the user to quit and reopen this conversation.',
   ],
+  replacing: [
+    'Checkout access is blocked while this conversation changes sessions',
+    ' Retry once that finishes.',
+  ],
   closing: ['This conversation is closing', ''],
   changed: [
-    'This conversation changed checkouts meanwhile',
+    'This conversation changed sessions or checkouts meanwhile',
     ' Check where it works now before retrying.',
   ],
 }
@@ -319,15 +334,16 @@ const pendingSwitchNotice =
   'A checkout switch is still in progress, so the session was not replaced; try again once it finishes.'
 const sessionChangeNotice =
   'Another session change is still in progress, so the session was not replaced; try again once it finishes.'
-const mismatchNotice =
-  "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged."
-const closingNotice = 'This conversation is closing, so the session was not replaced.'
-const changedMeanwhileNotice =
-  'This conversation changed checkouts meanwhile, so it was not switched. Run /workspace resume again to choose from where it is now.'
-const unresolvedChangeNotice =
-  'Dev cannot confirm the earlier session change, so the session was not replaced. Quit to leave it unchanged.'
-const unresolvedSwitchNotice =
-  'Dev cannot confirm the earlier checkout switch. The session was not replaced. Quit to leave it unchanged.'
+const unresolvedNotice =
+  'Dev cannot confirm an earlier checkout switch or session change, so the session was not replaced. Quit to leave it unchanged.'
+const RESUME_DECLINED: Record<Exclude<SwitchRequest, 'requested' | 'busy'>, string> = {
+  closing: 'This conversation is closing, so the session was not replaced.',
+  mismatch:
+    "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged.",
+  unresolved: unresolvedNotice,
+  changed:
+    'This conversation changed sessions or checkouts meanwhile, so it was not switched. Run /workspace resume again to choose from where it is now.',
+}
 const fromPi = <A>(operation: () => Promise<A>): Effect.Effect<A, WorkspaceHostError> =>
   Effect.tryPromise({
     try: operation,
@@ -577,31 +593,66 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   let startedSessionId: string | undefined
   let currentApi: ExtensionAPI | undefined
 
-  let parked: Parked = false
-  const setParked = (next: Parked): void => {
-    if (parked === next) return
-    parked = next
-    options.onParkingChange?.()
+  let closed = false
+  let quitting = false
+  let pending: PendingTransition | undefined
+  let replacement: Replacement | undefined
+  let hold: Hold | undefined
+  const isBlocked = (): boolean =>
+    hold !== undefined || pending !== undefined || replacement?.blocking === true
+  const updateAccess = (change: () => void): void => {
+    const was = isBlocked()
+    change()
+    if (isBlocked() !== was) options.onParkingChange?.()
   }
-  const blockedAccess = (didNotRun: string, changed = false): string => {
-    const [cause, next] =
-      BLOCKED_ACCESS[closed || quitting ? 'closing' : parked || (changed ? 'changed' : 'switch')]
+  const holdAccess = (cause: Hold): void =>
+    updateAccess(() => {
+      hold ??= cause
+    })
+  const settleHandoff = (transition: PendingTransition, outcome: ChangeOutcome): void =>
+    updateAccess(() => {
+      if (pending !== transition) return
+      if (outcome === 'unconfirmed') hold ??= 'unresolved'
+      else pending = undefined
+      if (outcome === 'confirmed') hold = undefined
+    })
+  const beginReplacement = (): Replacement => {
+    const started: Replacement = { blocking: false }
+    replacement = started
+    return started
+  }
+  const blockForReplacement = (owner: Replacement): void =>
+    updateAccess(() => {
+      owner.blocking = true
+    })
+  const settleReplacement = (owner: Replacement, outcome: ChangeOutcome): void =>
+    updateAccess(() => {
+      if (replacement !== owner) return
+      replacement = undefined
+      if (outcome === 'confirmed') hold = undefined
+      else if (outcome === 'unconfirmed') hold ??= 'unresolved'
+    })
+  const blockCause = (source: WorkspaceAttachment): BlockedAccess | undefined => {
+    if (closed || quitting) return 'closing'
+    if (hold !== undefined) return hold
+    if (source !== activeAttachment) return 'changed'
+    if (pending !== undefined) return 'switch'
+    return replacement === undefined ? undefined : 'replacing'
+  }
+  const blockedAccess = (didNotRun: string, source = activeAttachment): string => {
+    const [cause, next] = BLOCKED_ACCESS[blockCause(source) ?? 'switch']
     return `${cause}; ${didNotRun}.${next}`
   }
-  const parkedRefusal = (changed = false): RefusedAdmission => ({
+  const parkedRefusal = (source = activeAttachment): RefusedAdmission => ({
     kind: 'refused',
     endsTurn: true,
-    reason: blockedAccess('the call did not run', changed),
+    reason: blockedAccess('the call did not run', source),
   })
-  let closed = false
-  let pending: PendingTransition | undefined
   let armedRunEnd: PendingTransition | undefined
   let armedReviewEnd: RefusalDetails | undefined
   let armedDismissalEnd = false
   const pausedQuestion = yield* Semaphore.make(1)
   let invokingHandoffSwitch = false
-  let replacing = false
-  let quitting = false
   const withdrawals = new Map<WorkspaceAttachment, Fiber.Fiber<void>>()
   let runtimePreparationSerial = 0
   let pendingReopen:
@@ -867,8 +918,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
 
   const runHostHandoff = Effect.fnUntraced(function* (transition: PendingTransition) {
     if (transition.transitionSource !== activeAttachment) {
-      pending = undefined
-      setParked(false)
+      settleHandoff(transition, 'cancelled')
       return yield* withdrawOrReport(transition.transitionSource, transition.handoff)
     }
     const performed = yield* Effect.exit(
@@ -895,8 +945,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         )
         pendingReopen = undefined
         if (callbackResult === 'cancelled') {
-          pending = undefined
-          setParked(false)
+          settleHandoff(transition, 'cancelled')
           if (quitting) return
           restoreInput(transition.surface)
           notify(
@@ -910,14 +959,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           return yield* hostFailure('Dev did not confirm the checkout switch')
         if (transition.transitionSource !== activeAttachment)
           yield* closeAttachmentOnce(transition.transitionSource)
-        pending = undefined
-        setParked(false)
+        settleHandoff(transition, 'confirmed')
         queueReevaluation(transition)
       })
     )
     if (Exit.isSuccess(performed)) return
     const error = Cause.squash(performed.cause)
     if (reached(transition, 'switch-started')) {
+      settleHandoff(transition, 'unconfirmed')
       process.stderr.write(
         `Dev cannot confirm the switch finished. Checkout access is blocked. ${errorText(error)}\n`
       )
@@ -931,14 +980,14 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         : withdraw(transition.transitionSource, transition.handoff)
     )
     if (Exit.isFailure(withdrawn)) {
+      settleHandoff(transition, 'unconfirmed')
       process.stderr.write(
         `Dev could not cancel the switch. Checkout access is blocked. ${errorText(Cause.squash(withdrawn.cause))}\n`
       )
       return
     }
     pendingReopen = undefined
-    pending = undefined
-    setParked(false)
+    settleHandoff(transition, 'cancelled')
     restoreInput(transition.surface)
     notify(
       transition.surface,
@@ -975,12 +1024,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     capturedInput: false,
   })
 
-  const declinedSwitch = (source: WorkspaceAttachment): SwitchRequest | undefined => {
-    if (closed || quitting) return 'closing'
-    if (parked === 'mismatch' || parked === 'unresolved') return parked
-    if (source !== activeAttachment) return 'changed'
-    if (pending || parked || replacing) return 'busy'
-    return undefined
+  const declinedSwitch = (
+    source: WorkspaceAttachment
+  ): Exclude<SwitchRequest, 'requested'> | undefined => {
+    const cause = blockCause(source)
+    return cause === 'switch' || cause === 'replacing' ? 'busy' : cause
   }
 
   const requestHandoff = (
@@ -995,9 +1043,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
       return declined
     }
-    setParked('switch')
     const transition = makeTransition(handoff, origin, context, 'requested')
-    pending = transition
+    updateAccess(() => {
+      pending = transition
+    })
     if (immediate) scheduleHandoff(transition)
     else armedRunEnd = transition
     return 'requested'
@@ -1049,8 +1098,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const choice = yield* piCall(() =>
         context.ui.select(question.title, [question.continueHere, question.separately])
       )
-      if (parked || closed || quitting || attachment !== activeAttachment)
-        return parkedRefusal(attachment !== activeAttachment)
+      if (isBlocked() || blockCause(attachment) !== undefined) return parkedRefusal(attachment)
       if (choice === question.separately) return yield* attachment.authorize(operation)
       if (choice !== question.continueHere) {
         armedDismissalEnd = origin === 'tool-call'
@@ -1090,7 +1138,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       origin: 'tool-call' | 'user-bash',
       scoped: ScopedContinuation | undefined
     ): Effect.fn.Return<Admission, WorkspaceError> {
-      if (parked) return parkedRefusal()
+      if (isBlocked()) return parkedRefusal()
       const attachment = activeAttachment
       const result =
         access === 'read' && scoped === undefined
@@ -1179,7 +1227,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const scoped = scopedGrantOf(admitted.scoped)
     const mismatch = validateNativeGrant(admitted.grant, context, 'write')
     if (mismatch) {
-      setParked('mismatch')
+      holdAccess('mismatch')
       if (within !== undefined && scoped !== undefined && !(scoped instanceof WorkspaceError))
         yield* settleRefusedWrite(admitted.attachment, scoped, context, within.toolName)
       return { kind: 'refused', refusal: { block: true, terminate: true, reason: mismatch } }
@@ -1194,7 +1242,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         if (admitted.kind === 'refused') return refusalOf(admitted)
         const mismatch = validateNativeGrant(admitted.grant, context, 'read')
         if (mismatch) {
-          setParked('mismatch')
+          holdAccess('mismatch')
           return { block: true, terminate: true, reason: mismatch }
         }
         if (admitted.warning === undefined) writerWarned = false
@@ -1229,8 +1277,8 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const validate = Effect.suspend(() =>
         !closed &&
         !quitting &&
-        !replacing &&
-        !parked &&
+        replacement === undefined &&
+        !isBlocked() &&
         !detachedAttachments.has(attachment) &&
         activeAttachment === attachment &&
         attachment.binding.revision === binding.revision &&
@@ -1339,7 +1387,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     event: HostToolCallEvent,
     context: ExtensionContext
   ): Effect.Effect<ToolCallEventResult | void> => {
-    if (parked)
+    if (isBlocked())
       return Effect.succeed({
         block: true,
         terminate: true,
@@ -1441,7 +1489,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       staged ?? (canReuse ? activeAttachment : undefined)
     )
     if (staged) stagedAttachments.delete(key)
-    if (!canReuse && activeConversation.sessionId !== identity.sessionId) setParked('switch')
+    if (
+      replacement !== undefined &&
+      !canReuse &&
+      activeConversation.sessionId !== identity.sessionId
+    )
+      blockForReplacement(replacement)
     return {
       attachment: resolved.attachment,
       sessionManager: resolved.manager,
@@ -1490,42 +1543,43 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (previous !== attachment && !continuing) yield* closeAttachmentOnce(previous)
     if (startedSessionId === undefined || startedSessionId === nextIdentity.sessionId)
       showReplacementReceipt(nextIdentity.sessionId)
-    if (!pending && parked !== false) {
+    const owner = replacement
+    if (owner !== undefined && !continuing) {
       const expectedId = nextIdentity.sessionId
       runDeferred(
         Effect.sync(() => {
           if (
-            !pending &&
-            parked !== false &&
             activeConversation.sessionId === expectedId &&
             runtime?.session.sessionManager.getSessionId() === expectedId
           )
-            setParked(false)
+            settleReplacement(owner, 'confirmed')
         })
       )
     }
   })
 
   const refusedWhileSwitching = Effect.sync(() => {
-    if (pending === undefined) return false
+    if (hold !== 'unresolved' && pending === undefined) return false
     notify(
       currentContext,
-      reached(pending, 'switch-started') ? unresolvedSwitchNotice : pendingSwitchNotice,
+      hold === 'unresolved' ? unresolvedNotice : pendingSwitchNotice,
       'warning'
     )
     return true
   })
-  const guardedReplacement = Effect.fnUntraced(function* <A, E>(
-    cancelled: A,
-    replace: Effect.Effect<A, E>
-  ): Effect.fn.Return<A, E> {
-    if (yield* refusedWhileSwitching) return cancelled
-    replacing = true
-    return yield* Effect.ensuring(
-      replace,
-      Effect.sync(() => {
-        replacing = false
-      })
+  const guardedReplacement = Effect.fnUntraced(function* <
+    A extends { readonly cancelled: boolean },
+    E,
+  >(replace: Effect.Effect<A, E>): Effect.fn.Return<A | { readonly cancelled: true }, E> {
+    if (yield* refusedWhileSwitching) return { cancelled: true }
+    const owner = beginReplacement()
+    return yield* Effect.onExit(replace, exit =>
+      Effect.sync(() =>
+        settleReplacement(
+          owner,
+          changeOutcome(Exit.isSuccess(exit) && !exit.value.cancelled, !owner.blocking)
+        )
+      )
     )
   })
   const importConversation = Effect.fnUntraced(function* (
@@ -1543,7 +1597,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       (yield* Effect.sync(() => existsSync(source)))
     if (stored) return yield* switchSession(rawSwitch, source, undefined)
     return yield* guardedReplacement(
-      { cancelled: true },
       Effect.gen(function* () {
         const refusal = yield* importOutsideCheckout(source, cwdOverride)
         if (refusal === undefined) return yield* piCall(() => rawImport(inputPath, cwdOverride))
@@ -1560,13 +1613,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   ) {
     if (invokingHandoffSwitch) return yield* fromPi(() => rawSwitch(sessionFile, switchOptions))
     if (yield* refusedWhileSwitching) return { cancelled: true }
-    const before = parked
-    replacing = true
+    const owner = beginReplacement()
     const previousSerial = runtimePreparationSerial
-    let staged: WorkspaceAttachment | undefined
-    let stagedKey: string | undefined
+    const nothingPrepared = () => runtimePreparationSerial === previousSerial
+    let staged: { readonly key: string; readonly attachment: WorkspaceAttachment } | undefined
     let target: ConversationIdentity | undefined
-    let replacementStarted = false
+    let switchStarted = false
     const clearReopen = () => {
       if (
         target !== undefined &&
@@ -1575,6 +1627,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
         pendingReopen = undefined
     }
+    const unstage = Effect.suspend(() => {
+      if (staged === undefined) return Effect.void
+      stagedAttachments.delete(staged.key)
+      return closeAttachmentOnce(staged.attachment)
+    })
     return yield* Effect.gen(function* () {
       const targetManager = options.openSessionManager(sessionFile)
       const trustSnapshot = trustContextFor(currentContext, targetManager.getCwd())
@@ -1582,7 +1639,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       if (!file) return yield* fromPi(() => rawSwitch(sessionFile, switchOptions))
       const id = targetManager.getSessionId()
       target = { sessionId: id, sessionFile: file }
-      stagedKey = sessionKey(file, id)
       if (isBoundTo(activeConversation, target)) {
         notify(currentContext, 'This conversation is already active and kept its checkout.')
         return { cancelled: true }
@@ -1611,11 +1667,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         return { cancelled: true }
       }
       const prepared = attached.value
-      staged = prepared
-      stagedAttachments.set(stagedKey, prepared)
-      setParked('switch')
-      replacementStarted = true
-      const result = yield* fromPi(() =>
+      staged = { key: sessionKey(file, id), attachment: prepared }
+      stagedAttachments.set(staged.key, prepared)
+      blockForReplacement(owner)
+      switchStarted = true
+      return yield* fromPi(() =>
         rawSwitch(sessionFile, {
           ...switchOptions,
           cwdOverride: prepared.binding.cwd,
@@ -1623,41 +1679,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
             switchOptions?.projectTrustContextFactory ?? (cwd => ({ ...trustSnapshot, cwd })),
         })
       )
-      if (result.cancelled) {
-        if (runtimePreparationSerial === previousSerial && staged) {
-          stagedAttachments.delete(stagedKey)
-          yield* closeAttachmentOnce(staged)
-          setParked(before)
-          clearReopen()
-        } else {
-          setParked('unresolved')
-        }
-      } else if (!pending) {
-        setParked(false)
-        clearReopen()
-      }
-      return result
     }).pipe(
-      Effect.tapError(() =>
+      Effect.onExit(exit =>
         Effect.gen(function* () {
-          if (replacementStarted) {
-            setParked('unresolved')
-          } else if (runtimePreparationSerial === previousSerial && staged && stagedKey) {
-            stagedAttachments.delete(stagedKey)
-            yield* Effect.ignore(closeAttachmentOnce(staged))
-            setParked(before)
-            clearReopen()
-          } else if (runtimePreparationSerial === previousSerial) {
-            setParked(before)
-            clearReopen()
-          } else {
-            setParked('unresolved')
-          }
-        })
-      ),
-      Effect.ensuring(
-        Effect.sync(() => {
-          replacing = false
+          const changed = Exit.isSuccess(exit) && !exit.value.cancelled
+          const unchanged =
+            !changed && nothingPrepared() && (Exit.isSuccess(exit) || !switchStarted)
+          if (unchanged) yield* Effect.ignore(unstage)
+          if (changed || unchanged) clearReopen()
+          settleReplacement(owner, changeOutcome(changed, unchanged))
         })
       )
     )
@@ -1688,10 +1718,11 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       yield* Deferred.await(inFlight.settled)
       if (pending === inFlight) return
     }
-    if (pending) {
-      const withdrawn = yield* Effect.exit(withdraw(pending.transitionSource, pending.handoff))
+    const waiting = pending
+    if (waiting) {
+      const withdrawn = yield* Effect.exit(withdraw(waiting.transitionSource, waiting.handoff))
       if (Exit.isFailure(withdrawn)) {
-        setParked('switch')
+        settleHandoff(waiting, 'unconfirmed')
         notify(
           currentContext,
           `Dev could not safely cancel the checkout switch. ${errorText(Cause.squash(withdrawn.cause))}`,
@@ -1699,8 +1730,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         )
         return
       }
-      pending = undefined
-      setParked(false)
+      settleHandoff(waiting, 'cancelled')
     }
     yield* closeAttachmentOnce(activeAttachment)
   })
@@ -1737,15 +1767,16 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     return choice === undefined ? undefined : candidates[rows.indexOf(choice)]
   })
 
-  const switchingRefusal = (context: ExtensionCommandContext): string | undefined => {
-    if (closed || quitting) return closingNotice
-    if (pending !== undefined && reached(pending, 'switch-started')) return unresolvedSwitchNotice
-    if (parked === 'mismatch') return mismatchNotice
-    if (parked === 'unresolved') return unresolvedChangeNotice
+  const resumeRefusal = (
+    context: ExtensionCommandContext,
+    source: WorkspaceAttachment
+  ): string | undefined => {
+    const declined = declinedSwitch(source)
+    if (declined === 'busy')
+      return pending === undefined ? sessionChangeNotice : pendingSwitchNotice
+    if (declined !== undefined) return RESUME_DECLINED[declined]
     if (!context.isIdle())
       return 'A turn is still running, so the conversation was not switched; run /workspace resume again once it ends.'
-    if (pending !== undefined) return pendingSwitchNotice
-    if (parked || replacing) return sessionChangeNotice
     return undefined
   }
 
@@ -1761,15 +1792,15 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
         exitCode: 2,
       })
     const taskId = args[0] === undefined ? undefined : yield* exactId(args[0], 'Task')
-    const busy = switchingRefusal(context)
-    if (busy !== undefined) return say(busy)
     const attachment = activeAttachment
+    const busy = resumeRefusal(context, attachment)
+    if (busy !== undefined) return say(busy)
     const requested = yield* Effect.gen(function* () {
       const chosen = yield* resumeChoice(taskId, attachment.binding, context)
-      if (chosen === undefined || typeof chosen === 'string') return chosen
-      const changed =
-        attachment === activeAttachment ? switchingRefusal(context) : changedMeanwhileNotice
-      if (changed !== undefined) return changed
+      if (chosen === undefined) return undefined
+      const late = resumeRefusal(context, attachment)
+      if (late !== undefined) return late
+      if (typeof chosen === 'string') return chosen
       const { binding } = attachment
       if (
         chosen.view.workspaceId === binding.workspaceId &&
@@ -1831,7 +1862,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     shellOperations: shell.operations,
     writeOperations: nativeWrites.writeOperations,
     editOperations: nativeWrites.editOperations,
-    isParked: () => parked !== false,
+    isParked: isBlocked,
     blockedAccess: didNotRun => blockedAccess(didNotRun),
     isDetached: () => detachedAttachments.has(activeAttachment),
     requestHandoff: (handoff, source, context) =>
@@ -1851,20 +1882,10 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       }
       const rawNew = nextRuntime.newSession.bind(nextRuntime)
       nextRuntime.newSession = newOptions =>
-        runPromise(
-          guardedReplacement(
-            { cancelled: true },
-            piCall(() => rawNew(newOptions))
-          )
-        )
+        runPromise(guardedReplacement(piCall(() => rawNew(newOptions))))
       const rawFork = nextRuntime.fork.bind(nextRuntime)
       nextRuntime.fork = (entryId, forkOptions) =>
-        runPromise(
-          guardedReplacement(
-            { cancelled: true },
-            piCall(() => rawFork(entryId, forkOptions))
-          )
-        )
+        runPromise(guardedReplacement(piCall(() => rawFork(entryId, forkOptions))))
       const rawImport = nextRuntime.importFromJsonl.bind(nextRuntime)
       nextRuntime.importFromJsonl = (inputPath, cwdOverride) =>
         runPromise(importConversation(rawSwitch, rawImport, inputPath, cwdOverride))
@@ -1934,12 +1955,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       })
 
       api.on('agent_before_settle', event => {
-        if (!parked) return
+        if (!isBlocked()) return
         return { entries: event.entries, continue: false }
       })
 
       api.on('input', (event, _context) => {
-        if (!parked || event.source === 'extension') return
+        if (!isBlocked() || event.source === 'extension') return
         const command = event.text.trim()
         if (
           command === '/workspace' ||
@@ -2002,6 +2023,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           runPromise,
           requestResume: (handoff, source, context) =>
             requestHandoff(handoff, 'tool-resume', context, false, source),
+          declinedSwitch,
         })
       )
     },
