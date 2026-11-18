@@ -35,7 +35,7 @@ Agents read dev's text while working on other repositories, without dev's CONTEX
   | outcome                                        | result                                                    |
   | workspace reservation                          | checkout kept for a task                                  |
   | admission, grant, write acquisition            | permission to write                                       |
-  | binding, attachment, rebind, handoff, parked   | the checkout this conversation uses; switching checkouts  |
+  | binding, attachment, workspace handoff, parked | the checkout this conversation uses; switching checkouts  |
   | sweep                                          | automatic cleanup                                         |
   | gate                                           | lock                                                      |
   | workspace authority, controller, owner, worker | dev                                                       |

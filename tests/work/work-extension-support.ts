@@ -98,8 +98,8 @@ export const openLead = async (
     workspace: {
       lifecycle: fixture.lifecycle.effect,
       attachment: fixture.attachment.effect,
-      requestRebind: () => {
-        throw new Error('no work extension check expects a workspace rebind')
+      requestHandoff: () => {
+        throw new Error('no work extension check expects a workspace handoff')
       },
     },
     isWorkspaceParked: () => false,

@@ -24,7 +24,7 @@ import { makeClaims } from './workspace/workspace-check-support.ts'
 const { claim, passed } = makeClaims()
 
 const INTERNAL =
-  /\b(lead|leaf|leaves|child|children|coordinat\w*|attempts?|outcomes?|reservations?|reserve[sd]?|admission|admit\w*|grants?|attachments?|rebind|binding|bound|parked|sweeps?|gates?|authority|controller|owners?|owned|producer|dispatch rules?|integration target|residue|dev-cycle|ADR)\b/i
+  /\b(lead|leaf|leaves|child|children|coordinat\w*|attempts?|outcomes?|reservations?|reserve[sd]?|admission|admit\w*|grants?|attachments?|handoffs?|binding|bound|parked|sweeps?|gates?|authority|controller|owners?|owned|producer|dispatch rules?|integration target|residue|dev-cycle|ADR)\b/i
 
 const descriptions = (schema: unknown): string[] => {
   if (Array.isArray(schema)) return schema.flatMap(descriptions)

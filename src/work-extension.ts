@@ -207,7 +207,7 @@ export const createWorkExtension = ({
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
-    readonly requestRebind: (
+    readonly requestHandoff: (
       handoff: WorkspaceHandoff,
       source: WorkspaceAttachment,
       context: Pi.ExtensionContext
@@ -254,7 +254,7 @@ export const createWorkExtension = ({
     | undefined
   const pending = new Map<AttemptId, PendingOutcome>()
   const quietLedger = makeQuietLedger()
-  const rebindRefusals = new Set<string>()
+  const handoffRefusals = new Set<string>()
 
   const ownerRuntime = (
     ctx: Pi.ExtensionContext
@@ -279,8 +279,8 @@ export const createWorkExtension = ({
                   workspace: {
                     lifecycle: workspace.lifecycle,
                     attachment: workspace.attachment,
-                    requestRebind: handoff =>
-                      workspace.requestRebind(handoff, workspace.attachment, context ?? ctx),
+                    requestHandoff: handoff =>
+                      workspace.requestHandoff(handoff, workspace.attachment, context ?? ctx),
                   },
                   ...(childEntry === undefined ? {} : { childEntry }),
                   ...(quietAfterMs === undefined ? {} : { quietAfterMs }),
@@ -1083,9 +1083,9 @@ export const createWorkExtension = ({
               details: result,
               structuredContent: result,
             })),
-            Effect.catchTag('WorkRebindRequired', refusal =>
+            Effect.catchTag('WorkHandoffRequired', refusal =>
               Effect.sync(() => {
-                rebindRefusals.add(toolCallId)
+                handoffRefusals.add(toolCallId)
                 return {
                   content: [{ type: 'text' as const, text: refusal.message }],
                   details: {},
@@ -1098,7 +1098,7 @@ export const createWorkExtension = ({
     })
 
     pi.on('tool_result', event =>
-      rebindRefusals.delete(event.toolCallId) ? { isError: true } : undefined
+      handoffRefusals.delete(event.toolCallId) ? { isError: true } : undefined
     )
     pi.on('tool_call', async event => {
       const command = 'command' in event.input ? event.input.command : undefined

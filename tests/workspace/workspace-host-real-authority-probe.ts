@@ -394,9 +394,13 @@ await claim(
   }
 )
 await claim(
-  'a real contended native write is blocked, rebinds to an exact-commit managed worktree and is not replayed',
+  'a real contended native write is blocked, hands off to an exact-commit managed worktree and is not replayed',
   () => {
-    assert.notEqual(resolve(managed), resolve(lead), 'the contended write rebinds the conversation')
+    assert.notEqual(
+      resolve(managed),
+      resolve(lead),
+      'the contended write hands the conversation off'
+    )
     assert.equal(git(['rev-parse', 'HEAD'], managed), leadCommit)
     assert.ok(!existsSync(join(lead, 'contended.txt')), 'the blocked write never ran')
     assert.ok(!existsSync(join(managed, 'contended.txt')), 'the blocked write was not replayed')

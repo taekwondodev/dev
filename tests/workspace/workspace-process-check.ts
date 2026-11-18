@@ -56,7 +56,7 @@ const withReport = (
   reportExecution,
 })
 const lost = (message: string) => new WorkspaceError({ outcome: 'unavailable', message })
-const unexpectedRebind = (): never => assert.fail('no process check expects a workspace rebind')
+const unexpectedHandoff = (): never => assert.fail('no process check expects a workspace handoff')
 const initCheckout = async (path: string): Promise<void> => {
   await mkdir(path, { mode: 0o700 })
   await exec('git', ['init', '--quiet', path])
@@ -255,7 +255,7 @@ try {
         workspace: {
           lifecycle: authority.effect,
           attachment: attachment.effect,
-          requestRebind: unexpectedRebind,
+          requestHandoff: unexpectedHandoff,
         },
         onOutcome: attempt => outcome.resolve(attempt),
       })
@@ -806,7 +806,7 @@ try {
             workspace: {
               lifecycle: authority.effect,
               attachment: lossyAttachment,
-              requestRebind: unexpectedRebind,
+              requestHandoff: unexpectedHandoff,
             },
           })
         )
@@ -856,7 +856,7 @@ try {
             workspace: {
               lifecycle: authority.effect,
               attachment: flaky,
-              requestRebind: unexpectedRebind,
+              requestHandoff: unexpectedHandoff,
             },
           })
         )
@@ -897,7 +897,7 @@ try {
             workspace: {
               lifecycle: authority.effect,
               attachment: lockingAttachment,
-              requestRebind: unexpectedRebind,
+              requestHandoff: unexpectedHandoff,
             },
           })
         )

@@ -571,8 +571,8 @@ try {
         cwd: checkout,
       })
       const decision = await contender.authorize({ kind: 'write' })
-      assert.equal(decision.kind, 'rebind')
-      if (decision.kind !== 'rebind') throw new Error('Contended writer was not isolated')
+      assert.equal(decision.kind, 'handoff')
+      if (decision.kind !== 'handoff') throw new Error('Contended writer was not isolated')
       const detached = decision.handoff.target
       await contender.handoff(decision.handoff, async () => 'confirmed')
       mkdirSync(join(detached.checkout, 'build'))

@@ -125,7 +125,7 @@ export interface WorkspaceHost {
   isParked(): boolean
 
   isDetached(): boolean
-  requestRebind(
+  requestHandoff(
     handoff: WorkspaceHandoff,
     source: WorkspaceAttachment,
     context: ExtensionContext
@@ -423,7 +423,7 @@ const switchNotices = (
 const alreadyWorksFor = (taskId: WorkspaceId, binding: WorkspaceBinding): string =>
   `This conversation already works for task ${taskId} in ${binding.cwd}.`
 
-const rebindTurnEndNotice = (handoff: WorkspaceHandoff): string =>
+const handoffTurnEndNotice = (handoff: WorkspaceHandoff): string =>
   `Ending the turn to switch checkouts: ${handoff.reason}.`
 
 export const keptConversationGuidance = (
@@ -949,12 +949,12 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     else armedRunEnd = transition
   }
 
-  const endRunForRebind = (context: ExtensionContext): void => {
+  const endRunForHandoff = (context: ExtensionContext): void => {
     const transition = armedRunEnd
     if (transition === undefined) return
     armedRunEnd = undefined
     if (pending !== transition) return
-    notify(context, rebindTurnEndNotice(transition.handoff))
+    notify(context, handoffTurnEndNotice(transition.handoff))
     endRun(context, 'switching checkouts')
   }
 
@@ -1047,7 +1047,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
               origin
             )
       if (result.kind === 'refused') return result
-      if (result.kind === 'rebind') {
+      if (result.kind === 'handoff') {
         requestHandoff(result.handoff, origin, context, origin === 'user-bash')
         return {
           kind: 'refused',
@@ -1757,7 +1757,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     editOperations: nativeWrites.editOperations,
     isParked: () => parked !== false,
     isDetached: () => detachedAttachments.has(activeAttachment),
-    requestRebind: (handoff, source, context) =>
+    requestHandoff: (handoff, source, context) =>
       requestHandoff(handoff, 'tool-call', context, false, source),
     prepareRuntime,
     commitRuntime,
@@ -1812,7 +1812,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
             Effect.ensuring(
               Effect.sync(() => {
                 readerWarnings.delete(event.toolCallId)
-                endRunForRebind(context)
+                endRunForHandoff(context)
                 endRunForReview(context)
                 endRunForDismissal(context)
               })

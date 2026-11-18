@@ -22,7 +22,7 @@ import type { Writable } from 'node:stream'
 import {
   WorkDispatchError,
   WorkError,
-  WorkRebindRequired,
+  WorkHandoffRequired,
   WorkPersistenceError,
   WorkProtocolError,
   WorkSetupError,
@@ -175,7 +175,7 @@ interface WorkOwnerOptions {
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
-    readonly requestRebind: (handoff: WorkspaceHandoff) => void
+    readonly requestHandoff: (handoff: WorkspaceHandoff) => void
   }
   readonly onChange?: () => void
   readonly onLive?: () => void
@@ -191,7 +191,7 @@ const PI_CHILD_ENTRY = new URL('./pi-child.ts', import.meta.url)
 const toFailure = (cause: unknown): WorkFailure => {
   if (
     cause instanceof WorkError ||
-    cause instanceof WorkRebindRequired ||
+    cause instanceof WorkHandoffRequired ||
     cause instanceof WorkDispatchError ||
     cause instanceof WorkPersistenceError ||
     cause instanceof WorkProtocolError ||
@@ -730,9 +730,9 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           if (scoped instanceof WorkspaceError) return yield* scoped
           return { kind: 'ready' as const, grant: scoped }
         }).pipe(Effect.mapError(toFailure))
-        if (admission.kind === 'rebind') {
-          workspace.requestRebind(admission.handoff)
-          return yield* new WorkRebindRequired({
+        if (admission.kind === 'handoff') {
+          workspace.requestHandoff(admission.handoff)
+          return yield* new WorkHandoffRequired({
             message: `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. Check the new checkout before retrying.`,
           })
         }

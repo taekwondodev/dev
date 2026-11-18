@@ -520,7 +520,7 @@ try {
         cwd: repo,
       })
       const activeDecision = await contender.authorize({ kind: 'write' })
-      if (activeDecision.kind !== 'rebind') throw new Error('Contended writer was not isolated')
+      if (activeDecision.kind !== 'handoff') throw new Error('Contended writer was not isolated')
       const activeTarget = activeDecision.handoff.target
       assert.equal(activeTarget.origin, 'managed')
       assert.equal(git(['rev-parse', 'HEAD'], activeTarget.checkout), commit)
@@ -650,7 +650,7 @@ try {
         cwd: concurrentRepo,
       })
       const pausedDecision = await pausedContender.authorize({ kind: 'write' })
-      if (pausedDecision.kind !== 'rebind') throw new Error('Paused reservation was not isolated')
+      if (pausedDecision.kind !== 'handoff') throw new Error('Paused reservation was not isolated')
       assert.equal(pausedDecision.handoff.target.origin, 'managed')
       assert.equal(git(['rev-parse', 'HEAD'], pausedDecision.handoff.target.checkout), pausedCommit)
       await pausedContender.handoff(pausedDecision.handoff, async () => 'confirmed')
@@ -661,7 +661,7 @@ try {
 
   const asks = await openLifecycle({ root: join(sandbox, 'ask-authority') })
   await claim(
-    'a write that can ask, in a checkout a resumable task holds, is answered with that task, its head, changed files and last use and records nothing; joining then writes the same checkout for that task under a new acquisition, working separately is the exact-HEAD rebind, and a write that declares nothing isolates as before',
+    'a write that can ask, in a checkout a resumable task holds, is answered with that task, its head, changed files and last use and records nothing; joining then writes the same checkout for that task under a new acquisition, working separately is the exact-HEAD handoff, and a write that declares nothing isolates as before',
     async () => {
       const askRepo = join(sandbox, 'ask-repo')
       const askCommit = initRepository(askRepo, 'file.txt', 'fixture\n')
@@ -738,7 +738,7 @@ try {
       if (again.kind !== 'paused') throw new Error(`The second asking write was ${again.kind}`)
       assert.notEqual(again.task.reservationRevision, asked.task.reservationRevision)
       const isolated = await separate.authorize({ kind: 'write' })
-      if (isolated.kind !== 'rebind') throw new Error('Working separately did not isolate')
+      if (isolated.kind !== 'handoff') throw new Error('Working separately did not isolate')
       assert.equal(isolated.handoff.target.origin, 'managed')
       assert.notEqual(isolated.handoff.target.taskId, owned.taskId)
       assert.equal(git(['rev-parse', 'HEAD'], isolated.handoff.target.checkout), askCommit)
@@ -750,7 +750,7 @@ try {
         conversation: conversation('ask-silent'),
         cwd: askRepo,
       })
-      assert.equal((await silent.authorize({ kind: 'write' })).kind, 'rebind')
+      assert.equal((await silent.authorize({ kind: 'write' })).kind, 'handoff')
       await silent.close()
     }
   )
@@ -770,7 +770,7 @@ try {
         cwd: liveRepo,
       })
       const whileLive = await contender.authorizeWriter({ kind: 'write' }, { kind: 'ask' })
-      if (whileLive.kind !== 'rebind') throw new Error(`A live holder answered ${whileLive.kind}`)
+      if (whileLive.kind !== 'handoff') throw new Error(`A live holder answered ${whileLive.kind}`)
       await contender.handoff(whileLive.handoff, async () => 'cancelled')
       await contender.close()
 
@@ -787,7 +787,7 @@ try {
         { kind: 'write' },
         { kind: 'ask' }
       )
-      if (whileUnsettled.kind !== 'rebind')
+      if (whileUnsettled.kind !== 'handoff')
         throw new Error(`An unsettled holder answered ${whileUnsettled.kind}`)
       await afterUnsettled.handoff(whileUnsettled.handoff, async () => 'cancelled')
       await afterUnsettled.close()
@@ -821,7 +821,7 @@ try {
       })
       ready(await resumer.authorize({ kind: 'write' }))
       const taken = await late.authorizeWriter({ kind: 'write' }, answer)
-      if (taken.kind !== 'rebind') throw new Error(`A taken task answered ${taken.kind}`)
+      if (taken.kind !== 'handoff') throw new Error(`A taken task answered ${taken.kind}`)
       assert.equal(late.binding.taskId, undefined, 'the join attached nothing')
       await late.handoff(taken.handoff, async () => 'cancelled')
       await resumer.close()
@@ -1274,7 +1274,7 @@ try {
   )
 
   await claim(
-    "a lead native write into another repository reserves that checkout for the conversation's foreign task without a worktree or rebind, reuses its grant, admits a scoped write within it, and is refused with the delegation remedy while another task reserves the checkout",
+    "a lead native write into another repository reserves that checkout for the conversation's foreign task without a worktree or handoff, reuses its grant, admits a scoped write within it, and is refused with the delegation remedy while another task reserves the checkout",
     async () => {
       await assert.rejects(
         delegated.authorize({ kind: 'foreign-write', cwd: foreignRepo }),
@@ -1724,7 +1724,7 @@ try {
         cwd: repo,
       })
       const unresolvedDecision = await unresolvedContender.authorize({ kind: 'write' })
-      if (unresolvedDecision.kind !== 'rebind')
+      if (unresolvedDecision.kind !== 'handoff')
         throw new Error('A writer contending with an unknown use was not isolated')
       assert.equal(git(['rev-parse', 'HEAD'], unresolvedDecision.handoff.target.checkout), commit)
       await unresolvedContender.handoff(unresolvedDecision.handoff, async () => 'cancelled')
@@ -2225,7 +2225,7 @@ try {
       await scopedPrimary.reportExecution(besideShell, { kind: 'operation-started' })
       await scopedPrimary.reportExecution(besideShell, { kind: 'operation-completed' })
       const ownRead = await scopedPrimary.authorize({ kind: 'read' })
-      assert.equal(ownRead.kind === 'ready' ? ownRead.warning : 'rebind', undefined)
+      assert.equal(ownRead.kind === 'ready' ? ownRead.warning : 'handoff', undefined)
       const shellReader = await scopedLifecycle.attach({
         conversation: conversation('shell-reader'),
         cwd: scopedRepo,
@@ -2275,7 +2275,7 @@ try {
         cwd: scopedRepo,
       })
       const shellContention = await shellContender.authorize({ kind: 'write' })
-      if (shellContention.kind !== 'rebind')
+      if (shellContention.kind !== 'handoff')
         throw new Error('A writer contending with an unknown shell was not isolated')
       assert.equal(
         git(['rev-parse', 'HEAD'], shellContention.handoff.target.checkout),
@@ -2468,7 +2468,7 @@ try {
         cwd: fenceRepo,
       })
       const fenceContention = await fenceContender.authorize({ kind: 'write' })
-      if (fenceContention.kind !== 'rebind')
+      if (fenceContention.kind !== 'handoff')
         throw new Error('A live write execution did not isolate a contender')
       await fenceContender.handoff(fenceContention.handoff, async () => 'cancelled')
       await fenceContender.close()
@@ -2587,7 +2587,7 @@ try {
         cwd: fenceRepo,
       })
       const launderContention = await launderContender.authorize({ kind: 'write' })
-      if (launderContention.kind !== 'rebind')
+      if (launderContention.kind !== 'handoff')
         throw new Error('The old checkout admitted a contender beside unknown uses')
       await launderContender.handoff(launderContention.handoff, async () => 'cancelled')
       await launderContender.close()
@@ -2755,7 +2755,7 @@ try {
       await expectWorkspaceError(readerAgent.authorize({ kind: 'write' }), 'blocked')
       ready(await readerAgent.authorize({ kind: 'read' }))
       await endProcessUse(readerAgent, readerAgentUse)
-      assert.equal((await readerAgent.authorize({ kind: 'write' })).kind, 'rebind')
+      assert.equal((await readerAgent.authorize({ kind: 'write' })).kind, 'handoff')
       await readerAgent.close()
       await readerOwner.close()
       await readerAgentLifecycle.close()
@@ -3232,7 +3232,7 @@ try {
         cwd: switchingRepo,
       })
       const admission = await mover.authorize({ kind: 'write' })
-      if (admission.kind !== 'rebind') throw new Error('The contended writer was not isolated')
+      if (admission.kind !== 'handoff') throw new Error('The contended writer was not isolated')
       const { handoff } = admission
       const stage = async () =>
         (await switching.inspect({ cwd: switchingRepo }))

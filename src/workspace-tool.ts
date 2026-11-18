@@ -327,7 +327,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const admitted = yield* attachment
       .authorize({ kind: 'write', cwd: attachment.binding.cwd })
       .pipe(Effect.mapError(error => refuse(`No permission to write: ${error.message}`)))
-    if (admitted.kind === 'rebind') {
+    if (admitted.kind === 'handoff') {
       options.requestResume(admitted.handoff, context)
       const value = { artifacts: 'switching', reason: admitted.handoff.reason }
       return {

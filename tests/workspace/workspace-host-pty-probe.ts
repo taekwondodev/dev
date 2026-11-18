@@ -355,7 +355,7 @@ const makeAttachment = (
           const displaced = operation.kind === 'write' ? displacements.get(cwd) : undefined
           if (displaced !== undefined)
             return {
-              kind: 'rebind',
+              kind: 'handoff',
               handoff: handoffTo(binding, displaced.target, displaced.reason),
             }
           if (operation.kind === 'write' && operation.scoped !== undefined) {
@@ -1328,15 +1328,15 @@ assert.match(
 )
 
 attachFailures.add(resolve(targetFail))
-marker('DEV36_READY_FOR_FAILED_REBIND')
+marker('DEV36_READY_FOR_FAILED_HANDOFF')
 await within(
-  waitFor('the failed rebind to settle unknown', () =>
+  waitFor('the failed handoff to settle unknown', () =>
     timeline.some(entry => entry.kind === 'handoff-settled' && entry.outcome === 'unknown')
       ? true
       : undefined
   ),
   90000,
-  'failed automatic rebind report'
+  'failed automatic handoff report'
 )
 assert.ok(
   attachCalls.some(
@@ -1368,17 +1368,17 @@ const expectBlock = (
   return block
 }
 const PARKED = /Checkout access is blocked by a switch or mismatch; the tool did not run/
-const REBIND = /Switching checkouts; the call did not run\. fixture/
+const HANDOFF_REFUSAL = /Switching checkouts; the call did not run\. fixture/
 const UNVERIFIED = /did not run\. Dev has not verified what this tool can do to project files/
-expectBlock('stale-native-lead', lead, true, REBIND)
+expectBlock('stale-native-lead', lead, true, HANDOFF_REFUSAL)
 for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
   assert.equal(
     blockOf(toolCallId),
     undefined,
-    `${toolCallId} never reached the host: the run ended at the rebind before it was prepared`
+    `${toolCallId} never reached the host: the run ended at the handoff before it was prepared`
   )
 expectBlock('stale-shadow-read-a', targetA, false, UNVERIFIED)
-expectBlock('stale-native-a', targetA, true, REBIND)
+expectBlock('stale-native-a', targetA, true, HANDOFF_REFUSAL)
 expectBlock('rejected-native-b', targetB, false, /write did not run: .*parent/)
 expectBlock('unverified-custom-b', targetB, false, UNVERIFIED)
 for (const toolCallId of [
@@ -1431,7 +1431,7 @@ assert.deepEqual(staleCalls, [], 'no provider request ran in a parked context')
 assert.deepEqual(
   hostBlocks.filter(item => PARKED.test(item.reason)),
   [],
-  'no tool call was refused as parked: every rebind ended its run first'
+  'no tool call was refused as parked: every handoff ended its run first'
 )
 assert.deepEqual(
   abortedRuns,
@@ -1443,7 +1443,7 @@ assert.deepEqual(
     { step: 'resume-refused', terminalInputs: 1 },
     { step: 'resume-fail', terminalInputs: 1 },
   ],
-  'each tool-originated rebind ended its run through a session abort, the first two before any terminal Escape; the provider-side abort is not a session abort'
+  'each tool-originated handoff ended its run through a session abort, the first two before any terminal Escape; the provider-side abort is not a session abort'
 )
 
 const toolResults = new Map(
@@ -1467,8 +1467,8 @@ for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
     `${toolCallId} has no persisted result: Pi answers it synthetically on the next request`
   )
 for (const [toolCallId, reason] of [
-  ['stale-native-lead', REBIND],
-  ['stale-native-a', REBIND],
+  ['stale-native-lead', HANDOFF_REFUSAL],
+  ['stale-native-a', HANDOFF_REFUSAL],
   ['stale-shadow-read-a', UNVERIFIED],
 ] as const)
   assert.match(toolResults.get(toolCallId)?.text ?? '', reason, `${toolCallId} kept its reason`)
@@ -1707,7 +1707,7 @@ assert.ok(
 assert.deepEqual(
   timeline.flatMap(entry => (entry.kind === 'handoff-settled' ? [entry.outcome] : [])),
   ['confirmed', 'confirmed', 'confirmed', 'refused', 'unknown'],
-  'two automatic handoffs, one resume, one refused switch and one failed rebind'
+  'two automatic handoffs, one resume, one refused switch and one failed handoff'
 )
 assert.ok(
   handoffs.every(
@@ -1759,7 +1759,7 @@ assert.deepEqual(
       : []
   ),
   handoffs.map(item => ['info', `Ending the turn to switch checkouts: ${item.reason}.`]),
-  'each tool-originated rebind explained the ended turn before the switch'
+  'each tool-originated handoff explained the ended turn before the switch'
 )
 assert.deepEqual(
   hostMessages.map(shown),

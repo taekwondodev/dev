@@ -2040,7 +2040,7 @@ try {
   )
 
   await claim(
-    'the artifacts action admits a taskless writer, creates and reuses its absolute directory, and requests a rebind before returning a path for a contended checkout',
+    'the artifacts action admits a taskless writer, creates and reuses its absolute directory, and requests a handoff before returning a path for a contended checkout',
     async () => {
       const checkout = userCheckout()
       const owner = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
@@ -2085,9 +2085,9 @@ try {
 
       active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
       const contended = await call()
-      assert.equal(contended.terminate, true, 'the refused call ends the turn for a rebind')
+      assert.equal(contended.terminate, true, 'the refused call ends the turn for a handoff')
       assert.equal(value(contended).artifacts, 'switching')
-      assert.equal(value(contended).path, undefined, 'no directory is announced before rebinding')
+      assert.equal(value(contended).path, undefined, 'no directory is announced before the handoff')
       assert.equal(requested.length, 1)
       const handoff = requested[0]!
       const targetTask = requireTask(handoff.target.taskId)

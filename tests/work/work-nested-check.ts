@@ -360,7 +360,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      'a writing child writes and edits a repository nested in its own managed workspace through its controller, without rebinding or allocating another workspace',
+      'a writing child writes and edits a repository nested in its own managed workspace through its controller, without a handoff or allocating another workspace',
       async () => {
         const writer = await owner.run({
           taskId: 'managed-nested-writer',

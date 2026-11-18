@@ -156,7 +156,7 @@ export const WorkspaceAuthorizationSchema = Schema.Union([
     warning: Schema.optional(Schema.String),
     scoped: Schema.optional(ScopedOutcomeSchema),
   }),
-  Schema.Struct({ kind: Schema.Literal('rebind'), handoff: WorkspaceHandoffSchema }),
+  Schema.Struct({ kind: Schema.Literal('handoff'), handoff: WorkspaceHandoffSchema }),
 ])
 export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 

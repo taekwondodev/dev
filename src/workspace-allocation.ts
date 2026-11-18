@@ -506,7 +506,7 @@ export const isolateContendedWriter = (
         phase: 'intent',
       }
       state.parked = true
-      return { kind: 'rebind', handoff }
+      return { kind: 'handoff', handoff }
     }
   )
 }

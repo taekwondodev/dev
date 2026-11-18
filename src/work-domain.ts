@@ -541,14 +541,14 @@ export class WorkDispatchError extends Schema.TaggedError<
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class WorkRebindRequired extends Schema.TaggedError<
-  WorkRebindRequired,
+export class WorkHandoffRequired extends Schema.TaggedError<
+  WorkHandoffRequired,
   { readonly brand: unique symbol }
->()('WorkRebindRequired', { message: Schema.String }) {}
+>()('WorkHandoffRequired', { message: Schema.String }) {}
 
 export type WorkFailure =
   | WorkError
-  | WorkRebindRequired
+  | WorkHandoffRequired
   | WorkSetupError
   | WorkPersistenceError
   | WorkProtocolError

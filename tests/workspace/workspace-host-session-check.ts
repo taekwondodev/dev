@@ -278,7 +278,7 @@ const handoffTexts = (runtime: Pi.AgentSessionRuntime): string[] =>
 
 try {
   await claim(
-    'native external write/edit preserves checkout contention without allocating or rebinding a workspace',
+    'native external write/edit preserves checkout contention without allocating a workspace or a handoff',
     async () => {
       mkdirSync(join(fixture, 'configuration'))
       symlinkSync(join(fixture, 'configuration'), join(fixture, 'configuration-alias'))
@@ -330,14 +330,14 @@ try {
     }
   )
   await claim(
-    'native write/edit into a sibling or nested repository, including inside the lead managed workspace, reserves that checkout and writes in place without another worktree or rebind',
+    'native write/edit into a sibling or nested repository, including inside the lead managed workspace, reserves that checkout and writes in place without another worktree or handoff',
     async () => {
       for (const placement of ['sibling', 'nested', 'managed-nested']) {
         const { manager, attached } = await attachLeadConversation()
         if (placement === 'managed-nested') {
           const decision = await attached.authorize({ kind: 'write' })
-          assert.equal(decision.kind, 'rebind')
-          if (decision.kind !== 'rebind') throw new Error('Expected managed isolation')
+          assert.equal(decision.kind, 'handoff')
+          if (decision.kind !== 'handoff') throw new Error('Expected managed isolation')
           await attached.handoff(decision.handoff, async () => 'confirmed')
         }
         const { cwd } = attached.binding
@@ -461,7 +461,7 @@ try {
     }
   )
   await claim(
-    'a rebind inside a mixed tool batch ends the run: the admitted sibling read is cancelled unexecuted, Pi spends no request in the old context, and the handoff tells the model which call was refused and which were cancelled',
+    'a handoff inside a mixed tool batch ends the run: the admitted sibling read is cancelled unexecuted, Pi spends no request in the old context, and the handoff message tells the model which call was refused and which were cancelled',
     async () => {
       const { offline: mixed, script } = await offlineScript('mixed-batch', [
         [
@@ -1106,7 +1106,7 @@ try {
     [workProcess],
     [
       toolCall('read-after', 'read', { path: 'AGENTS.md' }),
-      toolCall('write-after', 'write', { path: 'after.txt', content: 'after the rebind\n' }),
+      toolCall('write-after', 'write', { path: 'after.txt', content: 'after the handoff\n' }),
     ],
   ])
   const { manager, attached } = await attachLeadConversation()
@@ -1124,7 +1124,7 @@ try {
   await runtime.session.waitForIdle()
 
   await claim(
-    'a work process refused in a checkout another task holds hands its rebind to the host, which moves the lead to an exact-commit managed worktree instead of leaving it parked',
+    'a work process refused in a checkout another task holds hands its handoff to the host, which moves the lead to an exact-commit managed worktree instead of leaving it parked',
     async () => {
       assert.equal(result('work-process').isError, true)
       assert.match(
@@ -1151,12 +1151,12 @@ try {
       assert.equal(lead1.calls(), 3, 'no model request was spent in the old context')
       assert.equal(result('read-after').isError, false, result('read-after').text)
       assert.equal(result('write-after').isError, false, result('write-after').text)
-      assert.equal(readFileSync(join(runtime.cwd, 'after.txt'), 'utf8'), 'after the rebind\n')
+      assert.equal(readFileSync(join(runtime.cwd, 'after.txt'), 'utf8'), 'after the handoff\n')
       assert.ok(!existsSync(join(lead, 'after.txt')), 'the held checkout was not written')
     }
   )
   await claim(
-    'a fork after the rebind continues in the managed worktree the conversation moved to, not the checkout its copied header names',
+    'a fork after the handoff continues in the managed worktree the conversation moved to, not the checkout its copied header names',
     async () => {
       const managedCwd = runtime.cwd
       const parentId = runtime.session.sessionManager.getSessionId()
@@ -1337,7 +1337,7 @@ try {
     ['new', 'before', 1500],
   ] as const)
     await claim(
-      `a /${replacement} that starts ${order} a contended work call's admission request withdraws the rebind${withdrawalDelayMs > 0 ? ' even when the withdrawal outlasts the replacement' : ''}: the next session stays usable and the old conversation can be resumed`,
+      `a /${replacement} that starts ${order} a contended work call's admission request withdraws the handoff${withdrawalDelayMs > 0 ? ' even when the withdrawal outlasts the replacement' : ''}: the next session stays usable and the old conversation can be resumed`,
       async () => {
         const { script: steps, offline: racing } = await offlineScript(
           `host-session-${replacement}-${order}-${withdrawalDelayMs}`,
@@ -1507,7 +1507,7 @@ try {
         await freshHost.runtime.session.prompt('Write one more scratch file.')
         await freshHost.runtime.session.waitForIdle()
         assert.equal(toolResults(freshHost.runtime)('modified-write').isError, true)
-        await unparked(freshHost.host, 'the rebind to finish', { attempts: 80, intervalMs: 100 })
+        await unparked(freshHost.host, 'the handoff to finish', { attempts: 80, intervalMs: 100 })
         assert.notEqual(
           resolve(freshHost.host.attachment.binding.cwd),
           resolve(fresh),
@@ -1590,7 +1590,7 @@ try {
         await heldHost.runtime.session.prompt('Write another scratch file.')
         await heldHost.runtime.session.waitForIdle()
         assert.equal(toolResults(heldHost.runtime)('held-next').isError, true)
-        await unparked(heldHost.host, 'the rebind to finish', { attempts: 80, intervalMs: 100 })
+        await unparked(heldHost.host, 'the handoff to finish', { attempts: 80, intervalMs: 100 })
         assert.notEqual(resolve(heldHost.host.attachment.binding.cwd), resolve(held))
         assert.equal(
           await checkoutTask(),

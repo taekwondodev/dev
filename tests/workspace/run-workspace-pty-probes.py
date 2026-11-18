@@ -66,7 +66,7 @@ STUB_ACTIONS = (
     Action('work-stop', 'DEV36_READY_FOR_WORK_STOP', '/work stop\r'),
     Action('resume-explicit', 'DEV36_READY_FOR_EXPLICIT_RESUME', 'resume it now\r'),
     Action('resume-refused', 'DEV36_READY_FOR_REFUSED_SWITCH', 'resume the other workspace\r'),
-    Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND', 'resume the failing task\r'),
+    Action('resume-failure', 'DEV36_READY_FOR_FAILED_HANDOFF', 'resume the failing task\r'),
 )
 
 
