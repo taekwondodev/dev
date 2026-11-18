@@ -1056,6 +1056,15 @@ export const createWorkExtension = ({
         scheduleDelivery()
       }
     })
+    pi.on('model_select', async event => {
+      const scope = deliveryScope()
+      if (event.source === 'restore' || scope === undefined) return
+      await Effect.runPromise(
+        ownedBy(scope.owner, work => work.exhaustions).pipe(
+          Effect.flatMap(since => recoverQuota(scope, since))
+        )
+      )
+    })
     pi.on('session_tree', (_event, ctx) =>
       sessionOwner?._tag === 'unavailable' ? undefined : interrupt(ctx, 'session navigation')
     )
