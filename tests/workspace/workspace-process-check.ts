@@ -22,7 +22,8 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { WorkOwner } from '../../src/work-controller.ts'
 import { checkChildWorkspace } from '../../src/work-child-workspace.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
-import { deferred, makeClaims, ownerEffect, waitUntil, within } from './workspace-check-support.ts'
+import { deferred, makeClaims, ownerEffect } from './workspace-check-support.ts'
+import { waitUntil, within } from '../wait.ts'
 import { openLifecycle, openShell } from './workspace-test-lifecycle.ts'
 import { makeNativeWrites } from '../../src/workspace-native-write.ts'
 import {
@@ -471,7 +472,12 @@ try {
           grant.cwd,
           silent
         )
-        await new Promise(resolveWait => setTimeout(resolveWait, 300))
+        await waitUntil(
+          'the forking family to start a member',
+          async () => (await exec('ps', ['-axo', 'command='])).stdout,
+          table => table.split('\n').some(line => line.trim() === 'sleep 31'),
+          { attempts: 100, intervalMs: 20 }
+        )
         await shell.stop()
         assert.equal(shell.live(), 0)
         await settled(8)

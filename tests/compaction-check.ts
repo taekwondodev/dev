@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
@@ -14,10 +13,10 @@ import {
   deferred,
   makeClaims,
   makeOfflineModel,
-  waitFor,
   type ScriptedStreamParts,
   type StreamSimple,
 } from './workspace/workspace-check-support.ts'
+import { holdsFor, waitFor, waitUntil } from './wait.ts'
 
 const decodeObservation = Schema.decodeUnknownSync(CompactionObservation)
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
@@ -279,6 +278,35 @@ const open = async (
     waitFor('summary request', () => summaries[index], { intervalMs: 5 })
   const compactions = () => manager.getEntries().filter(entry => entry.type === 'compaction')
   const applied = () => waitFor('applied compaction', () => compactions().at(-1), { intervalMs: 5 })
+  const observations = () =>
+    manager
+      .getEntries()
+      .flatMap(entry =>
+        entry.type === 'custom' && entry.customType === COMPACTION_OBSERVATION
+          ? [decodeObservation(entry.data)]
+          : []
+      )
+  const ready = () =>
+    waitFor(
+      'ready observation',
+      () => observations().find(event => event.kind === 'background-ready'),
+      { intervalMs: 5 }
+    )
+  const ended = () =>
+    waitFor(
+      'background end observation',
+      () => observations().find(event => event.kind === 'background-ended'),
+      { intervalMs: 5 }
+    )
+  const usageTotal = () =>
+    manager
+      .getEntries()
+      .filter(entry => entry.type === 'usage')
+      .reduce((sum, entry) => sum + entry.usage.totalTokens, 0)
+  const usageReaches = (total: number) =>
+    waitUntil(`background usage totalling ${total}`, usageTotal, value => value === total, {
+      intervalMs: 5,
+    })
   const start = () => session.prompt(recent)
   return {
     ...offline,
@@ -294,14 +322,10 @@ const open = async (
     oldId,
     summary,
     compactions,
-    observations: () =>
-      manager
-        .getEntries()
-        .flatMap(entry =>
-          entry.type === 'custom' && entry.customType === COMPACTION_OBSERVATION
-            ? [decodeObservation(entry.data)]
-            : []
-        ),
+    observations,
+    ready,
+    ended,
+    usageReaches,
     applied,
     start,
     hold: () => {
@@ -328,7 +352,6 @@ try {
         const rig = await open(options)
         try {
           await rig.start()
-          await sleep(20)
           assert.equal(rig.summaries.length, 0)
           assert.equal(rig.compactions().length, 0)
           assert.deepEqual(rig.announcements, [])
@@ -411,8 +434,6 @@ try {
         assert.equal(rig.ordinary.length, 1)
         assert.equal(rig.summaries.length, 1)
         assert.equal(rig.session.isIdle, true)
-        await sleep(20)
-        assert.equal(rig.session.getSessionStats().tokens.total - before, 12)
       } finally {
         await rig.close()
       }
@@ -452,7 +473,7 @@ try {
         const prompt = rig.session.prompt('CONCURRENT-TURN')
         const active = await waitFor('streaming request', () => rig.ordinary[1], { intervalMs: 5 })
         request.finish()
-        await sleep(20)
+        await rig.ready()
         assert.equal(rig.compactions().length, 0)
         assert.deepEqual(rig.announcements, [])
         active.finish(81930, 0, 'concurrent-result')
@@ -517,9 +538,11 @@ try {
         rig.tokens(100)
         rig.hold()
         const prompt = rig.session.prompt('AFTER-IDLE-COMPACTION')
-        await sleep(20)
-        assert.equal(rig.ordinary.length, 1)
-        assert.deepEqual(rig.announcements, [])
+        await holdsFor(
+          'the next prompt waits for every session_compact handler',
+          20,
+          () => rig.ordinary.length === 1 && rig.announcements.length === 0
+        )
         held.release.resolve()
         const next = await waitFor('request after announcement', () => rig.ordinary[1], {
           intervalMs: 5,
@@ -568,9 +591,11 @@ try {
           await held.entered()
           const compacted = await rig.applied()
           const prompt = next === 'prompt' ? rig.session.prompt('AFTER-BOUNDARY') : working
-          await sleep(20)
-          assert.equal(rig.ordinary.length, 2)
-          assert.deepEqual(rig.announcements, [])
+          await holdsFor(
+            'the continuation waits for every session_compact handler',
+            20,
+            () => rig.ordinary.length === 2 && rig.announcements.length === 0
+          )
           held.release.resolve()
           const continued = await waitFor('request after announcement', () => rig.ordinary[2], {
             intervalMs: 5,
@@ -615,7 +640,7 @@ try {
             prompt = rig.session.prompt('still-working')
             active = await waitFor('held ordinary turn', () => rig.ordinary[1], { intervalMs: 5 })
             request.finish(3, 1)
-            await sleep(20)
+            await rig.ready()
           }
           const before = rig.session.getSessionStats().tokens.total
           const abort = rig.session.abort()
@@ -623,7 +648,7 @@ try {
           await abort
           await prompt
           if (!ready) request.finish(3, 1)
-          await sleep(30)
+          await rig.usageReaches(4)
           assert.equal(rig.compactions().length, 0)
           assert.deepEqual(rig.announcements, [])
           assert.equal(rig.summaries.length, 1)
@@ -661,7 +686,8 @@ try {
           }
           rig.session.refreshContext()
           request.finish(3, 1, 'STALE-SUMMARY')
-          await sleep(30)
+          await rig.ended()
+          await rig.usageReaches(4)
           assert.equal(
             rig.compactions().some(entry => entry.summary.includes('STALE-SUMMARY')),
             false
@@ -718,8 +744,10 @@ try {
           const span = rig.observations().find(event => event.kind === 'native-ended')
           assert.equal(span?.outcome, 'completed')
           assert.ok(span && span.elapsedMs >= 0)
-          pending?.finish(3, 1, 'SUPERSEDED')
-          await sleep(20)
+          if (pending) {
+            pending.finish(3, 1, 'SUPERSEDED')
+            await rig.usageReaches(4)
+          }
           assert.equal(
             rig.compactions().filter(entry => entry.summary.includes('NATIVE-FALLBACK')).length,
             1
@@ -762,7 +790,7 @@ try {
         retry.finish(100, 0, 'recovered')
         await prompt
         background.finish(3, 1, 'OBSOLETE')
-        await sleep(20)
+        await rig.usageReaches(4)
         assert.ok(rig.manager.getEntries().some(entry => entry.type === 'context_edit'))
         assert.equal(rig.compactions().length, 1)
         assert.ok(rig.compactions()[0]?.summary.includes('OVERFLOW-RECOVERY'))
@@ -833,7 +861,7 @@ try {
         await rig.start()
         const background = await rig.summary()
         background.finish(0, 0, '', 'summary provider unavailable')
-        await sleep(20)
+        await rig.ended()
         assert.equal(rig.compactions().length, 0)
         assert.deepEqual(rig.announcements, [])
         assert.ok(JSON.stringify(rig.session.messages).includes('OLD-PREFIX'))
@@ -886,7 +914,7 @@ try {
           intervalMs: 5,
         })
         summary.finish(3, 1)
-        await sleep(20)
+        await rig.ready()
         edit = true
         active.finish(100, 0, 'finished')
         await prompt
@@ -985,7 +1013,7 @@ try {
           intervalMs: 5,
         })
         summary.finish()
-        await sleep(20)
+        await rig.ready()
         active.finish(81930, 0, 'boundary reached')
         await offered.promise
         assert.equal(
@@ -1028,7 +1056,7 @@ try {
         await entered.promise
         assert.equal(pending.options?.signal?.aborted, true)
         pending.finish()
-        await sleep(20)
+        await rig.usageReaches(12)
         assert.equal(rig.compactions().length, 0)
         assert.deepEqual(rig.announcements, [])
         release.resolve()

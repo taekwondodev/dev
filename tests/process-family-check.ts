@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { setTimeout as sleep } from 'node:timers/promises'
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import { native } from '../src/native.ts'
 import { observeFamily, processTable, type ObservedProcess } from '../src/process-family.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
+import { waitUntil } from './wait.ts'
 
 const read = (): Promise<ObservedProcess[]> => Effect.runPromise(processTable)
 const report = () => Effect.void
@@ -30,7 +30,6 @@ try {
     assert.ok(first !== undefined)
     assert.equal(first.parent, process.ppid)
     assert.match(first.birth, /^[1-9][0-9]*\.[0-9]{6}$/)
-    await sleep(20)
     assert.equal(find(await read(), process.pid)?.birth, first.birth)
   })
 
@@ -40,7 +39,6 @@ try {
     assert.ok(entry !== undefined)
     assert.equal(entry.parent, process.pid)
     assert.equal(entry.group, child.pid)
-    await sleep(20)
     assert.equal(find(await read(), child.pid)?.birth, entry.birth)
     child.kill('SIGKILL')
     await once(child, 'exit')
@@ -54,9 +52,12 @@ try {
     )
     const [chunk] = await once(parent.stdout!, 'data')
     const zombie = Number(String(chunk).trim())
-    for (let attempt = 0; attempt < 100 && !stateOf(zombie).startsWith('Z'); attempt += 1)
-      await sleep(20)
-    assert.ok(stateOf(zombie).startsWith('Z'))
+    await waitUntil(
+      'the forked child to become a zombie',
+      () => stateOf(zombie),
+      state => state.startsWith('Z'),
+      { attempts: 100, intervalMs: 20 }
+    )
     const table = await read()
     assert.equal(find(table, zombie), undefined)
     assert.equal(find(table, parent.pid)?.pid, parent.pid)
@@ -66,8 +67,15 @@ try {
 
   await claim('a shell family is observed alive and then observed gone', async () => {
     const child = await start('/bin/sh', ['-c', 'sleep 30 & wait'], true)
-    await sleep(100)
-    const root = find(await read(), child.pid)
+    const root = find(
+      await waitUntil(
+        'the shell to start its background sleep',
+        read,
+        table => table.some(item => item.parent === child.pid),
+        { attempts: 100, intervalMs: 20 }
+      ),
+      child.pid
+    )
     assert.ok(root !== undefined)
     const alive = await Effect.runPromise(
       observeFamily(
@@ -79,11 +87,15 @@ try {
     process.kill(-root.pid, 'SIGKILL')
     await once(child, 'exit')
     let gone = alive
-    for (let attempt = 0; attempt < 100 && gone.known.length > 0; attempt += 1) {
-      await sleep(20)
-      gone = await Effect.runPromise(observeFamily(gone, { rootExited: true, report }))
-    }
-    assert.deepEqual(gone.known, [])
+    await waitUntil(
+      'the killed family to be observed gone',
+      async () => {
+        gone = await Effect.runPromise(observeFamily(gone, { rootExited: true, report }))
+        return gone.known
+      },
+      known => known.length === 0,
+      { attempts: 100, intervalMs: 20 }
+    )
   })
 
   await claim(

@@ -35,9 +35,9 @@
     "types:pi": "node scripts/resolve-pi.ts",
     "typecheck": "npm run types:pi && tsc --noEmit",
     "lint:effect": "npm run types:pi && effect-tsgo diagnostics --project tsconfig.json --strict --format text",
-    "lint:types": "npm run types:pi && oxlint -c .oxlintrc-type-aware.json --max-warnings=0 .",
-    "lint": "npm run typecheck && npm run lint:effect && npm run lint:types && oxlint --max-warnings=0 .",
-    "lint:fix": "oxlint --fix .",
+    "lint:types": "npm run types:pi && oxlint -c .oxlintrc-type-aware.json --disable-nested-config --max-warnings=0 .",
+    "lint": "npm run typecheck && npm run lint:effect && npm run lint:types && oxlint --disable-nested-config --max-warnings=0 .",
+    "lint:fix": "oxlint --disable-nested-config --fix .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."
   },

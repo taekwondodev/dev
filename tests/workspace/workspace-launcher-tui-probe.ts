@@ -16,13 +16,13 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { setTimeout } from 'node:timers/promises'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import { WorkStore } from '../../src/work-store.ts'
 import { RETAINED_CONVERSATIONS } from '../../src/conversation-retention.ts'
+import { waitUntil } from '../wait.ts'
 import { AttemptId, GenerationId, SessionId, TaskId } from '../../src/work-domain.ts'
 import { awaitCleanupExits, loadInstalledPi, makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
@@ -37,11 +37,8 @@ const stoppedCleaners = new Set<number>()
 const cleanupMarkers = join(sandbox, 'cleanup-markers')
 mkdirSync(cleanupMarkers)
 let launcher: ReturnType<typeof spawn> | undefined
-const waitFor = async (ready: () => boolean, message: string) => {
-  const deadline = Date.now() + 20000
-  while (!ready() && Date.now() < deadline) await setTimeout(25)
-  assert.ok(ready(), message)
-}
+const waitFor = (ready: () => boolean, message: string) =>
+  waitUntil(message, ready, Boolean, { attempts: 800, intervalMs: 25 })
 
 const interruptedAfterQuit = process.env.LAUNCHER_TUI_FAULT === 'sigint-after-quit'
 const interruptedDuringSweep = ['sigint-during-sweep', 'sigint-during-strip'].includes(

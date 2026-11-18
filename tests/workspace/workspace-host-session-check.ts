@@ -15,7 +15,6 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, join, relative, resolve } from 'node:path'
 import { mock } from 'node:test'
 import { pathToFileURL } from 'node:url'
-import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
 import {
@@ -27,17 +26,21 @@ import {
 } from '../../src/workspace-domain.ts'
 import {
   loadInstalledPi,
-  IN_MEMORY_POLL,
   makeClaims,
   makeOfflineModel,
   openHostRuntime,
   replay,
   toolCall,
-  waitFor,
   type ScriptedContent,
+} from './workspace-check-support.ts'
+import {
+  clockAdvanced,
+  holdsFor,
+  IN_MEMORY_POLL,
+  waitFor,
   type WaitTiming,
   within,
-} from './workspace-check-support.ts'
+} from '../wait.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
@@ -640,13 +643,22 @@ try {
           () => (asked.length === 1 ? true : undefined),
           IN_MEMORY_POLL
         )
-        const command = opened.runtime.session.extensionRunner.emitUserBash({
-          type: 'user_bash',
-          command: 'true',
-          excludeFromContext: false,
-          cwd: paused.checkout,
-        })
-        await sleep(250)
+        let commandSettled = false
+        const command = opened.runtime.session.extensionRunner
+          .emitUserBash({
+            type: 'user_bash',
+            command: 'true',
+            excludeFromContext: false,
+            cwd: paused.checkout,
+          })
+          .finally(() => {
+            commandSettled = true
+          })
+        await holdsFor(
+          'the ! command waits for the pending answer',
+          250,
+          () => !commandSettled && asked.length === 1
+        )
         answer?.()
         const admitted = await command
         if (admitted?.operations === undefined)
@@ -1047,7 +1059,7 @@ try {
     async () => {
       const paused = await pausedCheckout('ask-order')
       const resumeIn = async (workspaceId: WorkspaceId) => {
-        await sleep(5)
+        await clockAdvanced()
         const toucher = await lifecycle.attach({
           conversation: conversationAt(pi.SessionManager.create(paused.checkout, sessionDir)),
           cwd: paused.checkout,
@@ -1349,10 +1361,9 @@ try {
         }
         const racingAdmission = {
           before: (authorizing: Effect.Effect<WorkspaceAuthorization, WorkspaceError>) =>
-            Effect.promise(async () => {
+            Effect.sync(() => {
               started = replacements[replacement]()
-              await sleep(150)
-            }).pipe(Effect.andThen(authorizing)),
+            }).pipe(Effect.andThen(authorizing.pipe(Effect.delay(150)))),
           after: (authorizing: Effect.Effect<WorkspaceAuthorization, WorkspaceError>) =>
             Effect.promise(async () => {
               const admitted = Effect.runPromise(authorizing)
@@ -1367,9 +1378,7 @@ try {
             : raced.effect.authorize(operation)
 
         const slowWithdrawal: WorkspaceAttachment['handoff'] = (transition, replace) =>
-          Effect.sleep(withdrawalDelayMs).pipe(
-            Effect.andThen(raced.effect.handoff(transition, replace))
-          )
+          raced.effect.handoff(transition, replace).pipe(Effect.delay(withdrawalDelayMs))
         const race = await openLeadHost({
           attachment: overriding(
             raced.effect,
@@ -1600,7 +1609,7 @@ try {
     id: string,
     handoff: (
       quitter: WorkspaceAttachment,
-      quitNow: Effect.Effect<void>
+      quitBefore: <A, E>(hostAction: Effect.Effect<A, E>) => Effect.Effect<A, E>
     ) => WorkspaceAttachment['handoff']
   ) => {
     const { offline: quitModel } = await offlineScript(id, [[workProcess]])
@@ -1612,10 +1621,10 @@ try {
     let disposing: Promise<void> | undefined
     let runtimeRef: Pi.AgentSessionRuntime | undefined
     let closedOnQuit = false
-    const quitNow = Effect.promise(async () => {
-      disposing = runtimeRef?.dispose()
-      await sleep(100)
-    })
+    const quitBefore = <A, E>(hostAction: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+      Effect.sync(() => {
+        disposing = runtimeRef?.dispose()
+      }).pipe(Effect.andThen(hostAction))
     const quitting = await openLeadHost({
       attachment: overriding(quitter.effect, {
         close: quitter.effect.close.pipe(
@@ -1625,7 +1634,7 @@ try {
             })
           )
         ),
-        handoff: handoff(quitter.effect, quitNow),
+        handoff: handoff(quitter.effect, quitBefore),
       }),
       manager: quitManager,
       offline: quitModel,
@@ -1652,8 +1661,8 @@ try {
     () =>
       quitDuringHandoff(
         'host-session-quit',
-        (quitter, quitNow) => (transition, replace) =>
-          quitter.handoff(transition, grant => quitNow.pipe(Effect.andThen(replace(grant))))
+        (quitter, quitBefore) => (transition, replace) =>
+          quitter.handoff(transition, grant => quitBefore(replace(grant)))
       )
   )
   await claim(
@@ -1661,9 +1670,8 @@ try {
     () =>
       quitDuringHandoff(
         'host-session-quit-refused',
-        (quitter, quitNow) => transition =>
-          quitNow.pipe(
-            Effect.andThen(quitter.handoff(transition, () => Effect.succeed('cancelled' as const))),
+        (quitter, quitBefore) => transition =>
+          quitBefore(quitter.handoff(transition, () => Effect.succeed('cancelled' as const))).pipe(
             Effect.andThen(
               Effect.fail(
                 new WorkspaceError({

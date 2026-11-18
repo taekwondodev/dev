@@ -3,11 +3,11 @@ import { createWorkExtension } from '../../src/work-extension.ts'
 import { WORK_VIEW_EVENT, type WorkView } from '../../src/work-view.ts'
 import {
   makeOfflineModel,
-  waitFor,
   type loadInstalledPi,
   type ScriptedContent,
   type StreamSimple,
 } from '../workspace/workspace-check-support.ts'
+import { waitFor } from '../wait.ts'
 import type { openWorkFixture } from './work-check-support.ts'
 
 type WorkFixture = Awaited<ReturnType<typeof openWorkFixture>>

@@ -12,7 +12,6 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -35,9 +34,8 @@ import {
   replay,
   type ScriptedContent,
   toolCall,
-  waitFor,
-  within,
 } from './workspace-check-support.ts'
+import { holdsFor, waitFor, within } from '../wait.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 import * as Effect from 'effect/Effect'
 
@@ -585,7 +583,7 @@ const survivorUse = await waitFor('the live shell use', async () =>
 )
 signal('READY_FOR_RELOAD')
 await within(reloaded.promise, 60000, 'the /reload session restart')
-await sleep(1500)
+await holdsFor('a reload keeps the live shell family', 1500, () => alive(survivorPid), 50)
 await claim(
   'a /reload typed in the TUI keeps a live lead shell family and its open use',
   async () => {
@@ -661,7 +659,12 @@ await within(
   90000,
   'the typed /quit to reach the dispose boundary'
 )
-await sleep(500)
+await holdsFor(
+  'the parked quit disposes nothing before the launcher takes over',
+  500,
+  () => alive(survivorPid) && existsSync(managed),
+  50
+)
 await claim(
   "a typed /quit parks Pi's own exit at the dispose boundary, recorded as a quit, with the runtime still undisposed",
   async () => {

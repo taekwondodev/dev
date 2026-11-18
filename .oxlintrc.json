@@ -11,6 +11,10 @@
         "eslint/no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
         "import/no-unassigned-import": ["warn", { "allow": ["**/compile-cache-adoption.ts"] }]
       }
+    },
+    {
+      "files": ["tests/**"],
+      "rules": { "dev/no-fixed-sleep": "error" }
     }
   ]
 }

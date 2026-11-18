@@ -11,7 +11,6 @@ import {
 } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import * as Cause from 'effect/Cause'
@@ -21,10 +20,12 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { holdsFor, waitUntil } from '../wait.ts'
 import {
   assertCopyReleased,
   makeChromeSource,
   openRenderer,
+  ownerExited,
   ownerPublished,
   selectOwnerFixture,
 } from './chrome-fixture.ts'
@@ -851,11 +852,10 @@ try {
         const slice = documentOf(await read(reader, { url: `${origin}/late.html` }))
         assert.equal(slice.document.method, 'browser')
         assert.match(slice.text, /Late requests/)
-        await sleep(1500)
-        assert.deepEqual(
-          seen.map(item => item.url).filter(url => url !== '/late.html'),
-          [],
-          'no late request reached the server'
+        await holdsFor(
+          'no late request reaches the server',
+          1500,
+          () => !seen.some(item => item.url !== '/late.html')
         )
       }
     )
@@ -925,7 +925,12 @@ try {
         const ending = await openReader()
         const peer = await openReader()
         const pending = read(ending, { url: `${origin}/hanging.html` })
-        await sleep(1500)
+        await waitUntil(
+          'Chrome to request the hanging script',
+          () => hanging.length,
+          requests => requests > 0,
+          { attempts: 200, intervalMs: 50 }
+        )
         const started = Date.now()
         await Effect.runPromise(ending.endSession('shutdown test'))
         assert.ok(
@@ -948,14 +953,18 @@ try {
         const ending = await openReader()
         seen.length = 0
         const pending = read(ending, { url: `${origin}/slow-app.html` })
-        await sleep(200)
+        await waitUntil(
+          'the static fetch to reach the server',
+          () => seen.length,
+          requests => requests > 0,
+          { attempts: 200, intervalMs: 10 }
+        )
         await Effect.runPromise(ending.endSession('shutdown during static fetch'))
         assert.match(failureOf(await pending), /session ended/)
-        await sleep(1500)
-        assert.deepEqual(
-          seen.map(item => item.url),
-          ['/slow-app.html'],
-          'only the static fetch reached the server; Chrome never loaded the page'
+        await holdsFor(
+          'only the static fetch reaches the server; Chrome never loads the page',
+          1500,
+          () => seen.length === 1 && seen[0]?.url === '/slow-app.html'
         )
       }
     )
@@ -986,7 +995,7 @@ try {
   )
 } finally {
   await Effect.runPromise(Scope.close(readerScope, Exit.void))
-  for (let attempt = 0; attempt < 100 && ownerPublished(dataHome); attempt += 1) await sleep(100)
+  await ownerExited(dataHome).catch(() => false)
   server.close()
   rmSync(fixture, { recursive: true, force: true })
 }

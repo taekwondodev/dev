@@ -26,6 +26,7 @@ import { workResultText } from '../../src/work-model-text.ts'
 import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
 import { openWorkFixture, script } from './work-check-support.ts'
+import { holdsFor } from '../wait.ts'
 import {
   CHILD_EFFORT,
   CHILD_MODEL,
@@ -192,10 +193,13 @@ const quietView = (lead: Lead, quiet: boolean, from = 0) =>
     view => view.commands.quiet.length > 0 === quiet,
     from
   )
-const noRequestBeyond = async (lead: Lead, count: number): Promise<void> => {
-  await new Promise(resolve => setTimeout(resolve, QUIET_AFTER_MS * 2))
-  assert.equal(lead.requests.length, count)
-}
+const noRequestBeyond = (lead: Lead, count: number): Promise<void> =>
+  holdsFor(
+    `no request beyond ${count}`,
+    QUIET_AFTER_MS * 2,
+    () => lead.requests.length === count,
+    50
+  )
 
 const userTurn = async (lead: Lead, index: number, prompt: string): Promise<void> => {
   const run = lead.session.prompt(prompt)
