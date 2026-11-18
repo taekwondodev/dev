@@ -133,28 +133,25 @@ const rangeNote = (result: ReadUrlResult): string => {
   return result.complete ? ' (complete)' : ' (size limit; no more text)'
 }
 
-const firstLine = (text: string): string => {
-  const end = text.indexOf('\n')
-  return end === -1 ? text : text.slice(0, end)
+const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean => {
+  const newline = text.indexOf('\n')
+  if (newline === -1 && !complete) return false
+  const firstLine = newline === -1 ? text : text.slice(0, newline)
+  return firstLine.replace(/^#+\s+/, '').trim() === title.trim()
 }
 
-const opensWith = (text: string, title: string): boolean =>
-  firstLine(text)
-    .replace(/^#+\s+/, '')
-    .trim() === title.trim()
-
-const URL_CHARACTER = /[\w\-~/?#@!$&*+=%]/
-
-const continuesUrl = (text: string, at: number): boolean => {
+const endsUrl = (text: string, at: number, atDocumentEnd: boolean): boolean => {
   const next = text[at]
-  if (next === undefined) return false
-  if (URL_CHARACTER.test(next)) return true
-  return /[.,;:]/.test(next) && URL_CHARACTER.test(text[at + 1] ?? '')
+  if (next === undefined) return atDocumentEnd
+  if (/[\s)>\]"'<`]/.test(next)) return true
+  if (!/[.,;:!?]/.test(next)) return false
+  const afterPunctuation = text[at + 1]
+  return afterPunctuation === undefined ? atDocumentEnd : /\s/.test(afterPunctuation)
 }
 
-const showsUrl = (text: string, url: string): boolean => {
+const showsUrl = ({ text, complete }: DocumentSlice, url: string): boolean => {
   for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
-    if (!continuesUrl(text, at + url.length)) return true
+    if (endsUrl(text, at + url.length, complete)) return true
   return false
 }
 
@@ -162,7 +159,7 @@ const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   const { document } = slice
   const { title } = document
   const lines = [
-    ...(title === undefined || opensWith(slice.text, title) ? [] : [`# ${title}`]),
+    ...(title === undefined || opensWith(slice, title) ? [] : [`# ${title}`]),
     `Source: ${document.finalUrl}${document.finalUrl === document.requestedUrl ? '' : ` (requested ${document.requestedUrl})`} · ${document.method}`,
     `Characters ${slice.offset}-${slice.end} of ${document.text.length}${rangeNote(result)}`,
   ]
@@ -172,7 +169,7 @@ const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
 }
 
 const linksTextOmits = (slice: DocumentSlice): readonly DocumentLink[] =>
-  slice.document.links.slice(0, LINKS_IN_TEXT).filter(link => !showsUrl(slice.text, link.url))
+  slice.document.links.slice(0, LINKS_IN_TEXT).filter(link => !showsUrl(slice, link.url))
 
 export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   if (outcome.kind === 'failed')
@@ -186,7 +183,7 @@ export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
     if (links.length > 0)
       parts.push(
         '',
-        `Links resolved to absolute URLs${slice.document.links.length > LINKS_IN_TEXT ? ` (from the first ${LINKS_IN_TEXT})` : ''}:`,
+        `Links (${links.length} of ${slice.document.links.length}):`,
         ...links.map(link => (link.text === '' ? `- ${link.url}` : `- ${link.text}: ${link.url}`))
       )
     if (result.suggestions.length > 0)

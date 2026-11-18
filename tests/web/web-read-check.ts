@@ -40,6 +40,7 @@ import {
   WebNetworkError,
   type AddressResolver,
 } from '../../src/web-network.ts'
+import { sliceDocument, type DocumentLink } from '../../src/web-documents.ts'
 import { toResult, toText } from '../../src/web-extension.ts'
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-web-read-')))
@@ -548,7 +549,7 @@ try {
       )
       assert.ok(
         text.includes(
-          `\n\nLinks resolved to absolute URLs:\n- the API: ${origin}/api.md\n- home: ${origin}/\n\nSuggestions:`
+          `\n\nLinks (2 of 2):\n- the API: ${origin}/api.md\n- home: ${origin}/\n\nSuggestions:`
         ),
         'links the text shows only as relative paths are listed with their absolute URLs'
       )
@@ -579,59 +580,111 @@ try {
         text.startsWith(`# Fixture Page\nSource: ${origin}/page.html · html\n`),
         'a title the text does not open with is kept'
       )
-      assert.ok(
-        !text.includes('Links resolved'),
-        'a link the text already shows with its absolute URL is not listed again'
-      )
+      assert.doesNotMatch(text, /^Links \(/m, 'no heading appears when no link is listed')
     }
   )
   await claim(
     'the text keeps a title its part does not show exactly, and lists links its first part shows only as a prefix or not at all, from the first 40 collected',
     () => {
       const base = 'https://docs.fixture.invalid'
+      const title = 'Run'
       const firstPart = `# Run configuration\n\nSee ${base}/guide-v2 and ${base}/api.json, or ${base}/faq.\n`
-      const links = [
+      const collectedLinks = [
         { text: 'guide', url: `${base}/guide` },
         { text: 'api', url: `${base}/api` },
         { text: 'faq', url: `${base}/faq` },
         { text: 'later', url: `${base}/later` },
         ...Array.from({ length: 40 }, (_, index) => ({ text: '', url: `${base}/n${index}` })),
       ]
-      const document = {
-        requestedUrl: `${base}/run`,
-        finalUrl: `${base}/run`,
-        title: 'Run',
-        text: `${firstPart}Later part: ${base}/later\n`,
-        links,
-        method: 'html',
-        contentType: 'text/html',
-        status: 200,
-        bodyTruncated: false,
-        suggestions: [],
-        limitations: [],
-      } as const
-      const outcome = {
-        kind: 'document',
-        slice: {
-          documentId: 'fixture',
-          document,
-          offset: 0,
-          text: firstPart,
-          end: firstPart.length,
-          complete: false,
-          continuation: 'fixture@1',
+      const render = (text: string, links: readonly DocumentLink[], maxChars = text.length) => {
+        const document = {
+          requestedUrl: `${base}/run`,
+          finalUrl: `${base}/run`,
+          title,
+          text,
+          links,
+          method: 'html',
+          contentType: 'text/html',
+          status: 200,
+          bodyTruncated: false,
+          suggestions: [],
+          limitations: [],
+        } as const
+        const outcome = {
+          kind: 'document',
+          slice: sliceDocument('fixture', document, 0, maxChars),
+        } as const
+        return toText(outcome, toResult(outcome))
+      }
+      const guide = `${base}/guide`
+      const docs = { text: 'docs', url: guide }
+      const relative = '[docs](/guide)'
+      const urlPrefix = `${relative}\n\nSee ${guide}`
+      const listsGuide = (text: string) => text.split('\n').includes(`- docs: ${guide}`)
+      const printsTitle = (text: string) => text.startsWith(`# ${title}\nSource: `)
+      const urlSuffixes = [
+        ['', false],
+        [' next', false],
+        ['(v2)', true],
+        ...Array.from(')>]"\'<`', delimiter => [delimiter, false] as const),
+        ...Array.from(
+          '.,;:!?',
+          punctuation =>
+            [
+              [punctuation, false],
+              [`${punctuation} next`, false],
+              [`${punctuation})`, true],
+            ] as const
+        ).flat(),
+      ] as const
+      const text = render(
+        `${firstPart}Later part: ${base}/later\n`,
+        collectedLinks,
+        firstPart.length
+      )
+      assert.deepEqual(
+        {
+          titleAtHardCut: printsTitle(render('# Run configuration', [], '# Run'.length)),
+          titleAtNewline: printsTitle(render('# Run\nconfiguration', [], '# Run\n'.length)),
+          titleAtDocumentEnd: printsTitle(render('### Run  ', [])),
+          guideBeforeSemicolonInDestination: listsGuide(
+            render(`${relative} plus [other](${guide};)`, [
+              docs,
+              { text: 'other', url: `${guide};` },
+            ])
+          ),
+          guideAtHardCut: listsGuide(render(`${urlPrefix}-v2`, [docs], urlPrefix.length)),
+          guideBeforePunctuationAtHardCut: listsGuide(
+            render(`${urlPrefix}. next`, [docs], urlPrefix.length + 1)
+          ),
+          guideBeforeWhitespaceAtHardCut: listsGuide(
+            render(`${urlPrefix} next`, [docs], urlPrefix.length + 1)
+          ),
+          guideListedBySuffix: Object.fromEntries(
+            urlSuffixes.map(([suffix]) => [
+              suffix,
+              listsGuide(render(`${urlPrefix}${suffix}`, [docs])),
+            ])
+          ),
+          linksHeading: text.match(/^Links .*:$/m)?.[0],
         },
-      } as const
-      const text = toText(outcome, toResult(outcome))
+        {
+          titleAtHardCut: true,
+          titleAtNewline: false,
+          titleAtDocumentEnd: false,
+          guideBeforeSemicolonInDestination: true,
+          guideAtHardCut: true,
+          guideBeforePunctuationAtHardCut: true,
+          guideBeforeWhitespaceAtHardCut: false,
+          guideListedBySuffix: Object.fromEntries(urlSuffixes),
+          linksHeading: 'Links (39 of 44):',
+        }
+      )
       assert.ok(text.startsWith('# Run\nSource: '), 'a title inside a longer first line is kept')
       const listed = text
-        .slice(text.indexOf('Links resolved'))
+        .slice(text.indexOf('\nLinks ('))
         .split('\n')
         .filter(line => line.startsWith('- '))
-      assert.ok(
-        text.includes('Links resolved to absolute URLs (from the first 40):'),
-        'the header says only the first 40 collected links were considered'
-      )
       assert.deepEqual(listed.slice(0, 3), [
         `- guide: ${base}/guide`,
         `- api: ${base}/api`,

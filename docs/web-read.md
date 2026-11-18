@@ -8,7 +8,9 @@ In codemode, call `tools.read_url({ url })`. Use `describeTool('read_url')` for 
 
 Results identify the source, method and limitations. `outcome` is `document` for the last part if nothing was cut, `partial` if there is more saved text or the page hit a size limit, and `failed` if nothing was read. Indexes such as `llms.txt` are suggestions, not substitutes.
 
-The text the model reads repeats nothing its part already shows: a title is omitted when the first line of the part is that title, and the first part lists each of the first 40 collected links whose complete absolute URL it does not show. An HTTP status appears only as a limitation. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
+The text omits the title only when the part shows a complete first line and that line matches the title after removing any leading Markdown heading marker and trimming both. A first line is complete if the part includes its newline or reaches the end of the saved text. The first part lists each of the first 40 collected links whose full absolute URL it does not show. A URL counts as shown if followed by whitespace, a closing delimiter, or the end of the saved text. Sentence punctuation counts as an ending only when followed by whitespace or the end of the saved text. The list starts with `Links (listed of total):` and is omitted when no links are listed.
+
+An HTTP status appears only as a limitation. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
 
 From a terminal:
 
