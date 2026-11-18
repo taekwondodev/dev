@@ -1290,6 +1290,26 @@ return JSON.stringify({
       })
   )
 
+  await claim('choosing another lead model lifts the exhaustion block and restores retries', () =>
+    withLead({}, async lead => {
+      const settings = lead.session.settingsManager
+      settings.applyOverrides({ retry: { enabled: true } })
+      const run = lead.session.prompt('start')
+      const first = await lead.request(0)
+      first.fail('Claude quota exceeded: rate limit (five_hour), resets 22:00:00')
+      await run
+      await lead.idle()
+      await lead.view('agents blocked', view => view.blocks.agentsBlocked)
+      assert.equal(settings.getRetryEnabled(), false)
+      const { model } = lead.session
+      assert.ok(model !== undefined)
+      const from = lead.views.length
+      await lead.session.setModel({ ...model, id: `${model.id}-other` })
+      await lead.view('agents unblocked', view => !view.blocks.agentsBlocked, from)
+      assert.equal(settings.getRetryEnabled(), true)
+    })
+  )
+
   await claim(
     'a final lead failure suspends automatic reactivation until the next user message',
     () =>
