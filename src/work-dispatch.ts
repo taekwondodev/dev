@@ -23,22 +23,23 @@ const decodeProfile = Schema.decodeUnknownEffect(DispatchProfileSchema)
 const failure = (message: string, cause?: unknown): WorkDispatchError =>
   new WorkDispatchError({ message, ...(cause === undefined ? {} : { cause }) })
 
-export const readDispatch: Effect.Effect<DispatchConfig, WorkDispatchError, FileSystem.FileSystem> =
-  Effect.gen(function* () {
+export const readDispatch = Effect.fnUntraced(
+  function* (path: string = DISPATCH_PATH) {
     const fs = yield* FileSystem.FileSystem
-    const contents = yield* fs.readFileString(DISPATCH_PATH)
+    const contents = yield* fs.readFileString(path)
     const config = yield* decodeConfig(contents, { onExcessProperty: 'error' })
     return {
-      path: DISPATCH_PATH,
-      configured: true as const,
+      path,
+      configured: true,
       rules: config.rules,
       default: config.default,
-    }
-  }).pipe(
-    Effect.mapError(cause =>
-      failure(`Cannot read dispatch configuration at ${DISPATCH_PATH}: ${errorText(cause)}`, cause)
+    } satisfies DispatchConfig
+  },
+  (effect, path = DISPATCH_PATH) =>
+    Effect.mapError(effect, cause =>
+      failure(`Cannot read dispatch configuration at ${path}: ${errorText(cause)}`, cause)
     )
-  )
+)
 
 const select = (config: DispatchConfig, input: DispatchInput): DispatchProfile =>
   input.skill !== undefined && Object.hasOwn(config.rules, input.skill)
@@ -46,9 +47,10 @@ const select = (config: DispatchConfig, input: DispatchInput): DispatchProfile =
     : config.default
 
 export const resolveDispatch = Effect.fnUntraced(function* (
-  input: DispatchInput
+  input: DispatchInput,
+  path?: string
 ): Effect.fn.Return<DispatchProfile, WorkDispatchError, FileSystem.FileSystem> {
-  const config = yield* readDispatch
+  const config = yield* readDispatch(path)
   const selected = select(config, input)
   if (input.harness !== undefined && input.harness !== 'pi') {
     return yield* failure(`Unsupported harness: ${input.harness}; only pi is available`)

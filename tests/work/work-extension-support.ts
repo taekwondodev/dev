@@ -103,6 +103,7 @@ export const openLead = async (
       },
     },
     isWorkspaceParked: () => false,
+    dispatchPath: fixture.dispatchPath,
     ...(options.onReactivationChange === undefined
       ? {}
       : { onReactivationChange: options.onReactivationChange }),

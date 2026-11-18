@@ -77,6 +77,11 @@ export const openWorkFixture = async (name: string) => {
     mkdirSync(path, { recursive: true })
   mkdirSync(dataHome, { mode: 0o700 })
   const profiles = installProfileFixture(join(root, 'profiles'))
+  const dispatchPath = join(root, 'dispatch.json')
+  writeFileSync(
+    dispatchPath,
+    JSON.stringify({ rules: {}, default: { harness: 'pi', model: CHILD_MODEL } })
+  )
   process.env.HOME = home
   process.env.PI_OFFLINE = '1'
   process.env.PI_TELEMETRY_DISABLED = '1'
@@ -137,6 +142,7 @@ export const openWorkFixture = async (name: string) => {
           },
         },
         childEntry: new URL('./work-child-entry.ts', import.meta.url),
+        dispatchPath,
         browserOwnerEntry: new URL('../web/browser-owner-entry.ts', import.meta.url),
         onOutcome: attempt => {
           outcomes.set(attempt.id, attempt)
@@ -214,6 +220,7 @@ export const openWorkFixture = async (name: string) => {
     repository,
     dataHome,
     profiles,
+    dispatchPath,
     git,
     writeSkill,
     lifecycle,

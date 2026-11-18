@@ -91,11 +91,29 @@ await claim(
     assert.doesNotMatch(malformed, /\bat \[/, 'a JSON failure names no field')
   }
 )
-await claim('the shipped configuration has no rules and a pi default with a model', async () => {
-  const shipped = await Effect.runPromise(readDispatch.pipe(Effect.provide(NodeFileSystem.layer)))
-  assert.deepEqual(shipped.rules, {})
-  assert.equal(shipped.default.harness, 'pi')
-  assert.equal(typeof shipped.default.model, 'string')
-})
+await claim(
+  'the installed configuration is read from its own path, and another path is read instead when given',
+  async () => {
+    const installed = await Effect.runPromise(
+      readDispatch().pipe(Effect.provide(NodeFileSystem.layer))
+    )
+    assert.match(installed.path, /config\/crew-dispatch\.json$/)
+    const read: string[] = []
+    const elsewhere = await Effect.runPromise(
+      resolveDispatch({}, '/fixture/dispatch.json').pipe(
+        Effect.provide(
+          FileSystem.layerNoop({
+            readFileString: path => {
+              read.push(path)
+              return Effect.succeed(JSON.stringify(configured))
+            },
+          })
+        )
+      )
+    )
+    assert.deepEqual(read, ['/fixture/dispatch.json'])
+    assert.deepEqual(elsewhere, cheap)
+  }
+)
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

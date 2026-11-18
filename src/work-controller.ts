@@ -184,6 +184,7 @@ interface WorkOwnerOptions {
   readonly quietAfterMs?: number
   readonly childEntry?: URL
   readonly browserOwnerEntry?: URL
+  readonly dispatchPath?: string
 }
 
 const PI_CHILD_ENTRY = new URL('./pi-child.ts', import.meta.url)
@@ -517,10 +518,9 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     })
   }
 
-  const dispatch: Effect.Effect<DispatchConfig, WorkFailure> = readDispatch.pipe(
-    Effect.provideService(FileSystem.FileSystem, fs),
-    Effect.mapError(toFailure)
-  )
+  const dispatch: Effect.Effect<DispatchConfig, WorkFailure> = readDispatch(
+    options.dispatchPath
+  ).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.mapError(toFailure))
 
   const startProcess = (request: ProcessStartRequest): Effect.Effect<AttemptView, WorkFailure> => {
     if (!request.command.trim())
@@ -549,7 +549,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           message: 'A read-only coordinator can start only read-only leaves',
         })
     }
-    const selection = yield* resolveDispatch(request).pipe(
+    const selection = yield* resolveDispatch(request, options.dispatchPath).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.mapError(toFailure)
     )
