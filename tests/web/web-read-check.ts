@@ -586,6 +586,65 @@ try {
     }
   )
   await claim(
+    'the text keeps a title its part does not show exactly, and lists links its first part shows only as a prefix or not at all, from the first 40 collected',
+    () => {
+      const base = 'https://docs.fixture.invalid'
+      const firstPart = `# Run configuration\n\nSee ${base}/guide-v2 and ${base}/api.json, or ${base}/faq.\n`
+      const links = [
+        { text: 'guide', url: `${base}/guide` },
+        { text: 'api', url: `${base}/api` },
+        { text: 'faq', url: `${base}/faq` },
+        { text: 'later', url: `${base}/later` },
+        ...Array.from({ length: 40 }, (_, index) => ({ text: '', url: `${base}/n${index}` })),
+      ]
+      const document = {
+        requestedUrl: `${base}/run`,
+        finalUrl: `${base}/run`,
+        title: 'Run',
+        text: `${firstPart}Later part: ${base}/later\n`,
+        links,
+        method: 'html',
+        contentType: 'text/html',
+        status: 200,
+        bodyTruncated: false,
+        suggestions: [],
+        limitations: [],
+      } as const
+      const outcome = {
+        kind: 'document',
+        slice: {
+          documentId: 'fixture',
+          document,
+          offset: 0,
+          text: firstPart,
+          end: firstPart.length,
+          complete: false,
+          continuation: 'fixture@1',
+        },
+      } as const
+      const text = toText(outcome, toResult(outcome))
+      assert.ok(text.startsWith('# Run\nSource: '), 'a title inside a longer first line is kept')
+      const listed = text
+        .slice(text.indexOf('Links resolved'))
+        .split('\n')
+        .filter(line => line.startsWith('- '))
+      assert.ok(
+        text.includes('Links resolved to absolute URLs (from the first 40):'),
+        'the header says only the first 40 collected links were considered'
+      )
+      assert.deepEqual(listed.slice(0, 3), [
+        `- guide: ${base}/guide`,
+        `- api: ${base}/api`,
+        `- later: ${base}/later`,
+      ])
+      assert.ok(
+        !listed.includes(`- faq: ${base}/faq`),
+        'a URL the part shows completely, before punctuation, is not repeated'
+      )
+      assert.equal(listed.length, 39, 'links past the first 40 collected are not considered')
+    }
+  )
+  await claim(
     'continuation reconstructs a long fixture exactly from the same snapshot without refetching, and a stale or foreign token is refused explicitly',
     async () => {
       seen.length = 0

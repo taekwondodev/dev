@@ -112,7 +112,7 @@ Live activity is transient: it stays in controller memory, never in the attempt 
 
 ### Model-visible results
 
-The model and `/work` read compact JSON. Extensions and scripts use `details` or codemode's structured return instead of parsing that text. The structured `run` result describes one run; `runs` is the page returned by `list` or `cancel` without an `id`. `parent` names the run that started a delegated run; `coordinator: true` means the agent can delegate. Usage counts once per run; unavailable is not zero.
+The model and `/work` read compact JSON. Extensions and scripts use `details` or codemode's structured return instead of parsing that text. The structured `run` result describes one run; `runs` is the page returned by `list` or `cancel` without an `id`. `parent` names the run that started a delegated run; `coordinate: true` means the agent can delegate. Usage counts once per run; unavailable is not zero.
 
 Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Results include answers that fit and command output previews. For an omitted answer, call `inspect` with its `id`, `stream: "result"` and `offset: 0`. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
 

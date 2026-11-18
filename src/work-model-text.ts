@@ -11,7 +11,8 @@ import type {
 import { redactSecrets } from './error-text.ts'
 
 export const OUTPUT_PREVIEW = 512
-export const TRUNCATED_RESULT = 'Inspect result from offset 0'
+export const TRUNCATED_RESULT =
+  'Too long to show; read it with work inspect, this id, stream "result", offset 0'
 
 type ModelObject = Record<string, unknown>
 
@@ -25,7 +26,7 @@ const attemptObject = (attempt: AttemptSummary): ModelObject =>
     ['kind', attempt.kind],
     ['status', attempt.status],
     ['parent', attempt.parent],
-    ['coordinator', attempt.coordinator === true ? true : undefined],
+    ['coordinate', attempt.coordinate === true ? true : undefined],
     ['exitCode', typeof attempt.exitCode === 'number' ? attempt.exitCode : undefined],
     ['error', attempt.error],
     ['deliveryError', attempt.deliveryError],

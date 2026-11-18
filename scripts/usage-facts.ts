@@ -51,6 +51,12 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
+      /^Refused: this command (?:only waits while background work is pending|starts with a sleep of \S+ seconds or more)/,
+    tools: BASH,
+  },
+  {
+    outcome: 'blocked',
+    pattern:
       /^(?:The checkout changed before start|The shell is stopping)\. The command did not run\.$|^Dev must switch checkouts first; the command did not run\.$|^this conversation is stopping its commands$/,
     tools: BASH,
   },
@@ -136,7 +142,7 @@ const recordedAttempts = (entry: Entry): readonly AttemptRecord[] => {
 }
 
 const roleOf = (attempt: AttemptRecord): Role => {
-  if (attempt.coordinator === true) return 'coordinator'
+  if (attempt.coordinate === true) return 'coordinator'
   return attempt.parent === undefined ? 'child' : 'leaf'
 }
 

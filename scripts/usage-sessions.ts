@@ -168,7 +168,7 @@ const AttemptRecord = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(['agent', 'process']),
   parent: Schema.optional(Schema.String),
-  coordinator: Schema.optional(Schema.Boolean),
+  coordinate: Schema.optional(Schema.Boolean),
   sessionFile: Schema.optional(Schema.String),
 })
 export type AttemptRecord = typeof AttemptRecord.Type

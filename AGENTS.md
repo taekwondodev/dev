@@ -47,7 +47,7 @@ Agents read dev's text while working on other repositories, without dev's CONTEX
 - Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition, at no more tokens than the value it replaces.
 - Spend no extra tokens: plain wording replaces jargon at the same length or shorter.
 
-[The model text check](tests/model-text-check.ts) rejects internal terms in tool declarations and the guidance dev sends with every result. Refusals and results it cannot reach follow the same rules by review.
+[The model text check](tests/model-text-check.ts) rejects internal terms in tool declarations, the guidance dev sends with every result and a sample of rendered results and checkout guidance. Refusals and results it does not sample follow the same rules by review.
 
 ## Learning more about Effect
 

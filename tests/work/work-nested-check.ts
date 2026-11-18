@@ -1138,7 +1138,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         const total = (id: string) => row(id)?.usage?.total
         const calls = fixture.modelCalls()
         const requests = (id: string) => calls.filter(attempt => attempt === id).length
-        assert.equal(row(view.id)?.coordinator, true)
+        assert.equal(row(view.id)?.coordinate, true)
         assert.equal(row(reviewer.id)?.parent, view.id)
         assert.ok(reviewer.resources?.tools.includes('git_inspect'))
         assert.equal(requests(reviewer.id), 2)

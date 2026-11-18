@@ -362,7 +362,7 @@ export const AttemptSummarySchema = Schema.Struct({
   parent: Schema.optionalKey(
     AttemptId.annotate({ description: 'ID of the run that started this one.' })
   ),
-  coordinator: Schema.optionalKey(Schema.Boolean.annotate({ description: 'Can delegate.' })),
+  coordinate: Schema.optionalKey(Schema.Boolean.annotate({ description: 'Can delegate.' })),
   workflowTaskId: optionalText('taskId for workspace resume.'),
   workspaceId: OptionalText,
   cwd: Schema.String,
@@ -402,7 +402,7 @@ export const AttemptFactsSchema = Schema.Struct({
   id: AttemptId,
   kind: WorkKindSchema,
   parent: Schema.optionalKey(AttemptId),
-  coordinator: Schema.optionalKey(Schema.Boolean),
+  coordinate: Schema.optionalKey(Schema.Boolean),
   sessionFile: OptionalText,
   effort: OptionalText,
   turns: Schema.optionalKey(Schema.Finite),

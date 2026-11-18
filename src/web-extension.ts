@@ -2,12 +2,7 @@ import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-age
 import * as Effect from 'effect/Effect'
 import type * as JsonSchema from 'effect/JsonSchema'
 import * as Schema from 'effect/Schema'
-import {
-  DocumentLink,
-  RetrievalMethod,
-  type DocumentSlice,
-  type WebDocument,
-} from './web-documents.ts'
+import { DocumentLink, RetrievalMethod, type DocumentSlice } from './web-documents.ts'
 import { READ_URL_TOOL } from './integrated-tools.ts'
 import type { ReadOutcome, WebReader } from './web-reader.ts'
 
@@ -143,11 +138,31 @@ const firstLine = (text: string): string => {
   return end === -1 ? text : text.slice(0, end)
 }
 
+const opensWith = (text: string, title: string): boolean =>
+  firstLine(text)
+    .replace(/^#+\s+/, '')
+    .trim() === title.trim()
+
+const URL_CHARACTER = /[\w\-~/?#@!$&*+=%]/
+
+const continuesUrl = (text: string, at: number): boolean => {
+  const next = text[at]
+  if (next === undefined) return false
+  if (URL_CHARACTER.test(next)) return true
+  return /[.,;:]/.test(next) && URL_CHARACTER.test(text[at + 1] ?? '')
+}
+
+const showsUrl = (text: string, url: string): boolean => {
+  for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
+    if (!continuesUrl(text, at + url.length)) return true
+  return false
+}
+
 const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   const { document } = slice
   const { title } = document
   const lines = [
-    ...(title === undefined || firstLine(slice.text).includes(title) ? [] : [`# ${title}`]),
+    ...(title === undefined || opensWith(slice.text, title) ? [] : [`# ${title}`]),
     `Source: ${document.finalUrl}${document.finalUrl === document.requestedUrl ? '' : ` (requested ${document.requestedUrl})`} · ${document.method}`,
     `Characters ${slice.offset}-${slice.end} of ${document.text.length}${rangeNote(result)}`,
   ]
@@ -156,15 +171,8 @@ const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   return lines.join('\n')
 }
 
-const linksTextOmits = (document: WebDocument): readonly DocumentLink[] => {
-  const omitted: DocumentLink[] = []
-  for (const link of document.links) {
-    if (document.text.includes(link.url)) continue
-    omitted.push(link)
-    if (omitted.length === LINKS_IN_TEXT) break
-  }
-  return omitted
-}
+const linksTextOmits = (slice: DocumentSlice): readonly DocumentLink[] =>
+  slice.document.links.slice(0, LINKS_IN_TEXT).filter(link => !showsUrl(slice.text, link.url))
 
 export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   if (outcome.kind === 'failed')
@@ -174,11 +182,11 @@ export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   const { slice } = outcome
   const parts = [header(slice, result), '', slice.text]
   if (slice.offset === 0) {
-    const links = linksTextOmits(slice.document)
+    const links = linksTextOmits(slice)
     if (links.length > 0)
       parts.push(
         '',
-        `Links resolved to absolute URLs${links.length === LINKS_IN_TEXT ? ` (first ${LINKS_IN_TEXT})` : ''}:`,
+        `Links resolved to absolute URLs${slice.document.links.length > LINKS_IN_TEXT ? ` (from the first ${LINKS_IN_TEXT})` : ''}:`,
         ...links.map(link => (link.text === '' ? `- ${link.url}` : `- ${link.text}: ${link.url}`))
       )
     if (result.suggestions.length > 0)

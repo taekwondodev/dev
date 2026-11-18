@@ -13,7 +13,8 @@ export const processGateScript = 'IFS= read -r _ <&3 || exit 125; exec 3<&-; exe
 
 export const processGate = (child: ChildProcess): Writable => {
   const [, , , descriptor] = child.stdio
-  if (!(descriptor instanceof Writable)) throw new Error('Process execution gate is unavailable')
+  if (!(descriptor instanceof Writable))
+    throw new Error('Dev cannot start the process: its start signal is unavailable')
   descriptor.on('error', () => undefined)
   return descriptor
 }

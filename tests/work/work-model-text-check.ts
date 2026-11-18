@@ -13,6 +13,7 @@ import {
   outputPreview,
   quietFacts,
   quietText,
+  TRUNCATED_RESULT,
   workResultText,
 } from '../../src/work-model-text.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
@@ -119,7 +120,7 @@ await claim(
     const warned = summary({
       status: 'failed',
       parent: PARENT,
-      coordinator: true,
+      coordinate: true,
       error: 'provider failed',
       deliveryError: 'delivery failed',
       cleanupError: 'cleanup failed',
@@ -134,7 +135,7 @@ await claim(
       kind: 'agent',
       status: 'failed',
       parent: PARENT,
-      coordinator: true,
+      coordinate: true,
       error: 'provider failed',
       deliveryError: 'delivery failed',
       cleanupError: 'cleanup failed',
@@ -144,8 +145,8 @@ await claim(
       worktree: { path: WORKTREE, cleanup: 'review-required' },
     })
     assert.equal(
-      'coordinator' in
-        (parse(workResultText({ kind: 'run', run: summary({ coordinator: false }) })) as object),
+      'coordinate' in
+        (parse(workResultText({ kind: 'run', run: summary({ coordinate: false }) })) as object),
       false
     )
   }
@@ -317,10 +318,12 @@ await claim(
         status: 'completed',
         exitCode: 0,
         staleArtifact: true,
-        result: 'Inspect result from offset 0',
+        result: TRUNCATED_RESULT,
       },
     ])
     assert.ok(!truncated.includes('tail of a long answer'))
+    for (const argument of ['inspect', 'id', 'stream "result"', 'offset 0'])
+      assert.ok(TRUNCATED_RESULT.includes(argument), `the pointer names ${argument}`)
   }
 )
 
