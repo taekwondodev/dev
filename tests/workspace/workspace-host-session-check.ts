@@ -264,6 +264,12 @@ const shown = (runtime: Pi.AgentSessionRuntime): string[] =>
         ? [String(entry.content)]
         : []
     )
+const shownDetails = (runtime: Pi.AgentSessionRuntime): unknown[] =>
+  runtime.session.sessionManager
+    .getEntries()
+    .flatMap(entry =>
+      entry.type === 'custom_message' && entry.customType === 'dev/workspace' ? [entry.details] : []
+    )
 const lifecycleEntries = (manager: Pi.SessionManager): unknown[] =>
   manager
     .getEntries()
@@ -582,6 +588,20 @@ try {
         assert.equal(dialog.asked[0]?.options.length, 2)
         const note = `This conversation now continues task ${paused.taskId} in ${paused.checkout} on feat/ask-continue. The user chose to continue it here. Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
         assert.deepEqual(shown(opened.runtime), [note])
+        assert.deepEqual(
+          shownDetails(opened.runtime),
+          [
+            {
+              kind: 'join',
+              taskId: paused.taskId,
+              workspaceId: opened.host.attachment.binding.workspaceId,
+              path: paused.checkout,
+              head: { kind: 'branch', name: 'feat/ask-continue' },
+              changedFiles: 1,
+            },
+          ],
+          'a renderer draws the join from details'
+        )
         assert.deepEqual(dialog.notices, [], 'the message is the only announcement')
         assert.ok(!requests[0]?.includes(note), 'the request that asked did not know of the join')
         const second = requests[1] ?? ''
