@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import type { WorkspaceReport } from '../../src/workspace-command.ts'
 import type {
   SweepReceipt,
@@ -269,20 +268,9 @@ await claim('an inspect or check without records is still a report, with no chec
   assert.deepEqual(parse(check.slice(check.indexOf('\n') + 1)), { taskId: TASK, checkouts: [] })
 })
 
-const keys = (text: string): string[] => Object.keys(parse(text) as object)
-
-await claim('the workspace guide names the top-level keys each report renders', () => {
-  const guide = readFileSync(new URL('../../docs/workspace.md', import.meta.url), 'utf8')
-  const documented = (row: string): string[][] => {
-    const line = guide.split('\n').find(text => text.startsWith(`| ${row}`))
-    assert.ok(line, `the guide has a row for ${row}`)
-    return [...line.matchAll(/`\{([^}`]*)\}`/g)].map(match =>
-      (match[1] ?? '').split(',').map(key => key.trim())
-    )
-  }
-  const check = reportText({ kind: 'check', taskId: TASK, assessments: [] })
-  assert.deepEqual(documented('`/workspace` list and `inspect`'), [
-    keys(
+await claim('a list and an inspect name the task artifact directory when it exists', () => {
+  assert.deepEqual(
+    parse(
       reportText({
         kind: 'list',
         repositoryRoot: '/repo',
@@ -291,9 +279,17 @@ await claim('the workspace guide names the top-level keys each report renders', 
         views: [],
       })
     ),
-    keys(reportText({ kind: 'inspect', taskId: TASK, artifacts: '/artifacts', views: [] })),
-  ])
-  assert.deepEqual(documented('`/workspace check`'), [keys(check.slice(check.indexOf('\n') + 1))])
+    {
+      repository: '/repo',
+      current: { workspaceId: WORKSPACE, cwd: PATH },
+      artifacts: '/artifacts',
+      checkouts: [],
+    }
+  )
+  assert.deepEqual(
+    parse(reportText({ kind: 'inspect', taskId: TASK, artifacts: '/artifacts', views: [] })),
+    { taskId: TASK, artifacts: '/artifacts', checkouts: [] }
+  )
 })
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

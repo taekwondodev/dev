@@ -57,12 +57,8 @@ const MISSING_REASON = 'The checkout directory no longer exists.'
 
 const sentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`)
 
-const missingAdvice = (origin: WorkspaceRecord['origin'], taskId: string | undefined): string => {
+const missingAdvice = (taskId: string | undefined): string => {
   const onPurpose = 'Restore it at this path. If it was deleted on purpose:'
-  if (origin === 'managed')
-    return taskId === undefined
-      ? 'Restore it at this path, or check what removed it. Do not retry automatically.'
-      : `${onPurpose} ${releaseOnceStopped(taskId)}`
   const forget = `${releaseOnceStopped(undefined)} That also forgets this checkout once no running session, pending operation or open conversation refers to it.`
   return taskId === undefined
     ? `${onPurpose} ${forget}`
@@ -78,7 +74,6 @@ export const assessWorkspace = (input: {
   readonly live: boolean
   readonly abandoned: () => readonly string[]
   readonly reserved: boolean
-  readonly origin: WorkspaceRecord['origin']
   readonly taskId?: string
 }): Pick<WorkspaceView, 'outcome' | 'reason' | 'nextAction'> => {
   const operation =
@@ -100,7 +95,7 @@ export const assessWorkspace = (input: {
     return {
       outcome: 'review-required',
       reason: withBlockers(MISSING_REASON),
-      nextAction: missingAdvice(input.origin, taskId),
+      nextAction: missingAdvice(taskId),
     }
   if (input.identityReason !== undefined || input.unresolved)
     return {
@@ -232,7 +227,6 @@ export const workspaceStanding = (
       live: uses.some(use => isActiveUse(use)),
       abandoned: () => abandonedUseIds(authority, db, uses),
       reserved,
-      origin: workspace.origin,
       ...(taskId === undefined ? {} : { taskId }),
     }),
     missing,

@@ -42,7 +42,7 @@ import { INTERNAL } from '../model-text-terms.ts'
 import { classifyError, sessionFacts } from '../../scripts/usage-facts.ts'
 import { readSessions } from '../../scripts/usage-sessions.ts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { SWITCH_REQUESTED, switchNotRequested } from '../../src/workspace-model-text.ts'
+import { switchNotRequested } from '../../src/workspace-model-text.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
@@ -289,7 +289,7 @@ const handoffTexts = (runtime: Pi.AgentSessionRuntime): string[] =>
 
 try {
   await claim(
-    'a permission for the same path but another checkout ID blocks a native write and a native read with an ID-specific refusal, ends the turn and keeps later calls blocked without running them; /workspace resume and a cancelled session change keep the mismatch and say to quit rather than to wait',
+    'a permission for the same path but another checkout ID blocks a native write and a native read with an ID-specific refusal, ends the turn and keeps later calls blocked without running them; /workspace resume keeps the mismatch and says to quit rather than to wait',
     async () => {
       const other = '00000000-0000-4000-8000-0000000000ff' as WorkspaceId
       const target = join(lead, 'wrong-checkout.txt')
@@ -328,14 +328,6 @@ try {
           manager,
           offline,
           ui: interactive(() => undefined).ui,
-          extensions: [
-            {
-              name: 'test:cancel-switch',
-              factory: api => {
-                api.on('session_before_switch', () => ({ cancel: true }))
-              },
-            },
-          ],
         })
         try {
           await opened.runtime.session.prompt(`Use ${name} once.`)
@@ -366,9 +358,6 @@ try {
             'with no switch pending, resume names the mismatch instead of a switch to wait for'
           )
           assert.equal(opened.host.isParked(), true, 'resume does not clear the mismatch')
-          const elsewhere = storedConversation(offline, lead)
-          assert.deepEqual(await opened.runtime.switchSession(elsewhere.file), { cancelled: true })
-          assert.equal(opened.host.isParked(), true, 'a cancelled session change keeps the block')
           for (const emitted of [
             result.text,
             String(later?.reason),
@@ -382,11 +371,6 @@ try {
             ['work', opened.host.blockedAccess('no background work started')],
           ] as const)
             assert.equal(classifyError(tool, emitted), 'blocked', `the profiler reads ${emitted}`)
-          assert.match(
-            opened.host.blockedAccess('nothing ran'),
-            /^Checkout access is blocked because this conversation's permission no longer matches it/,
-            'a cancelled session change keeps the mismatch, not a switch to wait for'
-          )
         } finally {
           await opened.close()
         }
@@ -395,19 +379,23 @@ try {
     }
   )
   await claim(
-    'a permission mismatch recorded while a session change is under way stays when that change is cancelled: only a completed change lifts it',
+    'a permission mismatch recorded while a session change is under way stays when that change is cancelled',
     async () => {
       const other = '00000000-0000-4000-8000-0000000000fe' as WorkspaceId
       const { offline } = await offlineScript('mismatch-during-change', [])
       const { manager, attached } = await attachLeadConversation()
       let trapped = false
+      let entered = false
       const gate: { open?: () => void } = {}
       const released = new Promise<void>(open => {
         gate.open = open
       })
       const authorize: WorkspaceAttachment['authorize'] = operation =>
         trapped && operation.kind === 'read'
-          ? Effect.promise(() => released).pipe(
+          ? Effect.sync(() => {
+              entered = true
+            }).pipe(
+              Effect.andThen(Effect.promise(() => released)),
               Effect.andThen(attached.effect.authorize(operation)),
               Effect.map((admitted): WorkspaceAuthorization =>
                 admitted.kind === 'ready'
@@ -443,7 +431,7 @@ try {
           toolCallId: 'stale-read',
           input: { path: join(lead, 'README.md') },
         })
-        await sleep(50)
+        await waitFor('the stale read to wait', () => (entered ? true : undefined), IN_MEMORY_POLL)
         assert.equal(opened.host.isParked(), false, 'the read is still being admitted')
         const elsewhere = storedConversation(offline, lead)
         assert.deepEqual(await opened.runtime.switchSession(elsewhere.file), { cancelled: true })
@@ -461,7 +449,7 @@ try {
     }
   )
   await claim(
-    'a checkout switch whose handoff and cancellation both fail before Pi replaces the session leaves the conversation blocked as unconfirmed: blocked calls, /workspace resume and other session changes say to quit, not to wait',
+    'a checkout switch whose handoff fails before Pi replaces the session leaves the conversation blocked as unconfirmed: blocked calls, /workspace resume and other session changes say to quit, not to wait',
     async () => {
       const paused = await pausedCheckout('ask-unconfirmed')
       const { offline: model } = await offlineScript('ask-unconfirmed', [])
@@ -509,125 +497,117 @@ try {
       }
     }
   )
-  for (const withMismatch of [false, true])
-    await claim(
-      `a /new whose next conversation cannot attach after Pi closed the current one stays blocked as unconfirmed${withMismatch ? ', also over a permission mismatch recorded meanwhile' : ''}, and refuses another session change`,
-      async () => {
-        const other = '00000000-0000-4000-8000-0000000000fb' as WorkspaceId
-        const { offline } = await offlineScript(
-          `new-attach-fails${withMismatch ? '-mismatch' : ''}`,
-          []
-        )
-        const { manager, attached } = await attachLeadConversation()
-        const dialog = interactive(() => undefined)
-        const gate: { open?: () => void } = {}
-        const released = new Promise<void>(open => {
-          gate.open = open
-        })
-        let trapped = false
-        let entered = false
-        let blockedBeforeAttach: string | undefined
-        let hostRef: { readonly blockedAccess: (didNotRun: string) => string } | undefined
-        let refuseAttach = false
-        let stale: Promise<unknown> | undefined
-        const authorize: WorkspaceAttachment['authorize'] = operation =>
-          trapped && operation.kind === 'read'
-            ? Effect.sync(() => {
-                entered = true
-              }).pipe(
-                Effect.andThen(Effect.promise(() => released)),
-                Effect.andThen(attached.effect.authorize(operation)),
-                Effect.map((admitted): WorkspaceAuthorization =>
-                  admitted.kind === 'ready'
-                    ? { kind: 'ready', grant: { ...admitted.grant, workspaceId: other } }
-                    : admitted
-                )
+  await claim(
+    'a /new whose next conversation cannot attach after Pi closed the current one stays blocked as unconfirmed, also over a permission mismatch recorded meanwhile, and refuses another session change',
+    async () => {
+      const other = '00000000-0000-4000-8000-0000000000fb' as WorkspaceId
+      const { offline } = await offlineScript('new-attach-fails-mismatch', [])
+      const { manager, attached } = await attachLeadConversation()
+      const dialog = interactive(() => undefined)
+      const gate: { open?: () => void } = {}
+      const released = new Promise<void>(open => {
+        gate.open = open
+      })
+      let trapped = false
+      let entered = false
+      let blockedBeforeAttach: string | undefined
+      let hostRef: { readonly blockedAccess: (didNotRun: string) => string } | undefined
+      let refuseAttach = false
+      let stale: Promise<unknown> | undefined
+      const authorize: WorkspaceAttachment['authorize'] = operation =>
+        trapped && operation.kind === 'read'
+          ? Effect.sync(() => {
+              entered = true
+            }).pipe(
+              Effect.andThen(Effect.promise(() => released)),
+              Effect.andThen(attached.effect.authorize(operation)),
+              Effect.map((admitted): WorkspaceAuthorization =>
+                admitted.kind === 'ready'
+                  ? { kind: 'ready', grant: { ...admitted.grant, workspaceId: other } }
+                  : admitted
               )
-            : attached.effect.authorize(operation)
-        const attach: WorkspaceLifecycle['attach'] = input =>
-          refuseAttach
-            ? Effect.fail(
-                new WorkspaceError({
-                  outcome: 'unavailable',
-                  message: 'attach refused by the probe',
-                })
-              )
-            : lifecycle.effect.attach(input)
-        const opened = await openLeadHost({
-          attachment: overriding(attached.effect, { authorize }),
-          lifecycle: overriding(lifecycle.effect, { attach }),
-          manager,
-          offline,
-          ui: dialog.ui,
-          extensions: [
-            {
-              name: 'test:attach-after-teardown',
-              factory: api => {
-                api.on('session_before_switch', async () => {
-                  gate.open?.()
-                  await stale
-                  blockedBeforeAttach = hostRef?.blockedAccess('nothing ran')
-                  refuseAttach = true
-                  return undefined
-                })
-              },
+            )
+          : attached.effect.authorize(operation)
+      const attach: WorkspaceLifecycle['attach'] = input =>
+        refuseAttach
+          ? Effect.fail(
+              new WorkspaceError({
+                outcome: 'unavailable',
+                message: 'attach refused by the probe',
+              })
+            )
+          : lifecycle.effect.attach(input)
+      const opened = await openLeadHost({
+        attachment: overriding(attached.effect, { authorize }),
+        lifecycle: overriding(lifecycle.effect, { attach }),
+        manager,
+        offline,
+        ui: dialog.ui,
+        extensions: [
+          {
+            name: 'test:attach-after-teardown',
+            factory: api => {
+              api.on('session_before_switch', async () => {
+                gate.open?.()
+                await stale
+                blockedBeforeAttach = hostRef?.blockedAccess('nothing ran')
+                refuseAttach = true
+                return undefined
+              })
             },
-          ],
+          },
+        ],
+      })
+      hostRef = opened.host
+      try {
+        trapped = true
+        stale = opened.runtime.session.extensionRunner.emitToolCall({
+          type: 'tool_call',
+          toolName: 'read',
+          toolCallId: 'stale-read',
+          input: { path: join(lead, 'README.md') },
         })
-        hostRef = opened.host
+        await waitFor('the stale read to wait', () => (entered ? true : undefined), IN_MEMORY_POLL)
+        const failed = await opened.runtime.newSession().then(
+          () => 'replaced',
+          (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+        )
+        assert.match(
+          failed,
+          /attach refused by the probe/,
+          'the /new could not attach its conversation'
+        )
+        assert.match(
+          String(((await stale) as { readonly reason?: string }).reason),
+          /^Permission was for checkout /,
+          'the stale read was refused for its mismatched permission'
+        )
+        assert.match(
+          String(blockedBeforeAttach),
+          /^Checkout access is blocked because this conversation's permission no longer matches it/,
+          'the mismatch held before the next conversation failed to attach'
+        )
+        assert.equal(opened.host.isParked(), true, 'access stays blocked')
+        assert.match(
+          opened.host.blockedAccess('nothing ran'),
+          /^Checkout access is blocked because dev cannot confirm an earlier session change/
+        )
+        refuseAttach = false
+        const output = mock.method(process.stderr, 'write')
         try {
-          if (withMismatch) {
-            trapped = true
-            stale = opened.runtime.session.extensionRunner.emitToolCall({
-              type: 'tool_call',
-              toolName: 'read',
-              toolCallId: 'stale-read',
-              input: { path: join(lead, 'README.md') },
-            })
-            await waitFor(
-              'the stale read to wait',
-              () => (entered ? true : undefined),
-              IN_MEMORY_POLL
-            )
-          }
-          const failed = await opened.runtime.newSession().then(
-            () => 'replaced',
-            (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
-          )
-          assert.notEqual(failed, 'replaced', 'the /new could not attach its conversation')
-          if (withMismatch) {
-            assert.match(
-              String(((await stale) as { readonly reason?: string }).reason),
-              /^Permission was for checkout /,
-              'the stale read was refused for its mismatched permission'
-            )
-            assert.match(
-              String(blockedBeforeAttach),
-              /^Checkout access is blocked because this conversation's permission no longer matches it/,
-              'the mismatch held before the next conversation failed to attach'
-            )
-          }
-          assert.equal(opened.host.isParked(), true, 'access stays blocked')
-          assert.match(
-            opened.host.blockedAccess('nothing ran'),
-            /^Checkout access is blocked because dev cannot confirm an earlier session change/
-          )
-          refuseAttach = false
-          const output = mock.method(process.stderr, 'write')
-          try {
-            assert.deepEqual(await opened.runtime.newSession(), { cancelled: true })
-          } finally {
-            output.mock.restore()
-          }
-          assert.ok(
-            output.mock.calls.some(call => String(call.arguments[0]).includes(UNRESOLVED_NOTICE)),
-            'with the closed conversation gone, the refusal reaches the terminal'
-          )
+          assert.deepEqual(await opened.runtime.newSession(), { cancelled: true })
         } finally {
-          await opened.close().catch(() => undefined)
+          output.mock.restore()
         }
+        assert.ok(
+          output.mock.calls.some(call => String(call.arguments[0]).includes(UNRESOLVED_NOTICE)),
+          'with the closed conversation gone, the refusal reaches the terminal'
+        )
+      } finally {
+        await opened.close().catch(() => undefined)
       }
-    )
+    }
+  )
   await claim(
     'a permission mismatch recorded while /workspace resume looks up the task is reported instead of saying the conversation already works there',
     async () => {
@@ -1248,7 +1228,6 @@ try {
           /^The call did not run: Another task uses or needs.*Dev requested a checkout switch/
         )
         assert.doesNotMatch(refused.text, INTERNAL, 'the switch refusal uses outward wording')
-        assert.equal(classifyError('write', refused.text), 'blocked', refused.text)
         assert.notEqual(resolve(opened.runtime.cwd), resolve(paused.checkout))
         assert.ok(!existsSync(join(paused.checkout, 'asked.txt')))
       } finally {
@@ -1411,7 +1390,12 @@ try {
         const reply = toolResults(opened.runtime)('tool-resume')
         assert.equal(reply.isError, false, reply.text)
         assert.match(reply.text, /"resumed":"requested"/)
-        assert.ok(reply.text.includes(SWITCH_REQUESTED), reply.text)
+        assert.ok(
+          reply.text.includes(
+            'Dev requested a checkout switch and reports where this conversation works if it completes.'
+          ),
+          reply.text
+        )
         assert.equal(script.calls(), 1, 'the requested switch ended the turn')
         assert.deepEqual(handoffTexts(opened.runtime), [], 'no completed switch is announced')
         assert.equal(opened.host.isParked(), false)

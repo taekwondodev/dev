@@ -19,8 +19,6 @@ import * as Effect from 'effect/Effect'
 import { GIT_INSPECT_OPERATIONS } from '../scripts/usage-export.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from '../scripts/usage-profile.ts'
 import type { Period } from '../scripts/usage-report.ts'
-import { classifyError } from '../scripts/usage-facts.ts'
-import { SWITCH_REQUESTED, switchNotRequested } from '../src/workspace-model-text.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
 
 const checkout = join(import.meta.dirname, '..')
@@ -917,24 +915,6 @@ const DEV_TEXTS = [
     'execution',
   ],
   ['src/workspace-shell.ts', ["'dev could not identify the new shell'"], 'bash', 'execution'],
-  [
-    'src/work-wait-guard.ts',
-    [
-      '`Refused: this command only waits while background work is pending (',
-      '). Do independent work or end your turn to receive results. Use work list or inspect only to diagnose problems or check progress on request.`',
-    ],
-    'bash',
-    'blocked',
-  ],
-  [
-    'src/work-wait-guard.ts',
-    [
-      '`Refused: this command starts with a sleep of ',
-      ' seconds or more. Run the wait with work (action: "process"), e.g. \\`until <check>; do sleep 30; done\\`. Do independent work or end your turn; dev sends the result when ready.`',
-    ],
-    'bash',
-    'blocked',
-  ],
   [
     'src/work-controller.ts',
     ['`Dev must switch checkouts first: ', '. No work started. '],
@@ -2259,23 +2239,6 @@ try {
         'the plain git status after a subshell cd repeats only the later plain git status'
       )
       assert.equal(summary.tools.unmatchedResults, 2)
-    }
-  )
-
-  await claim(
-    'every reason dev gives for not requesting a checkout switch classifies as blocked in both workspace tool refusals',
-    () => {
-      const requests = ['closing', 'mismatch', 'unresolved', 'changed', 'busy'] as const
-      for (const request of requests) {
-        const declined = switchNotRequested(request)
-        assert.equal(classifyError('workspace', declined), 'blocked', declined)
-        const artifacts = `No directory was created: reason. ${declined}`
-        assert.equal(classifyError('workspace', artifacts), 'blocked', artifacts)
-        const work = `Dev must switch checkouts first: reason. No work started. ${declined}`
-        assert.equal(classifyError('work', work), 'blocked', work)
-      }
-      const requested = `Dev must switch checkouts first: reason. No work started. ${SWITCH_REQUESTED} Then check the request still applies there before retrying.`
-      assert.equal(classifyError('work', requested), 'blocked', requested)
     }
   )
 

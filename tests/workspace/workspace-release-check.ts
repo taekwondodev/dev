@@ -2393,6 +2393,7 @@ try {
         switchNotRequested('mismatch'),
         'a block the host reports after the lookup is returned before any checkout-dependent reply'
       )
+      assert.equal(classifyError('workspace', blocked), 'blocked', 'the usage profiler reads it')
       assert.equal(requested.length, 0, 'a blocked resume hands nothing to the host')
       const hereTool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,

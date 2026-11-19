@@ -3203,7 +3203,7 @@ try {
           let inspections = 0
           while (!existsSync(${JSON.stringify(closingDone)})) {
             for (const view of await lifecycle.inspect({ cwd: ${JSON.stringify(closingRepo)} }))
-              if (view.reason.includes('may have left processes running')) abandoned.push(view.reason)
+              if (view.reason.includes('of ended sessions may still be running')) abandoned.push(view.reason)
             inspections += 1
           }
           await lifecycle.close()

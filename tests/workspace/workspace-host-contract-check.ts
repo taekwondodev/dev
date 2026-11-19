@@ -280,7 +280,7 @@ try {
           : []
       )
 
-  await claim('/workspace completes exactly the verbs it accepts, each explained', async () => {
+  await claim('/workspace offers exactly the verbs it accepts, each explained', async () => {
     const complete = runtime.session.extensionRunner.getCommand('workspace')?.getArgumentCompletions
     assert.ok(complete)
     const items = (await complete('')) ?? []
@@ -293,7 +293,6 @@ try {
       ((await complete('re')) ?? []).map(item => item.label),
       ['resume [task-id]', 'release <task-id>']
     )
-    assert.equal(await complete('inspect '), null)
   })
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')

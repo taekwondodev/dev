@@ -53,31 +53,28 @@ const coordinatorTool = createCoordinatorWorkTool({
   wake: Effect.die('unused'),
 })
 
-const checkoutStates = (['pre-existing', 'managed'] as const).flatMap(origin =>
-  [false, true].flatMap(reserved =>
-    [
-      { missing: true },
-      { unresolved: true },
-      { unknown: ['use-2'] },
-      { abandoned: () => ['use-1'] },
-      { live: true },
-      {},
-    ].map(fields => {
-      const assessed = assessWorkspace({
-        identityReason: undefined,
-        missing: false,
-        pending: undefined,
-        unresolved: false,
-        unknown: [],
-        live: false,
-        abandoned: () => [],
-        reserved,
-        origin,
-        ...fields,
-      })
-      return `${assessed.reason} ${assessed.nextAction}`
+const checkoutStates = [false, true].flatMap(reserved =>
+  [
+    { missing: true },
+    { unresolved: true },
+    { unknown: ['use-2'] },
+    { abandoned: () => ['use-1'] },
+    { live: true },
+    {},
+  ].map(fields => {
+    const assessed = assessWorkspace({
+      identityReason: undefined,
+      missing: false,
+      pending: undefined,
+      unresolved: false,
+      unknown: [],
+      live: false,
+      abandoned: () => [],
+      reserved,
+      ...fields,
     })
-  )
+    return `${assessed.reason} ${assessed.nextAction}`
+  })
 )
 
 const run = {
@@ -141,24 +138,19 @@ const surfaces: Record<string, readonly string[]> = {
   ).map(keyWords),
 }
 
-await claim('each listed surface has text to check', () => {
-  for (const [surface, texts] of Object.entries(surfaces))
-    assert.ok(
-      texts.length > 0 && texts.every(text => text.length > 0),
-      `${surface} has an empty text`
-    )
-})
-
-await claim('the delegated work tool is checked as registered, with its prompt snippet', () => {
-  assert.ok(
-    coordinatorTool.promptSnippet !== undefined &&
-      surfaces['delegated work tool']?.includes(coordinatorTool.promptSnippet)
-  )
-})
-
 await claim(
   'tool declarations, result guidance and sampled results use no dev-internal terms',
   () => {
+    assert.notEqual(
+      coordinatorTool.promptSnippet,
+      undefined,
+      'the delegated work tool has a snippet'
+    )
+    for (const [surface, texts] of Object.entries(surfaces))
+      assert.ok(
+        texts.length > 0 && texts.every(text => text.length > 0),
+        `${surface} has an empty text`
+      )
     const found = Object.entries(surfaces).flatMap(([surface, texts]) =>
       texts.flatMap(text => {
         const match = INTERNAL.exec(text)

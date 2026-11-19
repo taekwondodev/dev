@@ -14,7 +14,7 @@ import {
   resumeCandidates,
 } from '../../src/workspace-command.ts'
 import { assessWorkspace } from '../../src/workspace-inspect.ts'
-import { isResumable, type WorkspaceView } from '../../src/workspace-domain.ts'
+import type { WorkspaceView } from '../../src/workspace-domain.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { fixtureId } from './workspace-host-fixture-shapes.ts'
 
@@ -61,21 +61,8 @@ const assess = (fields: Partial<Parameters<typeof assessWorkspace>[0]>) =>
     live: false,
     abandoned: () => [],
     reserved: false,
-    origin: 'pre-existing',
     ...fields,
   })
-const standing = (reserved: boolean) =>
-  assessWorkspace({
-    identityReason: undefined,
-    missing: false,
-    pending: undefined,
-    unresolved: false,
-    unknown: [],
-    live: false,
-    abandoned: () => [],
-    reserved,
-    origin: 'pre-existing',
-  }).outcome
 
 try {
   const area = join(sandbox, 'area')
@@ -170,6 +157,7 @@ try {
         paused(5, { lastUsedAt: 9_000, outcome: 'active' }),
         paused(6, { lastUsedAt: 9_000, outcome: 'blocked' }),
         paused(8, { lastUsedAt: 9_000, outcome: 'review-required' }),
+        paused(10, { lastUsedAt: 9_000, outcome: 'idle' }),
         unreserved,
       ])
       assert.deepEqual(
@@ -183,13 +171,7 @@ try {
   await claim(
     'an unused checkout no task keeps is idle, not paused, and is never offered for resume',
     () => {
-      assert.deepEqual([standing(true), standing(false)], ['paused', 'idle'])
-      assert.deepEqual(
-        [isResumable(true, 'paused'), isResumable(false, 'idle'), isResumable(true, 'idle')],
-        [true, false, false]
-      )
-      const idle = { ...unreserved, outcome: 'idle' as const }
-      assert.deepEqual(resumableWorkspaces([idle]), [])
+      assert.deepEqual([assess({ reserved: true }).outcome, assess({}).outcome], ['paused', 'idle'])
       assert.deepEqual(resumeCandidates([{ ...paused(9), outcome: 'idle' }], fixtureId(9)), [])
     }
   )
@@ -197,10 +179,6 @@ try {
   await claim(
     "a missing checkout's advice names the release that fits its origin and task, and a row needing review still names the operations that block it",
     () => {
-      assert.equal(
-        assess({ missing: true, reserved: true, origin: 'managed', taskId: 'task-1' }).nextAction,
-        "Restore it at this path. If it was deleted on purpose: Once nothing still works in any of the task's checkouts, the user may run dev workspace release task-1, which deletes all of that task's managed worktrees and artifacts."
-      )
       assert.equal(
         assess({ missing: true }).nextAction,
         "Restore it at this path. If it was deleted on purpose: Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files. That also forgets this checkout once no running session, pending operation or open conversation refers to it."

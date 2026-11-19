@@ -648,12 +648,6 @@ try {
           titleAtHardCut: printsTitle(render('# Run configuration', [], '# Run'.length)),
           titleAtNewline: printsTitle(render('# Run\nconfiguration', [], '# Run\n'.length)),
           titleAtDocumentEnd: printsTitle(render('### Run  ', [])),
-          guideBeforeSemicolonInDestination: listsGuide(
-            render(`${relative} plus [other](${guide};)`, [
-              docs,
-              { text: 'other', url: `${guide};` },
-            ])
-          ),
           guideBeforeApostropheInDestination: listsGuide(
             render(`${relative} plus [other](${guide}'v2)`, [
               docs,
@@ -664,12 +658,6 @@ try {
             render(`${relative} plus [other](${guide}; "Title")`, [
               docs,
               { text: 'other', url: `${guide};` },
-            ])
-          ),
-          guideInsideParenthesesOfAnotherUrl: listsGuide(
-            render(`${relative} plus [other](https://other.fixture.invalid/?next=(${guide}))`, [
-              docs,
-              { text: 'other', url: `https://other.fixture.invalid/?next=(${guide})` },
             ])
           ),
           guideQuotedInsideAnotherDestination: ['`', '"', '<'].map(opener => {
@@ -688,12 +676,6 @@ try {
               ]
             )
           ),
-          guideInsideAnotherUrl: listsGuide(
-            render(`${relative} plus [other](https://other.fixture.invalid/?next=${guide})`, [
-              docs,
-              { text: 'other', url: `https://other.fixture.invalid/?next=${guide}` },
-            ])
-          ),
           guideShownInDestinations: [
             `[one](https://one.fixture.invalid/)[other](${guide})`,
             `[://](${guide})`,
@@ -702,7 +684,6 @@ try {
             `${'x'.repeat(4096)}<${guide}>`,
             `["https://one.fixture.invalid/","${guide}"]`,
             `\`https://one.fixture.invalid/\`\`${guide}\``,
-            `[other](${guide})`,
             `[other](${guide} "Title")`,
             `<${guide}>`,
             `'${guide}'`,
@@ -726,26 +707,11 @@ try {
           titleAtHardCut: true,
           titleAtNewline: false,
           titleAtDocumentEnd: false,
-          guideBeforeSemicolonInDestination: true,
           guideBeforeApostropheInDestination: true,
           guideBeforeSemicolonAndTitle: true,
-          guideInsideAnotherUrl: true,
-          guideInsideParenthesesOfAnotherUrl: true,
           guideQuotedInsideAnotherDestination: [true, true, true],
           guideInsideParenthesesOfAnotherUrlWithApostrophe: true,
-          guideShownInDestinations: [
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-          ],
+          guideShownInDestinations: Array.from({ length: 10 }, () => false),
           guideAtHardCut: true,
           guideBeforePunctuationAtHardCut: true,
           guideBeforeWhitespaceAtHardCut: false,

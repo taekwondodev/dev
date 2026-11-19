@@ -13,7 +13,6 @@ import {
   outputPreview,
   quietFacts,
   quietText,
-  TRUNCATED_RESULT,
   workResultText,
 } from '../../src/work-model-text.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
@@ -318,12 +317,10 @@ await claim(
         status: 'completed',
         exitCode: 0,
         staleArtifact: true,
-        result: TRUNCATED_RESULT,
+        result: 'Too long to show; read it with work inspect, this id, stream "result", offset 0',
       },
     ])
     assert.ok(!truncated.includes('tail of a long answer'))
-    for (const argument of ['inspect', 'id', 'stream "result"', 'offset 0'])
-      assert.ok(TRUNCATED_RESULT.includes(argument), `the pointer names ${argument}`)
   }
 )
 
