@@ -465,9 +465,7 @@ await claim(
       Effect.gen(function* () {
         yield* slot.request
         yield* Deferred.await(requested)
-        yield* Effect.forkChild(
-          Effect.andThen(Effect.sleep('20 millis'), Deferred.succeed(answer, undefined))
-        )
+        yield* Effect.forkChild(Deferred.succeed(answer, undefined).pipe(Effect.delay('20 millis')))
         left = yield* slot.leave
       })
     )

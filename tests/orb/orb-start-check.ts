@@ -28,7 +28,8 @@ import {
   type OrbStartView,
 } from '../../src/orb/start-view.ts'
 import { loadStartupTerminalModule } from '../../src/terminal-module.ts'
-import { kittyCommandsSent, makeClaims, observed } from '../workspace/workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims } from '../workspace/workspace-check-support.ts'
+import { observed } from '../wait.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -329,10 +330,11 @@ type Step = OrbStartStage | number | string
 const play = (view: OrbStartView, steps: readonly Step[]) =>
   Effect.forEach(
     steps,
-    step => {
-      if (typeof step === 'number') return Effect.sleep(step)
-      if (typeof step === 'string') return Effect.sync(() => view.print(step))
-      return view.show(step)
+    (step, index) => {
+      if (typeof step === 'number') return Effect.void
+      const shown = typeof step === 'string' ? Effect.sync(() => view.print(step)) : view.show(step)
+      const pause = steps[index - 1]
+      return typeof pause === 'number' ? shown.pipe(Effect.delay(pause)) : shown
     },
     { discard: true }
   )
@@ -513,16 +515,16 @@ await claim(
     const { text } = await viewRun(
       (view, log) =>
         play(view, happy.slice(0, 1)).pipe(
-          Effect.andThen(Effect.sleep(40)),
           Effect.andThen(
-            view.pause(
-              Effect.sync(() => {
-                before = log.join('')
-              })
-            )
+            view
+              .pause(
+                Effect.sync(() => {
+                  before = log.join('')
+                })
+              )
+              .pipe(Effect.delay(40))
           ),
-          Effect.andThen(Effect.sleep(40)),
-          Effect.andThen(play(view, happy.slice(2)))
+          Effect.andThen(play(view, happy.slice(2)).pipe(Effect.delay(40)))
         ),
       { style: live, module: kitty }
     )
@@ -564,8 +566,7 @@ await claim(
           const fiber = yield* Effect.forkChild(
             Effect.andThen(play(view, happy.slice(0, 6)), Effect.never)
           )
-          yield* Effect.sleep(40)
-          yield* Fiber.interrupt(fiber)
+          yield* Fiber.interrupt(fiber).pipe(Effect.delay(40))
           return yield* Effect.interrupt
         }),
       { style: live, module: kitty }

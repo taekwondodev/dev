@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises'
+import * as Effect from 'effect/Effect'
 
 export class TimedOut extends Error {}
 
@@ -69,3 +70,11 @@ export const clockAdvanced = async (): Promise<void> => {
   const start = Date.now()
   while (Date.now() === start) await sleep(1)
 }
+
+export const observed = Effect.fnUntraced(function* (what: string, seen: () => boolean) {
+  const deadline = performance.now() + 15_000
+  while (!seen()) {
+    if (performance.now() > deadline) return yield* Effect.die(new Error(`never observed: ${what}`))
+    yield* Effect.sleep(10)
+  }
+})

@@ -31,7 +31,8 @@ import {
   stripColumns,
   toRgba,
 } from '../../src/quit-scene.ts'
-import { kittyCommandsSent, makeClaims, observed } from './workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims } from './workspace-check-support.ts'
+import { observed } from '../wait.ts'
 
 const { claim, passed } = makeClaims()
 

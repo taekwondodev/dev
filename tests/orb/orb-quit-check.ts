@@ -30,7 +30,8 @@ import {
   type OrbQuitTerminal,
   type OrbQuitView,
 } from '../../src/orb/quit-view.ts'
-import { kittyCommandsSent, makeClaims, observed } from '../workspace/workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims } from '../workspace/workspace-check-support.ts'
+import { observed } from '../wait.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -307,9 +308,16 @@ const viewRun = async (
 }
 
 const play = (view: OrbQuitView, steps: readonly Step[]) =>
-  Effect.forEach(steps, step => (typeof step === 'number' ? Effect.sleep(step) : view.show(step)), {
-    discard: true,
-  })
+  Effect.forEach(
+    steps,
+    (step, index) => {
+      if (typeof step === 'number') return Effect.void
+      const shown = view.show(step)
+      const pause = steps[index - 1]
+      return typeof pause === 'number' ? shown.pipe(Effect.delay(pause)) : shown
+    },
+    { discard: true }
+  )
 
 const runView = (steps: readonly Step[], terminal?: Parameters<typeof viewRun>[1]) =>
   viewRun(view => play(view, steps), terminal)
@@ -459,14 +467,14 @@ const retryRun = (answers: readonly boolean[], interruptDuringFailure = false) =
     (view, log) =>
       Effect.gen(function* () {
         const outcome = yield* returnAtQuit(
-          Effect.andThen(view.show({ kind: 'returning' }), Effect.sleep(40)).pipe(
+          view.show({ kind: 'returning' }).pipe(
             Effect.andThen(
               Effect.suspend(() => {
                 attempts += 1
                 return attempts <= answers.length
                   ? Effect.fail(orbFailure('orb unreachable'))
                   : Effect.succeed(returned.outcome)
-              })
+              }).pipe(Effect.delay(40))
             )
           ),
           {
@@ -548,13 +556,11 @@ await claim(
         (view, out) =>
           Effect.gen(function* () {
             yield* view.show({ kind: 'returning' })
-            yield* Effect.sleep(60)
             yield* Effect.sync(() => {
               process.emit('SIGINT')
               out.push('<signalled>')
-            })
-            yield* Effect.sleep(60)
-            yield* view.show(returned)
+            }).pipe(Effect.delay(60))
+            yield* view.show(returned).pipe(Effect.delay(60))
             yield* view.show({
               kind: 'undeleted',
               reason: 'the wait for DELETED was interrupted while orb abcd1234 read DELETING',
