@@ -413,8 +413,8 @@ try {
             snapshot?.runs?.records.map(record => record.id).toSorted(),
             [slow.id, quick.id].toSorted()
           )
-          assert.equal(inspection?.inspection?.status, 'completed')
-          assert.equal(inspection?.inspection?.exitCode, 0)
+          assert.equal(inspection?.inspection?.run.status, 'completed')
+          assert.equal(inspection?.inspection?.run.exitCode, 0)
           assert.equal(typeof decodeRecordPid(inspection?.inspection?.record).pid, 'number')
           const recordKeys = keysOf(inspection?.inspection?.record)
           assert.ok(
@@ -457,8 +457,8 @@ try {
           assert.equal(shownCancel.status, 'cancelled')
           assert.deepEqual(Object.keys(shownList), ['records', 'nextOffset'])
           for (const record of shownList.records) decodeModelAttempt(JSON.stringify(record))
-          assert.equal(shownInspection.workflowTaskId, inspection?.inspection?.workflowTaskId)
-          assert.equal(shownInspection.cwd, inspection?.inspection?.cwd)
+          assert.equal(shownInspection.workflowTaskId, inspection?.inspection?.run.workflowTaskId)
+          assert.equal(shownInspection.cwd, inspection?.inspection?.run.cwd)
           for (const hidden of ['record', 'logs', 'completedAt', 'usage'])
             assert.equal(hidden in shownInspection, false, hidden)
           after.reply(text('inspected'))
@@ -1468,6 +1468,13 @@ return JSON.stringify({
         await run
         await lead.idle()
         const [onePid, otherPid] = [await pidOf(lead, one.id), await pidOf(lead, other.id)]
+        const { inspection: held1 } = await displayed(lead, `/work inspect ${one.id}`)
+        assert.equal(held1?.run.status, 'running')
+        assert.equal(
+          held1 !== undefined && 'staleArtifact' in held1,
+          false,
+          'a run in progress reports no file comparison'
+        )
         await lead.session.prompt(`/work stop ${one.id}`)
         const reported = await lead.request(2)
         assert.ok(seen(reported).includes(one.id) && seen(reported).includes('cancelled'))

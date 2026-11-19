@@ -195,15 +195,18 @@ await claim(
     const inspection: WorkResult = {
       kind: 'inspection',
       inspection: {
-        ...outcome({
-          staleArtifact: 'unknown',
+        run: summary({
+          status: 'completed',
+          exitCode: 0,
+          completedAt: 10,
           worktree: { path: WORKTREE, cleanup: 'blocked' },
           cwd: WORKTREE,
-          logs: [
-            log({ stream: 'result', text: 'SECRET-ANSWER' }),
-            log({ stream: 'stderr', available: false, reason: 'Log unavailable or expired' }),
-          ],
         }),
+        staleArtifact: 'unknown',
+        logs: [
+          log({ stream: 'result', text: 'SECRET-ANSWER' }),
+          log({ stream: 'stderr', available: false, reason: 'Log unavailable or expired' }),
+        ],
         record: { pid: 42, prompt: 'not for the model' },
       },
     }
@@ -224,11 +227,29 @@ await claim(
       unavailable: ['stderr'],
     })
     assert.ok(!text.includes('SECRET-ANSWER') && !text.includes('not for the model'))
-    const elsewhere = workResultText({
-      kind: 'inspection',
-      inspection: { ...outcome({ cwd: '/repo' }), record: {} },
-    })
-    assert.equal((parse(elsewhere) as { cwd?: string }).cwd, '/repo')
+    const active = (status: 'running' | 'waiting') =>
+      parse(
+        workResultText({
+          kind: 'inspection',
+          inspection: { run: summary({ status }), logs: [], record: {} },
+        })
+      )
+    assert.deepEqual(active('waiting'), { ...(active('running') as object), status: 'waiting' })
+    assert.deepEqual(
+      active('running'),
+      {
+        id: ID,
+        taskId: 'review',
+        kind: 'agent',
+        status: 'running',
+        workflowTaskId: 'workflow-task',
+        workspaceId: 'workspace',
+        access: 'read-only',
+        invokedSkill: 'code-review',
+        cwd: '/repo',
+      },
+      'a running run shows its checkout, without a file comparison or streams it does not have yet'
+    )
   }
 )
 

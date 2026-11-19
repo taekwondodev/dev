@@ -50,9 +50,6 @@ export const resolveDispatch = Effect.fnUntraced(function* (
 ): Effect.fn.Return<DispatchProfile, WorkDispatchError, FileSystem.FileSystem> {
   const config = yield* readDispatch
   const selected = select(config, input)
-  if (input.harness !== undefined && input.harness !== 'pi') {
-    return yield* failure(`Only harness "pi" is supported, not ${input.harness}`)
-  }
   return yield* decodeProfile({
     harness: 'pi',
     ...(selected.model === undefined ? {} : { model: selected.model }),

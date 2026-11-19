@@ -24,7 +24,7 @@ Set `coordinate: true` only to delegate a whole phase. The delegated agent can u
 /work stop                    stop all runs from this conversation, even while it is idle
 ```
 
-Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the saved record on inspection; use `describeTool('work')` for its current declaration.
+Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result; an inspection holds its `run`, logs and saved record; use `describeTool('work')` for its current declaration.
 
 Writing agents show their worktree path as `blocked` if it may still be in use, otherwise `review-required`. Neither status authorizes deletion. See [Workspace](workspace.md) for checkout cleanup.
 
@@ -114,7 +114,7 @@ Live activity is transient: it stays in controller memory, never in the attempt 
 
 The model and `/work` read compact JSON. Extensions and scripts use `details` or codemode's structured return instead of parsing that text. Usage counts once per run; unavailable is not zero.
 
-Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Results include answers that fit and command output previews. For an omitted answer, call `inspect` with its `id`, `stream: "result"` and `offset: 0`. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
+Plain `inspect` shows metadata and available streams without copying the answer or logs into model context; a run still in progress omits the file comparison and streams it does not have yet. Select a stream to read it. Results include answers that fit and command output previews. For an omitted answer, call `inspect` with its `id`, `stream: "result"` and `offset: 0`. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
 
 A delayed lock close appears as `lockWarning` without changing run status. See [when dev retries](workspace.md#process-uses-and-gates).
 

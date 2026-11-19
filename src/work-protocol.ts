@@ -123,7 +123,6 @@ const sharedWorkInput = {
       description: `read-only (default) or write. ${READ_ONLY_CHILD_CAPABILITIES} Writers get a separate worktree without local changes.`,
     })
   ),
-  harness: text('Leave unset.'),
   model: text('Only when the user asked for it.'),
   effort: text('Only when the user asked for it.'),
   stream: Schema.optionalKey(
