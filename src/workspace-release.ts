@@ -206,7 +206,7 @@ const assessIdentity = (authority: WorkspaceAuthority, workspace: WorkspaceRecor
     if (observed === 'present') return { kind: 'unverifiable', reason: errorText(cause) }
     return {
       kind: 'unverifiable',
-      reason: `Workspace directory is inaccessible (${observed.inaccessible}): ${workspace.path}`,
+      reason: `Checkout directory is inaccessible (${observed.inaccessible}): ${workspace.path}`,
     }
   }
 }
@@ -824,7 +824,7 @@ const markRemoved = (
 ): void => {
   const stored = getWorkspace(db, workspace.id)
   if (stored === undefined)
-    requireReview(`Workspace record disappeared while it was being removed: ${workspace.id}`)
+    requireReview(`Checkout record disappeared while it was being removed: ${workspace.id}`)
   saveWorkspace(db, {
     ...stored,
     status: 'removed',
@@ -1425,7 +1425,7 @@ const clearEndedUses = (
       if (workspace?.origin !== 'pre-existing')
         throw new WorkspaceError({
           outcome: 'invalid',
-          message: `Workspace ${workspaceId} is not a pre-existing checkout of repository ${repo}.`,
+          message: `${workspaceId} is not a pre-existing checkout of repository ${repo}.`,
         })
       const reservation = getReservation(db, workspace.id)
       if (reservation !== undefined)

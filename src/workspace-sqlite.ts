@@ -135,7 +135,7 @@ export const GATE_SQL = `
 
 export const encode = (value: unknown): string => {
   const result = JSON.stringify(value)
-  if (typeof result !== 'string') return invalid('Workspace record cannot be encoded')
+  if (typeof result !== 'string') return invalid('Checkout record cannot be encoded')
   return result
 }
 const decodeJsonText = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -329,7 +329,7 @@ export const createPublishedDatabase = (
     fsyncParent(path)
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot save the dev workspace database ${path}: ${errorText(cause)}`)
+    unavailable(`Cannot save the dev checkout database ${path}: ${errorText(cause)}`)
   } finally {
     try {
       db?.close()
@@ -378,7 +378,7 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   if (!validatedFiles.has(identity)) {
     if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
       unavailable(
-        `Dev workspace database has the wrong schema: ${path}. Quit all dev sessions and ask the user to check the saved checkout data.`
+        `Dev checkout database has the wrong schema: ${path}. Quit all dev sessions and ask the user to check the saved checkout data.`
       )
     if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
       requireReview(`Dev's checkout database is corrupt: ${path}`)
@@ -399,7 +399,7 @@ export const openRecordConnection = (
   try {
     const existed = lstatIfExists(path) !== undefined
     if (!existed) {
-      if (initialize === undefined) unavailable(`Dev workspace database is missing: ${path}`)
+      if (initialize === undefined) unavailable(`Dev checkout database is missing: ${path}`)
       createPublishedDatabase(path, kind, initialize)
     }
     databaseFile(path)
@@ -423,8 +423,8 @@ export const openRecordConnection = (
     }
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    if (sqliteBusy(cause)) blocked(`Dev workspace database is busy: ${path}`)
-    unavailable(`Cannot open the dev workspace database ${path}: ${errorText(cause)}`)
+    if (sqliteBusy(cause)) blocked(`Dev checkout database is busy: ${path}`)
+    unavailable(`Cannot open the dev checkout database ${path}: ${errorText(cause)}`)
   }
 }
 export const recordConnectionCurrent = (connection: RecordConnection, path: string): boolean => {

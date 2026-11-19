@@ -399,7 +399,7 @@ const admitFrom = <Reply>(
     const foreign = foreignSource(authority, cwd)
     if (foreign.repo === (operation.caller?.repositoryId ?? source.repo))
       invalid(
-        `The destination is in the caller's repository; write the file in its current workspace instead: ${operation.caller?.checkout ?? source.workspace.path}`
+        `The destination is in the caller's repository; write the file in its current checkout instead: ${operation.caller?.checkout ?? source.workspace.path}`
       )
     return reserveForeignWriter(authority, state, foreign, cwd)
   }
@@ -704,7 +704,7 @@ const authorizeForeign = (
     operation.kind === 'write' ||
     (operation.kind === 'read' && operation.execution === undefined)
   )
-    invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
+    invalid(`Operation cwd is outside the selected checkout: ${cwd}`)
   if (isWithin(authority.root, cwd))
     invalid(`Cannot delegate into dev private storage: ${cwd}. Choose a checkout outside it`)
   const source = foreignSource(authority, cwd)

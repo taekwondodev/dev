@@ -58,7 +58,7 @@ export const cleanupUpgradeWorkspace = (
       const record = getWorkspaceByPath(db, path)
       if (record === undefined) return undefined
       if (record.origin !== 'pre-existing' || record.status !== 'ready')
-        requireReview(`Upgrade checkout is not a ready pre-existing workspace: ${path}`)
+        requireReview(`Upgrade checkout is not ready or not pre-existing: ${path}`)
       if (
         getReservation(db, record.id) !== undefined ||
         getUseRows(db, record.id).some(isActiveUse) ||
@@ -70,7 +70,7 @@ export const cleanupUpgradeWorkspace = (
         )
       )
         blocked(
-          `Upgrade workspace is still kept for a task, in use or has a pending operation: ${path}`
+          `Upgrade checkout is still kept for a task, in use or has a pending operation: ${path}`
         )
       return record
     })
@@ -116,7 +116,7 @@ export const cleanupUpgradeWorkspace = (
     if (branch !== undefined) git(source.path, ['branch', '--delete', '--force', '--', branch])
     return entry === undefined && workspace === undefined
       ? ''
-      : `Removed upgrade worktree${branch === undefined ? '' : ` and local branch ${branch}`}; workspace inventory reconciled.\n`
+      : `Removed upgrade worktree${branch === undefined ? '' : ` and local branch ${branch}`}; checkout inventory reconciled.\n`
   } finally {
     if (gates !== undefined) releaseGates(gates)
     structure()

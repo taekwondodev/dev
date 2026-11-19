@@ -101,7 +101,7 @@ export const unsupportedAuthorityStorage = (input: {
 }
 const assertSupportedStorage = (root: string): void => {
   if (process.platform !== 'darwin')
-    unavailable(`Dev workspace support requires macOS, not ${process.platform}`)
+    unavailable(`Dev checkout support requires macOS, not ${process.platform}`)
   let existing = root
   while (lstatIfExists(existing) === undefined && dirname(existing) !== existing)
     existing = dirname(existing)
@@ -274,7 +274,7 @@ export class WorkspaceAuthority {
   }
 
   initialize(): WorkspaceId {
-    if (this.closed) unavailable('Workspace lifecycle is closed')
+    if (this.closed) unavailable('Dev checkout service is closed')
     if (this.initialized) return this.namespaceId ?? requireReview('Dev storage ID is missing')
     this.checkStorage()
     assertSqliteSafety()
@@ -311,7 +311,7 @@ export class WorkspaceAuthority {
   }
 
   inspectExisting(): WorkspaceId | undefined {
-    if (this.closed) unavailable('Workspace lifecycle is closed')
+    if (this.closed) unavailable('Dev checkout service is closed')
     this.checkStorage()
     const rootInfo = lstatIfExists(this.root)
     if (rootInfo === undefined) return undefined

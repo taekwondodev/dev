@@ -229,7 +229,7 @@ export const getWorkspace = (db: DatabaseSync, id: string): WorkspaceRecord | un
     id
   )
   if (row === undefined) return undefined
-  const value = parseRecord(WorkspaceSchema, row.payload, `workspace ${id}`)
+  const value = parseRecord(WorkspaceSchema, row.payload, `checkout ${id}`)
   if (
     value.id !== textField(row, 'id') ||
     value.path !== textField(row, 'path') ||
@@ -359,7 +359,7 @@ export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void =>
     value.revision - 1
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace record changed concurrently: ${value.id}`)
+    requireReview(`Checkout record changed concurrently: ${value.id}`)
 }
 export const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   statement(
@@ -411,7 +411,7 @@ const USE_ROW =
   'SELECT id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,within_use_id,revision,payload FROM uses'
 const recordedUse = (row: SqlRow): UseRecord => {
   const id = textField(row, 'id')
-  const value = parseRecord(UseSchema, row.payload, `workspace use ${id}`)
+  const value = parseRecord(UseSchema, row.payload, `checkout use ${id}`)
   if (
     value.id !== id ||
     value.workspaceId !== textField(row, 'workspace_id') ||
@@ -524,7 +524,7 @@ export const saveOperation = (db: DatabaseSync, value: OperationRecord): void =>
     value.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace operation disappeared: ${value.id}`)
+    requireReview(`Checkout operation disappeared: ${value.id}`)
 }
 const operationsWhere = (
   db: DatabaseSync,
@@ -667,7 +667,7 @@ export const validateWorkspacePath = (
 ): GitWorkspace => {
   if (record.status === 'removed')
     return requireReview(
-      `Workspace was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
+      `Checkout was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
     )
   if (record.status !== 'ready')
     return requireReview(`Worktree creation may be unfinished: ${record.path}`)
@@ -675,10 +675,10 @@ export const validateWorkspacePath = (
   try {
     actual = observed ?? canonicalGitWorkspace(record.path)
   } catch (cause) {
-    return requireReview(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
+    return requireReview(`Cannot verify checkout ${record.path}: ${errorText(cause)}`)
   }
   if (!matchesGitWorkspace(record, actual))
-    return requireReview(`Workspace path or Git identity was replaced: ${record.path}`)
+    return requireReview(`Checkout path or Git identity was replaced: ${record.path}`)
   return actual
 }
 

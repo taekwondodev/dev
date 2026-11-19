@@ -111,13 +111,13 @@ export const exactId = Effect.fnUntraced(function* (
   const decoded = decodeId(value)
   if (Option.isNone(decoded))
     return yield* usage(
-      `${name} must be an exact ID as listed by dev workspace, got ${JSON.stringify(value ?? '')}`
+      `${name} must be an exact ID as listed by dev workspace list, got ${JSON.stringify(value ?? '')}`
     )
   return decoded.value
 })
 
 const noTaskRecords = (taskId: string): string =>
-  `No workspace records exist for exact task ${taskId}.`
+  `No checkout records exist for exact task ${taskId}.`
 
 export const parseWorkspaceCommand = Effect.fnUntraced(function* (
   tokens: readonly string[]
@@ -200,7 +200,7 @@ export const describedHead = (head: WorkspaceHead | undefined): string | undefin
 }
 
 const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] => [
-  `task ${view.taskId ?? '(unassigned)'} — workspace ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current]' : ''}`,
+  `task ${view.taskId ?? '(unassigned)'} — checkout ${view.workspaceId}${view.workspaceId === currentWorkspaceId ? ' [current]' : ''}`,
   `  repository: ${view.repositoryId}`,
   `  path: ${view.path}`,
   ...(view.head === undefined ? [] : [`  head: ${describedHead(view.head)}`]),
@@ -220,7 +220,7 @@ const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] =>
 
 const formatWorkspaceViews = (views: readonly WorkspaceView[]): string => {
   const rows = sortedViews(views)
-  if (rows.length === 0) return 'No workspace records were found for this selection.'
+  if (rows.length === 0) return 'No checkout records were found for this selection.'
   return rows.flatMap(view => viewText(view)).join('\n')
 }
 
@@ -232,13 +232,13 @@ const formatWorkspaceList = (
 ): string => {
   const rows = sortedViews(views)
   const header = [
-    `Workspace list for repository ${repositoryRoot}:`,
+    `Checkout list for repository ${repositoryRoot}:`,
     ...(current === undefined
       ? []
       : [`Current checkout: ${current.workspaceId}`, `Effective cwd: ${current.effectiveCwd}`]),
     ...(artifacts === undefined ? [] : [`Task artifacts: ${artifacts}`]),
   ]
-  if (rows.length === 0) return `${header.join('\n')}\nNo workspace records were found.`
+  if (rows.length === 0) return `${header.join('\n')}\nNo checkout records were found.`
   return [...header, ...rows.flatMap(view => viewText(view, current?.workspaceId))].join('\n')
 }
 
@@ -350,7 +350,7 @@ const verdictText = (verdict: CompletionVerdict): string =>
   `${verdictLabel(verdict)}: ${verdict.reason}`
 
 const assessmentText = (assessment: WorkspaceAssessment): string[] => [
-  `workspace ${assessment.workspaceId} (${assessment.origin}) at ${assessment.path}`,
+  `checkout ${assessment.workspaceId} (${assessment.origin}) at ${assessment.path}`,
   `  repository: ${assessment.repositoryId}`,
   `  role: ${ROLE_TEXT[assessment.completion.role]}`,
   `  destination branch: ${assessment.target.description}`,
@@ -449,7 +449,7 @@ export const formatReleaseResults = (
       result.kind === 'task-artifacts'
         ? artifactsText(result)
         : [
-            `workspace ${result.workspaceId} (${result.origin}) at ${result.path}: ${result.outcome}`,
+            `checkout ${result.workspaceId} (${result.origin}) at ${result.path}: ${result.outcome}`,
             `  ${result.reason}`,
           ]
     ),
@@ -470,7 +470,7 @@ const sweepRowText = (row: SweepRow): string[] => {
     case 'workspace': {
       const attempted = row.verdict.kind === 'finished'
       return [
-        `workspace ${row.workspaceId} (${row.origin}) at ${row.path}, task ${row.taskId}: ${row.outcome}${attempted ? ' (automatic)' : ''}`,
+        `checkout ${row.workspaceId} (${row.origin}) at ${row.path}, task ${row.taskId}: ${row.outcome}${attempted ? ' (automatic)' : ''}`,
         `  verdict: ${verdictText(row.verdict)}`,
         ...(attempted ? [`  ${row.reason}`] : []),
         ...(row.operationId === undefined ? [] : [`  operation: ${row.operationId}`]),
@@ -549,7 +549,7 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
           views.length === 0
             ? noTaskRecords(command.taskId)
             : [
-                `Workspace records for exact task ${command.taskId}: ${formatWorkspaceViews(views)}`,
+                `Checkout records for exact task ${command.taskId}: ${formatWorkspaceViews(views)}`,
                 ...(artifacts === undefined ? [] : [`task artifacts: ${artifacts}`]),
               ].join('\n'),
         report: {
@@ -564,7 +564,7 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
     if (repositoryRoot === undefined)
       return {
         exitCode: 2,
-        text: 'Workspace list requires a Git repository; run dev from a Git checkout or pass --cwd PATH.',
+        text: 'dev workspace list requires a Git repository; run dev from a Git checkout or pass --cwd PATH.',
       }
     const lifecycle = yield* openLifecycle
     const views = yield* lifecycle.inspect({ cwd: repositoryRoot })

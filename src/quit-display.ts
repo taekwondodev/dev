@@ -59,7 +59,7 @@ const spin = Effect.fnUntraced(function* (
     const progress = frame % PROGRESS_KEEPALIVE_FRAMES === 0 ? PROGRESS_ACTIVE : ''
     yield* Effect.sync(() => {
       out.write(
-        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Cleaning up workspaces… ${paint(style, 'dim', seconds(now - started))}`
+        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Cleaning up checkouts… ${paint(style, 'dim', seconds(now - started))}`
       )
     })
     yield* Effect.sleep(FRAME_MS)
@@ -83,14 +83,14 @@ export const sweepIndicator = Effect.fnUntraced(function* (
 ): Effect.fn.Return<SweepIndicator, never, Scope.Scope> {
   if (!style.live) {
     yield* Effect.sync(() => {
-      out.write('Cleaning up workspaces...\n')
+      out.write('Cleaning up checkouts...\n')
     })
     return idle
   }
   const started = yield* Clock.currentTimeMillis
   if (stripFits(graphics, SCAN_SHAPE, LABEL_COLUMNS)) {
     const strip = yield* sweepStrip(out, graphics, INDICATOR_DELAY_MS, elapsed =>
-      paint(style, 'dim', `Cleaning up workspaces… ${seconds(elapsed)}`)
+      paint(style, 'dim', `Cleaning up checkouts… ${seconds(elapsed)}`)
     )
     return { sweepDone: Effect.void, settle: strip.settle }
   }
@@ -144,31 +144,31 @@ const RETAINED_DISPLAY: Record<
 > = {
   'identity-unverifiable': {
     offer: 'together',
-    status: 'The workspace identity could not be verified.',
+    status: 'The checkout identity could not be verified.',
   },
   'transition-unresolved': {
     offer: 'together',
-    status: 'A workspace transition has not finished.',
+    status: 'A checkout transition has not finished.',
   },
   'release-review': { offer: 'together', status: 'An earlier removal did not finish.' },
   excluded: {
     offer: 'never',
-    status: 'The conversation allocating a worktree is working in the workspace.',
+    status: 'The conversation allocating a worktree is working in the checkout.',
   },
-  'use-unknown': { offer: 'alone', status: 'A workspace use is unresolved.' },
+  'use-unknown': { offer: 'alone', status: 'A checkout use is unresolved.' },
   'use-abandoned': {
     offer: 'alone',
-    status: 'A previous session ended without settling its workspace use.',
+    status: 'A previous session ended without settling its checkout use.',
   },
-  'use-live': { offer: 'never', status: 'A session or process is still using the workspace.' },
+  'use-live': { offer: 'never', status: 'A session or process is still using the checkout.' },
   'directory-missing': {
     offer: 'together',
     status: 'The worktree directory is missing, but the task still keeps it.',
   },
-  'residue-unreadable': { offer: 'together', status: 'The workspace contents could not be read.' },
+  'residue-unreadable': { offer: 'together', status: 'The checkout contents could not be read.' },
   'checkout-modified': { offer: 'together', status: 'The checkout has uncommitted changes.' },
-  skipped: { offer: 'never', status: 'The workspace was excluded from this cleanup.' },
-  'no-commits': { offer: 'together', status: 'The workspace has no commits proving delivery.' },
+  skipped: { offer: 'never', status: 'The checkout was excluded from this cleanup.' },
+  'no-commits': { offer: 'together', status: 'The checkout has no commits proving delivery.' },
   'integration-unknown': {
     offer: 'together',
     status: 'Integration could not be assessed with the available evidence.',
@@ -266,7 +266,7 @@ export const formatQuitSummary = (
 ): string => {
   const summary =
     successes(receipt.rows, style) ||
-    (receipt.rows.length === 0 ? 'No workspaces kept for a task' : 'No workspaces removed')
+    (receipt.rows.length === 0 ? 'No checkouts kept for a task' : 'No checkouts removed')
   return `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`
 }
 
@@ -294,7 +294,7 @@ export const formatQuitReceipt = (
           commandStatus(
             style,
             `dev workspace check ${row.taskId}`,
-            'The workspace assessment failed.'
+            'The checkout assessment failed.'
           ),
         ]
       case 'task-deferred':
@@ -335,8 +335,8 @@ export const taskReleaseExclusion = (
 ): string | undefined => {
   const assessed = new Set(workspaceRows(receipt).map(row => row.workspaceId))
   if (views.some(view => !assessed.has(view.workspaceId)))
-    return 'The task has workspaces that this cleanup did not assess.'
-  if (views.length === 0) return 'The task no longer keeps any workspace.'
+    return 'The task has checkouts that this cleanup did not assess.'
+  if (views.length === 0) return 'The task no longer keeps any checkout.'
   return undefined
 }
 
@@ -345,7 +345,7 @@ export const quitReleaseExclusion = (
   views: readonly WorkspaceView[]
 ): string | undefined => {
   if (views.some(view => view.uses.some(use => use.stage !== 'quiescent')))
-    return 'The task has an active or unresolved workspace use.'
+    return 'The task has an active or unresolved checkout use.'
   return taskReleaseExclusion(receipt, views)
 }
 

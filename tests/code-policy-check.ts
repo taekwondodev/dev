@@ -66,6 +66,8 @@ const files: Record<string, string> = {
     "export const first = 'DELETE cannot run during the sweep.'",
     "export const state = (name: string) => name + ' is ' + 'parked'",
     "export const file = (directory: string) => directory + '/' + 'attempts'",
+    "export const noun = 'The task keeps this workspace'",
+    "export const named = 'Run dev workspace release 1, /workspace resume or [dev workspace]'",
     '',
   ].join('\n'),
   'tests/worded.ts': ["export const name = 'the lead waits for the sweep'", ''].join('\n'),
@@ -100,7 +102,7 @@ const files: Record<string, string> = {
 
 const expected: Record<string, string[]> = {
   'tests/flagged.ts': [6, 7, 8, 9, 10, 12, 13, 14].map(line => `no-fixed-sleep:${line}`),
-  'src/worded.ts': [1, 2, 6, 8, 10, 11].map(line => `no-internal-terms:${line}`),
+  'src/worded.ts': [1, 2, 6, 8, 10, 11, 13].map(line => `no-internal-terms:${line}`),
   'tests/disabled-line.ts': ['no-source-comments:1'],
   'tests/disabled-file.ts': ['no-source-comments:1'],
   'tests/disabled-later.ts': ['no-source-comments:1'],

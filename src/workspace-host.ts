@@ -807,7 +807,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     transition.stage = 'switch-started'
     const currentRuntime = runtime
     if (!currentRuntime)
-      return yield* hostFailure('Pi runtime disappeared before workspace replacement')
+      return yield* hostFailure('Pi runtime disappeared before checkout replacement')
     const trustSnapshot = trustContextFor(transition.surface, transition.handoff.target.cwd)
     const withSession = async (fresh: ReplacedSessionContext): Promise<void> => {
       restoreInput(fresh)
@@ -1049,7 +1049,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const endRunForDismissal = (context: ExtensionContext): void => {
     if (!armedDismissalEnd) return
     armedDismissalEnd = false
-    endRun(context, 'the dismissed workspace question')
+    endRun(context, 'the dismissed checkout question')
   }
 
   const endRunForReview = (context: ExtensionContext): void => {
@@ -1057,7 +1057,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     if (refusal === undefined) return
     armedReviewEnd = undefined
     showRefusal(refusal)
-    endRun(context, 'the workspace review')
+    endRun(context, 'the checkout review')
   }
 
   const answerPausedTask = Effect.fnUntraced(function* (
@@ -1722,7 +1722,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       if (!context.hasUI)
         return 'The list of paused work needs an interactive session; name the task instead: /workspace resume <task-id>.'
       const root = yield* repositoryRoot.resolve(context.cwd)
-      if (root === undefined) return 'Workspace resume requires a Git repository.'
+      if (root === undefined) return '/workspace resume requires a Git repository.'
       const views = yield* authority.inspect({ cwd: root })
       candidates = resumableWorkspaces(views)
       if (candidates.length === 0) return notResumableText({ repositoryRoot: root }, views)
@@ -1736,7 +1736,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           : notResumableText({ taskId }, views)
       if (candidates.length === 1) return only
       if (!context.hasUI)
-        return `Task ${taskId} retains several workspaces; choosing one needs an interactive session.`
+        return `Task ${taskId} retains several checkouts; choosing one needs an interactive session.`
     }
     const now = yield* Clock.currentTimeMillis
     const rows = candidates.map(candidate => resumableRowText(candidate, now))
@@ -1962,7 +1962,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       )
 
       api.registerCommand('workspace', {
-        description: 'Show workspaces, or resume, inspect or check a task',
+        description: 'Show checkouts, or resume, inspect or check a task',
         getArgumentCompletions: verbCompletions([
           {
             verb: 'list',
@@ -1976,7 +1976,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           {
             verb: 'inspect',
             arguments: '<task-id>',
-            description: "A task's workspaces and next safe action",
+            description: "A task's checkouts and next safe action",
           },
           {
             verb: 'check',
@@ -1986,7 +1986,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
           {
             verb: 'release',
             arguments: '<task-id>',
-            description: "Show the terminal command that discards a task's workspaces",
+            description: "Show the terminal command that discards a task's checkouts",
           },
         ]),
         handler: (args, context) => runPromise(workspaceCommand(api, args, context)),

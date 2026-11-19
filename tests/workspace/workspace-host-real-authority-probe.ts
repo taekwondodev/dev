@@ -302,13 +302,13 @@ await claim(
     const inspectResult = await readOnly(['inspect', squatterTaskId])
     assert.equal(listResult.exitCode, 0, listResult.text)
     assert.equal(inspectResult.exitCode, 0, inspectResult.text)
-    const squatterRow = `task ${squatterTaskId} — workspace ${squatterAdmission.grant.workspaceId}`
+    const squatterRow = `task ${squatterTaskId} — checkout ${squatterAdmission.grant.workspaceId}`
     assert.deepEqual(
       listResult.text.split('\n').filter(line => !line.startsWith(' ')),
-      [`Workspace list for repository ${lead}:`, squatterRow]
+      [`Checkout list for repository ${lead}:`, squatterRow]
     )
     const inspected = inspectResult.text.split('\n')
-    assert.equal(inspected[0], `Workspace records for exact task ${squatterTaskId}: ${squatterRow}`)
+    assert.equal(inspected[0], `Checkout records for exact task ${squatterTaskId}: ${squatterRow}`)
     assert.ok(
       inspected.some(line => line.startsWith(`  use ${squatterAdmission.grant.useId}: write, `)),
       inspectResult.text

@@ -49,7 +49,7 @@ const asWorkspaceError = (cause: unknown): WorkspaceError =>
     ? cause
     : new WorkspaceError({
         outcome: 'unavailable',
-        message: `Dev workspace operation failed: ${errorText(cause)}`,
+        message: `Dev checkout operation failed: ${errorText(cause)}`,
       })
 
 const attempt = <A>(work: () => A | Promise<A>): Promise<A> => {
@@ -86,7 +86,7 @@ export class WorkspaceEngine {
 
   run<A>(work: (authority: WorkspaceAuthority) => A | Promise<A>): Promise<A> {
     return attempt(() => {
-      if (this.closed) blocked('Workspace lifecycle is closed')
+      if (this.closed) blocked('Dev checkout service is closed')
       return this.authority.withHandles(() => work(this.authority))
     })
   }

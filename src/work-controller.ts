@@ -1641,7 +1641,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     yield* reportWorkspace(job, { kind: 'unknown', reason: errorText(cause) }).pipe(
       Effect.catch(error =>
         Effect.sync(() => {
-          process.stderr.write(`Workspace uncertainty could not be recorded: ${errorText(error)}\n`)
+          process.stderr.write(`Checkout uncertainty could not be recorded: ${errorText(error)}\n`)
         })
       )
     )

@@ -142,7 +142,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       ...(outcome === undefined ? {} : { outcome }),
     }
     if (byteLength(message) > MAX_MESSAGE_BYTES) {
-      fail(unavailableError('Workspace callback response exceeded its size limit'))
+      fail(unavailableError('Checkout callback response exceeded its size limit'))
       return
     }
     post(message, 'Dev lost the result of the checkout switch')
@@ -169,14 +169,14 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   const onMessage = (raw: unknown): void => {
     if (byteLength(raw) > MAX_MESSAGE_BYTES) {
-      fail(unavailableError('Dev workspace response exceeded the size limit'))
+      fail(unavailableError('Dev checkout response exceeded the size limit'))
       return
     }
     let message: WorkspaceWorkerMessage
     try {
       message = decodeWorkspaceWorkerMessage(raw)
     } catch {
-      fail(unavailableError('Dev received an invalid workspace response'))
+      fail(unavailableError('Dev received an invalid checkout response'))
       return
     }
     if ('type' in message) {
@@ -208,18 +208,18 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
           return
         default: {
           const exhaustive: never = message
-          fail(unavailableError(`Unexpected workspace response: ${String(exhaustive)}`))
+          fail(unavailableError(`Unexpected checkout response: ${String(exhaustive)}`))
           return
         }
       }
     }
     const request = pending.get(message.id)
     if (request === undefined) {
-      fail(unavailableError('Dev could not match the workspace response to a request'))
+      fail(unavailableError('Dev could not match the checkout response to a request'))
       return
     }
     if (message.ok && message.op !== request.op) {
-      fail(unavailableError('Workspace response did not match the request'))
+      fail(unavailableError('Checkout response did not match the request'))
       return
     }
     pending.delete(message.id)
@@ -233,9 +233,9 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   const onExit = (): void => {
     if (phase !== 'closing' && phase !== 'closed' && phase !== 'failed')
-      fail(unavailableError('Dev workspace service stopped unexpectedly'))
+      fail(unavailableError('Dev checkout service stopped unexpectedly'))
     else if (pending.size > 0) {
-      const cause = unavailableError('Dev workspace service stopped before confirming the request')
+      const cause = unavailableError('Dev checkout service stopped before confirming the request')
       for (const request of pending.values()) Deferred.doneUnsafe(request.result, Exit.fail(cause))
       pending.clear()
     }
@@ -245,13 +245,13 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   worker.on('message', onMessage)
   worker.on('error', cause =>
-    fail(unavailableError(`Dev workspace service failed: ${errorText(cause)}`))
+    fail(unavailableError(`Dev checkout service failed: ${errorText(cause)}`))
   )
   worker.on('exit', onExit)
   yield* Effect.sleep(STARTUP_TIMEOUT).pipe(
     Effect.andThen(
       Effect.sync(() => {
-        if (phase === 'starting') fail(unavailableError('Dev workspace service did not start'))
+        if (phase === 'starting') fail(unavailableError('Dev checkout service did not start'))
       })
     ),
     Effect.forkScoped
@@ -272,9 +272,9 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     duringClose: boolean
   ): Effect.fn.Return<WorkspaceRpcResults[K], WorkspaceError> {
     if (!(phase === 'ready' || (duringClose && phase === 'closing')))
-      return yield* unavailableError('Dev workspace service is unavailable')
+      return yield* unavailableError('Dev checkout service is unavailable')
     if (pending.size >= MAX_PENDING_REQUESTS)
-      return yield* unavailableError('Too many workspace requests')
+      return yield* unavailableError('Too many checkout requests')
     if (hostReplace !== undefined && input.op !== 'handoff')
       return yield* invalidError('This request cannot switch checkouts')
     const request: WorkspaceRpcInput = input
@@ -282,24 +282,24 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     const callbackId = request.op === 'handoff' ? request.callbackId : undefined
     if (hostReplace !== undefined && callbackId !== undefined) {
       if (callbacks.has(callbackId))
-        return yield* invalidError('Workspace callback ID is already in use')
+        return yield* invalidError('Checkout callback ID is already in use')
       callbacks.set(callbackId, { replace: hostReplace, invoked: false, responded: false })
     }
     const sentAt = yield* Clock.currentTimeMillis
     const envelope = { id, sentAt, request }
     if (byteLength(envelope) > MAX_MESSAGE_BYTES) {
       if (callbackId !== undefined) callbacks.delete(callbackId)
-      return yield* invalidError('Workspace request exceeded its size limit')
+      return yield* invalidError('Checkout request exceeded its size limit')
     }
     const result = yield* Deferred.make<unknown, WorkspaceError>()
 
     pending.set(id, { op: request.op, result })
-    post(envelope, 'Dev could not send the workspace request')
+    post(envelope, 'Dev could not send the checkout request')
     const value = yield* Deferred.await(result).pipe(
       Effect.timeoutOrElse({
         duration: RPC_TIMEOUT,
         orElse: () => {
-          const cause = unavailableError('Dev did not get confirmation of the workspace request')
+          const cause = unavailableError('Dev did not get confirmation of the checkout request')
           fail(cause)
           return Effect.fail(cause)
         },
@@ -312,7 +312,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     )
     const reply = replyDecoder<K>(input.op)(value)
     if (Option.isSome(reply)) return reply.value
-    const cause = unavailableError('Dev received an invalid workspace response')
+    const cause = unavailableError('Dev received an invalid checkout response')
     fail(cause)
     return yield* cause
   })
@@ -368,7 +368,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
           Effect.suspend(() => {
             nextCallbackId += 1
             if (!Number.isSafeInteger(nextCallbackId)) {
-              const cause = unavailableError('Workspace callback sequence exceeded its limit')
+              const cause = unavailableError('Checkout callback sequence exceeded its limit')
               fail(cause)
               return Effect.fail(cause)
             }

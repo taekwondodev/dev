@@ -74,7 +74,7 @@ await claim(
       [
         '✓ 1 worktree removed · 12.9s',
         `dev workspace release ${undelivered.taskId}  Delivery to the destination branch could not be verified.`,
-        `Not offered: dev workspace release ${abandoned.taskId}  A previous session ended without settling its workspace use.`,
+        `Not offered: dev workspace release ${abandoned.taskId}  A previous session ended without settling its checkout use.`,
       ].join('\n')
     )
     assert.equal(formatQuitSummary(receipt, 12900, plain), '✓ 1 worktree removed · 12.9s')
@@ -129,7 +129,7 @@ await claim(
     assert.ok(text.includes(`dev workspace release ${gated.taskId}`), text)
     assert.equal(
       formatQuitReceipt({ moment: 'quit', rows: [live] }, 100, plain),
-      'No workspaces removed · 0.1s'
+      'No checkouts removed · 0.1s'
     )
   }
 )
@@ -149,7 +149,7 @@ await claim(
       plain
     )
     assert.ok(
-      text.includes(`dev workspace check ${id('70')}  The workspace assessment failed.`),
+      text.includes(`dev workspace check ${id('70')}  The checkout assessment failed.`),
       text
     )
     assert.ok(
@@ -190,7 +190,7 @@ await claim('TTY styling and progress do not depend on the terminal name', () =>
   }
   assert.equal(
     formatQuitReceipt({ moment: 'quit', rows: [] }, 120, plain),
-    'No workspaces kept for a task · 0.1s'
+    'No checkouts kept for a task · 0.1s'
   )
   assert.equal(formatExitLine(plain, 0, 'done'), 'Exit 0: done.')
 })
@@ -231,15 +231,15 @@ await claim(
     assert.equal(quitReleaseExclusion(receipt, [view]), undefined)
     assert.equal(
       quitReleaseExclusion(receipt, [view, { ...view, workspaceId: id('2001') }]),
-      'The task has workspaces that this cleanup did not assess.'
+      'The task has checkouts that this cleanup did not assess.'
     )
     assert.equal(
       quitReleaseExclusion(receipt, [
         { ...view, uses: [{ id: id('2002'), access: 'read', stage: 'unknown' }] },
       ]),
-      'The task has an active or unresolved workspace use.'
+      'The task has an active or unresolved checkout use.'
     )
-    assert.equal(quitReleaseExclusion(receipt, []), 'The task no longer keeps any workspace.')
+    assert.equal(quitReleaseExclusion(receipt, []), 'The task no longer keeps any checkout.')
     const unsettled = {
       ...view,
       taskId: abandoned.taskId,
@@ -249,7 +249,7 @@ await claim(
     assert.equal(taskReleaseExclusion(receipt, [unsettled]), undefined)
     assert.equal(
       taskReleaseExclusion(receipt, [unsettled, { ...unsettled, workspaceId: id('2004') }]),
-      'The task has workspaces that this cleanup did not assess.'
+      'The task has checkouts that this cleanup did not assess.'
     )
     assert.equal(
       formatQuitTaskReleasePlan(
@@ -259,7 +259,7 @@ await claim(
       ),
       [
         `Release task ${abandoned.taskId} (1 managed worktree, 1 task artifact directory)?`,
-        'A previous session ended without settling its workspace use.',
+        'A previous session ended without settling its checkout use.',
         'This deletes the managed worktrees, including uncommitted changes and undelivered commits.',
         'Task artifact directories are deleted with everything in them.',
       ].join(' ')

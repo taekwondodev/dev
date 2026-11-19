@@ -203,11 +203,11 @@ try {
       )
       assert.equal(
         assess({
-          identityReason: 'Workspace path or Git identity was replaced: /repo',
+          identityReason: 'Checkout path or Git identity was replaced: /repo',
           unresolved: true,
           pending: { id: 'operation-2', stage: 'started' },
         }).reason,
-        'Workspace path or Git identity was replaced: /repo. Earlier operation operation-2: started; checking does not redo it.',
+        'Checkout path or Git identity was replaced: /repo. Earlier operation operation-2: started; checking does not redo it.',
         'an identity problem does not hide an unfinished operation'
       )
       const unresolved = assess({

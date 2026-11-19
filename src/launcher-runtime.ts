@@ -264,7 +264,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, destination branch and cleanup verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in checkouts at --cwd that no task keeps\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev cleans up the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list checkouts for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, destination branch and cleanup verdict of every checkout of the task\n  workspace release <task-id>  confirm interactively, then clear every checkout of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in checkouts at --cwd that no task keeps\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev cleans up the repository: finished checkouts are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -523,7 +523,7 @@ const exitText = (code: ReleaseExitCode): string => {
     case 1:
       return 'at least one workspace release that started did not reach a final result'
     case 130:
-      return 'interrupted; no workspace was attempted after the signal'
+      return 'interrupted; no checkout was attempted after the signal'
   }
 }
 
@@ -533,7 +533,7 @@ const tuiClosedNotice = (detached: boolean): string =>
 const quitFailureNotice = (detached: boolean, cause: Cause.Cause<unknown>): string =>
   Cause.hasInterruptsOnly(cause)
     ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before automatic cleanup started; nothing was released.\nExit 130: ${exitText(130)}.`
-    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its workspace uses may still be recorded; nothing was cleaned up or released.\nExit 1.`
+    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its checkout uses may still be recorded; nothing was cleaned up or released.\nExit 1.`
 
 interface QuitExit {
   readonly code: ReleaseExitCode
@@ -861,14 +861,14 @@ const terminalRelease = Effect.fnUntraced(function* (
   const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
   if (Exit.isFailure(listed)) {
     yield* write(
-      `Workspace inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
+      `Checkout inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
       process.stderr
     )
     return 1
   }
   const views = reservedViews(listed.value)
   if (views.length === 0) {
-    yield* write(`Task ${taskId} keeps no workspace; nothing to release.`, process.stderr)
+    yield* write(`Task ${taskId} keeps no checkout; nothing to release.`, process.stderr)
     return 1
   }
   return yield* confirmRelease(
@@ -894,7 +894,7 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
   const listed = yield* Effect.exit(lifecycle.inspect({ cwd: repositoryRoot }))
   if (Exit.isFailure(listed)) {
     yield* write(
-      `Workspace inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
+      `Checkout inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
       process.stderr
     )
     return 1
@@ -911,7 +911,7 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
   return yield* confirmRelease(
     preExistingReleasePlan(views),
     `the pre-existing checkouts of ${repositoryRoot}`,
-    `dev --cwd ${repositoryRoot} workspace`,
+    `dev --cwd ${repositoryRoot} workspace list`,
     lifecycle.releasePreExisting({
       repositoryId: first.repositoryId,
       workspaceIds: views.map(view => view.workspaceId),
@@ -1048,12 +1048,12 @@ const taskUsageRefusal = (options: LaunchOptions): string | undefined => {
     options.workspaceArgs !== undefined ||
     options.browserArgs !== undefined
   )
-    return '--task opens a new conversation in paused work; it cannot be combined with --resume, --continue, --diagnostics, --probe-runtime, --save-profile or a workspace or browser command.'
+    return '--task opens a new conversation in paused work; it cannot be combined with --resume, --continue, --diagnostics, --probe-runtime, --save-profile, a workspace command or a browser command.'
   if (
     options.task?.id === undefined &&
     (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
   )
-    return '--task without a task ID lists paused work and needs an interactive terminal; name the task instead: dev --task <task-id> (dev workspace lists them).'
+    return '--task without a task ID lists paused work and needs an interactive terminal; name the task instead: dev --task <task-id> (dev workspace list shows them).'
   return undefined
 }
 
@@ -1070,7 +1070,7 @@ const chooseTask = Effect.fnUntraced(function* (
 ): Effect.fn.Return<TaskChoice, LauncherError> {
   const views = yield* lifecycle
     .inspect({ cwd: repositoryRoot })
-    .pipe(Effect.mapError(error => toLauncherError(error, 'Workspace inspection failed')))
+    .pipe(Effect.mapError(error => toLauncherError(error, 'Checkout inspection failed')))
   const resumable = resumableWorkspaces(views)
   const candidates =
     taskId === undefined
@@ -1092,7 +1092,7 @@ const chooseTask = Effect.fnUntraced(function* (
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
     return {
       kind: 'refused',
-      reason: `Task ${taskId} retains several workspaces of ${repositoryRoot}; choosing one needs an interactive terminal.`,
+      reason: `Task ${taskId} retains several checkouts of ${repositoryRoot}; choosing one needs an interactive terminal.`,
     }
   const index = yield* chooseWorkspace(
     packageRoot,
@@ -1310,14 +1310,14 @@ const run = Effect.fnUntraced(function* (
       Effect.mapError(
         error =>
           new LauncherError({
-            message: `Cannot attach this conversation to a workspace: ${error.message}\n${keptConversationGuidance(sessionFile)}`,
+            message: `Cannot attach this conversation to a checkout: ${error.message}\n${keptConversationGuidance(sessionFile)}`,
             cause: error,
           })
       )
     )
   const effectiveCwd = attachment.binding.cwd
   if (resolve(sessions.getCwd()) !== resolve(effectiveCwd)) {
-    sessions = yield* fromSync('Cannot reopen Pi session at its authorized workspace cwd', () =>
+    sessions = yield* fromSync('Cannot reopen Pi session at its authorized checkout cwd', () =>
       api.SessionManager.open(sessionFile, sessionsPath, effectiveCwd)
     )
     if (

@@ -67,7 +67,7 @@ export const resolveSelection = (
       : matches.filter(item => item.workspace.id === selection.workspaceId)
   if (selected.length === 0) invalid(`No saved checkout matches task ${selection.taskId}`)
   if (selected.length > 1)
-    ambiguous(`Task ${selection.taskId} has multiple workspaces; provide an exact workspace ID`)
+    ambiguous(`Task ${selection.taskId} has multiple checkouts; provide an exact checkout ID`)
   const [result] = selected
   if (result === undefined) return invalid('Selected checkout is unavailable')
   return result

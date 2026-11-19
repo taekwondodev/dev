@@ -32,7 +32,7 @@ export const canonicalPathSlot = (path: string): string => {
   const absolute = resolve(path)
   const info = lstatIfExists(absolute)
   if (info !== undefined && (info.isSymbolicLink() || !info.isDirectory()))
-    requireReview(`Workspace path is not a physical directory: ${absolute}`)
+    requireReview(`Checkout path is not a physical directory: ${absolute}`)
   return canonicalSlot(absolute, info)
 }
 
@@ -105,10 +105,10 @@ const refuseSameRepository = (checkout: string, foreignRoot: string, path: strin
   const existing = lstatIfExists(equivalent)
   return existing !== undefined && existing.isFile()
     ? invalid(
-        `Write destination is in another worktree of this repository; write the same file in the current workspace instead: ${equivalent}`
+        `Write destination is in another worktree of this repository; write the same file in the current checkout instead: ${equivalent}`
       )
     : invalid(
-        `Write destination is in another worktree of this repository, and ${relativePath} does not exist in the current workspace; to create it there, write ${equivalent}`
+        `Write destination is in another worktree of this repository, and ${relativePath} does not exist in the current checkout; to create it there, write ${equivalent}`
       )
 }
 

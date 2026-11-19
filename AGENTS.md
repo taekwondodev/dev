@@ -42,6 +42,7 @@ Agents read dev's text while working on other repositories, without dev's CONTEX
   | dispatch rule                                  | configured model and effort                               |
   | integration target                             | destination branch                                        |
   | residue                                        | unfinished work                                           |
+  | workspace                                      | checkout; `workspace` only names the tool and the command |
 
 - Never name a skill, workflow or ADR the agent may not have, such as `dev-cycle`.
 - Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition.
