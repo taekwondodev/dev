@@ -8,9 +8,7 @@ In codemode, call `tools.read_url({ url })`. Use `describeTool('read_url')` for 
 
 Results identify the source, method and limitations. `outcome` is `document` for the last part if nothing was cut, `partial` if there is more saved text or the page hit a size limit, and `failed` if nothing was read. Indexes such as `llms.txt` are suggestions, not substitutes.
 
-The text omits the title only when the part shows a complete first line and that line matches the title after removing any leading Markdown heading marker and trimming both. A first line is complete if the part includes its newline or reaches the end of the saved text. The first part lists each of the first 40 collected links whose full absolute URL it does not show. A URL counts as shown only where it starts the text or follows whitespace, an opener, a quote, a backtick or `>`, and it does not start inside another URL. An earlier URL, a scheme followed by `://`, extends over non-space characters until the character that closes what opened it: `>` after `<`, `"` after `"`, a backtick after a backtick, a `)` that closes no `(` inside it after `(`, and otherwise `<` or a `)` or `]` that closes no opener inside it. A URL starting within that extent is nested and does not count. A URL opened by `(`, `<` or a quote counts as shown only if its closer follows, or whitespace after `(`, as in a Markdown link title. Any other URL counts as shown if followed by whitespace, a closing delimiter other than an apostrophe, or the end of the saved text; sentence punctuation counts as an ending only when followed by whitespace or the end of the saved text. The list starts with `Links (listed of total):` and is omitted when no links are listed.
-
-An HTTP status appears only as a limitation. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
+The text avoids repeating the page: it omits the title when the part's complete first line already shows it, reports an HTTP status only as a limitation, and lists on the first part only those of the first 40 collected links whose absolute URL the part does not show on its own. [`src/web-extension.ts`](../src/web-extension.ts) owns what counts as shown. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
 
 From a terminal:
 
@@ -44,7 +42,7 @@ If dev cannot verify that Chrome stopped, it keeps the profile locked and report
 
 ## Revocation
 
-`dev browser revoke` disables new Chrome reads, then waits up to ten seconds for current reads without cancelling them. Dev deletes only its copy after verifying Chrome stopped. If the reads take too long or dev cannot confirm shutdown, Chrome reads stay disabled and dev keeps the copy. Retry after the reads finish, or follow recovery if the service died.
+`dev browser revoke` disables new Chrome reads, then waits up to ten seconds for current reads without cancelling them. Dev deletes only its copy after verifying Chrome stopped. If the reads take too long or dev cannot confirm shutdown, Chrome reads stay disabled and dev keeps the copy. Retry after the reads finish. If the service died but its record remains, revoke reports `kept-live`: follow recovery.
 
 `dev browser enable` allows Chrome reads again but cannot clear a leftover browser record or let dev reuse the copy before recovery.
 

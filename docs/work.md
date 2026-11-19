@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`work` runs commands and delegated agents in the background while this conversation stays available. Dev runs the work and sends results. Verify them before reporting completion.
+`work` runs commands and delegated agents in the background while this conversation stays available. Dev owns execution, observation and delivery of results; the caller decides what to delegate and [verifies the result](#delivery-and-verification).
 
 ## Use
 
@@ -24,7 +24,7 @@ Set `coordinate: true` only to delegate a whole phase. The delegated agent can u
 /work stop                    stop all runs from this conversation, even while it is idle
 ```
 
-Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the saved record on inspection, with its internal field names replaced by outward ones; use `describeTool('work')` for its current declaration.
+Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the saved record on inspection; use `describeTool('work')` for its current declaration.
 
 Writing agents show their worktree path as `blocked` if it may still be in use, otherwise `review-required`. Neither status authorizes deletion. See [Workspace](workspace.md) for checkout cleanup.
 
@@ -112,7 +112,7 @@ Live activity is transient: it stays in controller memory, never in the attempt 
 
 ### Model-visible results
 
-The model and `/work` read compact JSON. Extensions and scripts use `details` or codemode's structured return instead of parsing that text. The structured `run` result describes one run; `runs` is the page returned by `list` or `cancel` without an `id`. `parent` names the run that started a delegated run; `coordinate: true` means the agent can delegate. Usage counts once per run; unavailable is not zero.
+The model and `/work` read compact JSON. Extensions and scripts use `details` or codemode's structured return instead of parsing that text. Usage counts once per run; unavailable is not zero.
 
 Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Results include answers that fit and command output previews. For an omitted answer, call `inspect` with its `id`, `stream: "result"` and `offset: 0`. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
 

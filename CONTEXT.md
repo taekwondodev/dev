@@ -2,7 +2,7 @@
 
 Dev is a personal agent distro built on Pi. This glossary defines the terms contributors use in code, documentation and task artifacts. [Architecture](docs/ARCHITECTURE.md) maps their owners; feature guides describe their behavior.
 
-Text an agent reads while working on another repository does not use these terms. It uses the [outward vocabulary](AGENTS.md#text-the-model-reads), and so do the structured values that text carries. The note under each table names those values.
+Text an agent reads while working on another repository, including the structured values it carries, uses the [outward vocabulary](AGENTS.md#text-the-model-reads) instead of these terms.
 
 ## Environment
 
@@ -11,8 +11,6 @@ Text an agent reads while working on another repository does not use these terms
 | **Pi**                      | The coding agent and SDK dev integrates.                                                       |
 | **Shared workflow library** | Common development guidance owned by `~/Developer/skills`, exposed through `~/.agents/skills`. |
 | **Profile**                 | A selectable set of guidance and skills.                                                       |
-
-Outward values: Pi keeps its product name; text an agent reads does not name the shared workflow library. A profile appears only by name, as `resources.profile` of an inspected run record.
 
 ## Background work
 
@@ -34,8 +32,6 @@ Outward values: Pi keeps its product name; text an agent reads does not name the
 | **Batch**            | The group of delegated children retained together in a live view.                                                     |
 
 A `work` **task key** (`taskId`) is local to the controller. It is not the durable **workflow task** identity (`workflowTaskId`). [Work](docs/work.md) owns execution and delivery behavior; [dispatch](config/README.md) owns selection rules.
-
-Outward values: an attempt is a `run` and a list of them is `runs`; a child, coordinator or leaf is an agent, and `coordinate: true` marks one that can delegate; an outcome is a result. An inspected run record names its ID `runId`, its owner `startedBy`, its controller process `devPid`, its write acquisition `writePermissionId` and its gate warning `lockWarning`.
 
 ## Workspace
 
@@ -66,8 +62,6 @@ Outward values: an attempt is a `run` and a list of them is `runs`; a child, coo
 
 See [Workspace](docs/workspace.md) for admission, completion and release behavior.
 
-Outward values: a workspace is a checkout, and reports list them as `checkouts`; a workspace handoff is a checkout switch (`switch`); `resumed: requested` and `artifacts: switch-requested` mean dev requested one that is not yet confirmed. A checkout's result is `paused` when a task reserves it and nothing uses or leaves it unresolved; only a `paused` checkout can be resumed. `idle` is the same clear state for a checkout no task reserves; a missing, unresolved, blocked or used checkout gets those results first, reserved or not. A parked conversation's refusals say whether a switch or session change is in progress, its grant no longer matches it, or dev cannot confirm a switch or session change. A managed worktree allocated for a delegated writer and without a branch has the role `agent`; its finished rule is `agent-delivered` only when a task PR proves delivery from its starting commit. A managed workspace has the finished rule `nothing-left` only when it holds no residue and no commits still to land. Residue is listed as `remaining`; a gate warning is `lockWarning`.
-
 ## Document reading
 
 | Term              | Meaning                                                                                            |
@@ -78,5 +72,3 @@ Outward values: a workspace is a checkout, and reports list them as `checkouts`;
 | **Profile copy**  | The dev-owned copy of the active Chrome profile used for authenticated rendering.                  |
 
 [Read URL](docs/web-read.md) owns retrieval, rendering and revocation behavior.
-
-Outward values: a reader is the `read_url` tool; renders and the profile copy appear as Chrome and a separate copy of the signed-in Chrome profile.

@@ -128,13 +128,13 @@ Dev has one current schema. Follow [AGENTS.md](../AGENTS.md#boundaries) when cha
 
 Stop affected runtimes and maintenance operations before deleting state, then restart on the current code. In particular, unlinking a lock database held by a running process splits ownership across inodes. Leave coordination databases on disk during normal operation.
 
-| Changed format                                                                                                           | Delete                                                                                                                            |
-| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace authority, including managed worktrees                                                                         | `~/Library/Application Support/dev/workspace-authority/`, then `git worktree prune` in each repository that had managed worktrees |
-| Attempt state                                                                                                            | `<data-home>/work/attempts.sqlite` and its `-wal`, `-shm`, `-journal` sidecars, plus `<data-home>/work/attempts/`                 |
-| Dev metadata in conversations, including `work` results, checkout reports and the refusal texts the usage profiler reads | `<data-home>/sessions/` and `<data-home>/child-sessions/`                                                                         |
-| Profile preferences                                                                                                      | `<data-home>/preferences/`                                                                                                        |
-| Usage reports                                                                                                            | `<data-home>/usage/`                                                                                                              |
-| Installation and conversation locks                                                                                      | `<installation>/.dev/coordination/`, independent of data-home overrides                                                           |
+| Changed format                                   | Delete                                                                                                                            |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace authority, including managed worktrees | `~/Library/Application Support/dev/workspace-authority/`, then `git worktree prune` in each repository that had managed worktrees |
+| Attempt state                                    | `<data-home>/work/attempts.sqlite` and its `-wal`, `-shm`, `-journal` sidecars, plus `<data-home>/work/attempts/`                 |
+| Dev metadata in conversations                    | `<data-home>/sessions/` and `<data-home>/child-sessions/`                                                                         |
+| Profile preferences                              | `<data-home>/preferences/`                                                                                                        |
+| Usage reports                                    | `<data-home>/usage/`                                                                                                              |
+| Installation and conversation locks              | `<installation>/.dev/coordination/`, independent of data-home overrides                                                           |
 
 Cover the default `.dev/` data home and every explicit `--data-home` or `DEV_DATA_HOME` override in use. Current identity, ownership, revision and release-decision fences remain required; they are not historical-format compatibility.

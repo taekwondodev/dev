@@ -31,7 +31,7 @@ The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifac
 
 ### Resume paused work
 
-Paused work is a [checkout kept for a task](../CONTEXT.md#workspace) that nothing is using, shown with the result `paused`; an unused checkout no task keeps is `idle` and cannot be resumed. Three ways lead back to it, each by explicit selection; the two that list it show the most recently used first. Only the workspace and its task are resumed, never the history of the conversation that worked there; `dev --continue` and `dev --resume` reopen history.
+Paused work is a [paused workspace](../CONTEXT.md#workspace), shown with the result `paused`; an unused workspace no task reserves is `idle` and cannot be resumed. Three ways lead back to it, each by explicit selection; the two that list it show the most recently used first. Only the workspace and its task are resumed, never the history of the conversation that worked there; `dev --continue` and `dev --resume` reopen history.
 
 | Entry                         | Effect                                                                                                                                                                                          |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
