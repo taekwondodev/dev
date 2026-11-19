@@ -23,7 +23,7 @@ import type { Writable } from 'node:stream'
 import {
   WorkDispatchError,
   WorkError,
-  WorkRebindRequired,
+  WorkHandoffRequired,
   WorkPersistenceError,
   WorkProtocolError,
   WorkSetupError,
@@ -107,6 +107,7 @@ import {
   type WorkspaceLifecycle,
   type WorkspaceOperation,
 } from './workspace-domain.ts'
+import { SWITCH_REQUESTED, switchNotRequested, type SwitchRequest } from './workspace-model-text.ts'
 import { commandRunner, type RunCommand } from './command.ts'
 import { isWithin } from './workspace-paths.ts'
 import { makeOwnerBootstrap } from './web-browser-owner.ts'
@@ -195,7 +196,7 @@ interface WorkOwnerOptions {
   readonly workspace: {
     readonly lifecycle: WorkspaceLifecycle
     readonly attachment: WorkspaceAttachment
-    readonly requestRebind: (handoff: WorkspaceHandoff) => void
+    readonly requestHandoff: (handoff: WorkspaceHandoff) => SwitchRequest
   }
   readonly onChange?: () => void
   readonly onLive?: () => void
@@ -212,7 +213,7 @@ const PI_CHILD_ENTRY = new URL('./pi-child.ts', import.meta.url)
 const toFailure = (cause: unknown): WorkFailure => {
   if (
     cause instanceof WorkError ||
-    cause instanceof WorkRebindRequired ||
+    cause instanceof WorkHandoffRequired ||
     cause instanceof WorkDispatchError ||
     cause instanceof WorkPersistenceError ||
     cause instanceof WorkProtocolError ||
@@ -237,8 +238,8 @@ const worktreeReminder = (record: AttemptRecord) => {
     path: record.worktreePath,
     cleanup: blocked ? ('blocked' as const) : ('review-required' as const),
     guidance: blocked
-      ? 'Workspace use is unresolved. Preserve the worktree and inspect the durable task.'
-      : 'The task reservation and files are retained independently of this attempt. Inspect or explicitly resume the workspace; never force removal.',
+      ? 'Checkout may still be in use. Keep it and inspect the saved task.'
+      : 'This checkout stays with the task after the run. Inspect or resume it; never force removal.',
   }
 }
 
@@ -382,7 +383,7 @@ const hasProcessExitEvidence = (job: Job): boolean =>
 const sendIpc = (child: ChildProcess, message: object): Effect.Effect<void, WorkError> =>
   Effect.callback(resume => {
     if (!child.connected)
-      return resume(Effect.fail(new WorkError({ message: 'Child IPC is closed' })))
+      return resume(Effect.fail(new WorkError({ message: 'Lost connection to the agent' })))
     child.send(message, cause =>
       resume(cause ? Effect.fail(new WorkError({ message: cause.message, cause })) : Effect.void)
     )
@@ -400,7 +401,7 @@ const refuseStaleRequest = (job: Job, raw: unknown): Effect.Effect<void> => {
     type: 'work-reply',
     requestId: request.value.requestId,
     ok: false,
-    error: 'This attempt is no longer current; the request was not executed',
+    error: 'This run is no longer current; the request did not run',
   }
   return Effect.ignore(sendIpc(child, refusal))
 }
@@ -493,8 +494,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         return viewOf({
           ...record,
           status: 'unknown',
-          processObservation: 'PID unavailable; launch and exit outcome unknown',
-          recovery: 'Retained facts only; no restart authorized',
+          processObservation: 'Could not confirm process start or exit',
+          recovery: 'Saved record does not authorize restart',
         })
       })
     return { records, unavailable: listed.unavailable, agentsBlocked: state.exhausted }
@@ -583,11 +584,11 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     if (parent !== undefined) {
       if (request.coordinate === true || request.cwd !== undefined)
         return yield* new WorkError({
-          message: "A leaf runs in its coordinator's workspace and cannot coordinate",
+          message: 'You cannot set cwd or coordinate for these agents',
         })
       if (parent.access !== 'write' && request.access === 'write')
         return yield* new WorkError({
-          message: 'A read-only coordinator can start only read-only leaves',
+          message: 'Read-only agents can delegate only read-only work',
         })
     }
     if (
@@ -610,7 +611,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       const job = active.get(id)
       if (!job)
         return yield* new WorkError({
-          message: 'Attempt is not owned by this live session; inspect retained facts instead',
+          message: 'This conversation cannot stop that run. Use inspect instead.',
         })
       yield* Deferred.await(job.prepared)
       if (job.lifecycle.isTerminal()) return yield* Deferred.await(job.settled)
@@ -675,7 +676,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     }
     const record = yield* recordFor(id)
     if (record.revision >= Number.MAX_SAFE_INTEGER)
-      return yield* new WorkError({ message: 'Attempt revision exhausted' })
+      return yield* new WorkError({ message: 'Run revision limit reached' })
     yield* store.save({
       ...record,
       deliveryError: message,
@@ -771,7 +772,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
                 Effect.mapError(
                   error =>
                     new WorkError({
-                      message: `The writing child was not started: it starts from the lead orb's committed HEAD, and ${error.message}`,
+                      message: `The writing agent did not start: it starts from the committed HEAD of this conversation's orb, and ${error.message}`,
                       cause: error,
                     })
                 )
@@ -786,15 +787,19 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           if (scoped === undefined)
             return yield* new WorkspaceError({
               outcome: 'unavailable',
-              message: 'Workspace admission changed before the process started',
+              message: 'Checkout permissions changed; no process started',
             })
           if (scoped instanceof WorkspaceError) return yield* scoped
           return { kind: 'ready' as const, grant: scoped }
         }).pipe(Effect.mapError(toFailure), Effect.ensuring(pinned?.unpin ?? Effect.void))
-        if (admission.kind === 'rebind') {
-          workspace.requestRebind(admission.handoff)
-          return yield* new WorkRebindRequired({
-            message: `Workspace handoff required before starting work: ${admission.handoff.reason}. No command was executed; obtain a fresh host tool decision.`,
+        if (admission.kind === 'handoff') {
+          const switchRequest = workspace.requestHandoff(admission.handoff)
+          return yield* new WorkHandoffRequired({
+            message: `Dev must switch checkouts first: ${admission.handoff.reason}. No work started. ${
+              switchRequest === 'requested'
+                ? `${SWITCH_REQUESTED} Then check the request still applies there before retrying.`
+                : switchNotRequested(switchRequest)
+            }`,
           })
         }
         const { grant: selected } = admission
@@ -891,7 +896,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             ? workspace.attachment
                 .reportExecution(selected, {
                   kind: 'launch-failed',
-                  reason: 'Admission ended before any process was spawned',
+                  reason: 'Permission ended before a process started',
                 })
                 .pipe(Effect.mapError(toFailure))
             : Effect.void
@@ -919,7 +924,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             throw new Error(
               'Background work currently requires POSIX process observation and signals'
             )
-          if (state.closed) throw new Error('This work owner has shut down')
+          if (state.closed) throw new Error('Background work has closed')
           if (kind === 'agent' && state.exhausted)
             throw new Error('Subscription exhausted; no new agents may start in this session')
           const task: TaskScope = {
@@ -928,7 +933,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           }
           if (parent !== undefined) assertCoordinatingUnsafe(parent)
           if (reservations.has(scopeKey(task)) || hasActiveTaskUnsafe(task))
-            throw new Error('This task already has an active attempt')
+            throw new Error('A run with this taskId is already active')
           reservations.add(scopeKey(task))
           return { generation: state.generation, sessionId: ownerSessionId, task }
         },
@@ -973,7 +978,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
 
   const assertCoordinatingUnsafe = (job: Job): void => {
     if (!isCoordinatingUnsafe(job))
-      throw new Error('This attempt is not a running coordinator authorized by the lead')
+      throw new Error('This run cannot delegate or is no longer active')
   }
 
   const routeLeaf = (job: Job): void => {
@@ -1000,7 +1005,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
 
   const scoped = (job: Job): WorkActions => {
     const coordinator = job.lifecycle.token.attemptId
-    const refused = new WorkError({ message: 'Attempt is not a leaf of this coordinator' })
+    const refused = new WorkError({ message: 'You did not start that run' })
     const owned = <A>(id: AttemptId, use: Effect.Effect<A, WorkFailure>, refusal = refused) =>
       recordFor(id).pipe(
         Effect.mapError(() => refusal),
@@ -1016,10 +1021,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       ),
       dispatch,
       startAgent: request => delegate(request, job),
-      cancel: id => owned(id, cancel(id, 'cancelled by its coordinator')),
+      cancel: id => owned(id, cancel(id, 'stopped by the agent that started it')),
       inspect: id => owned(id, inspect(id), unavailableAttempt()),
       readLog: request => owned(request.id, readLog(request), unavailableAttempt()),
-      interrupt: reason => cancelLeaves(job, reason ?? 'cancelled by its coordinator'),
+      interrupt: reason => cancelLeaves(job, reason ?? 'stopped by the agent that started it'),
     }
   }
 
@@ -1093,13 +1098,13 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       state.closed ||
       (kind === 'agent' && state.exhausted)
     ) {
-      throw new Error('Work owner invalidated before launch')
+      throw new Error('Launch no longer allowed; no work started')
     }
     if (hasActiveTaskUnsafe(task, except))
-      throw new Error('This task already has an active attempt')
+      throw new Error('A run with this taskId is already active')
     if (task.parent !== undefined) {
       const parent = active.get(task.parent)
-      if (parent === undefined) throw new Error('The coordinator of this leaf is gone')
+      if (parent === undefined) throw new Error('The agent that requested this run has stopped')
       assertCoordinatingUnsafe(parent)
     }
   }
@@ -1316,8 +1321,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           const { message: reported } = event
           message = reported
         } else if (event.type === 'close')
-          message = `Child closed before PID was available: ${event.code ?? 'unknown'}`
-        else message = 'Child exited before PID was available'
+          message = `Process closed before dev got its PID: ${event.code ?? 'unknown'}`
+        else message = 'Process exited before dev got its PID'
         return yield* new WorkError({ message })
       }
       yield* commit(job, () =>
@@ -1349,7 +1354,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             !known.some(item => item.pid === root.pid && item.birth === root.birth)
           )
             return yield* new WorkError({
-              message: 'Child root identity could not be captured before execution release',
+              message: 'Dev could not verify the new process; no work ran',
             })
           yield* commitUnlocked(job, () => job.lifecycle.transition.processes(token, known))
           const processIdentity = yield* Schema.decodeEffect(WorkspaceProcessSchema)(root).pipe(
@@ -1464,7 +1469,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         commitBestEffort(job, () =>
           job.lifecycle.transition.processError(
             token,
-            `The child's orb could not be provisioned: ${errorText(error)}`
+            `The delegated agent's orb could not be created: ${errorText(error)}`
           )
         ).pipe(
           Effect.andThen(
@@ -1566,7 +1571,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       if (message.type === 'workspace-check') {
         const { child } = job
         if (child === undefined)
-          return yield* new WorkError({ message: 'Child workspace owner is unavailable' })
+          return yield* new WorkError({ message: 'Dev cannot check checkout permissions' })
         const checked = yield* Effect.result(
           Effect.gen(function* () {
             if (
@@ -1574,7 +1579,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               (message.operation !== 'read' && job.workspace.access !== 'write')
             )
               return yield* new WorkError({
-                message: 'Child workspace grant does not match the requested operation',
+                message: 'Checkout permissions do not allow that operation',
               })
             yield* workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure))
             yield* Effect.try({
@@ -1591,14 +1596,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             if (message.operation === 'foreign-write') {
               if (message.checkout === undefined)
                 return yield* new WorkError({
-                  message: 'A foreign write check names the checkout to reserve',
+                  message: 'No destination checkout specified',
                 })
               const reserved = yield* workspace.attachment
                 .authorize({ kind: 'foreign-write', cwd: message.checkout, caller: job.workspace })
                 .pipe(Effect.mapError(toFailure))
               if (reserved.kind !== 'ready')
                 return yield* new WorkError({
-                  message: 'The other checkout was not reserved for this conversation',
+                  message: 'No permission to write in the other checkout',
                 })
             }
           })
@@ -1615,7 +1620,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       if (message.type === 'browser-ensure') {
         const { child } = job
         if (child === undefined)
-          return yield* new WorkError({ message: 'Child browser owner is unavailable' })
+          return yield* new WorkError({ message: 'Shared Chrome is unavailable' })
         const ensured = yield* Effect.result(
           withPreparedPermit(
             token.sessionId,
@@ -1663,7 +1668,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         const unresolved = job.pendingRequests + job.leaves.size + job.undelivered.size
         if (message.error === undefined && unresolved > 0)
           return yield* new WorkProtocolError({
-            message: `A coordinator reported its result while ${unresolved} request(s) or leaf outcome(s) were unresolved`,
+            message: `Agent reported with ${unresolved} requests or results pending`,
           })
         const outcome = yield* commitCurrentBestEffort(job, token, () =>
           job.lifecycle.transition.result(token, {
@@ -1683,7 +1688,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (outcome === undefined) return
         if (message.orbReturn !== undefined) job.orbReturn = message.orbReturn
         if (message.error !== undefined)
-          yield* Effect.forkIn(scope)(cancelLeaves(job, 'coordinator reported a failure'))
+          yield* Effect.forkIn(scope)(cancelLeaves(job, 'delegating agent failed'))
         if (outcome.accepted && (outcome.quotaExhausted || quotaExhausted(message.error)))
           yield* exhaust(token.attemptId)
         onChange()
@@ -1700,7 +1705,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               : job.lifecycle.transition.persistenceError(token, message)
           )
           if (outcome !== undefined)
-            yield* Effect.forkIn(scope)(Effect.ignore(cancelJob(job, 'invalid child message')))
+            yield* Effect.forkIn(scope)(Effect.ignore(cancelJob(job, 'invalid agent message')))
         })
       )
   )
@@ -1725,7 +1730,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             else if (event.type === 'close' || job.lifecycle.pid() === undefined)
               yield* commitBestEffort(job, () => job.lifecycle.transition.exit(token, null, null))
             if (job.lifecycle.hasExited())
-              yield* Effect.forkIn(scope)(cancelLeaves(job, 'coordinator exited'))
+              yield* Effect.forkIn(scope)(cancelLeaves(job, 'delegating agent exited'))
             return
           }
           const pending = yield* Queue.poll(job.events)
@@ -1818,10 +1823,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     }
     const outcome = yield* Effect.result(
       commit(job, () =>
-        job.lifecycle.transition.unknown(
-          token,
-          `Process observation unavailable: ${errorText(cause)}`
-        )
+        job.lifecycle.transition.unknown(token, `Process exit not confirmed: ${errorText(cause)}`)
       )
     )
     if (Result.isFailure(outcome)) yield* notePersistenceFailure(job, outcome.failure)
@@ -1848,7 +1850,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         job.workspaceLaunch === 'identity-recorded'
           ? {
               kind: 'quiescent',
-              reason: 'The owned process group and every tracked descendant were observed gone',
+              reason: 'The process group and tracked descendants stopped',
             }
           : { kind: 'launch-failed', reason: 'No process identity was recorded before failure' }
       ).pipe(Effect.retry(transientRetry))
@@ -1893,7 +1895,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     latest.get(scopeKey(scopeOf(attempt))) === attempt.id
 
   const cancelJob = (job: Job, reason: string): Effect.Effect<AttemptView, WorkFailure> =>
-    Effect.all([terminate(job, reason), cancelLeaves(job, `coordinator stopped: ${reason}`)], {
+    Effect.all([terminate(job, reason), cancelLeaves(job, `delegating agent stopped: ${reason}`)], {
       concurrency: 'unbounded',
     }).pipe(Effect.map(([view]) => view))
 
@@ -1908,7 +1910,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     )
     if (!requested.accepted || !job.lifecycle.isActive()) return yield* Deferred.await(job.settled)
     if (job.child === undefined) {
-      yield* failObservation(job, new Error('Cancellation raced with launch setup'))
+      yield* failObservation(job, new Error('Stop requested during startup; exit unknown'))
       return yield* Deferred.await(job.settled)
     }
     if (job.child.connected) {
@@ -1917,7 +1919,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         yield* commitBestEffort(job, () =>
           job.lifecycle.transition.protocolError(
             token,
-            `Cancellation IPC failed: ${errorText(ipc.failure)}`
+            `Could not send stop request: ${errorText(ipc.failure)}`
           )
         )
     }
@@ -1931,7 +1933,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       identityReused = rootIdentityReused(initialTable.success, root, hasProcessExitEvidence(job))
       if (identityReused) {
         known = []
-        observationError = 'Root process identity was reused; cleanup is unknown'
+        observationError = 'PID reused; cleanup not confirmed'
       } else {
         known = ownedProcesses(
           initialTable.success,
@@ -1968,7 +1970,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (rootIdentityReused(remainingTable.success, root, hasProcessExitEvidence(job))) {
           identityReused = true
           known = []
-          observationError = `${observationError ?? 'Cancellation'} root process identity was reused; cleanup is unknown`
+          observationError = `${observationError ?? 'Cancellation'}: PID reused; cleanup not confirmed`
         } else {
           known = ownedProcesses(
             remainingTable.success,
@@ -2008,7 +2010,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (rootIdentityReused(finalTable.success, root, hasProcessExitEvidence(job))) {
           identityReused = true
           known = []
-          observationError = `${observationError ?? 'Cancellation'} root process identity was reused; cleanup is unknown`
+          observationError = `${observationError ?? 'Cancellation'}: PID reused; cleanup not confirmed`
         } else {
           known = ownedProcesses(
             finalTable.success,
@@ -2019,10 +2021,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           yield* commitBestEffort(job, () => job.lifecycle.transition.processes(token, known))
         }
         if (known.length > 0) {
-          observationError = `${observationError ?? 'Cancellation requested'} but owned processes remain`
+          observationError = `${observationError ?? 'Cancellation requested'} but processes from this run remain`
         } else if (identityReused) {
           observationError =
-            observationError ?? 'Cancellation root process identity was reused; cleanup is unknown'
+            observationError ?? 'PID reused during cancellation; cleanup not confirmed'
         } else if (
           job.lifecycle.rootProcess() === undefined ||
           job.lifecycle.rootProcess()?.birth === undefined

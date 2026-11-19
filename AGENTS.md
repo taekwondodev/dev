@@ -20,6 +20,35 @@ Treat dev as unreleased: dev-owned state has exactly one schema, the final one. 
 - **Tracker:** before issue operations, read [issue conventions](docs/agents/issue-tracker.md) and [label mappings](docs/agents/triage-labels.md).
 - **Delivery:** before implementation or delivery, read [delivery policy](docs/agents/delivery.md).
 
+## Text the model reads
+
+Agents read dev's text while working on other repositories, without dev's CONTEXT, docs or source. Write every model-visible string for an agent that knows Git and Pi's tools but not dev. These strings include tool and parameter descriptions, output schemas, messages sent into a conversation, tool results, refusals, errors a tool returns and the prompts given to delegated agents.
+
+- Say what happened, what did not run and what the agent can do next. Put internal detail, such as a record or path, after that and only when it helps the next action.
+- Use this outward vocabulary instead of the CONTEXT terms:
+
+  | Internal term                                  | Model-visible wording                                     |
+  | ---------------------------------------------- | --------------------------------------------------------- |
+  | lead                                           | this conversation                                         |
+  | child, coordinator, leaf                       | delegated agent; one that may or may not delegate further |
+  | attempt                                        | run                                                       |
+  | outcome                                        | result                                                    |
+  | workspace reservation                          | checkout kept for a task                                  |
+  | admission, grant, write acquisition            | permission to write                                       |
+  | binding, attachment, workspace handoff, parked | the checkout this conversation uses; switching checkouts  |
+  | sweep                                          | automatic cleanup                                         |
+  | gate                                           | lock                                                      |
+  | workspace authority, controller, owner, worker | dev                                                       |
+  | dispatch rule                                  | configured model and effort                               |
+  | integration target                             | destination branch                                        |
+  | residue                                        | unfinished work                                           |
+
+- Never name a skill, workflow or ADR the agent may not have, such as `dev-cycle`.
+- Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition.
+- Replace jargon with plain wording of about the same length; add words only for a fact the next action depends on.
+
+[The model text check](tests/model-text-check.ts) rejects internal terms in tool declarations, the guidance dev sends with every result and a sample of rendered results and checkout guidance. Refusals and results it does not sample follow the same rules by review.
+
 ## Learning more about Effect
 
 Before writing Effect code, read `node_modules/effect/AGENTS.md` completely and follow its applicable links. Use `node_modules/effect/src` for APIs the guide does not cover; the installed package is authoritative for this pinned release. Read the [Effect boundary](docs/adr/0005-scoped-runtime-coordination.md#effect-boundary) before adding Promise code outside Pi's calling points.

@@ -65,6 +65,8 @@ import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
+import { switchNotRequested, type SwitchRequest } from '../../src/workspace-model-text.ts'
+import { classifyError } from '../../scripts/usage-facts.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { managedFacts, verdictName } from './workspace-completion-fixtures.ts'
 import type { ReleaseFault } from './workspace-release-fault-preload.ts'
@@ -146,6 +148,7 @@ const reply = (details: unknown) =>
     readonly recorded?: string
     readonly reference?: PublicationReference
     readonly artifacts?: string
+    readonly resumed?: string
     readonly taskId?: string
     readonly path?: string
   }
@@ -281,7 +284,7 @@ try {
       const managed = only(assessments, m1.workspaceId)
       assert.deepEqual(
         [verdictName(managed.completion), managed.completion.role, managed.target.source],
-        ['retained:integration-unknown', 'child', 'none']
+        ['retained:integration-unknown', 'agent', 'none']
       )
       assert.ok(
         managed.reasons.some(reason => reason.includes('no origin remote')),
@@ -318,11 +321,11 @@ try {
   )
   await lifecycle.recordTarget(taskB, localMain)
   await claim(
-    'a clean managed worktree at its base is finished as no-residue with the recorded target shown as an override, and a check removes nothing and leaves no live use',
+    'a clean managed worktree at its base is finished as nothing-left with the recorded target shown as an override, and a check removes nothing and leaves no live use',
     async () => {
       const managed = only(await lifecycle.check(taskB), m1.workspaceId)
       assert.equal(managed.evidence?.verdict, 'valid')
-      assert.equal(verdictName(managed.completion), 'no-residue')
+      assert.equal(verdictName(managed.completion), 'nothing-left')
       assert.equal(managed.target.source, 'override')
       assert.ok(existsSync(m1.checkout), 'the check removed nothing')
       const uses = (await lifecycle.inspect({ taskId: taskB })).flatMap(view => view.uses)
@@ -333,7 +336,7 @@ try {
     }
   )
   await claim(
-    'dev workspace release reports a Git-locked worktree as failed and keeps it while releasing the pre-existing checkout of the task; the unfinished release then holds the worktree back from resume and from the sweep',
+    'dev workspace release reports a Git-locked worktree as failed and keeps it while releasing the pre-existing checkout of the task; the unfinished release then holds the worktree back from resume, saying when the user may finish it, and from the sweep',
     async () => {
       git(['worktree', 'lock', '--reason', 'fixture lock', '--', m1.checkout], repo)
       let results: readonly WorkspaceReleaseResult[]
@@ -362,7 +365,10 @@ try {
           selection: { taskId: taskB, workspaceId: m1.workspaceId },
         }),
         'review-required',
-        [m1.workspaceId]
+        [
+          m1.workspaceId,
+          `Do not retry this call. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${taskB}, which deletes all of that task's managed worktrees and artifacts. That retries the release; check its result.`,
+        ]
       )
     }
   )
@@ -1005,7 +1011,7 @@ try {
         const { row } = await sweepRow(source.managed.workspaceId, source.managed.workspaceId)
         assert.equal(row.verdict.kind, 'finished', row.reason)
         assert.equal(row.outcome, 'retained', row.reason)
-        assert.match(row.reason, /Target installation coordination/)
+        assert.match(row.reason, /could not confirm the installation was idle/)
         assert.ok(existsSync(link), 'the sweep deleted nothing')
         const results = await lifecycle.release(source.taskId)
         assert.equal(resultOf(results, source.managed.workspaceId).outcome, 'removed')
@@ -1069,7 +1075,7 @@ try {
         )
         const blocked = await sourceRow()
         assert.equal(blocked.outcome, 'retained', blocked.reason)
-        assert.match(blocked.reason, /Target installation coordination/)
+        assert.match(blocked.reason, /could not confirm the installation was idle/)
         assert.ok(existsSync(database))
       } finally {
         await Effect.runPromise(Scope.close(unexpectedScope, Exit.void))
@@ -1103,7 +1109,7 @@ try {
       mkdirSync(source.managed.checkout, { recursive: true })
       await assert.rejects(
         Effect.runPromise(Effect.scoped(acquireRuntime(dataHome, options))),
-        /authority record/
+        /no longer matches dev's record/
       )
       assert.equal(existsSync(join(source.managed.checkout, '.dev')), false)
       rmSync(source.managed.checkout, { recursive: true })
@@ -1318,7 +1324,7 @@ try {
         worktree,
         {
           target: explicit,
-          completionRole: 'child',
+          completionRole: 'agent',
           head: extendedSource,
           base: githubMain,
           allocatedAt: Date.parse(MERGED_AT) - 60_000,
@@ -1754,29 +1760,30 @@ try {
         base: githubMain,
         siblings: [feature],
       })
-      assert.equal(verdictName(sibling), 'child-delivered', sibling.reason)
+      assert.equal(verdictName(sibling), 'agent-delivered', sibling.reason)
       assert.ok(
-        sibling.reason.includes('owner/repo#7') && sibling.reason.includes('sibling'),
+        sibling.reason.includes('owner/repo#7') &&
+          sibling.reason.includes('another checkout of this task'),
         sibling.reason
       )
       const base = childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
         base: githubMain,
         siblings: [],
       })
-      assert.equal(verdictName(base), 'child-delivered', base.reason)
-      assert.ok(base.reason.includes('base seed'), base.reason)
+      assert.equal(verdictName(base), 'agent-delivered', base.reason)
+      assert.ok(base.reason.includes('starting commit'), base.reason)
       const recorded = childVerdict(
         reader({ mergedPullRequestsForCommit: () => [] }),
         { base: githubMain, siblings: [] },
         { ...target, pullRequest: 7 }
       )
-      assert.equal(verdictName(recorded), 'child-delivered', recorded.reason)
+      assert.equal(verdictName(recorded), 'agent-delivered', recorded.reason)
       const patched = childVerdict(reader({ mergedPullRequestsForCommit: seeded(githubMain) }), {
         base: githubMain,
         head: extendedSource,
         siblings: [],
       })
-      assert.equal(verdictName(patched), 'child-delivered', patched.reason)
+      assert.equal(verdictName(patched), 'agent-delivered', patched.reason)
       const cases = [
         [
           'no seed finds a merged pull request',
@@ -2039,7 +2046,7 @@ try {
   )
 
   await claim(
-    'the artifacts action admits a taskless writer, creates and reuses its absolute directory, and requests a rebind before returning a path for a contended checkout',
+    'the artifacts action admits a taskless writer, creates and reuses its absolute directory, and requests a handoff before returning a path for a contended checkout',
     async () => {
       const checkout = userCheckout()
       const owner = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
@@ -2047,6 +2054,7 @@ try {
       const requested: WorkspaceHandoff[] = []
       const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
+        declinedSwitch: () => undefined,
         attachment: () => active.effect,
         runPromise: effect =>
           Effect.runPromise(
@@ -2055,10 +2063,14 @@ try {
               attachment: () => Effect.die('artifact discovery must not read an attachment'),
             })
           ),
-        requestResume: handoff => {
+        requestResume: (handoff, source) => {
           requested.push(handoff)
+          sources.push(source)
+          return accept
         },
       })
+      const sources: unknown[] = []
+      let accept: SwitchRequest = 'requested'
       const call = () =>
         tool.execute('artifacts', { action: 'artifacts' }, undefined, undefined, {
           cwd: active.binding.cwd,
@@ -2083,10 +2095,30 @@ try {
       assert.equal(requested.length, 0)
 
       active = await lifecycle.attach({ conversation: conversation(), cwd: checkout })
+      accept = 'busy'
+      const declined = await call().then(
+        () => undefined,
+        (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+      )
+      assert.ok(
+        declined?.startsWith('No directory was created: ') &&
+          declined.endsWith(switchNotRequested('busy')),
+        `a switch the host declines is reported as not requested, with its cause: ${declined}`
+      )
+      assert.equal(classifyError('workspace', String(declined)), 'blocked', String(declined))
+      assert.equal(requested.length, 1)
+      assert.equal(sources[0], active.effect, 'the host gets the checkout the call started from')
+      await active.handoff(requested[0]!, async () => 'cancelled').catch(() => undefined)
+      requested.length = 0
+      accept = 'requested'
       const contended = await call()
-      assert.equal(contended.terminate, true, 'the refused call ends the turn for a rebind')
-      assert.equal(value(contended).artifacts, 'rebind-requested')
-      assert.equal(value(contended).path, undefined, 'no directory is announced before rebinding')
+      assert.equal(contended.terminate, true, 'the refused call ends the turn for a handoff')
+      assert.equal(value(contended).artifacts, 'switch-requested')
+      assert.ok(
+        JSON.stringify(contended.content).includes('No directory was created.'),
+        'the model reads that nothing was created and that the switch is only requested'
+      )
+      assert.equal(value(contended).path, undefined, 'no directory is announced before the handoff')
       assert.equal(requested.length, 1)
       const handoff = requested[0]!
       const targetTask = requireTask(handoff.target.taskId)
@@ -2158,6 +2190,7 @@ try {
       }
       const tool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
+        declinedSwitch: () => undefined,
         attachment: () => bound.effect,
         runPromise: effect =>
           Effect.runPromise(
@@ -2254,7 +2287,7 @@ try {
         destination: { repository: 'owner/repo', number: 37, commentId: 9 },
       })
       assert.ok(!sensitive.ok)
-      assert.ok(sensitive.text.includes('sensitive name'), sensitive.text)
+      assert.ok(sensitive.text.includes('File name looks sensitive'), sensitive.text)
 
       const artifactsDirectory = join(root, 'artifacts', allocated.taskId)
       mkdirSync(artifactsDirectory, { recursive: true })
@@ -2289,13 +2322,16 @@ try {
 
       const elsewhere = await lifecycle.attach({ conversation: conversation(), cwd: repo })
       const requested: WorkspaceHandoff[] = []
+      let declined: Exclude<SwitchRequest, 'requested'> | undefined
       const resumeTool = makeWorkspaceTool({
         lifecycle: lifecycle.effect,
+        declinedSwitch: () => declined,
         attachment: () => elsewhere.effect,
         runPromise: effect =>
           Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
         requestResume: handoff => {
           requested.push(handoff)
+          return 'requested'
         },
       })
       const resumeRefusal = async (input: JsonObject) => {
@@ -2319,10 +2355,12 @@ try {
           'a workspace in use by another conversation is not resumable'
         )
         assert.ok(
-          occupied.includes('with or without workspaceId') &&
+          occupied.includes(`Task ${allocated.taskId} has no checkout you can resume:`) &&
             occupied.includes(allocated.managed.workspaceId) &&
             occupied.includes('is active: ') &&
-            occupied.includes('Do not take this workspace from its current user.'),
+            occupied.includes(
+              'A session or process is using this checkout. Wait until it is no longer in use.'
+            ),
           `the refusal carries the outcome, reason and next action the authority already knows: ${occupied}`
         )
       }
@@ -2347,6 +2385,53 @@ try {
         'the same-path checkout file remains unselected despite the artifact publication'
       )
 
+      declined = 'mismatch'
+      const blocked = await resumeRefusal({ action: 'resume', taskId: allocated.taskId })
+      declined = undefined
+      assert.equal(
+        blocked,
+        switchNotRequested('mismatch'),
+        'a block the host reports after the lookup is returned before any checkout-dependent reply'
+      )
+      assert.equal(classifyError('workspace', blocked), 'blocked', 'the usage profiler reads it')
+      assert.equal(requested.length, 0, 'a blocked resume hands nothing to the host')
+      const hereTool = makeWorkspaceTool({
+        lifecycle: lifecycle.effect,
+        declinedSwitch: () => declined,
+        attachment: () => ({
+          ...elsewhere.effect,
+          binding: {
+            ...elsewhere.effect.binding,
+            workspaceId: allocated.managed.workspaceId,
+            taskId: allocated.taskId,
+          },
+        }),
+        runPromise: effect =>
+          Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
+        requestResume: () => {
+          throw new Error('a conversation already in the checkout requests no switch')
+        },
+      })
+      const resumeHere = () =>
+        hereTool.execute(
+          'resume',
+          { action: 'resume', taskId: allocated.taskId } as never,
+          undefined,
+          undefined,
+          context()
+        )
+      assert.equal(reply((await resumeHere()).details).resumed, 'already-here')
+      declined = 'mismatch'
+      const blockedHere = await resumeHere().then(
+        () => undefined,
+        (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+      )
+      declined = undefined
+      assert.equal(
+        blockedHere,
+        switchNotRequested('mismatch'),
+        'a block the host reports after the lookup wins over already-here'
+      )
       const resumed = await resumeTool.execute(
         'resume',
         { action: 'resume', taskId: allocated.taskId } as never,

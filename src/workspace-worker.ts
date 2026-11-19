@@ -74,7 +74,7 @@ const send = (message: WorkspaceWorkerMessage): void => {
   if (Buffer.byteLength(encoded, 'utf8') > MAX_MESSAGE_BYTES)
     throw new WorkspaceError({
       outcome: 'unavailable',
-      message: 'Workspace authority worker message exceeded its size limit',
+      message: 'Workspace response exceeded the size limit',
     })
   port.postMessage(message)
 }
@@ -90,7 +90,7 @@ const startEngine = (): WorkspaceEngine | undefined => {
     } catch {
       throw new WorkspaceError({
         outcome: 'invalid',
-        message: 'Workspace worker configuration is invalid',
+        message: 'Dev could not start workspace support: invalid settings',
       })
     }
     const started = new WorkspaceEngine(data.root ?? defaultAuthorityRoot())
@@ -130,7 +130,7 @@ const repositoryOf = (authority: WorkspaceAuthority, workspaceId: WorkspaceId): 
     }
   }
   if (failures[0] !== undefined) throw failures[0]
-  return invalid(`Workspace ${workspaceId} is unknown to the workspace authority`)
+  return invalid(`Dev has no saved checkout ${workspaceId}`)
 }
 
 const registeredRepositoryOf = (
@@ -170,7 +170,7 @@ const sweepAtClose = async (
     } catch (cause) {
       rows.push({
         kind: 'sweep-failure',
-        reason: `The sweep could not assess the repository at ${commonPaths.get(repositoryId) ?? repositoryId}, so nothing of it was released: ${errorText(cause)}`,
+        reason: `Automatic cleanup could not check ${commonPaths.get(repositoryId) ?? repositoryId}; nothing was released: ${errorText(cause)}`,
       })
     }
   }
@@ -240,7 +240,7 @@ if (port !== null && engine !== undefined) {
           rows: [
             {
               kind: 'sweep-failure',
-              reason: `The sweep before this allocation failed; nothing was released: ${errorText(cause)}`,
+              reason: `Automatic cleanup before worktree creation failed; nothing was released: ${errorText(cause)}`,
             },
           ],
         }
@@ -275,7 +275,7 @@ if (port !== null && engine !== undefined) {
         if (attachments.size >= MAX_ATTACHMENTS)
           throw new WorkspaceError({
             outcome: 'blocked',
-            message: 'Workspace lifecycle has reached its attachment limit',
+            message: 'Too many conversations have checkout access',
           })
         const attachment = await engine.attach(request)
         const attachmentId = ++nextAttachmentId
@@ -416,7 +416,7 @@ if (port !== null && engine !== undefined) {
           waiter.reject(
             new WorkspaceError({
               outcome: 'unavailable',
-              message: 'Workspace lifecycle closed during host handoff',
+              message: 'Checkout access closed during the switch',
             })
           )
         callbacks.clear()
@@ -447,7 +447,10 @@ if (port !== null && engine !== undefined) {
     let executionSucceeded = false
     try {
       if (closing && request.op !== 'close')
-        throw new WorkspaceError({ outcome: 'unavailable', message: 'Workspace worker is closing' })
+        throw new WorkspaceError({
+          outcome: 'unavailable',
+          message: 'Dev workspace service is closing',
+        })
       if (request.op === 'close') currentCloseId = id
       const reply = await execute(request, sentAt)
       executionSucceeded = true
@@ -481,7 +484,7 @@ if (port !== null && engine !== undefined) {
           waiter.reject(
             new WorkspaceError({
               outcome: 'unavailable',
-              message: 'Workspace host handoff callback failed',
+              message: 'Dev could not finish switching checkouts',
             })
           )
         return
@@ -497,7 +500,7 @@ if (port !== null && engine !== undefined) {
       if (Option.isNone(request)) {
         failResponse(
           message.id,
-          new WorkspaceError({ outcome: 'invalid', message: 'Workspace worker request is invalid' })
+          new WorkspaceError({ outcome: 'invalid', message: 'Invalid workspace request' })
         )
         return
       }
@@ -509,7 +512,7 @@ if (port !== null && engine !== undefined) {
         send({
           type: 'startup-failure',
           outcome: 'unavailable',
-          message: 'Workspace worker received an invalid protocol message',
+          message: 'Dev received an invalid workspace request',
         })
       } finally {
         port.close()

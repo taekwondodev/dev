@@ -221,8 +221,7 @@ type TimelineEntry =
   | { readonly kind: 'notify'; readonly message: string; readonly level: string }
   | { readonly kind: 'attachment-closed'; readonly workspaceId: string }
 
-const WRITER_WARNING =
-  'A writer owns this live checkout; files may change while you read. No stable snapshot is provided.'
+const WRITER_WARNING = 'Another session can write here. Files may change while you read.'
 const uses = new Map<string, FixtureUse>()
 const timeline: TimelineEntry[] = []
 const attachCalls: { readonly path: string; readonly sessionId: string }[] = []
@@ -360,7 +359,7 @@ const makeAttachment = (
           const displaced = operation.kind === 'write' ? displacements.get(cwd) : undefined
           if (displaced !== undefined)
             return {
-              kind: 'rebind',
+              kind: 'handoff',
               handoff: handoffTo(binding, displaced.target, displaced.reason),
             }
           if (operation.kind === 'write' && operation.scoped !== undefined) {
@@ -437,10 +436,7 @@ const makeAttachment = (
           outcome: 'refused',
           error: refusal,
         })
-        return refuse(
-          'blocked',
-          `Workspace transition refused before the host acted; the current binding is kept: ${refusal}`
-        )
+        return refuse('blocked', `Dev did not switch checkouts: ${refusal}`)
       }
       pendingByConversation.set(conversationKey(conversation), target)
       timeline.push({
@@ -526,10 +522,8 @@ const fixtureLifecycle = {
   }): Promise<WorkspaceView[]> {
     inspections.push(input)
     let rows = [
-      ...descriptors.map(item =>
-        makeView(item, item.path === targetB ? 'active' : 'preserved-for-resume')
-      ),
-      ...resumeDescriptors.map(item => makeView(item, 'preserved-for-resume')),
+      ...descriptors.map(item => makeView(item, item.path === targetB ? 'active' : 'paused')),
+      ...resumeDescriptors.map(item => makeView(item, 'paused')),
     ]
     if (input.taskId !== undefined) rows = rows.filter(row => row.taskId === input.taskId)
     if (input.cwd !== undefined) {
@@ -1064,12 +1058,12 @@ const observer =
       if (event.toolCallId.startsWith('work-owner-')) {
         const result = decodeWorkResult(event.details)
         assert.ok(
-          result.kind === 'attempt' && result.attempt !== undefined,
+          result.kind === 'run' && result.run !== undefined,
           `WorkOwner returned an unexpected result: ${JSON.stringify(event.details)}`
         )
         processResults.set(event.toolCallId, {
-          id: result.attempt.id,
-          status: result.attempt.status,
+          id: result.run.id,
+          status: result.run.status,
         })
         if (event.toolCallId === 'work-owner-process') workToolReturned.resolve()
       }
@@ -1227,7 +1221,7 @@ const cancelledWork = async (attemptId: string) => {
   assert.deepEqual(factKinds(use).slice(0, 3), ['launch-intent', 'spawned', 'started'])
   assert.deepEqual(terminal, {
     kind: 'quiescent',
-    reason: 'The owned process group and every tracked descendant were observed gone',
+    reason: 'The process group and tracked descendants stopped',
   })
   const spawned = use.facts.find(fact => fact.kind === 'spawned')
   assert.ok(spawned?.kind === 'spawned')
@@ -1321,7 +1315,7 @@ const refusalNotice = await within(
   waitFor('the refused switch notice', () =>
     timeline.find(
       entry =>
-        entry.kind === 'notify' && entry.message.startsWith('Workspace switch was not performed')
+        entry.kind === 'notify' && entry.message.startsWith('Checkout switch was not performed')
     )
   ),
   90000,
@@ -1339,19 +1333,19 @@ assert.ok(refusalNotice.kind === 'notify', 'the refused switch was reported to t
 assert.equal(refusalNotice.level, 'warning')
 assert.match(
   refusalNotice.message,
-  /the current workspace is kept\. Workspace transition refused before the host acted; the current binding is kept: fixture target became unavailable/
+  /the current checkout is kept\. Dev did not switch checkouts: fixture target became unavailable/
 )
 
 attachFailures.add(resolve(targetFail))
-marker('DEV36_READY_FOR_FAILED_REBIND')
+marker('DEV36_READY_FOR_FAILED_HANDOFF')
 await within(
-  waitFor('the failed rebind to settle unknown', () =>
+  waitFor('the failed handoff to settle unknown', () =>
     timeline.some(entry => entry.kind === 'handoff-settled' && entry.outcome === 'unknown')
       ? true
       : undefined
   ),
   90000,
-  'failed automatic rebind report'
+  'failed automatic handoff report'
 )
 assert.ok(
   attachCalls.some(
@@ -1382,19 +1376,21 @@ const expectBlock = (
   assert.match(block.reason, reason)
   return block
 }
-const PARKED = /Workspace host is parked; stale tools are blocked/
-const REBIND = /requires a host rebind: fixture .* The operation was not executed/
-const UNVERIFIED = /has no verified workspace effect in dev, so it was not executed/
-expectBlock('stale-native-lead', lead, true, REBIND)
+const PARKED =
+  /Checkout access is blocked while this conversation switches checkouts; the tool did not run\. Retry after dev reports where it works\./
+const HANDOFF_REFUSAL =
+  /The call did not run: fixture.*\. Dev requested a checkout switch and reports/
+const UNVERIFIED = /did not run\. Dev has not verified what this tool can do to project files/
+expectBlock('stale-native-lead', lead, true, HANDOFF_REFUSAL)
 for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
   assert.equal(
     blockOf(toolCallId),
     undefined,
-    `${toolCallId} never reached the host: the run ended at the rebind before it was prepared`
+    `${toolCallId} never reached the host: the run ended at the handoff before it was prepared`
   )
 expectBlock('stale-shadow-read-a', targetA, false, UNVERIFIED)
-expectBlock('stale-native-a', targetA, true, REBIND)
-expectBlock('rejected-native-b', targetB, false, /Native write was not executed: .*parent/)
+expectBlock('stale-native-a', targetA, true, HANDOFF_REFUSAL)
+expectBlock('rejected-native-b', targetB, false, /write did not run: .*parent/)
 expectBlock('unverified-custom-b', targetB, false, UNVERIFIED)
 for (const toolCallId of [
   'fresh-native-b',
@@ -1446,7 +1442,7 @@ assert.deepEqual(staleCalls, [], 'no provider request ran in a parked context')
 assert.deepEqual(
   hostBlocks.filter(item => PARKED.test(item.reason)),
   [],
-  'no tool call was refused as parked: every rebind ended its run first'
+  'no tool call was refused as parked: every handoff ended its run first'
 )
 assert.deepEqual(
   abortedRuns,
@@ -1458,7 +1454,7 @@ assert.deepEqual(
     { step: 'resume-refused', terminalInputs: 1 },
     { step: 'resume-fail', terminalInputs: 1 },
   ],
-  'each tool-originated rebind ended its run through a session abort, the first two before any terminal Escape; the provider-side abort is not a session abort'
+  'each tool-originated handoff ended its run through a session abort, the first two before any terminal Escape; the provider-side abort is not a session abort'
 )
 
 const toolResults = new Map(
@@ -1482,8 +1478,8 @@ for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
     `${toolCallId} has no persisted result: Pi answers it synthetically on the next request`
   )
 for (const [toolCallId, reason] of [
-  ['stale-native-lead', REBIND],
-  ['stale-native-a', REBIND],
+  ['stale-native-lead', HANDOFF_REFUSAL],
+  ['stale-native-a', HANDOFF_REFUSAL],
   ['stale-shadow-read-a', UNVERIFIED],
 ] as const)
   assert.match(toolResults.get(toolCallId)?.text ?? '', reason, `${toolCallId} kept its reason`)
@@ -1522,7 +1518,7 @@ for (const toolCallId of ['fresh-native-b', 'edit-native-b', 'lead-bash-b'])
 assert.match(toolResults.get('lead-bash-b')?.text ?? '', /^dev36-lead-bash\s*$/)
 assert.equal(toolResults.get('resume-ambiguous')?.isError, true)
 assert.ok(
-  (toolResults.get('resume-ambiguous')?.text ?? '').includes('several retained workspaces') &&
+  (toolResults.get('resume-ambiguous')?.text ?? '').includes('several paused checkouts') &&
     (toolResults.get('resume-ambiguous')?.text ?? '').includes(WS_RESUME_C),
   'an ambiguous resume names the candidates'
 )
@@ -1651,7 +1647,7 @@ const resumeHandoff = timeline.findIndex(
 assert.ok(resumeSelect !== -1 && resumeSelect < resumeHandoff)
 assert.deepEqual(retainedUse.facts.at(-1), {
   kind: 'quiescent',
-  reason: 'The owned process group and every tracked descendant were observed gone',
+  reason: 'The process group and tracked descendants stopped',
 })
 assert.equal(timeline.filter(entry => entry.kind === 'confirm').length, 0)
 assert.throws(() => process.kill(leadShellSpawn.process.pid, 0), /ESRCH/)
@@ -1722,7 +1718,7 @@ assert.ok(
 assert.deepEqual(
   timeline.flatMap(entry => (entry.kind === 'handoff-settled' ? [entry.outcome] : [])),
   ['confirmed', 'confirmed', 'confirmed', 'refused', 'unknown'],
-  'two automatic handoffs, one resume, one refused switch and one failed rebind'
+  'two automatic handoffs, one resume, one refused switch and one failed handoff'
 )
 assert.ok(
   handoffs.every(
@@ -1747,14 +1743,14 @@ const switchedTo = (reason: string, workspaceId: string, cwd: string, resumed = 
 })
 const cancelledSiblings =
   'Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed.'
-const reevaluate = (reason: string, workspaceId: string, cwd: string): string =>
-  `Workspace admission changed after ${reason}. Dev ended that turn. Current workspace: ${workspaceId} at ${cwd}. The call that required the rebind was not executed and was not replayed: re-evaluate the user's request in this workspace before deciding whether to perform it. ${cancelledSiblings}`
+const reevaluate = (reason: string, _workspaceId: string, cwd: string): string =>
+  `Dev switched checkouts and ended that turn. ${reason}. Current checkout: ${cwd}. The blocked call did not run. Check this checkout before deciding whether to retry. ${cancelledSiblings}`
 assert.deepEqual(
   handoffMessages.map(message => message.content),
   [
     reevaluate('fixture competing writer required an isolated workspace', WS_A, targetA),
     reevaluate('fixture repeated contention required another isolated workspace', WS_B, targetB),
-    `This conversation resumed onto a retained workspace through the workspace tool: fixture explicit retained-workspace selection. Current workspace: ${WS_RESUME_A} at ${targetA}. Dev ended the turn that requested it. ${cancelledSiblings} Continue the conversation in this new context.`,
+    `Dev switched checkouts and ended the requesting turn. fixture explicit retained-workspace selection. Current checkout: ${targetA}. ${cancelledSiblings}`,
   ],
   'the model was told why each switch happened, which call was refused and which calls were cancelled'
 )
@@ -1769,12 +1765,12 @@ assert.deepEqual(
 )
 assert.deepEqual(
   timeline.flatMap(entry =>
-    entry.kind === 'notify' && entry.message.startsWith('Ending this turn for a workspace rebind')
+    entry.kind === 'notify' && entry.message.startsWith('Ending the turn to switch checkouts')
       ? [[entry.level, entry.message]]
       : []
   ),
-  handoffs.map(item => ['info', `Ending this turn for a workspace rebind: ${item.reason}.`]),
-  'each tool-originated rebind explained the ended turn before the switch'
+  handoffs.map(item => ['info', `Ending the turn to switch checkouts: ${item.reason}.`]),
+  'each tool-originated handoff explained the ended turn before the switch'
 )
 assert.deepEqual(
   hostMessages.map(shown),
@@ -1786,20 +1782,20 @@ assert.deepEqual(
       views: [[TASK_B, WS_B]],
     },
     { kind: 'inspect', taskId: TASK_LEAD, views: [[TASK_LEAD, WS_LEAD]] },
-    `Release runs only from a terminal: dev workspace release ${TASK_RESUME}. The task of this conversation is swept when dev quits.`,
+    `Release runs only from a terminal. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${TASK_RESUME}, which deletes all of that task's managed worktrees and artifacts. Dev also checks the task's checkouts for cleanup at quit.`,
   ],
   'the TUI showed the /workspace list, inspect and release answers and no second switch notice'
 )
 const listedForModel = JSON.parse(hostMessages[0]!.content) as {
   readonly repository: string
   readonly current: unknown
-  readonly workspaces: readonly Record<string, unknown>[]
+  readonly checkouts: readonly Record<string, unknown>[]
 }
 assert.deepEqual(
   [
     listedForModel.repository,
     listedForModel.current,
-    listedForModel.workspaces.map(item => item.workspaceId),
+    listedForModel.checkouts.map(item => item.workspaceId),
   ],
   [targetB, { workspaceId: WS_B, cwd: targetB }, [WS_B]],
   'the model reads the list as compact JSON'
@@ -1884,7 +1880,7 @@ const childShadowedRead = await childRead(grantFor(aDescriptor, 'read', targetA)
 assert.notEqual(childShadowedRead.source, 'builtin')
 assert.deepEqual(
   [childShadowedRead.result, childShadowedRead.operations],
-  [{ block: true, reason: 'Child workspace is read-only' }, []],
+  [{ block: true, reason: 'This agent has read-only access' }, []],
   'a read-only child refuses a shadowed read tool before asking its controller'
 )
 

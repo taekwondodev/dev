@@ -146,7 +146,7 @@ const sameIdentity = (left: ProcessObservation, right: ProcessObservation): bool
   left.birth === right.birth
 
 const nextRevision = (revision: number): number => {
-  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error('Attempt revision exhausted')
+  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error('Run revision limit reached')
   return revision + 1
 }
 
@@ -317,7 +317,7 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
       if (!active(eventToken)) return rejected()
       return changed(() => {
         let didChange = put('protocolError', message)
-        didChange = put('error', `Rejected child message: ${message}`) || didChange
+        didChange = put('error', `Rejected agent message: ${message}`) || didChange
         return didChange
       })
     },
@@ -417,7 +417,7 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
           state.record.cancelRequestedAt === undefined &&
           state.record.error === undefined
         )
-          didChange = put('error', 'Child exited without a final result') || didChange
+          didChange = put('error', 'Agent exited without a result') || didChange
         state.phase = cleanupBlocked
           ? unknownAttemptState
           : terminalAttemptState(terminalStatus, facts.completedAt)

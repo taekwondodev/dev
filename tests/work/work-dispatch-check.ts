@@ -50,19 +50,19 @@ await claim('a blank explicit model or an unknown effort fails naming the field'
 await claim('a rule named default fails parsing with that reason', async () => {
   assert.match(
     await refusal({ rules: { default: cheap }, default: cheap }, {}),
-    /Cannot read dispatch configuration[\s\S]*cannot be named "default"/
+    /Cannot read model settings[\s\S]*do not put it in "rules"/
   )
 })
 await claim('a rule key with whitespace fails parsing naming the key', async () => {
   assert.match(
     await refusal({ rules: { 'code review': cheap }, default: cheap }, {}),
-    /Cannot read dispatch configuration[\s\S]*"code review" must be a nonempty skill name without whitespace/
+    /Cannot read model settings[\s\S]*"code review" must be a nonempty skill name without whitespace/
   )
 })
 await claim('an array of rules fails parsing at the rules key', async () => {
   assert.match(
     await refusal({ rules: [{ when: 'x', use: cheap }], default: cheap }, {}),
-    /Cannot read dispatch configuration[\s\S]*\bat \["rules"\]$/
+    /Cannot read model settings[\s\S]*\bat \["rules"\]$/
   )
 })
 await claim('an unknown field inside a rule fails parsing at that field', async () => {
@@ -71,7 +71,7 @@ await claim('an unknown field inside a rule fails parsing at that field', async 
       { rules: { implement: { ...strong, when: 'Implementation' } }, default: cheap },
       {}
     ),
-    /Cannot read dispatch configuration[\s\S]*\["rules"\]\["implement"\]\["when"\]/
+    /Cannot read model settings[\s\S]*\["rules"\]\["implement"\]\["when"\]/
   )
 })
 await claim(
@@ -86,7 +86,7 @@ await claim(
       /\["default"\]\["harness"\]/
     )
     const malformed = await refusal('{not json', {})
-    assert.match(malformed, /Cannot read dispatch configuration/)
+    assert.match(malformed, /Cannot read model settings/)
     assert.doesNotMatch(malformed, /\bat \[/, 'a JSON failure names no field')
   }
 )

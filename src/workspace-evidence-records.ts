@@ -21,9 +21,7 @@ const inTaskShard = <A>(
     )
     if (found !== undefined) return found.value
   }
-  return invalid(
-    `Task ${taskId} is unknown to the workspace authority; a task exists once a write was admitted for it`
-  )
+  return invalid(`No saved task ${taskId}. Dev creates one when it first allows a write`)
 }
 
 export const recordTarget = (

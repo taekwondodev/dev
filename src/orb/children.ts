@@ -307,20 +307,20 @@ export const makeChildOrbs = (
     switch (returned?.kind) {
       case 'returned':
         lines.push(
-          `The child returned ${returned.commits} commit(s) and ${returned.files} changed file(s) into its worktree.`
+          `The delegated agent returned ${returned.commits} commit(s) and ${returned.files} changed file(s) into its worktree.`
         )
         break
       case 'unchanged':
-        lines.push('The child changed nothing on its orb.')
+        lines.push('The delegated agent changed nothing on its orb.')
         break
       case 'diverged':
         lines.push(`The worktree is untouched: ${divergenceText(returned.reason)}.`)
         break
       case 'failed':
-        lines.push(`The child's return failed: ${returned.reason}`)
+        lines.push(`The delegated agent's return failed: ${returned.reason}`)
         break
       case undefined:
-        lines.push('The child ended without returning its work.')
+        lines.push('The delegated agent ended without returning its work.')
     }
     const kept = (reason: string) =>
       Effect.as(record.release, {

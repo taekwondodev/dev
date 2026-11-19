@@ -1184,7 +1184,7 @@ await claim(
     for (const name of ['bash', 'find', 'ls'])
       assert.deepEqual(
         await call(name),
-        { block: true, reason: 'Child workspace is read-only' },
+        { block: true, reason: 'This agent has read-only access' },
         name
       )
     assert.deepEqual(asked, ['read', 'read'], 'refused tools never reach the controller')
@@ -2289,7 +2289,7 @@ await claim(
               controlPath: join(dataHome, 'mux'),
             }),
             root: mac,
-            label: "the lead's orb",
+            label: "this conversation's orb",
             record: 'lead-record',
           },
           lifecycle: lifecycle.effect,

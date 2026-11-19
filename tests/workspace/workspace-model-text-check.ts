@@ -39,8 +39,8 @@ const removed = {
   origin: 'managed',
   verdict: {
     kind: 'finished',
-    role: 'child',
-    rule: 'child-delivered',
+    role: 'agent',
+    rule: 'agent-delivered',
     reason: 'delivered',
   },
   outcome: 'removed',
@@ -103,26 +103,26 @@ await claim(
           outcome: 'removed',
           reason: 'removed',
         },
-        { kind: 'sweep-failure', reason: 'The authority is unavailable.' },
+        { kind: 'sweep-failure', reason: 'Dev storage is unavailable.' },
       ],
     })
-    const prefix = 'Workspace sweep at the conversation replacement: '
+    const prefix = 'Automatic cleanup when switching conversations: '
     assert.ok(text !== undefined && text.startsWith(prefix), String(text))
     assert.deepEqual(parse(text.slice(prefix.length)), [
-      { taskId: TASK, workspaceId: WORKSPACE, path: PATH, outcome: 'removed' },
+      { taskId: TASK, workspaceId: WORKSPACE, path: PATH, result: 'removed' },
       {
         taskId: TASK,
         workspaceId: OTHER,
         path: PATH,
-        outcome: 'review-required',
+        result: 'review-required',
         reason: 'Git refused.',
       },
       {
         taskId: TASK,
         artifacts: '/authority/artifacts/task',
-        outcome: 'removed',
+        result: 'removed',
       },
-      { outcome: 'review-required', reason: 'The authority is unavailable.' },
+      { result: 'review-required', reason: 'Dev storage is unavailable.' },
     ])
   }
 )
@@ -140,7 +140,7 @@ await claim(
             {
               id: fixtureId(11),
               access: 'write',
-              stage: 'live',
+              stage: 'launch-intent',
               execution: {
                 sessionId: 'session',
                 taskKey: 'tests',
@@ -151,7 +151,7 @@ await claim(
               logsAvailable: true,
             },
           ],
-          pending: [{ id: fixtureId(12), kind: 'remove', stage: 'intent' }],
+          pending: [{ id: fixtureId(12), kind: 'handoff', stage: 'intent' }],
         }),
         (({ taskId: _taskId, ...unassigned }) => unassigned)(
           view({ workspaceId: OTHER, path: '/repo', origin: 'pre-existing' })
@@ -163,23 +163,23 @@ await claim(
     assert.deepEqual(parse(text), {
       repository: '/repo',
       current: { workspaceId: WORKSPACE, cwd: PATH },
-      workspaces: [
+      checkouts: [
         {
           taskId: TASK,
           workspaceId: WORKSPACE,
           path: PATH,
           origin: 'managed',
-          outcome: 'active',
+          result: 'active',
           reason: 'A live dev session uses it.',
           next: 'Continue in that session.',
-          uses: [{ access: 'write', stage: 'live', attempt: 'attempt-1' }],
-          pending: ['remove (intent)'],
+          uses: [{ access: 'write', stage: 'launch-planned', run: 'attempt-1' }],
+          pending: ['switch (planned)'],
         },
         {
           workspaceId: OTHER,
           path: '/repo',
           origin: 'pre-existing',
-          outcome: 'active',
+          result: 'active',
           reason: 'A live dev session uses it.',
           next: 'Continue in that session.',
         },
@@ -205,9 +205,9 @@ await claim(
       ],
     })
     assert.ok(!text.includes('lastUsedAt') && !text.includes('1700000000000'), text)
-    const { workspaces } = parse(text) as { workspaces: { head?: string }[] }
+    const { checkouts } = parse(text) as { checkouts: { head?: string }[] }
     assert.deepEqual(
-      workspaces.map(workspace => workspace.head),
+      checkouts.map(checkout => checkout.head),
       ['feat/resume', 'detached 0123456789ab', 'detached 0123456789ab (Resume the parser)']
     )
   }
@@ -230,8 +230,8 @@ await claim('a check states that it changes nothing and gives each verdict as on
     },
     completion: {
       kind: 'finished',
-      role: 'child',
-      rule: 'no-residue',
+      role: 'agent',
+      rule: 'nothing-left',
       reason: 'Nothing remains.',
     },
   }
@@ -241,16 +241,16 @@ await claim('a check states that it changes nothing and gives each verdict as on
     assessments: [assessment],
   })
   const [guidance, json] = text.split('\n')
-  assert.equal(guidance, 'A check changes nothing; the next sweep rechecks everything.')
+  assert.equal(guidance, 'Read-only check. Dev checks again before cleanup.')
   assert.deepEqual(parse(json!), {
     taskId: TASK,
-    workspaces: [
+    checkouts: [
       {
         workspaceId: WORKSPACE,
         path: PATH,
         origin: 'managed',
-        role: 'child',
-        verdict: 'finished (no-residue)',
+        role: 'agent',
+        verdict: 'finished (nothing-left)',
         reason: 'Nothing remains.',
         target: 'owner/repo refs/heads/main',
         reasons: ['This conversation holds 1 use(s) here; they end when it quits.'],
@@ -259,13 +259,37 @@ await claim('a check states that it changes nothing and gives each verdict as on
   })
 })
 
-await claim('an inspect or check without records is still a report, with no workspaces', () => {
+await claim('an inspect or check without records is still a report, with no checkouts', () => {
   assert.deepEqual(parse(reportText({ kind: 'inspect', taskId: TASK, views: [] })), {
     taskId: TASK,
-    workspaces: [],
+    checkouts: [],
   })
   const check = reportText({ kind: 'check', taskId: TASK, assessments: [] })
-  assert.deepEqual(parse(check.slice(check.indexOf('\n') + 1)), { taskId: TASK, workspaces: [] })
+  assert.deepEqual(parse(check.slice(check.indexOf('\n') + 1)), { taskId: TASK, checkouts: [] })
+})
+
+await claim('a list and an inspect name the task artifact directory when it exists', () => {
+  assert.deepEqual(
+    parse(
+      reportText({
+        kind: 'list',
+        repositoryRoot: '/repo',
+        current: { workspaceId: WORKSPACE, effectiveCwd: PATH },
+        artifacts: '/artifacts',
+        views: [],
+      })
+    ),
+    {
+      repository: '/repo',
+      current: { workspaceId: WORKSPACE, cwd: PATH },
+      artifacts: '/artifacts',
+      checkouts: [],
+    }
+  )
+  assert.deepEqual(
+    parse(reportText({ kind: 'inspect', taskId: TASK, artifacts: '/artifacts', views: [] })),
+    { taskId: TASK, artifacts: '/artifacts', checkouts: [] }
+  )
 })
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

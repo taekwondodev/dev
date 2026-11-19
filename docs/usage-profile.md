@@ -31,7 +31,7 @@ Model, effort, skill and child-role groups come from recorded session history, n
 
 ### Tool outcomes
 
-`returned` means a matched tool call/result has no recorded error, not that the task was correct. Errors include invocation mistakes, execution failures, blocks and cancellations; unrecognized errors remain unclassified. A failed test command is an execution failure.
+`returned` means a matched tool call/result has no recorded error, not that the task was correct. Errors include invocation mistakes, execution failures, blocks and cancellations; unrecognized errors remain unclassified. A failed test command is an execution failure. The profiler recognizes only dev's current refusal texts and `work` result shape; when either changes, dev's conversation history in the old shape is deleted, as [discard obsolete state](DEVELOPMENT.md#discard-obsolete-state) requires, so a report does not mix shapes.
 
 Calls without results are unmatched. The chart's success percentage is `returned / matched` across leads and children; unmatched calls and results without calls are excluded. With no matched calls it shows `n/a`. The other chart tiles are lead-only.
 
@@ -43,7 +43,7 @@ The private report shows codemode's recorded internal operations separately from
 
 Internal `ok`, `error` and `unfinished` counts describe each operation, even when the outer script returns without error. Missing or malformed metadata is unknown coverage, not zero operations. Incomplete metadata can omit calls or arguments or contain unfinished work; malformed calls are counted separately and excluded from operation totals. A complete empty list records zero operations.
 
-These observations belong to the outer result's UTC period and exclude copied fork history. Duration samples, nearest-rank medians and maxima describe individual operations, not additive elapsed time: operations may overlap and durations may be absent. Arguments, raw errors and operation results are not included in this report. Internal results are not recorded by Pi, so the report does not infer read overlap, Git result equality or child attribution from these operations.
+These observations belong to the outer result's UTC period and exclude copied fork history. Duration samples, nearest-rank medians and maxima describe individual operations, not additive elapsed time: operations may overlap and durations may be absent. Arguments, raw errors and operation results are not included in this report. Internal results are not recorded by Pi, so the report does not infer read overlap, Git result equality or child attribution from these operations, and counts only direct `work` calls as launches.
 
 ### Reads and Git requests
 

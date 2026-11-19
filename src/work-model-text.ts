@@ -11,7 +11,8 @@ import type {
 import { redactSecrets } from './error-text.ts'
 
 export const OUTPUT_PREVIEW = 512
-export const TRUNCATED_RESULT = 'truncated: read from offset 0'
+export const TRUNCATED_RESULT =
+  'Too long to show; read it with work inspect, this id, stream "result", offset 0'
 
 type ModelObject = Record<string, unknown>
 
@@ -25,12 +26,12 @@ const attemptObject = (attempt: AttemptSummary): ModelObject =>
     ['kind', attempt.kind],
     ['status', attempt.status],
     ['parent', attempt.parent],
-    ['coordinator', attempt.coordinator === true ? true : undefined],
+    ['coordinate', attempt.coordinate === true ? true : undefined],
     ['exitCode', typeof attempt.exitCode === 'number' ? attempt.exitCode : undefined],
     ['error', attempt.error],
     ['deliveryError', attempt.deliveryError],
     ['cleanupError', attempt.cleanupError],
-    ['gateReleaseWarning', attempt.gateReleaseWarning],
+    ['lockWarning', attempt.lockWarning],
     ['processObservation', attempt.processObservation],
     ['recovery', attempt.recovery],
     ['orb', attempt.orb],
@@ -123,10 +124,10 @@ const dispatchObject = (dispatch: DispatchConfig): ModelObject => ({
 
 const resultObject = (result: WorkResult): ModelObject => {
   switch (result.kind) {
-    case 'attempt':
-      return result.attempt === undefined ? {} : attemptObject(result.attempt)
-    case 'snapshot':
-      return result.snapshot === undefined ? {} : snapshotObject(result.snapshot)
+    case 'run':
+      return result.run === undefined ? {} : attemptObject(result.run)
+    case 'runs':
+      return result.runs === undefined ? {} : snapshotObject(result.runs)
     case 'inspection':
       return result.inspection === undefined ? {} : inspectionObject(result.inspection)
     case 'log':

@@ -26,7 +26,10 @@ export class WorkspaceError extends Schema.TaggedError<
 }) {}
 
 export const attachmentClosed = (): WorkspaceError =>
-  new WorkspaceError({ outcome: 'closed', message: 'Workspace attachment is closed' })
+  new WorkspaceError({
+    outcome: 'closed',
+    message: 'This conversation no longer has checkout access',
+  })
 
 export function fail(outcome: WorkspaceError['outcome'], message: string): never {
   throw new WorkspaceError({ outcome, message })
@@ -153,7 +156,7 @@ export const WorkspaceAuthorizationSchema = Schema.Union([
     warning: Schema.optional(Schema.String),
     scoped: Schema.optional(ScopedOutcomeSchema),
   }),
-  Schema.Struct({ kind: Schema.Literal('rebind'), handoff: WorkspaceHandoffSchema }),
+  Schema.Struct({ kind: Schema.Literal('handoff'), handoff: WorkspaceHandoffSchema }),
 ])
 export type WorkspaceAuthorization = typeof WorkspaceAuthorizationSchema.Type
 
@@ -311,7 +314,8 @@ export const WorkspaceViewSchema = Schema.Struct({
   reservationId: Schema.optional(WorkspaceId),
   outcome: Schema.Literals([
     'active',
-    'preserved-for-resume',
+    'paused',
+    'idle',
     'blocked',
     'review-required',
     'released',
@@ -341,7 +345,7 @@ export const WorkspaceViewSchema = Schema.Struct({
 export type WorkspaceView = typeof WorkspaceViewSchema.Type
 
 export const isResumable = (reserved: boolean, outcome: WorkspaceView['outcome']): boolean =>
-  reserved && outcome === 'preserved-for-resume'
+  reserved && outcome === 'paused'
 
 const FullRef = Schema.NonEmptyString.check(
   Schema.makeFilter(value =>
@@ -418,15 +422,15 @@ export type SweepMoment = typeof SweepMomentSchema.Type
 export const ClosingSweepMomentSchema = Schema.Literals(['quit', 'replacement'])
 export type ClosingSweepMoment = typeof ClosingSweepMomentSchema.Type
 
-export const WorkspaceRoleSchema = Schema.Literals(['pre-existing', 'branch', 'child', 'detached'])
+export const WorkspaceRoleSchema = Schema.Literals(['pre-existing', 'branch', 'agent', 'detached'])
 export type WorkspaceRole = typeof WorkspaceRoleSchema.Type
 
 export const FinishedRuleSchema = Schema.Literals([
   'clean-checkout',
-  'no-residue',
+  'nothing-left',
   'branch-merged',
   'branch-in-target',
-  'child-delivered',
+  'agent-delivered',
 ])
 export type FinishedRule = typeof FinishedRuleSchema.Type
 

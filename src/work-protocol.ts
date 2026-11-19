@@ -39,10 +39,10 @@ const activityKeys = ['type', 'turns', 'activity'] as const
 
 const noUnexpectedKeys = (keys: readonly string[]) =>
   Schema.makeFilter((value: unknown) => {
-    if (!Predicate.isObject(value) || Array.isArray(value)) return 'Invalid child message'
+    if (!Predicate.isObject(value) || Array.isArray(value)) return 'Invalid agent message'
     return Object.keys(value).every(key => keys.includes(key))
       ? undefined
-      : 'Unexpected child message field'
+      : 'Unexpected agent message field'
   })
 
 const strictMessage = <Fields extends Schema.Struct.Fields>(
@@ -98,10 +98,10 @@ const ResultMessageSchema = strictMessage(
   Schema.check(
     Schema.makeFilter((value: unknown) => {
       if (!Predicate.isObject(value) || typeof value.text !== 'string')
-        return 'Invalid child result text'
+        return 'Invalid agent result text'
       return value.text.trim() || value.error !== undefined
         ? undefined
-        : 'Child result needs text or an explicit failure'
+        : 'Agent returned neither text nor an error'
     })
   )
 )
@@ -114,15 +114,15 @@ const ActivityMessageSchema = strictMessage(
 const text = (description: string) => Schema.optionalKey(Schema.String.annotate({ description }))
 
 const sharedWorkInput = {
-  taskId: text('Task key for process and delegate; not the workflowTaskId.'),
+  taskId: text('Label you choose for process or delegate.'),
   prompt: text('Focused, self-contained assignment, never a transcript.'),
   skill: text(
-    'Skill the child must follow. Set it whenever you would tell the child to load a skill: it is loaded for the child and selects its dispatch rule.'
+    'Name the skill to load instead of asking in the prompt. It selects the configured model and effort.'
   ),
-  id: text('Attempt id for inspect and cancel.'),
+  id: text('Run ID for inspect or cancel.'),
   access: Schema.optionalKey(
     WorkAccessSchema.annotate({
-      description: `read-only (default; reviews) or write. ${READ_ONLY_CHILD_CAPABILITIES} A writer gets a distinct worktree without dirty files.`,
+      description: `read-only (default) or write. ${READ_ONLY_CHILD_CAPABILITIES} Writers get a separate worktree without local changes.`,
     })
   ),
   harness: text('Leave unset.'),
@@ -130,13 +130,13 @@ const sharedWorkInput = {
   effort: text('Only when the user asked for it.'),
   stream: Schema.optionalKey(
     Schema.Literals(['stdout', 'stderr', 'result']).annotate({
-      description: "With inspect: page a stream; result is a child's answer.",
+      description: "For inspect; result is the agent's answer.",
     })
   ),
   offset: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
       description:
-        'Byte offset of a stream page, or the list page start. Continue with nextOffset until it is null.',
+        'Byte offset for a stream or starting index for list. Continue with nextOffset until null.',
     })
   ),
 }
@@ -151,16 +151,15 @@ export const LeadWorkInputSchema = Schema.Struct({
     'cancel',
   ]).annotate({
     description:
-      'process: shell command; delegate: Pi child; dispatch: model policy; list; inspect; cancel (all without id).',
+      'process: shell; delegate: agent; dispatch: configured model and effort; list; inspect; cancel (all if no id).',
   }),
   command: text('Shell command for process.'),
   cwd: text(
-    'Working directory. For delegate it may lie in another Git checkout, which the child then works in under its own instructions and delivery policy; your native writes into a checkout another task reserves are refused.'
+    'Working directory. With delegate, another Git checkout uses its own instructions and delivery rules. Your write and edit calls cannot change a checkout dev keeps for another task.'
   ),
   coordinate: Schema.optionalKey(
     Schema.Boolean.annotate({
-      description:
-        'Let the child run a whole phase through leaves within its own access; only its outcome reaches you.',
+      description: "Allow delegation within the agent's access; only its final report reaches you.",
     })
   ),
   ...sharedWorkInput,
@@ -169,7 +168,7 @@ export const LeadWorkInputSchema = Schema.Struct({
 export const CoordinatorWorkInputSchema = Schema.Struct({
   action: Schema.Literals(['delegate', 'dispatch', 'list', 'inspect', 'cancel']).annotate({
     description:
-      'delegate: leaf child; dispatch: model policy; list; inspect; cancel (all without id).',
+      'delegate: agent; dispatch: configured model and effort; list; inspect; cancel (all if no id).',
   }),
   ...sharedWorkInput,
 })
@@ -319,13 +318,13 @@ export type ChildResultMessage = Extract<ChildMessage, { readonly type: 'result'
 const validateSessionFile = (value: string, sessionDir: string): string => {
   const path = relative(sessionDir, value)
   if (!isAbsolute(value) || !path || path.startsWith('..') || isAbsolute(path)) {
-    throw new Error('Child session file is outside its conversation directory')
+    throw new Error('Agent history path is outside its directory')
   }
   return value
 }
 
 const validateResources = (value: ChildResources, cwd: string): ChildResources => {
-  if (value.cwd !== cwd) throw new Error('Invalid child resource scope')
+  if (value.cwd !== cwd) throw new Error('Agent resources do not match its checkout')
   return value
 }
 
