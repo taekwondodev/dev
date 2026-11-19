@@ -31,7 +31,8 @@ import {
   stripColumns,
   toRgba,
 } from '../../src/quit-scene.ts'
-import { kittyCommandsSent, makeClaims, observed } from './workspace-check-support.ts'
+import { kittyCommandsSent, makeClaims } from './workspace-check-support.ts'
+import { observed } from '../wait.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -330,8 +331,7 @@ const sweepOutput = (
     Effect.scoped(
       Effect.gen(function* () {
         const indicator = yield* sweepIndicator(style, out.stream, withGraphics)
-        yield* Effect.sleep(sweepMs)
-        yield* indicator.sweepDone
+        yield* indicator.sweepDone.pipe(Effect.delay(sweepMs))
         if (settle !== undefined) yield* indicator.settle(settle, label)
       })
     )
@@ -516,8 +516,7 @@ const heldSweep = async (sweepMs: number, shape: SceneShape) => {
     Effect.scoped(
       Effect.gen(function* () {
         const indicator = yield* sweepIndicator(live, out.stream, holding)
-        yield* Effect.sleep(sweepMs)
-        yield* indicator.sweepDone
+        yield* indicator.sweepDone.pipe(Effect.delay(sweepMs))
         yield* indicator.settle(shape, SUMMARY)
       })
     )
@@ -584,8 +583,7 @@ await claim('release strips show progress and result, then leave nothing', async
           const active = yield* releaseIndicator(style, out.stream, available, initial, 1)
           if (active === undefined) return false
           yield* active.begin(0)
-          yield* Effect.sleep(80)
-          yield* active.end(0, succeeds)
+          yield* active.end(0, succeeds).pipe(Effect.delay(80))
           if (finished) yield* active.finish(RESULT)
           return true
         })

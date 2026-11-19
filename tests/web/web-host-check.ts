@@ -5,7 +5,6 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -19,7 +18,7 @@ import {
   chromeRunningOn,
   makeChromeSource,
   openRenderer,
-  ownerPublished,
+  ownerExited,
   selectOwnerFixture,
 } from './chrome-fixture.ts'
 import {
@@ -387,8 +386,7 @@ try {
         closed = true
         await opened.close()
         await Effect.runPromise(Scope.close(readerScope, Exit.void))
-        for (let attempt = 0; attempt < 100 && ownerPublished(dataHome); attempt += 1)
-          await sleep(100)
+        await ownerExited(dataHome)
         await assertCopyReleased(profile, 'after the last client disconnected')
       }
     )

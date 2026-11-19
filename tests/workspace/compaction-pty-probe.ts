@@ -1,18 +1,13 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { COMPACTION_OBSERVATION, CompactionObservation } from '../../src/compaction-observation.ts'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { openWorkFixture } from '../work/work-check-support.ts'
-import {
-  loadInstalledPi,
-  makeOfflineModel,
-  openHostRuntime,
-  waitFor,
-} from './workspace-check-support.ts'
+import { loadInstalledPi, makeOfflineModel, openHostRuntime } from './workspace-check-support.ts'
+import { holdsFor, waitFor } from '../wait.ts'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
 const fixture = await openWorkFixture('compaction-pty')
@@ -141,11 +136,20 @@ void mode.run().catch((cause: unknown) => {
 })
 const summary = (index: number) =>
   waitFor('held preparation', () => held[index], { intervalMs: 10 })
-const noCompaction = (sessions: Pi.SessionManager) =>
-  assert.equal(
-    sessions.getEntries().some(entry => entry.type === 'compaction'),
-    false
-  )
+const compacted = (sessions: Pi.SessionManager) =>
+  sessions.getEntries().some(entry => entry.type === 'compaction')
+const noCompaction = (sessions: Pi.SessionManager) => assert.equal(compacted(sessions), false)
+const noLateCompaction = (what: string, ...sessions: Pi.SessionManager[]) =>
+  holdsFor(`${what} applies no compaction`, 80, () => !sessions.some(compacted))
+const readyResults = (sessions: Pi.SessionManager) =>
+  sessions
+    .getEntries()
+    .filter(
+      entry =>
+        entry.type === 'custom' &&
+        entry.customType === COMPACTION_OBSERVATION &&
+        Schema.decodeUnknownSync(CompactionObservation)(entry.data).kind === 'background-ready'
+    ).length
 let closed = false
 try {
   const idle = await summary(0)
@@ -155,8 +159,7 @@ try {
   await waitFor('real idle Escape', () => (escapes >= 1 ? true : undefined), { intervalMs: 10 })
   assert.equal(idle.signal?.aborted, true)
   idle.finish()
-  await sleep(80)
-  noCompaction(manager)
+  await noLateCompaction('the escaped idle summary', manager)
   assert.equal(held.length, 1)
   assert.equal(ordinaryRequests, 1)
 
@@ -168,18 +171,22 @@ try {
     intervalMs: 10,
   })
   const readyIndex = held.length
+  const readyBefore = readyResults(manager)
+  const isReady = () => (readyResults(manager) > readyBefore ? true : undefined)
   ready.finish()
-  await sleep(50)
-  if (held.length > readyIndex) {
-    const split = held[readyIndex]
-    assert.ok(split)
+  const split = await waitFor(
+    'the summary to be ready or to request its split turn',
+    () => held[readyIndex] ?? (isReady() ? null : undefined),
+    { intervalMs: 10 }
+  )
+  if (split !== null) {
     assert.equal(
       split.signal,
       ready.signal,
       'the second request belongs to the same split-turn preparation'
     )
     split.finish()
-    await sleep(50)
+    await waitFor('the split summary to be ready', isReady, { intervalMs: 10 })
   }
   const readyRequests = held.length
   noCompaction(manager)
@@ -189,8 +196,7 @@ try {
   })
   await active
   await runtime.session.waitForIdle()
-  await sleep(80)
-  noCompaction(manager)
+  await noLateCompaction('the escaped ready summary', manager)
   assert.equal(held.length, readyRequests)
   assert.equal(ordinaryRequests, 3)
 
@@ -201,8 +207,7 @@ try {
   await runtime.session.reload()
   assert.equal(reloading.signal?.aborted, true)
   reloading.finish()
-  await sleep(80)
-  noCompaction(manager)
+  await noLateCompaction('the summary cancelled by reload', manager)
   assert.equal(held.length, reloadIndex + 1)
 
   const replacementIndex = held.length
@@ -211,9 +216,11 @@ try {
   await runtime.newSession()
   assert.equal(replacing.signal?.aborted, true)
   replacing.finish()
-  await sleep(80)
-  noCompaction(manager)
-  noCompaction(runtime.session.sessionManager)
+  await noLateCompaction(
+    'the summary cancelled by a new session',
+    manager,
+    runtime.session.sessionManager
+  )
   assert.equal(held.length, replacementIndex + 1)
 
   const shutdownIndex = held.length
@@ -227,8 +234,7 @@ try {
   closed = true
   assert.equal(shuttingDown.signal?.aborted, true)
   shuttingDown.finish()
-  await sleep(80)
-  noCompaction(finalManager)
+  await noLateCompaction('the summary cancelled by shutdown', finalManager)
   assert.equal(held.length, shutdownIndex + 1)
   assert.equal(ordinaryRequests, 6)
   assert.equal(runFailure, undefined)

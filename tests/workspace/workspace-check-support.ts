@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as ConfigProvider from 'effect/ConfigProvider'
@@ -32,8 +31,7 @@ import { PublicationDestinations } from '../../src/workspace-tool.ts'
 import { makeWebReader, type WebReader } from '../../src/web-reader.ts'
 import { staticOnlyRenderer } from '../web/chrome-fixture.ts'
 import { RepositoryRoot } from '../../src/preferences.ts'
-
-class TimedOut extends Error {}
+import { TimedOut, waitFor, within } from '../wait.ts'
 
 const nodeServicesWithCurrentEnvironment = () =>
   Layer.mergeAll(NodeServices.layer, ConfigProvider.layer(ConfigProvider.fromEnv()))
@@ -41,14 +39,6 @@ const nodeServicesWithCurrentEnvironment = () =>
 export const ownerEffect = <A>(
   f: (owner: WorkOwnerService) => Effect.Effect<A, WorkFailure>
 ): Effect.Effect<A, WorkFailure, WorkOwner> => Effect.flatMap(WorkOwner, f)
-
-export const within = <A>(promise: Promise<A>, ms: number, what: string): Promise<A> =>
-  Promise.race([
-    promise,
-    sleep(ms, undefined, { ref: false }).then(() => {
-      throw new TimedOut(`timed out: ${what}`)
-    }),
-  ])
 
 export const equalWith = <A>(actual: A, expected: A, detail: string | undefined): void => {
   assert.equal(
@@ -108,47 +98,6 @@ export const deferred = <A>() => {
   })
   return { promise, resolve: (value: A) => settle.resolve?.(value) }
 }
-
-export interface WaitTiming {
-  readonly attempts?: number
-  readonly intervalMs?: number
-}
-
-export const IN_MEMORY_POLL: WaitTiming = { attempts: 400, intervalMs: 50 }
-
-export async function waitUntil<A, B extends A>(
-  what: string,
-  read: () => A | Promise<A>,
-  done: (value: A) => value is B,
-  timing?: WaitTiming
-): Promise<B>
-export async function waitUntil<A>(
-  what: string,
-  read: () => A | Promise<A>,
-  done: (value: A) => boolean,
-  timing?: WaitTiming
-): Promise<A>
-export async function waitUntil<A>(
-  what: string,
-  read: () => A | Promise<A>,
-  done: (value: A) => boolean,
-  { attempts = 80, intervalMs = 250 }: WaitTiming = {}
-): Promise<A> {
-  let last: A | undefined
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    last = await read()
-    if (done(last)) return last
-    await sleep(intervalMs)
-  }
-  const shown = last === undefined ? '' : `; last read: ${JSON.stringify(last)}`
-  throw new Error(`timed out: ${what}${shown}`)
-}
-
-export const waitFor = <A>(
-  what: string,
-  probe: () => A | undefined | Promise<A | undefined>,
-  timing?: WaitTiming
-): Promise<A> => waitUntil(what, probe, (value): value is A => value !== undefined, timing)
 
 export const awaitCleanupExits = async (markers: string): Promise<void> => {
   for (const name of readdirSync(markers).filter(file => file.endsWith('.json'))) {
@@ -424,14 +373,6 @@ export const openHostRuntime = async (input: {
     throw cause
   }
 }
-
-export const observed = Effect.fnUntraced(function* (what: string, seen: () => boolean) {
-  const deadline = performance.now() + 15_000
-  while (!seen()) {
-    if (performance.now() > deadline) return yield* Effect.die(new Error(`never observed: ${what}`))
-    yield* Effect.sleep(10)
-  }
-})
 
 export const kittyCommandsSent = (text: string, command: string): number =>
   text.split(`\x1b_G${command}`).length - 1

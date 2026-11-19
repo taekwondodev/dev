@@ -3,7 +3,6 @@ import childProcess from 'node:child_process'
 import { renameSync, writeFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { dirname, join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as Effect from 'effect/Effect'
 import { launch } from '../../src/launcher-runtime.ts'
@@ -62,10 +61,9 @@ const interruptedDuringStrip = Effect.gen(function* () {
   const lifecycle: WorkspaceLifecycle = {
     ...real,
     sweep: input =>
-      Effect.sleep(300).pipe(
-        Effect.andThen(deliverSigint),
-        Effect.andThen(Effect.sleep(200)),
-        Effect.andThen(real.sweep(input))
+      deliverSigint.pipe(
+        Effect.delay(300),
+        Effect.andThen(real.sweep(input).pipe(Effect.delay(200)))
       ),
   }
   return lifecycle
@@ -75,7 +73,7 @@ const slowSweep = Effect.gen(function* () {
   const real = yield* makeWorkspaceLifecycle({ root })
   const lifecycle: WorkspaceLifecycle = {
     ...real,
-    sweep: input => Effect.sleep(400).pipe(Effect.andThen(real.sweep(input))),
+    sweep: input => real.sweep(input).pipe(Effect.delay(400)),
   }
   return lifecycle
 })
@@ -132,7 +130,6 @@ if (process.env.LAUNCHER_TUI_FAULT === 'interactive-failure') {
   const { run } = InteractiveMode.prototype
   InteractiveMode.prototype.run = async function (this: InstanceType<typeof InteractiveMode>) {
     run.call(this).catch(() => undefined)
-    await sleep(1500)
     this.stop()
     throw new Error('injected interactive mode failure')
   }
