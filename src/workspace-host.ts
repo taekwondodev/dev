@@ -614,7 +614,6 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       if (pending !== transition) return
       if (outcome === 'unconfirmed') hold = 'unresolved'
       else pending = undefined
-      if (outcome === 'confirmed') hold = undefined
     })
   const beginReplacement = (): Replacement => {
     const started: Replacement = { blocking: false }

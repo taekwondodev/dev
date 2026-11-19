@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -506,6 +507,42 @@ try {
         'the other task keeps its reservation'
       )
       await lifecycle.release(taskOf(adopted))
+    }
+  )
+
+  await claim(
+    'dev workspace check keeps a checkout switch that may be unfinished next to an identity it cannot verify, with the switch ID and the advice not to retry it',
+    async () => {
+      const checkout = userCheckout('identity-and-switch')
+      const { owner, write, taskId } = await reserve(checkout)
+      await owner.close()
+      const mover = await lifecycle.attach({ conversation: conversation(), cwd: repo })
+      const handoff = await mover.select({ taskId, workspaceId: write.workspaceId })
+      let assessed: Awaited<ReturnType<typeof lifecycle.check>> | undefined
+      await mover.handoff(handoff, async () => {
+        renameSync(join(checkout, '.git'), join(checkout, '.git-away'))
+        try {
+          assessed = await lifecycle.check(taskId)
+        } finally {
+          renameSync(join(checkout, '.git-away'), join(checkout, '.git'))
+        }
+        return 'cancelled'
+      })
+      await mover.close()
+      const row = assessed?.find(item => item.workspaceId === write.workspaceId)
+      assert.ok(row !== undefined, JSON.stringify(assessed))
+      assert.ok(
+        row.reasons.some(reason => reason.startsWith(`Cannot verify workspace ${checkout}`)),
+        row.reasons.join(' | ')
+      )
+      assert.ok(
+        row.reasons.some(reason =>
+          reason.startsWith(`Checkout switch ${handoff.operationId} may be unfinished`)
+        ),
+        `the identity problem does not hide the unfinished switch: ${row.reasons.join(' | ')}`
+      )
+      assert.equal(row.nextActions[0], 'Do not retry it.')
+      assert.equal(verdictName(row.completion), 'retained:identity-unverifiable')
     }
   )
 

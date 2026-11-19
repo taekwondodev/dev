@@ -142,8 +142,11 @@ const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean =>
 
 const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
 
-const startsUrl = (text: string, start: number): boolean =>
-  start === 0 || /[\s(<"'[`>]/.test(text[start - 1] ?? '')
+const startsUrl = (text: string, start: number): boolean => {
+  if (start > 0 && !/[\s(<"'[`>]/.test(text[start - 1] ?? '')) return false
+  const before = text.slice(0, start)
+  return !before.slice(before.search(/\S*$/)).includes('://')
+}
 
 const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
   const next = text[end]

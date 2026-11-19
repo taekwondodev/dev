@@ -525,11 +525,17 @@ try {
           gate.open = open
         })
         let trapped = false
+        let entered = false
+        let blockedBeforeAttach: string | undefined
+        let hostRef: { readonly blockedAccess: (didNotRun: string) => string } | undefined
         let refuseAttach = false
         let stale: Promise<unknown> | undefined
         const authorize: WorkspaceAttachment['authorize'] = operation =>
           trapped && operation.kind === 'read'
-            ? Effect.promise(() => released).pipe(
+            ? Effect.sync(() => {
+                entered = true
+              }).pipe(
+                Effect.andThen(Effect.promise(() => released)),
                 Effect.andThen(attached.effect.authorize(operation)),
                 Effect.map((admitted): WorkspaceAuthorization =>
                   admitted.kind === 'ready'
@@ -560,6 +566,7 @@ try {
                 api.on('session_before_switch', async () => {
                   gate.open?.()
                   await stale
+                  blockedBeforeAttach = hostRef?.blockedAccess('nothing ran')
                   refuseAttach = true
                   return undefined
                 })
@@ -567,6 +574,7 @@ try {
             },
           ],
         })
+        hostRef = opened.host
         try {
           if (withMismatch) {
             trapped = true
@@ -576,13 +584,29 @@ try {
               toolCallId: 'stale-read',
               input: { path: join(lead, 'README.md') },
             })
-            await sleep(50)
+            await waitFor(
+              'the stale read to wait',
+              () => (entered ? true : undefined),
+              IN_MEMORY_POLL
+            )
           }
           const failed = await opened.runtime.newSession().then(
             () => 'replaced',
             (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
           )
           assert.notEqual(failed, 'replaced', 'the /new could not attach its conversation')
+          if (withMismatch) {
+            assert.match(
+              String(((await stale) as { readonly reason?: string }).reason),
+              /^Permission was for checkout /,
+              'the stale read was refused for its mismatched permission'
+            )
+            assert.match(
+              String(blockedBeforeAttach),
+              /^Checkout access is blocked because this conversation's permission no longer matches it/,
+              'the mismatch held before the next conversation failed to attach'
+            )
+          }
           assert.equal(opened.host.isParked(), true, 'access stays blocked')
           assert.match(
             opened.host.blockedAccess('nothing ran'),

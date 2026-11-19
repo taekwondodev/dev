@@ -666,6 +666,12 @@ try {
               { text: 'other', url: `${guide};` },
             ])
           ),
+          guideInsideParenthesesOfAnotherUrl: listsGuide(
+            render(`${relative} plus [other](https://other.fixture.invalid/?next=(${guide}))`, [
+              docs,
+              { text: 'other', url: `https://other.fixture.invalid/?next=(${guide})` },
+            ])
+          ),
           guideInsideAnotherUrl: listsGuide(
             render(`${relative} plus [other](https://other.fixture.invalid/?next=${guide})`, [
               docs,
@@ -701,6 +707,7 @@ try {
           guideBeforeApostropheInDestination: true,
           guideBeforeSemicolonAndTitle: true,
           guideInsideAnotherUrl: true,
+          guideInsideParenthesesOfAnotherUrl: true,
           guideShownInDestinations: [false, false, false, false],
           guideAtHardCut: true,
           guideBeforePunctuationAtHardCut: true,

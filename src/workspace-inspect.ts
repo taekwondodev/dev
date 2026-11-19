@@ -55,6 +55,8 @@ export const checkoutMissing = (workspace: WorkspaceRecord): boolean => {
 
 const MISSING_REASON = 'The checkout directory no longer exists.'
 
+const sentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`)
+
 const missingAdvice = (origin: WorkspaceRecord['origin'], taskId: string | undefined): string => {
   const onPurpose = 'Restore it at this path. If it was deleted on purpose:'
   if (origin === 'managed')
@@ -104,8 +106,10 @@ export const assessWorkspace = (input: {
     return {
       outcome: 'review-required',
       reason: withBlockers(
-        [input.identityReason, operation].filter(part => part !== undefined).join(' ') ||
-          'An earlier operation may not have finished.'
+        [input.identityReason, operation]
+          .filter(part => part !== undefined)
+          .map(sentence)
+          .join(' ') || 'An earlier operation may not have finished.'
       ),
       nextAction: 'Check what changed. Do not retry automatically.',
     }
