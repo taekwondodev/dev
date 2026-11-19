@@ -21,7 +21,7 @@ import {
 } from '../src/work-extension.ts'
 import { WORKSPACE_TOOL_DESCRIPTION, workspaceToolParameters } from '../src/workspace-tool.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
-import { INTERNAL, keyWords } from './model-text-terms.ts'
+import { INTERNAL, keyWords } from '../scripts/model-text-terms.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -53,6 +53,19 @@ const coordinatorTool = createCoordinatorWorkTool({
   wake: Effect.die('unused'),
 })
 
+const assess = (reserved: boolean, fields: Partial<Parameters<typeof assessWorkspace>[0]>) =>
+  assessWorkspace({
+    identityReason: undefined,
+    missing: false,
+    pending: undefined,
+    unresolved: false,
+    unknown: [],
+    live: false,
+    abandoned: () => [],
+    reserved,
+    ...fields,
+  })
+
 const checkoutStates = [false, true].flatMap(reserved =>
   [
     { missing: true },
@@ -62,17 +75,7 @@ const checkoutStates = [false, true].flatMap(reserved =>
     { live: true },
     {},
   ].map(fields => {
-    const assessed = assessWorkspace({
-      identityReason: undefined,
-      missing: false,
-      pending: undefined,
-      unresolved: false,
-      unknown: [],
-      live: false,
-      abandoned: () => [],
-      reserved,
-      ...fields,
-    })
+    const assessed = assess(reserved, fields)
     return `${assessed.reason} ${assessed.nextAction}`
   })
 )
@@ -160,5 +163,12 @@ await claim(
     assert.deepEqual(found, [])
   }
 )
+
+await claim('an earlier operation is named by the stage label an agent reads', () => {
+  assert.match(
+    assess(true, { pending: { id: 'operation-1', stage: 'intent' } }).reason,
+    /^Earlier operation operation-1: planned; checking does not redo it\./
+  )
+})
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

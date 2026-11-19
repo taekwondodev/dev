@@ -1,5 +1,6 @@
 import { relative } from 'node:path'
 import type { RuleTester } from 'oxlint/plugins-dev'
+import { INTERNAL } from './model-text-terms.ts'
 
 type Rule = Parameters<RuleTester['run']>[1]
 type Visitor = ReturnType<Extract<Rule, { createOnce: unknown }>['createOnce']>
@@ -12,6 +13,10 @@ const WAIT_MODULE = 'tests/wait.ts'
 const TIMER_MODULES = new Set(['node:timers/promises', 'timers/promises'])
 const EFFECT_MODULES = new Set(['effect', 'effect/Effect'])
 const DIRECTIVE = /^\s*(?:oxlint|eslint)-(?:disable|enable)/
+const QUERY_LANGUAGE =
+  /^\s*(?:SELECT\b[\s\S]*\bFROM\b|INSERT\s+(?:OR\s+\w+\s+)?INTO\b|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(?:TABLE|INDEX|UNIQUE\s+INDEX)\b|PRAGMA\s+\w+|(?:BEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE))?|COMMIT|ROLLBACK)\s*$|query\()/
+const PROSE = /\S\s+\S/
+const WORDS = /[A-Za-z]{2}/
 const FILE_START = { start: { line: 1, column: 0 }, end: { line: 1, column: 0 } }
 
 const importedName = (specifier: Import['specifiers'][number]): string | undefined => {
@@ -87,6 +92,38 @@ const resolvesOnTimer = (node: Construction): boolean => {
   )
 }
 
+const written = (template: NodeOf<'TemplateLiteral'>): string =>
+  template.quasis.map(quasi => quasi.value.cooked ?? '').join('…')
+
+type Expression = NodeOf<'Literal'>['parent']
+
+const writtenWords = (node: Expression, except: Expression): boolean => {
+  if (node === except) return false
+  if (node.type === 'Literal') return typeof node.value === 'string' && WORDS.test(node.value)
+  if (node.type === 'TemplateLiteral') return WORDS.test(written(node))
+  return (
+    node.type === 'BinaryExpression' &&
+    node.operator === '+' &&
+    (writtenWords(node.left, except) || writtenWords(node.right, except))
+  )
+}
+
+const sentenceAround = (node: NodeOf<'Literal'>): boolean => {
+  let outer = node.parent
+  while (
+    outer.type === 'ConditionalExpression' ||
+    outer.type === 'LogicalExpression' ||
+    outer.type === 'CallExpression' ||
+    (outer.type === 'BinaryExpression' &&
+      outer.operator === '+' &&
+      outer.parent.type === 'BinaryExpression' &&
+      outer.parent.operator === '+')
+  )
+    outer = outer.parent
+  if (outer.type === 'TemplateLiteral') return WORDS.test(written(outer))
+  return outer.type === 'BinaryExpression' && outer.operator === '+' && writtenWords(outer, node)
+}
+
 const plugin = {
   meta: { name: 'dev' },
   rules: {
@@ -110,6 +147,32 @@ const plugin = {
                 context.report({ loc: FILE_START, messageId: 'directive' })
               else context.report({ loc: comment.loc, messageId: 'clarify' })
             }
+          },
+        }
+      },
+    } satisfies Rule,
+    'no-internal-terms': {
+      meta: {
+        type: 'problem',
+        schema: [],
+        messages: {
+          internal:
+            'This text uses the dev-internal term "{{term}}". Agents and users read dev\'s text without its glossary: say it with the model-visible wording in AGENTS.md ("Text the model reads"). This rule has no allowlist.',
+        },
+      },
+      createOnce(context) {
+        const report = (node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>, text: string) => {
+          const term = INTERNAL.exec(text)?.[0]
+          if (term !== undefined) context.report({ node, messageId: 'internal', data: { term } })
+        }
+        return {
+          Literal(node) {
+            if (typeof node.value !== 'string' || QUERY_LANGUAGE.test(node.value)) return
+            if (PROSE.test(node.value) || sentenceAround(node)) report(node, node.value)
+          },
+          TemplateLiteral(node) {
+            const text = written(node)
+            if (PROSE.test(text) && !QUERY_LANGUAGE.test(text)) report(node, text)
           },
         }
       },

@@ -47,7 +47,9 @@ Agents read dev's text while working on other repositories, without dev's CONTEX
 - Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition.
 - Replace jargon with plain wording of about the same length; add words only for a fact the next action depends on.
 
-[The model text check](tests/model-text-check.ts) rejects internal terms in tool declarations, the guidance dev sends with every result and a sample of rendered results and checkout guidance. Refusals and results it does not sample follow the same rules by review.
+Text dev prints in the terminal for the user uses the same outward vocabulary, so the user and the agent name things alike.
+
+The `dev/no-internal-terms` lint rule in [`scripts/code-policy.ts`](scripts/code-policy.ts) rejects the internal terms in `src/` and has no allowlist. It checks every string of two or more words and every single word written directly inside a template or concatenation that has other words; only text shaped like an SQL statement or a GraphQL query is exempt. A word that reaches a sentence through a variable or a stored value follows the same rules by review. [The model text check](tests/model-text-check.ts) covers what the rule cannot see: structured keys and a sample of rendered results.
 
 ## Learning more about Effect
 

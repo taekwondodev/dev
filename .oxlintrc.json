@@ -1,20 +1,45 @@
 {
   "extends": ["./node_modules/oxc-standard/.oxlintrc.json"],
-  "jsPlugins": [{ "name": "dev", "specifier": "./scripts/code-policy.ts" }],
-  "rules": { "dev/no-source-comments": "error" },
+  "jsPlugins": [
+    {
+      "name": "dev",
+      "specifier": "./scripts/code-policy.ts"
+    }
+  ],
+  "rules": {
+    "dev/no-source-comments": "error"
+  },
   "overrides": [
     {
       "files": ["**/*.ts"],
       "rules": {
         "eslint/new-cap": "off",
         "unicorn/throw-new-error": "off",
-        "eslint/no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
-        "import/no-unassigned-import": ["warn", { "allow": ["**/compile-cache-adoption.ts"] }]
+        "eslint/no-underscore-dangle": [
+          "warn",
+          {
+            "allow": ["_tag"]
+          }
+        ],
+        "import/no-unassigned-import": [
+          "warn",
+          {
+            "allow": ["**/compile-cache-adoption.ts"]
+          }
+        ]
       }
     },
     {
       "files": ["tests/**"],
-      "rules": { "dev/no-fixed-sleep": "error" }
+      "rules": {
+        "dev/no-fixed-sleep": "error"
+      }
+    },
+    {
+      "files": ["src/**"],
+      "rules": {
+        "dev/no-internal-terms": "error"
+      }
     }
   ]
 }

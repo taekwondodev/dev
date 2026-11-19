@@ -63,7 +63,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 
 Use the actual TUI for interactive behavior. The Python pseudo-terminal driver exists because Node has no built-in pty; it drives TypeScript fixtures. To run one probe, use `python3 tests/workspace/run-workspace-pty-probes.py <name>`; `--list` prints the supported names. Match proof to the change rather than adding a test or benchmark campaign by default.
 
-The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
+The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. The same file rejects fixed delays in checks and, in `src/`, sentences that use a [dev-internal term](../AGENTS.md#text-the-model-reads); neither rule has an allowlist. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
 
 The separate Promise-check configuration avoids activating the general preset's dormant type-aware style rules. Explicit `void` remains an opt-out for intentional Promise detachment, not proof that rejection is handled.
 

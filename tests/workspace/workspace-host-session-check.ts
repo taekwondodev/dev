@@ -41,7 +41,7 @@ import {
   type WaitTiming,
   within,
 } from '../wait.ts'
-import { INTERNAL } from '../model-text-terms.ts'
+import { INTERNAL } from '../../scripts/model-text-terms.ts'
 import { classifyError, sessionFacts } from '../../scripts/usage-facts.ts'
 import { readSessions } from '../../scripts/usage-sessions.ts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
