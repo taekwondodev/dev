@@ -87,9 +87,7 @@ const makeCdpClient = Effect.fnUntraced(function* (
   input.on('data', (chunk: string) => {
     buffered += chunk
     if (buffered.length > MAX_CDP_MESSAGE_CHARS) {
-      settleAll(
-        fail('protocol', 'A DevTools message exceeded the size limit; the browser is closed')
-      )
+      settleAll(fail('protocol', 'Chrome connection closed: oversized DevTools message'))
       input.destroy()
       return
     }
@@ -102,12 +100,12 @@ const makeCdpClient = Effect.fnUntraced(function* (
       separator = buffered.indexOf('\0')
     }
   })
-  input.on('end', () => settleAll(fail('shutdown', 'The browser closed its DevTools pipe')))
+  input.on('end', () => settleAll(fail('shutdown', 'Chrome closed its DevTools connection')))
   input.on('error', cause =>
-    settleAll(fail('protocol', `DevTools pipe failed: ${errorText(cause)}`))
+    settleAll(fail('protocol', `Chrome connection failed: ${errorText(cause)}`))
   )
   output.on('error', cause =>
-    settleAll(fail('protocol', `DevTools pipe failed: ${errorText(cause)}`))
+    settleAll(fail('protocol', `Chrome connection failed: ${errorText(cause)}`))
   )
   return {
     closed,
@@ -120,7 +118,7 @@ const makeCdpClient = Effect.fnUntraced(function* (
     send: (method, params = {}, sessionId) =>
       Effect.callback<unknown, BrowserError>(resume => {
         if (Deferred.isDoneUnsafe(closed)) {
-          resume(Effect.fail(fail('shutdown', `Browser is closed; ${method} was not sent`)))
+          resume(Effect.fail(fail('shutdown', `Chrome connection closed before ${method}`)))
           return
         }
         nextId += 1
@@ -249,7 +247,7 @@ const shutdown = Effect.fnUntraced(function* (
   if (Exit.isSuccess(settled) && settled.value === 0) return { kind: 'settled' }
   return {
     kind: 'unobserved',
-    message: `Browser descendants were not observed gone: ${Exit.isSuccess(settled) ? `${settled.value} still running after ${Duration.toSeconds(DESCENDANT_SETTLE)} seconds` : errorText(settled.cause)}`,
+    message: `Could not verify Chrome helpers stopped: ${Exit.isSuccess(settled) ? `${settled.value} still running after ${Duration.toSeconds(DESCENDANT_SETTLE)} seconds` : errorText(settled.cause)}`,
   }
 })
 
@@ -285,7 +283,7 @@ export const launchChrome = (
       const [, , , toChrome, fromChrome] = child.stdio
       if (!(toChrome instanceof Writable) || !(fromChrome instanceof Readable)) {
         child.kill('SIGKILL')
-        return yield* fail('launch', 'Chrome DevTools pipe descriptors are unavailable')
+        return yield* fail('launch', 'Could not connect to Chrome DevTools')
       }
       const { pid } = child
       if (pid === undefined) return yield* fail('launch', 'Chrome reported no process id')
@@ -315,8 +313,7 @@ export const launchChrome = (
         .pipe(Effect.uninterruptible)
       yield* Effect.timeoutOrElse(cdp.send('Browser.getVersion'), {
         duration: Duration.seconds(20),
-        orElse: () =>
-          Effect.fail(fail('launch', 'Chrome did not answer DevTools within 20 seconds')),
+        orElse: () => Effect.fail(fail('launch', 'Chrome did not answer within 20 seconds')),
       }).pipe(
         Effect.andThen(cdp.send('Browser.setDownloadBehavior', { behavior: 'deny' })),
         Effect.tapError(() => close)
@@ -383,7 +380,7 @@ const decode = <T>(schema: Schema.Decoder<T>) => {
     const decoded = run(value)
     return decoded._tag === 'Success'
       ? Effect.succeed(decoded.success)
-      : Effect.fail(fail('protocol', `Unexpected DevTools payload: ${errorText(decoded.failure)}`))
+      : Effect.fail(fail('protocol', `Invalid Chrome reply: ${errorText(decoded.failure)}`))
   }
 }
 
@@ -393,7 +390,7 @@ const snapshotScript = (maxHtmlChars: number): string =>
   `(() => { const html = document.documentElement ? document.documentElement.outerHTML : ""; return { url: location.href.slice(0, ${MAX_URL_CHARS}), title: document.title.slice(0, ${MAX_TITLE_CHARS}), html: html.slice(0, ${maxHtmlChars}), truncated: html.length > ${maxHtmlChars} } })()`
 
 const disabledConstructor = (name: string): string =>
-  `Object.defineProperty(globalThis, ${JSON.stringify(name)}, { configurable: false, writable: false, value: function ${name}() { throw new DOMException(${JSON.stringify(`${name} is disabled by the dev reader`)}, "SecurityError") } })`
+  `Object.defineProperty(globalThis, ${JSON.stringify(name)}, { configurable: false, writable: false, value: function ${name}() { throw new DOMException(${JSON.stringify(`${name} is disabled in browser reads`)}, "SecurityError") } })`
 
 const DISABLED_WORKER_CHANNELS_SCRIPT = ['WebSocket', 'RTCPeerConnection', 'WebTransport']
   .map(disabledConstructor)

@@ -110,7 +110,7 @@ The lead's TUI runs on a terminal the launcher builds from Pi's own terminal mod
 
 `--continue` selects by session-file modification time and the cwd in Pi's header. A conversation opened with `--task` records its workspace's path there, so `--continue` finds it from that path, not from the directory `--task` was launched in. If the selected conversation is refused, it does not try an older one. Both resume forms refuse a conversation open in another dev installation or one whose workspace path, Git metadata or persistent identity no longer matches the authority.
 
-A refused existing regular session file and its history remain unchanged. An absent path is reported as absent, without inferring whether history existed. Follow the reported reason: a conversation-specific refusal need not block another conversation, but starting fresh cannot bypass repository identity checks. A workspace switch that never reached the host is withdrawn on resume.
+A refused existing regular session file and its history remain unchanged. An absent path is reported as absent, without inferring whether history existed. Follow the reported reason: a conversation-specific refusal need not block another conversation, but starting fresh cannot bypass repository identity checks. A checkout switch that never reached the host is withdrawn on resume.
 
 Independent repositories can share a data home. See [workspace session commands](workspace.md#session-commands) for replacements and [quit and interruption](workspace.md#quit-and-interruption) for cleanup, the release offer and exit status.
 

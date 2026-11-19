@@ -122,8 +122,8 @@ const receipt: SweepReceipt = makeFixtureReceipt({
       outcome: 'removed',
       verdict: {
         kind: 'finished',
-        role: 'child',
-        rule: 'child-delivered',
+        role: 'agent',
+        rule: 'agent-delivered',
         reason: 'fixture pull request descends from the base',
       },
       reason:
@@ -280,15 +280,19 @@ try {
           : []
       )
 
-  await claim('the /workspace description names only the verbs the command accepts', () => {
-    const description = runtime.session.extensionRunner.getCommand('workspace')?.description ?? ''
-    assert.deepEqual(description.toLowerCase().match(/\b(list|inspect|check|release|resume)\b/g), [
-      'list',
-      'resume',
-      'inspect',
-      'check',
-      'release',
-    ])
+  await claim('/workspace offers exactly the verbs it accepts, each explained', async () => {
+    const complete = runtime.session.extensionRunner.getCommand('workspace')?.getArgumentCompletions
+    assert.ok(complete)
+    const items = (await complete('')) ?? []
+    assert.deepEqual(
+      items.map(item => item.value.trim()),
+      ['list', 'resume', 'inspect', 'check', 'release']
+    )
+    assert.ok(items.every(item => (item.description ?? '').length > 0))
+    assert.deepEqual(
+      ((await complete('re')) ?? []).map(item => item.label),
+      ['resume [task-id]', 'release <task-id>']
+    )
   })
   await claim('a malformed /workspace command is shown with its usage', async () => {
     await runtime.session.prompt('/workspace switch')
@@ -296,13 +300,16 @@ try {
       'Unknown workspace command "switch". Use list, inspect <task-id>, check <task-id>, release <task-id> or release pre-existing.',
     ])
   })
-  await claim('/workspace release pre-existing only names its terminal command', async () => {
-    const before = displayed().length
-    await runtime.session.prompt('/workspace release pre-existing')
-    assert.deepEqual(displayed().slice(before), [
-      'Release runs only from a terminal: dev workspace release pre-existing. The task of this conversation is swept when dev quits.',
-    ])
-  })
+  await claim(
+    '/workspace release pre-existing names its terminal command, what it clears and when it is safe to run',
+    async () => {
+      const before = displayed().length
+      await runtime.session.prompt('/workspace release pre-existing')
+      assert.deepEqual(displayed().slice(before), [
+        "Release runs only from a terminal. Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files.",
+      ])
+    }
+  )
   await claim(
     'sweep receipts the authority delivers while a work tool admission allocates reach the model only when they change something, and the TUI receives every receipt with its facts',
     async () => {
@@ -312,12 +319,12 @@ try {
       assert.deepEqual(
         shown,
         [
-          `Workspace sweep before a worktree allocation: ${JSON.stringify([
+          `Automatic cleanup before creating a worktree: ${JSON.stringify([
             {
               taskId: swept.taskId,
               workspaceId: swept.workspaceId,
               path: swept.path,
-              outcome: 'removed',
+              result: 'removed',
             },
           ])}`,
         ],
@@ -419,7 +426,7 @@ try {
       assert.notEqual(resultText('review-sibling'), '', 'the sibling call ran')
       assert.equal(
         resultText('review-write'),
-        'Workspace admission failed closed: fixture allocation did not finish'
+        'The call did not run: fixture allocation did not finish'
       )
       const refusals = () =>
         runtime.session.sessionManager

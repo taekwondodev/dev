@@ -29,7 +29,7 @@ Checks and setup regenerate an ignored `node_modules/@earendil-works` link to th
 
 ### Pi integration limits
 
-Forking before the first user message can fail after a workspace rebind. [Issue #98](https://github.com/taekwondodev/dev/issues/98) tracks that limit.
+Forking before the first user message can fail after a workspace handoff. [Issue #98](https://github.com/taekwondodev/dev/issues/98) tracks that limit.
 
 ## Find the owner
 
@@ -47,7 +47,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `npm run lint`             | Type checking, strict Effect diagnostics, type-aware Promise checks and Oxlint with warnings as errors                                                                                                           |
 | `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                                                                                        |
-| `npm run smoke`            | Launcher diagnostics and upgrade cleanup on disposable storage, without a model response                                                                                                                         |
+| `npm run smoke`            | Launcher diagnostics and upgrade cleanup on disposable storage, and dev-internal terms in tool declarations, without a model response                                                                            |
 | `npm run cleanup:check`    | Conversation quotas, preference publication exclusion, fenced deletion, conversation lock removal and detached cleanup survival on disposable storage                                                            |
 | `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                                                                                                |
 | `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                                                                                                            |

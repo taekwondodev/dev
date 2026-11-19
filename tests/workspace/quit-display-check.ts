@@ -47,13 +47,13 @@ const row = (
 })
 const finished: CompletionVerdict = {
   kind: 'finished',
-  role: 'child',
-  rule: 'no-residue',
+  role: 'agent',
+  rule: 'nothing-left',
   reason: 'nothing left',
 }
 const retained = (reason: RetainedReason): CompletionVerdict => ({
   kind: 'retained',
-  role: 'child',
+  role: 'agent',
   retained: reason,
   reason: `retained: ${reason}`,
 })
@@ -222,7 +222,7 @@ await claim(
       path: '/worktrees/one',
       origin: 'managed' as const,
       reservationId: id('1002'),
-      outcome: 'preserved-for-resume' as const,
+      outcome: 'paused' as const,
       reason: 'kept',
       nextAction: 'resume',
       uses: [],

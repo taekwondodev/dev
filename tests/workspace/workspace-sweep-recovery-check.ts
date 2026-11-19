@@ -207,7 +207,7 @@ try {
         'nothing of a deferred task is assessed'
       )
       assert.ok(existsSync(kept.managed.checkout))
-      assert.ok(formatSweepReceipt(receipt).includes('deferred to the next sweep'))
+      assert.ok(formatSweepReceipt(receipt).includes('deferred to the next cleanup'))
       assert.equal(sweepExitCode(receipt), 0, 'a deferred task is not a failed attempt')
       assert.ok(existsSync(orphan), 'an expired budget leaves orphan artifacts for a later sweep')
 
@@ -334,7 +334,7 @@ try {
         assert.throws(
           () => classify(writeScope, path),
           (cause: unknown) =>
-            cause instanceof WorkspaceError && cause.message.includes('dev authority metadata'),
+            cause instanceof WorkspaceError && cause.message.includes('Dev private storage'),
           `${reason} is refused`
         )
       }
@@ -368,7 +368,7 @@ try {
           rowOf(released, sibling.workspaceId).outcome,
           verdictName(rowOf(released, sibling.workspaceId).verdict),
         ],
-        ['removed', 'no-residue']
+        ['removed', 'nothing-left']
       )
       const artifactsRow = artifactsRowOf(released, owner.taskId)
       assert.equal(artifactsRow?.outcome, 'removed', JSON.stringify(released.rows))
@@ -439,11 +439,15 @@ try {
       assert.ok(git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
       assert.equal(
         unfinished.nextAction,
-        `dev workspace release ${unfinished.taskId} clears it and removes what Git created of the worktree.`
+        `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${unfinished.taskId}, which deletes all of that task's managed worktrees and artifacts, including what Git created of this one.`
       )
-
       const quit = await sweepAtQuit(owner.write.workspaceId)
       const row = rowOf(quit, unfinished.workspaceId)
+      assert.ok(
+        row.reason.startsWith('Worktree creation did not finish.') &&
+          !row.reason.includes('switch'),
+        `the receipt names the unfinished creation, not a checkout switch: ${row.reason}`
+      )
       assert.deepEqual(
         [row.taskId, row.outcome, verdictName(row.verdict), row.path],
         [unfinished.taskId, 'retained', 'retained:transition-unresolved', unfinished.path]

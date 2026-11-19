@@ -260,7 +260,7 @@ try {
         const refusal = yield* Effect.flip(
           Layer.build(WorkStore.layer(home, asSessionId('corrupt-check')))
         )
-        assert.equal(refusal.message, 'Work store database is corrupt')
+        assert.equal(refusal.message, 'Saved runs database is corrupt')
         assert.deepEqual(readFileSync(databasePath), garbage)
       }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer))
     )

@@ -40,7 +40,7 @@ export const summarize = (record: AttemptView): AttemptSummary =>
     id: record.id,
     taskId: record.owner.taskId,
     parent: record.owner.parent,
-    coordinator: record.coordinator,
+    coordinate: record.coordinator,
     workflowTaskId: record.workflowTaskId,
     workspaceId: record.workspaceId,
     cwd: record.cwd,
@@ -70,7 +70,7 @@ export const summarize = (record: AttemptView): AttemptSummary =>
           }),
     deliveryError: record.deliveryError,
     cleanupError: record.cleanupError,
-    gateReleaseWarning: record.gateReleaseWarning,
+    lockWarning: record.gateReleaseWarning,
     processObservation: record.processObservation,
     recovery: record.recovery,
   })
@@ -86,7 +86,7 @@ export const factsOf = (record: AttemptView): AttemptFacts =>
     id: record.id,
     kind: record.kind,
     parent: record.owner.parent,
-    coordinator: record.coordinator,
+    coordinate: record.coordinator,
     sessionFile: record.sessionFile,
     effort: record.effort,
     turns: settledTurns(record),
@@ -113,9 +113,29 @@ export const outcomeView = (attempt: AttemptView | AttemptDescription): AttemptO
 
 const decodeRecord = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))
 
+const OUTWARD_RECORD_KEYS: Readonly<Record<string, string>> = {
+  attemptId: 'runId',
+  coordinator: 'coordinate',
+  controllerPid: 'devPid',
+  owner: 'startedBy',
+  gateReleaseWarning: 'lockWarning',
+  workspaceAcquisitionId: 'writePermissionId',
+}
+
+const outwardKeys = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(outwardKeys)
+  if (typeof value !== 'object' || value === null) return value
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [OUTWARD_RECORD_KEYS[key] ?? key, outwardKeys(item)])
+  )
+}
+
+export const outwardRecord = (record: object): AttemptInspection['record'] =>
+  decodeRecord(JSON.stringify(outwardKeys(record)))
+
 const inspectionView = (description: AttemptDescription): AttemptInspection => {
   const { staleArtifact: _stale, logs: _logs, worktree: _worktree, ...record } = description
-  return { ...outcomeView(description), record: decodeRecord(JSON.stringify(record)) }
+  return { ...outcomeView(description), record: outwardRecord(record) }
 }
 
 const PAGE = 20
@@ -125,8 +145,8 @@ const snapshotResult = (
   offset: number,
   cancellationRequested?: true
 ): WorkResult => ({
-  kind: 'snapshot',
-  snapshot: defined<WorkSnapshotView>({
+  kind: 'runs',
+  runs: defined<WorkSnapshotView>({
     records: snapshot.records.slice(offset, offset + PAGE).map(summarize),
     unavailable: snapshot.unavailable,
     agentsBlocked: snapshot.agentsBlocked,
@@ -137,8 +157,8 @@ const snapshotResult = (
 })
 
 const attemptResult = (view: AttemptView): WorkResult => ({
-  kind: 'attempt',
-  attempt: summarize(view),
+  kind: 'run',
+  run: summarize(view),
 })
 
 const inspectionResult = (description: AttemptDescription): WorkResult => ({
@@ -158,7 +178,7 @@ const startProcess = (
   input: WorkInput
 ): Effect.Effect<WorkResult, WorkFailure> => {
   if (actions.startProcess === undefined)
-    return Effect.fail(new WorkError({ message: 'Unsupported work operation' }))
+    return Effect.fail(new WorkError({ message: 'This agent cannot run commands' }))
   const request: ProcessStartRequest = {
     taskId: input.taskId ?? '',
     command: input.command ?? '',
@@ -214,7 +234,7 @@ const cancel = (actions: WorkActions, input: WorkInput): Effect.Effect<WorkResul
 
 export const unavailableAttempt = (): WorkError =>
   new WorkError({
-    message: 'Result is unavailable in this session (unknown or expired attempt)',
+    message: 'No saved run with that id is available here',
   })
 
 const inspect = (

@@ -52,7 +52,7 @@ export const leadingLongSleep = (command: string): boolean => {
 }
 
 export const waitRefusal = (running: string): string =>
-  `Refused: this command only waits while background work is running (${running}). Outcomes are delivered when your turn ends, so sleeping delays them. Do independent work if any remains; otherwise end your turn now and let outcomes resume you. Use work list or inspect only for diagnosis or a requested progress check.`
+  `Refused: this command only waits while background work is pending (${running}). Do independent work or end your turn to receive results. Use work list or inspect only to diagnose problems or check progress on request.`
 
 export const sleepRefusal = (): string =>
-  `Refused: this command starts with a sleep of ${LONG_SLEEP_SECONDS} seconds or more. Dev does not resume you from a shell sleep; it only blocks your turn. Move the wait itself into work process, for example \`until <check>; do sleep 30; done\`, so that outcome delivery resumes you when the check passes. Then do independent work if any remains; otherwise end your turn now.`
+  `Refused: this command starts with a sleep of ${LONG_SLEEP_SECONDS} seconds or more. Run the wait with work (action: "process"), e.g. \`until <check>; do sleep 30; done\`. Do independent work or end your turn; dev sends the result when ready.`

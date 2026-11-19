@@ -360,7 +360,7 @@ await claim(
     )
     assert.deepEqual(persistedResult('filtered-write'), {
       isError: true,
-      text: 'Workspace admission failed closed: Managed allocation is unavailable for filtered files; checkout filter effects are not controlled',
+      text: 'The call did not run: Dev will not create a worktree that would run Git checkout filters',
     })
   }
 )
@@ -387,22 +387,26 @@ await claim(
     assert.equal(read.isError, false)
     assert.ok(
       read.text.endsWith(
-        '\n[dev workspace] A writer owns this live checkout; files may change while you read. No stable snapshot is provided.'
+        '\n[dev workspace] Another session can write here. Files may change while you read.'
       ),
       read.text
     )
   }
 )
 await claim(
-  'a real contended native write is blocked, rebinds to an exact-commit managed worktree and is not replayed',
+  'a real contended native write is blocked, hands off to an exact-commit managed worktree and is not replayed',
   () => {
-    assert.notEqual(resolve(managed), resolve(lead), 'the contended write rebinds the conversation')
+    assert.notEqual(
+      resolve(managed),
+      resolve(lead),
+      'the contended write hands the conversation off'
+    )
     assert.equal(git(['rev-parse', 'HEAD'], managed), leadCommit)
     assert.ok(!existsSync(join(lead, 'contended.txt')), 'the blocked write never ran')
     assert.ok(!existsSync(join(managed, 'contended.txt')), 'the blocked write was not replayed')
     assert.deepEqual(persistedResult('contended-native-write'), {
       isError: true,
-      text: 'Workspace admission requires a host rebind: Another task owns or is using the requested checkout. The new detached worktree starts at the exact current commit; uncommitted and ignored files were not copied. The operation was not executed.',
+      text: 'The call did not run: Another task uses or needs the requested checkout. The new detached worktree starts at its current commit; local edits and untracked files were not copied. Dev requested a checkout switch and reports where this conversation works if it completes.',
     })
   }
 )
@@ -442,7 +446,7 @@ await claim(
   () => {
     const duplicate = persistedResult('duplicate-native-write')
     assert.equal(duplicate.isError, true)
-    assert.match(duplicate.text, /still in flight/)
+    assert.match(duplicate.text, /has not finished/)
     const duplicateUse = nativeUses.find(item => item.path === join(managed, 'NATIVE.txt'))
     assert.equal(duplicateUse?.stage, 'quiescent')
     assert.equal(duplicateUse?.reason, 'operation-ended-before-start:native-file-write')
@@ -516,7 +520,7 @@ await claim(
     assert.equal(runtime.session.sessionManager.getSessionId(), sessionBeforeNestedSwitch)
     assert.equal(workspaceHost.isParked(), false, 'a refused switch leaves the host usable')
     assert.deepEqual(notices.slice(noticesBefore), [
-      `The session was not switched: The working directory bound to this conversation no longer exists and is not recreated: ${nestedCwd}\n${keptConversation(nestedFile)}`,
+      `The session was not switched: The working directory is gone and will not be recreated: ${nestedCwd}\n${keptConversation(nestedFile)}`,
     ])
     assert.deepEqual(readFileSync(nestedFile), nestedBytes, 'the conversation file is unchanged')
     assert.ok(!existsSync(nestedCwd), 'the removed directory is not recreated')
@@ -616,11 +620,11 @@ await claim(
   "/workspace check of the TUI task shows its managed worktree as finished for the sweep, naming the conversation's own live shell as a use that ends when it quits, without parking the host or stopping anything",
   async () => {
     const shown = await waitFor('the check to be displayed', () =>
-      workspaceEntries().find(content => content.startsWith('A check changes nothing'))
+      workspaceEntries().find(content => content.startsWith('Read-only check.'))
     )
     const checked = JSON.parse(shown.slice(shown.indexOf('\n') + 1)) as {
       readonly taskId: string
-      readonly workspaces: readonly {
+      readonly checkouts: readonly {
         readonly workspaceId: string
         readonly origin: string
         readonly verdict: string
@@ -628,11 +632,11 @@ await claim(
       }[]
     }
     assert.equal(checked.taskId, hostTask, shown)
-    const own = checked.workspaces.find(item => item.workspaceId === binding.workspaceId)
-    assert.deepEqual([own?.origin, own?.verdict], ['managed', 'finished (no-residue)'], shown)
+    const own = checked.checkouts.find(item => item.workspaceId === binding.workspaceId)
+    assert.deepEqual([own?.origin, own?.verdict], ['managed', 'finished (nothing-left)'], shown)
     assert.ok(
       own?.reasons?.some(
-        reason => reason.includes('lead-shell') && reason.includes('they end when it quits')
+        reason => reason.includes('a bash command') && reason.includes('Dev checks again at quit')
       ),
       shown
     )

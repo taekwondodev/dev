@@ -29,7 +29,7 @@ export const requestBrowserOwner = (
 ): Effect.Effect<void, BrowserOwnerError> =>
   Effect.callback<void, BrowserOwnerError>(resume => {
     if (!channel.connected || channel.send === undefined) {
-      resume(Effect.fail(unavailable('The work controller IPC channel is unavailable')))
+      resume(Effect.fail(unavailable('Cannot reach dev to start Chrome')))
       return
     }
     const requestId = randomUUID()
@@ -38,16 +38,14 @@ export const requestBrowserOwner = (
       resume(result)
     }
     const cleanup = awaitReply(channel, requestId, {
-      disconnected: () => settle(Effect.fail(unavailable('The work controller disconnected'))),
+      disconnected: () => settle(Effect.fail(unavailable('Lost connection to dev'))),
       reply: raw => {
         const reply = decodeReply(raw)
         if (Option.isNone(reply) || reply.value.requestId !== requestId) return
         settle(
           reply.value.ok
             ? Effect.void
-            : Effect.fail(
-                unavailable(reply.value.reason ?? 'The lead refused to start a browser owner')
-              )
+            : Effect.fail(unavailable(reply.value.reason ?? 'Dev could not start Chrome'))
         )
       },
     })
@@ -62,7 +60,6 @@ export const requestBrowserOwner = (
   }).pipe(
     Effect.timeoutOrElse({
       duration: '20 seconds',
-      orElse: () =>
-        Effect.fail(unavailable('The work controller did not answer the browser owner request')),
+      orElse: () => Effect.fail(unavailable('Dev did not reply to the Chrome request')),
     })
   )

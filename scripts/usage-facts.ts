@@ -44,14 +44,20 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'execution',
     pattern:
-      /^(?:Working directory does not exist: |the shell did not start$|The shell exited before its identity was available$|the shell identity could not be captured$)/,
+      /^(?:Working directory does not exist: |the shell did not start$|The shell exited before dev could identify it$|dev could not identify the new shell$)/,
     tools: BASH,
   },
   { outcome: 'invocation', pattern: /^Invalid timeout: /, tools: BASH },
   {
     outcome: 'blocked',
     pattern:
-      /^(?:Workspace admission changed before the shell started|Workspace admission requires a host rebind|The workspace shell is stopping); the command was not executed\.$|^the host is stopping its shells$/,
+      /^Refused: this command (?:only waits while background work is pending|starts with a sleep of \S+ seconds or more)/,
+    tools: BASH,
+  },
+  {
+    outcome: 'blocked',
+    pattern:
+      /^(?:The checkout changed before start|The shell is stopping)\. The command did not run\.$|^Dev must switch checkouts first; the command did not run\.$|^this conversation is stopping its commands$/,
     tools: BASH,
   },
   { outcome: 'invocation', pattern: /^Offset \d+ is beyond end of file/, tools: ['read'] },
@@ -82,23 +88,36 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^Workspace host is parked(?:; stale tools are blocked| during a transition; no operation started)\.$/,
+      /^(?:Checkout access is blocked (?:while|because) [^;]+|This conversation (?:is closing|changed sessions or checkouts meanwhile)); (?:the (?:tool|call) did not run|no background work started)\./,
+  },
+  {
+    outcome: 'blocked',
+    pattern: /^(?:No checkout switch was requested|No directory was created): /,
+    tools: ['workspace'],
+  },
+  {
+    outcome: 'blocked',
+    pattern: /^The call did not run: /,
+  },
+  {
+    outcome: 'blocked',
+    pattern: /^\S+ did not run\. Dev has not verified what this tool can do to project files\.$/,
   },
   {
     outcome: 'blocked',
     pattern:
-      /^Workspace admission (?:requires a host rebind: [\s\S]*\. The operation was not executed\.$|failed closed: )/,
+      /^(?:This call needs \S+ access but got \S+|Permission was for [\s\S]*, not [\s\S]*)\. The call did not run, and checkout access stays blocked\. /,
+  },
+  { outcome: 'blocked', pattern: /^\S+ did not run: / },
+  { outcome: 'blocked', pattern: /^This agent has read-only access$/ },
+  {
+    outcome: 'blocked',
+    pattern:
+      /^The question about the paused task in this checkout was dismissed, so the operation was not executed and nothing changed\./,
   },
   {
     outcome: 'blocked',
-    pattern: /^Tool \S+ has no verified workspace effect in dev, so it was not executed\./,
-  },
-  { outcome: 'blocked', pattern: /; the (?:Pi|native) tool was not executed\.$/ },
-  { outcome: 'blocked', pattern: /^Native \S+ was not executed: / },
-  { outcome: 'blocked', pattern: /^Child workspace is read-only$/ },
-  {
-    outcome: 'blocked',
-    pattern: /^Workspace handoff required before starting work: [\s\S]*No command was executed/,
+    pattern: /^Dev must switch checkouts first: [\s\S]*No work started/,
   },
 ]
 
@@ -115,15 +134,16 @@ const textBytes = (blocks: readonly Block[]): number =>
     0
   )
 
+export const classifyError = (tool: string, text: string): ResultOutcome =>
+  ERROR_TEXTS.find(
+    error => (error.tools === undefined || error.tools.includes(tool)) && error.pattern.test(text)
+  )?.outcome ?? 'unclassified'
+
 const classify = (result: ResultEntry): ResultOutcome => {
   if (!result.isError) return 'returned'
   const text = firstText(result.blocks)
   if (text === undefined) return 'unclassified'
-  const recognized = ERROR_TEXTS.find(
-    error =>
-      (error.tools === undefined || error.tools.includes(result.tool)) && error.pattern.test(text)
-  )
-  return recognized?.outcome ?? 'unclassified'
+  return classifyError(result.tool, text)
 }
 
 const recordedAttempts = (entry: Entry): readonly AttemptRecord[] => {
@@ -133,7 +153,7 @@ const recordedAttempts = (entry: Entry): readonly AttemptRecord[] => {
 }
 
 const roleOf = (attempt: AttemptRecord): Role => {
-  if (attempt.coordinator === true) return 'coordinator'
+  if (attempt.coordinate === true) return 'coordinator'
   return attempt.parent === undefined ? 'child' : 'leaf'
 }
 

@@ -35,6 +35,7 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
   'format:check': npmScript('format:check'),
   smoke: files(
     'tests/launcher-cache-check.ts',
+    'tests/model-text-check.ts',
     'tests/smoke.ts',
     'tests/upgrade-check.ts',
     'tests/upgrade-checks-check.ts'
