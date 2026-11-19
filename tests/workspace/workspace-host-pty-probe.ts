@@ -61,10 +61,8 @@ import {
   type ScriptedStreamParts,
   type StreamSimple,
   toolCall,
-  IN_MEMORY_POLL,
-  waitFor,
-  within,
 } from './workspace-check-support.ts'
+import { IN_MEMORY_POLL, waitFor, within } from '../wait.ts'
 import {
   fixtureId as id,
   makeFixtureBinding,

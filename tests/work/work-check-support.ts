@@ -23,7 +23,8 @@ import type {
 } from '../../src/work-domain.ts'
 import type { WorkspaceAttachment } from '../../src/workspace-domain.ts'
 import { installProfileFixture } from '../profile-fixture.ts'
-import { ownerEffect, waitFor, within } from '../workspace/workspace-check-support.ts'
+import { ownerEffect } from '../workspace/workspace-check-support.ts'
+import { waitFor, within } from '../wait.ts'
 import { openLifecycle } from '../workspace/workspace-test-lifecycle.ts'
 import { CHILD_EFFORT, CHILD_MODEL, MODEL_CALLS, SCRIPT_MARKER } from './work-child-model.ts'
 

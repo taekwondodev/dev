@@ -14,9 +14,9 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { setTimeout } from 'node:timers/promises'
 import { WorkspaceAuthority } from '../src/workspace-authority.ts'
 import { RETAINED_CONVERSATIONS } from '../src/conversation-retention.ts'
+import { waitUntil } from './wait.ts'
 import * as Effect from 'effect/Effect'
 import {
   acquireCleanupRuntime,
@@ -163,18 +163,20 @@ try {
   const pid = JSON.parse(readFileSync(marker, 'utf8')) as number
   process.kill(pid, 0)
   process.kill(pid, 'SIGCONT')
-  let exited = false
-  const deadline = Date.now() + 20000
-  while (!exited && Date.now() < deadline) {
-    try {
-      process.kill(pid, 0)
-      await setTimeout(25)
-    } catch (error) {
-      assert.match(String(error), /ESRCH/)
-      exited = true
-    }
-  }
-  assert.ok(exited, 'cleanup process did not exit after resuming')
+  await waitUntil(
+    'the cleanup process to exit after resuming',
+    () => {
+      try {
+        process.kill(pid, 0)
+        return false
+      } catch (error) {
+        assert.match(String(error), /ESRCH/)
+        return true
+      }
+    },
+    exited => exited,
+    { attempts: 800, intervalMs: 25 }
+  )
   assert.equal(parent.status, 0, parent.stderr)
   console.log(
     'cleanup process: maintenance/singleton contention, retry, conversation lock purge only without runtimes, a runtime outwaiting a momentary exclusive hold and natural parent exit with cleanup stopped passed'

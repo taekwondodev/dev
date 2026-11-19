@@ -13,11 +13,11 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { canonicalGitWorkspace, resolveIdentityGit } from '../../src/workspace-git.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
+import { holdsFor, waitUntil } from '../wait.ts'
 
 const { claim, passed } = makeClaims()
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-git-')))
@@ -73,11 +73,19 @@ try {
   const launcher = { git: join(launcherDirectory, 'git'), finder }
   const described = [canonicalGitWorkspace(committed), canonicalGitWorkspace(unborn)]
   const describe = () => [canonicalGitWorkspace(committed), canonicalGitWorkspace(unborn)]
-  const settle = async (): Promise<void> => {
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await sleep(50)
-      canonicalGitWorkspace(committed)
-    }
+  const readsBypassingNothing = async (): Promise<number> => {
+    let reads = 0
+    await holdsFor(
+      'identity reads never move to the binary the launcher resolves to',
+      500,
+      () => {
+        canonicalGitWorkspace(committed)
+        reads += 1
+        return runs(directLog) === 0
+      },
+      50
+    )
+    return reads
   }
 
   await claim(
@@ -95,8 +103,8 @@ try {
         process.env.PATH = `${entry}:${launcherDirectory}:${originalPath}`
         try {
           resolveIdentityGit(launcher)
-          await settle()
-          assert.ok(runs(log) >= 10, `the ${name} entry ran every read: ${runs(log)}`)
+          const reads = await readsBypassingNothing()
+          assert.ok(runs(log) >= reads, `the ${name} entry ran every read: ${runs(log)}/${reads}`)
           assert.equal(runs(directLog), 0, `the ${name} entry was not bypassed`)
         } finally {
           process.env.PATH = originalPath
@@ -112,11 +120,15 @@ try {
       process.env.PATH = `${launcherDirectory}:${originalPath}`
       try {
         resolveIdentityGit(launcher)
-        for (let attempt = 0; attempt < 100 && runs(directLog) === 0; attempt += 1) {
-          await sleep(20)
-          canonicalGitWorkspace(committed)
-        }
-        assert.ok(runs(directLog) > 0, 'the resolved binary ran an identity read')
+        await waitUntil(
+          'the resolved binary to run an identity read',
+          () => {
+            canonicalGitWorkspace(committed)
+            return runs(directLog)
+          },
+          directRuns => directRuns > 0,
+          { attempts: 100, intervalMs: 20 }
+        )
         const [launcherBefore, directBefore] = [runs(launcherLog), runs(directLog)]
         assert.deepEqual(describe(), described)
         assert.equal(runs(launcherLog), launcherBefore, 'the launcher ran no further identity read')
