@@ -1,16 +1,43 @@
-import { describedHead, SWEEP_MOMENT_TEXT, type WorkspaceReport } from './workspace-command.ts'
-import type {
-  SweepReceipt,
-  SweepRow,
-  WorkspaceAssessment,
-  WorkspaceId,
-  WorkspaceView,
+import { checkoutUseStage } from './workspace-labels.ts'
+import {
+  describedHead,
+  pendingOperationText,
+  SWEEP_MOMENT_TEXT,
+  verdictLabel,
+  type WorkspaceReport,
+} from './workspace-command.ts'
+import {
+  type PausedTask,
+  type SweepReceipt,
+  type SweepRow,
+  type WorkspaceAssessment,
+  type WorkspaceId,
+  type WorkspaceView,
 } from './workspace-domain.ts'
 
 export const WORKSPACE_MESSAGE = 'dev/workspace'
 export const HANDOFF_MESSAGE = 'dev/workspace-handoff'
 export const RECEIPT_ENTRY = 'dev/workspace-receipt'
 export const REFUSAL_ENTRY = 'dev/workspace-refusal'
+
+export type SwitchRequest = 'requested' | 'closing' | 'mismatch' | 'unresolved' | 'changed' | 'busy'
+
+const SWITCH_NOT_REQUESTED: Record<Exclude<SwitchRequest, 'requested'>, string> = {
+  closing: 'this conversation is closing',
+  mismatch:
+    "this conversation's permission no longer matches it, so checkout access stays blocked; ask the user to quit and reopen this conversation",
+  unresolved:
+    'dev cannot confirm an earlier session change, so checkout access stays blocked; ask the user to quit and reopen this conversation',
+  changed:
+    'this conversation changed sessions or checkouts meanwhile; check where it works now before retrying',
+  busy: 'another checkout switch or session change is in progress; retry after it ends',
+}
+
+export const switchNotRequested = (request: Exclude<SwitchRequest, 'requested'>): string =>
+  `No checkout switch was requested: ${SWITCH_NOT_REQUESTED[request]}.`
+
+export const SWITCH_REQUESTED =
+  'Dev requested a checkout switch and reports where this conversation works if it completes.'
 
 export interface SweepDetails {
   readonly kind: 'sweep'
@@ -32,6 +59,30 @@ export interface SwitchDetails {
   readonly reason: string
 }
 
+export interface JoinDetails {
+  readonly kind: 'join'
+  readonly taskId: WorkspaceId
+  readonly workspaceId: WorkspaceId
+  readonly path: string
+  readonly head?: PausedTask['head']
+  readonly changedFiles?: number
+}
+
+export const joinDetails = ({
+  taskId,
+  workspaceId,
+  path,
+  head,
+  changedFiles,
+}: PausedTask): JoinDetails => ({
+  kind: 'join',
+  taskId,
+  workspaceId,
+  path,
+  ...(head === undefined ? {} : { head }),
+  ...(changedFiles === undefined ? {} : { changedFiles }),
+})
+
 type ModelObject = Record<string, unknown>
 
 const present = (entries: readonly (readonly [string, unknown])[]): ModelObject =>
@@ -47,7 +98,7 @@ const viewObject = (view: WorkspaceView): ModelObject =>
     ['path', view.path],
     ['head', describedHead(view.head)],
     ['origin', view.origin],
-    ['outcome', view.outcome],
+    ['result', view.outcome],
     ['reason', view.reason],
     ['next', view.nextAction],
     ['directoryMissing', view.directoryMissing === true ? true : undefined],
@@ -57,13 +108,13 @@ const viewObject = (view: WorkspaceView): ModelObject =>
         view.uses.map(use =>
           present([
             ['access', use.access],
-            ['stage', use.stage],
-            ['attempt', use.execution?.attemptId],
+            ['stage', checkoutUseStage(use.stage)],
+            ['run', use.execution?.attemptId],
           ])
         )
       ),
     ],
-    ['pending', nonEmpty(view.pending.map(item => `${item.kind} (${item.stage})`))],
+    ['pending', nonEmpty(view.pending.map(pendingOperationText))],
   ])
 
 const assessmentObject = ({ completion, ...assessment }: WorkspaceAssessment): ModelObject =>
@@ -72,18 +123,13 @@ const assessmentObject = ({ completion, ...assessment }: WorkspaceAssessment): M
     ['path', assessment.path],
     ['origin', assessment.origin],
     ['role', completion.role],
-    [
-      'verdict',
-      completion.kind === 'finished'
-        ? `finished (${completion.rule})`
-        : `retained (${completion.retained})`,
-    ],
+    ['verdict', verdictLabel(completion)],
     ['reason', completion.reason],
     ['target', assessment.target.description],
     ['reasons', nonEmpty(assessment.reasons)],
     ['evidence', assessment.evidence?.verdict],
     ['inventory', assessment.inventory],
-    ['residual', nonEmpty(assessment.residual)],
+    ['remaining', nonEmpty(assessment.residual)],
     ['next', nonEmpty(assessment.nextActions)],
   ])
 
@@ -103,7 +149,7 @@ export const reportText = (report: WorkspaceReport): string => {
                 },
           ],
           ['artifacts', report.artifacts],
-          ['workspaces', report.views.map(viewObject)],
+          ['checkouts', report.views.map(viewObject)],
         ])
       )
     case 'inspect':
@@ -111,13 +157,13 @@ export const reportText = (report: WorkspaceReport): string => {
         present([
           ['taskId', report.taskId],
           ['artifacts', report.artifacts],
-          ['workspaces', report.views.map(viewObject)],
+          ['checkouts', report.views.map(viewObject)],
         ])
       )
     case 'check':
-      return `A check changes nothing; the next sweep rechecks everything.\n${JSON.stringify({
+      return `Read-only check. Dev checks again before cleanup.\n${JSON.stringify({
         taskId: report.taskId,
-        workspaces: report.assessments.map(assessmentObject),
+        checkouts: report.assessments.map(assessmentObject),
       })}`
   }
 }
@@ -142,31 +188,31 @@ const sweepRowObject = (row: SweepRow): ModelObject => {
         ['taskId', row.taskId],
         ['workspaceId', row.workspaceId],
         ['path', row.path],
-        ['outcome', row.outcome],
+        ['result', row.outcome],
         ['reason', row.outcome === 'review-required' ? row.reason : undefined],
       ])
     case 'task-artifacts':
       return present([
         ['taskId', row.taskId],
         ['artifacts', row.path],
-        ['outcome', row.outcome],
+        ['result', row.outcome],
         ['reason', row.outcome === 'review-required' ? row.reason : undefined],
       ])
     case 'task-failure':
       return {
         taskId: row.taskId,
-        outcome: 'review-required',
+        result: 'review-required',
         reason: row.reason,
       }
     case 'task-deferred':
-      return { taskId: row.taskId, outcome: 'deferred' }
+      return { taskId: row.taskId, result: 'deferred' }
     case 'sweep-failure':
-      return { outcome: 'review-required', reason: row.reason }
+      return { result: 'review-required', reason: row.reason }
   }
 }
 
 export const sweepText = (receipt: SweepReceipt): string | undefined => {
   const rows = receipt.rows.filter(changesSomething)
   if (rows.length === 0) return undefined
-  return `Workspace sweep ${SWEEP_MOMENT_TEXT[receipt.moment]}: ${JSON.stringify(rows.map(sweepRowObject))}`
+  return `Automatic cleanup ${SWEEP_MOMENT_TEXT[receipt.moment]}: ${JSON.stringify(rows.map(sweepRowObject))}`
 }

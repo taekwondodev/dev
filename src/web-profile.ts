@@ -228,7 +228,7 @@ export interface BrowserProfileOptions {
   readonly sourceUserData?: string
 }
 
-const lockConflict = 'The dev browser profile copy is in use by its browser owner.'
+const lockConflict = 'Dev still has the Chrome profile copy locked.'
 const LOCK_RETRY_INTERVAL = Duration.millis(250)
 
 const withLock = <A>(paths: BrowserProfilePaths, run: (release: GateRelease) => A): A => {
@@ -254,7 +254,7 @@ const native = <A>(operation: () => A): Effect.Effect<A, BrowserProfileError> =>
     catch: cause =>
       cause instanceof BrowserProfileError
         ? cause
-        : fail('storage', `Browser profile storage failed: ${errorText(cause)}`),
+        : fail('storage', `Chrome profile copy failed: ${errorText(cause)}`),
   })
 
 export const makeBrowserProfileOwner = (options: BrowserProfileOptions): BrowserProfileOwner => {
@@ -272,18 +272,12 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
     if (chrome === undefined)
       throw fail(
         'chrome-missing',
-        'Google Chrome is not installed in /Applications or ~/Applications; browser rendering is unavailable until it is.'
+        'Google Chrome is not installed in /Applications or ~/Applications.'
       )
     if (regularSource(paths.disabled))
-      throw fail(
-        'disabled',
-        'Authenticated browser rendering is disabled for this data home; run `dev browser enable` to allow it again.'
-      )
+      throw fail('disabled', 'Chrome reads are disabled. Run `dev browser enable` to allow them.')
     if (!existsSync(join(source, 'Local State')))
-      throw fail(
-        'source',
-        `No Chrome user data was found at ${source}; sign in to Chrome once so dev can copy an authenticated profile.`
-      )
+      throw fail('source', `No Chrome profile found at ${source}. Sign in to Chrome first.`)
     const profileDirectory = activeProfileDirectory(source)
     const sourceProfile = join(source, profileDirectory)
     if (!existsSync(sourceProfile))
@@ -314,7 +308,7 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
     } catch (cause) {
       throw fail(
         'copy',
-        `Chrome's cookie database could not be snapshotted coherently (${errorText(cause)}); close Chrome or retry in a moment.`
+        `Couldn't copy Chrome's cookie database. Close Chrome or retry shortly: ${errorText(cause)}`
       )
     }
     for (const name of COPIED_PROFILE_FILES) {

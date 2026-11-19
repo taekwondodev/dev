@@ -108,18 +108,18 @@ export const isRecordUnavailable = (error: WorkPersistenceError): boolean =>
   error.code === 'record-unavailable'
 
 const persistenceMessage = (code: string): string => {
-  if (code === 'unsupported-format') return 'Work store format is unsupported'
-  if (code === 'corrupt-database') return 'Work store database is corrupt'
-  if (code === 'unsafe-path') return 'Work store path is unsafe'
+  if (code === 'unsupported-format') return 'Saved runs have an invalid layout'
+  if (code === 'corrupt-database') return 'Saved runs database is corrupt'
+  if (code === 'unsafe-path') return 'Unsafe path for saved runs'
   if (code === 'unsafe-sqlite') return 'Installed SQLite runtime is unsafe for WAL storage'
-  if (code === 'revision-conflict') return 'Work record revision conflict'
-  if (code === 'owner-conflict') return 'Work record ownership conflict'
-  if (code === 'record-unavailable') return 'Work record is unavailable'
-  if (code === 'invalid-record') return 'Work record is invalid'
-  if (code === 'session-mismatch') return 'Work store session mismatch'
-  if (code === 'worker-closed') return 'Work store worker is closed'
-  if (code === 'worker-protocol') return 'Work store worker protocol failed'
-  return 'Work store operation failed'
+  if (code === 'revision-conflict') return 'Saved run changed during update'
+  if (code === 'owner-conflict') return 'Saved run identity mismatch'
+  if (code === 'record-unavailable') return 'Saved run unavailable'
+  if (code === 'invalid-record') return 'Invalid saved run'
+  if (code === 'session-mismatch') return 'Saved run belongs to another conversation'
+  if (code === 'worker-closed') return 'Storage for saved runs is closed'
+  if (code === 'worker-protocol') return 'Invalid reply from storage for saved runs'
+  return 'Could not access saved runs'
 }
 
 const persistenceError = (cause: unknown): WorkPersistenceError => {
@@ -669,12 +669,12 @@ export class WorkStore extends Context.Service<
 
         const plannedLogPath = (id: AttemptId, stream: LogStream): string => {
           if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
-            throw new Error('Choose a valid attempt and log stream')
+            throw new Error('Choose a valid run and stream')
           return join(root, id, LOG_FILES[stream])
         }
 
         const logPath = (id: AttemptId, stream: LogStream): string => {
-          if (!authorized.has(id)) throw new Error('Choose a valid attempt and log stream')
+          if (!authorized.has(id)) throw new Error('Choose a valid run and stream')
           return plannedLogPath(id, stream)
         }
 

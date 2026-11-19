@@ -356,7 +356,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      'a writing child writes and edits a repository nested in its own managed workspace through its controller, without rebinding or allocating another workspace',
+      'a writing child writes and edits a repository nested in its own managed workspace through its controller, without a handoff or allocating another workspace',
       async () => {
         const writer = await owner.run({
           taskId: 'managed-nested-writer',
@@ -523,7 +523,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         }
         assert.throws(
           () => classifyWriteDestination(leadScope, fixture.repository, join(worktree, 'lead.txt')),
-          /another managed workspace; ask its owning conversation/
+          /Ask the conversation using this checkout to make the change/
         )
 
         const tree = await owner.run({
@@ -570,7 +570,10 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.equal(leafReader.cwd, coordinatorWorktree)
         assert.equal(count(await owner.result(leafReader.id), 'foreign committed'), 1)
         assert.match(refusal(fixture.dataHome, tree.view.id, 'leaf-cwd'), /\["cwd"\]/)
-        assert.match(refusal(fixture.dataHome, tree.view.id, 'leaf-writer'), /read-only leaves/)
+        assert.match(
+          refusal(fixture.dataHome, tree.view.id, 'leaf-writer'),
+          /delegate only read-only work/
+        )
         const records = await owner.records()
         for (const taskId of ['foreign-leaf-cwd', 'foreign-leaf-writer'])
           assert.ok(
@@ -604,8 +607,8 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         )
         const freeText = await owner.result(free.id)
         const heldText = await owner.result(held.id)
-        assert.equal(count(freeText, 'Leaf outcomes:'), 1)
-        assert.equal(count(heldText, 'Leaf outcomes:'), 1)
+        assert.equal(count(freeText, 'Delegated results:'), 1)
+        assert.equal(count(heldText, 'Delegated results:'), 1)
         const [, freeLater = ''] = freeText.split('LATER-MESSAGES')
         const [, heldLater = ''] = heldText.split('LATER-MESSAGES')
         assert.ok(freeLater.includes(quickLeaf.id) && !freeLater.includes(slowLeaf.id))
@@ -655,7 +658,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         ]),
       })
       assertStatus(view, 'completed')
-      assert.equal(count(text, 'Leaf outcomes:'), 1)
+      assert.equal(count(text, 'Delegated results:'), 1)
       const offered = replies(fixture.dataHome, view.id).filter(
         reply => reply.type === 'work-pending' && reply.outcomes.length > 0
       )
@@ -727,8 +730,14 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         const inner = await owner.leaf(coordinator.view.id, 'inner', settled)
         assertStatus(inner, 'completed')
         assert.ok(!inner.resources?.tools.includes('work'))
-        assert.match(refusal(fixture.dataHome, plain.view.id, 'plain'), /not a running coordinator/)
-        assert.match(refusal(fixture.dataHome, inner.id, 'leaf'), /not a running coordinator/)
+        assert.match(
+          refusal(fixture.dataHome, plain.view.id, 'plain'),
+          /cannot delegate or is no longer active/
+        )
+        assert.match(
+          refusal(fixture.dataHome, inner.id, 'leaf'),
+          /cannot delegate or is no longer active/
+        )
         const tasks: readonly string[] = (await owner.records()).map(record => record.owner.taskId)
         assert.ok(!tasks.includes('smuggled-by-child') && !tasks.includes('smuggled-by-leaf'))
       }
@@ -763,12 +772,9 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           ])}`,
         })
         assertStatus(view, 'completed')
-        assert.equal(count(text, 'A read-only coordinator can start only read-only leaves'), 1)
-        assert.equal(count(text, 'Attempt is not a leaf of this coordinator'), 1)
-        assert.equal(
-          count(text, 'Result is unavailable in this session (unknown or expired attempt)'),
-          1
-        )
+        assert.equal(count(text, 'Read-only agents can delegate only read-only work'), 1)
+        assert.equal(count(text, 'You did not start that run'), 1)
+        assert.equal(count(text, 'No saved run with that id is available here'), 1)
         refusal(fixture.dataHome, view.id, 'raw-process')
         assert.ok(!existsSync(marker), 'a coordinator started a process')
         const records = await owner.records()
@@ -848,7 +854,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           settled
         )
         assert.equal(forger.status, 'failed')
-        assert.match(forger.protocolError ?? '', /Unexpected child message field/)
+        assert.match(forger.protocolError ?? '', /Unexpected agent message field/)
         const records = await owner.records()
         assert.equal(records.find(record => record.id === bystander.id)?.status, 'running')
       }
@@ -875,7 +881,10 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         )
         const cancelled = await owner.call(actions => actions.cancel(started.id))
         assert.equal(cancelled.status, 'cancelled')
-        assert.match(refusal(fixture.dataHome, started.id, 'late'), /not a running coordinator/)
+        assert.match(
+          refusal(fixture.dataHome, started.id, 'late'),
+          /cannot delegate or is no longer active/
+        )
         const tasks: readonly string[] = (await owner.records()).map(record => record.owner.taskId)
         assert.ok(!tasks.includes('late-leaf'), 'a stale request started a leaf')
       }
@@ -898,7 +907,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           settled
         )
         assert.equal(hasty.status, 'failed')
-        assert.match(hasty.protocolError ?? '', /request\(s\) or leaf outcome\(s\) were unresolved/)
+        assert.match(hasty.protocolError ?? '', /requests or results pending/)
         assert.equal(count(await owner.result(started.id), 'hasty result'), 0)
         const records = await owner.records()
         assert.deepEqual(
@@ -930,10 +939,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           settled
         )
         assert.equal(premature.status, 'failed')
-        assert.match(
-          premature.protocolError ?? '',
-          /request\(s\) or leaf outcome\(s\) were unresolved/
-        )
+        assert.match(premature.protocolError ?? '', /requests or results pending/)
         const outliving = await owner.leaf(started.id, 'outliving', settled)
         assert.equal(outliving.status, 'cancelled')
         assert.equal(count(await owner.result(started.id), 'premature result'), 0)
@@ -949,7 +955,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           prompt: `Silent phase\n${script([[work('d', delegation('heard', 'Heard leaf'))], []])}`,
         })
         assertStatus(view, 'completed')
-        assert.equal(count(text, 'Leaf outcomes:'), 1)
+        assert.equal(count(text, 'Delegated results:'), 1)
         assert.equal((await owner.leaf(view.id, 'heard', settled)).status, 'completed')
       }
     )
@@ -1041,7 +1047,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assertStatus(view, 'completed')
         assert.ok(Date.now() - started < 120_000)
         assert.equal(count(text, 'Refused: this command only waits'), 1, text)
-        assert.match(text, /1 live leaves/)
+        assert.match(text, /1 running/)
         assertStatus(await owner.leaf(view.id, 'held-leaf', settled), 'completed')
       }
     )
@@ -1088,7 +1094,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           ])}`,
         })
         assertStatus(view, 'completed')
-        assert.equal(count(text, 'Leaf outcomes:') >= 1, true)
+        assert.equal(count(text, 'Delegated results:') >= 1, true)
         const worktree = view.worktree?.path
         assert.ok(worktree !== undefined && worktree !== fixture.repository)
         const reviewer = await owner.leaf(view.id, 'reviewer', settled)
@@ -1123,12 +1129,12 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.equal(count(rewrite, 'MODIFIED-BY-COORDINATOR'), 0)
 
         const listed = await owner.call(actions => executeWork(actions, { action: 'list' }))
-        assert.equal(listed.kind, 'snapshot')
-        const row = (id: string) => listed.snapshot?.records.find(record => record.id === id)
+        assert.equal(listed.kind, 'runs')
+        const row = (id: string) => listed.runs?.records.find(record => record.id === id)
         const total = (id: string) => row(id)?.usage?.total
         const calls = fixture.modelCalls()
         const requests = (id: string) => calls.filter(attempt => attempt === id).length
-        assert.equal(row(view.id)?.coordinator, true)
+        assert.equal(row(view.id)?.coordinate, true)
         assert.equal(row(reviewer.id)?.parent, view.id)
         assert.ok(reviewer.resources?.tools.includes('git_inspect'))
         assert.equal(requests(reviewer.id), 2)
@@ -1153,7 +1159,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         if (writer.kind !== 'ready') return
         await assert.rejects(
           fixture.attachment.authorize({ kind: 'leaf-read', coordinator: writer.grant, execution }),
-          /A leaf reads only the workspace of a delegated coordinator/
+          /A delegated reader uses the checkout of the agent that started it/
         )
         const idle = await fixture.attachment.authorize({
           kind: 'read',
@@ -1163,7 +1169,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         if (idle.kind !== 'ready') return
         await assert.rejects(
           fixture.attachment.authorize({ kind: 'leaf-read', coordinator: idle.grant, execution }),
-          /The coordinator is not running in its workspace/
+          /The delegating agent is not running in this checkout/
         )
         await assert.rejects(
           fixture.attachment.authorize({
@@ -1171,7 +1177,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
             coordinator: { ...idle.grant, useId: writer.grant.useId },
             execution,
           }),
-          /stale or was not issued/
+          /No current permission in this conversation/
         )
         await fixture.attachment.reportExecution(idle.grant, {
           kind: 'launch-failed',
@@ -1247,7 +1253,7 @@ return outcome
         assertStatus(collided.view, 'completed')
         assert.ok(!collided.text.includes('COLLIDER RAN'), collided.text)
         assert.ok(!collided.text.includes('# Child Guide'), collided.text)
-        assert.match(collided.text, /Child workspace is read-only/, collided.text.slice(0, 800))
+        assert.match(collided.text, /This agent has read-only access/, collided.text.slice(0, 800))
         assert.deepEqual(served, [], 'no fetch happened through the colliding tool')
       }
     )

@@ -11,7 +11,9 @@ import {
   pausedTaskQuestion,
   resumableRowText,
   resumableWorkspaces,
+  resumeCandidates,
 } from '../../src/workspace-command.ts'
+import { assessWorkspace } from '../../src/workspace-inspect.ts'
 import type { WorkspaceView } from '../../src/workspace-domain.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { fixtureId } from './workspace-host-fixture-shapes.ts'
@@ -42,13 +44,26 @@ const paused = (index: number, fields: Partial<WorkspaceView> = {}): WorkspaceVi
   reservationId: fixtureId(index + 40),
   path: `/opt/area/work-${index}`,
   origin: 'managed',
-  outcome: 'preserved-for-resume',
+  outcome: 'paused',
   reason: 'Task reservation is retained for explicit resume.',
   nextAction: 'Resume only by exact task/workspace selection.',
   uses: [],
   pending: [],
   ...fields,
 })
+const assess = (fields: Partial<Parameters<typeof assessWorkspace>[0]>) =>
+  assessWorkspace({
+    identityReason: undefined,
+    missing: false,
+    pending: undefined,
+    unresolved: false,
+    unknown: [],
+    live: false,
+    abandoned: () => [],
+    reserved: false,
+    ...fields,
+  })
+
 try {
   const area = join(sandbox, 'area')
   const sessions = join(sandbox, 'sessions')
@@ -142,6 +157,7 @@ try {
         paused(5, { lastUsedAt: 9_000, outcome: 'active' }),
         paused(6, { lastUsedAt: 9_000, outcome: 'blocked' }),
         paused(8, { lastUsedAt: 9_000, outcome: 'review-required' }),
+        paused(10, { lastUsedAt: 9_000, outcome: 'idle' }),
         unreserved,
       ])
       assert.deepEqual(
@@ -149,6 +165,63 @@ try {
         ['/opt/area/work-2', '/opt/area/work-1', '/opt/area/earlier', '/opt/area/work-3']
       )
       assert.deepEqual(listed[0]?.selection, { taskId: fixtureId(2), workspaceId: fixtureId(22) })
+    }
+  )
+
+  await claim(
+    'an unused checkout no task keeps is idle, not paused, and is never offered for resume',
+    () => {
+      assert.deepEqual([assess({ reserved: true }).outcome, assess({}).outcome], ['paused', 'idle'])
+      assert.deepEqual(resumeCandidates([{ ...paused(9), outcome: 'idle' }], fixtureId(9)), [])
+    }
+  )
+
+  await claim(
+    "a missing checkout's advice names the release that fits its origin and task, and a row needing review still names the operations that block it",
+    () => {
+      assert.equal(
+        assess({ missing: true }).nextAction,
+        "Restore it at this path. If it was deleted on purpose: Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files. That also forgets this checkout once no running session, pending operation or open conversation refers to it."
+      )
+      const reservedPreExisting = assess({ missing: true, reserved: true, taskId: 'task-2' })
+      assert.ok(
+        reservedPreExisting.nextAction.includes(
+          'the user may run dev workspace release task-2, '
+        ) &&
+          reservedPreExisting.nextAction.includes(
+            'Then: Once nothing that ended sessions started still works'
+          ),
+        reservedPreExisting.nextAction
+      )
+      assert.equal(
+        assess({
+          identityReason: 'The checkout moved.',
+          unknown: ['use-1'],
+          abandoned: () => ['use-2'],
+        }).reason,
+        'The checkout moved. Dev could not confirm operations use-1 stopped. Operations use-2 of ended sessions may still be running.'
+      )
+      assert.equal(
+        assess({
+          identityReason: 'Workspace path or Git identity was replaced: /repo',
+          unresolved: true,
+          pending: { id: 'operation-2', stage: 'started' },
+        }).reason,
+        'Workspace path or Git identity was replaced: /repo. Earlier operation operation-2: started; checking does not redo it.',
+        'an identity problem does not hide an unfinished operation'
+      )
+      const unresolved = assess({
+        unresolved: true,
+        pending: { id: 'operation-1', stage: 'started' },
+        unknown: ['use-3'],
+      })
+      assert.deepEqual(
+        [unresolved.outcome, unresolved.reason],
+        [
+          'review-required',
+          'Earlier operation operation-1: started; checking does not redo it. Dev could not confirm operations use-3 stopped.',
+        ]
+      )
     }
   )
 
@@ -248,16 +321,16 @@ try {
       const joined = `This conversation now continues task ${fixtureId(1)} in /opt/area/repo on feat/resume. The user chose to continue it here.`
       assert.equal(
         joinedTaskNote({ ...task, changedFiles: 3 }),
-        `${joined} Its 3 changed files come from earlier work, whose history this conversation does not hold.`
+        `${joined} 3 changed files remain from earlier work. Earlier messages are not here.`
       )
       assert.equal(
         joinedTaskNote({ ...task, changedFiles: 1 }),
-        `${joined} Its 1 changed file comes from earlier work, whose history this conversation does not hold.`
+        `${joined} 1 changed file remains from earlier work. Earlier messages are not here.`
       )
       for (const changedFiles of [0, undefined])
         assert.equal(
           joinedTaskNote({ ...task, ...(changedFiles === undefined ? {} : { changedFiles }) }),
-          `${joined} This conversation does not hold the history of its earlier work.`
+          `${joined} Earlier messages are not here.`
         )
     }
   )

@@ -267,7 +267,7 @@ const readFrames = (
   }
   socket.on('data', (chunk: Uint8Array) => {
     if (buffered + chunk.length > 2 * (4 + limit)) {
-      broken(`The browser control connection buffered more than ${2 * (4 + limit)} bytes`)
+      broken(`Browser connection exceeded its ${2 * (4 + limit)}-byte limit`)
       return
     }
     pending.push(chunk)
@@ -277,7 +277,7 @@ const readFrames = (
         if (buffered < 4) return
         const length = coalesced().readUInt32BE(0)
         if (length > limit) {
-          broken(`A browser control frame of ${length} bytes exceeds the ${limit}-byte limit`)
+          broken(`Browser message too large: ${length} bytes (limit ${limit})`)
           return
         }
         frameLength = length
@@ -292,15 +292,13 @@ const readFrames = (
       onFrame(text)
     }
   })
-  socket.on('error', cause =>
-    onBroken(`The browser control connection failed: ${errorText(cause)}`)
-  )
-  socket.on('close', () => onBroken('The browser control connection closed'))
+  socket.on('error', cause => onBroken(`Browser connection failed: ${errorText(cause)}`))
+  socket.on('close', () => onBroken('Browser connection closed'))
   return {
     write: text => {
       if (socket.destroyed || socket.writableEnded) return false
       if (socket.writableLength > 2 * limit) {
-        broken('The browser control connection exceeded its write buffer')
+        broken('Browser connection could not send more data')
         return false
       }
       socket.write(frameOf(text))
@@ -420,9 +418,7 @@ export const makeSessionRenderer = Effect.fnUntraced(function* (options: {
       const attempt = Effect.suspend(() => {
         const locator = readLocator(paths)
         return locator === undefined
-          ? Effect.fail(
-              ownerFailure('unavailable', 'No browser owner is published for this data home')
-            )
+          ? Effect.fail(ownerFailure('unavailable', 'No shared browser service available'))
           : bindSocket(locator)
       })
       return attempt.pipe(
@@ -450,9 +446,7 @@ export const makeSessionRenderer = Effect.fnUntraced(function* (options: {
           })
           if (!bound.channel.write(encodeRequest(request(requestId)))) {
             bound.pending.delete(requestId)
-            resume(
-              Effect.fail(ownerFailure('unavailable', 'The browser owner connection is closed'))
-            )
+            resume(Effect.fail(ownerFailure('unavailable', 'Browser connection closed')))
           }
         }
         sent()
@@ -476,9 +470,7 @@ export const makeSessionRenderer = Effect.fnUntraced(function* (options: {
         if (reply.type === 'rendered')
           return Effect.succeed({ ...reply.page, status: reply.page.status })
         if (reply.type === 'failed') return Effect.fail(reply.error)
-        return Effect.fail(
-          ownerFailure('protocol', 'The browser owner answered a render with an unrelated reply')
-        )
+        return Effect.fail(ownerFailure('protocol', 'Browser service returned an unexpected reply'))
       }
     )
 
@@ -489,7 +481,7 @@ export const makeSessionRenderer = Effect.fnUntraced(function* (options: {
         Effect.fail(
           ownerFailure(
             'unavailable',
-            `The browser owner did not render within ${Duration.toSeconds(budget)} seconds, bootstrap and queue waiting included`
+            `Browser read timed out after ${Duration.toSeconds(budget)} seconds, including startup and waiting`
           )
         ),
     })
@@ -549,7 +541,7 @@ const connectForAdmin = (
   Effect.gen(function* () {
     const locator = readLocator(paths)
     if (locator === undefined)
-      return yield* ownerFailure('unavailable', 'No browser owner is published')
+      return yield* ownerFailure('unavailable', 'No browser service available')
     const socket = yield* Effect.acquireRelease(
       Effect.try({
         try: () => createConnection({ path: locator.socket }),
@@ -601,9 +593,7 @@ const connectForAdmin = (
           })
           if (!bound.channel.write(encodeRequest(request))) {
             bound.pending.delete(request.requestId)
-            resume(
-              Effect.fail(ownerFailure('unavailable', 'The browser owner connection is closed'))
-            )
+            resume(Effect.fail(ownerFailure('unavailable', 'Browser connection closed')))
           }
           return Effect.sync(() => {
             bound.pending.delete(request.requestId)
@@ -624,7 +614,7 @@ const requireSettledOwner = (paths: BrowserProfilePaths): Effect.Effect<void, Br
       ? Effect.fail(
           ownerFailure(
             'unavailable',
-            `A previous browser owner left ${paths.locator}; Chrome shutdown is unverified. Stop any remaining dev-owned Chrome processes and remove this record only after verifying they are gone.`
+            `Chrome shutdown is unverified. Stop dev's browser service and Chrome processes for this copy. Verify they are gone before removing ${paths.locator}.`
           )
         )
       : Effect.void
@@ -648,7 +638,7 @@ const withStartupGate = <A, E>(
     Effect.try({
       try: () => {
         privateBrowserDirectory(paths.root)
-        return acquireExclusiveLock(paths.gate, 'A dev browser owner is active for this data home.')
+        return acquireExclusiveLock(paths.gate, 'Dev is already serving browser reads.')
       },
       catch: cause => ownerFailure('unavailable', errorText(cause)),
     }),
@@ -674,7 +664,7 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
             Effect.fail(
               ownerFailure(
                 'protocol',
-                'The browser owner did not answer the administrative request before its deadline; its outcome is unverified'
+                'Browser command timed out; result unverified. Check `dev browser status` before retrying.'
               )
             ),
         })
@@ -687,7 +677,7 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
         live({ type: 'status', requestId: newRequestId() }, reply =>
           reply.type === 'status'
             ? Effect.succeed({ profile: reply.profile, activity: reply.activity })
-            : Effect.fail(ownerFailure('protocol', 'The browser owner sent an unexpected status'))
+            : Effect.fail(ownerFailure('protocol', 'Unexpected browser status reply'))
         )
       )
       if (Exit.isSuccess(activity))
@@ -703,8 +693,8 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
               kind: 'unavailable',
               message:
                 locator === undefined
-                  ? 'The browser owner record is unreadable or belongs to another installation; Chrome shutdown is unverified.'
-                  : `A browser owner is published for process ${locator.pid} but did not answer; it may have died without settling Chrome.`,
+                  ? 'Dev could not verify its browser record. Chrome may still be running.'
+                  : `Dev process ${locator.pid} did not answer. Chrome may still be running.`,
             }
           : { kind: 'absent' },
       } satisfies BrowserOwnerStatus
@@ -715,9 +705,7 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
         reply =>
           reply.type === 'revoked'
             ? Effect.succeed(reply.outcome)
-            : Effect.fail(
-                ownerFailure('protocol', 'The browser owner sent an unexpected revocation')
-              ),
+            : Effect.fail(ownerFailure('protocol', 'Unexpected reply to browser revoke')),
         Duration.sum(Duration.min(wait, REVOKE_SETTLE), Duration.seconds(2))
       ).pipe(
         Effect.catchIf(
@@ -739,7 +727,7 @@ export const makeBrowserAdmin = (options: BrowserProfileOptions): BrowserAdmin =
     enable: live({ type: 'enable', requestId: newRequestId() }, reply =>
       reply.type === 'enabled'
         ? Effect.void
-        : Effect.fail(ownerFailure('protocol', 'The browser owner sent an unexpected reply'))
+        : Effect.fail(ownerFailure('protocol', 'Unexpected reply to browser enable'))
     ).pipe(
       Effect.catchIf(
         error => error.reason === 'unavailable',
@@ -805,11 +793,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
   })
   yield* Effect.acquireRelease(
     Effect.try({
-      try: () =>
-        acquireExclusiveLock(
-          paths.gate,
-          'Another dev browser owner already serves this data home.'
-        ),
+      try: () => acquireExclusiveLock(paths.gate, 'Dev already has a browser service running.'),
       catch: cause =>
         ownerFailure(
           cause instanceof CoordinationError ? 'conflict' : 'bootstrap',
@@ -917,7 +901,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
         if (previous.kind === 'unobserved')
           return yield* new BrowserError({
             reason: 'shutdown',
-            message: `${previous.message}. The profile copy is still locked; a later browser read or an explicit lifecycle operation will retry settlement.`,
+            message: `${previous.message}. The copy stays locked. Dev retries shutdown on the next Chrome read or revoke.`,
           })
         const held = retained
         retained = undefined
@@ -973,13 +957,11 @@ const runBrowserOwner = Effect.fnUntraced(function* (
     url: string,
     maxHtmlChars: number
   ): Effect.fn.Return<RenderedPage, RenderFailure> {
-    if (state.draining)
-      return yield* ownerFailure('retiring', 'The dev browser owner is shutting down')
+    if (state.draining) return yield* ownerFailure('retiring', 'Dev is closing its browser service')
     if (yield* profile.disabled)
       return yield* new BrowserProfileError({
         reason: 'disabled',
-        message:
-          'Authenticated browser rendering is disabled for this data home; run `dev browser enable` to allow it again.',
+        message: 'Chrome reads are disabled. Run `dev browser enable` to allow them.',
       })
     const current = yield* chromeLock.withPermits(1)(openChrome)
     return yield* current.host
@@ -1004,7 +986,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
           requestId: request.requestId,
           error: ownerFailure(
             'capacity',
-            `The dev browser owner already serves ${MAX_RENDER_CLIENTS} rendering clients; retry later`
+            `At limit of ${MAX_RENDER_CLIENTS} browser readers. Retry later.`
           ),
         })
       client.rendering = true
@@ -1014,7 +996,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
           requestId: request.requestId,
           error: ownerFailure(
             'capacity',
-            `The dev browser owner already has ${MAX_QUEUED_RENDERS} renders waiting; retry later`
+            `Already ${MAX_QUEUED_RENDERS} browser reads waiting. Retry later.`
           ),
         })
       state.queued += 1
@@ -1049,7 +1031,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
               Effect.fail(
                 ownerFailure(
                   'capacity',
-                  `The render did not start or finish within ${Duration.toSeconds(budget)} seconds`
+                  `Browser read timed out after ${Duration.toSeconds(budget)} seconds`
                 )
               ),
           }),
@@ -1187,7 +1169,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
               encodeReply({
                 type: 'failed',
                 requestId: request.requestId,
-                error: ownerFailure('unavailable', 'The render was cancelled by the owner'),
+                error: ownerFailure('unavailable', 'Dev cancelled the browser read'),
               })
             )
           )
@@ -1253,7 +1235,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
       created.once('error', cause =>
         resume(
           Effect.fail(
-            ownerFailure('bootstrap', `The browser owner socket failed: ${errorText(cause)}`)
+            ownerFailure('bootstrap', `Could not open browser connection: ${errorText(cause)}`)
           )
         )
       )
@@ -1272,9 +1254,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
   yield* Effect.timeoutOrElse(bootstrap.commit, {
     duration: BOOTSTRAP_BUDGET,
     orElse: () =>
-      Effect.fail(
-        ownerFailure('bootstrap', 'The bootstrap commit did not arrive within ten seconds')
-      ),
+      Effect.fail(ownerFailure('bootstrap', 'Browser startup not confirmed within ten seconds')),
   })
   yield* Effect.acquireRelease(
     Effect.try({
@@ -1334,7 +1314,9 @@ const bootstrapChannel = () => {
     if (!autonomous)
       Deferred.doneUnsafe(
         commit,
-        Exit.fail(ownerFailure('bootstrap', 'The bootstrap channel closed before commit'))
+        Exit.fail(
+          ownerFailure('bootstrap', 'Browser startup connection closed before confirmation')
+        )
       )
   })
   return {
@@ -1464,7 +1446,7 @@ export const makeOwnerBootstrap = (options: {
         settle(Effect.void)
         return
       }
-      abandon('The browser owner exited during bootstrap')
+      abandon('Browser service stopped during startup')
     })
     child.send({ type: 'prepare', dataHome: options.dataHome })
     return Effect.sync(() => {
@@ -1478,9 +1460,7 @@ export const makeOwnerBootstrap = (options: {
     Effect.timeoutOrElse({
       duration: BOOTSTRAP_BUDGET,
       orElse: () =>
-        Effect.fail(
-          ownerFailure('bootstrap', 'The browser owner did not become ready within ten seconds')
-        ),
+        Effect.fail(ownerFailure('bootstrap', 'Browser service not ready within ten seconds')),
     })
   )
   type GateOutcome = 'published' | 'free' | 'held'
@@ -1496,7 +1476,7 @@ export const makeOwnerBootstrap = (options: {
   })
   const heldWithoutOwner = ownerFailure(
     'bootstrap',
-    'Another dev process holds the browser startup gate but published no owner within ten seconds'
+    'Dev locked browser startup but no browser service was ready within ten seconds'
   )
   const followPublication: Effect.Effect<void, BrowserOwnerError> = Effect.flatMap(
     awaitGateOutcome,
@@ -1506,10 +1486,7 @@ export const makeOwnerBootstrap = (options: {
         : Effect.fail(
             outcome === 'held'
               ? heldWithoutOwner
-              : ownerFailure(
-                  'bootstrap',
-                  'The browser startup gate was released without a published owner'
-                )
+              : ownerFailure('bootstrap', 'Browser startup ended without a running service')
           )
   )
   const spawnOrFollow: Effect.Effect<void, BrowserOwnerError> = spawn.pipe(

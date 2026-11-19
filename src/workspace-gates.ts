@@ -35,7 +35,7 @@ const lockFormatSupported = (db: DatabaseSync, ddl: string): boolean =>
 
 const openLock = (lock: {
   readonly path: string
-  readonly name: 'Workspace gate' | 'Workspace protocol gate'
+  readonly name: 'Checkout lock' | 'Dev storage lock'
   readonly ddl: string
   readonly waitMs: number
   readonly readOnly?: boolean
@@ -62,7 +62,7 @@ const openLock = (lock: {
 const holdLock = (lock: {
   readonly path: string
   readonly ddl: string
-  readonly name: 'Workspace gate' | 'Workspace protocol gate'
+  readonly name: 'Checkout lock' | 'Dev storage lock'
   readonly waitMs: number
   readonly exclusive: boolean
   readonly verifyMarker: (db: DatabaseSync) => void
@@ -106,18 +106,18 @@ export const validateProtocol = (path: string): WorkspaceId => {
   try {
     db = openLock({
       path,
-      name: 'Workspace protocol gate',
+      name: 'Dev storage lock',
       ddl: PROTOCOL_SQL,
       waitMs: 0,
     })
     const row = first(db, 'SELECT namespace_id FROM protocol_marker WHERE id = 1')
     const actual = textField(row, 'namespace_id')
     if (!Schema.is(WorkspaceId)(actual))
-      return requireReview(`Workspace protocol identity mismatch at ${path}`)
+      return requireReview(`Dev storage lock does not match ${path}`)
     return actual
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot validate workspace protocol gate ${path}: ${errorText(cause)}`)
+    unavailable(`Cannot verify dev storage lock ${path}: ${errorText(cause)}`)
   } finally {
     db?.close()
   }
@@ -131,21 +131,21 @@ export const acquireProtocolGate = (
   holdLock({
     path,
     ddl: PROTOCOL_SQL,
-    name: 'Workspace protocol gate',
+    name: 'Dev storage lock',
     waitMs: 0,
     exclusive: false,
     verifyMarker: db => {
       const marker = first(db, 'SELECT namespace_id FROM protocol_marker WHERE id=1')
       if (textField(marker, 'namespace_id') !== namespaceId)
-        requireReview(`Workspace protocol identity changed at ${path}`)
+        requireReview(`Dev storage lock changed at ${path}`)
     },
     verifyHeld: db => {
       const marker = first(db, 'SELECT namespace_id FROM protocol_marker WHERE id=1')
       if (textField(marker, 'namespace_id') !== namespaceId)
-        requireReview(`Workspace protocol marker changed while joining ${root}`)
+        requireReview(`Dev storage lock changed while opening ${root}`)
     },
-    busy: `Workspace protocol gate is busy: ${root}`,
-    releaseFailure: `Cannot release protocol gate ${root}`,
+    busy: `Dev storage lock is busy: ${root}`,
+    releaseFailure: `Cannot close dev storage lock ${root}`,
   })
 
 const gateDirectory = (
@@ -160,6 +160,13 @@ const gateDirectory = (
 }
 
 type GateKind = 'use' | 'writer' | 'structure' | 'conversation' | 'incarnation'
+const LOCK_NAME: Record<GateKind, string> = {
+  use: 'Checkout',
+  writer: 'Write',
+  structure: 'Repository',
+  conversation: 'Conversation',
+  incarnation: 'Session',
+}
 interface GateIdentity {
   readonly kind: GateKind
   readonly path: string
@@ -173,9 +180,7 @@ const verifyGateMarker = (db: DatabaseSync, path: string, identity: GateIdentity
     textField(marker, 'path') !== identity.path ||
     textField(marker, 'key') !== identity.key
   )
-    requireReview(
-      `Workspace gate identity was replaced or does not match its canonical path: ${path}`
-    )
+    requireReview(`Lock no longer matches the real path: ${path}`)
 }
 
 const acquireGate = (
@@ -196,16 +201,16 @@ const acquireGate = (
   return holdLock({
     path,
     ddl: GATE_SQL,
-    name: 'Workspace gate',
+    name: 'Checkout lock',
     waitMs,
     exclusive,
     verifyMarker: db => verifyGateMarker(db, path, identity),
     verifyHeld: db => {
       if (textField(first(db, 'SELECT kind FROM gate_marker WHERE id=1'), 'kind') !== identity.kind)
-        requireReview(`Workspace gate marker changed while acquiring ${path}`)
+        requireReview(`Checkout lock changed while opening ${path}`)
     },
-    busy: `Workspace ${identity.kind === 'use' ? 'presence' : identity.kind} gate is busy: ${identity.path}`,
-    releaseFailure: `Cannot release workspace gate ${path}`,
+    busy: `${LOCK_NAME[identity.kind]} lock is busy: ${identity.path}`,
+    releaseFailure: `Cannot close checkout lock ${path}`,
   })
 }
 
@@ -350,7 +355,7 @@ const gateHeld = (path: string, identity: GateIdentity): boolean => {
   try {
     db = openLock({
       path,
-      name: 'Workspace gate',
+      name: 'Checkout lock',
       ddl: GATE_SQL,
       waitMs: 0,
       readOnly: true,
@@ -361,7 +366,7 @@ const gateHeld = (path: string, identity: GateIdentity): boolean => {
     if (sqliteBusy(cause)) return true
     if (removed()) return false
     if (cause instanceof WorkspaceError) throw cause
-    return unavailable(`Cannot probe workspace gate ${path}: ${errorText(cause)}`)
+    return unavailable(`Cannot check checkout lock ${path}: ${errorText(cause)}`)
   } finally {
     db?.close()
   }

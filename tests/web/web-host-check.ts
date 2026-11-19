@@ -329,7 +329,10 @@ try {
       const { continuation: _d, ...directRest } = direct
       const { continuation: _s, ...scriptRest } = viaScript
       assert.deepEqual(scriptRest, directRest)
-      assert.match(String(output.rogueOutcome), /no verified workspace effect/)
+      assert.match(
+        String(output.rogueOutcome),
+        /Dev has not verified what this tool can do to project files/
+      )
       assert.equal(output.models, 'object', "the lead's codemode keeps its model catalog")
       const nested = recorded.filter(item => item.parentToolCallId === 'scripted')
       assert.deepEqual(
@@ -352,7 +355,7 @@ try {
   await claim('the unreviewed tool is refused directly as well, without ending the turn', () => {
     const direct = sessionResult('rogue-direct')
     assert.equal(direct.isError, true)
-    assert.match(direct.text, /no verified workspace effect/)
+    assert.match(direct.text, /Dev has not verified what this tool can do to project files/)
     assert.ok(script.calls() >= 5, 'the model was asked again after the refusal')
   })
   if (chrome !== undefined) {

@@ -638,7 +638,7 @@ const originTarget = (reader: GitHubReader, checkout: string): DerivedTarget => 
   }
   if (url === undefined)
     return none(
-      'No integration target: none is recorded for the task and the repository has no origin remote.'
+      'No destination branch: none is recorded for the task and the repository has no origin remote.'
     )
   const repository = githubRepositoryOf(url)
   let candidate: unknown
@@ -657,7 +657,7 @@ const originTarget = (reader: GitHubReader, checkout: string): DerivedTarget => 
   }
   const target = decodeTarget(candidate)
   if (Option.isNone(target))
-    return none(`The origin remote names an unsupported target: ${JSON.stringify(candidate)}`)
+    return none(`Unsupported destination from origin: ${JSON.stringify(candidate)}`)
   return {
     source: repository === undefined ? 'origin-remote' : 'origin-github',
     target: target.value,
@@ -716,7 +716,7 @@ export const deriveTarget = (
     return { source: 'override', target: override }
   return {
     ...originTarget(reader, checkout),
-    ignored: `The recorded target ${targetText(override)} names this worktree's own branch, which proves nothing, so it is ignored.`,
+    ignored: `Ignoring ${targetText(override)}: it names this worktree's own branch.`,
   }
 }
 
@@ -727,7 +727,7 @@ const derivedView = (derived: DerivedTarget): TargetView => {
     case 'override':
       return {
         source: 'override',
-        description: `${targetText(derived.target)}${derived.target.kind === 'github' && derived.target.pullRequest !== undefined ? ` (pull request #${derived.target.pullRequest})` : ''}, recorded for the task`,
+        description: `${targetText(derived.target)}${derived.target.kind === 'github' && derived.target.pullRequest !== undefined ? ` (pull request #${derived.target.pullRequest})` : ''} (set for this task)`,
       }
     case 'origin-github':
       return {
@@ -770,7 +770,7 @@ const resolveTip = (
   if (target.kind === 'local') {
     const resolved = resolveLocalRef(checkout, target.ref)
     return resolved === undefined
-      ? { unknown: `The agreed local ref ${target.ref} does not exist in this repository` }
+      ? { unknown: `The configured local ref ${target.ref} does not exist in this repository` }
       : { sha: resolved, local: true }
   }
   if (target.kind === 'remote') {
@@ -807,7 +807,7 @@ const tipAncestry = (
         `History is shallow, so a negative ancestry result for ${described} proves nothing`
       )
     return no(
-      `${short(commit)} is not integrated into the current ${described} tip ${short(tip.sha)} (complete history)`
+      `${short(commit)} is not in the current ${described} tip ${short(tip.sha)} (complete history)`
     )
   }
   if (target.kind !== 'github')
@@ -867,15 +867,13 @@ const bindPullRequest = (
       `${label} targets ${pull.baseRepository} ${pull.baseRef}, not the agreed ${target.repository} ${branchName(target.ref)}`
     )
   if (pull.headRepository === undefined)
-    return unboundable(
-      `${label} no longer names its source repository, so the merged source cannot be bound`
-    )
+    return unboundable(`${label} no longer names the repository it merged from`)
   if (pull.headRepository !== expectedSource)
     return unbound(
       `${label} was merged from ${pull.headRepository}, not from the agreed source repository ${expectedSource}`
     )
   if (pull.commits > 250)
-    return unboundable(`${label} has more than 250 commits; its merged head cannot be bound`)
+    return unboundable(`${label} has over 250 commits; dev cannot verify the merged commit`)
   const mergedHead =
     preloaded === undefined
       ? reader.pullRequestLastCommit(target.repository, number, pull.commits)
@@ -884,7 +882,7 @@ const bindPullRequest = (
   if (mergedHead === undefined) return unboundable(`${label} lists no commits`)
   if (mergedHead !== pull.headSha)
     return unboundable(
-      `${label} lists ${short(mergedHead)} as its last commit but ${short(pull.headSha)} as its head; the merged source cannot be bound`
+      `${label} lists ${short(mergedHead)} as its last commit but ${short(pull.headSha)} as its head; dev cannot verify the merged commit`
     )
   if (pull.mergeCommit === undefined) return unboundable(`${label} reports no merge result commit`)
   const result = pull.mergeCommit
@@ -939,7 +937,7 @@ const sourceAncestry = (
   commitPresent: CommitPresence
 ): Proof => {
   const { label, mergedHead, mergeCommit } = bound
-  if (commit === undefined) return no(`this worktree records no ${what} commit`)
+  if (commit === undefined) return no(`no saved ${what} commit`)
   const contained = sourceContains(checkout, label, mergedHead, commit, commitPresent)
   switch (contained.kind) {
     case 'yes':
@@ -968,14 +966,14 @@ const baseDescent = (
   if (base === undefined) return no('this worktree records no base commit')
   if (mergedHead === base)
     return no(
-      `${label} merged source ${short(mergedHead)} is this worktree's base itself, so it carries nothing made after the allocation`
+      `${label} merged source ${short(mergedHead)} is the starting commit and includes no later work`
     )
   if (allocatedAt === undefined)
-    return unknownProof('the allocation time of this worktree is not recorded')
+    return unknownProof('the creation time of this worktree is not recorded')
   const merged = mergedAt === undefined ? Option.none() : DateTime.make(mergedAt)
   if (Option.isNone(merged)) return unknownProof(`${label} reports no readable merge time`)
   if (DateTime.toEpochMillis(merged.value) <= allocatedAt)
-    return no(`${label} was merged at ${mergedAt}, before this worktree was allocated`)
+    return no(`${label} was merged at ${mergedAt}, before this worktree was created`)
   return sourceAncestry(checkout, target, bound, tip, base, 'base', commitPresent)
 }
 
@@ -1081,7 +1079,7 @@ export const integrationFacts = (
       )
       if (
         (input.completionRole === 'branch' && containsHead.kind === 'yes') ||
-        (input.completionRole === 'child' && descendsFromBase.kind === 'yes')
+        (input.completionRole === 'agent' && descendsFromBase.kind === 'yes')
       )
         return {
           tip: tip.sha,
@@ -1136,11 +1134,11 @@ export const integrationFacts = (
         const unproven = containment.filter(proof => proof.kind === 'unknown')
         if (unproven.length > 0)
           unknown.push(
-            `${bound.label} was found only through sibling commits whose containment cannot be proven: ${unproven.map(proof => proof.reason).join('; ')}`
+            `${bound.label} could not be shown to include commits from another checkout for this task: ${unproven.map(proof => proof.reason).join('; ')}`
           )
         else
           rejected.push(
-            `${bound.label} was found only through a sibling commit its merged source does not contain`
+            `${bound.label} does not include the other checkout's commit used to find it`
           )
         continue
       }
@@ -1162,7 +1160,7 @@ export const integrationFacts = (
   }
   if (found.size === 0 && unknown.length === 0)
     rejected.push(
-      `GitHub lists no merged pull request for this worktree's HEAD, base or sibling commits in ${target.repository}`
+      `GitHub lists no merged pull request for this worktree's HEAD, starting commit or other task checkouts in ${target.repository}`
     )
   return { tip: tip.sha, headInTip, pullRequests, rejected, unknown }
 }
@@ -1204,26 +1202,24 @@ export const verifyInventory = (
   for (const file of [...inventory.trackedFiles, ...inventory.files]) {
     if (file.kind === 'nested-repository') {
       blocking += 1
-      invalid.push(`Nested repository is not entered or removed: ${file.path}/`)
+      invalid.push(`Nested Git repository blocks cleanup: ${file.path}/`)
       continue
     }
     if (file.kind === 'unreadable' || file.kind === 'absent') {
       blocking += 1
-      unknown.push(`Unreadable inventory entry: ${file.path} (${file.detail ?? 'unknown'})`)
+      unknown.push(`Could not inspect: ${file.path} (${file.detail ?? 'unknown'})`)
       continue
     }
     if (file.kind === 'other') {
       blocking += 1
-      unknown.push(`Unsupported inventory entry: ${file.path} ${file.detail ?? ''}`.trim())
+      unknown.push(`Unsupported file: ${file.path} ${file.detail ?? ''}`.trim())
       continue
     }
     if (file.kind !== 'file' && file.kind !== 'symlink') continue
     const references = publicationsByPath.get(file.path)
     if (references !== undefined && sensitiveName(file.path)) {
       blocking += 1
-      invalid.push(
-        `Possibly sensitive published artifact is never certified for disposal: ${file.path}`
-      )
+      invalid.push(`Dev will not mark a possibly sensitive file safe to delete: ${file.path}`)
       continue
     }
     if (references !== undefined && file.kind === 'symlink') {
@@ -1242,7 +1238,7 @@ export const verifyInventory = (
       }
       blocking += 1
       invalid.push(
-        `Selected artifact changed since its publication (${references.map(reference => reference.destination.url).join(', ')}); publish the current bytes first: ${file.path}`
+        `Selected artifact changed since its publication (${references.map(reference => reference.destination.url).join(', ')}); publish the current file first: ${file.path}`
       )
       continue
     }

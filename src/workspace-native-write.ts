@@ -73,7 +73,7 @@ export const makeNativeWrites = (options: {
           Effect.catch(error =>
             Effect.sync(() =>
               onError(
-                `Native file write ${write.toolCallId} could not be settled: ${error.message}`
+                `Dev could not confirm file write ${write.toolCallId} ended: ${error.message}`
               )
             )
           )
@@ -91,7 +91,7 @@ export const makeNativeWrites = (options: {
     )
     if (matched.length === 0)
       return yield* new NativeWriteRefused({
-        message: `Native file operation on ${path} matches no admitted destination`,
+        message: `No write permission for ${path}`,
       })
     for (const write of matched) {
       yield* Effect.try({
@@ -167,14 +167,14 @@ export const makeNativeWrites = (options: {
         )
           return Effect.fail(
             new NativeWriteRefused({
-              message: 'A native write grant does not match its destination',
+              message: 'The file path does not match the one dev checked',
             })
           )
         const identity = destinationIdentity(destination)
         if ([...writes.values()].some(write => write.identity === identity))
           return Effect.fail(
             new NativeWriteRefused({
-              message: `Another native write to ${destination} is still in flight`,
+              message: `Another write to ${destination} has not finished`,
             })
           )
         writes.set(input.toolCallId, { ...input, identity })

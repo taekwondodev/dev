@@ -133,8 +133,8 @@ export const openWorkFixture = async (name: string) => {
         workspace: {
           lifecycle: lifecycle.effect,
           attachment: wrap(attachment.effect),
-          requestRebind: () => {
-            throw new Error('no work check expects a workspace rebind')
+          requestHandoff: () => {
+            throw new Error('no work check expects a workspace handoff')
           },
         },
         childEntry: new URL('./work-child-entry.ts', import.meta.url),

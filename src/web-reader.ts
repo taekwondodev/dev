@@ -76,7 +76,7 @@ const INDEX_CANDIDATES = ['/llms.txt', '/llms-full.txt']
 const indexSuggestions = (finalUrl: string): readonly DocumentLink[] => {
   const url = new URL(finalUrl)
   return INDEX_CANDIDATES.filter(path => url.pathname !== path).map(path => ({
-    text: `Possible documentation index (not the requested page): ${path}`,
+    text: `Possible docs index (not this page): ${path}`,
     url: new URL(path, url.origin).href,
   }))
 }
@@ -84,10 +84,10 @@ const indexSuggestions = (finalUrl: string): readonly DocumentLink[] => {
 const statusLimitation = (status: number): string | undefined => {
   if (status >= 200 && status < 300) return undefined
   if (status === 401 || status === 403)
-    return `The origin answered HTTP ${status}; the page may require a login, a browser or a different client.`
-  if (status === 404) return 'The origin answered HTTP 404: this page does not exist there.'
-  if (status === 429) return 'The origin answered HTTP 429 (rate limited); retry later.'
-  return `The origin answered HTTP ${status}.`
+    return `HTTP ${status}: the page may need a login, browser or different client.`
+  if (status === 404) return 'HTTP 404: page not found.'
+  if (status === 429) return 'HTTP 429: too many requests. Retry later.'
+  return `Site returned HTTP ${status}.`
 }
 
 const clampChars = (requested: number | undefined): number =>
@@ -95,7 +95,7 @@ const clampChars = (requested: number | undefined): number =>
 
 const STATIC_CONCURRENCY = 4
 const RENDERED_NOTE =
-  'Rendered with the installed Chrome using a dev-owned copy of your authenticated profile; the origin may have recorded this visit.'
+  'Chrome used a separate copy of your signed-in profile. The site may have recorded the visit.'
 
 const failed = (error: string): ReadOutcome => ({ kind: 'failed', error, limitations: [] })
 
@@ -142,10 +142,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
     const limitations: string[] = []
     const status = statusLimitation(response.status)
     if (status !== undefined) limitations.push(status)
-    if (response.truncated)
-      limitations.push(
-        `The response was cut at ${limits.maxBytes} bytes; the document is incomplete.`
-      )
+    if (response.truncated) limitations.push(`Response cut at ${limits.maxBytes} bytes.`)
     const base = response.finalUrl
     let method: RetrievalMethod
     let extracted: Extracted
@@ -193,13 +190,9 @@ export const makeWebReader = Effect.fnUntraced(function* (
     const extracted = extractHtml(yield* loadDom, rendered.html, rendered.finalUrl)
     const limitations = [...priorLimitations]
     if (rendered.blockedRequests > 0)
-      limitations.push(
-        `${rendered.blockedRequests} browser subrequest(s) to non-public destinations were blocked.`
-      )
+      limitations.push(`Blocked requests to non-public addresses: ${rendered.blockedRequests}.`)
     if (rendered.htmlTruncated)
-      limitations.push(
-        `The rendered page was cut at ${limits.maxBytes} characters of HTML; the document is incomplete.`
-      )
+      limitations.push(`Chrome cut the page at ${limits.maxBytes} characters of HTML.`)
     const status = rendered.status === undefined ? undefined : statusLimitation(rendered.status)
     if (status !== undefined) limitations.push(status)
     limitations.push(RENDERED_NOTE)
@@ -239,16 +232,14 @@ export const makeWebReader = Effect.fnUntraced(function* (
     if (fetched.kind === 'escalate')
       return yield* browserDocument(
         url,
-        [`Static retrieval failed first: ${fetched.error.message}`],
+        [`Fetch without Chrome failed: ${fetched.error.message}`],
         signal
       )
     const { document, renderable } = yield* staticDocument(fetched.response)
     if (!renderable) return document
     return yield* browserDocument(
       url,
-      [
-        `Static HTML extraction yielded too little readable text (HTTP ${document.status}); the page was rendered in Chrome.`,
-      ],
+      [`Too little text without Chrome (HTTP ${document.status}); Chrome loaded the page instead.`],
       signal
     ).pipe(
       Effect.catchTag(['BrowserError', 'BrowserProfileError'], error =>
@@ -256,7 +247,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
           ...document,
           limitations: [
             ...document.limitations,
-            `Static extraction looked incomplete and browser rendering was unavailable: ${error.message}`,
+            `Text may be incomplete. Chrome unavailable: ${error.message}`,
           ],
         })
       )
@@ -277,7 +268,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
       } satisfies ReadOutcome
     }
     if (request.url === undefined)
-      return failed('Pass url to read a page, or continuation to read on from an earlier result.')
+      return failed('Pass url for a page or continuation for more saved text.')
     const retrieved = yield* Effect.exit(retrieve(request.url, signal))
     if (Exit.isFailure(retrieved)) return failed(errorText(Cause.squash(retrieved.cause)))
     const id = snapshots.remember(retrieved.value)
@@ -292,7 +283,7 @@ export const makeWebReader = Effect.fnUntraced(function* (
       Fiber.join(fiber).pipe(
         Effect.onInterrupt(() => Fiber.interrupt(fiber)),
         Effect.catchCauseIf(Cause.hasInterruptsOnly, () =>
-          Effect.succeed(failed('The read was stopped: the session ended'))
+          Effect.succeed(failed('Read stopped: the conversation ended.'))
         )
       )
     )

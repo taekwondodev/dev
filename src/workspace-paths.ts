@@ -43,7 +43,7 @@ export const canonicalPath = (
   const missing: string[] = []
   while (lstatIfExists(ancestor) === undefined) {
     const parent = dirname(ancestor)
-    if (parent === ancestor) invalid(`Cannot establish write-path identity: ${absolute}`)
+    if (parent === ancestor) invalid(`Could not verify the write path: ${absolute}`)
     missing.unshift(basename(ancestor))
     ancestor = parent
   }
@@ -62,7 +62,7 @@ const assertLiteralOperand = (requested: string): void => {
     requested.startsWith('file://') ||
     /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/.test(requested)
   )
-    invalid(`Write path must be a literal path, not Pi shorthand: ${requested}`)
+    invalid(`Use a literal file path: ${requested}`)
 }
 
 export interface WriteScope {
@@ -117,7 +117,7 @@ export const assertNonAdministrativePath = (path: string): void => {
   if (parts.includes('.git'))
     invalid('Write destination targets Git administrative paths; select a project file instead')
   if (parts.some((part, index) => part === '.dev' && parts[index + 1] === 'coordination'))
-    invalid('Write destination targets dev coordination metadata; select a project file instead')
+    invalid('Dev private storage is not writable. Choose a project file')
 }
 
 export const classifyWriteDestination = (
@@ -149,10 +149,8 @@ export const classifyWriteDestination = (
     !(workspace && isWithin(authority.worktrees, checkout))
   ) {
     if (isWithin(authority.worktrees, path))
-      invalid(
-        'The destination belongs to another managed workspace; ask its owning conversation to make the change'
-      )
-    invalid('Write destination targets dev authority metadata; select a project file instead')
+      invalid('Ask the conversation using this checkout to make the change')
+    invalid('Dev private storage is not writable. Choose a project file')
   }
   const device = workspace ? lstatSync(checkout).dev : undefined
   for (

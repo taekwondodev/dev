@@ -13,7 +13,8 @@ export const processGateScript = 'IFS= read -r _ <&3 || exit 125; exec 3<&-; exe
 
 export const processGate = (child: ChildProcess): Writable => {
   const [, , , descriptor] = child.stdio
-  if (!(descriptor instanceof Writable)) throw new Error('Process execution gate is unavailable')
+  if (!(descriptor instanceof Writable))
+    throw new Error('Dev cannot start the process: its start signal is unavailable')
   descriptor.on('error', () => undefined)
   return descriptor
 }
@@ -82,12 +83,12 @@ export const observeFamily = Effect.fnUntraced(function* <E>(
   const table = yield* processTable
   if (rootIdentityReused(table, family.root, options.rootExited))
     return yield* new ProcessObservationLost({
-      message: 'Root process identity was reused; cleanup is unknown',
+      message: 'The process ID was reused; dev cannot confirm the processes stopped',
     })
   const known = ownedProcesses(table, family.pid, family.known, family.root)
   const processes = yield* decodeFamily(known).pipe(
     Effect.mapError(
-      () => new ProcessObservationLost({ message: 'A tracked process has no birth identity' })
+      () => new ProcessObservationLost({ message: 'A tracked process has no recorded start time' })
     )
   )
   const signature = JSON.stringify(processes)

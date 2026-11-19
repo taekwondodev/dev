@@ -231,7 +231,10 @@ try {
           prompt: 'x',
         })
         assert.equal(view.status, 'failed')
-        assert.match(view.error ?? '', /Skill "stack-only" is not in this child's catalog/)
+        assert.match(
+          view.error ?? '',
+          /Skill "stack-only" is unavailable; no model request was made/
+        )
         assert.ok(!fixture.modelCalls().includes(view.id))
       }),
     ])
@@ -240,13 +243,19 @@ try {
       async () => {
         const unknown = await base.run({ taskId: 'unknown', skill: 'missing', prompt: 'do it' })
         assert.equal(unknown.view.status, 'failed')
-        assert.match(unknown.view.error ?? '', /Skill "missing" is not in this child's catalog/)
+        assert.match(
+          unknown.view.error ?? '',
+          /Skill "missing" is unavailable; no model request was made/
+        )
         const locked = fixture.writeSkill('locked', 'LOCKED-BODY')
         chmodSync(locked, 0o000)
         try {
           const unreadable = await base.run({ taskId: 'unreadable', skill: 'locked', prompt: 'do' })
           assert.equal(unreadable.view.status, 'failed')
-          assert.match(unreadable.view.error ?? '', /Skill "locked" is not in this child's catalog/)
+          assert.match(
+            unreadable.view.error ?? '',
+            /Skill "locked" is unavailable; no model request was made/
+          )
           assert.equal(count(unreadable.text, 'LOCKED-BODY'), 0)
           const calls = fixture.modelCalls()
           assert.ok(!calls.includes(unknown.view.id), 'the unknown skill reached the model')

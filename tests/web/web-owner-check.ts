@@ -232,7 +232,7 @@ try {
         assert.ok(Exit.isFailure(outcome))
         assert.match(
           String(Cause.squash(outcome.cause)),
-          /administrative request.*deadline.*unverified/
+          /Browser command timed out; result unverified\. Check `dev browser status`/
         )
         assert.ok(Date.now() - started < 3500, 'the administrative deadline bounded the request')
         await waitFor('the timed-out admin socket to close', () =>
@@ -426,10 +426,7 @@ try {
           impatient.render(`${origin}/page.html?m=QUEUED`, MAX_HTML)
         )
         assert.ok(Exit.isFailure(queued))
-        assert.match(
-          String(Cause.squash(queued.cause)),
-          /did not start or finish within|did not render within 1 seconds/
-        )
+        assert.match(String(Cause.squash(queued.cause)), /Browser read timed out after 1 seconds/)
         await Effect.runPromise(Fiber.interrupt(holding))
         const patient = await openRenderer(dataHome, scope, failures)
         const page = await Effect.runPromise(
@@ -490,7 +487,10 @@ try {
           extra.render(`${origin}/page.html?m=SIXTYFIVE`, MAX_HTML)
         )
         assert.ok(Exit.isFailure(refused), 'the 65th rendering client was refused')
-        assert.match(String(Cause.squash(refused.cause)), /already serves 64 rendering clients/)
+        assert.match(
+          String(Cause.squash(refused.cause)),
+          /At limit of 64 browser readers\. Retry later/
+        )
         for (const socket of raw) socket.destroy()
         await waitUntil(
           'the closed clients to leave',
@@ -547,7 +547,10 @@ try {
           burst.render(`${origin}/page.html?m=OVERFLOW`, MAX_HTML)
         )
         assert.ok(Exit.isFailure(overflow))
-        assert.match(String(Cause.squash(overflow.cause)), /already has 64 renders waiting/)
+        assert.match(
+          String(Cause.squash(overflow.cause)),
+          /Already 64 browser reads waiting\. Retry later/
+        )
         for (const fiber of [holding, ...waiting]) await Effect.runPromise(Fiber.interrupt(fiber))
         await waitUntil('the interrupted queue to drain', queuedRenders, count => count === 0)
         const page = await Effect.runPromise(
@@ -658,7 +661,7 @@ try {
           if (status.owner.kind === 'live')
             assert.match(
               status.owner.activity.unobserved ?? '',
-              /not observed gone/,
+              /Could not verify Chrome helpers stopped/,
               'status names the unverified shutdown'
             )
           assert.equal(status.profile.inUse, true, 'the owner kept the profile lock')
@@ -702,7 +705,10 @@ try {
           )
         )
         assert.ok(Exit.isFailure(exit))
-        assert.match(String(Cause.squash(exit.cause)), /did not become ready within ten seconds/)
+        assert.match(
+          String(Cause.squash(exit.cause)),
+          /Browser service not ready within ten seconds/
+        )
         assert.ok(Date.now() - started < 15_000, 'the bootstrap budget bounded the wait')
         await waitUntil(
           'the hanging helper to be killed',
