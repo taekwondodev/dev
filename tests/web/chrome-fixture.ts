@@ -74,10 +74,12 @@ export const makeChromeSource = (
   }
   return { userData, cookiesPath, downloads, writeCookies }
 }
-export const chromeRunningOn = (userDataDir: string): number =>
-  execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' })
+const chromeProcessesOn = (userDataDir: string): string[] =>
+  execFileSync('ps', ['-axo', 'pid=,stat=,etime=,command='], { encoding: 'utf8' })
     .split('\n')
-    .filter(line => line.includes(`--user-data-dir=${userDataDir}`)).length
+    .filter(line => line.includes(`--user-data-dir=${userDataDir}`))
+export const chromeRunningOn = (userDataDir: string): number =>
+  chromeProcessesOn(userDataDir).length
 
 export const OWNER_ENTRY = new URL('./browser-owner-entry.ts', import.meta.url)
 export const FIXTURE_VARIABLE = 'DEV_WEB_FIXTURE'
@@ -151,10 +153,11 @@ export const assertCopyReleased = async (
   profile: BrowserProfileOptions,
   phase: string
 ): Promise<void> => {
+  const remaining = chromeProcessesOn(join(profile.dataHome, 'browser', 'user-data'))
   assert.equal(
-    chromeRunningOn(join(profile.dataHome, 'browser', 'user-data')),
+    remaining.length,
     0,
-    `no Chrome remains on the dev copy ${phase}`
+    `no Chrome remains on the dev copy ${phase}:\n${remaining.map(line => line.slice(0, 200)).join('\n')}`
   )
   assert.equal(
     (await Effect.runPromise(makeBrowserProfileOwner(profile).status)).inUse,

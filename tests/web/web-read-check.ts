@@ -357,6 +357,11 @@ const documentOf = (outcome: ReadOutcome) => {
   if (outcome.kind !== 'document') throw new Error('unreachable')
   return outcome.slice
 }
+const renderedOf = (outcome: ReadOutcome) => {
+  const slice = documentOf(outcome)
+  assert.equal(slice.document.method, 'browser', slice.document.limitations.join('\n'))
+  return slice
+}
 const continuationOf = (outcome: ReadOutcome): string | undefined =>
   outcome.kind === 'document' ? outcome.slice.continuation : undefined
 const failureOf = (outcome: ReadOutcome) => {
@@ -851,8 +856,7 @@ try {
       'a JavaScript-only page is rendered by the installed Chrome from a disposable profile copy: rendered text appears, non-public subrequests are blocked before connecting, and the source profile is unchanged',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/js.html` }))
-        assert.equal(slice.document.method, 'browser')
+        const slice = renderedOf(await read(reader, { url: `${origin}/js.html` }))
         assert.match(slice.text, /# Rendered Heading\n\nRendered body from JSON\./)
         assert.equal(slice.document.title, 'JS Only')
         assert.ok(
@@ -879,7 +883,7 @@ try {
     await claim(
       'copied fixture cookies authenticate the rendered page, and a live copy refuses a second acquisition instead of being overwritten',
       async () => {
-        const slice = documentOf(await read(reader, { url: `${origin}/account` }))
+        const slice = renderedOf(await read(reader, { url: `${origin}/account` }))
         assert.match(slice.text, /ACCOUNT MARKER ORIGINAL/)
         assert.ok(
           !JSON.stringify(toResult({ kind: 'document', slice })).includes(SECRET),
@@ -908,7 +912,7 @@ try {
         await assertCopyReleased(profileOptions, 'after the revocation settled the browser')
         writeCookies(ROTATED)
         rotatedBefore = sha(cookiesPath)
-        const slice = documentOf(await read(reader, { url: `${origin}/account` }))
+        const slice = renderedOf(await read(reader, { url: `${origin}/account` }))
         assert.match(slice.text, /ACCOUNT MARKER ROTATED/)
       }
     )
@@ -977,8 +981,7 @@ try {
     await claim(
       'a rendered page larger than the byte limit is cut, reported as partial with the limit named, and does not grow the lead process unbounded',
       async () => {
-        const slice = documentOf(await read(reader, { url: `${origin}/huge.html` }))
-        assert.equal(slice.document.method, 'browser')
+        const slice = renderedOf(await read(reader, { url: `${origin}/huge.html` }))
         assert.equal(slice.document.bodyTruncated, true)
         assert.ok(slice.document.text.length <= 96 * 1024)
         assert.match(
@@ -1016,8 +1019,7 @@ try {
       'a subrequest whose origin redirects to a non-public host is refused at the redirected hop, before connecting',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/subredirect.html` }))
-        assert.equal(slice.document.method, 'browser')
+        const slice = renderedOf(await read(reader, { url: `${origin}/subredirect.html` }))
         assert.ok(
           seen.some(item => item.url === '/redirect-blocked'),
           'the first hop was fetched'
@@ -1034,8 +1036,7 @@ try {
     )
     await claim('blob and anchor downloads triggered by a rendered page land nowhere', async () => {
       seen.length = 0
-      const slice = documentOf(await read(reader, { url: `${origin}/blob-download.html` }))
-      assert.equal(slice.document.method, 'browser')
+      renderedOf(await read(reader, { url: `${origin}/blob-download.html` }))
       assert.ok(
         seen.some(item => item.url === '/attachment'),
         'the anchor target was requested'
@@ -1046,8 +1047,7 @@ try {
       'subrequests still undecided when the render ends, and requests issued while the page is torn down, are refused rather than released to Chrome',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/late.html` }))
-        assert.equal(slice.document.method, 'browser')
+        const slice = renderedOf(await read(reader, { url: `${origin}/late.html` }))
         assert.match(slice.text, /Late requests/)
         await holdsFor(
           'no late request reaches the server',
@@ -1060,8 +1060,7 @@ try {
       'a rendered page cannot save files: an attachment frame is fetched but nothing lands in the download directory of the copied preferences',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/download.html` }))
-        assert.equal(slice.document.method, 'browser')
+        const slice = renderedOf(await read(reader, { url: `${origin}/download.html` }))
         assert.match(slice.text, /Download page/)
         assert.ok(
           seen.some(item => item.url === '/attachment'),
@@ -1169,8 +1168,7 @@ try {
       'a 403 static answer escalates to the browser once and returns its rendering, named as made with the authenticated profile copy',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/forbidden.html` }))
-        assert.equal(slice.document.method, 'browser')
+        const slice = renderedOf(await read(reader, { url: `${origin}/forbidden.html` }))
         assert.equal(slice.document.status, 403)
         assert.match(slice.text, /Forbidden/)
         assert.match(
