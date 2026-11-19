@@ -28,6 +28,7 @@ import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../s
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
 import {
   assertCopyReleased,
+  chromeProcessesOn,
   chromeRunningOn,
   makeChromeSource,
   openRenderer,
@@ -643,16 +644,31 @@ try {
       async () => {
         const home = join(fixture, 'unobserved')
         mkdirSync(home, { mode: 0o700 })
+        const userDataDir = join(home, 'browser', 'user-data')
         const flag = join(fixture, 'observation-blocked')
         writeFileSync(flag, 'blocked\n')
         selectOwnerFixture({ ...baseFixture, processObservationBlock: flag })
         const blindAdmin = makeBrowserAdmin({ ...profileOptions, dataHome: home })
+        let helper: number | undefined
+        const helperOnCopy = () =>
+          chromeProcessesOn(userDataDir).some(
+            line => Number.parseInt(line.trimStart(), 10) === helper
+          )
         try {
           const renderer = await openRenderer(home, newScope(), failures)
           const page = await Effect.runPromise(
             renderer.render(`${origin}/page.html?m=BLIND`, MAX_HTML)
           )
           assert.match(text(page.html), /MARKER BLIND/)
+          const utility = chromeProcessesOn(userDataDir).find(line =>
+            line.includes('--utility-sub-type=network.mojom.NetworkService')
+          )
+          assert.ok(utility, 'Chrome started a network helper on the fixture copy')
+          const utilityPid = Number.parseInt(utility.trimStart(), 10)
+          const root = Number(processGroup(utilityPid))
+          assert.ok(root > 0 && root !== utilityPid, 'the helper is not the group leader')
+          process.kill(utilityPid, 'SIGSTOP')
+          helper = utilityPid
           const kept = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(5)))
           assert.equal(kept.kind, 'kept-live')
           assert.ok(existsSync(join(home, 'browser', 'user-data')), 'the uncertain copy was kept')
@@ -673,9 +689,17 @@ try {
             true,
             'enabling did not erase the unsettled ownership'
           )
-          assert.ok(existsSync(join(home, 'browser', 'user-data')), 'enabling deleted nothing')
+          assert.ok(existsSync(userDataDir), 'enabling deleted nothing')
+          assert.equal(alive(root), false, 'the Chrome root has exited')
+          assert.ok(helperOnCopy(), 'the stopped Chrome helper outlived the root')
+          rmSync(flag)
+          const stillKept = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
+          assert.equal(stillKept.kind, 'kept-live', 'the surviving helper prevents deletion')
+          assert.ok(existsSync(userDataDir), 'the copy was kept after observation recovered')
+          assert.equal((await Effect.runPromise(blindAdmin.status)).profile.inUse, true)
         } finally {
           rmSync(flag, { force: true })
+          if (helper !== undefined && helperOnCopy()) process.kill(helper, 'SIGKILL')
         }
         const removed = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
         assert.equal(removed.kind, 'removed', 'settlement observed later allows removal')

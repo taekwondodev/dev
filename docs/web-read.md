@@ -38,7 +38,7 @@ Dev runs one browser service per data home. Reads from different conversations c
 
 Chrome closes after three idle minutes and reopens on demand. When the last reader disconnects, the service closes Chrome and exits. Dev refreshes the copy before each launch. If Chrome locks its cookie database or a refresh fails, dev reports the error rather than opening an incomplete copy.
 
-If dev cannot verify that Chrome stopped, it keeps the profile locked and reports why in `dev browser status`. A later Chrome read or revoke retries shutdown. If the service dies, the OS frees the locks, but Chrome may still be running. The leftover record blocks a restart, refresh or deletion. Follow the recovery steps below.
+If dev cannot verify that Chrome stopped, it keeps the profile locked and reports why in `dev browser status`. A later Chrome read or revoke retries shutdown. If dev missed the main process's identity at launch, it waits for Chrome's process group to empty without force-stopping its helpers. If the service dies, the OS frees the locks, but Chrome may still be running. The leftover record blocks a restart, refresh or deletion. Follow the recovery steps below.
 
 ## Revocation
 

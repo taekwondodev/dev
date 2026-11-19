@@ -219,6 +219,10 @@ const shutdown = Effect.fnUntraced(function* (
   const { pid } = child
   if (pid === undefined) return { kind: 'settled' }
   const sweep = Effect.gen(function* () {
+    if (family.root === undefined) {
+      const table = yield* processTable
+      return table.filter(item => item.group === pid).length
+    }
     const observed = yield* observeFamily(
       { pid, root: family.root, known: family.known, reported: undefined },
       { rootExited: true, report: () => Effect.void }

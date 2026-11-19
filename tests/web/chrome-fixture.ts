@@ -74,7 +74,7 @@ export const makeChromeSource = (
   }
   return { userData, cookiesPath, downloads, writeCookies }
 }
-const chromeProcessesOn = (userDataDir: string): string[] =>
+export const chromeProcessesOn = (userDataDir: string): string[] =>
   execFileSync('ps', ['-axo', 'pid=,stat=,etime=,command='], { encoding: 'utf8' })
     .split('\n')
     .filter(line => line.includes(`--user-data-dir=${userDataDir}`))
