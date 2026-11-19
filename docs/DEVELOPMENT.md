@@ -137,4 +137,4 @@ Stop affected runtimes and maintenance operations before deleting state, then re
 | Usage reports                                    | `<data-home>/usage/`                                                                                                              |
 | Installation and conversation locks              | `<installation>/.dev/coordination/`, independent of data-home overrides                                                           |
 
-Cover the default `.dev/` data home and every explicit `--data-home` or `DEV_DATA_HOME` override in use. Current identity, ownership, revision and release-decision fences remain required; they are not historical-format compatibility.
+Cover the default `.dev/` data home and every explicit `--data-home` or `DEV_DATA_HOME` override in use. A conversation file opened with `--resume PATH` can live outside those directories: delete each such file dev wrote in the old format, or keep it as Pi history and do not resume it in dev. Leave unrelated Pi history alone. Current identity, ownership, revision and release-decision fences remain required; they are not historical-format compatibility.

@@ -148,7 +148,7 @@ const constantHolding = (node: Node): HeldValue | undefined => {
       return holder.init === value &&
         declaration?.type === 'VariableDeclaration' &&
         declaration.kind === 'const'
-        ? { constant: holder, keys }
+        ? { constant: holder, keys: holder.id.type === 'Identifier' ? keys : [] }
         : undefined
     }
     if (holder.type === 'Property') {
@@ -156,7 +156,11 @@ const constantHolding = (node: Node): HeldValue | undefined => {
       keys.unshift(staticKey(holder.key, holder.computed))
     } else if (holder.type === 'ArrayExpression') {
       const elements: readonly unknown[] = holder.elements
-      keys.unshift(String(elements.indexOf(value)))
+      const index = elements.indexOf(value)
+      const shifted = holder.elements
+        .slice(0, index)
+        .some(element => element?.type === 'SpreadElement')
+      keys.unshift(shifted ? undefined : String(index))
     } else if (!CONSTANT_SHAPES.has(holder.type)) return undefined
     value = holder
   }

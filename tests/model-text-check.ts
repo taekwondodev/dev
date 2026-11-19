@@ -147,7 +147,7 @@ const storedValues: readonly string[] = [
   ...UseSchema.fields.stage.literals.map(checkoutUseStage),
   ...Object.values(SWEEP_MOMENT_TEXT),
   ...WorkspaceViewSchema.fields.outcome.literals,
-  ...WorkspaceReleaseResultSchema.members[0].fields.outcome.literals,
+  ...WorkspaceReleaseResultSchema.members.flatMap(member => member.fields.outcome.literals),
   ...SweepOutcomeSchema.literals,
   ...TaskArtifactsOutcomeSchema.literals,
   ...WorkspaceRoleSchema.literals,

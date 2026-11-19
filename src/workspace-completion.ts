@@ -64,7 +64,7 @@ export const RETAINED: Record<
   'integration-unknown': {
     sweep: 'retained',
     actions: [
-      'Check the destination branch and Git history. Use `workspace` set-target if needed. Dev never fetches or uploads.',
+      'Check the destination branch and Git history. Use the `set-target` action of the `workspace` tool if needed. Dev never fetches or uploads.',
       CLEAR,
     ],
   },

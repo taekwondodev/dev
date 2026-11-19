@@ -371,7 +371,7 @@ export const AttemptSummarySchema = Schema.Struct({
     AttemptId.annotate({ description: 'ID of the run that started this one.' })
   ),
   coordinate: Schema.optionalKey(Schema.Boolean.annotate({ description: 'Can delegate.' })),
-  workflowTaskId: optionalText('taskId for workspace resume.'),
+  workflowTaskId: optionalText('taskId for `workspace` resume.'),
   workspaceId: OptionalText,
   cwd: Schema.String,
   kind: WorkKindSchema,

@@ -84,6 +84,12 @@ const files: Record<string, string> = {
     'export const backticked = `dev/work-outcome`',
     "export const quit = 'A workspace release that started did not finish'",
     "export const usage = 'Usage: workspace release <task-id>'",
+    "export const wait = 'Wait for the workspace release.'",
+    "export const listed = 'Run `dev workspace` to list tasks'",
+    "const SPREAD = [...['open'], 'parked'] as const",
+    "export const shifted = 'Now ' + SPREAD[0]",
+    "const { labels } = { labels: { held: 'parked' } }",
+    "export const kept = 'Now ' + labels.held",
     '',
   ].join('\n'),
   'tests/worded.ts': ["export const name = 'the lead waits for the sweep'", ''].join('\n'),
@@ -118,7 +124,7 @@ const files: Record<string, string> = {
 
 const expected: Record<string, string[]> = {
   'tests/flagged.ts': [6, 7, 8, 9, 10, 12, 13, 14].map(line => `no-fixed-sleep:${line}`),
-  'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21, 23, 25, 28, 29].map(
+  'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21, 23, 25, 28, 29, 31, 33, 35].map(
     line => `no-internal-terms:${line}`
   ),
   'tests/disabled-line.ts': ['no-source-comments:1'],

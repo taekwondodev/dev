@@ -720,14 +720,20 @@ try {
         (await lifecycle.inspect({ taskId: paused.taskId })).flatMap(view =>
           view.pending.map(operation => operation.id)
         )
-      let selected: readonly string[] = []
+      let selected:
+        | { readonly operation: string; readonly checkout: string; readonly pending: string[] }
+        | undefined
       const select: WorkspaceAttachment['select'] = selection =>
         trapped
           ? recordMismatch.pipe(
               Effect.andThen(paused.attached.effect.select(selection)),
-              Effect.tap(() =>
+              Effect.tap(handoff =>
                 Effect.promise(async () => {
-                  selected = await pendingOfTask()
+                  selected = {
+                    operation: handoff.operationId,
+                    checkout: handoff.target.workspaceId,
+                    pending: await pendingOfTask(),
+                  }
                 })
               )
             )
@@ -748,16 +754,23 @@ try {
         assert.equal(opened.host.isParked(), true)
         assert.equal(opened.host.attachment.binding.taskId, undefined)
         assert.equal(handoffTexts(opened.runtime).length, 0, 'no switch was announced')
-        assert.equal(selected.length, 1, 'the selection recorded one pending switch')
+        assert.deepEqual(
+          selected?.pending,
+          [selected?.operation],
+          'the selection recorded its switch as the one pending operation'
+        )
         await waitFor(
           'the selection to be withdrawn',
           async () => ((await pendingOfTask()).length === 0 ? true : undefined),
           IN_MEMORY_POLL
         )
         assert.deepEqual(
-          (await lifecycle.inspect({ taskId: paused.taskId })).map(view => view.taskId),
-          [paused.taskId],
-          'the task keeps its checkout'
+          (await lifecycle.inspect({ taskId: paused.taskId })).map(view => [
+            view.workspaceId,
+            view.reservationId !== undefined,
+          ]),
+          [[selected?.checkout, true]],
+          'the task still keeps the selected checkout'
         )
       } finally {
         await opened.close()
