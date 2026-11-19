@@ -65,11 +65,11 @@ export const resolveSelection = (
     selection.workspaceId === undefined
       ? matches
       : matches.filter(item => item.workspace.id === selection.workspaceId)
-  if (selected.length === 0) invalid(`No retained workspace matches task ${selection.taskId}`)
+  if (selected.length === 0) invalid(`No saved checkout matches task ${selection.taskId}`)
   if (selected.length > 1)
     ambiguous(`Task ${selection.taskId} has multiple workspaces; provide an exact workspace ID`)
   const [result] = selected
-  if (result === undefined) return invalid('Selected workspace is unavailable')
+  if (result === undefined) return invalid('Selected checkout is unavailable')
   return result
 }
 
@@ -80,8 +80,7 @@ export const selectWorkspace = (
 ): WorkspaceHandoff => {
   attachment.assertOpen()
   const { state } = attachment
-  if (state.parked || state.pending !== undefined)
-    blocked('A workspace transition is already pending')
+  if (state.parked || state.pending !== undefined) blocked('A checkout switch is already pending')
   assertNoLiveExecution(authority, state, state.binding, 'switched')
   const target = resolveSelection(authority, selection)
   validateWorkspace(authority, target.workspace)
@@ -97,12 +96,12 @@ export const selectWorkspace = (
         operationId: newId(),
         from: toBinding(state.binding),
         target: current,
-        reason: 'The selected task is already bound to this workspace.',
+        reason: 'This conversation already uses the selected checkout.',
       }
   }
   const targetUses = inDb(authority, target.repo, db => getActiveUseRows(db, target.workspace.id))
   if (targetUses.some(use => use.access === 'write' && !state.leases.has(use.id)))
-    blocked(`Selected workspace has an active or unresolved writer: ${target.workspace.path}`)
+    blocked(`Another writer may still be active: ${target.workspace.path}`)
   inDb(authority, target.repo, db => assertNoUnresolvedRelease(db, target.workspace.id))
   const gates = acquirePathGates(authority.paths, target.workspace.path, 'writer')
   const operationId = newId()
@@ -160,8 +159,7 @@ export const selectWorkspace = (
     operationId,
     from: toBinding(state.binding),
     target: grant,
-    reason:
-      'Explicit task selection. The existing workspace and its contents will be used; no files are transferred',
+    reason: 'Using the selected checkout and its files. Nothing is copied',
   }
   const targetLease: GrantLease = {
     grant,
@@ -180,7 +178,7 @@ export const selectWorkspace = (
           reservation.id !== target.reservation.id ||
           reservation.taskId !== target.reservation.taskId
         )
-          requireReview('Selected reservation changed before resume')
+          requireReview('The selected checkout or task changed before switching')
         updateReservation(db, {
           ...reservation,
           acquisitionId,
@@ -191,7 +189,7 @@ export const selectWorkspace = (
         if (source.repo === target.repo) {
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('Conversation binding changed before resume')
+            requireReview('The current checkout changed before switching')
           putBinding(db, { ...current, pendingOperationId: operationId })
         }
       })
@@ -201,7 +199,7 @@ export const selectWorkspace = (
         transaction(db, () => {
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('Conversation binding changed before resume')
+            requireReview('The current checkout changed before switching')
           putBinding(db, { ...current, pendingOperationId: operationId })
         })
       )
@@ -239,11 +237,9 @@ export const performHandoff = async (
     !sameGrant(pending.handoff.target, transition.target) ||
     !sameBinding(pending.handoff.from, transition.from)
   )
-    requireReview('Workspace handoff token is stale or belongs to another transition')
+    requireReview('This checkout switch is no longer current')
   if (pending.phase !== 'intent')
-    requireReview(
-      `Workspace handoff ${transition.operationId} already reached the host; it needs review, not withdrawal`
-    )
+    requireReview(`Dev cannot cancel switch ${transition.operationId}; it may already have started`)
   let operation: TransitionOperationRecord
   try {
     validateGrant(authority, state, pending.handoff.target)
@@ -252,7 +248,7 @@ export const performHandoff = async (
       transaction(db, () => {
         const current = getOperation(db, transition.operationId)
         if (current === undefined || current.kind !== 'handoff' || current.phase !== 'intent')
-          requireReview(`Workspace handoff intent is unavailable: ${transition.operationId}`)
+          requireReview(`Dev has no saved switch plan: ${transition.operationId}`)
         const started = { ...current, phase: 'started' as const }
         saveOperation(db, started)
         return started
@@ -263,11 +259,9 @@ export const performHandoff = async (
       authority,
       state,
       pending,
-      `Refused before the host acted: ${errorText(cause)}`
+      `Checkout switch did not start: ${errorText(cause)}`
     )
-    return blocked(
-      `Workspace transition refused before the host acted; the current binding is kept: ${errorText(cause)}`
-    )
+    return blocked(`Dev did not switch checkouts: ${errorText(cause)}`)
   }
   pending.phase = 'started'
   let outcome: 'confirmed' | 'cancelled'
@@ -278,17 +272,12 @@ export const performHandoff = async (
       authority,
       state,
       pending,
-      `Host transition outcome is uncertain: ${errorText(cause)}`
+      `Checkout switch may not have finished: ${errorText(cause)}`
     )
-    return requireReview(`Workspace handoff requires explicit recovery: ${transition.operationId}`)
+    return requireReview(`Dev cannot confirm the checkout switched: ${transition.operationId}`)
   }
   if (outcome === 'cancelled')
-    cancelTransition(
-      authority,
-      state,
-      pending,
-      'Host reported that the last confirmed binding was preserved.'
-    )
+    cancelTransition(authority, state, pending, 'The conversation kept its previous checkout.')
   else finishConfirmed(authority, state, pending, operation)
 }
 
@@ -334,9 +323,9 @@ const cancelTransition = (
   const targetUse = inDb(authority, pending.targetRepositoryId, db =>
     getUse(db, pending.targetLease.useId)
   )
-  if (targetUse === undefined) requireReview('Cancelled handoff lost its target use record')
+  if (targetUse === undefined) requireReview('Dev lost track of access to the selected checkout')
   if (targetUse.stage !== 'authorized')
-    requireReview('Cancelled handoff target was used before host confirmation')
+    requireReview('The new checkout was used before dev confirmed the switch')
   inDb(authority, pending.targetRepositoryId, db =>
     transaction(db, () => {
       const current = getOperation(db, operationId)
@@ -345,7 +334,7 @@ const cancelTransition = (
         current.kind === 'release' ||
         (current.phase !== 'intent' && current.phase !== 'started')
       )
-        requireReview('Handoff result no longer matches its intent')
+        requireReview('The switch result does not match the requested checkout')
       const cancelled: TransitionOperationRecord = { ...current, phase: 'cancelled', result }
       saveUse(db, {
         ...targetUse,
@@ -358,7 +347,7 @@ const cancelTransition = (
       if (pending.sourceRepositoryId === pending.targetRepositoryId) {
         const binding = getBinding(db, state.key)
         if (binding === undefined || binding.pendingOperationId !== operationId)
-          requireReview('Cancelled handoff binding changed')
+          requireReview('The selected checkout changed while cancelling the switch')
         putBinding(db, { ...binding, pendingOperationId: undefined })
       }
     })
@@ -368,7 +357,7 @@ const cancelTransition = (
       transaction(db, () => {
         const binding = getBinding(db, state.key)
         if (binding === undefined || binding.pendingOperationId !== operationId)
-          requireReview('Cancelled handoff source binding changed')
+          requireReview('The original checkout changed while cancelling the switch')
         putBinding(db, { ...binding, pendingOperationId: undefined })
       })
     )
@@ -410,7 +399,7 @@ const finishConfirmed = (
   const confirmedOperation: TransitionOperationRecord = {
     ...operation,
     phase: 'confirmed',
-    result: 'Host callback confirmed the target binding.',
+    result: 'The conversation opened the selected checkout.',
   }
   if (pending.sourceRepositoryId === pending.targetRepositoryId) {
     inDb(authority, pending.targetRepositoryId, db =>
@@ -421,7 +410,7 @@ const finishConfirmed = (
           binding.pendingOperationId !== operation.id ||
           binding.revision !== operation.expectedBindingRevision
         )
-          requireReview('Conversation binding changed before confirmed handoff publication')
+          requireReview('The checkout changed before dev saved the switch')
         putBinding(db, confirmedBinding)
         saveOperation(db, confirmedOperation)
       })
@@ -431,10 +420,10 @@ const finishConfirmed = (
       transaction(db, () => {
         const current = getOperation(db, operation.id)
         if (current === undefined || current.phase !== 'started')
-          requireReview('Cross-repository handoff intent changed')
+          requireReview('The planned switch to another repository changed')
         saveOperation(db, {
           ...current,
-          result: 'Host confirmed; binding publication is pending across repository shards.',
+          result: 'The new checkout opened, but dev has not saved the switch yet.',
         })
         const previous = getBinding(db, state.key)
         if (previous !== undefined)
@@ -445,7 +434,7 @@ const finishConfirmed = (
       transaction(db, () => {
         const binding = getBinding(db, state.key)
         if (binding === undefined || binding.pendingOperationId !== operation.id)
-          requireReview('Cross-repository source binding changed')
+          requireReview('The original checkout changed during the switch')
         putBinding(db, { ...binding, superseded: true, pendingOperationId: undefined })
       })
     )

@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -325,7 +326,7 @@ try {
     async () => {
       const outcome = await runLauncher(resumeArgs(sessionFile))
       assert.equal(outcome.code, 1, outcome.stderr)
-      assert.match(outcome.stderr, /no longer exists and is not recreated/)
+      assert.match(outcome.stderr, /gone and will not be recreated/)
       assert.ok(outcome.stderr.includes(sessionFile), outcome.stderr)
       assert.match(
         outcome.stderr,
@@ -621,7 +622,7 @@ try {
         const reported = await readOnly(inspectRoot, args)
         assert.equal(reported.code, 1, `${args.join(' ')}: ${reported.stderr}`)
         assert.equal(reported.stdout, '', 'a damaged authority is not presented as a listing')
-        assert.match(reported.stderr, /^Workspace inspection failed: .*catalog/)
+        assert.match(reported.stderr, /^Checkout inspection failed: Corrupt saved repository/)
       }
       assert.deepEqual(
         authorityFiles(inspectRoot),
@@ -651,7 +652,7 @@ try {
       )
       assert.ok(
         checked.stdout.includes('role: pre-existing checkout') &&
-          checked.stdout.includes('sweep verdict: finished (clean-checkout)'),
+          checked.stdout.includes('verdict: finished (clean-checkout)'),
         checked.stdout
       )
       const malformed = await readOnly(inspectRoot, ['workspace', 'check', 'not-a-task'])
@@ -674,6 +675,62 @@ try {
     }
   )
   await claim(
+    'dev workspace check <task-id> prints a checkout switch that may be unfinished next to an identity it cannot verify, with the switch ID and the advice not to retry it',
+    async () => {
+      const switchRoot = join(sandbox, 'switch-authority')
+      const target = join(sandbox, 'switch-target')
+      const origin = join(sandbox, 'switch-origin')
+      for (const path of [target, origin]) {
+        mkdirSync(path)
+        initRepository(path)
+      }
+      const switchAuthority = await openLifecycle({ root: switchRoot })
+      try {
+        const conversationOf = (sessionId: string) => ({
+          sessionId,
+          sessionFile: join(sandbox, `${sessionId}.jsonl`),
+          dataHome,
+        })
+        const owner = await switchAuthority.attach({
+          conversation: conversationOf('switch-owner'),
+          cwd: target,
+        })
+        const written = await owner.authorize({ kind: 'write' })
+        await owner.close()
+        if (written.kind !== 'ready' || written.grant.taskId === undefined)
+          throw new Error('The fixture could not reserve a task in the target checkout')
+        const { taskId, workspaceId } = written.grant
+        const mover = await switchAuthority.attach({
+          conversation: conversationOf('switch-mover'),
+          cwd: origin,
+        })
+        const handoff = await mover.select({ taskId, workspaceId })
+        let checked: Awaited<ReturnType<typeof readOnly>> | undefined
+        await mover.handoff(handoff, async () => {
+          renameSync(join(target, '.git'), join(target, '.git-away'))
+          try {
+            checked = await readOnly(switchRoot, ['--cwd', notGit, 'workspace', 'check', taskId])
+          } finally {
+            renameSync(join(target, '.git-away'), join(target, '.git'))
+          }
+          return 'cancelled'
+        })
+        await mover.close()
+        assert.ok(checked !== undefined)
+        assert.equal(checked.code, 0, checked.stderr)
+        for (const expected of [
+          `Cannot verify workspace ${target}`,
+          `Checkout switch ${handoff.operationId} may be unfinished`,
+          'Do not retry it.',
+          'verdict: retained (identity-unverifiable)',
+        ])
+          assert.ok(checked.stdout.includes(expected), `${expected}\n${checked.stdout}`)
+      } finally {
+        await switchAuthority.close()
+      }
+    }
+  )
+  await claim(
     'dev workspace release <task-id> without a TTY refuses with exit 2 and releases nothing: the reservation is still held afterwards',
     async () => {
       const refused = await readOnly(inspectRoot, [
@@ -689,7 +746,7 @@ try {
         const views = await still.inspect({ taskId: firstGrant.taskId })
         assert.deepEqual(
           views.map(view => [view.workspaceId, view.reservationId, view.outcome]),
-          [[firstGrant.workspaceId, firstGrant.reservationId, 'preserved-for-resume']]
+          [[firstGrant.workspaceId, firstGrant.reservationId, 'paused']]
         )
       } finally {
         await still.close()
@@ -755,7 +812,7 @@ try {
         assert.equal(elsewhere.code, 1, elsewhere.stderr)
         assert.equal(
           elsewhere.stderr,
-          `Task ${secondGrant.taskId} reserves no workspace in the repository at ${repo}.\n`
+          `No checkout kept for task ${secondGrant.taskId} in the repository at ${repo}.\n`
         )
         const holder = await fixtures.attach({
           conversation: {
@@ -773,7 +830,7 @@ try {
         assert.equal(inUse.code, 1, inUse.stderr)
         assert.equal(
           inUse.stderr,
-          `No workspace of task ${taskId} in the repository at ${repo} is resumable:\n- task ${taskId} at ${checkout} is active: A persisted workspace use is still active. Do not take this workspace from its current user.\n`
+          `Cannot resume a checkout for task ${taskId} in the repository at ${repo}:\n- task ${taskId} at ${checkout} is active: A session or process is using this checkout. Wait until it is no longer in use.\n`
         )
 
         const malformed = await withTask(['--task', 'not-a-task'])

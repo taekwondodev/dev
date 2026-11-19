@@ -94,7 +94,7 @@ try {
       children.unreachable = true
       await assert.rejects(
         owner.delegate({ taskId: 'orb-unreachable', prompt: 'edit', access: 'write' }),
-        /starts from the lead orb's committed HEAD, and the commit of the lead orb could not be read/
+        /starts from the committed HEAD of this conversation's orb, and the commit of the lead orb could not be read/
       )
       children.unreachable = false
       assert.deepEqual(await owner.records(), [], 'no attempt was recorded')
@@ -133,7 +133,7 @@ try {
         [{ status: 'provisioning', orb: { id: 'child-orb', status: 'BUILDING' } }]
       )
       assert.ok(
-        workResultText({ kind: 'attempt', attempt: summarize(provisioning) }).includes(
+        workResultText({ kind: 'run', run: summarize(provisioning) }).includes(
           '"orb":{"id":"child-orb","status":"BUILDING"}'
         )
       )
@@ -164,7 +164,7 @@ try {
         report: 'Orb 4567cdef was deleted.',
       })
       assert.ok(
-        workResultText({ kind: 'attempt', attempt: summarize(view) }).includes(
+        workResultText({ kind: 'run', run: summarize(view) }).includes(
           '"orb":{"id":"child-orb","status":"DELETED","report":"Orb 4567cdef was deleted."}'
         )
       )
@@ -217,7 +217,7 @@ try {
         /Git exited with status 255/,
         'git_inspect ended with the SSH failure code'
       )
-      assert.doesNotMatch(results, /only on the Mac|Child workspace is read-only/, results)
+      assert.doesNotMatch(results, /only on the Mac|This agent has read-only access/, results)
     }
   )
 

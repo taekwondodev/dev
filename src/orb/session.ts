@@ -222,7 +222,7 @@ const startOrbSession = Effect.fnUntraced(function* (
     .authorize({ kind: 'write', cwd: input.cwd })
     .pipe(
       Effect.mapError(error =>
-        orbFailure(`The checkout was not admitted for the orb: ${error.message}`, error)
+        orbFailure(`The orb cannot write the checkout: ${error.message}`, error)
       )
     )
   if (presence.kind !== 'ready') {
@@ -478,7 +478,7 @@ const startOrbSession = Effect.fnUntraced(function* (
       orbit,
       config,
       conversation: input.conversation,
-      lead: { ssh, root: checkout.root, label: "the lead's orb", record: record.id },
+      lead: { ssh, root: checkout.root, label: "this conversation's orb", record: record.id },
       spares,
       lifecycle: input.lifecycle,
     },
@@ -555,11 +555,15 @@ export const withReturnAdmission = <A, E, R>(
       )
   return Effect.acquireUseRelease(
     attachment.authorize({ kind: 'orb-return', within, cwd }).pipe(
-      Effect.mapError(error => orbFailure(`The return was not admitted: ${error.message}`, error)),
+      Effect.mapError(error =>
+        orbFailure(`The return from the orb did not run: ${error.message}`, error)
+      ),
       Effect.flatMap(admitted =>
         admitted.kind === 'ready'
           ? Effect.succeed(admitted.grant)
-          : Effect.fail(orbFailure('The return was not admitted: the workspace requires a rebind'))
+          : Effect.fail(
+              orbFailure('The return from the orb did not run: dev must switch checkouts first')
+            )
       )
     ),
     grant => Effect.andThen(report(grant, { kind: 'operation-started' }), write),

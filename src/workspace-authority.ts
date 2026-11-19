@@ -67,10 +67,10 @@ import {
 } from './workspace-platform.ts'
 
 const canonicalRoot = (requested: string): string => {
-  if (!isAbsolute(requested)) invalid('Workspace authority root must be an absolute path')
+  if (!isAbsolute(requested)) invalid('Dev storage needs an absolute path')
   const absolute = resolve(requested)
   if (lstatIfExists(absolute)?.isSymbolicLink())
-    unavailable(`Workspace authority root must not be a symbolic link: ${absolute}`)
+    unavailable(`Dev storage cannot be a symlink: ${absolute}`)
   return canonicalPath(absolute).path
 }
 
@@ -91,18 +91,17 @@ export const unsupportedAuthorityStorage = (input: {
 }): string | undefined => {
   for (const parts of SYNCHRONIZED_FOLDERS) {
     const folder = join(input.home, ...parts)
-    if (isWithin(folder, input.path))
-      return `Workspace authority cannot live in a synchronized folder: ${folder}`
+    if (isWithin(folder, input.path)) return `Dev storage cannot use a synced folder: ${folder}`
   }
   const { type, local, mountPoint } = input.filesystem
-  if (!local) return `Workspace authority requires local storage; ${mountPoint} is a ${type} mount`
+  if (!local) return `Dev needs local storage; ${mountPoint} is a ${type} mount`
   if (!SUPPORTED_FILESYSTEMS.has(type))
-    return `Workspace authority does not support ${type} storage at ${mountPoint}`
+    return `Dev does not support ${type} storage at ${mountPoint}`
   return undefined
 }
 const assertSupportedStorage = (root: string): void => {
   if (process.platform !== 'darwin')
-    unavailable(`Workspace authority currently supports only macOS, not ${process.platform}`)
+    unavailable(`Dev workspace support requires macOS, not ${process.platform}`)
   let existing = root
   while (lstatIfExists(existing) === undefined && dirname(existing) !== existing)
     existing = dirname(existing)
@@ -141,7 +140,7 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
     const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
     if (mode.toLowerCase() !== 'wal')
-      unavailable(`Cannot enable WAL for new workspace catalog: ${path}`)
+      unavailable(`Cannot enable WAL for dev's new checkout database: ${path}`)
     db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
     db.close()
     db = undefined
@@ -150,7 +149,9 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     databaseFile(path)
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot durably enable WAL for workspace catalog ${path}: ${errorText(cause)}`)
+    unavailable(
+      `Cannot durably enable WAL for dev's checkout database ${path}: ${errorText(cause)}`
+    )
   } finally {
     db?.close()
   }
@@ -184,7 +185,7 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
   const value = parseRecord(
     RepositoryCatalogSchema,
     row.payload,
-    `repository catalog entry ${textField(row, 'id')}`
+    `saved repository ${textField(row, 'id')}`
   )
   if (
     value.id !== textField(row, 'id') ||
@@ -196,7 +197,7 @@ const parseRepositoryCatalogRow = (row: SqlRow): RepositoryCatalogRecord => {
     value.provisionId !== textField(row, 'provision_id') ||
     value.revision !== numberField(row, 'revision')
   )
-    requireReview(`Repository catalog columns disagree with payload: ${value.id}`)
+    requireReview(`Saved repository data is inconsistent: ${value.id}`)
   return value
 }
 const matchesRepository = (record: RepositoryCatalogRecord, repository: GitWorkspace): boolean =>
@@ -210,7 +211,7 @@ const validateRepositoryRecord = (
 ): RepositoryCatalogRecord => {
   const value = parseRepositoryCatalogRow(row)
   if (!matchesRepository(value, repository))
-    requireReview(`Git common-directory identity changed: ${repository.commonPath}`)
+    requireReview(`The repository's Git directory changed: ${repository.commonPath}`)
   return value
 }
 
@@ -261,7 +262,7 @@ export class WorkspaceAuthority {
       const catalog = this.openCatalog()
       try {
         if (catalogNamespace(catalog) !== id)
-          requireReview(`Workspace catalog does not match namespace ${this.root}`)
+          requireReview(`Checkout data does not match dev storage at ${this.root}`)
       } finally {
         catalog.close()
       }
@@ -274,8 +275,7 @@ export class WorkspaceAuthority {
 
   initialize(): WorkspaceId {
     if (this.closed) unavailable('Workspace lifecycle is closed')
-    if (this.initialized)
-      return this.namespaceId ?? requireReview('Workspace namespace identity is missing')
+    if (this.initialized) return this.namespaceId ?? requireReview('Dev storage ID is missing')
     this.checkStorage()
     assertSqliteSafety()
     const rootInfo = lstatIfExists(this.root)
@@ -297,12 +297,11 @@ export class WorkspaceAuthority {
           return true
         }
       })
-      if (hasEvidence)
-        requireReview(`Workspace authority has data but no namespace markers: ${this.root}`)
+      if (hasEvidence) requireReview(`Dev data exists but its storage ID is missing: ${this.root}`)
       createProtocolDatabase(this.paths.protocol, newId())
       createCatalogDatabase(this.paths.catalog, validateProtocol(this.paths.protocol))
     } else if (!protocolExists || !catalogExists) {
-      requireReview(`Workspace authority has incomplete namespace markers: ${this.root}`)
+      requireReview(`Dev storage ID is incomplete: ${this.root}`)
     }
     const { id, release } = this.joinNamespace()
     this.namespaceId = id
@@ -322,10 +321,10 @@ export class WorkspaceAuthority {
     if (protocol === undefined && catalog === undefined) {
       const entries = entriesIfExists(this.root)
       if (entries.length === 0) return undefined
-      requireReview(`Workspace authority has files but no valid namespace markers: ${this.root}`)
+      requireReview(`Dev files exist but the storage ID is invalid: ${this.root}`)
     }
     if (protocol === undefined || catalog === undefined)
-      requireReview(`Workspace authority is incomplete: ${this.root}`)
+      requireReview(`Dev storage is incomplete: ${this.root}`)
     const { id, release } = this.joinNamespace()
     release()
     return id
@@ -386,9 +385,9 @@ export class WorkspaceAuthority {
   }
 
   private catalogCurrent(known: HeldCatalog): boolean {
-    if (!recordConnectionCurrent(known, this.paths.catalog, 'catalog')) return false
+    if (!recordConnectionCurrent(known, this.paths.catalog)) return false
     if (catalogNamespace(known.db) !== this.expectedNamespace())
-      requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
+      requireReview(`Dev's checkout records were replaced or moved: ${this.paths.catalog}`)
     return true
   }
 
@@ -407,11 +406,10 @@ export class WorkspaceAuthority {
   private shardCurrent(known: HeldShard, repositoryId: WorkspaceId): boolean {
     const path = this.shardPath(repositoryId)
     const record = this.readRepository(repositoryId)
-    if (record === undefined)
-      return unavailable(`Repository is not registered in workspace authority: ${repositoryId}`)
+    if (record === undefined) return unavailable(`Dev has no record for repository ${repositoryId}`)
     if (record.state !== 'ready') return false
     privateDirectory(dirname(path), false)
-    if (!recordConnectionCurrent(known, path, 'shard')) return false
+    if (!recordConnectionCurrent(known, path)) return false
     this.validateShardMeta(known.db, record)
     known.record = record
     return true
@@ -440,7 +438,7 @@ export class WorkspaceAuthority {
       const shared = this.currentShard(held, repositoryId)
       if (shared !== undefined && !shared.db.isTransaction) {
         if (repository !== undefined && !matchesRepository(shared.record, repository))
-          requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
+          requireReview(`Saved repository does not match Git: ${repositoryId}`)
         return work(shared.db)
       }
       const opened = this.openShardRecord(repositoryId, create, repository)
@@ -465,7 +463,7 @@ export class WorkspaceAuthority {
     const connection = openRecordConnection(this.paths.catalog, 'catalog')
     try {
       if (catalogNamespace(connection.db) !== namespaceId)
-        requireReview(`Workspace catalog namespace identity changed: ${this.paths.catalog}`)
+        requireReview(`Dev's checkout records were replaced or moved: ${this.paths.catalog}`)
       return connection
     } catch (cause) {
       connection.db.close()
@@ -500,15 +498,14 @@ export class WorkspaceAuthority {
     if (!this.initialized && create) this.initialize()
     const path = this.shardPath(repositoryId)
     const record = this.readRepository(repositoryId)
-    if (record === undefined)
-      return unavailable(`Repository is not registered in workspace authority: ${repositoryId}`)
+    if (record === undefined) return unavailable(`Dev has no record for repository ${repositoryId}`)
     const published = lstatIfExists(path) !== undefined
     if (record.state === 'ready' && !published)
-      requireReview(`Ready repository shard is missing: ${path}`)
+      requireReview(`Repository database is missing: ${path}`)
     if (record.state === 'provisioning' && !create && !published)
-      requireReview(`Repository shard provisioning is incomplete: ${path}`)
+      requireReview(`Repository database setup did not finish: ${path}`)
     if (repository !== undefined && !matchesRepository(record, repository))
-      requireReview(`Repository identity changed for workspace shard ${repositoryId}`)
+      requireReview(`Saved repository does not match Git: ${repositoryId}`)
     const provision = create && record.state === 'provisioning'
     privateDirectory(dirname(path), provision)
     const { db, identity } = openRecordConnection(
@@ -518,7 +515,7 @@ export class WorkspaceAuthority {
         ? candidate => {
             if (repository === undefined)
               requireReview(
-                `Cannot initialize repository shard without its Git identity: ${repositoryId}`
+                `Cannot create repository database without Git identity: ${repositoryId}`
               )
             const values: readonly [string, string][] = [
               ['repository_id', repositoryId],
@@ -557,7 +554,7 @@ export class WorkspaceAuthority {
       values.get('common_inode') !== expected.inode ||
       values.get('object_format') !== expected.objectFormat
     )
-      requireReview(`Repository shard identity or schema mismatch: ${expected.id}`)
+      requireReview(`Repository database has the wrong ID or schema: ${expected.id}`)
   }
 
   private markRepositoryReady(repositoryId: WorkspaceId): void {
@@ -565,7 +562,7 @@ export class WorkspaceAuthority {
       transaction(db, () => {
         const row = repositoryRow(db, 'id=?', repositoryId)
         if (row === undefined)
-          requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
+          requireReview(`Dev's record of this repository disappeared: ${repositoryId}`)
         const current = parseRepositoryCatalogRow(row)
         if (current.state === 'ready') return
         const ready: RepositoryCatalogRecord = {
@@ -582,7 +579,7 @@ export class WorkspaceAuthority {
           current.revision
         )
         if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-          requireReview(`Cannot publish ready repository shard: ${repositoryId}`)
+          requireReview(`Could not save repository database: ${repositoryId}`)
       })
     })
   }
@@ -646,7 +643,7 @@ export class WorkspaceAuthority {
           textField(byPath, 'id') !== textField(byPhysical, 'id')
         )
           requireReview(
-            `Repository identity conflicts with existing catalog data: ${repository.commonPath}`
+            `This repository does not match dev's saved record of it: ${repository.commonPath}`
           )
         registered = validateRepositoryRecord(repository, byPath)
       } finally {
@@ -654,9 +651,7 @@ export class WorkspaceAuthority {
       }
     }
     if (registered === undefined)
-      requireReview(
-        `Repository registration produced no authoritative record: ${repository.commonPath}`
-      )
+      requireReview(`Dev could not save repository data: ${repository.commonPath}`)
     const repositoryId = registered.id
     let structure: GateRelease | undefined
     try {
@@ -669,11 +664,11 @@ export class WorkspaceAuthority {
         )
       const current = this.readRepository(repositoryId)
       if (current === undefined)
-        requireReview(`Repository catalog mapping disappeared: ${repositoryId}`)
+        requireReview(`Dev's record of this repository disappeared: ${repositoryId}`)
       if (current.state === 'ready') {
         const path = this.shardPath(repositoryId)
         if (lstatIfExists(path) === undefined)
-          requireReview(`Ready repository shard is missing: ${path}`)
+          requireReview(`Repository database is missing: ${path}`)
         this.openShard(repositoryId, false, repository).close()
       } else {
         privateDirectory(dirname(this.shardPath(repositoryId)), true)
@@ -765,9 +760,9 @@ export const registerWorkspace = (
         const existing = getWorkspaceByPath(db, git.path)
         if (existing !== undefined) {
           if (!matchesGitWorkspace(existing, git))
-            requireReview(`Workspace path slot was replaced: ${existing.path}`)
+            requireReview(`Checkout path was replaced: ${existing.path}`)
           if (existing.status !== 'ready')
-            requireReview(`Workspace allocation is unresolved: ${existing.path}`)
+            requireReview(`Worktree creation may be unfinished: ${existing.path}`)
           return existing
         }
         const record = makeWorkspaceRecord(repo, git, 'pre-existing')
@@ -795,10 +790,10 @@ export const taskWorkspaces = (
       )) {
         const reservation = getReservationById(db, textField(row, 'id'))
         if (reservation === undefined || reservation.taskId !== taskId)
-          requireReview(`Task reservation is inconsistent: ${taskId}`)
+          requireReview(`Saved checkout disagrees with task: ${taskId}`)
         const workspace = getWorkspace(db, reservation.workspaceId)
         if (workspace === undefined)
-          requireReview(`Reserved workspace is missing: ${reservation.workspaceId}`)
+          requireReview(`Checkout kept for task is missing: ${reservation.workspaceId}`)
         result.push({ repo: repository.id, reservation, workspace })
       }
     })
@@ -818,7 +813,7 @@ export const findBinding = (
     })
   }
   if (matches.length > 1)
-    requireReview(`Conversation has multiple authoritative workspace bindings: ${key}`)
+    requireReview(`Multiple checkouts claim to be current for this conversation: ${key}`)
   return matches[0]
 }
 
@@ -831,7 +826,7 @@ export const validateWorkspace = (
   if (workspace.origin === 'managed') {
     const base = resolve(authority.paths.worktrees, workspace.repositoryId)
     if (!isWithin(base, workspace.path) || workspace.path === base)
-      requireReview(`Managed workspace escaped its allocation root: ${workspace.path}`)
+      requireReview(`Dev-created worktree is outside dev storage: ${workspace.path}`)
   }
   return actual
 }

@@ -30,14 +30,14 @@ type Request =
   | { readonly type: 'work-request'; readonly input: unknown }
   | { readonly type: 'work-idle' }
 
-const LEAF_OUTCOME_GUIDANCE =
-  'Leaf outcomes: producer observations, not verification. Read a result from offset 0 when it is not included. Reconcile them before you report your own result.'
+export const LEAF_OUTCOME_GUIDANCE =
+  'Delegated results: verify against files or test output before reporting your own result.'
 export const COORDINATOR_TOOL_DESCRIPTION =
-  'Coordinate leaf children for this assignment. delegate starts a separate Pi child from a focused, self-contained prompt; a read-only leaf reads your workspace as it is, uncommitted files included, and a writer leaf gets its own managed worktree without your changes. Leaves cannot delegate. list, inspect and cancel cover only your own leaves; cancel without an id stops them all. Leaf outcomes arrive after your turn ends; read any answer they omit from offset 0. While work is running, do independent work if available; otherwise end your turn and let outcomes resume you. Do not use sleep, wait loops, or repeated list/inspect calls just to await completion. Your result is reported only after every leaf settled and its outcome reached you; outcomes are observations, not verification.'
+  'Start agents for subtasks with delegate. They cannot delegate further. Read-only agents see your checkout, including local changes; writers get separate worktrees without your edits. list, inspect and cancel cover only runs you started; omit id to stop them all. Do independent work or end your turn; results arrive after it ends. Do not sleep, loop or poll for them. Report only after all runs finish and you receive and verify their results.'
 
 const decodeControllerMessage = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
 const decodeResult = Schema.decodeUnknownEffect(WorkResultSchema)
-const parameters = Schema.toJsonSchemaDocument(CoordinatorWorkInputSchema, {
+export const coordinatorWorkParameters = Schema.toJsonSchemaDocument(CoordinatorWorkInputSchema, {
   onExcessProperty: 'error',
 }).schema
 
@@ -45,7 +45,7 @@ const unavailable = (message: string) => new WorkError({ message })
 
 const post = (message: CoordinationMessage, done: (failure?: WorkError) => void): void => {
   if (!process.connected || process.send === undefined) {
-    done(unavailable('Work controller IPC is unavailable'))
+    done(unavailable('Cannot reach dev'))
     return
   }
   try {
@@ -68,7 +68,7 @@ const exchange = (
       resume(result)
     }
     const cleanup = awaitReply(process, requestId, {
-      disconnected: () => settle(Effect.fail(unavailable('Work controller disconnected'))),
+      disconnected: () => settle(Effect.fail(unavailable('Lost connection to dev'))),
       reply: raw => {
         const reply = decodeControllerMessage(raw)
         if (
@@ -87,7 +87,7 @@ const exchange = (
   }).pipe(
     Effect.timeoutOrElse({
       duration,
-      orElse: () => Effect.fail(unavailable('Work controller did not answer')),
+      orElse: () => Effect.fail(unavailable('Dev did not reply')),
     })
   )
 
@@ -112,8 +112,8 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
   }
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      const onDisconnect = end('Work controller disconnected')
-      const onAbort = end('Child run cancelled')
+      const onDisconnect = end('Lost connection to dev')
+      const onAbort = end('Run cancelled')
       process.on('message', onMessage)
       process.on('disconnect', onDisconnect)
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -131,14 +131,14 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
       exchange({ type: 'work-request', input }, '180 seconds').pipe(
         Effect.flatMap(reply => {
           if (reply.type !== 'work-reply')
-            return Effect.fail(unavailable('Work controller sent an unexpected reply'))
+            return Effect.fail(unavailable('Unexpected reply from dev'))
           return reply.ok ? Effect.succeed(reply.result) : Effect.fail(unavailable(reply.error))
         })
       ),
     pending: exchange({ type: 'work-idle' }, '60 seconds').pipe(
       Effect.filterOrFail(
         (reply): reply is Pending => reply.type === 'work-pending',
-        () => unavailable('Work controller sent an unexpected reply')
+        () => unavailable('Unexpected reply from dev')
       )
     ),
     acknowledge: attempts =>
@@ -152,12 +152,14 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
   return link
 })
 
+export const COORDINATOR_PROMPT_SNIPPET = 'Delegate subtasks and inspect results'
+
 export const createCoordinatorWorkTool = (link: CoordinatorLink): Pi.ToolDefinition => ({
   name: 'work',
-  label: 'Leaf work',
+  label: 'Delegated work',
   description: COORDINATOR_TOOL_DESCRIPTION,
-  promptSnippet: 'Delegate leaf children and inspect their outcomes',
-  parameters,
+  promptSnippet: COORDINATOR_PROMPT_SNIPPET,
+  parameters: coordinatorWorkParameters,
   outputSchema: workResultOutputSchema,
   execute: (_toolCallId, input, signal) =>
     Effect.runPromise(
@@ -165,7 +167,7 @@ export const createCoordinatorWorkTool = (link: CoordinatorLink): Pi.ToolDefinit
         Effect.flatMap(raw =>
           decodeResult(raw, { onExcessProperty: 'error' }).pipe(
             Effect.mapError(cause =>
-              unavailable(`Work controller sent an invalid result: ${errorText(cause)}`)
+              unavailable(`Invalid work result from dev: ${errorText(cause)}`)
             )
           )
         ),
@@ -192,7 +194,7 @@ export const coordinatorWaitGuard =
       if (live === 0 && outcomes.length === 0) return undefined
       return {
         block: true,
-        reason: waitRefusal(`${live} live leaves, ${outcomes.length} undelivered outcomes`),
+        reason: waitRefusal(`${live} running, ${outcomes.length} results pending`),
       }
     })
   }
@@ -223,7 +225,7 @@ export const coordinate = Effect.fn('coordinate')(function* (
         .map(entry => entry.facts.id)
         .filter(id => received.has(id))
       if (acknowledged.length < pending.outcomes.length)
-        return yield* unavailable('A leaf outcome did not reach the coordinator conversation')
+        return yield* unavailable('Dev could not deliver a delegated result')
       yield* link.acknowledge(acknowledged)
     } else if (pending.live === 0) return
     else yield* link.wake

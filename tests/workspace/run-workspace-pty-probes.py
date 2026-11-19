@@ -66,7 +66,7 @@ STUB_ACTIONS = (
     Action('work-stop', 'DEV36_READY_FOR_WORK_STOP', '/work stop\r'),
     Action('resume-explicit', 'DEV36_READY_FOR_EXPLICIT_RESUME', 'resume it now\r'),
     Action('resume-refused', 'DEV36_READY_FOR_REFUSED_SWITCH', 'resume the other workspace\r'),
-    Action('resume-failure', 'DEV36_READY_FOR_FAILED_REBIND', 'resume the failing task\r'),
+    Action('resume-failure', 'DEV36_READY_FOR_FAILED_HANDOFF', 'resume the failing task\r'),
 )
 
 
@@ -300,8 +300,8 @@ PROBES = {
         ),
         expect=('This checkout holds a paused task on feat/paused', 'Work separately',
                 'Exit 0: done.'),
-        expect_flowed=('on feat/paused. The user chose to continue it here. Its 1 changed file '
-                       'comes from earlier work, whose history this conversation does not hold.',),
+        expect_flowed=('on feat/paused. The user chose to continue it here. 1 changed file '
+                       'remains from earlier work. Earlier messages are not here.',),
         env=(('LAUNCHER_PICKER', 'ask'),),
     ),
 
@@ -313,7 +313,7 @@ PROBES = {
             Action('resume', 'Press ctrl+o to show full startup help', '\x15/workspace resume\r',
                    delay=2.0),
             Action('choose', 'Resume paused work in:', '\r', delay=0.5),
-            Action('write', 'The user resumed this conversation',
+            Action('write', 'The user chose /workspace resume.',
                    "\x15!printf 'dev-task-%s' written > bound.txt; cat bound.txt\r", delay=1.0),
             Action('quit', 'dev-task-written', '\x15/quit\r', delay=1.0),
             Action('decline', '[y = release, Enter = keep]', '\r', delay=0.5),

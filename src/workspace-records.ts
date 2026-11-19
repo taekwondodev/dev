@@ -40,6 +40,7 @@ import {
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
+import { releaseOnceStopped } from './workspace-labels.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
 const TaskSchema = Schema.Struct({
@@ -201,7 +202,7 @@ export const getTask = (db: DatabaseSync, id: string): TaskRecord | undefined =>
   if (row === undefined) return undefined
   const value = parseRecord(TaskSchema, row.payload, `task ${id}`)
   if (value.id !== textField(row, 'id') || value.revision !== numberField(row, 'revision'))
-    requireReview(`Task columns disagree with payload: ${id}`)
+    requireReview(`Saved task data is inconsistent: ${id}`)
   return value
 }
 export const putTask = (db: DatabaseSync, value: TaskRecord): void => {
@@ -237,7 +238,7 @@ export const getWorkspace = (db: DatabaseSync, id: string): WorkspaceRecord | un
     value.status !== textField(row, 'status') ||
     value.revision !== numberField(row, 'revision')
   )
-    requireReview(`Workspace columns disagree with payload: ${id}`)
+    requireReview(`Saved checkout data is inconsistent: ${id}`)
   return value
 }
 export const getWorkspaceByPath = (db: DatabaseSync, path: string): WorkspaceRecord | undefined => {
@@ -276,7 +277,7 @@ export const getReservation = (
     (value.acquisitionId ?? null) !== (row.acquisition_id ?? null) ||
     value.revision !== numberField(row, 'revision')
   )
-    requireReview(`Reservation columns disagree with payload: ${value.id}`)
+    requireReview(`Saved checkout hold is inconsistent: ${value.id}`)
   return value
 }
 export const getReservationById = (db: DatabaseSync, id: string): ReservationRecord | undefined => {
@@ -304,7 +305,7 @@ export const deleteReservation = (db: DatabaseSync, value: ReservationRecord): v
     value.revision
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Reservation changed before its release was recorded: ${value.id}`)
+    requireReview(`The task changed before dev recorded release: ${value.id}`)
   statement(db, "DELETE FROM uses WHERE workspace_id=? AND stage='quiescent'").run(
     value.workspaceId
   )
@@ -369,7 +370,7 @@ export const updateReservation = (db: DatabaseSync, value: ReservationRecord): v
     value.workspaceId
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Reservation disappeared: ${value.id}`)
+    requireReview(`Checkout hold disappeared: ${value.id}`)
 }
 const BINDING_ROW = 'SELECT conversation_key,workspace_id,task_id,revision,payload FROM bindings'
 const recordedBinding = (row: SqlRow): BindingRecord => {
@@ -381,7 +382,7 @@ const recordedBinding = (row: SqlRow): BindingRecord => {
     (value.taskId ?? null) !== (row.task_id ?? null) ||
     value.revision !== numberField(row, 'revision')
   )
-    requireReview(`Binding columns disagree with payload: ${key}`)
+    requireReview(`Saved conversation checkout is inconsistent: ${key}`)
   return value
 }
 export const getBinding = (db: DatabaseSync, key: string): BindingRecord | undefined => {
@@ -418,7 +419,7 @@ const recordedUse = (row: SqlRow): UseRecord => {
     (value.withinUseId ?? null) !== (row.within_use_id ?? null) ||
     value.revision !== numberField(row, 'revision')
   )
-    requireReview(`Workspace use columns disagree with payload: ${id}`)
+    requireReview(`Saved checkout access is inconsistent: ${id}`)
   return value
 }
 export const getUse = (db: DatabaseSync, id: string): UseRecord | undefined => {
@@ -445,9 +446,13 @@ export const putUse = (db: DatabaseSync, value: UseRecord): void => {
 export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
   const stored = getUse(db, value.id)
   if (stored?.stage === 'unknown' && value.stage !== 'unknown')
-    requireReview(`Workspace use ${value.id} is unknown; only explicit recovery can resolve it`)
+    requireReview(`Dev cannot confirm checkout use ${value.id} ended; recovery needed`)
   if (value.stage === 'quiescent')
-    assertNoActiveDependentUseInDb(db, value.id, `Cannot settle workspace use ${value.id}`)
+    assertNoActiveDependentUseInDb(
+      db,
+      value.id,
+      `Cannot record the end of checkout use ${value.id}`
+    )
   statement(
     db,
     'UPDATE uses SET workspace_id=?,task_id=?,reservation_id=?,acquisition_id=?,access=?,stage=?,within_use_id=?,revision=?,payload=? WHERE id=?'
@@ -464,7 +469,7 @@ export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
     value.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace use disappeared: ${value.id}`)
+    requireReview(`Dev lost track of checkout access: ${value.id}`)
 }
 const OPERATION_ROW = 'SELECT id,kind,phase,workspace_id,task_id,revision,payload FROM operations'
 const recordedOperation = (row: SqlRow): OperationRecord => {
@@ -478,7 +483,7 @@ const recordedOperation = (row: SqlRow): OperationRecord => {
     value.taskId !== textField(row, 'task_id') ||
     operationRevision(value) !== numberField(row, 'revision')
   )
-    requireReview(`Operation columns disagree with payload: ${id}`)
+    requireReview(`Saved operation data is inconsistent: ${id}`)
   return value
 }
 export const getOperation = (db: DatabaseSync, id: string): OperationRecord | undefined => {
@@ -554,7 +559,7 @@ export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: st
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)
     requireReview(
-      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on this workspace; dev workspace release completes it: ${workspaceIdValue}`
+      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. ${[...new Set(unresolved.map(operation => operation.taskId))].map(taskId => releaseOnceStopped(taskId)).join(' ')} That retries the release; check its result.`
     )
 }
 export const unresolvedReleases = (
@@ -578,7 +583,7 @@ export const getPublications = (db: DatabaseSync, taskId: string): PublicationRe
       `publication ${textField(row, 'id')}`
     )
     if (value.id !== textField(row, 'id') || value.taskId !== taskId)
-      requireReview(`Publication columns disagree with payload: ${value.id}`)
+      requireReview(`Saved publication data is inconsistent: ${value.id}`)
     return value
   })
 export const putPublication = (db: DatabaseSync, value: PublicationReference): void => {
@@ -608,7 +613,7 @@ const assertNoActiveDependentUseInDb = (
   const dependents = activeDependentUses(db, useIdValue)
   if (dependents.length > 0)
     blocked(
-      `${action} while dependent scoped operations remain live: ${dependents
+      `${action} while related operations may still be running: ${dependents
         .map(use => `${use.id} (${use.effect ?? 'ordinary'}/${use.stage})`)
         .join(', ')}`
     )
@@ -617,9 +622,8 @@ export const assertWithinLiveInDb = (db: DatabaseSync, use: UseRecord): void => 
   if (use.withinUseId === undefined) return
   const parent = getUse(db, use.withinUseId)
   if (parent === undefined)
-    requireReview(`Scoped operation lost its within grant: ${use.withinUseId}`)
-  if (parent.stage !== 'authorized')
-    blocked(`Scoped operation cannot start under a ${parent.stage} within grant: ${parent.id}`)
+    requireReview(`The operation lost checkout permission: ${use.withinUseId}`)
+  if (parent.stage !== 'authorized') blocked(`No active permission to start this operation`)
 }
 
 export const makeWorkspaceRecord = (
@@ -662,7 +666,7 @@ export const validateWorkspacePath = (
       `Workspace was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
     )
   if (record.status !== 'ready')
-    return requireReview(`Workspace allocation is unresolved: ${record.path}`)
+    return requireReview(`Worktree creation may be unfinished: ${record.path}`)
   let actual: GitWorkspace
   try {
     actual = observed ?? canonicalGitWorkspace(record.path)

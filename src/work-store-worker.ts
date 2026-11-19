@@ -615,7 +615,7 @@ const list = (request: Extract<RpcRequest, { readonly op: 'list' }>): ListValue 
       } catch (cause) {
         if (!(cause instanceof StoreFault) || cause.code !== 'corrupt-record') throw cause
         if (!safelyAttributable(row, request.sessionId)) fail('corrupt-database')
-        unavailable.push({ id: asAttemptId(row.id), error: 'Record payload is unavailable' })
+        unavailable.push({ id: asAttemptId(row.id), error: 'Saved run data is unreadable' })
       }
     }
     return { records, unavailable }

@@ -94,7 +94,7 @@ export const attachConversation = (
           selected.workspaceId === pending.handoff.target.workspaceId)
       if (selectionMatches && canonicalPathSlot(input.cwd) === pending.handoff.target.checkout)
         return { state: live, targetOperationId: pending.handoff.operationId }
-      requireReview('A pending live workspace handoff can only reopen its exact destination')
+      requireReview('The checkout switch can only reopen its selected destination')
     }
     if (input.selection !== undefined) {
       const selection = resolveSelection(authority, input.selection)
@@ -104,7 +104,9 @@ export const attachConversation = (
         selection.reservation.taskId === live.binding.taskId
       )
         return { state: live }
-      requireReview('A live attachment cannot be moved without its host handoff')
+      requireReview(
+        'This conversation already works in another checkout and has no switch to the selected one pending. Nothing changed.'
+      )
     }
     return { state: live }
   }
@@ -120,14 +122,14 @@ export const attachConversation = (
     if (previous !== undefined && pendingOperationId !== undefined) {
       if (!retireUnstartedTransition(authority, pendingOperationId))
         requireReview(
-          `The last workspace switch of this conversation (${pendingOperationId}) may have reached the host, so it cannot be resumed until explicit recovery exists; its history is unchanged`
+          `The last checkout switch may not have finished. Dev cannot reopen this conversation safely; its history is unchanged`
         )
       const { repo } = previous
       const kept = inDb(authority, repo, db =>
         transaction(db, () => {
           const current = getBinding(db, normalized.key)
           if (current === undefined || current.pendingOperationId !== pendingOperationId)
-            requireReview('Conversation binding changed while its unstarted switch was withdrawn')
+            requireReview('The checkout changed while cancelling the switch')
           const withdrawn = { ...current, pendingOperationId: undefined }
           putBinding(db, withdrawn)
           return withdrawn
@@ -158,7 +160,7 @@ export const attachConversation = (
           transaction(db, () => {
             const current = getBinding(db, normalized.key)
             if (current === undefined || current.revision !== previous.binding.revision)
-              requireReview('Conversation binding changed during explicit recovery')
+              requireReview('The checkout changed during recovery')
             putBinding(db, binding)
           })
         )
@@ -167,7 +169,7 @@ export const attachConversation = (
           transaction(db, () => {
             const current = getBinding(db, normalized.key)
             if (current === undefined || current.revision !== previous.binding.revision)
-              requireReview('Conversation binding changed during explicit recovery')
+              requireReview('The checkout changed during recovery')
             putBinding(db, {
               ...current,
               superseded: true,
@@ -196,22 +198,19 @@ export const attachConversation = (
     } else {
       ;({ repo: repoId, binding } = previous)
       const workspace = inDb(authority, repoId, db => getWorkspace(db, binding.workspaceId))
-      if (workspace === undefined)
-        requireReview(`Confirmed conversation workspace is missing: ${binding.workspaceId}`)
+      if (workspace === undefined) requireReview(`Checkout missing: ${binding.workspaceId}`)
       if (workspace.status === 'removed')
         requireReview(
-          `The workspace bound to this conversation was removed${workspace.removalOperationId === undefined ? '' : ` by release ${workspace.removalOperationId}`} and is not recreated: ${workspace.path}`
+          `This conversation's checkout was removed and will not be recreated: ${workspace.path}`
         )
       if (lstatIfExists(workspace.path) === undefined)
         requireReview(
-          `The workspace bound to this conversation no longer exists and is not recreated: ${workspace.path}`
+          `This conversation's checkout is gone and will not be recreated: ${workspace.path}`
         )
       validateWorkspace(authority, workspace)
       inDb(authority, repoId, db => assertNoUnresolvedRelease(db, workspace.id))
       if (lstatIfExists(binding.cwd)?.isDirectory() !== true)
-        requireReview(
-          `The working directory bound to this conversation no longer exists and is not recreated: ${binding.cwd}`
-        )
+        requireReview(`The working directory is gone and will not be recreated: ${binding.cwd}`)
     }
     const state: ConversationState = {
       key: normalized.key,
@@ -282,7 +281,7 @@ const ensureNoUnresolvedUse = (
 ): void => {
   const active = inDb(authority, repo, db => getActiveUseRows(db, workspaceIdValue))
   if (active.length > 0)
-    blocked(`Workspace has unresolved live-use facts and cannot be resumed: ${workspaceIdValue}`)
+    blocked(`Dev cannot confirm prior use stopped, so it cannot resume: ${workspaceIdValue}`)
   inDb(authority, repo, db => assertNoUnresolvedRelease(db, workspaceIdValue))
 }
 

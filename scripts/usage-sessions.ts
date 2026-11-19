@@ -168,14 +168,14 @@ const AttemptRecord = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(['agent', 'process']),
   parent: Schema.optional(Schema.String),
-  coordinator: Schema.optional(Schema.Boolean),
+  coordinate: Schema.optional(Schema.Boolean),
   sessionFile: Schema.optional(Schema.String),
 })
 export type AttemptRecord = typeof AttemptRecord.Type
 
 const decodeAttempt = Schema.decodeUnknownOption(AttemptRecord)
 const decodeAttemptResult = Schema.decodeUnknownOption(
-  Schema.Struct({ kind: Schema.Literal('attempt'), attempt: AttemptRecord })
+  Schema.Struct({ kind: Schema.Literal('run'), run: AttemptRecord })
 )
 const decodeOutcomeChildren = Schema.decodeUnknownOption(
   Schema.Struct({ children: Schema.Array(Schema.Unknown) })
@@ -389,7 +389,7 @@ const resultPayload = (value: unknown): Payload | undefined =>
         truncation: truncationOf(message.details),
         attempt: work
           ? Option.getOrUndefined(
-              Option.map(decodeAttemptResult(message.details), result => result.attempt)
+              Option.map(decodeAttemptResult(message.details), result => result.run)
             )
           : undefined,
         usage: message.usage === undefined ? undefined : usageOf(message.usage),

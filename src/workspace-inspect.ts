@@ -24,6 +24,7 @@ import {
   type WorkspaceRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
+import { releaseOnceStopped, taskRelease } from './workspace-labels.ts'
 import { rows, textField } from './workspace-sqlite.ts'
 import { effectiveUid, hasErrorCode, lstatIfExists } from './workspace-platform.ts'
 
@@ -54,66 +55,80 @@ export const checkoutMissing = (workspace: WorkspaceRecord): boolean => {
 
 const MISSING_REASON = 'The checkout directory no longer exists.'
 
-const assessWorkspace = (input: {
+const sentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`)
+
+const missingAdvice = (taskId: string | undefined): string => {
+  const onPurpose = 'Restore it at this path. If it was deleted on purpose:'
+  const forget = `${releaseOnceStopped(undefined)} That also forgets this checkout once no running session, pending operation or open conversation refers to it.`
+  return taskId === undefined
+    ? `${onPurpose} ${forget}`
+    : `${onPurpose} ${releaseOnceStopped(taskId)} Then: ${forget}`
+}
+
+export const assessWorkspace = (input: {
   readonly identityReason: string | undefined
   readonly missing: boolean
   readonly pending: { readonly id: string; readonly stage: string } | undefined
   readonly unresolved: boolean
-  readonly unknown: boolean
+  readonly unknown: readonly string[]
   readonly live: boolean
   readonly abandoned: () => readonly string[]
   readonly reserved: boolean
+  readonly taskId?: string
 }): Pick<WorkspaceView, 'outcome' | 'reason' | 'nextAction'> => {
   const operation =
     input.pending === undefined
       ? undefined
-      : `Operation ${input.pending.id} is ${input.pending.stage}; inspection does not replay it.`
+      : `Earlier operation ${input.pending.id}: ${input.pending.stage}; checking does not redo it.`
+  const taskId = input.reserved ? (input.taskId ?? '<taskId>') : undefined
+  const abandoned = input.abandoned()
+  const blockers = [
+    ...(input.unknown.length > 0
+      ? [`Dev could not confirm operations ${input.unknown.join(', ')} stopped.`]
+      : []),
+    ...(abandoned.length > 0
+      ? [`Operations ${abandoned.join(', ')} of ended sessions may still be running.`]
+      : []),
+  ]
+  const withBlockers = (reason: string): string => [reason, ...blockers].join(' ')
   if (input.missing && input.pending === undefined)
     return {
       outcome: 'review-required',
-      reason: MISSING_REASON,
-      nextAction: `Restore it at this path, or if it was deleted on purpose, ${
-        input.reserved ? 'run dev workspace release <task-id>, then ' : ''
-      }dev workspace release pre-existing forgets it.`,
+      reason: withBlockers(MISSING_REASON),
+      nextAction: missingAdvice(taskId),
     }
   if (input.identityReason !== undefined || input.unresolved)
     return {
       outcome: 'review-required',
-      reason: input.identityReason ?? operation ?? 'An operation outcome is unresolved.',
-      nextAction: 'Inspect the exact identity/operation; do not retry effects automatically.',
+      reason: withBlockers(
+        [input.identityReason, operation]
+          .filter(part => part !== undefined)
+          .map(sentence)
+          .join(' ') || 'An earlier operation may not have finished.'
+      ),
+      nextAction: 'Check what changed. Do not retry automatically.',
     }
-  if (input.unknown)
+  if (blockers.length > 0)
     return {
       outcome: 'blocked',
-      reason: operation ?? 'A persisted workspace use is unresolved.',
-      nextAction: 'Wait for a directly observed safe boundary or require explicit recovery.',
-    }
-  const abandoned = input.abandoned()
-  if (abandoned.length > 0)
-    return {
-      outcome: 'blocked',
-      reason:
-        operation ??
-        `Uses ${abandoned.join(', ')} were left unsettled by dev sessions that have ended; processes they started may still run.`,
-      nextAction: `Do not reuse it for writing; once their processes are gone, ${
-        input.reserved ? 'dev workspace release <task-id>' : 'dev workspace release pre-existing'
-      } clears them.`,
+      reason: [...(operation === undefined ? [] : [operation]), ...blockers].join(' '),
+      nextAction: `Do not write here or retry those operations. ${releaseOnceStopped(taskId)}`,
     }
   if (input.live)
     return {
       outcome: 'active',
-      reason: operation ?? 'A persisted workspace use is still active.',
-      nextAction: 'Do not take this workspace from its current user.',
+      reason: operation ?? 'A session or process is using this checkout.',
+      nextAction: 'Wait until it is no longer in use.',
     }
   if (input.reserved)
     return {
-      outcome: 'preserved-for-resume',
-      reason: operation ?? 'Task reservation is retained for explicit resume.',
-      nextAction: 'Resume only by exact task/workspace selection.',
+      outcome: 'paused',
+      reason: operation ?? 'Checkout kept for this task.',
+      nextAction: 'Select the task and checkout to resume.',
     }
   return {
-    outcome: 'preserved-for-resume',
-    reason: operation ?? 'Registered checkout; no exclusive task reservation is held.',
+    outcome: 'idle',
+    reason: operation ?? 'No task holds this checkout.',
     nextAction: 'Select or create a task before requesting write access.',
   }
 }
@@ -142,12 +157,12 @@ export const sampledPaths = (paths: readonly string[]): string =>
 
 const DECIDER_TEXT: Record<ReleaseDecider, string> = {
   user: 'By dev workspace release',
-  quit: 'By the sweep at quit',
-  replacement: 'By the sweep at a conversation replacement',
-  allocation: 'By the sweep before a worktree allocation',
+  quit: 'By cleanup at quit',
+  replacement: 'By cleanup when changing conversations',
+  allocation: 'By cleanup before creating a worktree',
   'orb-recovery': 'By the orb recovery at dev --orb startup',
   'orb-start': 'By the failed dev --orb start that reserved it',
-  admission: 'By a write admitted in a checkout with no commits',
+  admission: 'By allowing a write before the first commit',
 }
 
 const receiptView = (
@@ -164,10 +179,10 @@ const receiptView = (
     path: workspace.path,
     origin: workspace.origin,
     outcome: release.effect === 'remove-worktree' ? 'removed' : 'released',
-    reason: `${DECIDER_TEXT[release.decider]}: ${release.result ?? (removed ? 'Removed.' : 'Reservation released.')}`,
+    reason: `${DECIDER_TEXT[release.decider]}: ${release.result ?? (removed ? 'Removed.' : 'Checkout freed for other work.')}`,
     nextAction: removed
       ? 'Do not resume a conversation into this path; start from an existing checkout with dev --cwd PATH.'
-      : 'The checkout is unreserved; select or create a task before writing there.',
+      : 'Select or create a task before writing here.',
     uses: [],
     pending: [],
   }
@@ -188,7 +203,8 @@ export const workspaceStanding = (
   db: DatabaseSync,
   workspace: WorkspaceRecord,
   reserved: boolean,
-  uses: readonly UseRecord[]
+  uses: readonly UseRecord[],
+  taskId?: string
 ): WorkspaceStanding => {
   const pending = openOperations(db, workspace.id).map(value => ({
     id: value.id,
@@ -209,10 +225,11 @@ export const workspaceStanding = (
       missing,
       pending: pending[0],
       unresolved: pending.some(operation => operation.stage !== 'intent'),
-      unknown: uses.some(use => use.stage === 'unknown'),
+      unknown: uses.filter(use => use.stage === 'unknown').map(use => use.id),
       live: uses.some(use => isActiveUse(use)),
       abandoned: () => abandonedUseIds(authority, db, uses),
       reserved,
+      ...(taskId === undefined ? {} : { taskId }),
     }),
     missing,
     pending,
@@ -274,7 +291,7 @@ export const inspectWorkspaces = (
       for (const row of workspaceRows) {
         const id = textField(row, 'id')
         const workspace = getWorkspace(db, id)
-        if (workspace === undefined) requireReview(`Workspace inventory row disappeared: ${id}`)
+        if (workspace === undefined) requireReview(`Checkout record disappeared: ${id}`)
         present.add(id)
         const reservation = getReservation(db, id)
         if (input.taskId !== undefined && reservation?.taskId !== input.taskId) continue
@@ -286,7 +303,8 @@ export const inspectWorkspaces = (
           db,
           workspace,
           reservation !== undefined,
-          uses
+          uses,
+          reservation?.taskId
         )
         for (const operation of pending) visibleOperationIds.add(operation.id)
         heads ??= repositoryHeads(repository.commonPath)
@@ -342,11 +360,11 @@ export const inspectWorkspaces = (
           path: operation.targetPath,
           origin: 'managed',
           outcome: 'review-required',
-          reason: `Pending ${operation.kind} operation ${operation.id} has no ready workspace record (${operation.phase}).`,
+          reason: `No usable checkout after operation ${operation.id} (${operation.phase}).`,
           nextAction:
             operation.kind === 'allocation'
-              ? `dev workspace release ${operation.taskId} clears it and removes what Git created of the worktree.`
-              : 'Observe the exact Git effect and require explicit recovery; do not replay or adopt it.',
+              ? `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run ${taskRelease(operation.taskId)}, including what Git created of this one.`
+              : 'Check what Git changed. Do not retry or use the checkout; the user must resolve it.',
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],
           reservationId: operation.reservationId,

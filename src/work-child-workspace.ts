@@ -29,7 +29,10 @@ export interface ControllerChannel extends ReplyChannel {
 }
 
 const unavailableError = (message: string) =>
-  new WorkspaceError({ outcome: 'unavailable', message })
+  new WorkspaceError({
+    outcome: 'unavailable',
+    message: `Checkout permission unconfirmed: ${message}`,
+  })
 
 export type ChildWorkspaceOperation =
   | 'read'
@@ -43,7 +46,7 @@ export const checkChildWorkspace = (
 ): Effect.Effect<void, WorkspaceError> =>
   Effect.callback<void, WorkspaceError>(resume => {
     if (!channel.connected || channel.send === undefined) {
-      resume(Effect.fail(unavailableError('Workspace controller IPC is unavailable')))
+      resume(Effect.fail(unavailableError('cannot reach dev')))
       return
     }
     const requestId = newId()
@@ -52,8 +55,7 @@ export const checkChildWorkspace = (
       resume(result)
     }
     const cleanup = awaitReply(channel, requestId, {
-      disconnected: () =>
-        settle(Effect.fail(unavailableError('Workspace controller disconnected'))),
+      disconnected: () => settle(Effect.fail(unavailableError('lost connection to dev'))),
       reply: raw => {
         const reply = decodeReply(raw)
         if (
@@ -68,7 +70,7 @@ export const checkChildWorkspace = (
             : Effect.fail(
                 new WorkspaceError({
                   outcome: 'blocked',
-                  message: reply.value.reason ?? 'Workspace authorization rejected',
+                  message: reply.value.reason ?? 'No permission to use this checkout',
                 })
               )
         )
@@ -95,8 +97,7 @@ export const checkChildWorkspace = (
   }).pipe(
     Effect.timeoutOrElse({
       duration: '10 seconds',
-      orElse: () =>
-        Effect.fail(unavailableError('Workspace authorization acknowledgment unavailable')),
+      orElse: () => Effect.fail(unavailableError('dev did not reply')),
     })
   )
 
@@ -139,7 +140,7 @@ export const childWorkspaceExtension =
           if (!read && grant.access !== 'write')
             return yield* new WorkspaceError({
               outcome: 'blocked',
-              message: 'Child workspace is read-only',
+              message: 'This agent has read-only access',
             })
           yield* checkChildWorkspace(grant, read ? 'read' : 'write', channel)
           if (nativeWrite) {

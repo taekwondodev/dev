@@ -204,9 +204,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     }))
     const grant = scopedGrantOf(scoped)
     if (grant === undefined)
-      return yield* failure(
-        'Workspace admission changed before the shell started; the command was not executed.'
-      )
+      return yield* failure('The checkout changed before start. The command did not run.')
     if (grant instanceof WorkspaceError) return yield* grant
     const report: Report = fact => attachment.reportExecution(grant, fact)
     const notLaunched = (reason: string, cause: ShellCommandError | WorkspaceError) =>
@@ -214,7 +212,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         Effect.andThen(Effect.fail(cause))
       )
     const refusal = (): string | undefined => {
-      if (stopping) return 'the host is stopping its shells'
+      if (stopping) return 'this conversation is stopping its commands'
       if (signal?.aborted === true) return 'aborted'
       return undefined
     }
@@ -242,7 +240,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         'the shell did not start',
         Exit.isFailure(outcome)
           ? failure('the shell did not start')
-          : failure('The shell exited before its identity was available')
+          : failure('The shell exited before dev could identify it')
       )
     }
 
@@ -258,7 +256,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
       })
       const table = yield* processTable.pipe(Effect.mapError(cause => failure(cause.message)))
       const root = table.find(item => item.pid === pid)
-      if (root === undefined) return yield* failure('the shell identity could not be captured')
+      if (root === undefined) return yield* failure('dev could not identify the new shell')
       return { gate, root }
     }).pipe(
       Effect.catch(cause =>
@@ -318,8 +316,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     const timeoutMs = timeout === undefined ? undefined : timeout * 1000
     if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0))
       return yield* failure('Invalid timeout: must be a finite number of seconds')
-    if (stopping)
-      return yield* failure('The workspace shell is stopping; the command was not executed.')
+    if (stopping) return yield* failure('The shell is stopping. The command did not run.')
     const launching = Deferred.makeUnsafe<void>()
     launches.add(launching)
     const launched = yield* launch(command, cwd, env, signal).pipe(

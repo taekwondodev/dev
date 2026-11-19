@@ -88,6 +88,7 @@ import {
 import { transaction } from './workspace-sqlite.ts'
 import { newId, now } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
+import { releaseOnceStopped } from './workspace-labels.ts'
 
 const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<WorkspaceId>()
@@ -104,7 +105,7 @@ export const currentSource = (
       ? state.pending.targetBinding
       : state.binding
   const workspace = inDb(authority, state.repositoryId, db => getWorkspace(db, binding.workspaceId))
-  if (workspace === undefined) requireReview(`Bound workspace is missing: ${binding.workspaceId}`)
+  if (workspace === undefined) requireReview(`Checkout missing: ${binding.workspaceId}`)
   return {
     repo: state.repositoryId,
     binding,
@@ -121,20 +122,19 @@ const validateWithinGrant = (
 ): { readonly lease: GrantLease; readonly workspace: WorkspaceRecord; readonly use: UseRecord } => {
   const owners = attachment.state.leaseAttachments.get(grant.useId)
   if (owners === undefined || !owners.has(attachment.token))
-    requireReview('Scoped operation grant was not issued to this attachment')
+    requireReview('No permission for this operation in this conversation')
   const lease = validateGrant(authority, attachment.state, grant, observed)
   const result = inDb(authority, grant.repositoryId, db => {
     const { workspace, use } = fencedUse(
       db,
       grant,
-      'Scoped operation grant has no live workspace use'
+      'Permission for this operation is no longer active'
     )
     if (use.effect !== undefined || use.execution !== undefined)
-      invalid('A scoped operation must be admitted within an ordinary workspace grant')
+      invalid('This operation needs checkout access')
     if (use.access !== grant.access || use.stage === 'quiescent')
-      requireReview('Scoped operation grant is no longer active')
-    if (use.stage !== 'authorized')
-      blocked(`Scoped operation grant is unresolved: ${use.id} (${use.stage})`)
+      requireReview('Permission for this operation ended')
+    if (use.stage !== 'authorized') blocked(`Dev cannot confirm permission for this operation`)
     return { workspace, use }
   })
   return { lease, ...result }
@@ -154,14 +154,12 @@ interface Takeover {
 
 const refuseWithoutCommits = (path: string, holder: WorkspaceId | undefined): never =>
   blocked(
-    `Checkout ${path} has no commits yet, so no worktree can take this write, and another dev session is writing it or left its use unsettled. Quit that session, or once it has ended run${holder === undefined ? ' in that checkout' : ''}: dev workspace release ${holder ?? 'pre-existing'}. Files stay.`
+    `Checkout ${path} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry once that session's work is confirmed stopped. ${releaseOnceStopped(holder)}`
   )
 
 const assertNoCommitArrived = (authority: WorkspaceAuthority, workspace: WorkspaceRecord): void => {
   if (!hasNoCommits(validateWorkspace(authority, workspace)))
-    blocked(
-      `Checkout ${workspace.path} received its first commit while this write was being admitted; retry the operation.`
-    )
+    blocked(`Checkout ${workspace.path} got its first commit during the write check. Retry.`)
 }
 
 const assertStillPaused = (
@@ -178,9 +176,7 @@ const assertStillPaused = (
     getActiveUseRows(db, workspace.id).some(use => !state.leases.has(use.id)) ||
     openOperations(db, workspace.id).some(operation => operation.phase !== 'intent')
   )
-    blocked(
-      `The paused task of ${workspace.path} changed while this write was being admitted; retry the operation.`
-    )
+    blocked(`The paused task of ${workspace.path} changed during the write check. Retry.`)
 }
 
 const reserveForTask = (
@@ -196,7 +192,7 @@ const reserveForTask = (
 ): void => {
   const recorded = getReservation(db, source.workspace.id)
   if (recorded !== undefined && recorded.taskId === claim.taskId) {
-    if (recorded.id !== claim.reservationId) requireReview('Workspace reservation identity changed')
+    if (recorded.id !== claim.reservationId) requireReview('The checkout kept for the task changed')
     updateReservation(db, {
       ...recorded,
       acquisitionId: claim.acquisitionId,
@@ -217,7 +213,7 @@ const reserveForTask = (
         undefined
       ),
       phase: 'confirmed',
-      result: `Reservation ${recorded.id} released to task ${claim.taskId}; files unchanged.`,
+      result: `Checkout now kept for task ${claim.taskId}; files unchanged.`,
     })
     deleteReservation(db, recorded)
   }
@@ -349,8 +345,8 @@ const assertAdmitting = (authority: WorkspaceAuthority, attachment: AttachmentHa
   attachment.assertOpen()
   const { state } = attachment
   if (state.review !== undefined) requireReview(state.review)
-  if (state.closing || state.parked)
-    blocked('Workspace admission is parked during a host transition')
+  if (state.closing) blocked('This conversation is closing its checkout access')
+  if (state.parked) blocked('This conversation is switching checkouts')
   retryDeferredGateReleases(authority, state)
 }
 
@@ -471,7 +467,7 @@ const admitFrom = <Reply>(
   if (takeover !== undefined && !unborn) return isolate(boundTaskId ?? newId())
   if (inDb(authority, source.repo, writers)) {
     if (ownTaskContended)
-      blocked(`The selected task has an unresolved writer use: ${source.workspace.path}`)
+      blocked(`Dev cannot confirm the previous writer stopped: ${source.workspace.path}`)
     return isolate(newId())
   }
   let gates: PathGates
@@ -517,14 +513,14 @@ const admitFrom = <Reply>(
           currentBinding.revision !== source.binding.revision ||
           currentBinding.workspaceId !== source.workspace.id
         )
-          requireReview('Conversation binding changed during write admission')
+          requireReview('The checkout changed before the write')
         if (joined !== undefined) assertStillPaused(db, state, source.workspace, joined)
         reserveForTask(
           db,
           source,
           { taskId, reservationId, acquisitionId },
           takeover,
-          `Checkout is reserved by another task: ${source.workspace.path}`
+          `Another task is keeping this checkout: ${source.workspace.path}`
         )
         if (getTask(db, taskId) === undefined)
           putTask(db, { id: taskId, repositoryId: source.repo, revision: 0, createdAt: now() })
@@ -564,10 +560,10 @@ const assertLocalCoordinator = (
 ): void => {
   const owners = attachment.state.leaseAttachments.get(coordinator.useId)
   if (owners === undefined || !owners.has(attachment.token))
-    requireReview('Coordinator grant was not issued to this attachment')
+    requireReview('This conversation did not authorize that delegated agent')
   if (coordinator.repositoryId !== attachment.state.repositoryId)
     invalid(
-      'A coordinator delegated into another checkout can start only read-only leaves there; it writes that checkout itself'
+      'An agent sent to another checkout must write there itself; it can delegate only read-only work'
     )
 }
 
@@ -581,26 +577,20 @@ const assertForeignWriteScope = (
   if (caller !== undefined) {
     const owners = attachment.state.leaseAttachments.get(caller.useId)
     if (owners === undefined || !owners.has(attachment.token))
-      requireReview(
-        'The caller grant belongs to another attachment; retry from the current workspace'
-      )
+      requireReview('Permission changed; retry from the current checkout')
     const lease = validateGrant(authority, attachment.state, caller)
     if (caller.access !== 'write' || isScoped(lease))
-      blocked(
-        'The caller has no workspace writer grant; request the change through a writing lead or child'
-      )
+      blocked('No permission to write; ask a conversation or delegated agent with write access')
     const stage = inDb(
       authority,
       caller.repositoryId,
-      db => fencedUse(db, caller, 'Caller workspace use is missing').use.stage
+      db => fencedUse(db, caller, 'Dev lost track of checkout access').use.stage
     )
     if (stage !== (lease.kind === 'execution' ? 'started' : 'authorized'))
-      blocked(
-        'The caller workspace use is no longer active; retry from the current authorized workspace'
-      )
+      blocked('Checkout access ended; retry from the current checkout')
   }
   if (isWithin(authority.root, cwd) && !isWithin(authority.paths.worktrees, cwd))
-    invalid(`The destination is dev authority metadata: ${cwd}; select a project checkout instead`)
+    invalid(`Dev private storage: ${cwd}. Select a project checkout`)
   if (
     isWithin(authority.root, cwd) &&
     (caller === undefined ||
@@ -608,9 +598,7 @@ const assertForeignWriteScope = (
       !isWithin(authority.paths.worktrees, caller.checkout) ||
       !isWithin(caller.checkout, cwd))
   )
-    invalid(
-      `The destination is in dev-managed storage outside the caller's authorized workspace: ${cwd}; ask the conversation owning that workspace to make the change`
-    )
+    invalid(`No permission to write in ${cwd}. Ask the conversation using that checkout`)
 }
 
 const foreignSource = (authority: WorkspaceAuthority, cwd: string): WorkspaceSource => {
@@ -619,7 +607,7 @@ const foreignSource = (authority: WorkspaceAuthority, cwd: string): WorkspaceSou
     git = canonicalGitWorkspace(cwd)
   } catch (cause) {
     return invalid(
-      `Operation cwd is outside the selected workspace and not inside another Git checkout: ${cwd} (${errorText(cause)})`
+      `cwd is outside this checkout and not inside another Git checkout: ${cwd} (${errorText(cause)})`
     )
   }
   const repo = authority.registerRepository(git)
@@ -652,7 +640,7 @@ const reserveForeignWriter = (
       : undefined
   const unborn = hasNoCommits(source.git)
   if (takeover !== undefined && !unborn)
-    blocked(`Checkout ${workspace.path} is reserved by another task; ${remedy}`)
+    blocked(`Another task is keeping ${workspace.path}; ${remedy}`)
   if (inDb(authority, repo, writers)) {
     if (unborn) refuseWithoutCommits(workspace.path, reservation?.taskId)
     blocked(`Checkout ${workspace.path} has a live writer from another conversation; ${remedy}`)
@@ -684,7 +672,7 @@ const reserveForeignWriter = (
           source,
           { taskId, reservationId, acquisitionId },
           takeover,
-          `Checkout ${workspace.path} is reserved by another task; ${remedy}`
+          `Another task is keeping ${workspace.path}; ${remedy}`
         )
         if (getTask(db, taskId) === undefined)
           putTask(db, { id: taskId, repositoryId: repo, revision: 0, createdAt: now() })
@@ -722,9 +710,7 @@ const authorizeForeign = (
   )
     invalid(`Operation cwd is outside the selected workspace: ${cwd}`)
   if (isWithin(authority.root, cwd))
-    invalid(
-      `The selected checkout is inside dev authority storage or a managed workspace: ${cwd}; select a source checkout outside dev-managed storage for delegation`
-    )
+    invalid(`Cannot delegate into dev private storage: ${cwd}. Choose a checkout outside it`)
   const source = foreignSource(authority, cwd)
   const taskId = state.foreignTasks.get(source.workspace.id)
   if (operation.kind === 'read') {
@@ -751,9 +737,9 @@ const attributeReader = (
   grant: WorkspaceGrant,
   execution: WorkspaceExecution | undefined
 ): WorkspaceAuthorization => {
-  if (execution === undefined) invalid('A delegated reader needs an execution identity')
+  if (execution === undefined) invalid('No run ID for the delegated reader')
   const base = state.leases.get(grant.useId)
-  if (base === undefined) requireReview('Reader grant disappeared before execution attribution')
+  if (base === undefined) requireReview('Read permission ended before the run')
   return executionUse(authority, state, validateGrant(authority, state, base.grant), execution)
 }
 
@@ -770,10 +756,9 @@ const authorizeScoped = (
     workspace,
     use: withinUse,
   } = validateWithinGrant(authority, attachment, within, observed)
-  if (within.access !== 'write')
-    blocked('A read-only workspace grant cannot authorize a scoped mutation')
+  if (within.access !== 'write') blocked('Read-only access does not allow writes')
   const cwd = realpathSync(resolve(operation.cwd ?? within.cwd))
-  if (!isWithin(workspace.path, cwd)) invalid(`Scoped operation cwd escapes its workspace: ${cwd}`)
+  if (!isWithin(workspace.path, cwd)) invalid(`Working directory is outside the checkout: ${cwd}`)
   const kind: LeaseKind =
     operation.kind === 'opaque'
       ? { kind: operation.kind, withinUseId: withinUse.id, execution: operation.execution }
@@ -787,7 +772,7 @@ const authorizeScoped = (
         )
       : undefined
   if (destination !== undefined && destination.kind !== 'workspace')
-    invalid('A workspace-scoped write grant covers only its own workspace')
+    invalid('Write permission covers only this checkout')
   const operationPath = destination?.path
   const use = {
     id: newId(),
@@ -821,7 +806,7 @@ const authorizeScoped = (
         currentWithin.access !== within.access ||
         currentWithin.stage !== 'authorized'
       )
-        requireReview('Within grant changed before scoped operation admission')
+        requireReview('Checkout permission changed before the operation')
       putUse(db, use)
     })
   )
@@ -907,7 +892,7 @@ const writerWarning = (
       )
     )
   )
-    return 'A writer owns this live checkout; files may change while you read. No stable snapshot is provided.'
+    return 'Another session can write here. Files may change while you read.'
   return undefined
 }
 
@@ -918,7 +903,7 @@ const executionUse = (
   execution: WorkspaceExecution
 ): WorkspaceAuthorization => {
   const base = inDb(authority, parent.repositoryId, db => getUse(db, parent.useId))
-  if (base === undefined) requireReview('Workspace grant has no base use record')
+  if (base === undefined) requireReview('Dev could not confirm checkout access')
   const use = {
     ...base,
     id: newId(),
@@ -953,17 +938,15 @@ const authorizeLeafRead = (
   const { state } = attachment
   const owners = state.leaseAttachments.get(coordinator.useId)
   if (owners === undefined || !owners.has(attachment.token))
-    requireReview('Coordinator grant was not issued to this attachment')
+    requireReview('This conversation did not authorize that delegated agent')
   const lease = validateGrant(authority, state, coordinator)
   if (lease.kind !== 'execution')
-    invalid('A leaf reads only the workspace of a delegated coordinator')
+    invalid('A delegated reader uses the checkout of the agent that started it')
   const use = inDb(authority, coordinator.repositoryId, db =>
     transaction(db, () => {
-      const running = fencedUse(db, coordinator, 'Coordinator grant has no live workspace use')
+      const running = fencedUse(db, coordinator, 'Delegating agent no longer has checkout access')
       if (running.use.stage !== 'started')
-        blocked(
-          `The coordinator is not running in its workspace: ${running.use.id} (${running.use.stage})`
-        )
+        blocked(`The delegating agent is not running in this checkout`)
       const reservation = getReservation(db, running.workspace.id)
       const leaf = {
         id: newId(),
@@ -1038,21 +1021,21 @@ const grantRecords = (
   grant: WorkspaceGrant
 ): { readonly lease: GrantLease; readonly workspace: WorkspaceRecord } => {
   if (grant.namespaceId !== authority.initialize())
-    requireReview('Workspace grant belongs to another namespace')
+    requireReview('Permission came from different dev storage')
   const lease = state.leases.get(grant.useId)
   if (lease === undefined || lease.released || !sameGrant(lease.grant, grant))
-    requireReview('Workspace grant is stale or was not issued to this attachment')
+    requireReview('No current permission in this conversation')
   const scoped = isScoped(lease) ? lease : undefined
   const workspace = inDb(authority, grant.repositoryId, db => {
-    const fenced = fencedUse(db, grant, 'Workspace grant has no matching durable use')
+    const fenced = fencedUse(db, grant, 'Dev lost the record of this checkout permission')
     if (
       !matchesGrant(fenced.use, grant) ||
       fenced.use.effect !== scoped?.kind ||
       fenced.use.withinUseId !== scoped?.withinUseId
     )
-      requireReview('Workspace grant no longer matches its fenced use facts')
+      requireReview('Permission no longer matches checkout use')
     if (!holdsCurrentAcquisition(db, grant))
-      requireReview('Workspace grant is not the current reservation acquisition')
+      requireReview('This run no longer has permission to write')
     return fenced.workspace
   })
   return { lease, workspace }
@@ -1091,32 +1074,32 @@ export const validateDurableGrant = (
 ): void => {
   const namespace = authority.inspectExisting()
   if (namespace === undefined || namespace !== grant.namespaceId)
-    requireReview('Workspace grant namespace is missing or differs')
+    requireReview('Permission does not match dev storage')
   const repositories = authority.listRepositories()
   if (!repositories.some(repository => repository.id === grant.repositoryId))
-    requireReview('Workspace grant repository is not registered')
+    requireReview('Dev has no record of this repository')
   const workspace = inDb(authority, grant.repositoryId, db => {
-    const fenced = fencedUse(db, grant, 'Workspace grant does not identify a durable use')
-    if (!matchesGrant(fenced.use, grant))
-      requireReview('Workspace grant does not match its fenced use record')
+    const fenced = fencedUse(db, grant, 'No saved record of this checkout permission')
+    if (!matchesGrant(fenced.use, grant)) requireReview('Permission does not match checkout use')
     const { stage } = fenced.use
     if (stage === 'quiescent' || stage === 'observed' || stage === 'unknown')
-      requireReview(`Workspace use is no longer eligible for a child: ${stage}`)
-    if (!holdsCurrentAcquisition(db, grant)) requireReview('Workspace grant acquisition is stale')
+      requireReview(`The delegated agent no longer has checkout access`)
+    if (!holdsCurrentAcquisition(db, grant))
+      requireReview('The run no longer has permission to write')
     return fenced.workspace
   })
   if (grant.checkout !== workspace.path || grant.origin !== workspace.origin)
-    requireReview('Workspace grant checkout fields were altered')
+    requireReview('The checkout permission was altered')
   if (!isWithin(workspace.path, grant.cwd))
-    requireReview('Workspace grant cwd escapes its checkout')
+    requireReview('Working directory is outside the permitted checkout')
   let actualCwd: string
   try {
     actualCwd = realpathSync(grant.cwd)
   } catch {
-    return requireReview(`Workspace grant cwd is unavailable: ${grant.cwd}`)
+    return requireReview(`Permitted working directory unavailable: ${grant.cwd}`)
   }
   if (actualCwd !== grant.cwd || !isWithin(workspace.path, actualCwd))
-    requireReview('Workspace grant cwd is not the canonical checkout path')
+    requireReview('Working directory does not match the permitted path')
   validateWorkspace(authority, workspace)
 }
 
@@ -1135,7 +1118,7 @@ export const reportExecutionFact = (
   fact: WorkspaceExecutionFact
 ): WorkspaceExecutionReport => {
   attachment.assertOpen()
-  if (attachment.state.closing) blocked('Execution reporting is fenced during attachment closure')
+  if (attachment.state.closing) blocked('Dev cannot record execution while closing checkout access')
   const retried = retryDeferredGateReleases(authority, attachment.state)
   return withWarnings(recordExecutionFact(authority, attachment, grant, fact), retried)
 }
@@ -1155,39 +1138,38 @@ const recordExecutionFact = (
     state.parked &&
     ['launch-intent', 'spawned', 'started', 'operation-started'].includes(fact.kind)
   )
-    blocked('Starting an operation is fenced during a host transition')
+    blocked('No operation can start while switching checkouts')
   const { lease, workspace } = grantRecords(authority, state, grant)
   if (confirmsCheckout(fact)) validateWorkspace(authority, workspace)
   if (isScoped(lease)) {
     const owners = state.leaseAttachments.get(lease.useId)
     if (owners === undefined || !owners.has(attachment.token))
-      requireReview('Scoped operation report was not issued to this attachment')
+      requireReview('This conversation did not start that operation')
   }
-  if (lease.kind === 'ordinary')
-    invalid('Legacy workspace grants do not carry scoped operation authority')
+  if (lease.kind === 'ordinary') invalid('No permission for this operation')
   if (lease.kind === 'native-file-write' || lease.kind === 'orb-return') {
     reportScopedOperation(authority, lease, fact)
     return {}
   }
   if (fact.kind === 'operation-started' || fact.kind === 'operation-completed')
-    invalid('Operation boundary facts are only valid for non-process scoped operations')
+    invalid('This start or stop report cannot describe a process')
   const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
   if (
     current === undefined ||
     current.execution === undefined ||
     !sameExecution(current.execution, lease.execution)
   )
-    requireReview('Execution recovery row no longer matches the issued grant')
-  if (current.stage === 'quiescent') requireReview('Execution has already been settled')
+    requireReview('Execution no longer matches the permission dev issued')
+  if (current.stage === 'quiescent') requireReview('Execution already ended')
   const update = (value: UseRecord): void =>
     inDb(authority, lease.repositoryId, db => transaction(db, () => saveUse(db, value)))
   const updatedAt = now()
   switch (fact.kind) {
     case 'launch-intent': {
       if (!sameExecution(fact.execution, lease.execution))
-        invalid('Launch intent does not match the authorized execution')
+        invalid('Launch does not match the permitted operation')
       if (current.stage !== 'authorized')
-        requireReview(`Cannot record launch intent after ${current.stage}`)
+        requireReview(`Cannot record a planned launch after ${current.stage}`)
       update({ ...current, stage: 'launch-intent', revision: current.revision + 1, updatedAt })
       return {}
     }
@@ -1205,9 +1187,7 @@ const recordExecutionFact = (
     }
     case 'started': {
       if (current.stage !== 'spawned')
-        requireReview(
-          `Cannot release user code after ${current.stage}; process identity must be recorded first`
-        )
+        requireReview(`Dev must verify the process before letting code run`)
       update({ ...current, stage: 'started', revision: current.revision + 1, updatedAt })
       return {}
     }
@@ -1248,9 +1228,7 @@ const recordExecutionFact = (
     }
     case 'quiescent': {
       if (current.stage !== 'observed' || current.processes.length > 0)
-        requireReview(
-          `Quiescence after ${current.stage} requires an observed empty process family first`
-        )
+        requireReview(`Dev must confirm the process and its descendants stopped`)
       update({
         ...current,
         stage: 'quiescent',
@@ -1278,10 +1256,10 @@ const reportScopedOperation = (
     fact.kind !== 'operation-completed' &&
     fact.kind !== 'unknown'
   )
-    invalid('Scoped native operations require operation boundary facts')
+    invalid('Dev needs a start or stop report for this file operation')
   const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
   if (current === undefined || current.effect !== lease.kind)
-    requireReview('Scoped operation lost its durable use record')
+    requireReview('Dev lost the record of this operation')
   const next = inDb(authority, lease.repositoryId, db =>
     transaction(db, () => {
       const latest = getUse(db, lease.useId)
@@ -1291,15 +1269,15 @@ const reportScopedOperation = (
         latest.effect !== lease.kind ||
         latest.withinUseId !== lease.withinUseId
       )
-        requireReview('Scoped operation report is stale')
+        requireReview('Operation report is stale')
       if (fact.kind === 'operation-started') {
         if (latest.stage !== 'authorized')
-          requireReview(`Cannot start scoped operation after ${latest.stage}`)
+          requireReview(`Cannot start operation after ${latest.stage}`)
         assertWithinLiveInDb(db, latest)
         if (latest.operationPath !== undefined) {
           const workspace = getWorkspace(db, latest.workspaceId)
           if (workspace === undefined)
-            requireReview(`Scoped operation lost its workspace: ${latest.workspaceId}`)
+            requireReview(`The checkout for the operation disappeared: ${latest.workspaceId}`)
           assertDestinationUnchanged(
             { checkout: workspace.path, authorityRoot: authority.root },
             { kind: 'workspace', operand: latest.operationPath, path: latest.operationPath }
@@ -1316,7 +1294,7 @@ const reportScopedOperation = (
       }
       if (fact.kind === 'operation-completed') {
         if (latest.stage !== 'operation-started' && latest.stage !== 'authorized')
-          requireReview(`Cannot complete scoped operation after ${latest.stage}`)
+          requireReview(`Cannot record completion after ${latest.stage}`)
         const completed: UseRecord = {
           ...latest,
           stage: 'quiescent',
@@ -1331,7 +1309,7 @@ const reportScopedOperation = (
         return completed
       }
       if (latest.stage !== 'authorized' && latest.stage !== 'operation-started')
-        requireReview(`Cannot mark scoped operation unknown after ${latest.stage}`)
+        requireReview(`Cannot mark execution unconfirmed after ${latest.stage}`)
       const unknown: UseRecord = {
         ...latest,
         stage: 'unknown',

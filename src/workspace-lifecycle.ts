@@ -145,7 +145,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
       fail(unavailableError('Workspace callback response exceeded its size limit'))
       return
     }
-    post(message, 'Workspace worker could not receive its callback result')
+    post(message, 'Dev lost the result of the checkout switch')
   }
 
   const runHostCallback = (
@@ -169,21 +169,21 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   const onMessage = (raw: unknown): void => {
     if (byteLength(raw) > MAX_MESSAGE_BYTES) {
-      fail(unavailableError('Workspace authority worker message exceeded its size limit'))
+      fail(unavailableError('Dev workspace response exceeded the size limit'))
       return
     }
     let message: WorkspaceWorkerMessage
     try {
       message = decodeWorkspaceWorkerMessage(raw)
     } catch {
-      fail(unavailableError('Workspace authority worker protocol failed'))
+      fail(unavailableError('Dev received an invalid workspace response'))
       return
     }
     if ('type' in message) {
       switch (message.type) {
         case 'ready':
           if (phase !== 'starting') {
-            fail(unavailableError('Workspace authority worker sent an unexpected ready message'))
+            fail(unavailableError('Dev received an unexpected startup response'))
             return
           }
           phase = 'ready'
@@ -194,7 +194,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
           return
         case 'bindings':
           if (message.updates.length > MAX_ATTACHMENTS) {
-            fail(unavailableError('Workspace worker sent too many binding updates'))
+            fail(unavailableError('Dev received too many checkout updates'))
             return
           }
           for (const update of message.updates)
@@ -208,18 +208,18 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
           return
         default: {
           const exhaustive: never = message
-          fail(unavailableError(`Unexpected worker message: ${String(exhaustive)}`))
+          fail(unavailableError(`Unexpected workspace response: ${String(exhaustive)}`))
           return
         }
       }
     }
     const request = pending.get(message.id)
     if (request === undefined) {
-      fail(unavailableError('Workspace worker returned an uncorrelated acknowledgment'))
+      fail(unavailableError('Dev could not match the workspace response to a request'))
       return
     }
     if (message.ok && message.op !== request.op) {
-      fail(unavailableError('Workspace worker acknowledgment did not match its request'))
+      fail(unavailableError('Workspace response did not match the request'))
       return
     }
     pending.delete(message.id)
@@ -233,9 +233,9 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   const onExit = (): void => {
     if (phase !== 'closing' && phase !== 'closed' && phase !== 'failed')
-      fail(unavailableError('Workspace authority worker exited unexpectedly'))
+      fail(unavailableError('Dev workspace service stopped unexpectedly'))
     else if (pending.size > 0) {
-      const cause = unavailableError('Workspace worker exited before acknowledging its request')
+      const cause = unavailableError('Dev workspace service stopped before confirming the request')
       for (const request of pending.values()) Deferred.doneUnsafe(request.result, Exit.fail(cause))
       pending.clear()
     }
@@ -245,14 +245,13 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
 
   worker.on('message', onMessage)
   worker.on('error', cause =>
-    fail(unavailableError(`Workspace authority worker failed: ${errorText(cause)}`))
+    fail(unavailableError(`Dev workspace service failed: ${errorText(cause)}`))
   )
   worker.on('exit', onExit)
   yield* Effect.sleep(STARTUP_TIMEOUT).pipe(
     Effect.andThen(
       Effect.sync(() => {
-        if (phase === 'starting')
-          fail(unavailableError('Workspace authority worker did not become ready'))
+        if (phase === 'starting') fail(unavailableError('Dev workspace service did not start'))
       })
     ),
     Effect.forkScoped
@@ -262,7 +261,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     Effect.suspend(() => {
       nextRequestId += 1
       if (Number.isSafeInteger(nextRequestId)) return Effect.succeed(nextRequestId)
-      const cause = unavailableError('Workspace RPC sequence exceeded its limit')
+      const cause = unavailableError('Dev cannot accept more checkout requests in this session')
       fail(cause)
       return Effect.fail(cause)
     })
@@ -273,11 +272,11 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     duringClose: boolean
   ): Effect.fn.Return<WorkspaceRpcResults[K], WorkspaceError> {
     if (!(phase === 'ready' || (duringClose && phase === 'closing')))
-      return yield* unavailableError('Workspace authority worker is not available')
+      return yield* unavailableError('Dev workspace service is unavailable')
     if (pending.size >= MAX_PENDING_REQUESTS)
-      return yield* unavailableError('Workspace authority worker request limit reached')
+      return yield* unavailableError('Too many workspace requests')
     if (hostReplace !== undefined && input.op !== 'handoff')
-      return yield* invalidError('Host callback supplied for a non-handoff operation')
+      return yield* invalidError('This request cannot switch checkouts')
     const request: WorkspaceRpcInput = input
     const id = yield* nextId()
     const callbackId = request.op === 'handoff' ? request.callbackId : undefined
@@ -290,17 +289,17 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     const envelope = { id, sentAt, request }
     if (byteLength(envelope) > MAX_MESSAGE_BYTES) {
       if (callbackId !== undefined) callbacks.delete(callbackId)
-      return yield* invalidError('Workspace worker request exceeded its size limit')
+      return yield* invalidError('Workspace request exceeded its size limit')
     }
     const result = yield* Deferred.make<unknown, WorkspaceError>()
 
     pending.set(id, { op: request.op, result })
-    post(envelope, 'Workspace authority worker could not receive a request')
+    post(envelope, 'Dev could not send the workspace request')
     const value = yield* Deferred.await(result).pipe(
       Effect.timeoutOrElse({
         duration: RPC_TIMEOUT,
         orElse: () => {
-          const cause = unavailableError('Workspace worker acknowledgment was lost or timed out')
+          const cause = unavailableError('Dev did not get confirmation of the workspace request')
           fail(cause)
           return Effect.fail(cause)
         },
@@ -313,7 +312,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     )
     const reply = replyDecoder<K>(input.op)(value)
     if (Option.isSome(reply)) return reply.value
-    const cause = unavailableError('Workspace authority worker protocol failed')
+    const cause = unavailableError('Dev received an invalid workspace response')
     fail(cause)
     return yield* cause
   })
@@ -421,7 +420,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     attach: Effect.fnUntraced(function* (input) {
       const opened = yield* request({ op: 'attach', ...input })
       if (attachments.size >= MAX_ATTACHMENTS || attachments.has(opened.attachmentId)) {
-        const cause = unavailableError('Workspace worker returned an invalid attachment identity')
+        const cause = unavailableError('Dev could not verify checkout access')
         fail(cause)
         return yield* cause
       }

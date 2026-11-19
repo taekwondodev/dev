@@ -33,7 +33,7 @@ export type WorkAccess = typeof WorkAccessSchema.Type
 
 export const READ_ONLY_CHILD_TOOLS = ['read', 'grep', 'find', 'ls', 'git_inspect'] as const
 export const INTEGRATED_CHILD_TOOLS = ['read_url', 'codemode'] as const
-export const READ_ONLY_CHILD_CAPABILITIES = `A read-only child has only ${[...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].join(', ')}: no shell, no edits and no gh. Put issue, PR or other external text in the prompt or a workspace file.`
+export const READ_ONLY_CHILD_CAPABILITIES = `Read-only tools: ${[...READ_ONLY_CHILD_TOOLS, ...INTEGRATED_CHILD_TOOLS].join(', ')}. No shell, edits or gh. Put issue, PR or other external text in the prompt or a checkout file.`
 
 export const WorkStatusSchema = Schema.Literals([
   'provisioning',
@@ -68,11 +68,11 @@ export const DispatchRulesSchema = Schema.Record(Schema.String, DispatchProfileS
   Schema.makeFilter((rules: Readonly<Record<string, DispatchProfile>>) => {
     const names = Object.keys(rules)
     if (names.includes('default'))
-      return 'A dispatch rule cannot be named "default"; that word selects the default profile'
+      return 'Use the top-level "default" for fallback settings; do not put it in "rules"'
     const invalid = names.find(name => !/^\S+$/.test(name))
     return invalid === undefined
       ? undefined
-      : `Dispatch rule key "${invalid}" must be a nonempty skill name without whitespace`
+      : `"${invalid}" must be a nonempty skill name without whitespace`
   })
 )
 
@@ -256,12 +256,11 @@ const attemptRecordInvariants = Schema.makeFilter(
     readonly workspaceId?: string | undefined
     readonly workspaceUseId?: string | undefined
   }) => {
-    if (record.id !== record.owner.attemptId)
-      return 'Attempt record identity disagrees with its owner'
+    if (record.id !== record.owner.attemptId) return 'Saved run IDs do not match'
     if (record.worktreePath === undefined) return undefined
-    if (!isAbsolute(record.worktreePath)) return 'Attempt worktree path must be absolute'
+    if (!isAbsolute(record.worktreePath)) return 'Worktree path must be absolute'
     return record.workspaceId === undefined || record.workspaceUseId === undefined
-      ? 'Attempt worktree requires its workspace and workspace use'
+      ? 'Saved worktree lacks checkout or process tracking'
       : undefined
   }
 )
@@ -273,6 +272,12 @@ const attemptRecord = <
   status: Status,
   completedAt: Completion
 ) => Schema.Struct({ ...AttemptRecordFactFields, status, completedAt })
+
+export const ATTEMPT_RECORD_KEYS: readonly string[] = [
+  ...Object.keys(AttemptRecordFactFields),
+  'status',
+  'completedAt',
+]
 
 export const AttemptRecordSchema = Schema.Union([
   attemptRecord(Schema.Literal('provisioning'), NoCompletionTime),
@@ -372,15 +377,17 @@ const optionalText = (description: string) =>
 export const AttemptSummarySchema = Schema.Struct({
   id: AttemptId,
   taskId: Schema.String,
-  parent: Schema.optionalKey(AttemptId),
-  coordinator: Schema.optionalKey(Schema.Boolean),
-  workflowTaskId: optionalText('For workspace resume.'),
+  parent: Schema.optionalKey(
+    AttemptId.annotate({ description: 'ID of the run that started this one.' })
+  ),
+  coordinate: Schema.optionalKey(Schema.Boolean.annotate({ description: 'Can delegate.' })),
+  workflowTaskId: optionalText('taskId for workspace resume.'),
   workspaceId: OptionalText,
   cwd: Schema.String,
   kind: WorkKindSchema,
   status: WorkStatusSchema.annotate({
     description:
-      'provisioning: its orb is being created; completed: any exit code; failed: could not run or report; unknown: unobserved.',
+      'provisioning: its orb is being created; completed: any exit code; failed: could not run or report; unknown: exit not confirmed.',
   }),
   access: Schema.optionalKey(WorkAccessSchema),
   model: OptionalText,
@@ -398,18 +405,20 @@ export const AttemptSummarySchema = Schema.Struct({
   usage: Schema.optionalKey(Schema.Struct({ total: Schema.Finite, cost: Schema.Finite })),
   requested: Schema.optionalKey(
     Schema.Struct({ model: OptionalText, effort: OptionalText }).annotate({
-      description: 'Model and effort the dispatch selection requested.',
+      description: 'Requested model and effort.',
     })
   ),
   deliveryError: OptionalText,
   cleanupError: OptionalText,
-  gateReleaseWarning: OptionalText,
+  lockWarning: OptionalText,
   processObservation: OptionalText,
   recovery: OptionalText,
   orb: Schema.optionalKey(
     Schema.Struct({
       id: Schema.optionalKey(Schema.String),
-      status: Schema.String.annotate({ description: "orbit's state of the child's orb." }),
+      status: Schema.String.annotate({
+        description: "orbit's state of the delegated agent's orb.",
+      }),
       report: optionalText("Where the orb's work went, and whether the orb was deleted."),
     })
   ),
@@ -420,7 +429,7 @@ export const AttemptFactsSchema = Schema.Struct({
   id: AttemptId,
   kind: WorkKindSchema,
   parent: Schema.optionalKey(AttemptId),
-  coordinator: Schema.optionalKey(Schema.Boolean),
+  coordinate: Schema.optionalKey(Schema.Boolean),
   sessionFile: OptionalText,
   effort: OptionalText,
   turns: Schema.optionalKey(Schema.Finite),
@@ -449,7 +458,7 @@ export type LogView = typeof LogViewSchema.Type
 export const AttemptOutcomeSchema = Schema.Struct({
   ...AttemptSummarySchema.fields,
   staleArtifact: Schema.Union([Schema.Boolean, Schema.Literal('unknown')]).annotate({
-    description: 'Tracked files changed after completion.',
+    description: 'Whether tracked files changed after the run.',
   }),
   logs: Schema.Array(LogViewSchema),
 })
@@ -457,7 +466,7 @@ export type AttemptOutcome = typeof AttemptOutcomeSchema.Type
 
 export const AttemptInspectionSchema = Schema.Struct({
   ...AttemptOutcomeSchema.fields,
-  record: Schema.JsonObject.annotate({ description: 'The complete persisted attempt record.' }),
+  record: Schema.JsonObject.annotate({ description: 'Full saved run record.' }),
 })
 export type AttemptInspection = typeof AttemptInspectionSchema.Type
 
@@ -472,12 +481,12 @@ export const WorkSnapshotViewSchema = Schema.Struct({
 export type WorkSnapshotView = typeof WorkSnapshotViewSchema.Type
 
 const WorkResultFields = Schema.Struct({
-  kind: Schema.Literals(['attempt', 'snapshot', 'dispatch', 'inspection', 'log']).annotate({
+  kind: Schema.Literals(['run', 'runs', 'dispatch', 'inspection', 'log']).annotate({
     description:
-      'attempt: process, delegate, cancel <id>; snapshot: list, cancel; inspection: inspect; log: inspect with stream.',
+      'run: one run (process, delegate, cancel id); runs: list or cancel all; inspection or log: inspect.',
   }),
-  attempt: Schema.optionalKey(AttemptSummarySchema),
-  snapshot: Schema.optionalKey(WorkSnapshotViewSchema),
+  run: Schema.optionalKey(AttemptSummarySchema),
+  runs: Schema.optionalKey(WorkSnapshotViewSchema),
   dispatch: Schema.optionalKey(DispatchConfigSchema),
   inspection: Schema.optionalKey(AttemptInspectionSchema),
   log: Schema.optionalKey(LogViewSchema),
@@ -559,14 +568,14 @@ export class WorkDispatchError extends Schema.TaggedError<
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class WorkRebindRequired extends Schema.TaggedError<
-  WorkRebindRequired,
+export class WorkHandoffRequired extends Schema.TaggedError<
+  WorkHandoffRequired,
   { readonly brand: unique symbol }
->()('WorkRebindRequired', { message: Schema.String }) {}
+>()('WorkHandoffRequired', { message: Schema.String }) {}
 
 export type WorkFailure =
   | WorkError
-  | WorkRebindRequired
+  | WorkHandoffRequired
   | WorkSetupError
   | WorkPersistenceError
   | WorkProtocolError

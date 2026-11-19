@@ -2,31 +2,31 @@
 
 ## Purpose
 
-`work` runs local commands and delegated Pi children in the background while the lead remains available to the user. The shared workflow decides what to delegate and verifies the result; dev owns process execution, observation and outcome delivery.
+`work` runs commands and delegated agents in the background while this conversation stays available. Dev owns execution, observation and delivery of results; the caller decides what to delegate and [verifies the result](#delivery-and-verification).
 
 ## Use
 
-Ask the lead to run a command or delegate an assignment. It calls `work` with `action: "process"` or `action: "delegate"`; there is no `/work start`.
+Ask the agent in this conversation to run a command or delegate an assignment. It calls `work` with `action: "process"` or `action: "delegate"`; there is no `/work start`.
 
-A delegation supplies a controller-local `taskId`, focused prompt and `access` (`read-only` or `write`). This task key is distinct from the durable `workflowTaskId` returned by workspace admission.
+A delegation supplies a `taskId` label you choose, a focused prompt and `access` (`read-only` or `write`). `workflowTaskId` is separate: use it as `taskId` in `workspace` with `action: "resume"`.
 
-`skill` names the skill the child loads first and selects [dispatch](../config/README.md#resolution). Set it whenever the assignment would otherwise tell the child to load a skill: a skill the prompt merely mentions does not select its dispatch rule. Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Explicit overrides follow the [dispatch rules](../config/README.md#resolution).
+`skill` names the skill to load first and selects its [configured model and effort](../config/README.md#resolution). A skill mentioned only in the prompt does not affect model or effort. Without the field, a leading `/skill:name` has the same effect; with the field set, the prompt is passed as written. Explicit overrides follow the [dispatch rules](../config/README.md#resolution).
 
-With `coordinate: true`, the child gets a scoped `work` tool to start and manage leaves; only the coordinator's result returns to the lead.
+With `coordinate: true`, the delegated agent can use `work` to start and manage agents that cannot delegate further. Only its final report returns to this conversation.
 
 ```text
-/work                        list this session's attempts, including leaves and their parent
-/work dispatch               inspect configured dispatch rules; not a prerequisite to launch
-/work inspect <id>           inspect an attempt's metadata, stale-artifact status and readable streams
-/work inspect <id> stdout 0  page output by byte offset; continue with nextOffset until it is null
-/work inspect <id> stderr 0  page stderr; use result for a child's retained answer
-/work stop <id>              cancel an attempt and, for a coordinator, its leaves
-/work stop                   cancel all owned attempts, including while the lead is idle
+/work                         list runs, including which run started each delegated run
+/work dispatch                show configured models and effort; not required before launch
+/work inspect <run>           show run details, tracked-file changes and available streams
+/work inspect <run> stdout 0  read by byte offset; continue with nextOffset until null
+/work inspect <run> stderr 0  read stderr; use result for a delegated agent's answer
+/work stop <run>              stop a run and any agents it started
+/work stop                    stop all runs from this conversation, even while it is idle
 ```
 
-The model reads [compact results](#model-visible-results); use `inspect` for an attempt's metadata, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the complete record on inspection; use `describeTool('work')` for its current declaration.
+Typing `/work ` offers each subcommand with a one-line explanation. The model reads [compact results](#model-visible-results); use `inspect` for run details, or select a stream to page its output. In codemode, `tools.work(...)` returns the structured result, including the saved record on inspection; use `describeTool('work')` for its current declaration.
 
-Writer attempts show their managed-worktree path as `blocked` while use is unresolved, otherwise `review-required`. Neither status authorizes deletion. [Workspace](workspace.md) owns reservation and release.
+Writing agents show their worktree path as `blocked` if it may still be in use, otherwise `review-required`. Neither status authorizes deletion. See [Workspace](workspace.md) for checkout cleanup.
 
 ## Behavior
 
@@ -112,11 +112,11 @@ Live activity is transient: it stays in controller memory, never in the attempt 
 
 ### Model-visible results
 
-The model and `/work` read compact JSON, not the full structured result. Extensions and scripts use `details` or codemode's structured return for complete attempt facts; renderers must not decode model-facing text as the structured result. Usage counts once per attempt, not again in its coordinator; unavailable values are distinct from zero.
+The model and `/work` read compact JSON. Extensions and scripts use `details` or codemode's structured return instead of parsing that text. Usage counts once per run; unavailable is not zero.
 
-Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Outcomes include answers that fit the result read and previews of command output; a truncated answer points to offset 0. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
+Plain `inspect` shows metadata and available streams without copying the answer or logs into model context. Select a stream to read it. Results include answers that fit and command output previews. For an omitted answer, call `inspect` with its `id`, `stream: "result"` and `offset: 0`. The [model projection](../src/work-model-text.ts) owns exact fields and preview limits.
 
-A deferred gate close appears as `gateReleaseWarning` without changing attempt status; [workspace settlement](workspace.md#process-uses-and-gates) explains the retry boundary.
+A delayed lock close appears as `lockWarning` without changing run status. See [when dev retries](workspace.md#process-uses-and-gates).
 
 ## State
 

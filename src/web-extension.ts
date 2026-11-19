@@ -14,10 +14,9 @@ const InputSchema = Schema.Struct({
 type ReadUrlInput = typeof InputSchema.Type
 
 const inputDescriptions: { readonly [Field in keyof ReadUrlInput]-?: string } = {
-  url: 'Absolute http(s) URL of the page to read. Omit when passing continuation.',
-  continuation:
-    'Token from an earlier incomplete result; returns the next part of that same snapshot without fetching again.',
-  maxChars: 'Characters of text per result (default 16000, 1000-120000).',
+  url: 'Absolute http(s) URL. Omit with continuation.',
+  continuation: 'Token from a prior result. Read more of the same saved text without refetching.',
+  maxChars: 'Chars per part (default 16000; 1000–120000).',
 }
 
 const describe = (
@@ -40,7 +39,7 @@ const describe = (
   }
 }
 
-const readUrlParameters = describe(
+export const readUrlParameters = describe(
   Schema.toJsonSchemaDocument(InputSchema, { onExcessProperty: 'error' }).schema,
   inputDescriptions
 )
@@ -67,28 +66,25 @@ export type ReadUrlResult = typeof ReadUrlResultSchema.Type
 
 const resultDescriptions: { readonly [Field in keyof ReadUrlResult]-?: string } = {
   outcome:
-    'document: the requested page, complete in this result; partial: more text follows via continuation or the snapshot is cut; failed: nothing was read.',
-  requestedUrl: 'URL as requested.',
-  finalUrl: 'URL that answered after validated redirects.',
-  title: 'Document title when the page declares one.',
-  method:
-    'markdown (origin served Markdown), text, html (local extraction) or browser (rendered in Chrome).',
+    'document: final part, no text cut; partial: more text via continuation or the page hit a size limit; failed: no text read.',
+  requestedUrl: 'URL requested.',
+  finalUrl: 'URL after redirects.',
+  title: 'Page title, if provided.',
+  method: 'markdown or text from the site, html extracted locally, or browser (Chrome).',
   status: 'HTTP status of the final response.',
-  text: 'Readable text of this part, Markdown-flavoured.',
-  offset: 'Character offset of this part within the whole document text.',
-  end: 'Character offset just past this part.',
-  totalChars: 'Characters in the whole document text held in this session.',
-  complete: 'True when this part ends the document and nothing was cut.',
-  continuation: 'Pass as continuation to read the next part of this same snapshot.',
-  links: 'Links found in the document with absolute URLs.',
-  suggestions:
-    'Related documents such as llms.txt indexes; never substituted for the requested page.',
-  limitations:
-    'Explicit limits of this result: truncation, status, blocked subrequests, rendering notes.',
+  text: 'Readable page text, often Markdown.',
+  offset: 'Starting character offset in the saved text.',
+  end: 'End offset (exclusive).',
+  totalChars: 'Total characters in the saved page text.',
+  complete: 'True for the last part if nothing was cut.',
+  continuation: 'Pass as continuation for the next part of the saved text.',
+  links: 'Page links with absolute URLs.',
+  suggestions: 'Other pages to try, such as llms.txt; not the requested page.',
+  limitations: 'Size limits, HTTP errors, blocked requests or notes about Chrome.',
   error: 'Why the read failed.',
 }
 
-const readUrlOutputSchema = describe(
+export const readUrlOutputSchema = describe(
   Schema.toJsonSchemaDocument(ReadUrlResultSchema).schema,
   resultDescriptions
 )
@@ -133,21 +129,125 @@ export const toResult = (outcome: ReadOutcome): ReadUrlResult => {
 }
 
 const rangeNote = (result: ReadUrlResult): string => {
-  if (result.continuation !== undefined)
-    return `; continue with continuation "${result.continuation}"`
-  return result.complete ? ' (complete)' : ' (snapshot cut by the byte limit)'
+  if (result.continuation !== undefined) return `; pass continuation: "${result.continuation}"`
+  return result.complete ? ' (complete)' : ' (size limit; no more text)'
+}
+
+const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean => {
+  const newline = text.indexOf('\n')
+  if (newline === -1 && !complete) return false
+  const firstLine = newline === -1 ? text : text.slice(0, newline)
+  return firstLine.replace(/^#+\s+/, '').trim() === title.trim()
+}
+
+const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
+
+type UrlSpan = readonly [start: number, end: number]
+
+const schemeStart = (text: string, separator: number): number => {
+  let at = separator
+  while (at > 0 && /[A-Za-z0-9+.-]/.test(text[at - 1] ?? '')) at -= 1
+  return at
+}
+
+const QUOTE_CLOSERS: Readonly<Record<string, string>> = { '<': '>', '"': '"', '`': '`' }
+
+const quotedUrlEnd = (text: string, start: number, closer: string): number => {
+  let at = start
+  while (at < text.length && !/\s/.test(text[at] ?? '') && text[at] !== closer) at += 1
+  return at
+}
+
+const unquotedUrlEnd = (text: string, start: number, closers: string): number => {
+  const open = { ')': 0, ']': 0 }
+  let at = start
+  for (; at < text.length; at += 1) {
+    const char = text[at] ?? ''
+    if (/\s/.test(char) || (char === '<' && closers.includes(char))) break
+    if (char === '(') open[')'] += 1
+    else if (char === '[') open[']'] += 1
+    else if (char === ')' || char === ']') {
+      if (open[char] === 0 && closers.includes(char)) break
+      open[char] = Math.max(0, open[char] - 1)
+    }
+  }
+  return at
+}
+
+const urlEnd = (text: string, start: number): number => {
+  const opener = text[start - 1] ?? ''
+  const quoteCloser = QUOTE_CLOSERS[opener]
+  if (quoteCloser !== undefined) return quotedUrlEnd(text, start, quoteCloser)
+  return unquotedUrlEnd(text, start, opener === '(' ? ')' : '<)]')
+}
+
+const outerUrlSpans = (text: string): readonly UrlSpan[] => {
+  const spans: UrlSpan[] = []
+  let covered = 0
+  for (let separator = text.indexOf('://'); separator !== -1;) {
+    const start = schemeStart(text, separator)
+    if (start < separator && start >= covered) {
+      covered = urlEnd(text, start)
+      spans.push([start, covered])
+    }
+    separator = text.indexOf('://', separator + 3)
+  }
+  return spans
+}
+
+const insideUrl = (spans: readonly UrlSpan[], start: number): boolean => {
+  let low = 0
+  let high = spans.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if ((spans[middle]?.[0] ?? start) < start) low = middle + 1
+    else high = middle
+  }
+  return start < (spans[low - 1]?.[1] ?? 0)
+}
+
+const startsUrl = (text: string, spans: readonly UrlSpan[], start: number): boolean =>
+  start === 0 || (/[\s(<"'[`>]/.test(text[start - 1] ?? '') && !insideUrl(spans, start))
+
+const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
+  const next = text[end]
+  if (next === undefined) return atDocumentEnd
+  const closer = URL_CLOSERS[text[start - 1] ?? '']
+  if (closer !== undefined) return next === closer || (closer === ')' && /\s/.test(next))
+  if (/[\s)>\]"<`]/.test(next)) return true
+  if (!/[.,;:!?]/.test(next)) return false
+  const afterPunctuation = text[end + 1]
+  return afterPunctuation === undefined ? atDocumentEnd : /\s/.test(afterPunctuation)
+}
+
+const showsUrl = (
+  { text, complete }: DocumentSlice,
+  spans: readonly UrlSpan[],
+  url: string
+): boolean => {
+  for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
+    if (startsUrl(text, spans, at) && endsUrl(text, at, at + url.length, complete)) return true
+  return false
 }
 
 const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   const { document } = slice
+  const { title } = document
   const lines = [
-    `# ${document.title ?? document.finalUrl}`,
-    `Source: ${document.finalUrl}${document.finalUrl === document.requestedUrl ? '' : ` (requested ${document.requestedUrl})`} · ${document.method}${document.status === undefined ? '' : ` · HTTP ${document.status}`}`,
+    ...(title === undefined || opensWith(slice, title) ? [] : [`# ${title}`]),
+    `Source: ${document.finalUrl}${document.finalUrl === document.requestedUrl ? '' : ` (requested ${document.requestedUrl})`} · ${document.method}`,
     `Characters ${slice.offset}-${slice.end} of ${document.text.length}${rangeNote(result)}`,
   ]
   if (document.limitations.length > 0)
     lines.push(...document.limitations.map(limitation => `Limitation: ${limitation}`))
   return lines.join('\n')
+}
+
+const linksTextOmits = (slice: DocumentSlice): readonly DocumentLink[] => {
+  const spans = outerUrlSpans(slice.text)
+  return slice.document.links
+    .slice(0, LINKS_IN_TEXT)
+    .filter(link => !showsUrl(slice, spans, link.url))
 }
 
 export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
@@ -158,13 +258,12 @@ export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   const { slice } = outcome
   const parts = [header(slice, result), '', slice.text]
   if (slice.offset === 0) {
-    if (result.links.length > 0)
+    const links = linksTextOmits(slice)
+    if (links.length > 0)
       parts.push(
         '',
-        `Links (${Math.min(result.links.length, LINKS_IN_TEXT)} of ${slice.document.links.length}):`,
-        ...result.links
-          .slice(0, LINKS_IN_TEXT)
-          .map(link => `- ${link.text || link.url}: ${link.url}`)
+        `Links (${links.length} of ${slice.document.links.length}):`,
+        ...links.map(link => (link.text === '' ? `- ${link.url}` : `- ${link.text}: ${link.url}`))
       )
     if (result.suggestions.length > 0)
       parts.push(
@@ -178,11 +277,13 @@ export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
 
 const decodeInput = Schema.decodeUnknownEffect(InputSchema)
 
+export const READ_URL_DESCRIPTION =
+  'Read a public documentation page and return text with sources. Prefer Markdown from the site, or extract HTML locally. If needed, use Chrome with a separate copy of your signed-in Chrome profile. Pass continuation to read more saved text in this conversation without refetching. Indexes such as llms.txt are suggestions, not substitutes. Public http(s) only; private addresses, URLs with credentials and unsafe redirects are blocked. In codemode, tools.read_url(...) returns the structured result.'
+
 const makeReadUrlTool = (reader: WebReader): ToolDefinition => ({
   name: READ_URL_TOOL,
   label: 'Read URL',
-  description:
-    'Read a public documentation page by URL and return its readable text with sources. Dev negotiates Markdown with the origin, otherwise extracts the HTML locally, and renders in the installed Chrome (with a dev-owned copy of your authenticated profile) only when static content is unusable. Results are bounded: an incomplete result carries a continuation token that returns the next part of the same snapshot; snapshots live only in this session. Indexes such as llms.txt appear as suggestions, never as substitutes. Only public http(s) destinations are read; private addresses, credential-bearing URLs and unsafe redirects are refused before connecting. In codemode, tools.read_url(...) resolves to the structured result.',
+  description: READ_URL_DESCRIPTION,
   parameters: readUrlParameters,
   outputSchema: readUrlOutputSchema,
   annotations: { readOnlyHint: true, openWorldHint: true },
@@ -212,9 +313,7 @@ export const createWebExtension = (
     api.registerTool(makeReadUrlTool(reader))
     api.on('session_shutdown', event =>
       Effect.runPromise(
-        reader.endSession(
-          `This document snapshot belonged to a session that ended (${event.reason}); read the URL again.`
-        )
+        reader.endSession(`The conversation ended (${event.reason}). Read the URL again.`)
       )
     )
   },

@@ -387,7 +387,7 @@ try {
           reserved.toSorted(),
           [write.grant.workspaceId, managed.grant.workspaceId].toSorted()
         )
-        assert.deepEqual(outcomes, ['preserved-for-resume', 'preserved-for-resume'])
+        assert.deepEqual(outcomes, ['paused', 'paused'])
         assert.ok(existsSync(worktree))
         assert.equal(readFileSync(join(repo, 'AGENTS.md'), 'utf8'), 'launcher tui probe\n')
         if (history !== undefined)
@@ -415,7 +415,7 @@ try {
           assert.equal(exit.signal, null)
           assert.equal(exit.code, 1)
           assert.deepEqual(reserved, [managed.grant.workspaceId])
-          assert.deepEqual(outcomes, ['preserved-for-resume', 'released'])
+          assert.deepEqual(outcomes, ['paused', 'released'])
           assert.ok(existsSync(worktree))
           assert.equal(listed, 2)
           assert.ok(history !== undefined)

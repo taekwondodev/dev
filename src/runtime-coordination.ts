@@ -78,18 +78,20 @@ const sourcePresence = (options: CoordinationOptions): GateRelease => {
   const [repository, workspace] = relative(paths.worktrees, source).split(sep)
   if (!Schema.is(WorkspaceId)(repository) || !Schema.is(WorkspaceId)(workspace))
     throw new CoordinationError({
-      message: 'Installation is not inside an identifiable managed workspace',
+      message: 'Dev cannot identify the worktree it is installed in',
     })
   const root = join(paths.worktrees, repository, workspace)
   const before = lstatSync(root, { bigint: true })
   let release: GateRelease | undefined
   try {
     if (authority.inspectExisting() === undefined)
-      throw new CoordinationError({ message: 'Managed installation authority is unavailable' })
+      throw new CoordinationError({ message: "Dev's checkout records are unavailable" })
     release = acquirePathGates(authority.paths, root, 'reader').use
     const after = observePhysicalIdentity(root)
     if (before.dev !== BigInt(after.device) || String(before.ino) !== after.identity.inode)
-      throw new CoordinationError({ message: 'Installation workspace changed during startup' })
+      throw new CoordinationError({
+        message: 'The worktree dev is installed in changed during startup',
+      })
     const db = authority.openShard(repository)
     try {
       const recorded = getWorkspace(db, workspace)
@@ -102,7 +104,7 @@ const sourcePresence = (options: CoordinationOptions): GateRelease => {
         recorded.physical.inode !== after.identity.inode
       )
         throw new CoordinationError({
-          message: 'Installation workspace no longer matches its authority record',
+          message: "The worktree dev is installed in no longer matches dev's record",
         })
     } finally {
       db.close()

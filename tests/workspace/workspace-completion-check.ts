@@ -91,9 +91,9 @@ const rows: readonly Row[] = [
         ],
       }),
     }),
-    expected: 'child-delivered',
-    role: 'child',
-    mentions: ['#43', 'sibling'],
+    expected: 'agent-delivered',
+    role: 'agent',
+    mentions: ['#43', 'another checkout of this task'],
   },
   {
     name: 'the dirty child at 50a26f3 under task b1c50ea0, through the sibling-seeded PR #43',
@@ -109,9 +109,9 @@ const rows: readonly Row[] = [
         ],
       }),
     }),
-    expected: 'child-delivered',
-    role: 'child',
-    mentions: ['#43', 'sibling'],
+    expected: 'agent-delivered',
+    role: 'agent',
+    mentions: ['#43', 'another checkout of this task'],
   },
   {
     name: 'a child at a6013cb under task d9fdcf2d, through its base seed and PR #41',
@@ -127,9 +127,9 @@ const rows: readonly Row[] = [
         ],
       }),
     }),
-    expected: 'child-delivered',
-    role: 'child',
-    mentions: ['#41', 'base seed'],
+    expected: 'agent-delivered',
+    role: 'agent',
+    mentions: ['#41', 'starting commit'],
   },
   {
     name: 'a dirty child with a proven descending PR finishes despite unknown HEAD proofs and an unpushed commit lookup',
@@ -149,9 +149,9 @@ const rows: readonly Row[] = [
         ],
       }),
     }),
-    expected: 'child-delivered',
-    role: 'child',
-    mentions: ['#41', 'base seed'],
+    expected: 'agent-delivered',
+    role: 'agent',
+    mentions: ['#41', 'starting commit'],
   },
   ...[true, undefined].map((ownCommits): Row => ({
     name: `a clean child with ${ownCommits === true ? 'own' : 'undetermined own'} commits finishes through a descending PR that does not keep its HEAD`,
@@ -166,14 +166,14 @@ const rows: readonly Row[] = [
         ],
       }),
     }),
-    expected: 'child-delivered',
-    role: 'child',
-    mentions: ['#41', 'sibling seed'],
+    expected: 'agent-delivered',
+    role: 'agent',
+    mentions: ['#41', 'another checkout of this task'],
   })),
   {
     name: 'the clean detached worktrees at their bases, 983f8a4 and the contention worktree 64e0b23b of task d9fdcf2d at a6013cb',
     facts: managed({ allocation: 'checkout-contention' }),
-    expected: 'no-residue',
+    expected: 'nothing-left',
     role: 'detached',
   },
   {
@@ -206,7 +206,7 @@ const rows: readonly Row[] = [
   {
     name: 'the clean contention worktree at its base at a conversation replacement',
     facts: managed({ moment: 'replacement', allocation: 'checkout-contention' }),
-    expected: 'no-residue',
+    expected: 'nothing-left',
     role: 'detached',
   },
   {
@@ -232,7 +232,7 @@ const rows: readonly Row[] = [
       }),
     }),
     expected: 'retained:not-integrated',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'a child whose provider is unavailable',
@@ -244,7 +244,7 @@ const rows: readonly Row[] = [
       }),
     }),
     expected: 'retained:integration-unknown',
-    role: 'child',
+    role: 'agent',
     mentions: ['rate limited'],
   },
   {
@@ -336,7 +336,7 @@ const rows: readonly Row[] = [
         headInTip: yes('HEAD is an ancestor of the current main tip'),
       }),
     }),
-    expected: 'no-residue',
+    expected: 'nothing-left',
     role: 'detached',
   },
   {
@@ -371,7 +371,7 @@ const rows: readonly Row[] = [
       ownCommits: undefined,
     }),
     expected: 'retained:directory-missing',
-    role: 'child',
+    role: 'agent',
   },
 ]
 
@@ -383,19 +383,19 @@ const precedence: readonly Row[] = [
       uses: { unknown: 1, abandoned: 0, live: 0, conversations: 0 },
     }),
     expected: 'retained:identity-unverifiable',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'an unresolved transition',
     facts: managed({ transitionUnresolved: true, releaseReview: true }),
     expected: 'retained:transition-unresolved',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'an engine-recorded unknown or review-required release',
     facts: managed({ releaseReview: true, excluded: true }),
     expected: 'retained:release-review',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: "the allocating conversation's own workspace",
@@ -404,7 +404,7 @@ const precedence: readonly Row[] = [
       uses: { unknown: 0, abandoned: 0, live: 1, conversations: 0 },
     }),
     expected: 'retained:excluded',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'an unknown use before abandoned and live ones',
@@ -412,7 +412,7 @@ const precedence: readonly Row[] = [
       uses: { unknown: 1, abandoned: 1, live: 1, conversations: 0 },
     }),
     expected: 'retained:use-unknown',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'an abandoned use before a live one or an open conversation',
@@ -420,7 +420,7 @@ const precedence: readonly Row[] = [
       uses: { unknown: 0, abandoned: 1, live: 1, conversations: 1 },
     }),
     expected: 'retained:use-abandoned',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'a live use',
@@ -436,19 +436,19 @@ const precedence: readonly Row[] = [
       uses: { unknown: 0, abandoned: 0, live: 0, conversations: 1 },
     }),
     expected: 'retained:use-live',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'an attempt not observed quiescent',
     facts: managed({ attemptsQuiescent: false }),
     expected: 'retained:use-live',
-    role: 'child',
+    role: 'agent',
   },
   {
     name: 'unreadable worktree contents',
     facts: managed({ residue: undefined }),
     expected: 'retained:residue-unreadable',
-    role: 'child',
+    role: 'agent',
   },
 ]
 
@@ -557,8 +557,7 @@ try {
         {
           source: 'origin-remote',
           target: { kind: 'remote', remote: 'origin', ref: 'refs/heads/develop' },
-          ignored:
-            "The recorded target local refs/heads/feature names this worktree's own branch, which proves nothing, so it is ignored.",
+          ignored: "Ignoring local refs/heads/feature: it names this worktree's own branch.",
         },
         "an override naming the worktree's own branch is ignored in favor of the origin"
       )
@@ -568,7 +567,7 @@ try {
           plain,
           { kind: 'remote', remote: 'origin', ref: 'refs/heads/feature' },
           ownBranch
-        ).ignored?.startsWith('The recorded target origin refs/heads/feature'),
+        ).ignored?.startsWith('Ignoring origin refs/heads/feature'),
         true,
         "a remote override naming the worktree's own branch is ignored too"
       )
