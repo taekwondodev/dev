@@ -16,7 +16,7 @@ import {
 } from './workspace-domain.ts'
 
 export const WORKSPACE_MESSAGE = 'dev/workspace'
-export const HANDOFF_MESSAGE = 'dev/workspace-handoff'
+export const HANDOFF_MESSAGE = 'dev/workspace-switch'
 export const RECEIPT_ENTRY = 'dev/workspace-receipt'
 export const REFUSAL_ENTRY = 'dev/workspace-refusal'
 

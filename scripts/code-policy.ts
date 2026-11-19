@@ -16,6 +16,7 @@ const DIRECTIVE = /^\s*(?:oxlint|eslint)-(?:disable|enable)/
 const QUERY_LANGUAGE =
   /^\s*(?:SELECT\b[\s\S]*\bFROM\b|INSERT\s+(?:OR\s+\w+\s+)?INTO\b|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(?:TABLE|INDEX|UNIQUE\s+INDEX)\b|PRAGMA\s+\w+|(?:BEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE))?|COMMIT|ROLLBACK)\s*$|query\()/
 const PROSE = /\S\s+\S/
+const MESSAGE_LABEL = /^dev\/[a-z-]+$/
 const WORDS = /[A-Za-z]{2}/
 const CONSTANT_SHAPES = new Set([
   'ObjectExpression',
@@ -201,7 +202,8 @@ const plugin = {
         return {
           Literal(node) {
             if (typeof node.value !== 'string' || QUERY_LANGUAGE.test(node.value)) return
-            if (PROSE.test(node.value) || sentenceAround(node)) return report(node, node.value)
+            if (MESSAGE_LABEL.test(node.value) || PROSE.test(node.value) || sentenceAround(node))
+              return report(node, node.value)
             const constant = constantHolding(node)
             if (
               constant !== undefined &&

@@ -39,7 +39,7 @@ import {
 } from './work-child-model.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
-const OUTCOME = 'dev/work-outcome'
+const OUTCOME = 'dev/work-result'
 const keysOf = (value: unknown, keys: string[] = []): string[] => {
   if (typeof value !== 'object' || value === null) return keys
   for (const [key, item] of Object.entries(value)) {

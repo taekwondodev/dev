@@ -937,7 +937,7 @@ const instrumentHost =
                   ...(message.details === undefined ? {} : { details: message.details }),
                 }
                 if (message.customType === 'dev/workspace') hostMessages.push(entry)
-                if (message.customType === 'dev/workspace-handoff') handoffMessages.push(entry)
+                if (message.customType === 'dev/workspace-switch') handoffMessages.push(entry)
               }
               return target.sendMessage(...args)
             }

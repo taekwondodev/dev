@@ -415,7 +415,7 @@ const readsHome = join(root, 'reads')
     }),
     lead.assistant('a8', 'res-r10', 80, { calls: [r11] }),
     lead.result('res-r11', 'a8', 81, r11, { text: 'b1\nb2' }),
-    lead.custom('h', 'res-r11', 82, 'dev/workspace-handoff', 'switched'),
+    lead.custom('h', 'res-r11', 82, 'dev/workspace-switch', 'switched'),
     lead.assistant('a9', 'h', 90, { calls: [r12] }),
     lead.result('res-r12', 'a9', 91, r12, { text: 'b1\nb2' }),
   ])
@@ -648,7 +648,7 @@ const periodsHome = join(root, 'periods')
         },
       },
     }),
-    lead.custom('oc', 'res-d1', 60, 'dev/work-outcome', `Outcomes\n${JSON.stringify(attempts)}`, {
+    lead.custom('oc', 'res-d1', 60, 'dev/work-result', `Outcomes\n${JSON.stringify(attempts)}`, {
       attempts: ['coord', 'leaf'],
       children,
     }),
@@ -832,7 +832,7 @@ const edgesHome = join(root, 'edges')
     lead.result('res-g5', 'a4', 41, g5, { text: ' M c' }),
     lead.result('res-g6', 'res-g5', 41, g6, { text: '[main 1234] first' }),
     lead.result('res-g8', 'res-g6', 41, g8, { text: ' M a' }),
-    lead.custom('h', 'res-g8', 42, 'dev/workspace-handoff', 'switched'),
+    lead.custom('h', 'res-g8', 42, 'dev/workspace-switch', 'switched'),
     lead.assistant('a5', 'h', 50, { calls: [g7] }),
     lead.result('res-g7', 'a5', 51, g7, { text: ' M c' }),
     lead.assistant('a6', 'res-g7', 52, { calls: [g9] }),
@@ -939,9 +939,9 @@ const DEV_TEXTS = [
 ] as const
 
 const DEV_ANCHORS = [
-  ['src/work-protocol.ts', ["const OUTCOME_MESSAGE = 'dev/work-outcome'"]],
+  ['src/work-protocol.ts', ["const OUTCOME_MESSAGE = 'dev/work-result'"]],
   ['src/work-model-text.ts', ['`', String.raw`\n`, '`']],
-  ['src/workspace-model-text.ts', ["export const HANDOFF_MESSAGE = 'dev/workspace-handoff'"]],
+  ['src/workspace-model-text.ts', ["export const HANDOFF_MESSAGE = 'dev/workspace-switch'"]],
   ['src/workspace-host.ts', ['text: `[dev workspace] ', '`']],
   ['src/pi-child.ts', [String.raw`\n\n[git output truncated at `, ' bytes]']],
   [

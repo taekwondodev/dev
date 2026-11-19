@@ -253,7 +253,7 @@ export const ControllerWorkMessageSchema = Schema.Union([
 ])
 export type ControllerWorkMessage = typeof ControllerWorkMessageSchema.Type
 
-const OUTCOME_MESSAGE = 'dev/work-outcome'
+const OUTCOME_MESSAGE = 'dev/work-result'
 
 const decodeDeliveryDetails = Schema.decodeUnknownResult(
   Schema.Struct({ attempts: Schema.Array(AttemptId) })

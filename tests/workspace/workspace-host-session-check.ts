@@ -149,12 +149,12 @@ const toolResults = (runtime: Pi.AgentSessionRuntime) => (toolCallId: string) =>
   resultsIn(runtime.session.sessionManager)(toolCallId)
 
 const handoffText = (entry: Pi.SessionEntry): string | undefined => {
-  if (entry.type === 'custom_message' && entry.customType === 'dev/workspace-handoff')
+  if (entry.type === 'custom_message' && entry.customType === 'dev/workspace-switch')
     return String(entry.content)
   if (
     entry.type === 'message' &&
     entry.message.role === 'custom' &&
-    entry.message.customType === 'dev/workspace-handoff'
+    entry.message.customType === 'dev/workspace-switch'
   )
     return String(entry.message.content)
   return undefined
