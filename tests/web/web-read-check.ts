@@ -626,7 +626,8 @@ try {
         ['', false],
         [' next', false],
         ['(v2)', true],
-        ...Array.from(')>]"\'<`', delimiter => [delimiter, false] as const),
+        ...Array.from(')>]"<`', delimiter => [delimiter, false] as const),
+        ["'", true],
         ...Array.from(
           '.,;:!?',
           punctuation =>
@@ -653,6 +654,24 @@ try {
               { text: 'other', url: `${guide};` },
             ])
           ),
+          guideBeforeApostropheInDestination: listsGuide(
+            render(`${relative} plus [other](${guide}'v2)`, [
+              docs,
+              { text: 'other', url: `${guide}'v2` },
+            ])
+          ),
+          guideBeforeSemicolonAndTitle: listsGuide(
+            render(`${relative} plus [other](${guide}; "Title")`, [
+              docs,
+              { text: 'other', url: `${guide};` },
+            ])
+          ),
+          guideShownInDestinations: [
+            `[other](${guide})`,
+            `[other](${guide} "Title")`,
+            `<${guide}>`,
+            `'${guide}'`,
+          ].map(shown => listsGuide(render(`${relative} plus ${shown}`, [docs]))),
           guideAtHardCut: listsGuide(render(`${urlPrefix}-v2`, [docs], urlPrefix.length)),
           guideBeforePunctuationAtHardCut: listsGuide(
             render(`${urlPrefix}. next`, [docs], urlPrefix.length + 1)
@@ -673,6 +692,9 @@ try {
           titleAtNewline: false,
           titleAtDocumentEnd: false,
           guideBeforeSemicolonInDestination: true,
+          guideBeforeApostropheInDestination: true,
+          guideBeforeSemicolonAndTitle: true,
+          guideShownInDestinations: [false, false, false, false],
           guideAtHardCut: true,
           guideBeforePunctuationAtHardCut: true,
           guideBeforeWhitespaceAtHardCut: false,

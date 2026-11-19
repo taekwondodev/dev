@@ -39,6 +39,14 @@ import {
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
 const OUTCOME = 'dev/work-outcome'
+const keysOf = (value: unknown, keys: string[] = []): string[] => {
+  if (typeof value !== 'object' || value === null) return keys
+  for (const [key, item] of Object.entries(value)) {
+    if (!Array.isArray(value)) keys.push(key)
+    keysOf(item, keys)
+  }
+  return keys
+}
 const INSPECTION = 'dev/work-inspection'
 const QUIET = 'dev/work-quiet'
 
@@ -415,6 +423,20 @@ try {
           assert.equal(inspection?.inspection?.status, 'completed')
           assert.equal(inspection?.inspection?.exitCode, 0)
           assert.equal(typeof decodeRecordPid(inspection?.inspection?.record).pid, 'number')
+          const recordKeys = keysOf(inspection?.inspection?.record)
+          assert.ok(
+            ['runId', 'startedBy', 'devPid'].every(key => recordKeys.includes(key)),
+            `the inspected record uses outward keys: ${recordKeys.join(', ')}`
+          )
+          for (const saved of [
+            'attemptId',
+            'owner',
+            'controllerPid',
+            'coordinator',
+            'gateReleaseWarning',
+            'workspaceAcquisitionId',
+          ])
+            assert.ok(!recordKeys.includes(saved), `the inspected record hides ${saved}`)
           assert.equal(inspection?.inspection?.staleArtifact, false)
           assert.deepEqual(
             inspection?.inspection?.logs.map(log => log.stream),

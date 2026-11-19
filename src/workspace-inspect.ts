@@ -24,7 +24,7 @@ import {
   type WorkspaceRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
-import { PRE_EXISTING_RELEASE, releaseOnceStopped, taskRelease } from './workspace-labels.ts'
+import { releaseOnceStopped, taskRelease } from './workspace-labels.ts'
 import { rows, textField } from './workspace-sqlite.ts'
 import { effectiveUid, hasErrorCode, lstatIfExists } from './workspace-platform.ts'
 
@@ -55,6 +55,18 @@ export const checkoutMissing = (workspace: WorkspaceRecord): boolean => {
 
 const MISSING_REASON = 'The checkout directory no longer exists.'
 
+const missingAdvice = (origin: WorkspaceRecord['origin'], taskId: string | undefined): string => {
+  const onPurpose = 'Restore it at this path. If it was deleted on purpose:'
+  if (origin === 'managed')
+    return taskId === undefined
+      ? 'Restore it at this path, or check what removed it. Do not retry automatically.'
+      : `${onPurpose} ${releaseOnceStopped(taskId)}`
+  const forget = `${releaseOnceStopped(undefined)} That also forgets this checkout.`
+  return taskId === undefined
+    ? `${onPurpose} ${forget}`
+    : `${onPurpose} ${releaseOnceStopped(taskId)} Then: ${forget}`
+}
+
 export const assessWorkspace = (input: {
   readonly identityReason: string | undefined
   readonly missing: boolean
@@ -64,44 +76,43 @@ export const assessWorkspace = (input: {
   readonly live: boolean
   readonly abandoned: () => readonly string[]
   readonly reserved: boolean
+  readonly origin: WorkspaceRecord['origin']
   readonly taskId?: string
 }): Pick<WorkspaceView, 'outcome' | 'reason' | 'nextAction'> => {
   const operation =
     input.pending === undefined
       ? undefined
       : `Earlier operation ${input.pending.id}: ${input.pending.stage}; checking does not redo it.`
-  const withOperation = (reason: string): string =>
-    operation === undefined ? reason : `${operation} ${reason}`
-  const release = releaseOnceStopped(input.reserved ? (input.taskId ?? '<taskId>') : undefined)
+  const taskId = input.reserved ? (input.taskId ?? '<taskId>') : undefined
+  const abandoned = input.abandoned()
+  const blockers = [
+    ...(input.unknown.length > 0
+      ? [`Dev could not confirm operations ${input.unknown.join(', ')} stopped.`]
+      : []),
+    ...(abandoned.length > 0
+      ? [`Operations ${abandoned.join(', ')} of ended sessions may still be running.`]
+      : []),
+  ]
+  const withBlockers = (reason: string): string => [reason, ...blockers].join(' ')
   if (input.missing && input.pending === undefined)
     return {
       outcome: 'review-required',
-      reason: MISSING_REASON,
-      nextAction: `Restore it at this path. If it was deleted on purpose: ${
-        input.reserved ? `${release} Then the user may run ` : 'the user may run '
-      }${PRE_EXISTING_RELEASE}, which also forgets this checkout.`,
+      reason: withBlockers(MISSING_REASON),
+      nextAction: missingAdvice(input.origin, taskId),
     }
   if (input.identityReason !== undefined || input.unresolved)
     return {
       outcome: 'review-required',
-      reason: input.identityReason ?? operation ?? 'An earlier operation may not have finished.',
+      reason: withBlockers(
+        input.identityReason ?? operation ?? 'An earlier operation may not have finished.'
+      ),
       nextAction: 'Check what changed. Do not retry automatically.',
     }
-  const abandoned = input.abandoned()
-  if (input.unknown.length > 0 || abandoned.length > 0)
+  if (blockers.length > 0)
     return {
       outcome: 'blocked',
-      reason: withOperation(
-        [
-          ...(input.unknown.length > 0
-            ? [`Dev could not confirm operations ${input.unknown.join(', ')} stopped.`]
-            : []),
-          ...(abandoned.length > 0
-            ? [`Operations ${abandoned.join(', ')} of ended sessions may still be running.`]
-            : []),
-        ].join(' ')
-      ),
-      nextAction: `Do not write here or retry those operations. ${release}`,
+      reason: [...(operation === undefined ? [] : [operation]), ...blockers].join(' '),
+      nextAction: `Do not write here or retry those operations. ${releaseOnceStopped(taskId)}`,
     }
   if (input.live)
     return {
@@ -216,6 +227,7 @@ export const workspaceStanding = (
       live: uses.some(use => isActiveUse(use)),
       abandoned: () => abandonedUseIds(authority, db, uses),
       reserved,
+      origin: workspace.origin,
       ...(taskId === undefined ? {} : { taskId }),
     }),
     missing,

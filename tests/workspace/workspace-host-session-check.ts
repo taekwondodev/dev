@@ -39,7 +39,9 @@ import {
   within,
 } from './workspace-check-support.ts'
 import { INTERNAL } from '../model-text-terms.ts'
-import { classifyError } from '../../scripts/usage-facts.ts'
+import { classifyError, sessionFacts } from '../../scripts/usage-facts.ts'
+import { readSessions } from '../../scripts/usage-sessions.ts'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { SWITCH_REQUESTED, switchNotRequested } from '../../src/workspace-model-text.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
@@ -399,9 +401,9 @@ try {
       const { offline } = await offlineScript('mismatch-during-change', [])
       const { manager, attached } = await attachLeadConversation()
       let trapped = false
-      let release: () => void = () => undefined
-      const released = new Promise<void>(resolve => {
-        release = resolve
+      const gate: { open?: () => void } = {}
+      const released = new Promise<void>(open => {
+        gate.open = open
       })
       const authorize: WorkspaceAttachment['authorize'] = operation =>
         trapped && operation.kind === 'read'
@@ -425,7 +427,7 @@ try {
             name: 'test:mismatch-during-change',
             factory: api => {
               api.on('session_before_switch', async () => {
-                release()
+                gate.open?.()
                 await stale
                 return { cancel: true }
               })
@@ -773,7 +775,7 @@ try {
         assert.equal(result('mixed-bash').isError, true)
         assert.match(
           result('mixed-bash').text,
-          /^The call did not run: .*Dev requested a checkout switch at turn end/,
+          /^The call did not run: .*Dev requested a checkout switch and reports/,
           'the refused call keeps its reason'
         )
         assert.deepEqual(result('mixed-read'), { isError: true, text: 'Operation aborted' })
@@ -2076,6 +2078,27 @@ try {
       } finally {
         await reload.close()
       }
+    }
+  )
+  await claim(
+    'the usage profiler, reading the conversations these probes saved, classifies every tool error dev returned in them',
+    async () => {
+      const saved = await Effect.runPromise(
+        readSessions(fixture, 'sessions', 'lead', session => sessionFacts(session, 'lead')).pipe(
+          Effect.provide(NodeServices.layer)
+        )
+      )
+      const calls = saved.flatMap(facts => facts.calls)
+      assert.deepEqual(
+        calls
+          .filter(call => call.outcome === 'unclassified')
+          .map(call => `${call.tool} ${call.ref}`),
+        []
+      )
+      assert.ok(
+        calls.filter(call => call.outcome === 'blocked').length >= 5,
+        `the saved refusals include blocked calls: ${JSON.stringify(calls.map(call => call.outcome))}`
+      )
     }
   )
 } finally {

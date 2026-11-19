@@ -301,13 +301,16 @@ try {
       'Unknown workspace command "switch". Use list, inspect <task-id>, check <task-id>, release <task-id> or release pre-existing.',
     ])
   })
-  await claim('/workspace release pre-existing only names its terminal command', async () => {
-    const before = displayed().length
-    await runtime.session.prompt('/workspace release pre-existing')
-    assert.deepEqual(displayed().slice(before), [
-      "Release runs only from a terminal: dev workspace release pre-existing. Dev checks the task's checkouts for cleanup at quit.",
-    ])
-  })
+  await claim(
+    '/workspace release pre-existing names its terminal command, what it clears and when it is safe to run',
+    async () => {
+      const before = displayed().length
+      await runtime.session.prompt('/workspace release pre-existing')
+      assert.deepEqual(displayed().slice(before), [
+        "Release runs only from a terminal. Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files.",
+      ])
+    }
+  )
   await claim(
     'sweep receipts the authority delivers while a work tool admission allocates reach the model only when they change something, and the TUI receives every receipt with its facts',
     async () => {

@@ -1370,7 +1370,7 @@ const expectBlock = (
 const PARKED =
   /Checkout access is blocked while this conversation switches checkouts; the tool did not run\. Retry after dev reports where it works\./
 const HANDOFF_REFUSAL =
-  /The call did not run: fixture.*\. Dev requested a checkout switch at turn end/
+  /The call did not run: fixture.*\. Dev requested a checkout switch and reports/
 const UNVERIFIED = /did not run\. Dev has not verified what this tool can do to project files/
 expectBlock('stale-native-lead', lead, true, HANDOFF_REFUSAL)
 for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
@@ -1773,7 +1773,7 @@ assert.deepEqual(
       views: [[TASK_B, WS_B]],
     },
     { kind: 'inspect', taskId: TASK_LEAD, views: [[TASK_LEAD, WS_LEAD]] },
-    `Release runs only from a terminal: dev workspace release ${TASK_RESUME}. Dev checks the task's checkouts for cleanup at quit.`,
+    `Release runs only from a terminal. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${TASK_RESUME}, which deletes all of that task's managed worktrees and artifacts. Dev also checks the task's checkouts for cleanup at quit.`,
   ],
   'the TUI showed the /workspace list, inspect and release answers and no second switch notice'
 )

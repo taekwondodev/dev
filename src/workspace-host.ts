@@ -49,7 +49,7 @@ import {
   pausedTaskQuestion,
   resumableRowText,
   resumableWorkspaces,
-  terminalReleaseCommand,
+  releaseRedirect,
   runReadOnlyWorkspaceCommand,
   type ResumeCandidate,
   type WorkspaceCommandResult,
@@ -1830,7 +1830,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       const command = yield* parseWorkspaceCommand(tokens)
       if (isReleaseCommand(command)) {
         display(api, context, {
-          text: `Release runs only from a terminal: ${terminalReleaseCommand(command)}. Dev checks the task's checkouts for cleanup at quit.`,
+          text: releaseRedirect(command),
         })
         return
       }

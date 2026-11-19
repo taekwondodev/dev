@@ -112,6 +112,11 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   { outcome: 'blocked', pattern: /^This agent has read-only access$/ },
   {
     outcome: 'blocked',
+    pattern:
+      /^The question about the paused task in this checkout was dismissed, so the operation was not executed and nothing changed\./,
+  },
+  {
+    outcome: 'blocked',
     pattern: /^Dev must switch checkouts first: [\s\S]*No work started/,
   },
 ]

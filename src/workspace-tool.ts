@@ -256,7 +256,7 @@ interface ToolReply {
 }
 
 export const WORKSPACE_TOOL_DESCRIPTION =
-  "Manage this conversation's checkout and task. artifacts returns a folder outside Git for PR text, reports, logs or notes. Dev first checks permission to write, and deletes the folder when the last checkout kept for the task is freed or removed. resume switches to a paused checkout at turn end. set-target sets the destination branch instead of inferring it from origin. record-publication verifies a file already posted to a GitHub issue or PR (complete text or an exact uploaded file), and saves the proof. Nothing is uploaded or released. Dev checks for automatic cleanup at quit or before creating a worktree."
+  "Manage this conversation's checkout and task. artifacts returns a folder outside Git for PR text, reports, logs or notes. Dev first checks permission to write, and deletes the folder when the last checkout kept for the task is freed or removed. resume asks dev to switch to a paused checkout at turn end; dev reports where this conversation works once the switch completes. set-target sets the destination branch instead of inferring it from origin. record-publication verifies a file already posted to a GitHub issue or PR (complete text or an exact uploaded file), and saves the proof. Nothing is uploaded or released. Dev checks for automatic cleanup at quit or before creating a worktree."
 
 export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition => {
   const boundWorkspace = Effect.fnUntraced(function* (requestedTaskId: WorkspaceId | undefined) {

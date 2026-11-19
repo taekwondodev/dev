@@ -51,6 +51,19 @@ const paused = (index: number, fields: Partial<WorkspaceView> = {}): WorkspaceVi
   pending: [],
   ...fields,
 })
+const assess = (fields: Partial<Parameters<typeof assessWorkspace>[0]>) =>
+  assessWorkspace({
+    identityReason: undefined,
+    missing: false,
+    pending: undefined,
+    unresolved: false,
+    unknown: [],
+    live: false,
+    abandoned: () => [],
+    reserved: false,
+    origin: 'pre-existing',
+    ...fields,
+  })
 const standing = (reserved: boolean) =>
   assessWorkspace({
     identityReason: undefined,
@@ -61,6 +74,7 @@ const standing = (reserved: boolean) =>
     live: false,
     abandoned: () => [],
     reserved,
+    origin: 'pre-existing',
   }).outcome
 
 try {
@@ -177,6 +191,50 @@ try {
       const idle = { ...unreserved, outcome: 'idle' as const }
       assert.deepEqual(resumableWorkspaces([idle]), [])
       assert.deepEqual(resumeCandidates([{ ...paused(9), outcome: 'idle' }], fixtureId(9)), [])
+    }
+  )
+
+  await claim(
+    "a missing checkout's advice names the release that fits its origin and task, and a row needing review still names the operations that block it",
+    () => {
+      assert.equal(
+        assess({ missing: true, reserved: true, origin: 'managed', taskId: 'task-1' }).nextAction,
+        "Restore it at this path. If it was deleted on purpose: Once nothing still works in any of the task's checkouts, the user may run dev workspace release task-1, which deletes all of that task's managed worktrees and artifacts."
+      )
+      assert.equal(
+        assess({ missing: true }).nextAction,
+        "Restore it at this path. If it was deleted on purpose: Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files. That also forgets this checkout."
+      )
+      const reservedPreExisting = assess({ missing: true, reserved: true, taskId: 'task-2' })
+      assert.ok(
+        reservedPreExisting.nextAction.includes(
+          'the user may run dev workspace release task-2, '
+        ) &&
+          reservedPreExisting.nextAction.includes(
+            'Then: Once nothing that ended sessions started still works'
+          ),
+        reservedPreExisting.nextAction
+      )
+      assert.equal(
+        assess({
+          identityReason: 'The checkout moved.',
+          unknown: ['use-1'],
+          abandoned: () => ['use-2'],
+        }).reason,
+        'The checkout moved. Dev could not confirm operations use-1 stopped. Operations use-2 of ended sessions may still be running.'
+      )
+      const unresolved = assess({
+        unresolved: true,
+        pending: { id: 'operation-1', stage: 'started' },
+        unknown: ['use-3'],
+      })
+      assert.deepEqual(
+        [unresolved.outcome, unresolved.reason],
+        [
+          'review-required',
+          'Earlier operation operation-1: started; checking does not redo it. Dev could not confirm operations use-3 stopped.',
+        ]
+      )
     }
   )
 

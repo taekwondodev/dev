@@ -1,4 +1,4 @@
-import { checkoutUseStage } from './workspace-labels.ts'
+import { checkoutUseStage, releaseOnceStopped } from './workspace-labels.ts'
 import { existsSync } from 'node:fs'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -40,8 +40,10 @@ type ReadOnlyWorkspaceCommand = Exclude<WorkspaceCommand, ReleaseCommand>
 export const isReleaseCommand = (command: WorkspaceCommand): command is ReleaseCommand =>
   command.kind === 'release' || command.kind === 'release-pre-existing'
 
-export const terminalReleaseCommand = (command: ReleaseCommand): string =>
-  `dev workspace release ${command.kind === 'release' ? command.taskId : 'pre-existing'}`
+export const releaseRedirect = (command: ReleaseCommand): string =>
+  command.kind === 'release'
+    ? `Release runs only from a terminal. ${releaseOnceStopped(command.taskId)} Dev also checks the task's checkouts for cleanup at quit.`
+    : `Release runs only from a terminal. ${releaseOnceStopped(undefined)}`
 
 export type WorkspaceReport =
   | {

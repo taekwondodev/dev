@@ -474,18 +474,21 @@ const stageWorkspace = (
     blockers,
   })
   if (identity.kind === 'unverifiable')
-    return shape({ reasons: [identity.reason], nextActions: [CLEAR] })
+    return shape({ reasons: [identity.reason, ...uses.reasons], nextActions: [CLEAR] })
   if (unresolvedTransitions.length > 0)
     return shape({
-      reasons: unresolvedTransitions.map(
-        operation =>
-          `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
-      ),
+      reasons: [
+        ...unresolvedTransitions.map(
+          operation =>
+            `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
+        ),
+        ...uses.reasons,
+      ],
       nextActions: ['Do not retry it.', CLEAR],
     })
   if (identity.kind === 'absent')
     return shape({
-      reasons: [`The managed worktree directory is absent: ${workspace.path}`],
+      reasons: [`The managed worktree directory is absent: ${workspace.path}`, ...uses.reasons],
       nextActions: [CLEAR],
     })
   if (workspace.origin === 'pre-existing') {
@@ -878,7 +881,7 @@ const removeFinishedWorktree = (
     } catch {}
     return {
       outcome: 'review-required',
-      reason: `${result}; dev workspace release ${reservation.taskId} finishes it.`,
+      reason: `${result}. Do not retry it. ${releaseOnceStopped(reservation.taskId)} That finishes it.`,
       operationId: started.id,
     }
   }

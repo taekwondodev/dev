@@ -1,5 +1,6 @@
 import { closeSync, constants, fchmodSync, fsyncSync, openSync } from 'node:fs'
 import { join } from 'node:path'
+import { taskRelease } from './workspace-labels.ts'
 import { toGrant, inDb, validateWorkspace, type WorkspaceAuthority } from './workspace-authority.ts'
 import {
   assertNoLiveExecution,
@@ -358,7 +359,7 @@ const allocateWorktree = (
         inDb(authority, source.repo, db => transaction(db, () => saveOperation(db, unresolved)))
       } catch {}
       state.parked = true
-      state.review = `Worktree creation did not finish. No more operations can start here. Quit and confirm release when asked, or ask the user to run dev workspace release ${operation.taskId}. ${errorText(cause)}`
+      state.review = `Worktree creation did not finish: ${errorText(cause)}. No more operations can start in this session; ask the user to quit it. Once nothing still works in any of the task's checkouts, the user may confirm the release offered at quit or run ${taskRelease(operation.taskId)}.`
       requireReview(state.review)
     }
 

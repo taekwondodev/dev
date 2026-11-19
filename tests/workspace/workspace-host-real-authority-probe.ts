@@ -406,7 +406,7 @@ await claim(
     assert.ok(!existsSync(join(managed, 'contended.txt')), 'the blocked write was not replayed')
     assert.deepEqual(persistedResult('contended-native-write'), {
       isError: true,
-      text: 'The call did not run: Another task uses or needs the requested checkout. The new detached worktree starts at its current commit; local edits and untracked files were not copied. Dev requested a checkout switch at turn end and reports where this conversation works if it completes.',
+      text: 'The call did not run: Another task uses or needs the requested checkout. The new detached worktree starts at its current commit; local edits and untracked files were not copied. Dev requested a checkout switch and reports where this conversation works if it completes.',
     })
   }
 )

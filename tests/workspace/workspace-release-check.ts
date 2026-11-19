@@ -335,7 +335,7 @@ try {
     }
   )
   await claim(
-    'dev workspace release reports a Git-locked worktree as failed and keeps it while releasing the pre-existing checkout of the task; the unfinished release then holds the worktree back from resume and from the sweep',
+    'dev workspace release reports a Git-locked worktree as failed and keeps it while releasing the pre-existing checkout of the task; the unfinished release then holds the worktree back from resume, saying when the user may finish it, and from the sweep',
     async () => {
       git(['worktree', 'lock', '--reason', 'fixture lock', '--', m1.checkout], repo)
       let results: readonly WorkspaceReleaseResult[]
@@ -364,7 +364,10 @@ try {
           selection: { taskId: taskB, workspaceId: m1.workspaceId },
         }),
         'review-required',
-        [m1.workspaceId]
+        [
+          m1.workspaceId,
+          `Do not retry this call. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${taskB}, which deletes all of that task's managed worktrees and artifacts. That finishes the release.`,
+        ]
       )
     }
   )

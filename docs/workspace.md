@@ -20,12 +20,12 @@ Every listed workspace shows its head: the branch its checkout is on, or the com
 
 The lead's `workspace` tool supports these operations:
 
-| Action               | Effect                                                                                                                                                                                       |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `artifacts`          | Create and return the [task artifact directory](#task-artifacts)                                                                                                                             |
-| `resume`             | End the turn and switch to a retained workspace without moving files; refused while the conversation has live shells or work. A refusal reports each checkout's result, reason and next step |
-| `set-target`         | Set the destination branch dev checks for merged commits                                                                                                                                     |
-| `record-publication` | Verify exact readback of an already published issue/PR artifact, in the workspace or in the task artifact directory, and record the evidence                                                 |
+| Action               | Effect                                                                                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `artifacts`          | Create and return the [task artifact directory](#task-artifacts)                                                                                                                                       |
+| `resume`             | End the turn and request a switch to a retained workspace without moving files; refused while the conversation has live shells or work. A refusal reports each checkout's result, reason and next step |
+| `set-target`         | Set the destination branch dev checks for merged commits                                                                                                                                               |
+| `record-publication` | Verify exact readback of an already published issue/PR artifact, in the workspace or in the task artifact directory, and record the evidence                                                           |
 
 The tool uploads nothing, fetches no refs and cannot infer an unrecorded artifact selection.
 
@@ -126,7 +126,7 @@ The same conversation cannot attach in two dev sessions, even across installatio
 
 ### Model-visible messages
 
-`/workspace` reports, sweep rows and tool results reach the model as minified JSON without repository, reservation, use or record identities, digests or timestamps. `details` carry the full facts for [presentation](adr/0006-global-visual-layer.md).
+`/workspace` reports, sweep rows and tool results reach the model as minified JSON without repository, reservation or record identities, digests or timestamps. Use and operation IDs appear only in a reason, for the operations that block a checkout or may not have finished. `details` carry the full facts for [presentation](adr/0006-global-visual-layer.md).
 
 | Source                                | Model-visible form                                                                                                                                                                                                       | `details`                                             |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |

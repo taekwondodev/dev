@@ -27,7 +27,7 @@ export const executionLabel = (execution: WorkspaceExecution): string =>
 export const taskRelease = (taskId: string): string =>
   `dev workspace release ${taskId}, which deletes all of that task's managed worktrees and artifacts`
 
-export const PRE_EXISTING_RELEASE =
+const PRE_EXISTING_RELEASE =
   'dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files'
 
 export const releaseOnceStopped = (taskId: string | undefined): string =>

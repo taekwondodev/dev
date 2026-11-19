@@ -140,18 +140,22 @@ const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean =>
   return firstLine.replace(/^#+\s+/, '').trim() === title.trim()
 }
 
-const endsUrl = (text: string, at: number, atDocumentEnd: boolean): boolean => {
-  const next = text[at]
+const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
+
+const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
+  const next = text[end]
   if (next === undefined) return atDocumentEnd
-  if (/[\s)>\]"'<`]/.test(next)) return true
+  const closer = URL_CLOSERS[text[start - 1] ?? '']
+  if (closer !== undefined) return next === closer || (closer === ')' && /\s/.test(next))
+  if (/[\s)>\]"<`]/.test(next)) return true
   if (!/[.,;:!?]/.test(next)) return false
-  const afterPunctuation = text[at + 1]
+  const afterPunctuation = text[end + 1]
   return afterPunctuation === undefined ? atDocumentEnd : /\s/.test(afterPunctuation)
 }
 
 const showsUrl = ({ text, complete }: DocumentSlice, url: string): boolean => {
   for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
-    if (endsUrl(text, at + url.length, complete)) return true
+    if (endsUrl(text, at, at + url.length, complete)) return true
   return false
 }
 

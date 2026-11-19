@@ -897,6 +897,14 @@ const DEV_TEXTS = [
   ['src/work-child-workspace.ts', ["'This agent has read-only access'"], 'bash', 'blocked'],
   [
     'src/workspace-host.ts',
+    [
+      "'The question about the paused task in this checkout was dismissed, so the operation was not executed and nothing changed. The next write asks again.'",
+    ],
+    'write',
+    'blocked',
+  ],
+  [
+    'src/workspace-host.ts',
     ["'Dev must switch checkouts first; the command did not run.'"],
     'bash',
     'blocked',

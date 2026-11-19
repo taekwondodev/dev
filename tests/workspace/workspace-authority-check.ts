@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { releaseOnceStopped } from '../../src/workspace-labels.ts'
 import { spawn, spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -248,7 +247,11 @@ const ready = (result: Awaited<ReturnType<TestAttachment['authorizeWriter']>>) =
 }
 const refusedWithoutCommits = (checkout: string, holder: string | undefined) => ({
   outcome: 'blocked',
-  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry once that session's work is confirmed stopped. ${releaseOnceStopped(holder)}`,
+  message: `Checkout ${checkout} has no commits to create a worktree from. Another session is writing here or dev cannot confirm it stopped. The call did not run; retry once that session's work is confirmed stopped. ${
+    holder === undefined
+      ? "Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files."
+      : `Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${holder}, which deletes all of that task's managed worktrees and artifacts.`
+  }`,
 })
 const resolveDefaultRoot = (
   installation: URL,
@@ -1069,11 +1072,12 @@ try {
         [['allocation', 'review-required']]
       )
       assert.ok(
-        refusal.message.startsWith(
-          'Worktree creation did not finish. No more operations can start here.'
-        ) &&
+        refusal.message.startsWith('Worktree creation did not finish: Git worktree failed: ') &&
           refusal.message.includes(
-            `dev workspace release ${unfinishedTask}. Git worktree failed: `
+            "No more operations can start in this session; ask the user to quit it. Once nothing still works in any of the task's checkouts,"
+          ) &&
+          refusal.message.endsWith(
+            `dev workspace release ${unfinishedTask}, which deletes all of that task's managed worktrees and artifacts.`
           ),
         refusal.message
       )

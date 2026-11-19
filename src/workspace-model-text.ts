@@ -36,7 +36,7 @@ export const switchNotRequested = (request: Exclude<SwitchRequest, 'requested'>)
   `No checkout switch was requested: ${SWITCH_NOT_REQUESTED[request]}.`
 
 export const SWITCH_REQUESTED =
-  'Dev requested a checkout switch at turn end and reports where this conversation works if it completes.'
+  'Dev requested a checkout switch and reports where this conversation works if it completes.'
 
 export interface SweepDetails {
   readonly kind: 'sweep'

@@ -40,7 +40,7 @@ import {
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
-import { taskRelease } from './workspace-labels.ts'
+import { releaseOnceStopped } from './workspace-labels.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
 const TaskSchema = Schema.Struct({
@@ -559,7 +559,7 @@ export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: st
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)
     requireReview(
-      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. To finish the release, the user may rerun ${[...new Set(unresolved.map(operation => taskRelease(operation.taskId)))].join('; or ')}.`
+      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. ${[...new Set(unresolved.map(operation => operation.taskId))].map(taskId => releaseOnceStopped(taskId)).join(' ')} That finishes the release.`
     )
 }
 export const unresolvedReleases = (

@@ -53,28 +53,31 @@ const coordinatorTool = createCoordinatorWorkTool({
   wake: Effect.die('unused'),
 })
 
-const checkoutStates = [false, true].flatMap(reserved =>
-  [
-    { missing: true },
-    { unresolved: true },
-    { unknown: ['use-2'] },
-    { abandoned: () => ['use-1'] },
-    { live: true },
-    {},
-  ].map(fields => {
-    const assessed = assessWorkspace({
-      identityReason: undefined,
-      missing: false,
-      pending: undefined,
-      unresolved: false,
-      unknown: [],
-      live: false,
-      abandoned: () => [],
-      reserved,
-      ...fields,
+const checkoutStates = (['pre-existing', 'managed'] as const).flatMap(origin =>
+  [false, true].flatMap(reserved =>
+    [
+      { missing: true },
+      { unresolved: true },
+      { unknown: ['use-2'] },
+      { abandoned: () => ['use-1'] },
+      { live: true },
+      {},
+    ].map(fields => {
+      const assessed = assessWorkspace({
+        identityReason: undefined,
+        missing: false,
+        pending: undefined,
+        unresolved: false,
+        unknown: [],
+        live: false,
+        abandoned: () => [],
+        reserved,
+        origin,
+        ...fields,
+      })
+      return `${assessed.reason} ${assessed.nextAction}`
     })
-    return `${assessed.reason} ${assessed.nextAction}`
-  })
+  )
 )
 
 const run = {
