@@ -7,6 +7,7 @@ import {
   type WorkspaceReport,
 } from './workspace-command.ts'
 import {
+  type PausedTask,
   type SweepReceipt,
   type SweepRow,
   type WorkspaceAssessment,
@@ -57,6 +58,30 @@ export interface SwitchDetails {
   readonly cwd: string
   readonly reason: string
 }
+
+export interface JoinDetails {
+  readonly kind: 'join'
+  readonly taskId: WorkspaceId
+  readonly workspaceId: WorkspaceId
+  readonly path: string
+  readonly head?: PausedTask['head']
+  readonly changedFiles?: number
+}
+
+export const joinDetails = ({
+  taskId,
+  workspaceId,
+  path,
+  head,
+  changedFiles,
+}: PausedTask): JoinDetails => ({
+  kind: 'join',
+  taskId,
+  workspaceId,
+  path,
+  ...(head === undefined ? {} : { head }),
+  ...(changedFiles === undefined ? {} : { changedFiles }),
+})
 
 type ModelObject = Record<string, unknown>
 

@@ -53,9 +53,12 @@ import {
   runReadOnlyWorkspaceCommand,
   type ResumeCandidate,
   type WorkspaceCommandResult,
+  type WorkspaceReport,
 } from './workspace-command.ts'
 import {
   HANDOFF_MESSAGE,
+  joinDetails,
+  type JoinDetails,
   RECEIPT_ENTRY,
   REFUSAL_ENTRY,
   reportText,
@@ -417,18 +420,21 @@ const notify = (
 const display = (
   api: ExtensionAPI,
   context: ExtensionContext,
-  { text, report }: Pick<WorkspaceCommandResult, 'text' | 'report'>
+  {
+    text,
+    report,
+    join,
+  }: Pick<WorkspaceCommandResult, 'text' | 'report'> & { readonly join?: JoinDetails }
 ): void => {
   if (context.hasUI) {
+    const details: WorkspaceReport | JoinDetails | undefined = report ?? join
     api.sendMessage(
-      report === undefined
-        ? { customType: WORKSPACE_MESSAGE, content: text, display: true }
-        : {
-            customType: WORKSPACE_MESSAGE,
-            content: reportText(report),
-            display: true,
-            details: report,
-          },
+      {
+        customType: WORKSPACE_MESSAGE,
+        content: report === undefined ? text : reportText(report),
+        display: true,
+        ...(details === undefined ? {} : { details }),
+      },
       { triggerTurn: false }
     )
   } else {
@@ -1064,7 +1070,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     const api = currentApi
     if (api !== undefined)
       try {
-        display(api, context, { text: joinedTaskNote(task) })
+        display(api, context, { text: joinedTaskNote(task), join: joinDetails(task) })
         return
       } catch {}
     notify(context, joinedTaskNotice(task))
