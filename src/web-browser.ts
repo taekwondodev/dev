@@ -50,6 +50,9 @@ export interface CdpClient {
 
 const MAX_CDP_MESSAGE_CHARS = 64 * 1024 * 1024
 
+const chromeConnectionFailedText = (cause: unknown): string =>
+  `Chrome connection failed: ${errorText(cause)}`
+
 const makeCdpClient = Effect.fnUntraced(function* (
   input: Readable,
   output: Writable
@@ -101,12 +104,8 @@ const makeCdpClient = Effect.fnUntraced(function* (
     }
   })
   input.on('end', () => settleAll(fail('shutdown', 'Chrome closed its DevTools connection')))
-  input.on('error', cause =>
-    settleAll(fail('protocol', `Chrome connection failed: ${errorText(cause)}`))
-  )
-  output.on('error', cause =>
-    settleAll(fail('protocol', `Chrome connection failed: ${errorText(cause)}`))
-  )
+  input.on('error', cause => settleAll(fail('protocol', chromeConnectionFailedText(cause))))
+  output.on('error', cause => settleAll(fail('protocol', chromeConnectionFailedText(cause))))
   return {
     closed,
     subscribe(listener) {
@@ -258,6 +257,9 @@ export const retryChromeShutdown = (userDataDir: string): Effect.Effect<BrowserS
     () => pendingShutdowns.get(resolve(userDataDir)) ?? Effect.succeed({ kind: 'settled' })
   )
 
+const chromeStartFailedText = (cause: unknown): string =>
+  `Chrome could not be started: ${errorText(cause)}`
+
 export const launchChrome = (
   launch: ChromeLaunch,
   onShutdown: (outcome: BrowserShutdown) => void = () => {}
@@ -271,12 +273,12 @@ export const launchChrome = (
             detached: true,
             env: chromeEnvironment(),
           }),
-        catch: cause => fail('launch', `Chrome could not be started: ${errorText(cause)}`),
+        catch: cause => fail('launch', chromeStartFailedText(cause)),
       })
       const spawned = yield* Effect.callback<void, BrowserError>(resume => {
         child.once('spawn', () => resume(Effect.void))
         child.once('error', cause =>
-          resume(Effect.fail(fail('launch', `Chrome could not be started: ${errorText(cause)}`)))
+          resume(Effect.fail(fail('launch', chromeStartFailedText(cause))))
         )
       }).pipe(Effect.exit)
       if (Exit.isFailure(spawned)) return yield* Effect.failCause(spawned.cause)

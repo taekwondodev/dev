@@ -468,6 +468,8 @@ interface LogRead {
   readonly text?: string
 }
 
+const CHOOSE_VALID_RUN_AND_STREAM = 'Choose a valid run and stream'
+
 export class WorkStore extends Context.Service<
   WorkStore,
   {
@@ -669,12 +671,12 @@ export class WorkStore extends Context.Service<
 
         const plannedLogPath = (id: AttemptId, stream: LogStream): string => {
           if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
-            throw new Error('Choose a valid run and stream')
+            throw new Error(CHOOSE_VALID_RUN_AND_STREAM)
           return join(root, id, LOG_FILES[stream])
         }
 
         const logPath = (id: AttemptId, stream: LogStream): string => {
-          if (!authorized.has(id)) throw new Error('Choose a valid run and stream')
+          if (!authorized.has(id)) throw new Error(CHOOSE_VALID_RUN_AND_STREAM)
           return plannedLogPath(id, stream)
         }
 

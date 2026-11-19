@@ -73,6 +73,8 @@ export const resolveSelection = (
   return result
 }
 
+const CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING = 'The current checkout changed before switching'
+
 export const selectWorkspace = (
   authority: WorkspaceAuthority,
   attachment: AttachmentHandle,
@@ -189,7 +191,7 @@ export const selectWorkspace = (
         if (source.repo === target.repo) {
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('The current checkout changed before switching')
+            requireReview(CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING)
           putBinding(db, { ...current, pendingOperationId: operationId })
         }
       })
@@ -199,7 +201,7 @@ export const selectWorkspace = (
         transaction(db, () => {
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('The current checkout changed before switching')
+            requireReview(CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING)
           putBinding(db, { ...current, pendingOperationId: operationId })
         })
       )

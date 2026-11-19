@@ -235,15 +235,17 @@ export const first = (
   sql: string,
   ...params: SqlParameter[]
 ): SqlRow | undefined => statement(db, sql).get(...params) as SqlRow | undefined
+const corruptDatabaseFieldText = (key: string): string => `Corrupt dev database field: ${key}`
+
 export const textField = (row: SqlRow | undefined, key: string): string => {
   const value = row?.[key]
-  if (typeof value !== 'string') return requireReview(`Corrupt dev database field: ${key}`)
+  if (typeof value !== 'string') return requireReview(corruptDatabaseFieldText(key))
   return value
 }
 export const numberField = (row: SqlRow | undefined, key: string): number => {
   const value = row?.[key]
   if (typeof value !== 'number' || !Number.isFinite(value))
-    return requireReview(`Corrupt dev database field: ${key}`)
+    return requireReview(corruptDatabaseFieldText(key))
   return value
 }
 const normalizeSql = (sql: string): string => sql.replace(/\s+/g, ' ').trim()
@@ -391,6 +393,9 @@ export interface RecordConnection {
   readonly db: DatabaseSync
   readonly identity: string | undefined
 }
+export const cannotEnableWalText = (path: string): string =>
+  `Cannot enable WAL for dev's new checkout database: ${path}`
+
 export const openRecordConnection = (
   path: string,
   kind: 'catalog' | 'shard',
@@ -412,8 +417,7 @@ export const openRecordConnection = (
     try {
       if (!existed) {
         const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
-        if (mode.toLowerCase() !== 'wal')
-          unavailable(`Cannot enable WAL for dev's new checkout database: ${path}`)
+        if (mode.toLowerCase() !== 'wal') unavailable(cannotEnableWalText(path))
       }
       const identity = configureRecordDb(db, path, kind)
       return { db, identity: identity === opening ? identity : undefined }

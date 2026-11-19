@@ -514,6 +514,9 @@ export const formatSweepReceipt = (receipt: SweepReceipt): string => {
   ].join('\n')
 }
 
+export const checkoutInspectionFailedText = (detail: string): string =>
+  `Checkout inspection failed: ${detail}`
+
 export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
   function* <R, RootR>(
     openLifecycle: Effect.Effect<WorkspaceLifecycle, never, R>,
@@ -591,7 +594,7 @@ export const runReadOnlyWorkspaceCommand = Effect.fnUntraced(
   Effect.catch(cause =>
     Effect.succeed<WorkspaceCommandResult>({
       exitCode: 1,
-      text: `Checkout inspection failed: ${cause.message}`,
+      text: checkoutInspectionFailedText(cause.message),
     })
   )
 )

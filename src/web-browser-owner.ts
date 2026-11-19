@@ -57,6 +57,7 @@ import {
   type BrowserProfilePaths,
   type BrowserProfileStatus,
   type RevocationOutcome,
+  CHROME_READS_DISABLED,
 } from './web-profile.ts'
 import {
   defaultFetchLimits,
@@ -243,6 +244,8 @@ interface FrameChannel {
   readonly close: () => void
 }
 
+const BROWSER_CONNECTION_CLOSED = 'Browser connection closed'
+
 const readFrames = (
   socket: Socket,
   limit: number,
@@ -293,7 +296,7 @@ const readFrames = (
     }
   })
   socket.on('error', cause => onBroken(`Browser connection failed: ${errorText(cause)}`))
-  socket.on('close', () => onBroken('Browser connection closed'))
+  socket.on('close', () => onBroken(BROWSER_CONNECTION_CLOSED))
   return {
     write: text => {
       if (socket.destroyed || socket.writableEnded) return false
@@ -446,7 +449,7 @@ export const makeSessionRenderer = Effect.fnUntraced(function* (options: {
           })
           if (!bound.channel.write(encodeRequest(request(requestId)))) {
             bound.pending.delete(requestId)
-            resume(Effect.fail(ownerFailure('unavailable', 'Browser connection closed')))
+            resume(Effect.fail(ownerFailure('unavailable', BROWSER_CONNECTION_CLOSED)))
           }
         }
         sent()
@@ -593,7 +596,7 @@ const connectForAdmin = (
           })
           if (!bound.channel.write(encodeRequest(request))) {
             bound.pending.delete(request.requestId)
-            resume(Effect.fail(ownerFailure('unavailable', 'Browser connection closed')))
+            resume(Effect.fail(ownerFailure('unavailable', BROWSER_CONNECTION_CLOSED)))
           }
           return Effect.sync(() => {
             bound.pending.delete(request.requestId)
@@ -961,7 +964,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
     if (yield* profile.disabled)
       return yield* new BrowserProfileError({
         reason: 'disabled',
-        message: 'Chrome reads are disabled. Run `dev browser enable` to allow them.',
+        message: CHROME_READS_DISABLED,
       })
     const current = yield* chromeLock.withPermits(1)(openChrome)
     return yield* current.host

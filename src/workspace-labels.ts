@@ -1,6 +1,10 @@
 import type { WorkspaceExecution } from './workspace-domain.ts'
 import type { UseRecord } from './workspace-records.ts'
 
+export const CHECKOUT_CONTENTS_UNREADABLE = 'The checkout contents could not be read.'
+
+export const missingCheckoutText = (checkoutId: string): string => `Checkout missing: ${checkoutId}`
+
 const USE_STAGE_LABELS: Record<UseRecord['stage'], string> = {
   authorized: 'permitted',
   'operation-started': 'running',

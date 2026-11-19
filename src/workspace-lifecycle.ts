@@ -81,6 +81,8 @@ const replyDecoder = <K extends WorkspaceRpcOperation>(op: K) => decodeWorkspace
 
 const startWorkerThread: StartWorkspaceWorker = (url, options) => new Worker(url, options)
 
+const INVALID_CHECKOUT_RESPONSE = 'Dev received an invalid checkout response'
+
 export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
   readonly root?: string
   readonly startWorker?: StartWorkspaceWorker
@@ -176,7 +178,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     try {
       message = decodeWorkspaceWorkerMessage(raw)
     } catch {
-      fail(unavailableError('Dev received an invalid checkout response'))
+      fail(unavailableError(INVALID_CHECKOUT_RESPONSE))
       return
     }
     if ('type' in message) {
@@ -312,7 +314,7 @@ export const makeWorkspaceLifecycle = Effect.fnUntraced(function* (options?: {
     )
     const reply = replyDecoder<K>(input.op)(value)
     if (Option.isSome(reply)) return reply.value
-    const cause = unavailableError('Dev received an invalid checkout response')
+    const cause = unavailableError(INVALID_CHECKOUT_RESPONSE)
     fail(cause)
     return yield* cause
   })

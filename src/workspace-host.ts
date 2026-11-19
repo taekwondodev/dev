@@ -410,6 +410,8 @@ const display = (
 const cancelledSiblingsNotice =
   'Other calls of that batch reporting "Operation aborted" or "No result provided" were cancelled before running and may be issued again if still needed.'
 
+const SUBMIT_NEW_PROMPT = 'Submit a new prompt.'
+
 const switchNotices = (
   { origin, handoff }: PendingTransition,
   binding: WorkspaceBinding
@@ -426,13 +428,13 @@ const switchNotices = (
     return {
       details,
       model: `The user chose /workspace resume. ${handoff.reason}. ${current}`,
-      unqueued: 'Submit a new prompt.',
+      unqueued: SUBMIT_NEW_PROMPT,
     }
   return origin === 'tool-resume'
     ? {
         details,
         model: `Dev switched checkouts and ended the requesting turn. ${handoff.reason}. ${current} ${cancelledSiblingsNotice}`,
-        unqueued: 'Submit a new prompt.',
+        unqueued: SUBMIT_NEW_PROMPT,
       }
     : {
         details,

@@ -12,6 +12,7 @@ import type {
   WorkspaceReleaseResult,
   WorkspaceView,
 } from './workspace-domain.ts'
+import { CHECKOUT_CONTENTS_UNREADABLE } from './workspace-labels.ts'
 
 export interface TerminalStyle {
   readonly live: boolean
@@ -138,6 +139,8 @@ type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
 type ReleaseOffer = 'together' | 'alone' | 'never'
 const OFFER_RANK: Record<ReleaseOffer, number> = { together: 0, alone: 1, never: 2 }
 
+const EARLIER_REMOVAL_UNFINISHED = 'An earlier removal did not finish.'
+
 const RETAINED_DISPLAY: Record<
   RetainedReason,
   { readonly offer: ReleaseOffer; readonly status: string }
@@ -150,7 +153,7 @@ const RETAINED_DISPLAY: Record<
     offer: 'together',
     status: 'A checkout transition has not finished.',
   },
-  'release-review': { offer: 'together', status: 'An earlier removal did not finish.' },
+  'release-review': { offer: 'together', status: EARLIER_REMOVAL_UNFINISHED },
   excluded: {
     offer: 'never',
     status: 'The conversation allocating a worktree is working in the checkout.',
@@ -165,7 +168,7 @@ const RETAINED_DISPLAY: Record<
     offer: 'together',
     status: 'The worktree directory is missing, but the task still keeps it.',
   },
-  'residue-unreadable': { offer: 'together', status: 'The checkout contents could not be read.' },
+  'residue-unreadable': { offer: 'together', status: CHECKOUT_CONTENTS_UNREADABLE },
   'checkout-modified': { offer: 'together', status: 'The checkout has uncommitted changes.' },
   skipped: { offer: 'never', status: 'The checkout was excluded from this cleanup.' },
   'no-commits': { offer: 'together', status: 'The checkout has no commits proving delivery.' },
@@ -231,7 +234,7 @@ export const tasksToConfirm = (receipt: SweepReceipt): readonly WorkspaceId[] =>
 const statusOf = (row: WorkspaceRow): string => {
   if (row.verdict.kind === 'retained') return RETAINED_DISPLAY[row.verdict.retained].status
   return row.outcome === 'review-required'
-    ? 'An earlier removal did not finish.'
+    ? EARLIER_REMOVAL_UNFINISHED
     : 'A cleanup guard blocked removal after completion was verified.'
 }
 

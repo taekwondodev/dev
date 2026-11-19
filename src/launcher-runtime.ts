@@ -36,6 +36,7 @@ import {
   resourceSummary,
   type ComposedResources,
   type Profile,
+  CANNOT_COMPOSE_PROFILE_RESOURCES,
 } from './profiles.ts'
 import { errorText } from './error-text.ts'
 import {
@@ -691,6 +692,8 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   })
 })
 
+const INTERRUPTED_AFTER_AUTOMATIC_CLEANUP = 'interrupted after automatic cleanup'
+
 export const sweepAtQuit = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
   input: {
@@ -769,13 +772,13 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
           settle
         )
         if (!input.proceed() && exit.code !== 130)
-          exit = { code: 130, text: 'interrupted after automatic cleanup' }
+          exit = { code: 130, text: INTERRUPTED_AFTER_AUTOMATIC_CLEANUP }
       } else {
         yield* settle(0)
         yield* write(formatQuitReceipt(receipt, elapsed, style))
         exit = input.proceed()
           ? sweptExit
-          : { code: 130, text: 'interrupted after automatic cleanup' }
+          : { code: 130, text: INTERRUPTED_AFTER_AUTOMATIC_CLEANUP }
       }
       yield* write(
         `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
@@ -853,6 +856,9 @@ const confirmRelease = Effect.fnUntraced(function* (
   return releaseExitCode(released.value)
 })
 
+const releaseInspectionFailedText = (detail: string): string =>
+  `Checkout inspection failed; nothing was released: ${detail}`
+
 const terminalRelease = Effect.fnUntraced(function* (
   dependencies: LauncherDependencies,
   taskId: WorkspaceId
@@ -860,10 +866,7 @@ const terminalRelease = Effect.fnUntraced(function* (
   const lifecycle = yield* dependencies.workspaceLifecycle
   const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
   if (Exit.isFailure(listed)) {
-    yield* write(
-      `Checkout inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
-      process.stderr
-    )
+    yield* write(releaseInspectionFailedText(errorText(Cause.squash(listed.cause))), process.stderr)
     return 1
   }
   const views = reservedViews(listed.value)
@@ -893,10 +896,7 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
   const lifecycle = yield* dependencies.workspaceLifecycle
   const listed = yield* Effect.exit(lifecycle.inspect({ cwd: repositoryRoot }))
   if (Exit.isFailure(listed)) {
-    yield* write(
-      `Checkout inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
-      process.stderr
-    )
+    yield* write(releaseInspectionFailedText(errorText(Cause.squash(listed.cause))), process.stderr)
     return 1
   }
   const views = unreservedCheckoutViews(listed.value)
@@ -1108,6 +1108,8 @@ const chooseTask = Effect.fnUntraced(function* (
   return candidate === undefined ? { kind: 'cancelled' } : { kind: 'chosen', candidate }
 })
 
+const CANNOT_LOAD_SELECTED_PROFILE = 'Cannot load selected profile'
+
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
   dependencies: LauncherDependencies
@@ -1273,12 +1275,12 @@ const run = Effect.fnUntraced(function* (
   if (options.diagnostics) {
     const diagnosticProfile = yield* catalog
       .load(recorded ?? selection.profile)
-      .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
+      .pipe(Effect.mapError(error => toLauncherError(error, CANNOT_LOAD_SELECTED_PROFILE)))
     const diagnosticResources = yield* composeResources({
       cwd: launchCwd,
       gitRoot: yield* gitRoot(launchCwd),
       profile: diagnosticProfile,
-    }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
+    }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_COMPOSE_PROFILE_RESOURCES)))
     const dispatch = yield* readDispatch.pipe(
       Effect.mapError(error => toLauncherError(error, 'Cannot read dispatch configuration'))
     )
@@ -1357,13 +1359,13 @@ const run = Effect.fnUntraced(function* (
   const selectedName = recorded ?? effectiveSelection.profile
   const profile = yield* catalog
     .load(selectedName)
-    .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
+    .pipe(Effect.mapError(error => toLauncherError(error, CANNOT_LOAD_SELECTED_PROFILE)))
   const effectiveRoot = yield* rootOf(effectiveCwd)
   const resources = yield* composeResources({
     cwd: effectiveCwd,
     gitRoot: effectiveRoot,
     profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
+  }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_COMPOSE_PROFILE_RESOURCES)))
   if (recorded === undefined)
     yield* Effect.sync(() => {
       sessions.appendCustomEntry('dev/profile', {

@@ -1,5 +1,7 @@
 import * as Predicate from 'effect/Predicate'
 
+export const LOST_CONNECTION_TO_DEV = 'Lost connection to dev'
+
 export interface ReplyChannel {
   on(event: 'message', listener: (message: unknown) => void): unknown
   once(event: 'disconnect', listener: () => void): unknown

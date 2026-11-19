@@ -10,7 +10,7 @@ import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import { verbCompletions } from './command-completions.ts'
 import { executeWork, factsOf, outcomeView } from './work-actions.ts'
-import { WorkOwner } from './work-controller.ts'
+import { WorkOwner, BACKGROUND_WORK_CLOSED } from './work-controller.ts'
 import {
   asSessionId,
   WorkError,
@@ -265,7 +265,7 @@ export const createWorkExtension = ({
     Effect.try({
       try: () => {
         if (sessionOwner?._tag === 'closed')
-          throw new WorkError({ message: 'Background work has closed' })
+          throw new WorkError({ message: BACKGROUND_WORK_CLOSED })
         if (sessionOwner?._tag === 'unavailable')
           throw new WorkError({ message: sessionOwner.message })
         const sessionId = asSessionId(ctx.sessionManager.getSessionId())

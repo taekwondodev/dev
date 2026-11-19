@@ -3,7 +3,7 @@ import {
   conversationRecord,
   settleClosingState,
 } from './workspace-attachment.ts'
-import { WorkspaceAuthority } from './workspace-authority.ts'
+import { WorkspaceAuthority, CHECKOUT_SERVICE_CLOSED } from './workspace-authority.ts'
 import type { AttachmentHandle, ConversationState } from './workspace-conversation.ts'
 import {
   attachmentClosed,
@@ -86,7 +86,7 @@ export class WorkspaceEngine {
 
   run<A>(work: (authority: WorkspaceAuthority) => A | Promise<A>): Promise<A> {
     return attempt(() => {
-      if (this.closed) blocked('Dev checkout service is closed')
+      if (this.closed) blocked(CHECKOUT_SERVICE_CLOSED)
       return this.authority.withHandles(() => work(this.authority))
     })
   }

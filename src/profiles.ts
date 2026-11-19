@@ -220,6 +220,8 @@ const existingPaths = (
     fs.exists(path).pipe(Effect.map(exists => (exists ? path : undefined)))
   ).pipe(Effect.map(values => values.filter((path): path is string => path !== undefined)))
 
+export const CANNOT_COMPOSE_PROFILE_RESOURCES = 'Cannot compose profile resources'
+
 export const composeResources: (
   options: ComposeResourcesOptions
 ) => Effect.Effect<ComposedResources, ProfileError, FileSystem.FileSystem> = Effect.fnUntraced(
@@ -249,7 +251,7 @@ export const composeResources: (
       soulPath: options.profile.soulPath,
     }
   },
-  Effect.mapError(error => toProfileError(error, 'Cannot compose profile resources'))
+  Effect.mapError(error => toProfileError(error, CANNOT_COMPOSE_PROFILE_RESOURCES))
 )
 
 export function resourceSummary(resources: ComposedResources): string {

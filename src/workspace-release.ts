@@ -73,6 +73,7 @@ import {
   removeWorktree,
   symbolicBranch,
   type GitWorkspace,
+  type GitResult,
 } from './workspace-git.ts'
 import { abandonedUseIds, checkoutMissing, sampledPaths } from './workspace-inspect.ts'
 import { isWithin } from './workspace-paths.ts'
@@ -855,6 +856,18 @@ interface SweepAttempt {
   readonly operationId?: WorkspaceId
 }
 
+const WORKTREE_AND_GIT_REGISTRATION_REMOVED = 'Dev removed the worktree and its Git registration.'
+
+const gitWorktreeRemovalText = (git: GitResult): string =>
+  git.status === 0
+    ? 'git worktree remove --force exited 0'
+    : `git worktree remove --force failed: ${git.stderr.trim() || `exit ${git.status ?? 'signal'}`}`
+
+const incompleteRemovalText = (detail: string, observed: string): string =>
+  `The removal did not complete (${detail}): ${observed}`
+
+const worktreeRemovedText = (detail: string): string => `Worktree removed; ${detail}.`
+
 const removeFinishedWorktree = (
   authority: WorkspaceAuthority,
   repo: WorkspaceId,
@@ -877,10 +890,7 @@ const removeFinishedWorktree = (
     })
   )
   const git = removeWorktree(workspace.commonPath, workspace.path)
-  const detail =
-    git.status === 0
-      ? 'git worktree remove --force exited 0'
-      : `git worktree remove --force failed: ${git.stderr.trim() || `exit ${git.status ?? 'signal'}`}`
+  const detail = gitWorktreeRemovalText(git)
   const after = observeRemoval(workspace)
   const unfinished = (result: string): SweepAttempt => {
     try {
@@ -892,7 +902,7 @@ const removeFinishedWorktree = (
       operationId: started.id,
     }
   }
-  if (!after.complete) return unfinished(`The removal did not complete (${detail}): ${after.text}`)
+  if (!after.complete) return unfinished(incompleteRemovalText(detail, after.text))
   removeEmptyRepositoryDirectory(authority, workspace.repositoryId)
   try {
     inDb(authority, repo, db =>
@@ -906,7 +916,7 @@ const removeFinishedWorktree = (
         markRemoved(db, workspace, {
           ...started,
           phase: 'confirmed',
-          result: `Worktree removed; ${detail}.`,
+          result: worktreeRemovedText(detail),
         })
       })
     )
@@ -917,10 +927,12 @@ const removeFinishedWorktree = (
   }
   return {
     outcome: 'removed',
-    reason: 'Dev removed the worktree and its Git registration.',
+    reason: WORKTREE_AND_GIT_REGISTRATION_REMOVED,
     operationId: started.id,
   }
 }
+
+const CHECKOUT_FREED_WITHOUT_CHANGES = 'Checkout freed for other work. Files and commits unchanged.'
 
 const releaseFinishedReservation = (
   authority: WorkspaceAuthority,
@@ -932,7 +944,7 @@ const releaseFinishedReservation = (
   const operation: ReleaseOperationRecord = {
     ...startedRelease(repo, reservation, workspace, moment, 'release-reservation', assessed.head),
     phase: 'confirmed',
-    result: 'Checkout freed for other work. Files and commits unchanged.',
+    result: CHECKOUT_FREED_WITHOUT_CHANGES,
   }
   inDb(authority, repo, db =>
     transaction(db, () => {
@@ -943,7 +955,7 @@ const releaseFinishedReservation = (
   )
   return {
     outcome: 'released',
-    reason: 'Checkout freed for other work. Files and commits unchanged.',
+    reason: CHECKOUT_FREED_WITHOUT_CHANGES,
     operationId: operation.id,
   }
 }
@@ -1079,8 +1091,8 @@ const disposeWorktree = (authority: WorkspaceAuthority, workspace: Worktree): st
     return 'Git worktree registration is unreadable; nothing was deleted'
   if (registered) {
     const git = removeWorktree(workspace.commonPath, workspace.path)
-    if (git.status === 0) return 'git worktree remove --force exited 0'
-    detail = `git worktree remove --force failed: ${git.stderr.trim() || `exit ${git.status ?? 'signal'}`}`
+    detail = gitWorktreeRemovalText(git)
+    if (git.status === 0) return detail
     if (listed(workspace) !== false) return detail
   }
   try {
@@ -1194,6 +1206,9 @@ const removeOrphanArtifacts = (
   return results
 }
 
+const fixCauseAndReleaseAgainText = (detail: string): string =>
+  `${detail}. Fix the cause and release again.`
+
 const removeForUser = (
   authority: WorkspaceAuthority,
   repo: WorkspaceId,
@@ -1221,9 +1236,9 @@ const removeForUser = (
   const detail = disposeWorktree(authority, workspace)
   const after = observeRemoval(workspace)
   if (!after.complete) {
-    const result = `The removal did not complete (${detail}): ${after.text}`
+    const result = incompleteRemovalText(detail, after.text)
     save(authority, repo, { ...started, phase: 'review-required', result })
-    return releaseResult(repo, workspace, 'failed', `${result}. Fix the cause and release again.`)
+    return releaseResult(repo, workspace, 'failed', fixCauseAndReleaseAgainText(result))
   }
   removeEmptyRepositoryDirectory(authority, workspace.repositoryId)
   inDb(authority, repo, db =>
@@ -1232,16 +1247,11 @@ const removeForUser = (
       markRemoved(db, workspace, {
         ...started,
         phase: 'confirmed',
-        result: `Worktree removed; ${detail}.`,
+        result: worktreeRemovedText(detail),
       })
     })
   )
-  return releaseResult(
-    repo,
-    workspace,
-    'removed',
-    'Dev removed the worktree and its Git registration.'
-  )
+  return releaseResult(repo, workspace, 'removed', WORKTREE_AND_GIT_REGISTRATION_REMOVED)
 }
 
 const releaseForUser = (
@@ -1263,17 +1273,12 @@ const releaseForUser = (
           headOf(authority, workspace)
         ),
         phase: 'confirmed',
-        result: 'Checkout freed for other work. Files and commits unchanged.',
+        result: CHECKOUT_FREED_WITHOUT_CHANGES,
       })
       forgetReservation(db, reservation)
     })
   )
-  return releaseResult(
-    repo,
-    workspace,
-    'released',
-    'Checkout freed for other work. Files and commits unchanged.'
-  )
+  return releaseResult(repo, workspace, 'released', CHECKOUT_FREED_WITHOUT_CHANGES)
 }
 
 const linkedAdminPath = (commonPath: string, target: string): string | undefined => {
@@ -1352,7 +1357,9 @@ const clearUnfinishedAllocation = (
     if (!after.complete)
       return result(
         'failed',
-        `The unfinished worktree creation was not cleared (${detail}): ${after.text}. Fix the cause and release again.`
+        fixCauseAndReleaseAgainText(
+          `The unfinished worktree creation was not cleared (${detail}): ${after.text}`
+        )
       )
     save(authority, repo, closed(detail))
     removeEmptyRepositoryDirectory(authority, repo)
@@ -1361,7 +1368,7 @@ const clearUnfinishedAllocation = (
       'The unfinished worktree creation was cleared; nothing of the worktree remains.'
     )
   } catch (cause) {
-    return result('failed', `${errorText(cause)}. Fix the cause and release again.`)
+    return result('failed', fixCauseAndReleaseAgainText(errorText(cause)))
   } finally {
     if (gates !== undefined) releaseGates(gates)
     structure?.()
@@ -1393,12 +1400,7 @@ export const releaseTask = (
       structure = acquireStructureGate(authority.paths, workspace, repo)
       return removeForUser(authority, repo, reservation, workspace)
     } catch (cause) {
-      return releaseResult(
-        repo,
-        workspace,
-        'failed',
-        `${errorText(cause)}. Fix the cause and release again.`
-      )
+      return releaseResult(repo, workspace, 'failed', fixCauseAndReleaseAgainText(errorText(cause)))
     } finally {
       structure?.()
     }

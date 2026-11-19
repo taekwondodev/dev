@@ -36,6 +36,7 @@ import {
   type ReservationRecord,
   type BindingRecord,
   type UseRecord,
+  unfinishedWorktreeCreationText,
 } from './workspace-records.ts'
 import {
   encode,
@@ -53,6 +54,7 @@ import {
   type RecordConnection,
   sqliteCode,
   type SqlRow,
+  cannotEnableWalText,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
 import { native } from './native.ts'
@@ -139,8 +141,7 @@ const createCatalogDatabase = (path: string, namespaceId: WorkspaceId): void => 
     db = new DatabaseSync(path, { timeout: 0, allowExtension: false })
     db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
     const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
-    if (mode.toLowerCase() !== 'wal')
-      unavailable(`Cannot enable WAL for dev's new checkout database: ${path}`)
+    if (mode.toLowerCase() !== 'wal') unavailable(cannotEnableWalText(path))
     db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON;')
     db.close()
     db = undefined
@@ -232,6 +233,23 @@ interface HeldHandles {
   readonly shards: Map<WorkspaceId, HeldShard>
 }
 
+export const CHECKOUT_SERVICE_CLOSED = 'Dev checkout service is closed'
+
+const checkoutRecordsMovedText = (path: string): string =>
+  `Dev's checkout records were replaced or moved: ${path}`
+
+const repositoryNotRecordedText = (repositoryId: WorkspaceId): string =>
+  `Dev has no record for repository ${repositoryId}`
+
+const savedRepositoryMismatchText = (repositoryId: WorkspaceId): string =>
+  `Saved repository does not match Git: ${repositoryId}`
+
+const repositoryDatabaseMissingText = (path: string): string =>
+  `Repository database is missing: ${path}`
+
+const repositoryRecordDisappearedText = (repositoryId: WorkspaceId): string =>
+  `Dev's record of this repository disappeared: ${repositoryId}`
+
 export class WorkspaceAuthority {
   readonly paths: AuthorityPaths
   readonly root: string
@@ -274,7 +292,7 @@ export class WorkspaceAuthority {
   }
 
   initialize(): WorkspaceId {
-    if (this.closed) unavailable('Dev checkout service is closed')
+    if (this.closed) unavailable(CHECKOUT_SERVICE_CLOSED)
     if (this.initialized) return this.namespaceId ?? requireReview('Dev storage ID is missing')
     this.checkStorage()
     assertSqliteSafety()
@@ -311,7 +329,7 @@ export class WorkspaceAuthority {
   }
 
   inspectExisting(): WorkspaceId | undefined {
-    if (this.closed) unavailable('Dev checkout service is closed')
+    if (this.closed) unavailable(CHECKOUT_SERVICE_CLOSED)
     this.checkStorage()
     const rootInfo = lstatIfExists(this.root)
     if (rootInfo === undefined) return undefined
@@ -387,7 +405,7 @@ export class WorkspaceAuthority {
   private catalogCurrent(known: HeldCatalog): boolean {
     if (!recordConnectionCurrent(known, this.paths.catalog)) return false
     if (catalogNamespace(known.db) !== this.expectedNamespace())
-      requireReview(`Dev's checkout records were replaced or moved: ${this.paths.catalog}`)
+      requireReview(checkoutRecordsMovedText(this.paths.catalog))
     return true
   }
 
@@ -406,7 +424,7 @@ export class WorkspaceAuthority {
   private shardCurrent(known: HeldShard, repositoryId: WorkspaceId): boolean {
     const path = this.shardPath(repositoryId)
     const record = this.readRepository(repositoryId)
-    if (record === undefined) return unavailable(`Dev has no record for repository ${repositoryId}`)
+    if (record === undefined) return unavailable(repositoryNotRecordedText(repositoryId))
     if (record.state !== 'ready') return false
     privateDirectory(dirname(path), false)
     if (!recordConnectionCurrent(known, path)) return false
@@ -438,7 +456,7 @@ export class WorkspaceAuthority {
       const shared = this.currentShard(held, repositoryId)
       if (shared !== undefined && !shared.db.isTransaction) {
         if (repository !== undefined && !matchesRepository(shared.record, repository))
-          requireReview(`Saved repository does not match Git: ${repositoryId}`)
+          requireReview(savedRepositoryMismatchText(repositoryId))
         return work(shared.db)
       }
       const opened = this.openShardRecord(repositoryId, create, repository)
@@ -463,7 +481,7 @@ export class WorkspaceAuthority {
     const connection = openRecordConnection(this.paths.catalog, 'catalog')
     try {
       if (catalogNamespace(connection.db) !== namespaceId)
-        requireReview(`Dev's checkout records were replaced or moved: ${this.paths.catalog}`)
+        requireReview(checkoutRecordsMovedText(this.paths.catalog))
       return connection
     } catch (cause) {
       connection.db.close()
@@ -498,14 +516,13 @@ export class WorkspaceAuthority {
     if (!this.initialized && create) this.initialize()
     const path = this.shardPath(repositoryId)
     const record = this.readRepository(repositoryId)
-    if (record === undefined) return unavailable(`Dev has no record for repository ${repositoryId}`)
+    if (record === undefined) return unavailable(repositoryNotRecordedText(repositoryId))
     const published = lstatIfExists(path) !== undefined
-    if (record.state === 'ready' && !published)
-      requireReview(`Repository database is missing: ${path}`)
+    if (record.state === 'ready' && !published) requireReview(repositoryDatabaseMissingText(path))
     if (record.state === 'provisioning' && !create && !published)
       requireReview(`Repository database setup did not finish: ${path}`)
     if (repository !== undefined && !matchesRepository(record, repository))
-      requireReview(`Saved repository does not match Git: ${repositoryId}`)
+      requireReview(savedRepositoryMismatchText(repositoryId))
     const provision = create && record.state === 'provisioning'
     privateDirectory(dirname(path), provision)
     const { db, identity } = openRecordConnection(
@@ -561,8 +578,7 @@ export class WorkspaceAuthority {
     this.inCatalog(db => {
       transaction(db, () => {
         const row = repositoryRow(db, 'id=?', repositoryId)
-        if (row === undefined)
-          requireReview(`Dev's record of this repository disappeared: ${repositoryId}`)
+        if (row === undefined) requireReview(repositoryRecordDisappearedText(repositoryId))
         const current = parseRepositoryCatalogRow(row)
         if (current.state === 'ready') return
         const ready: RepositoryCatalogRecord = {
@@ -663,12 +679,10 @@ export class WorkspaceAuthority {
           MOMENTARY_HOLD_WAIT_MS
         )
       const current = this.readRepository(repositoryId)
-      if (current === undefined)
-        requireReview(`Dev's record of this repository disappeared: ${repositoryId}`)
+      if (current === undefined) requireReview(repositoryRecordDisappearedText(repositoryId))
       if (current.state === 'ready') {
         const path = this.shardPath(repositoryId)
-        if (lstatIfExists(path) === undefined)
-          requireReview(`Repository database is missing: ${path}`)
+        if (lstatIfExists(path) === undefined) requireReview(repositoryDatabaseMissingText(path))
         this.openShard(repositoryId, false, repository).close()
       } else {
         privateDirectory(dirname(this.shardPath(repositoryId)), true)
@@ -762,7 +776,7 @@ export const registerWorkspace = (
           if (!matchesGitWorkspace(existing, git))
             requireReview(`Checkout path was replaced: ${existing.path}`)
           if (existing.status !== 'ready')
-            requireReview(`Worktree creation may be unfinished: ${existing.path}`)
+            requireReview(unfinishedWorktreeCreationText(existing.path))
           return existing
         }
         const record = makeWorkspaceRecord(repo, git, 'pre-existing')

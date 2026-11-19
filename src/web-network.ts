@@ -100,6 +100,8 @@ const DNS_TIMEOUT = Duration.seconds(10)
 
 export type LookupAll = (hostname: string) => Promise<readonly { readonly address: string }[]>
 
+const hostHasNoAddressText = (host: string): string => `${host} has no address`
+
 export const makeAddressResolver =
   (lookupAll: LookupAll) =>
   (hostname: string): Effect.Effect<string, WebNetworkError> =>
@@ -118,7 +120,7 @@ export const makeAddressResolver =
           orElse: () => Effect.fail(refuse('dns', `${host} did not resolve within 10 seconds`)),
         }),
         Effect.flatMap(answers => {
-          if (answers.length === 0) return Effect.fail(refuse('dns', `${host} has no address`))
+          if (answers.length === 0) return Effect.fail(refuse('dns', hostHasNoAddressText(host)))
           const blocked = answers.filter(answer => !isPublicAddress(answer.address))
           if (blocked.length > 0)
             return Effect.fail(
@@ -129,7 +131,7 @@ export const makeAddressResolver =
             )
           const [first] = answers
           return first === undefined
-            ? Effect.fail(refuse('dns', `${host} has no address`))
+            ? Effect.fail(refuse('dns', hostHasNoAddressText(host)))
             : Effect.succeed(first.address)
         })
       )

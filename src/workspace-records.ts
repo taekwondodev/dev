@@ -661,6 +661,9 @@ export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace):
   record.commonPath === git.commonPath &&
   sameIdentity(record.common, git.commonIdentity) &&
   record.objectFormat === git.objectFormat
+export const unfinishedWorktreeCreationText = (path: string): string =>
+  `Worktree creation may be unfinished: ${path}`
+
 export const validateWorkspacePath = (
   record: WorkspaceRecord,
   observed?: GitWorkspace
@@ -669,8 +672,7 @@ export const validateWorkspacePath = (
     return requireReview(
       `Checkout was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
     )
-  if (record.status !== 'ready')
-    return requireReview(`Worktree creation may be unfinished: ${record.path}`)
+  if (record.status !== 'ready') return requireReview(unfinishedWorktreeCreationText(record.path))
   let actual: GitWorkspace
   try {
     actual = observed ?? canonicalGitWorkspace(record.path)

@@ -8,6 +8,7 @@ import type {
   WorkspaceOrigin,
   WorkspaceRole,
 } from './workspace-domain.ts'
+import { CHECKOUT_CONTENTS_UNREADABLE } from './workspace-labels.ts'
 
 export type Proof =
   | { readonly kind: 'yes'; readonly reason: string }
@@ -215,7 +216,7 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
 
   if (facts.origin === 'pre-existing') {
     if (facts.residue === undefined)
-      return retain('residue-unreadable', 'The checkout contents could not be read.')
+      return retain('residue-unreadable', CHECKOUT_CONTENTS_UNREADABLE)
     if (!isClean(facts.residue))
       return retain(
         'checkout-modified',

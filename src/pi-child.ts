@@ -51,6 +51,7 @@ import {
   createCoordinatorWorkTool,
   type CoordinatorLink,
 } from './work-child-coordination.ts'
+import { RUN_CANCELLED } from './work-model-text.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError, { readonly brand: unique symbol }>()(
   'ChildError',
@@ -224,6 +225,9 @@ function fail(message: string): never {
   throw new ChildError({ message })
 }
 
+const requestCwdNotDirectoryText = (cwd: string): string =>
+  `request.cwd must be an existing directory: ${cwd}`
+
 const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
   const request = yield* Schema.decodeUnknownEffect(ChildRequestEnvelope)(raw).pipe(
     Effect.mapError(
@@ -247,12 +251,12 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
   yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
-      message: `request.cwd must be an existing directory: ${request.cwd}`,
+      message: requestCwdNotDirectoryText(request.cwd),
     })
   const cwdInfo = yield* fs.stat(request.cwd).pipe(Effect.mapError(toChildError))
   if (cwdInfo.type !== 'Directory')
     return yield* new ChildError({
-      message: `request.cwd must be an existing directory: ${request.cwd}`,
+      message: requestCwdNotDirectoryText(request.cwd),
     })
   yield* fs
     .makeDirectory(request.dataHome, { recursive: true, mode: 0o700 })
@@ -1010,7 +1014,7 @@ const runSession = Effect.fnUntraced(
         }),
       catch: toChildError,
     })
-    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled' })
+    if (signal?.aborted) return yield* new ChildError({ message: RUN_CANCELLED })
     if (initialPrompt.skill !== undefined && !skillExpanded(resource.session, initialPrompt.skill))
       return yield* new ChildError({
         message: `Pi did not expand the invocation of skill "${initialPrompt.skill.name}"`,
@@ -1021,7 +1025,7 @@ const runSession = Effect.fnUntraced(
         link,
         () => signal?.aborted === true || turnFailed(resource.session)
       ).pipe(Effect.mapError(toChildError))
-    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled' })
+    if (signal?.aborted) return yield* new ChildError({ message: RUN_CANCELLED })
     const outcome = finalAssistantOutcome(resource.session)
     const current = telemetry(resource.session)
     state.telemetry = current
@@ -1069,13 +1073,13 @@ const runPiChild = Effect.fn('runPiChild')(function* (
   let exitCode = 1
   if (attempt._tag === 'Failure') {
     const cancelled = options.signal?.aborted === true
-    result = childResult(state, '', cancelled ? 'Run cancelled' : errorMessage(attempt.failure))
+    result = childResult(state, '', cancelled ? RUN_CANCELLED : errorMessage(attempt.failure))
   } else if (attempt.success._tag === 'Failure') {
     const cancelled = options.signal?.aborted === true
     result = childResult(
       state,
       '',
-      cancelled ? 'Run cancelled' : errorMessage(attempt.success.failure)
+      cancelled ? RUN_CANCELLED : errorMessage(attempt.success.failure)
     )
   } else {
     const outcome = attempt.success.success

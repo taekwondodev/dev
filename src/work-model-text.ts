@@ -10,6 +10,8 @@ import type {
 } from './work-domain.ts'
 import { redactSecrets } from './error-text.ts'
 
+export const RUN_CANCELLED = 'Run cancelled'
+
 export const OUTPUT_PREVIEW = 512
 export const TRUNCATED_RESULT =
   'Too long to show; read it with work inspect, this id, stream "result", offset 0'

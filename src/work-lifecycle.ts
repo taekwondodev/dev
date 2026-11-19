@@ -138,8 +138,10 @@ const sameIdentity = (left: ProcessObservation, right: ProcessObservation): bool
   right.birth !== undefined &&
   left.birth === right.birth
 
+export const RUN_REVISION_LIMIT_REACHED = 'Run revision limit reached'
+
 const nextRevision = (revision: number): number => {
-  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error('Run revision limit reached')
+  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error(RUN_REVISION_LIMIT_REACHED)
   return revision + 1
 }
 

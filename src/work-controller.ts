@@ -59,6 +59,7 @@ import {
   type AttemptLifecycle,
   type LifecycleTransition,
   type ProcessObservation,
+  RUN_REVISION_LIMIT_REACHED,
 } from './work-lifecycle.ts'
 import { withCompileCache } from './compile-cache.ts'
 import { quotaExhausted, readDispatch, resolveDispatch } from './work-dispatch.ts'
@@ -420,6 +421,15 @@ export class WorkOwner extends Context.Service<WorkOwner, WorkOwnerService>()(
     )
 }
 
+const TASK_ID_ALREADY_ACTIVE = 'A run with this taskId is already active'
+
+const STOPPED_BY_STARTING_AGENT = 'stopped by the agent that started it'
+
+const pidReuseDuringCleanupText = (detail: string): string =>
+  `${detail}: PID reused; cleanup not confirmed`
+
+export const BACKGROUND_WORK_CLOSED = 'Background work has closed'
+
 const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const fs = yield* FileSystem.FileSystem
   const scope = yield* Effect.scope
@@ -627,7 +637,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     }
     const record = yield* recordFor(id)
     if (record.revision >= Number.MAX_SAFE_INTEGER)
-      return yield* new WorkError({ message: 'Run revision limit reached' })
+      return yield* new WorkError({ message: RUN_REVISION_LIMIT_REACHED })
     yield* store.save({
       ...record,
       deliveryError: message,
@@ -862,7 +872,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             throw new Error(
               'Background work currently requires POSIX process observation and signals'
             )
-          if (state.closed) throw new Error('Background work has closed')
+          if (state.closed) throw new Error(BACKGROUND_WORK_CLOSED)
           if (kind === 'agent' && state.exhausted)
             throw new Error('Subscription exhausted; no new agents may start in this session')
           const task: TaskScope = {
@@ -871,7 +881,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
           }
           if (parent !== undefined) assertCoordinatingUnsafe(parent)
           if (reservations.has(scopeKey(task)) || hasActiveTaskUnsafe(task))
-            throw new Error('A run with this taskId is already active')
+            throw new Error(TASK_ID_ALREADY_ACTIVE)
           reservations.add(scopeKey(task))
           return { generation: state.generation, sessionId: ownerSessionId, task }
         },
@@ -959,10 +969,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       ),
       dispatch,
       startAgent: request => delegate(request, job),
-      cancel: id => owned(id, cancel(id, 'stopped by the agent that started it')),
+      cancel: id => owned(id, cancel(id, STOPPED_BY_STARTING_AGENT)),
       inspect: id => owned(id, inspect(id), unavailableAttempt()),
       readLog: request => owned(request.id, readLog(request), unavailableAttempt()),
-      interrupt: reason => cancelLeaves(job, reason ?? 'stopped by the agent that started it'),
+      interrupt: reason => cancelLeaves(job, reason ?? STOPPED_BY_STARTING_AGENT),
     }
   }
 
@@ -1038,8 +1048,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     ) {
       throw new Error('Launch no longer allowed; no work started')
     }
-    if (hasActiveTaskUnsafe(task, except))
-      throw new Error('A run with this taskId is already active')
+    if (hasActiveTaskUnsafe(task, except)) throw new Error(TASK_ID_ALREADY_ACTIVE)
     if (task.parent !== undefined) {
       const parent = active.get(task.parent)
       if (parent === undefined) throw new Error('The agent that requested this run has stopped')
@@ -1795,7 +1804,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (rootIdentityReused(remainingTable.success, root, hasProcessExitEvidence(job))) {
           identityReused = true
           known = []
-          observationError = `${observationError ?? 'Cancellation'}: PID reused; cleanup not confirmed`
+          observationError = pidReuseDuringCleanupText(observationError ?? 'Cancellation')
         } else {
           known = ownedProcesses(
             remainingTable.success,
@@ -1835,7 +1844,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (rootIdentityReused(finalTable.success, root, hasProcessExitEvidence(job))) {
           identityReused = true
           known = []
-          observationError = `${observationError ?? 'Cancellation'}: PID reused; cleanup not confirmed`
+          observationError = pidReuseDuringCleanupText(observationError ?? 'Cancellation')
         } else {
           known = ownedProcesses(
             finalTable.success,

@@ -88,7 +88,7 @@ import {
 import { transaction } from './workspace-sqlite.ts'
 import { newId, now } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
-import { checkoutUseStage, releaseOnceStopped } from './workspace-labels.ts'
+import { checkoutUseStage, releaseOnceStopped, missingCheckoutText } from './workspace-labels.ts'
 
 const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<WorkspaceId>()
@@ -105,7 +105,7 @@ export const currentSource = (
       ? state.pending.targetBinding
       : state.binding
   const workspace = inDb(authority, state.repositoryId, db => getWorkspace(db, binding.workspaceId))
-  if (workspace === undefined) requireReview(`Checkout missing: ${binding.workspaceId}`)
+  if (workspace === undefined) requireReview(missingCheckoutText(binding.workspaceId))
   return {
     repo: state.repositoryId,
     binding,

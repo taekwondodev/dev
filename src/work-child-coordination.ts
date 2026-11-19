@@ -20,8 +20,8 @@ import {
   type CoordinationMessage,
 } from './work-protocol.ts'
 import { errorText } from './error-text.ts'
-import { workResultText } from './work-model-text.ts'
-import { awaitReply } from './work-child-ipc.ts'
+import { workResultText, RUN_CANCELLED } from './work-model-text.ts'
+import { awaitReply, LOST_CONNECTION_TO_DEV } from './work-child-ipc.ts'
 import { waitOnlyCommand, waitRefusal } from './work-wait-guard.ts'
 
 type Reply = Extract<ControllerWorkMessage, { readonly requestId: string }>
@@ -68,7 +68,7 @@ const exchange = (
       resume(result)
     }
     const cleanup = awaitReply(process, requestId, {
-      disconnected: () => settle(Effect.fail(unavailable('Lost connection to dev'))),
+      disconnected: () => settle(Effect.fail(unavailable(LOST_CONNECTION_TO_DEV))),
       reply: raw => {
         const reply = decodeControllerMessage(raw)
         if (
@@ -98,6 +98,8 @@ export interface CoordinatorLink {
   readonly wake: Effect.Effect<void, WorkError>
 }
 
+const UNEXPECTED_DEV_REPLY = 'Unexpected reply from dev'
+
 export const acquireCoordinatorLink = Effect.fnUntraced(function* (
   signal: AbortSignal | undefined
 ) {
@@ -112,8 +114,8 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
   }
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      const onDisconnect = end('Lost connection to dev')
-      const onAbort = end('Run cancelled')
+      const onDisconnect = end(LOST_CONNECTION_TO_DEV)
+      const onAbort = end(RUN_CANCELLED)
       process.on('message', onMessage)
       process.on('disconnect', onDisconnect)
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -130,15 +132,14 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
     request: input =>
       exchange({ type: 'work-request', input }, '180 seconds').pipe(
         Effect.flatMap(reply => {
-          if (reply.type !== 'work-reply')
-            return Effect.fail(unavailable('Unexpected reply from dev'))
+          if (reply.type !== 'work-reply') return Effect.fail(unavailable(UNEXPECTED_DEV_REPLY))
           return reply.ok ? Effect.succeed(reply.result) : Effect.fail(unavailable(reply.error))
         })
       ),
     pending: exchange({ type: 'work-idle' }, '60 seconds').pipe(
       Effect.filterOrFail(
         (reply): reply is Pending => reply.type === 'work-pending',
-        () => unavailable('Unexpected reply from dev')
+        () => unavailable(UNEXPECTED_DEV_REPLY)
       )
     ),
     acknowledge: attempts =>

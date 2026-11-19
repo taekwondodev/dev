@@ -257,6 +257,9 @@ const native = <A>(operation: () => A): Effect.Effect<A, BrowserProfileError> =>
         : fail('storage', `Chrome profile copy failed: ${errorText(cause)}`),
   })
 
+export const CHROME_READS_DISABLED =
+  'Chrome reads are disabled. Run `dev browser enable` to allow them.'
+
 export const makeBrowserProfileOwner = (options: BrowserProfileOptions): BrowserProfileOwner => {
   const paths = browserProfilePaths(options.dataHome)
   const source = options.sourceUserData ?? chromeUserData()
@@ -274,8 +277,7 @@ export const makeBrowserProfileOwner = (options: BrowserProfileOptions): Browser
         'chrome-missing',
         'Google Chrome is not installed in /Applications or ~/Applications.'
       )
-    if (regularSource(paths.disabled))
-      throw fail('disabled', 'Chrome reads are disabled. Run `dev browser enable` to allow them.')
+    if (regularSource(paths.disabled)) throw fail('disabled', CHROME_READS_DISABLED)
     if (!existsSync(join(source, 'Local State')))
       throw fail('source', `No Chrome profile found at ${source}. Sign in to Chrome first.`)
     const profileDirectory = activeProfileDirectory(source)
