@@ -7,6 +7,7 @@ import type * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Scope from 'effect/Scope'
 import { makeBrowserProfileOwner, type BrowserProfileOptions } from '../../src/web-profile.ts'
+import { waitUntil } from '../wait.ts'
 import {
   BrowserOwnerError,
   makeOwnerBootstrap,
@@ -137,6 +138,14 @@ export const staticOnlyRenderer: SessionRenderer = {
 
 export const ownerPublished = (dataHome: string): boolean =>
   existsSync(join(dataHome, 'browser', 'owner.json'))
+
+export const ownerExited = (dataHome: string): Promise<boolean> =>
+  waitUntil(
+    `the browser owner of ${dataHome} to remove its locator and exit`,
+    () => ownerPublished(dataHome),
+    published => !published,
+    { attempts: 100, intervalMs: 100 }
+  )
 
 export const assertCopyReleased = async (
   profile: BrowserProfileOptions,

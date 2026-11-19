@@ -16,14 +16,14 @@ import { createConnection, createServer as createSocketServer, type Socket } fro
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { setTimeout as sleep } from 'node:timers/promises'
 import * as Cause from 'effect/Cause'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Scope from 'effect/Scope'
-import { makeClaims, waitFor, waitUntil } from '../workspace/workspace-check-support.ts'
+import { makeClaims } from '../workspace/workspace-check-support.ts'
+import { holdsFor, waitFor, waitUntil, within } from '../wait.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
 import {
@@ -33,6 +33,7 @@ import {
   openRenderer,
   OWNER_ENTRY,
   ownerBootstrap,
+  ownerExited,
   ownerPublished,
   selectOwnerFixture,
 } from './chrome-fixture.ts'
@@ -159,10 +160,21 @@ const alive = (pid: number): boolean => {
     return false
   }
 }
-const queuedRenders = async (): Promise<number> => {
-  const status = await Effect.runPromise(admin.status)
-  return status.owner.kind === 'live' ? status.owner.activity.queued : -1
+const activityOf = async (
+  of: typeof admin
+): Promise<{ queued: number; rendering: number; clients: number }> => {
+  const status = await Effect.runPromise(of.status)
+  return status.owner.kind === 'live'
+    ? status.owner.activity
+    : { queued: -1, rendering: -1, clients: -1 }
 }
+const queuedRenders = async (): Promise<number> => (await activityOf(admin)).queued
+const renderInFlight = (of: typeof admin = admin) =>
+  waitUntil(
+    'the slow render to be in flight',
+    () => activityOf(of),
+    activity => activity.rendering >= 1
+  )
 const ownerProcesses = (): number => readdirSync(ownerPids).filter(pid => alive(Number(pid))).length
 const startOwner = (home: string): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -380,12 +392,7 @@ try {
           const replies: string[] = []
           let received = Buffer.alloc(0)
           const socket = createConnection({ path: published.socket }, () => {
-            void (async () => {
-              for (const part of writes) {
-                socket.write(part)
-                await sleep(40)
-              }
-            })()
+            writes.forEach((part, index) => setTimeout(() => socket.write(part), index * 40))
           })
           socket.on('data', (chunk: Buffer) => {
             received = Buffer.concat([received, chunk])
@@ -414,7 +421,7 @@ try {
         const scope = newScope()
         const impatient = await openRenderer(dataHome, scope, failures, Duration.seconds(1))
         const holding = Effect.runFork(impatient.render(`${origin}/slow.html?m=HOLD`, MAX_HTML))
-        await sleep(400)
+        await renderInFlight()
         const queued = await Effect.runPromiseExit(
           impatient.render(`${origin}/page.html?m=QUEUED`, MAX_HTML)
         )
@@ -467,7 +474,11 @@ try {
             socket.once('error', reject)
           })
         for (let count = connected; count < 64; count += 1) raw.push(await open(`C${count}`))
-        await sleep(500)
+        await waitUntil(
+          '64 rendering clients',
+          () => activityOf(admin),
+          activity => activity.clients === 64
+        )
         const full = await Effect.runPromise(admin.status)
         assert.equal(full.owner.kind, 'live', 'status answers while render clients are full')
         assert.equal(full.owner.kind === 'live' ? full.owner.activity.clients : 0, 64)
@@ -481,7 +492,11 @@ try {
           /At limit of 64 browser readers\. Retry later/
         )
         for (const socket of raw) socket.destroy()
-        await sleep(500)
+        await waitUntil(
+          'the closed clients to leave',
+          () => activityOf(admin),
+          activity => activity.clients < 64
+        )
         const again = await Effect.runPromise(
           extra.render(`${origin}/page.html?m=ADMITTED`, MAX_HTML)
         )
@@ -523,7 +538,7 @@ try {
         const scope = newScope()
         const burst = await openRenderer(dataHome, scope, failures)
         const holding = Effect.runFork(burst.render(`${origin}/slow.html?m=HOLDQ`, MAX_HTML))
-        await sleep(400)
+        await renderInFlight()
         const waiting = Array.from({ length: 64 }, (_, index) =>
           Effect.runFork(burst.render(`${origin}/page.html?m=Q${index}`, MAX_HTML))
         )
@@ -549,7 +564,7 @@ try {
       async () => {
         const busy = await openRenderer(dataHome, newScope(), failures)
         const pending = Effect.runFork(busy.render(`${origin}/slow.html?m=BUSY`, MAX_HTML))
-        await sleep(500)
+        await renderInFlight()
         const kept = await Effect.runPromise(admin.revoke(Duration.millis(600)))
         assert.equal(kept.kind, 'kept-live')
         assert.ok(existsSync(copyDir), 'the live copy was not deleted')
@@ -596,9 +611,7 @@ try {
       async () => {
         assert.ok(chromeRunningOn(copyDir) > 0, 'Chrome was live before the last client left')
         for (const scope of scopes.splice(0)) await closeScope(scope)
-        for (let attempt = 0; attempt < 100 && ownerPublished(dataHome); attempt += 1)
-          await sleep(100)
-        assert.ok(!ownerPublished(dataHome), 'the owner removed its locator and exited')
+        await ownerExited(dataHome)
         await assertCopyReleased(profileOptions, 'after the last client left')
         assert.equal(
           (await Effect.runPromise(makeBrowserProfileOwner(profileOptions).status)).inUse,
@@ -801,8 +814,7 @@ try {
         await prepared
         assert.ok(!ownerPublished(home), 'nothing is published before commit')
         helper.disconnect()
-        const code = await Promise.race([exited, sleep(5000).then(() => 'timeout' as const)])
-        assert.notEqual(code, 'timeout', 'the helper exited on bootstrap EOF before commit')
+        await within(exited, 5000, 'the helper to exit on bootstrap EOF before commit')
         assert.ok(!ownerPublished(home))
         assert.ok(!existsSync(join(home, 'browser', 'user-data')), 'no Chrome copy was made')
         const renderer = await openRenderer(home, newScope(), failures)
@@ -819,13 +831,17 @@ try {
         const racedAdmin = makeBrowserAdmin({ ...profileOptions, dataHome: home })
         const busy = await openRenderer(home, newScope(), failures)
         const pending = Effect.runFork(busy.render(`${origin}/slow.html?m=ORDER`, MAX_HTML))
-        await sleep(400)
+        await renderInFlight(racedAdmin)
         const order: string[] = []
         const revoke = Effect.runPromise(racedAdmin.revoke(Duration.millis(1500))).then(outcome => {
           order.push(`revoke:${outcome.kind}`)
           return outcome
         })
-        await sleep(100)
+        await waitUntil(
+          'the revocation to disable rendering',
+          () => Effect.runPromise(racedAdmin.status),
+          status => !status.profile.enabled
+        )
         const enable = Effect.runPromise(racedAdmin.enable).then(() => {
           order.push('enable')
         })
@@ -833,7 +849,9 @@ try {
         assert.equal(kept.kind, 'kept-live')
         assert.deepEqual(order, ['revoke:kept-live', 'enable'], 'enable waited for the revocation')
         await Effect.runPromise(Fiber.interrupt(pending))
-        await sleep(300)
+        await holdsFor('the copy survives the finished read after the enable', 300, () =>
+          existsSync(join(home, 'browser', 'user-data'))
+        )
         const status = await Effect.runPromise(racedAdmin.status)
         assert.equal(status.profile.enabled, true)
         assert.ok(existsSync(join(home, 'browser', 'user-data')), 'the copy survived the enable')
@@ -956,7 +974,7 @@ try {
     join(fixture, 'raced'),
     join(fixture, 'eof-before-commit'),
   ])
-    for (let attempt = 0; attempt < 100 && ownerPublished(home); attempt += 1) await sleep(100)
+    await ownerExited(home).catch(() => false)
   server.close()
   rmSync(fixture, { recursive: true, force: true })
 }

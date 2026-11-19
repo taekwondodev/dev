@@ -13,9 +13,9 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { awaitCleanupExits, makeClaims } from './workspace-check-support.ts'
+import { clockAdvanced } from '../wait.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-picker-')))
@@ -89,7 +89,7 @@ try {
       if (checkout.kind !== 'ready' || checkout.grant.taskId === undefined)
         throw new Error('The fixture could not reserve paused work')
       if (scenario !== 'task') return { taskId: checkout.grant.taskId }
-      await sleep(20)
+      await clockAdvanced()
       const later = await lifecycle.attach({ conversation: conversation('later'), cwd: alpha })
       const worktree = await later.authorize({ kind: 'delegated-write' })
       await later.close()

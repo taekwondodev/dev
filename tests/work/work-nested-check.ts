@@ -14,15 +14,11 @@ import {
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { ControllerWorkMessageSchema, trackOutcomeAttempts } from '../../src/work-protocol.ts'
 import { WorkspaceError, type WorkspaceAttachment } from '../../src/workspace-domain.ts'
-import {
-  loadInstalledPi,
-  makeClaims,
-  toolCall,
-  waitFor,
-} from '../workspace/workspace-check-support.ts'
+import { loadInstalledPi, makeClaims, toolCall } from '../workspace/workspace-check-support.ts'
+import { waitFor } from '../wait.ts'
 import { assertStatus, openWorkFixture, script, settled } from './work-check-support.ts'
 import { CHROME_EXECUTABLES, findChrome } from '../../src/web-profile.ts'
-import { makeChromeSource, ownerPublished, selectOwnerFixture } from '../web/chrome-fixture.ts'
+import { makeChromeSource, ownerExited, selectOwnerFixture } from '../web/chrome-fixture.ts'
 import {
   CHILD_EFFORT,
   CHILD_MODEL,
@@ -1265,8 +1261,7 @@ return outcome
   }
 } finally {
   documents.close()
-  for (let attempt = 0; attempt < 100 && ownerPublished(fixture.dataHome); attempt += 1)
-    await new Promise<void>(resolve => setTimeout(resolve, 100))
+  await ownerExited(fixture.dataHome).catch(() => false)
   await fixture.close()
 }
 
