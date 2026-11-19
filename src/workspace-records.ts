@@ -40,7 +40,7 @@ import {
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
-import { releaseOnceStopped } from './workspace-labels.ts'
+import { checkoutUseStage, pendingStage, releaseOnceStopped } from './workspace-labels.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
 const TaskSchema = Schema.Struct({
@@ -559,7 +559,7 @@ export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: st
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)
     requireReview(
-      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. ${[...new Set(unresolved.map(operation => operation.taskId))].map(taskId => releaseOnceStopped(taskId)).join(' ')} That retries the release; check its result.`
+      `Release ${unresolved.map(operation => `${operation.id} (${pendingStage(operation.phase)})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. ${[...new Set(unresolved.map(operation => operation.taskId))].map(taskId => releaseOnceStopped(taskId)).join(' ')} That retries the release; check its result.`
     )
 }
 export const unresolvedReleases = (
@@ -614,7 +614,7 @@ const assertNoActiveDependentUseInDb = (
   if (dependents.length > 0)
     blocked(
       `${action} while related operations may still be running: ${dependents
-        .map(use => `${use.id} (${use.effect ?? 'ordinary'}/${use.stage})`)
+        .map(use => `${use.id} (${use.effect ?? 'ordinary'}/${checkoutUseStage(use.stage)})`)
         .join(', ')}`
     )
 }

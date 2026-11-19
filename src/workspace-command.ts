@@ -1,4 +1,4 @@
-import { checkoutUseStage, releaseOnceStopped } from './workspace-labels.ts'
+import { checkoutUseStage, pendingStage, releaseOnceStopped } from './workspace-labels.ts'
 import { existsSync } from 'node:fs'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -158,7 +158,7 @@ const sortedViews = (views: readonly WorkspaceView[]): WorkspaceView[] =>
 
 export const pendingOperationText = ({ kind, stage }: WorkspaceView['pending'][number]): string => {
   const name = kind === 'handoff' ? 'switch' : kind
-  return `${name === 'allocation' ? 'create' : name} (${stage === 'intent' ? 'planned' : stage})`
+  return `${name === 'allocation' ? 'create' : name} (${pendingStage(stage)})`
 }
 
 const usesText = (view: WorkspaceView): string[] => {

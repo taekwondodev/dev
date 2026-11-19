@@ -228,9 +228,11 @@ const pendingAtLead = async () =>
 const CONTINUE_HERE = 'Continue that task here'
 const RESUME_LIST = 'Resume paused work in:'
 const UNRESOLVED_NOTICE =
-  'Dev cannot confirm an earlier checkout switch or session change, so the session was not replaced. Quit to leave it unchanged.'
-const MISMATCH_NOTICE =
-  "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged."
+  'Dev cannot confirm an earlier checkout switch or session change, so its tools stay blocked and the session was not replaced. Quit and reopen this conversation.'
+const UNRESOLVED_RESUME =
+  'Dev cannot confirm an earlier checkout switch or session change, so its tools stay blocked and the conversation was not switched. Quit and reopen this conversation.'
+const MISMATCH_RESUME =
+  "This conversation's permission no longer matches it, so its tools stay blocked and the conversation was not switched. Quit and reopen this conversation."
 const pausedCheckout = async (name: string) => {
   const checkout = join(fixture, name)
   mkdirSync(checkout)
@@ -360,10 +362,21 @@ try {
             String(later?.reason),
             /^Checkout access is blocked because this conversation's permission no longer matches it; the tool did not run\. Ask the user to quit and reopen this conversation\.$/
           )
+          const typed = await opened.runtime.session.extensionRunner.emitUserBash({
+            type: 'user_bash',
+            command: 'true',
+            excludeFromContext: false,
+            cwd: lead,
+          })
+          assert.equal(
+            typed?.result?.output,
+            "This conversation's permission no longer matches it, so its tools stay blocked and the command did not run. Quit and reopen this conversation.",
+            'a command the user types is refused in words for the user'
+          )
           await opened.runtime.session.prompt('/workspace resume')
           assert.equal(
             shown(opened.runtime).at(-1),
-            "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged.",
+            MISMATCH_RESUME,
             'with no switch pending, resume names the mismatch instead of a switch to wait for'
           )
           assert.equal(opened.host.isParked(), true, 'resume does not clear the mismatch')
@@ -493,10 +506,10 @@ try {
         assert.equal(opened.host.isParked(), true, 'access stays blocked')
         assert.match(
           opened.host.blockedAccess('nothing ran'),
-          /^Checkout access is blocked because dev cannot confirm an earlier session change; nothing ran\. Ask the user to quit and reopen this conversation\.$/
+          /^Checkout access is blocked because dev cannot confirm an earlier checkout switch or session change; nothing ran\. Ask the user to quit and reopen this conversation\.$/
         )
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
-        assert.equal(shown(opened.runtime).at(-1), UNRESOLVED_NOTICE)
+        assert.equal(shown(opened.runtime).at(-1), UNRESOLVED_RESUME)
         assert.deepEqual(await opened.runtime.newSession(), { cancelled: true })
         assert.equal(dialog.notices.at(-1), UNRESOLVED_NOTICE)
         assert.equal(opened.host.isParked(), true, 'the refused /new leaves the block')
@@ -599,7 +612,7 @@ try {
         assert.equal(opened.host.isParked(), true, 'access stays blocked')
         assert.match(
           opened.host.blockedAccess('nothing ran'),
-          /^Checkout access is blocked because dev cannot confirm an earlier session change/
+          /^Checkout access is blocked because dev cannot confirm an earlier checkout switch or session change/
         )
         refuseAttach = false
         const output = mock.method(process.stderr, 'write')
@@ -667,7 +680,7 @@ try {
         trapped = true
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         assert.equal(trapped, false, 'the lookup recorded the mismatch')
-        assert.equal(shown(opened.runtime).at(-1), MISMATCH_NOTICE)
+        assert.equal(shown(opened.runtime).at(-1), MISMATCH_RESUME)
         assert.equal(opened.host.isParked(), true)
       } finally {
         await opened.close()
@@ -1530,7 +1543,7 @@ try {
         assert.equal(opened.host.isParked(), true)
         assert.match(
           opened.host.blockedAccess('nothing ran'),
-          /^Checkout access is blocked because dev cannot confirm an earlier session change/,
+          /^Checkout access is blocked because dev cannot confirm an earlier checkout switch or session change/,
           'the failed switch is unconfirmed, not one to wait for'
         )
       } finally {

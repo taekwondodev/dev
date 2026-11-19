@@ -18,6 +18,8 @@ const isUseStage = (stage: string): stage is UseRecord['stage'] =>
 export const checkoutUseStage = (stage: string): string =>
   isUseStage(stage) ? USE_STAGE_LABELS[stage] : stage
 
+export const pendingStage = (stage: string): string => (stage === 'intent' ? 'planned' : stage)
+
 export const isConversationShell = (execution: WorkspaceExecution): boolean =>
   execution.taskKey === 'lead-shell' && execution.generation === 'lead'
 

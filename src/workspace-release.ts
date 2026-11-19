@@ -1,4 +1,9 @@
-import { checkoutUseStage, executionLabel, releaseOnceStopped } from './workspace-labels.ts'
+import {
+  checkoutUseStage,
+  executionLabel,
+  pendingStage,
+  releaseOnceStopped,
+} from './workspace-labels.ts'
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -408,7 +413,7 @@ const stageWorkspace = (
       ),
     ...unfinishedReleases.map(
       operation =>
-        `Release ${operation.id} did not finish (${operation.phase})${operation.result === undefined ? '' : `: ${operation.result}`}.`
+        `Release ${operation.id} did not finish (${pendingStage(operation.phase)})${operation.result === undefined ? '' : `: ${operation.result}`}.`
     ),
   ]
   const allocation = allocationOf(db, workspace)

@@ -88,7 +88,7 @@ import {
 import { transaction } from './workspace-sqlite.ts'
 import { newId, now } from './workspace-platform.ts'
 import { errorText } from './error-text.ts'
-import { releaseOnceStopped } from './workspace-labels.ts'
+import { checkoutUseStage, releaseOnceStopped } from './workspace-labels.ts'
 
 const claimGrant = (attachment: AttachmentHandle, grant: WorkspaceGrant): void => {
   const owners = attachment.state.leaseAttachments.get(grant.useId) ?? new Set<WorkspaceId>()
@@ -549,13 +549,14 @@ const admitFrom = <Reply>(
   }
 }
 
+const AGENT_NOT_AUTHORIZED = 'This conversation did not authorize that delegated agent'
+
 const assertLocalCoordinator = (
   attachment: AttachmentHandle,
   coordinator: WorkspaceGrant
 ): void => {
   const owners = attachment.state.leaseAttachments.get(coordinator.useId)
-  if (owners === undefined || !owners.has(attachment.token))
-    requireReview('This conversation did not authorize that delegated agent')
+  if (owners === undefined || !owners.has(attachment.token)) requireReview(AGENT_NOT_AUTHORIZED)
   if (coordinator.repositoryId !== attachment.state.repositoryId)
     invalid(
       'An agent sent to another checkout must write there itself; it can delegate only read-only work'
@@ -634,8 +635,8 @@ const reserveForeignWriter = (
       ? { from: reservation, foreignWriters: writers }
       : undefined
   const unborn = hasNoCommits(source.git)
-  if (takeover !== undefined && !unborn)
-    blocked(`Another task is keeping ${workspace.path}; ${remedy}`)
+  const keptByAnotherTask = `Another task is keeping ${workspace.path}; ${remedy}`
+  if (takeover !== undefined && !unborn) blocked(keptByAnotherTask)
   if (inDb(authority, repo, writers)) {
     if (unborn) refuseWithoutCommits(workspace.path, reservation?.taskId)
     blocked(`Checkout ${workspace.path} has a live writer from another conversation; ${remedy}`)
@@ -667,7 +668,7 @@ const reserveForeignWriter = (
           source,
           { taskId, reservationId, acquisitionId },
           takeover,
-          `Another task is keeping ${workspace.path}; ${remedy}`
+          keptByAnotherTask
         )
         if (getTask(db, taskId) === undefined)
           putTask(db, { id: taskId, repositoryId: repo, revision: 0, createdAt: now() })
@@ -931,8 +932,7 @@ const authorizeLeafRead = (
 ): WorkspaceAuthorization => {
   const { state } = attachment
   const owners = state.leaseAttachments.get(coordinator.useId)
-  if (owners === undefined || !owners.has(attachment.token))
-    requireReview('This conversation did not authorize that delegated agent')
+  if (owners === undefined || !owners.has(attachment.token)) requireReview(AGENT_NOT_AUTHORIZED)
   const lease = validateGrant(authority, state, coordinator)
   if (lease.kind !== 'execution')
     invalid('A delegated reader uses the checkout of the agent that started it')
@@ -1163,13 +1163,13 @@ const recordExecutionFact = (
       if (!sameExecution(fact.execution, lease.execution))
         invalid('Launch does not match the permitted operation')
       if (current.stage !== 'authorized')
-        requireReview(`Cannot record a planned launch after ${current.stage}`)
+        requireReview(`Cannot record a planned launch after ${checkoutUseStage(current.stage)}`)
       update({ ...current, stage: 'launch-intent', revision: current.revision + 1, updatedAt })
       return {}
     }
     case 'spawned': {
       if (current.stage !== 'launch-intent')
-        requireReview(`Cannot record process identity after ${current.stage}`)
+        requireReview(`Cannot record process identity after ${checkoutUseStage(current.stage)}`)
       update({
         ...current,
         stage: 'spawned',
@@ -1187,7 +1187,9 @@ const recordExecutionFact = (
     }
     case 'observed': {
       if (!['spawned', 'started', 'observed'].includes(current.stage))
-        requireReview(`Cannot record a process observation after ${current.stage}`)
+        requireReview(
+          `Cannot record a process observation after ${checkoutUseStage(current.stage)}`
+        )
       update({
         ...current,
         stage: 'observed',
@@ -1209,7 +1211,7 @@ const recordExecutionFact = (
     }
     case 'launch-failed': {
       if (current.stage !== 'authorized' && current.stage !== 'launch-intent')
-        requireReview(`A launch cannot be reported failed after ${current.stage}`)
+        requireReview(`A launch cannot be reported failed after ${checkoutUseStage(current.stage)}`)
       update({
         ...current,
         stage: 'quiescent',
@@ -1266,7 +1268,7 @@ const reportScopedOperation = (
         requireReview('Operation report is stale')
       if (fact.kind === 'operation-started') {
         if (latest.stage !== 'authorized')
-          requireReview(`Cannot start operation after ${latest.stage}`)
+          requireReview(`Cannot start operation after ${checkoutUseStage(latest.stage)}`)
         assertWithinLiveInDb(db, latest)
         if (latest.operationPath !== undefined) {
           const workspace = getWorkspace(db, latest.workspaceId)
@@ -1288,7 +1290,7 @@ const reportScopedOperation = (
       }
       if (fact.kind === 'operation-completed') {
         if (latest.stage !== 'operation-started' && latest.stage !== 'authorized')
-          requireReview(`Cannot record completion after ${latest.stage}`)
+          requireReview(`Cannot record completion after ${checkoutUseStage(latest.stage)}`)
         const completed: UseRecord = {
           ...latest,
           stage: 'quiescent',
@@ -1303,7 +1305,7 @@ const reportScopedOperation = (
         return completed
       }
       if (latest.stage !== 'authorized' && latest.stage !== 'operation-started')
-        requireReview(`Cannot mark execution unconfirmed after ${latest.stage}`)
+        requireReview(`Cannot mark execution unconfirmed after ${checkoutUseStage(latest.stage)}`)
       const unknown: UseRecord = {
         ...latest,
         stage: 'unknown',

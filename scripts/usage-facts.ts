@@ -88,7 +88,7 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^(?:Checkout access is blocked (?:while|because) [^;]+|This conversation (?:is closing|changed sessions or checkouts meanwhile)); (?:the (?:tool|call) did not run|no background work started)\./,
+      /^Checkout access is blocked because [^;]+; (?:the (?:tool|call) did not run|no background work started)\./,
   },
   {
     outcome: 'blocked',

@@ -1366,7 +1366,7 @@ const expectBlock = (
   return block
 }
 const PARKED =
-  /Checkout access is blocked while this conversation switches checkouts; the tool did not run\. Retry after dev reports where it works\./
+  /Checkout access is blocked because this conversation is switching checkouts; the tool did not run\. Retry after dev reports where it works\./
 const HANDOFF_REFUSAL =
   /The call did not run: fixture.*\. Dev requested a checkout switch and reports/
 const UNVERIFIED = /did not run\. Dev has not verified what this tool can do to project files/
