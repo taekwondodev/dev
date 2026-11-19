@@ -73,7 +73,7 @@ await claim(
       formatQuitReceipt(receipt, 12900, plain),
       [
         '✓ 1 worktree removed · 12.9s',
-        `dev workspace release ${undelivered.taskId}  Delivery to the integration target could not be verified.`,
+        `dev workspace release ${undelivered.taskId}  Delivery to the destination branch could not be verified.`,
         `Not offered: dev workspace release ${abandoned.taskId}  A previous session ended without settling its workspace use.`,
       ].join('\n')
     )
@@ -154,7 +154,7 @@ await claim(
     )
     assert.ok(
       text.includes(
-        `dev workspace check ${id('71')}  The sweep ran out of time before assessing this task.`
+        `dev workspace check ${id('71')}  Automatic cleanup ran out of time before assessing this task.`
       ),
       text
     )
@@ -190,7 +190,7 @@ await claim('TTY styling and progress do not depend on the terminal name', () =>
   }
   assert.equal(
     formatQuitReceipt({ moment: 'quit', rows: [] }, 120, plain),
-    'No reserved workspaces · 0.1s'
+    'No workspaces kept for a task · 0.1s'
   )
   assert.equal(formatExitLine(plain, 0, 'done'), 'Exit 0: done.')
 })
@@ -201,7 +201,7 @@ await claim(
     const text = formatQuitReceipt(receipt, 12900, tty)
     assert.ok(text.includes('\x1b[32m✓ 1 worktree removed\x1b[0m'), text)
     assert.ok(text.includes(`\x1b[33mdev workspace release ${undelivered.taskId}\x1b[0m`), text)
-    assert.ok(text.includes('\x1b[2mDelivery to the integration target'), text)
+    assert.ok(text.includes('\x1b[2mDelivery to the destination branch'), text)
     assert.equal(
       formatQuitReceipt(receipt, 12900, ttyNoColor),
       formatQuitReceipt(receipt, 12900, plain)
@@ -231,7 +231,7 @@ await claim(
     assert.equal(quitReleaseExclusion(receipt, [view]), undefined)
     assert.equal(
       quitReleaseExclusion(receipt, [view, { ...view, workspaceId: id('2001') }]),
-      'The task has workspaces that this sweep did not assess.'
+      'The task has workspaces that this cleanup did not assess.'
     )
     assert.equal(
       quitReleaseExclusion(receipt, [
@@ -239,10 +239,7 @@ await claim(
       ]),
       'The task has an active or unresolved workspace use.'
     )
-    assert.equal(
-      quitReleaseExclusion(receipt, []),
-      'The task no longer has any workspace reservations.'
-    )
+    assert.equal(quitReleaseExclusion(receipt, []), 'The task no longer keeps any workspace.')
     const unsettled = {
       ...view,
       taskId: abandoned.taskId,
@@ -252,7 +249,7 @@ await claim(
     assert.equal(taskReleaseExclusion(receipt, [unsettled]), undefined)
     assert.equal(
       taskReleaseExclusion(receipt, [unsettled, { ...unsettled, workspaceId: id('2004') }]),
-      'The task has workspaces that this sweep did not assess.'
+      'The task has workspaces that this cleanup did not assess.'
     )
     assert.equal(
       formatQuitTaskReleasePlan(
@@ -286,7 +283,7 @@ await claim(
     const text = formatQuitReleasePlan(plans, plain)
     assert.ok(
       text.includes(
-        'Release 1 task (2 managed worktrees, 1 checkout reservation, 1 task artifact directory)?'
+        'Release 1 task (2 managed worktrees, 1 pre-existing checkout, 1 task artifact directory)?'
       ),
       text
     )
@@ -294,7 +291,7 @@ await claim(
     assert.ok(text.includes('including uncommitted changes and undelivered commits'), text)
     assert.ok(
       text.includes(
-        'Pre-existing checkouts keep their files and commits; only their reservations end.'
+        'Pre-existing checkouts keep their files and commits; the task only stops keeping them.'
       ),
       text
     )
@@ -373,18 +370,18 @@ await claim(
     )
     assert.ok(
       failed.includes(
-        `dev workspace release ${undelivered.taskId}  The release failed; its recorded outcome needs review.`
+        `dev workspace release ${undelivered.taskId}  The release failed; its recorded result needs review.`
       ),
       failed
     )
     assert.ok(!failed.includes(result.path), failed)
     assert.equal(
       formatQuitReleaseFailure(undelivered.taskId, 'unreported', plain),
-      `dev workspace release ${undelivered.taskId}  The release did not report back; its outcome is unknown.`
+      `dev workspace release ${undelivered.taskId}  The release did not report back; its result is unknown.`
     )
     assert.equal(
       formatQuitSweepFailure(plain),
-      'dev workspace list  The sweep did not report back; its outcome is unknown.'
+      'dev workspace list  Automatic cleanup did not report back; its result is unknown.'
     )
     const sweepFailure = formatQuitReceipt(
       { moment: 'quit', rows: [{ kind: 'sweep-failure', reason: 'Error at /private/path' }] },

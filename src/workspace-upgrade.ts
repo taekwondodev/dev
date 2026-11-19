@@ -69,7 +69,9 @@ export const cleanupUpgradeWorkspace = (
             conversationPresent(authority.paths, conversationIdentity(binding.conversation))
         )
       )
-        blocked(`Upgrade workspace still has a reservation, use or pending operation: ${path}`)
+        blocked(
+          `Upgrade workspace is still kept for a task, in use or has a pending operation: ${path}`
+        )
       return record
     })
     const entry = git(source.path, ['worktree', 'list', '--porcelain', '-z'])

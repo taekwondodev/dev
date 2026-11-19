@@ -562,7 +562,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
   }
 
   const bindSession = (active: AgentSession) => {
-    if (session) throw new Error('Background compaction is bound to one AgentSession')
+    if (session) throw new Error('Background compaction serves only one AgentSession')
     session = active
     record(active, { runId, kind: 'attached' })
     fenceBoundary(active)

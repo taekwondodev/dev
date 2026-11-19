@@ -59,7 +59,7 @@ const spin = Effect.fnUntraced(function* (
     const progress = frame % PROGRESS_KEEPALIVE_FRAMES === 0 ? PROGRESS_ACTIVE : ''
     yield* Effect.sync(() => {
       out.write(
-        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Sweeping workspaces… ${paint(style, 'dim', seconds(now - started))}`
+        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Cleaning up workspaces… ${paint(style, 'dim', seconds(now - started))}`
       )
     })
     yield* Effect.sleep(FRAME_MS)
@@ -83,14 +83,14 @@ export const sweepIndicator = Effect.fnUntraced(function* (
 ): Effect.fn.Return<SweepIndicator, never, Scope.Scope> {
   if (!style.live) {
     yield* Effect.sync(() => {
-      out.write('Sweeping workspaces...\n')
+      out.write('Cleaning up workspaces...\n')
     })
     return idle
   }
   const started = yield* Clock.currentTimeMillis
   if (stripFits(graphics, SCAN_SHAPE, LABEL_COLUMNS)) {
     const strip = yield* sweepStrip(out, graphics, INDICATOR_DELAY_MS, elapsed =>
-      paint(style, 'dim', `Sweeping workspaces… ${seconds(elapsed)}`)
+      paint(style, 'dim', `Cleaning up workspaces… ${seconds(elapsed)}`)
     )
     return { sweepDone: Effect.void, settle: strip.settle }
   }
@@ -163,11 +163,11 @@ const RETAINED_DISPLAY: Record<
   'use-live': { offer: 'never', status: 'A session or process is still using the workspace.' },
   'directory-missing': {
     offer: 'together',
-    status: 'The worktree directory is missing, but its reservation remains.',
+    status: 'The worktree directory is missing, but the task still keeps it.',
   },
   'residue-unreadable': { offer: 'together', status: 'The workspace contents could not be read.' },
   'checkout-modified': { offer: 'together', status: 'The checkout has uncommitted changes.' },
-  skipped: { offer: 'never', status: 'The workspace was excluded from this sweep.' },
+  skipped: { offer: 'never', status: 'The workspace was excluded from this cleanup.' },
   'no-commits': { offer: 'together', status: 'The workspace has no commits proving delivery.' },
   'integration-unknown': {
     offer: 'together',
@@ -175,7 +175,7 @@ const RETAINED_DISPLAY: Record<
   },
   'not-integrated': {
     offer: 'together',
-    status: 'Delivery to the integration target could not be verified.',
+    status: 'Delivery to the destination branch could not be verified.',
   },
 }
 
@@ -252,7 +252,7 @@ const successes = (
   ).length
   return [
     ...(removed === 0 ? [] : [paint(style, 'ok', `✓ ${count(removed, 'worktree')} removed`)]),
-    ...(released === 0 ? [] : [paint(style, 'ok', `✓ ${count(released, 'reservation')} released`)]),
+    ...(released === 0 ? [] : [paint(style, 'ok', `✓ ${count(released, 'checkout')} released`)]),
     ...(artifacts === 0
       ? []
       : [paint(style, 'ok', `✓ ${count(artifacts, 'task artifact directory')} removed`)]),
@@ -266,7 +266,7 @@ export const formatQuitSummary = (
 ): string => {
   const summary =
     successes(receipt.rows, style) ||
-    (receipt.rows.length === 0 ? 'No reserved workspaces' : 'No workspaces removed')
+    (receipt.rows.length === 0 ? 'No workspaces kept for a task' : 'No workspaces removed')
   return `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`
 }
 
@@ -302,7 +302,7 @@ export const formatQuitReceipt = (
           commandStatus(
             style,
             `dev workspace check ${row.taskId}`,
-            'The sweep ran out of time before assessing this task.'
+            'Automatic cleanup ran out of time before assessing this task.'
           ),
         ]
       case 'sweep-failure':
@@ -310,7 +310,7 @@ export const formatQuitReceipt = (
           commandStatus(
             style,
             'dev workspace list',
-            'The sweep failed before every task could be assessed.'
+            'Automatic cleanup failed before every task could be assessed.'
           ),
         ]
       case 'task-artifacts':
@@ -335,8 +335,8 @@ export const taskReleaseExclusion = (
 ): string | undefined => {
   const assessed = new Set(workspaceRows(receipt).map(row => row.workspaceId))
   if (views.some(view => !assessed.has(view.workspaceId)))
-    return 'The task has workspaces that this sweep did not assess.'
-  if (views.length === 0) return 'The task no longer has any workspace reservations.'
+    return 'The task has workspaces that this cleanup did not assess.'
+  if (views.length === 0) return 'The task no longer keeps any workspace.'
   return undefined
 }
 
@@ -366,7 +366,7 @@ const releaseConsequences = (
   const existing = views.length - managed
   const scope = [
     ...(managed === 0 ? [] : [count(managed, 'managed worktree')]),
-    ...(existing === 0 ? [] : [count(existing, 'checkout reservation')]),
+    ...(existing === 0 ? [] : [count(existing, 'pre-existing checkout')]),
     ...(artifacts === 0 ? [] : [count(artifacts, 'task artifact directory')]),
   ].join(', ')
   return [
@@ -383,7 +383,7 @@ const releaseConsequences = (
         ]),
     ...(existing === 0
       ? []
-      : ['Pre-existing checkouts keep their files and commits; only their reservations end.']),
+      : ['Pre-existing checkouts keep their files and commits; the task only stops keeping them.']),
     ...(artifacts === 0
       ? []
       : [paint(style, 'fail', 'Task artifact directories are deleted with everything in them.')]),
@@ -430,7 +430,7 @@ export const formatQuitSweepFailure = (style: TerminalStyle): string =>
   commandStatus(
     style,
     'dev workspace list',
-    'The sweep did not report back; its outcome is unknown.'
+    'Automatic cleanup did not report back; its result is unknown.'
   )
 
 export const formatQuitReleaseFailure = (
@@ -442,8 +442,8 @@ export const formatQuitReleaseFailure = (
     style,
     `dev workspace release ${taskId}`,
     outcome === 'failed'
-      ? 'The release failed; its recorded outcome needs review.'
-      : 'The release did not report back; its outcome is unknown.'
+      ? 'The release failed; its recorded result needs review.'
+      : 'The release did not report back; its result is unknown.'
   )
 
 export const formatQuitReleaseSummary = (

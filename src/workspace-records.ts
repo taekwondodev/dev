@@ -269,7 +269,11 @@ export const getReservation = (
     workspaceIdValue
   )
   if (row === undefined) return undefined
-  const value = parseRecord(ReservationSchema, row.payload, `reservation ${textField(row, 'id')}`)
+  const value = parseRecord(
+    ReservationSchema,
+    row.payload,
+    `kept-checkout record ${textField(row, 'id')}`
+  )
   if (
     value.id !== textField(row, 'id') ||
     value.workspaceId !== textField(row, 'workspace_id') ||
@@ -375,7 +379,7 @@ export const updateReservation = (db: DatabaseSync, value: ReservationRecord): v
 const BINDING_ROW = 'SELECT conversation_key,workspace_id,task_id,revision,payload FROM bindings'
 const recordedBinding = (row: SqlRow): BindingRecord => {
   const key = textField(row, 'conversation_key')
-  const value = parseRecord(BindingSchema, row.payload, `binding ${key}`)
+  const value = parseRecord(BindingSchema, row.payload, `checkout record of conversation ${key}`)
   if (
     value.key !== key ||
     value.workspaceId !== textField(row, 'workspace_id') ||

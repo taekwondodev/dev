@@ -636,7 +636,7 @@ try {
   )
 
   await claim(
-    'dev workspace check <task-id> returns the role, target and sweep verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
+    'dev workspace check <task-id> returns the role, destination branch and cleanup verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
     async () => {
       const checked = await readOnly(inspectRoot, [
         '--cwd',

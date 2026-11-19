@@ -1119,7 +1119,7 @@ const decodeIpcMessage = Schema.decodeUnknownOption(IpcMessage)
 
 export function serveChild(options: ChildServeOptions = {}): void {
   if (typeof process.send !== 'function') {
-    console.error('src/pi-child.ts must be launched with child_process.fork and IPC')
+    console.error('The agent process must be forked with an IPC channel')
     process.exitCode = 2
     return
   }

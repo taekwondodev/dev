@@ -415,7 +415,7 @@ export const unreservedCheckoutViews = (
 
 export const preExistingReleasePlan = (views: readonly WorkspaceView[]): string =>
   [
-    'dev workspace release pre-existing deletes the use records of ended dev sessions in every unreserved pre-existing checkout of this repository and forgets checkouts whose directory no longer exists:',
+    'dev workspace release pre-existing deletes the use records of ended dev sessions in every pre-existing checkout of this repository that no task keeps and forgets checkouts whose directory no longer exists:',
     ...views.map(
       view =>
         `- ${view.workspaceId} at ${view.path} (${view.outcome}): ${

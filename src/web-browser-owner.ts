@@ -1350,7 +1350,7 @@ const awaitPrepare: Effect.Effect<string> = Effect.callback<string>(resume => {
 
 export const serveBrowserOwner = (options: OwnerServeOptions = {}): void => {
   if (typeof process.send !== 'function') {
-    console.error('src/web-browser-owner.ts must be launched with child_process.fork and IPC')
+    console.error('The shared browser process must be forked with an IPC channel')
     process.exitCode = 2
     return
   }

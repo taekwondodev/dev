@@ -264,7 +264,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, destination branch and cleanup verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in checkouts at --cwd that no task keeps\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nQuitting dev cleans up the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -344,7 +344,10 @@ const createRuntime = Effect.fnUntraced(function* (
     .prepareRuntime({ sessionManager: runtimeOptions.sessionManager, cwd: runtimeOptions.cwd })
     .pipe(
       Effect.mapError(error =>
-        toLauncherError(error, 'Cannot resolve workspace binding before Pi startup')
+        toLauncherError(
+          error,
+          'Cannot resolve the checkout for this conversation before Pi startup'
+        )
       )
     )
   yield* guard
@@ -450,7 +453,9 @@ const createRuntime = Effect.fnUntraced(function* (
   yield* workspaceHost
     .commitRuntime(attachment)
     .pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot commit workspace runtime binding'))
+      Effect.mapError(error =>
+        toLauncherError(error, 'Cannot record the checkout this conversation uses')
+      )
     )
   yield* Effect.sync(() => {
     compaction.bindSession(result.session)
@@ -516,19 +521,19 @@ const exitText = (code: ReleaseExitCode): string => {
     case 0:
       return 'done'
     case 1:
-      return 'at least one attempted workspace did not reach a terminal outcome'
+      return 'at least one workspace release that started did not reach a final result'
     case 130:
       return 'interrupted; no workspace was attempted after the signal'
   }
 }
 
 const tuiClosedNotice = (detached: boolean): string =>
-  `\nThe TUI is closed and its session disposed; ${detached ? 'its workspace attachment is closed' : 'closing its workspace attachment was not confirmed, so the sweep rechecks every use'}.`
+  `\nThe TUI is closed and its session disposed; ${detached ? 'its checkout access is closed' : 'closing its checkout access was not confirmed, so automatic cleanup rechecks every use'}.`
 
 const quitFailureNotice = (detached: boolean, cause: Cause.Cause<unknown>): string =>
   Cause.hasInterruptsOnly(cause)
-    ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before the sweep started; nothing was released.\nExit 130: ${exitText(130)}.`
-    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its workspace uses may still be recorded; nothing was swept or released.\nExit 1.`
+    ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before automatic cleanup started; nothing was released.\nExit 130: ${exitText(130)}.`
+    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its workspace uses may still be recorded; nothing was cleaned up or released.\nExit 1.`
 
 interface QuitExit {
   readonly code: ReleaseExitCode
@@ -657,7 +662,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
     text:
       released.size === 0 && !failed
         ? 'release cancelled; nothing was released'
-        : 'release cancelled; each confirmed release reached its recorded outcome and no other was started',
+        : 'release cancelled; each confirmed release reached its recorded result and no other was started',
   })
   const confirmations: (readonly [string, readonly WorkspaceId[]])[] = [
     ...(plans.length === 0
@@ -677,7 +682,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   if (!proceed())
     return {
       code: 130,
-      text: 'interrupted; each started release reached its recorded outcome and no other was started',
+      text: 'interrupted; each started release reached its recorded result and no other was started',
     }
   if (failed) return { code: 1, text: 'at least one release at quit failed or did not report back' }
   return sweepExit({
@@ -713,7 +718,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
   yield* write(
     input.detached
       ? ''
-      : '\nClosing the workspace attachment was not confirmed, so the sweep rechecks every use.'
+      : '\nClosing checkout access was not confirmed, so automatic cleanup rechecks every use.'
   )
   const started = yield* Clock.currentTimeMillis
   yield* Effect.scoped(
@@ -764,11 +769,13 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
           settle
         )
         if (!input.proceed() && exit.code !== 130)
-          exit = { code: 130, text: 'interrupted after the sweep' }
+          exit = { code: 130, text: 'interrupted after automatic cleanup' }
       } else {
         yield* settle(0)
         yield* write(formatQuitReceipt(receipt, elapsed, style))
-        exit = input.proceed() ? sweptExit : { code: 130, text: 'interrupted after the sweep' }
+        exit = input.proceed()
+          ? sweptExit
+          : { code: 130, text: 'interrupted after automatic cleanup' }
       }
       yield* write(
         `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
@@ -779,7 +786,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
 }, Effect.uninterruptible)
 
 const SWEEP_INTERRUPT_NOTICE =
-  'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+  'Interrupt received: automatic cleanup, or a confirmed release, runs on until each release already started reaches its recorded result; dev exits 130 after the receipt.'
 
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchCause(effect, cause =>
@@ -861,10 +868,7 @@ const terminalRelease = Effect.fnUntraced(function* (
   }
   const views = reservedViews(listed.value)
   if (views.length === 0) {
-    yield* write(
-      `Task ${taskId} holds no workspace reservation; nothing to release.`,
-      process.stderr
-    )
+    yield* write(`Task ${taskId} keeps no workspace; nothing to release.`, process.stderr)
     return 1
   }
   return yield* confirmRelease(
@@ -899,7 +903,7 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
   const [first] = views
   if (first === undefined) {
     yield* write(
-      `No unreserved pre-existing checkout of ${repositoryRoot} records a use or is missing; nothing to release.`,
+      `No pre-existing checkout of ${repositoryRoot} that no task keeps records a use or is missing; nothing to release.`,
       process.stderr
     )
     return 1
@@ -1293,7 +1297,7 @@ const run = Effect.fnUntraced(function* (
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
     return yield* new LauncherError({
-      message: 'Workspace-bound conversations require a persisted session file',
+      message: 'A conversation that uses a checkout needs a saved session file',
     })
   const sessionId = sessions.getSessionId()
   const attachment = yield* workspaceLifecycle
@@ -1375,7 +1379,7 @@ const run = Effect.fnUntraced(function* (
         ensureOwner: makeOwnerBootstrap({
           dataHome,
           onFailure: message => {
-            process.stderr.write(`The dev browser owner could not start: ${message}\n`)
+            process.stderr.write(`The shared dev browser could not start: ${message}\n`)
           },
         }).ensure,
       }),

@@ -521,7 +521,7 @@ const stageWorkspace = (
     return shape({
       reasons: [
         ...reasons,
-        'Releasing a pre-existing checkout leaves files and commits untouched.',
+        'Releasing a pre-existing checkout keeps its files and commits untouched.',
         completion.reason,
       ],
       nextActions:

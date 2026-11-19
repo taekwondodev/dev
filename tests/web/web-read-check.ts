@@ -416,14 +416,14 @@ try {
       for (const [url, pattern] of [
         ['ftp://example.com/x', /Only http and https/],
         ['https://user:pw@example.com/', /credentials/],
-        ['http://10.0.0.1/', /Private or reserved/],
-        ['http://[::1]/', /Private or reserved/],
-        ['http://169.254.169.254/latest/meta-data', /Private or reserved/],
+        ['http://10.0.0.1/', /Non-public address/],
+        ['http://[::1]/', /Non-public address/],
+        ['http://169.254.169.254/latest/meta-data', /Non-public address/],
         ['http://localhost/', /Non-public host/],
         ['http://intranet.local/', /Non-public host/],
         ['http://home.arpa/', /Non-public host/],
         ['http://printer.home.arpa/', /Non-public host/],
-        ['http://0x7f000001/', /Private or reserved/],
+        ['http://0x7f000001/', /Non-public address/],
         ['not a url', /Not an absolute URL/],
       ] as const) {
         const exit = await Effect.runPromiseExit(validateUrl(url))
@@ -473,7 +473,7 @@ try {
         })
       )
       assert.ok(Exit.isFailure(mixed))
-      assert.match(String(Cause.squash(mixed.cause)), /private or reserved address \(10\.0\.0\.1\)/)
+      assert.match(String(Cause.squash(mixed.cause)), /non-public address \(10\.0\.0\.1\)/)
       assert.equal(seen.length, 0, 'nothing connected')
       lookups = 0
       const pinned = await Effect.runPromise(
@@ -506,7 +506,7 @@ try {
       assert.ok(Exit.isFailure(refused))
       assert.match(
         String(Cause.squash(refused.cause)),
-        /Redirect from .*redirect-private refused: Private or reserved/
+        /Redirect from .*redirect-private refused: Non-public address/
       )
       assert.deepEqual(
         seen.map(item => item.url),

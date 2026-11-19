@@ -2,7 +2,7 @@
 
 Dev is a personal agent distro built on Pi. This glossary defines the terms contributors use in code, documentation and task artifacts. [Architecture](docs/ARCHITECTURE.md) maps their owners; feature guides describe their behavior.
 
-Text an agent reads while working on another repository, including the structured values it carries, uses the [outward vocabulary](AGENTS.md#text-the-model-reads) instead of these terms.
+Text an agent reads while working on another repository, including the structured values it carries, and text dev prints for the user use the [outward vocabulary](AGENTS.md#text-the-model-reads) instead of these terms.
 
 ## Environment
 

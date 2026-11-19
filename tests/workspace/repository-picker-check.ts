@@ -181,7 +181,7 @@ try {
     () => {
       assert.equal(
         assess({ missing: true }).nextAction,
-        "Restore it at this path. If it was deleted on purpose: Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files. That also forgets this checkout once no running session, pending operation or open conversation refers to it."
+        "Restore it at this path. If it was deleted on purpose: Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its pre-existing checkouts that no task keeps and keeps their files. That also forgets this checkout once no running session, pending operation or open conversation refers to it."
       )
       const reservedPreExisting = assess({ missing: true, reserved: true, taskId: 'task-2' })
       assert.ok(

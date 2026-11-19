@@ -448,7 +448,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
     if (readBack === undefined)
       return yield* refuse(
-        `${destination.url} lacks the complete text or exact attachment for ${input.path} (${bytes.byteLength} bytes, SHA-256 ${digest.slice(0, 12)}). Publish the file there first; dev uploads nothing.`
+        `${destination.url} lacks the complete text or exact uploaded file for ${input.path} (${bytes.byteLength} bytes, SHA-256 ${digest.slice(0, 12)}). Publish the file there first; dev uploads nothing.`
       )
     const head = yield* readHead(view.path)
     const reference: PublicationReference = {

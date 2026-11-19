@@ -83,7 +83,7 @@ export const validateUrl = (input: string): Effect.Effect<URL, WebNetworkError> 
     const literal = isIP(host) !== 0
     if (literal && !isPublicAddress(host))
       return Effect.fail(
-        refuse('destination', `Private or reserved address refused before connecting: ${host}`)
+        refuse('destination', `Non-public address refused before connecting: ${host}`)
       )
     const last = host.split('.').at(-1) ?? ''
     if (
@@ -108,7 +108,7 @@ export const makeAddressResolver =
       if (isIP(host) !== 0)
         return isPublicAddress(host)
           ? Effect.succeed(host)
-          : Effect.fail(refuse('destination', `Private or reserved address refused: ${host}`))
+          : Effect.fail(refuse('destination', `Non-public address refused: ${host}`))
       return Effect.tryPromise({
         try: () => lookupAll(host),
         catch: cause => refuse('dns', `${host} could not be resolved: ${errorText(cause)}`),
@@ -124,7 +124,7 @@ export const makeAddressResolver =
             return Effect.fail(
               refuse(
                 'destination',
-                `${host} resolves to a private or reserved address (${blocked.map(answer => answer.address).join(', ')}); refused before connecting`
+                `${host} resolves to a non-public address (${blocked.map(answer => answer.address).join(', ')}); refused before connecting`
               )
             )
           const [first] = answers

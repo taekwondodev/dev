@@ -66,7 +66,7 @@ interface CallbackWaiter {
 const outcomeOf = (cause: unknown): WorkspaceError['outcome'] =>
   cause instanceof WorkspaceError ? cause.outcome : 'unavailable'
 const send = (message: WorkspaceWorkerMessage): void => {
-  if (port === null) throw new Error('Workspace worker has no parent port')
+  if (port === null) throw new Error('The workspace thread has no parent port')
   const encoded = JSON.stringify(message)
   if (Buffer.byteLength(encoded, 'utf8') > MAX_MESSAGE_BYTES)
     throw new WorkspaceError({
