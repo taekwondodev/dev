@@ -142,20 +142,61 @@ const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean =>
 
 const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
 
-const NESTING_LOOKBACK = 2048
+type UrlSpan = readonly [start: number, end: number]
 
-const insideOpenUrl = (text: string, start: number): boolean => {
-  const stop = Math.max(0, start - NESTING_LOOKBACK)
-  for (let at = start - 1; at >= stop; at -= 1) {
-    const char = text[at] ?? ''
-    if (/[\s)>"'\]]/.test(char)) return false
-    if (text.startsWith('://', at)) return true
-  }
-  return stop > 0
+const schemeStart = (text: string, separator: number): number => {
+  let at = separator
+  while (at > 0 && /[A-Za-z0-9+.-]/.test(text[at - 1] ?? '')) at -= 1
+  return at
 }
 
-const startsUrl = (text: string, start: number): boolean =>
-  start === 0 || (/[\s(<"'[`>]/.test(text[start - 1] ?? '') && !insideOpenUrl(text, start))
+const urlEnd = (text: string, start: number): number => {
+  let parentheses = 0
+  let brackets = 0
+  let at = start
+  for (; at < text.length; at += 1) {
+    const char = text[at] ?? ''
+    if (/[\s<>"`]/.test(char)) break
+    if (char === '(') parentheses += 1
+    else if (char === '[') brackets += 1
+    else if (char === ')') {
+      if (parentheses === 0) break
+      parentheses -= 1
+    } else if (char === ']') {
+      if (brackets === 0) break
+      brackets -= 1
+    }
+  }
+  return at
+}
+
+const outerUrlSpans = (text: string): readonly UrlSpan[] => {
+  const spans: UrlSpan[] = []
+  let covered = 0
+  for (let separator = text.indexOf('://'); separator !== -1;) {
+    const start = schemeStart(text, separator)
+    if (start < separator && start >= covered) {
+      covered = urlEnd(text, start)
+      spans.push([start, covered])
+    }
+    separator = text.indexOf('://', separator + 3)
+  }
+  return spans
+}
+
+const insideUrl = (spans: readonly UrlSpan[], start: number): boolean => {
+  let low = 0
+  let high = spans.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if ((spans[middle]?.[0] ?? start) < start) low = middle + 1
+    else high = middle
+  }
+  return start < (spans[low - 1]?.[1] ?? 0)
+}
+
+const startsUrl = (text: string, spans: readonly UrlSpan[], start: number): boolean =>
+  start === 0 || (/[\s(<"'[`>]/.test(text[start - 1] ?? '') && !insideUrl(spans, start))
 
 const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
   const next = text[end]
@@ -168,9 +209,13 @@ const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolea
   return afterPunctuation === undefined ? atDocumentEnd : /\s/.test(afterPunctuation)
 }
 
-const showsUrl = ({ text, complete }: DocumentSlice, url: string): boolean => {
+const showsUrl = (
+  { text, complete }: DocumentSlice,
+  spans: readonly UrlSpan[],
+  url: string
+): boolean => {
   for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
-    if (startsUrl(text, at) && endsUrl(text, at, at + url.length, complete)) return true
+    if (startsUrl(text, spans, at) && endsUrl(text, at, at + url.length, complete)) return true
   return false
 }
 
@@ -187,8 +232,12 @@ const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   return lines.join('\n')
 }
 
-const linksTextOmits = (slice: DocumentSlice): readonly DocumentLink[] =>
-  slice.document.links.slice(0, LINKS_IN_TEXT).filter(link => !showsUrl(slice, link.url))
+const linksTextOmits = (slice: DocumentSlice): readonly DocumentLink[] => {
+  const spans = outerUrlSpans(slice.text)
+  return slice.document.links
+    .slice(0, LINKS_IN_TEXT)
+    .filter(link => !showsUrl(slice, spans, link.url))
+}
 
 export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   if (outcome.kind === 'failed')
