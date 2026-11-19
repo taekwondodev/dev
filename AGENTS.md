@@ -50,7 +50,7 @@ Agents read dev's text while working on other repositories, without dev's CONTEX
 
 Text dev prints in the terminal for the user uses the same outward vocabulary, so the user and the agent name things alike.
 
-The `dev/no-internal-terms` lint rule in [`scripts/code-policy.ts`](scripts/code-policy.ts) rejects the internal terms in `src/` and has no allowlist. It checks every string of two or more words and every single word written directly inside a template or concatenation that has other words; only text shaped like an SQL statement or a GraphQL query is exempt. A word that reaches a sentence through a variable or a stored value follows the same rules by review. [The model text check](tests/model-text-check.ts) covers what the rule cannot see: structured keys and a sample of rendered results.
+The `dev/no-internal-terms` lint rule in [`scripts/code-policy.ts`](scripts/code-policy.ts) rejects the internal terms in `src/` and has no allowlist. It checks every string of two or more words, every single word written directly inside a template or concatenation that has other words, and every single word of a `const` that such a sentence reads in the same file; only text shaped like an SQL statement or a GraphQL query is exempt. A word that reaches a sentence any other way, such as through an import, a function result or a saved value, follows the same rules by review. [The model text check](tests/model-text-check.ts) covers what the rule cannot see: structured keys, every value of the enumerations that sentences interpolate and a sample of rendered results. Add an enumeration to that check when a sentence starts to interpolate it.
 
 ## Learning more about Effect
 

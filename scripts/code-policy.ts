@@ -17,6 +17,12 @@ const QUERY_LANGUAGE =
   /^\s*(?:SELECT\b[\s\S]*\bFROM\b|INSERT\s+(?:OR\s+\w+\s+)?INTO\b|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(?:TABLE|INDEX|UNIQUE\s+INDEX)\b|PRAGMA\s+\w+|(?:BEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE))?|COMMIT|ROLLBACK)\s*$|query\()/
 const PROSE = /\S\s+\S/
 const WORDS = /[A-Za-z]{2}/
+const CONSTANT_SHAPES = new Set([
+  'ObjectExpression',
+  'ArrayExpression',
+  'TSAsExpression',
+  'TSSatisfiesExpression',
+])
 const FILE_START = { start: { line: 1, column: 0 }, end: { line: 1, column: 0 } }
 
 const importedName = (specifier: Import['specifiers'][number]): string | undefined => {
@@ -95,33 +101,60 @@ const resolvesOnTimer = (node: Construction): boolean => {
 const written = (template: NodeOf<'TemplateLiteral'>): string =>
   template.quasis.map(quasi => quasi.value.cooked ?? '').join('…')
 
-type Expression = NodeOf<'Literal'>['parent']
+type Node = NonNullable<NodeOf<'Identifier'>['parent']>
 
-const writtenWords = (node: Expression, except: Expression): boolean => {
+const parentOf = (node: Node): Node | undefined => node.parent ?? undefined
+
+const joins = (node: Node | undefined): node is NodeOf<'BinaryExpression'> =>
+  node?.type === 'BinaryExpression' && node.operator === '+'
+
+const writtenWords = (node: Node, except: Node): boolean => {
   if (node === except) return false
   if (node.type === 'Literal') return typeof node.value === 'string' && WORDS.test(node.value)
   if (node.type === 'TemplateLiteral') return WORDS.test(written(node))
-  return (
-    node.type === 'BinaryExpression' &&
-    node.operator === '+' &&
-    (writtenWords(node.left, except) || writtenWords(node.right, except))
-  )
+  return joins(node) && (writtenWords(node.left, except) || writtenWords(node.right, except))
 }
 
-const sentenceAround = (node: NodeOf<'Literal'>): boolean => {
-  let outer = node.parent
+const sentenceAround = (node: Node): boolean => {
+  let outer = parentOf(node)
   while (
-    outer.type === 'ConditionalExpression' ||
-    outer.type === 'LogicalExpression' ||
-    outer.type === 'CallExpression' ||
-    (outer.type === 'BinaryExpression' &&
-      outer.operator === '+' &&
-      outer.parent.type === 'BinaryExpression' &&
-      outer.parent.operator === '+')
+    outer !== undefined &&
+    (outer.type === 'ConditionalExpression' ||
+      outer.type === 'LogicalExpression' ||
+      outer.type === 'CallExpression' ||
+      (joins(outer) && joins(parentOf(outer))))
   )
-    outer = outer.parent
-  if (outer.type === 'TemplateLiteral') return WORDS.test(written(outer))
-  return outer.type === 'BinaryExpression' && outer.operator === '+' && writtenWords(outer, node)
+    outer = parentOf(outer)
+  if (outer?.type === 'TemplateLiteral') return WORDS.test(written(outer))
+  return joins(outer) && writtenWords(outer, node)
+}
+
+const constantHolding = (node: Node): NodeOf<'VariableDeclarator'> | undefined => {
+  let value = node
+  for (;;) {
+    const holder = parentOf(value)
+    if (holder === undefined) return undefined
+    if (holder.type === 'VariableDeclarator') {
+      const declaration = parentOf(holder)
+      return holder.init === value &&
+        declaration?.type === 'VariableDeclaration' &&
+        declaration.kind === 'const'
+        ? holder
+        : undefined
+    }
+    if (holder.type === 'Property' ? holder.value !== value : !CONSTANT_SHAPES.has(holder.type))
+      return undefined
+    value = holder
+  }
+}
+
+const readFrom = (reference: Node): Node => {
+  let read = reference
+  for (;;) {
+    const member = parentOf(read)
+    if (member?.type !== 'MemberExpression' || member.object !== read) return read
+    read = member
+  }
 }
 
 const plugin = {
@@ -168,7 +201,19 @@ const plugin = {
         return {
           Literal(node) {
             if (typeof node.value !== 'string' || QUERY_LANGUAGE.test(node.value)) return
-            if (PROSE.test(node.value) || sentenceAround(node)) report(node, node.value)
+            if (PROSE.test(node.value) || sentenceAround(node)) return report(node, node.value)
+            const constant = constantHolding(node)
+            if (
+              constant !== undefined &&
+              context.sourceCode
+                .getDeclaredVariables(constant)
+                .some(variable =>
+                  variable.references.some(reference =>
+                    sentenceAround(readFrom(reference.identifier))
+                  )
+                )
+            )
+              report(node, node.value)
           },
           TemplateLiteral(node) {
             const text = written(node)

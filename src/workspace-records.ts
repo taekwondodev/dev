@@ -122,7 +122,7 @@ export const UseSchema = Schema.Struct({
   createdAt: Schema.Finite,
   updatedAt: Schema.Finite,
 })
-const OperationPhase = Schema.Literals([
+export const OperationPhase = Schema.Literals([
   'intent',
   'started',
   'confirmed',
