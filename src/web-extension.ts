@@ -150,35 +150,10 @@ const schemeStart = (text: string, separator: number): number => {
   return at
 }
 
-const QUOTE_CLOSERS: Readonly<Record<string, string>> = { '<': '>', '"': '"', '`': '`' }
-
-const quotedUrlEnd = (text: string, start: number, closer: string): number => {
-  let at = start
-  while (at < text.length && !/\s/.test(text[at] ?? '') && text[at] !== closer) at += 1
-  return at
-}
-
-const unquotedUrlEnd = (text: string, start: number, closers: string): number => {
-  const open = { ')': 0, ']': 0 }
-  let at = start
-  for (; at < text.length; at += 1) {
-    const char = text[at] ?? ''
-    if (/\s/.test(char) || (char === '<' && closers.includes(char))) break
-    if (char === '(') open[')'] += 1
-    else if (char === '[') open[']'] += 1
-    else if (char === ')' || char === ']') {
-      if (open[char] === 0 && closers.includes(char)) break
-      open[char] = Math.max(0, open[char] - 1)
-    }
-  }
-  return at
-}
-
-const urlEnd = (text: string, start: number): number => {
-  const opener = text[start - 1] ?? ''
-  const quoteCloser = QUOTE_CLOSERS[opener]
-  if (quoteCloser !== undefined) return quotedUrlEnd(text, start, quoteCloser)
-  return unquotedUrlEnd(text, start, opener === '(' ? ')' : '<)]')
+const runEnd = (text: string, start: number): number => {
+  const whitespace = /\s/g
+  whitespace.lastIndex = start
+  return whitespace.exec(text)?.index ?? text.length
 }
 
 const outerUrlSpans = (text: string): readonly UrlSpan[] => {
@@ -187,7 +162,7 @@ const outerUrlSpans = (text: string): readonly UrlSpan[] => {
   for (let separator = text.indexOf('://'); separator !== -1;) {
     const start = schemeStart(text, separator)
     if (start < separator && start >= covered) {
-      covered = urlEnd(text, start)
+      covered = runEnd(text, start)
       spans.push([start, covered])
     }
     separator = text.indexOf('://', separator + 3)
