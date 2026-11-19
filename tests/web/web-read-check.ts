@@ -679,6 +679,8 @@ try {
             ])
           ),
           guideShownInDestinations: [
+            `[one](https://one.fixture.invalid/)[other](${guide})`,
+            `[://](${guide})`,
             `[other](${guide})`,
             `[other](${guide} "Title")`,
             `<${guide}>`,
@@ -708,7 +710,7 @@ try {
           guideBeforeSemicolonAndTitle: true,
           guideInsideAnotherUrl: true,
           guideInsideParenthesesOfAnotherUrl: true,
-          guideShownInDestinations: [false, false, false, false],
+          guideShownInDestinations: [false, false, false, false, false, false],
           guideAtHardCut: true,
           guideBeforePunctuationAtHardCut: true,
           guideBeforeWhitespaceAtHardCut: false,

@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -672,6 +673,62 @@ try {
         resume.stderr.includes('Unknown workspace command "resume"'),
         'resume left the terminal surface'
       )
+    }
+  )
+  await claim(
+    'dev workspace check <task-id> prints a checkout switch that may be unfinished next to an identity it cannot verify, with the switch ID and the advice not to retry it',
+    async () => {
+      const switchRoot = join(sandbox, 'switch-authority')
+      const target = join(sandbox, 'switch-target')
+      const origin = join(sandbox, 'switch-origin')
+      for (const path of [target, origin]) {
+        mkdirSync(path)
+        initRepository(path)
+      }
+      const switchAuthority = await openLifecycle({ root: switchRoot })
+      try {
+        const conversationOf = (sessionId: string) => ({
+          sessionId,
+          sessionFile: join(sandbox, `${sessionId}.jsonl`),
+          dataHome,
+        })
+        const owner = await switchAuthority.attach({
+          conversation: conversationOf('switch-owner'),
+          cwd: target,
+        })
+        const written = await owner.authorize({ kind: 'write' })
+        await owner.close()
+        if (written.kind !== 'ready' || written.grant.taskId === undefined)
+          throw new Error('The fixture could not reserve a task in the target checkout')
+        const { taskId, workspaceId } = written.grant
+        const mover = await switchAuthority.attach({
+          conversation: conversationOf('switch-mover'),
+          cwd: origin,
+        })
+        const handoff = await mover.select({ taskId, workspaceId })
+        let checked: Awaited<ReturnType<typeof readOnly>> | undefined
+        await mover.handoff(handoff, async () => {
+          renameSync(join(target, '.git'), join(target, '.git-away'))
+          try {
+            checked = await readOnly(switchRoot, ['--cwd', notGit, 'workspace', 'check', taskId])
+          } finally {
+            renameSync(join(target, '.git-away'), join(target, '.git'))
+          }
+          return 'cancelled'
+        })
+        await mover.close()
+        assert.ok(checked !== undefined)
+        assert.equal(checked.code, 0, checked.stderr)
+        for (const expected of [
+          `Cannot verify workspace ${target}`,
+          `Checkout switch ${handoff.operationId} may be unfinished`,
+          'Do not retry it.',
+          'verdict: retained (identity-unverifiable)',
+        ])
+          assert.ok(checked.stdout.includes(expected), `${expected}\n${checked.stdout}`)
+      } finally {
+        await switchAuthority.close()
+      }
     }
   )
   await claim(

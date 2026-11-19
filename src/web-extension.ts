@@ -142,11 +142,20 @@ const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean =>
 
 const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
 
-const startsUrl = (text: string, start: number): boolean => {
-  if (start > 0 && !/[\s(<"'[`>]/.test(text[start - 1] ?? '')) return false
-  const before = text.slice(0, start)
-  return !before.slice(before.search(/\S*$/)).includes('://')
+const NESTING_LOOKBACK = 2048
+
+const insideOpenUrl = (text: string, start: number): boolean => {
+  const stop = Math.max(0, start - NESTING_LOOKBACK)
+  for (let at = start - 1; at >= stop; at -= 1) {
+    const char = text[at] ?? ''
+    if (/[\s)>"'\]]/.test(char)) return false
+    if (text.startsWith('://', at)) return true
+  }
+  return stop > 0
 }
+
+const startsUrl = (text: string, start: number): boolean =>
+  start === 0 || (/[\s(<"'[`>]/.test(text[start - 1] ?? '') && !insideOpenUrl(text, start))
 
 const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
   const next = text[end]
