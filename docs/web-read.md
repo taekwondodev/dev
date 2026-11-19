@@ -8,7 +8,7 @@ In codemode, call `tools.read_url({ url })`. Use `describeTool('read_url')` for 
 
 Results identify the source, method and limitations. `outcome` is `document` for the last part if nothing was cut, `partial` if there is more saved text or the page hit a size limit, and `failed` if nothing was read. Indexes such as `llms.txt` are suggestions, not substitutes.
 
-The text avoids repeating the page: it omits the title when the part's complete first line already shows it, reports an HTTP status only as a limitation, and lists on the first part only those of the first 40 collected links whose absolute URL the part does not show on its own. [`src/web-extension.ts`](../src/web-extension.ts) owns what counts as shown. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
+The text avoids repeating the page: it omits the title when the part's complete first line already shows it, reports an HTTP status only as a limitation, and lists on the first part only those of the first 40 collected links whose absolute URL the part does not show whole. Extraction records where the page text shows each link's URL; [`src/web-extract.ts`](../src/web-extract.ts) owns what counts as shown. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
 
 From a terminal:
 

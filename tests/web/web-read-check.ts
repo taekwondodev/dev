@@ -41,7 +41,8 @@ import {
   WebNetworkError,
   type AddressResolver,
 } from '../../src/web-network.ts'
-import { sliceDocument, type DocumentLink } from '../../src/web-documents.ts'
+import { sliceDocument } from '../../src/web-documents.ts'
+import { extractMarkdown, extractText, type Extracted } from '../../src/web-extract.ts'
 import { toResult, toText } from '../../src/web-extension.ts'
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-web-read-')))
@@ -92,7 +93,7 @@ const server = createServer((request, response) => {
       return reply(
         200,
         'text/html; charset=utf-8',
-        `<!doctype html><html><head><title>Fixture Page</title></head><body><nav><a href="/nav">Nav</a></nav><main><h1>Fixture Heading</h1><p>Body text with a <a href="/relative/link">relative link</a> and <code>inline code</code>.</p><pre><code class="language-ts">const x = 1</code></pre><ul><li>first</li><li>second</li></ul>${'<p>Padding paragraph to make the main content long enough for extraction.</p>'.repeat(4)}</main><footer>footer</footer></body></html>`
+        `<!doctype html><html><head><title>Fixture Page</title></head><body><nav><a href="/nav">Nav</a></nav><main><h1>Fixture Heading</h1><p>Body text with a <a href="/relative/link">relative link</a> and <code>inline code</code>.</p><p>See the <a href="/wiki/Git_(tool)">tool page</a>.</p><pre><code class="language-ts">const x = 1</code></pre><ul><li>first</li><li>second</li></ul>${'<p>Padding paragraph to make the main content long enough for extraction.</p>'.repeat(4)}</main><footer>footer</footer></body></html>`
       )
     case '/js.html':
       return reply(
@@ -110,7 +111,10 @@ const server = createServer((request, response) => {
       return reply(
         200,
         'application/json',
-        JSON.stringify({ heading: 'Rendered Heading', body: 'Rendered body from JSON.' })
+        JSON.stringify({
+          heading: 'Rendered Heading',
+          body: 'Rendered body from JSON.',
+        })
       )
     case '/account': {
       const cookie = request.headers.cookie ?? ''
@@ -129,7 +133,9 @@ const server = createServer((request, response) => {
     case '/redirect-ok':
       return reply(302, 'text/plain', '', { location: '/doc.md' })
     case '/redirect-private':
-      return reply(302, 'text/plain', '', { location: 'http://10.0.0.1/secret' })
+      return reply(302, 'text/plain', '', {
+        location: 'http://10.0.0.1/secret',
+      })
     case '/redirect-loop':
       return reply(302, 'text/plain', '', { location: '/redirect-loop' })
     case '/big.txt':
@@ -293,7 +299,11 @@ let rotatedBefore = sourceBefore
 const localStateBefore = sha(join(sourceUserData, 'Local State'))
 
 const chrome = findChrome(CHROME_EXECUTABLES)
-const profileOptions = { dataHome, sourceUserData, chromeExecutables: CHROME_EXECUTABLES }
+const profileOptions = {
+  dataHome,
+  sourceUserData,
+  chromeExecutables: CHROME_EXECUTABLES,
+}
 mkdirSync(join(fixture, 'authority'), { recursive: true, mode: 0o700 })
 selectOwnerFixture({
   sourceUserData,
@@ -321,7 +331,11 @@ const openReader = (
           makeWebReader({
             renderer,
             resolveAddress: fixtureResolver,
-            fetchLimits: { maxBytes: 96 * 1024, maxRedirects: 3, timeout: Duration.seconds(20) },
+            fetchLimits: {
+              maxBytes: 96 * 1024,
+              maxRedirects: 3,
+              timeout: Duration.seconds(20),
+            },
             ...overrides,
           })
       )
@@ -363,7 +377,12 @@ try {
           calls.push({ method, params })
           if (method === 'Target.createTarget') return Effect.succeed({ targetId: 'owned-target' })
           if (method === 'Target.attachToTarget')
-            return Effect.fail(new BrowserError({ reason: 'protocol', message: 'attach failed' }))
+            return Effect.fail(
+              new BrowserError({
+                reason: 'protocol',
+                message: 'attach failed',
+              })
+            )
           return Effect.void
         },
       }
@@ -382,7 +401,12 @@ try {
       )
       assert.deepEqual(
         calls.filter(call => call.method === 'Target.closeTarget'),
-        [{ method: 'Target.closeTarget', params: { targetId: 'owned-target' } }]
+        [
+          {
+            method: 'Target.closeTarget',
+            params: { targetId: 'owned-target' },
+          },
+        ]
       )
     }
   )
@@ -444,21 +468,27 @@ try {
     'mixed DNS answers with any private address fail before connecting, and a rebinding answer cannot redirect a pinned connection',
     async () => {
       const mixed = await Effect.runPromiseExit(
-        fetchPublic(`http://mixed.fixture.invalid:${port}/doc.md`, { resolve: fixtureResolver })
+        fetchPublic(`http://mixed.fixture.invalid:${port}/doc.md`, {
+          resolve: fixtureResolver,
+        })
       )
       assert.ok(Exit.isFailure(mixed))
       assert.match(String(Cause.squash(mixed.cause)), /private or reserved address \(10\.0\.0\.1\)/)
       assert.equal(seen.length, 0, 'nothing connected')
       lookups = 0
       const pinned = await Effect.runPromise(
-        fetchPublic(`http://rebind.fixture.invalid:${port}/doc.md`, { resolve: fixtureResolver })
+        fetchPublic(`http://rebind.fixture.invalid:${port}/doc.md`, {
+          resolve: fixtureResolver,
+        })
       )
       assert.equal(pinned.status, 200)
       assert.equal(lookups, 1, 'one resolution per hop; the connection used the validated address')
       assert.equal(seen.at(-1)?.headers.host, `rebind.fixture.invalid:${port}`)
       assert.match(seen.at(-1)?.headers.accept ?? '', /^text\/markdown/)
       const rebound = await Effect.runPromiseExit(
-        fetchPublic(`http://rebind.fixture.invalid:${port}/doc.md`, { resolve: fixtureResolver })
+        fetchPublic(`http://rebind.fixture.invalid:${port}/doc.md`, {
+          resolve: fixtureResolver,
+        })
       )
       assert.ok(
         Exit.isFailure(rebound),
@@ -485,7 +515,11 @@ try {
       )
       const loop = await Effect.runPromiseExit(
         fetchPublic(`${origin}/redirect-loop`, {
-          limits: { maxBytes: 1024, maxRedirects: 2, timeout: Duration.seconds(10) },
+          limits: {
+            maxBytes: 1024,
+            maxRedirects: 2,
+            timeout: Duration.seconds(10),
+          },
           resolve: fixtureResolver,
         })
       )
@@ -524,10 +558,6 @@ try {
       assert.equal(slice.document.requestedUrl, `${origin}/doc.md`)
       assert.equal(slice.document.finalUrl, `${origin}/doc.md`)
       assert.match(slice.text, /^# Fixture Guide\n\nIntro paragraph\.\n\n## Install/)
-      assert.deepEqual(slice.document.links, [
-        { text: 'the API', url: `${origin}/api.md` },
-        { text: 'home', url: `${origin}/` },
-      ])
       assert.deepEqual(
         slice.document.suggestions.map(link => link.url),
         [`${origin}/llms.txt`, `${origin}/llms-full.txt`]
@@ -543,6 +573,10 @@ try {
       assert.equal(seen[0]?.headers.cookie, undefined, 'static retrieval sends no cookies')
       const result = toResult({ kind: 'document', slice })
       assert.equal(result.outcome, 'document')
+      assert.deepEqual(result.links, [
+        { text: 'the API', url: `${origin}/api.md` },
+        { text: 'home', url: `${origin}/` },
+      ])
       const text = toText({ kind: 'document', slice }, result)
       assert.ok(
         text.startsWith(`Source: ${origin}/doc.md · markdown\nCharacters 0-`),
@@ -572,7 +606,7 @@ try {
       assert.ok(!slice.text.includes('Nav'), 'navigation was dropped')
       assert.deepEqual(
         slice.document.links.map(link => link.url),
-        [`${origin}/relative/link`]
+        [`${origin}/relative/link`, `${origin}/wiki/Git_(tool)`]
       )
       assert.ok(slice.document.suggestions.every(link => link.url !== slice.document.finalUrl))
       const outcome = { kind: 'document', slice } as const
@@ -585,29 +619,25 @@ try {
     }
   )
   await claim(
-    'the text keeps a title its part does not show exactly, and lists links its first part shows only as a prefix or not at all, from the first 40 collected',
+    'the text keeps a title its part does not show exactly, and lists from the first 40 collected links those whose absolute URL its first part does not show whole',
     () => {
       const base = 'https://docs.fixture.invalid'
-      const title = 'Run'
-      const firstPart = `# Run configuration\n\nSee ${base}/guide-v2 and ${base}/api.json, or ${base}/faq.\n`
-      const collectedLinks = [
-        { text: 'guide', url: `${base}/guide` },
-        { text: 'api', url: `${base}/api` },
-        { text: 'faq', url: `${base}/faq` },
-        { text: 'later', url: `${base}/later` },
-        ...Array.from({ length: 40 }, (_, index) => ({ text: '', url: `${base}/n${index}` })),
-      ]
-      const render = (text: string, links: readonly DocumentLink[], maxChars = text.length) => {
+      const guide = `${base}/guide`
+      const rendered = (
+        { text, links }: Extracted,
+        maxChars = text.length,
+        bodyTruncated = false
+      ) => {
         const document = {
           requestedUrl: `${base}/run`,
           finalUrl: `${base}/run`,
-          title,
+          title: 'Run',
           text,
           links,
-          method: 'html',
-          contentType: 'text/html',
+          method: 'markdown',
+          contentType: 'text/markdown',
           status: 200,
-          bodyTruncated: false,
+          bodyTruncated,
           suggestions: [],
           limitations: [],
         } as const
@@ -615,112 +645,92 @@ try {
           kind: 'document',
           slice: sliceDocument('fixture', document, 0, maxChars),
         } as const
-        return toText(outcome, toResult(outcome))
+        const result = toResult(outcome)
+        return { text: toText(outcome, result), links: result.links }
       }
-      const guide = `${base}/guide`
-      const docs = { text: 'docs', url: guide }
-      const relative = '[docs](/guide)'
-      const urlPrefix = `${relative}\n\nSee ${guide}`
+      const markdown = (text: string, maxChars?: number) =>
+        rendered(extractMarkdown(text, `${base}/run`), maxChars).text
+      const titled = '# Run\nSource: '
+      const printsTitle = (text: string) => text.startsWith(titled)
       const listsGuide = (text: string) => text.split('\n').includes(`- docs: ${guide}`)
-      const printsTitle = (text: string) => text.startsWith(`# ${title}\nSource: `)
-      const urlSuffixes = [
-        ['', false],
-        [' next', false],
-        ['(v2)', true],
-        ...Array.from(')>]"<`', delimiter => [delimiter, false] as const),
-        ["'", true],
-        ...Array.from(
-          '.,;:!?',
-          punctuation =>
-            [
-              [punctuation, false],
-              [`${punctuation} next`, false],
-              [`${punctuation})`, true],
-            ] as const
-        ).flat(),
-      ] as const
-      const text = render(
-        `${firstPart}Later part: ${base}/later\n`,
-        collectedLinks,
-        firstPart.length
-      )
+      const relative = '[docs](/guide)'
+      const nestedBeforeCut = `${'x'.repeat(600)} (https://other.fixture.invalid/q](${guide}))\n`
+      const shownLater = `${relative}\n\nSee ${guide}`
+      const firstPart = `# Run configuration\n\n[guide](/guide) [api](/api) [faq](/faq) [later](/later)\n${Array.from({ length: 40 }, (_, index) => `[n${index}](/n${index})`).join(' ')}\n\nSee ${base}/guide-v2 and ${base}/api.json, or ${base}/faq.\n`
+      const text = markdown(`${firstPart}Later part: ${base}/later\n`, firstPart.length)
       assert.deepEqual(
         {
-          titleAtHardCut: printsTitle(render('# Run configuration', [], '# Run'.length)),
-          titleAtNewline: printsTitle(render('# Run\nconfiguration', [], '# Run\n'.length)),
-          titleAtDocumentEnd: printsTitle(render('### Run  ', [])),
-          guideBeforeApostropheInDestination: listsGuide(
-            render(`${relative} plus [other](${guide}'v2)`, [
-              docs,
-              { text: 'other', url: `${guide}'v2` },
-            ])
+          titleAtHardCut: printsTitle(markdown('# Run configuration', '# Run'.length)),
+          titleAtNewline: printsTitle(markdown('# Run\nconfiguration', '# Run\n'.length)),
+          titleAtDocumentEnd: printsTitle(markdown('### Run  ')),
+          guideOnlyRelative: listsGuide(markdown(relative)),
+          guideShown: [
+            `[docs](${guide})`,
+            `${relative} plus [other](${guide})`,
+            `${relative} plus [other](${guide} "Title")`,
+            `${relative} plus <${guide}>`,
+            `${relative} plus (${guide})`,
+            `${relative} plus (see ${guide}).`,
+            `${relative} plus ${guide} next`,
+            `${relative} plus ${guide}. Next`,
+            `${relative} plus ${guide}`,
+          ].map(shown => listsGuide(markdown(shown))),
+          guideInsideAnotherUrl: [
+            `${guide}-v2`,
+            `${guide}/more`,
+            `${guide}?page=2`,
+            `[other](${guide}'v2)`,
+            `[other](${guide}; "Title")`,
+            `[other](https://other.fixture.invalid/?next=${guide})`,
+            `[other](https://other.fixture.invalid/?next="${guide}")`,
+            `[other](https://other.fixture.invalid/?next=<${guide}>)`,
+            `[other](https://other.fixture.invalid/q](${guide}))`,
+            `[other](https://other.fixture.invalid/o'clock?next=(${guide}))`,
+          ].map(other => listsGuide(markdown(`${relative} plus ${other}`))),
+          guideNotDelimitedAsWholeUrl: [`'${guide}'`, `"${guide}"`, `\`${guide}\``].map(quoted =>
+            listsGuide(markdown(`${relative} plus ${quoted}`))
           ),
-          guideBeforeSemicolonAndTitle: listsGuide(
-            render(`${relative} plus [other](${guide}; "Title")`, [
-              docs,
-              { text: 'other', url: `${guide};` },
-            ])
+          guideCutByThePart: listsGuide(markdown(`${shownLater}-v2`, shownLater.length)),
+          guideEndingThePart: listsGuide(markdown(`${shownLater} next`, shownLater.length)),
+          guideFollowedInThePart: listsGuide(markdown(`${shownLater} next`, shownLater.length + 1)),
+          guideEndingACutBody: listsGuide(
+            rendered(extractMarkdown(`${relative} plus ${guide}`, `${base}/run`), undefined, true)
+              .text
           ),
-          guideQuotedInsideAnotherDestination: ['`', '"', '<'].map(opener => {
-            const closer = opener === '<' ? '>' : opener
-            const other = `https://other.fixture.invalid/?next=${opener}${guide}${closer}`
-            return listsGuide(
-              render(`${relative} plus [other](${other})`, [docs, { text: 'other', url: other }])
-            )
-          }),
-          guideInsideParenthesesOfAnotherUrlWithApostrophe: listsGuide(
-            render(
-              `${relative} plus [other](https://other.fixture.invalid/o'clock?next=(${guide}))`,
-              [
-                docs,
-                { text: 'other', url: `https://other.fixture.invalid/o'clock?next=(${guide})` },
-              ]
-            )
+          guideOnlyInsideAnotherUrlBeforeTheCut: rendered(
+            extractText(`${nestedBeforeCut}${guide}`, `${base}/run`),
+            nestedBeforeCut.length
+          )
+            .text.split('\n')
+            .includes(`- ${guide}`),
+          guideBeforePunctuationEndingThePart: listsGuide(
+            markdown(`${shownLater}. next`, shownLater.length + 1)
           ),
-          guideShownInDestinations: [
-            `[one](https://one.fixture.invalid/)[other](${guide})`,
-            `[://](${guide})`,
-            `[https://one.fixture.invalid/](${guide})`,
-            `[one](http://[::1]/)[other](${guide})`,
-            `${'x'.repeat(4096)}<${guide}>`,
-            `["https://one.fixture.invalid/","${guide}"]`,
-            `\`https://one.fixture.invalid/\`\`${guide}\``,
-            `[other](${guide} "Title")`,
-            `<${guide}>`,
-            `'${guide}'`,
-          ].map(shown => listsGuide(render(`${relative} plus ${shown}`, [docs]))),
-          guideAtHardCut: listsGuide(render(`${urlPrefix}-v2`, [docs], urlPrefix.length)),
-          guideBeforePunctuationAtHardCut: listsGuide(
-            render(`${urlPrefix}. next`, [docs], urlPrefix.length + 1)
-          ),
-          guideBeforeWhitespaceAtHardCut: listsGuide(
-            render(`${urlPrefix} next`, [docs], urlPrefix.length + 1)
-          ),
-          guideListedBySuffix: Object.fromEntries(
-            urlSuffixes.map(([suffix]) => [
-              suffix,
-              listsGuide(render(`${urlPrefix}${suffix}`, [docs])),
-            ])
-          ),
+          plainText: rendered(extractText(`See ${guide} next`, `${base}/run`)),
           linksHeading: text.match(/^Links .*:$/m)?.[0],
         },
         {
           titleAtHardCut: true,
           titleAtNewline: false,
           titleAtDocumentEnd: false,
-          guideBeforeApostropheInDestination: true,
-          guideBeforeSemicolonAndTitle: true,
-          guideQuotedInsideAnotherDestination: [true, true, true],
-          guideInsideParenthesesOfAnotherUrlWithApostrophe: true,
-          guideShownInDestinations: Array.from({ length: 10 }, () => false),
-          guideAtHardCut: true,
-          guideBeforePunctuationAtHardCut: true,
-          guideBeforeWhitespaceAtHardCut: false,
-          guideListedBySuffix: Object.fromEntries(urlSuffixes),
+          guideOnlyRelative: true,
+          guideShown: Array.from({ length: 9 }, () => false),
+          guideInsideAnotherUrl: Array.from({ length: 10 }, () => true),
+          guideNotDelimitedAsWholeUrl: [true, true, true],
+          guideCutByThePart: true,
+          guideEndingThePart: true,
+          guideFollowedInThePart: false,
+          guideEndingACutBody: true,
+          guideOnlyInsideAnotherUrlBeforeTheCut: true,
+          guideBeforePunctuationEndingThePart: true,
+          plainText: {
+            text: `# Run\nSource: ${base}/run · markdown\nCharacters 0-${`See ${guide} next`.length} of ${`See ${guide} next`.length} (complete)\n\nSee ${guide} next`,
+            links: [{ text: '', url: guide }],
+          },
           linksHeading: 'Links (39 of 44):',
         }
       )
-      assert.ok(text.startsWith('# Run\nSource: '), 'a title inside a longer first line is kept')
+      assert.ok(printsTitle(text), 'a title inside a longer first line is kept')
       const listed = text
         .slice(text.indexOf('\nLinks ('))
         .split('\n')
@@ -732,7 +742,7 @@ try {
       ])
       assert.ok(
         !listed.includes(`- faq: ${base}/faq`),
-        'a URL the part shows completely, before punctuation, is not repeated'
+        'a URL the part shows whole, before punctuation, is not repeated'
       )
       assert.equal(listed.length, 39, 'links past the first 40 collected are not considered')
     }
@@ -741,7 +751,10 @@ try {
     'continuation reconstructs a long fixture exactly from the same snapshot without refetching, and a stale or foreign token is refused explicitly',
     async () => {
       seen.length = 0
-      let outcome = await read(reader, { url: `${origin}/long.md`, maxChars: 5000 })
+      let outcome = await read(reader, {
+        url: `${origin}/long.md`,
+        maxChars: 5000,
+      })
       const first = documentOf(outcome)
       assert.equal(first.complete, false)
       assert.ok(first.continuation)
@@ -781,7 +794,10 @@ try {
   await claim(
     'a cut without a nearby newline keeps a surrogate pair whole, so every slice is well-formed',
     async () => {
-      let outcome = await read(reader, { url: `${origin}/astral.txt`, maxChars: 1000 })
+      let outcome = await read(reader, {
+        url: `${origin}/astral.txt`,
+        maxChars: 1000,
+      })
       const slices = [documentOf(outcome)]
       for (
         let token = continuationOf(outcome);
