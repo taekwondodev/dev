@@ -689,6 +689,69 @@ try {
     }
   )
   await claim(
+    'a permission mismatch recorded while /workspace resume selects the checkout is reported, the selection is withdrawn and the conversation stays where it was',
+    async () => {
+      const paused = await pausedCheckout('ask-select')
+      const other = '00000000-0000-4000-8000-0000000000fc' as WorkspaceId
+      const { offline: model } = await offlineScript('ask-select', [])
+      let wrong = false
+      let trapped = false
+      const authorize: WorkspaceAttachment['authorize'] = operation =>
+        Effect.map(
+          paused.attached.effect.authorize(operation),
+          (admitted): WorkspaceAuthorization =>
+            wrong && admitted.kind === 'ready'
+              ? { kind: 'ready', grant: { ...admitted.grant, workspaceId: other } }
+              : admitted
+        )
+      let opened: Awaited<ReturnType<typeof openLeadHost>> | undefined
+      const recordMismatch = Effect.promise(async () => {
+        trapped = false
+        wrong = true
+        await opened?.runtime.session.extensionRunner.emitToolCall({
+          type: 'tool_call',
+          toolName: 'read',
+          toolCallId: 'mismatch-read',
+          input: { path: join(paused.checkout, 'AGENTS.md') },
+        })
+        wrong = false
+      })
+      const select: WorkspaceAttachment['select'] = selection =>
+        trapped
+          ? recordMismatch.pipe(Effect.andThen(paused.attached.effect.select(selection)))
+          : paused.attached.effect.select(selection)
+      opened = await openLeadHost({
+        attachment: overriding(paused.attached.effect, { authorize, select }),
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: interactive(() => undefined).ui,
+      })
+      try {
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        trapped = true
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        assert.equal(trapped, false, 'the selection recorded the mismatch')
+        assert.equal(shown(opened.runtime).at(-1), MISMATCH_RESUME)
+        assert.equal(opened.host.isParked(), true)
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        assert.equal(handoffTexts(opened.runtime).length, 0, 'no switch was announced')
+        await waitFor(
+          'the selection to be withdrawn',
+          async () =>
+            (await lifecycle.inspect({ taskId: paused.taskId })).every(
+              view => view.pending.length === 0
+            )
+              ? true
+              : undefined,
+          IN_MEMORY_POLL
+        )
+      } finally {
+        await opened.close()
+      }
+    }
+  )
+  await claim(
     'native external write/edit preserves checkout contention without allocating a workspace or a handoff',
     async () => {
       mkdirSync(join(fixture, 'configuration'))

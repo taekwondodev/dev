@@ -366,7 +366,7 @@ try {
         }),
         'review-required',
         [
-          m1.workspaceId,
+          `(review-required) did not finish on checkout ${m1.workspaceId}.`,
           `Do not retry this call. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${taskB}, which deletes all of that task's managed worktrees and artifacts. That retries the release; check its result.`,
         ]
       )
@@ -763,7 +763,7 @@ try {
           selection: { taskId, workspaceId: managed.workspaceId },
         }),
         'review-required',
-        [managed.workspaceId]
+        [`(started) did not finish on checkout ${managed.workspaceId}.`]
       )
       const results = await lifecycle.release(taskId)
       assert.equal(resultOf(results, managed.workspaceId).outcome, 'removed')
