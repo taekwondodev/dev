@@ -473,18 +473,20 @@ const stageWorkspace = (
     head,
     blockers,
   })
+  const unfinished = unresolvedTransitions.map(
+    operation =>
+      `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
+  )
+  const doNotRetry = unfinished.length > 0 ? ['Do not retry it.'] : []
   if (identity.kind === 'unverifiable')
-    return shape({ reasons: [identity.reason, ...uses.reasons], nextActions: [CLEAR] })
-  if (unresolvedTransitions.length > 0)
     return shape({
-      reasons: [
-        ...unresolvedTransitions.map(
-          operation =>
-            `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
-        ),
-        ...uses.reasons,
-      ],
-      nextActions: ['Do not retry it.', CLEAR],
+      reasons: [identity.reason, ...unfinished, ...uses.reasons],
+      nextActions: [...doNotRetry, CLEAR],
+    })
+  if (unfinished.length > 0)
+    return shape({
+      reasons: [...unfinished, ...uses.reasons],
+      nextActions: [...doNotRetry, CLEAR],
     })
   if (identity.kind === 'absent')
     return shape({
@@ -881,7 +883,7 @@ const removeFinishedWorktree = (
     } catch {}
     return {
       outcome: 'review-required',
-      reason: `${result}. Do not retry it. ${releaseOnceStopped(reservation.taskId)} That finishes it.`,
+      reason: `${result}. Do not retry it. ${releaseOnceStopped(reservation.taskId)} That retries the removal; check its result.`,
       operationId: started.id,
     }
   }

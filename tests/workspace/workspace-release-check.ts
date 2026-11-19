@@ -148,6 +148,7 @@ const reply = (details: unknown) =>
     readonly recorded?: string
     readonly reference?: PublicationReference
     readonly artifacts?: string
+    readonly resumed?: string
     readonly taskId?: string
     readonly path?: string
   }
@@ -366,7 +367,7 @@ try {
         'review-required',
         [
           m1.workspaceId,
-          `Do not retry this call. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${taskB}, which deletes all of that task's managed worktrees and artifacts. That finishes the release.`,
+          `Do not retry this call. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${taskB}, which deletes all of that task's managed worktrees and artifacts. That retries the release; check its result.`,
         ]
       )
     }
@@ -2393,6 +2394,43 @@ try {
         'a block the host reports after the lookup is returned before any checkout-dependent reply'
       )
       assert.equal(requested.length, 0, 'a blocked resume hands nothing to the host')
+      const hereTool = makeWorkspaceTool({
+        lifecycle: lifecycle.effect,
+        declinedSwitch: () => declined,
+        attachment: () => ({
+          ...elsewhere.effect,
+          binding: {
+            ...elsewhere.effect.binding,
+            workspaceId: allocated.managed.workspaceId,
+            taskId: allocated.taskId,
+          },
+        }),
+        runPromise: effect =>
+          Effect.runPromise(Effect.provideService(effect, PublicationDestinations, destinations)),
+        requestResume: () => {
+          throw new Error('a conversation already in the checkout requests no switch')
+        },
+      })
+      const resumeHere = () =>
+        hereTool.execute(
+          'resume',
+          { action: 'resume', taskId: allocated.taskId } as never,
+          undefined,
+          undefined,
+          context()
+        )
+      assert.equal(reply((await resumeHere()).details).resumed, 'already-here')
+      declined = 'mismatch'
+      const blockedHere = await resumeHere().then(
+        () => undefined,
+        (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+      )
+      declined = undefined
+      assert.equal(
+        blockedHere,
+        switchNotRequested('mismatch'),
+        'a block the host reports after the lookup wins over already-here'
+      )
       const resumed = await resumeTool.execute(
         'resume',
         { action: 'resume', taskId: allocated.taskId } as never,

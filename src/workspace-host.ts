@@ -612,7 +612,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
   const settleHandoff = (transition: PendingTransition, outcome: ChangeOutcome): void =>
     updateAccess(() => {
       if (pending !== transition) return
-      if (outcome === 'unconfirmed') hold ??= 'unresolved'
+      if (outcome === 'unconfirmed') hold = 'unresolved'
       else pending = undefined
       if (outcome === 'confirmed') hold = undefined
     })
@@ -630,7 +630,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       if (replacement !== owner) return
       replacement = undefined
       if (outcome === 'confirmed') hold = undefined
-      else if (outcome === 'unconfirmed') hold ??= 'unresolved'
+      else if (outcome === 'unconfirmed') hold = 'unresolved'
     })
   const blockCause = (source: WorkspaceAttachment): BlockedAccess | undefined => {
     if (closed || quitting) return 'closing'
@@ -1708,6 +1708,7 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
 
   const sessionShutdown = Effect.fnUntraced(function* (reason: string) {
     if (reason === 'quit') quitting = true
+    else if (reason !== 'reload' && replacement !== undefined) blockForReplacement(replacement)
     yield* nativeWrites.settle
     if (reason !== 'reload') yield* shell.stop
     if (reason !== 'quit') return

@@ -142,6 +142,9 @@ const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean =>
 
 const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
 
+const startsUrl = (text: string, start: number): boolean =>
+  start === 0 || /[\s(<"'[`>]/.test(text[start - 1] ?? '')
+
 const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
   const next = text[end]
   if (next === undefined) return atDocumentEnd
@@ -155,7 +158,7 @@ const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolea
 
 const showsUrl = ({ text, complete }: DocumentSlice, url: string): boolean => {
   for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
-    if (endsUrl(text, at, at + url.length, complete)) return true
+    if (startsUrl(text, at) && endsUrl(text, at, at + url.length, complete)) return true
   return false
 }
 

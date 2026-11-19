@@ -28,7 +28,9 @@ import { workResultText } from '../../src/work-model-text.ts'
 import { childBrief } from '../../src/pi-child.ts'
 import { emptyWorkView, type WorkView } from '../../src/work-view.ts'
 import { leadingLongSleep, waitOnlyCommand } from '../../src/work-wait-guard.ts'
-import { classifyError } from '../../scripts/usage-facts.ts'
+import { classifyError, sessionFacts } from '../../scripts/usage-facts.ts'
+import { readSessions } from '../../scripts/usage-sessions.ts'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { openWorkFixture, script } from './work-check-support.ts'
 import {
   CHILD_EFFORT,
@@ -605,6 +607,25 @@ return JSON.stringify({
         assert.ok(seen(idle).includes('idle-ok'), seen(idle))
         idle.reply(text('done'))
         await lead.idle()
+        const saved = join(fixture.root, 'wait-guard-history')
+        mkdirSync(join(saved, 'sessions'), { recursive: true })
+        const manager = lead.session.sessionManager
+        writeFileSync(
+          join(saved, 'sessions', 'wait-guard.jsonl'),
+          [manager.getHeader(), ...manager.getEntries()]
+            .map(entry => `${JSON.stringify(entry)}\n`)
+            .join('')
+        )
+        const [facts] = await Effect.runPromise(
+          readSessions(saved, 'sessions', 'lead', session => sessionFacts(session, 'lead')).pipe(
+            Effect.provide(NodeServices.layer)
+          )
+        )
+        assert.deepEqual(
+          facts?.calls.filter(call => call.tool === 'bash').map(call => call.outcome),
+          ['blocked', 'blocked', 'returned', 'blocked', 'returned'],
+          'the usage profiler reads the saved wait refusals as blocked'
+        )
       })
   )
 

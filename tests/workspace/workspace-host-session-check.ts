@@ -509,6 +509,101 @@ try {
       }
     }
   )
+  for (const withMismatch of [false, true])
+    await claim(
+      `a /new whose next conversation cannot attach after Pi closed the current one stays blocked as unconfirmed${withMismatch ? ', also over a permission mismatch recorded meanwhile' : ''}, and refuses another session change`,
+      async () => {
+        const other = '00000000-0000-4000-8000-0000000000fb' as WorkspaceId
+        const { offline } = await offlineScript(
+          `new-attach-fails${withMismatch ? '-mismatch' : ''}`,
+          []
+        )
+        const { manager, attached } = await attachLeadConversation()
+        const dialog = interactive(() => undefined)
+        const gate: { open?: () => void } = {}
+        const released = new Promise<void>(open => {
+          gate.open = open
+        })
+        let trapped = false
+        let refuseAttach = false
+        let stale: Promise<unknown> | undefined
+        const authorize: WorkspaceAttachment['authorize'] = operation =>
+          trapped && operation.kind === 'read'
+            ? Effect.promise(() => released).pipe(
+                Effect.andThen(attached.effect.authorize(operation)),
+                Effect.map((admitted): WorkspaceAuthorization =>
+                  admitted.kind === 'ready'
+                    ? { kind: 'ready', grant: { ...admitted.grant, workspaceId: other } }
+                    : admitted
+                )
+              )
+            : attached.effect.authorize(operation)
+        const attach: WorkspaceLifecycle['attach'] = input =>
+          refuseAttach
+            ? Effect.fail(
+                new WorkspaceError({
+                  outcome: 'unavailable',
+                  message: 'attach refused by the probe',
+                })
+              )
+            : lifecycle.effect.attach(input)
+        const opened = await openLeadHost({
+          attachment: overriding(attached.effect, { authorize }),
+          lifecycle: overriding(lifecycle.effect, { attach }),
+          manager,
+          offline,
+          ui: dialog.ui,
+          extensions: [
+            {
+              name: 'test:attach-after-teardown',
+              factory: api => {
+                api.on('session_before_switch', async () => {
+                  gate.open?.()
+                  await stale
+                  refuseAttach = true
+                  return undefined
+                })
+              },
+            },
+          ],
+        })
+        try {
+          if (withMismatch) {
+            trapped = true
+            stale = opened.runtime.session.extensionRunner.emitToolCall({
+              type: 'tool_call',
+              toolName: 'read',
+              toolCallId: 'stale-read',
+              input: { path: join(lead, 'README.md') },
+            })
+            await sleep(50)
+          }
+          const failed = await opened.runtime.newSession().then(
+            () => 'replaced',
+            (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+          )
+          assert.notEqual(failed, 'replaced', 'the /new could not attach its conversation')
+          assert.equal(opened.host.isParked(), true, 'access stays blocked')
+          assert.match(
+            opened.host.blockedAccess('nothing ran'),
+            /^Checkout access is blocked because dev cannot confirm an earlier session change/
+          )
+          refuseAttach = false
+          const output = mock.method(process.stderr, 'write')
+          try {
+            assert.deepEqual(await opened.runtime.newSession(), { cancelled: true })
+          } finally {
+            output.mock.restore()
+          }
+          assert.ok(
+            output.mock.calls.some(call => String(call.arguments[0]).includes(UNRESOLVED_NOTICE)),
+            'with the closed conversation gone, the refusal reaches the terminal'
+          )
+        } finally {
+          await opened.close().catch(() => undefined)
+        }
+      }
+    )
   await claim(
     'a permission mismatch recorded while /workspace resume looks up the task is reported instead of saying the conversation already works there',
     async () => {

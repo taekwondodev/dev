@@ -61,7 +61,7 @@ const missingAdvice = (origin: WorkspaceRecord['origin'], taskId: string | undef
     return taskId === undefined
       ? 'Restore it at this path, or check what removed it. Do not retry automatically.'
       : `${onPurpose} ${releaseOnceStopped(taskId)}`
-  const forget = `${releaseOnceStopped(undefined)} That also forgets this checkout.`
+  const forget = `${releaseOnceStopped(undefined)} That also forgets this checkout once no running session, pending operation or open conversation refers to it.`
   return taskId === undefined
     ? `${onPurpose} ${forget}`
     : `${onPurpose} ${releaseOnceStopped(taskId)} Then: ${forget}`
@@ -104,7 +104,8 @@ export const assessWorkspace = (input: {
     return {
       outcome: 'review-required',
       reason: withBlockers(
-        input.identityReason ?? operation ?? 'An earlier operation may not have finished.'
+        [input.identityReason, operation].filter(part => part !== undefined).join(' ') ||
+          'An earlier operation may not have finished.'
       ),
       nextAction: 'Check what changed. Do not retry automatically.',
     }

@@ -281,6 +281,8 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const views = yield* options.lifecycle
       .inspect({ taskId: input.taskId })
       .pipe(Effect.mapError(error => refuse(`Checkout inspection failed: ${error.message}`)))
+    const declined = options.declinedSwitch(attachment)
+    if (declined !== undefined) return yield* refuse(switchNotRequested(declined))
     const candidates = resumeCandidates(views, input.taskId)
     const candidate =
       input.workspaceId === undefined
@@ -301,8 +303,6 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
         `Checkout ${input.workspaceId} is not resumable for task ${input.taskId}: ${selected.join(' | ') || 'checkout not found'}. Resumable: ${resumable}`
       )
     }
-    const declined = options.declinedSwitch(attachment)
-    if (declined !== undefined) return yield* refuse(switchNotRequested(declined))
     const { binding } = attachment
     if (candidate.view.workspaceId === binding.workspaceId && binding.taskId === input.taskId) {
       const value = {
@@ -349,7 +349,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
         value,
         model: {
           ...value,
-          note: `No directory was created. ${SWITCH_REQUESTED} Then call artifacts again there.`,
+          note: `No directory was created. ${SWITCH_REQUESTED} Once it does, call artifacts again there if the folder is still needed.`,
         },
         terminate: true,
       }
