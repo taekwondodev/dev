@@ -19,6 +19,9 @@ import * as Scope from 'effect/Scope'
 import type * as FileSystem from 'effect/FileSystem'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
+  CANNOT_PREPARE_SESSION_DIRECTORY,
+  CANNOT_RESOLVE_DATA_HOME,
+  CANNOT_RESOLVE_PROFILE_SELECTION,
   defaultDataHome,
   globalPiAgentDir,
   globalPiAuthPath,
@@ -40,6 +43,7 @@ import {
 } from './profiles.ts'
 import { errorText } from './error-text.ts'
 import {
+  CANNOT_RESOLVE_PI_RELEASE,
   findRecentSession,
   loadPi,
   loadPiPathResolver,
@@ -522,7 +526,7 @@ const exitText = (code: ReleaseExitCode): string => {
     case 0:
       return 'done'
     case 1:
-      return 'at least one workspace release that started did not reach a final result'
+      return 'at least one checkout release that started did not reach a final result'
     case 130:
       return 'interrupted; no checkout was attempted after the signal'
   }
@@ -1002,7 +1006,7 @@ const launchDirectory = Effect.fnUntraced(function* (
     return options.cwd
   const dataHome = yield* (
     options.dataHome === undefined ? defaultDataHome : Effect.succeed(options.dataHome)
-  ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve dev data home')))
+  ).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_DATA_HOME)))
   const repositories = yield* findRepositories(options.cwd, join(dataHome, 'sessions'))
   const initializable =
     process.stdin.isTTY &&
@@ -1014,7 +1018,7 @@ const launchDirectory = Effect.fnUntraced(function* (
       message: `${displayPath(options.cwd)} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`,
     })
   const { root } = yield* resolvePiPackage.pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot resolve the installed Pi release'))
+    Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_PI_RELEASE))
   )
   if (repositories.length > 0)
     return yield* chooseRepository(root, options.cwd, repositories).pipe(
@@ -1151,7 +1155,7 @@ const run = Effect.fnUntraced(function* (
     if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
       yield* Effect.sync(() => {
         process.stderr.write(
-          'Workspace release requires an interactive TTY for its confirmation; nothing was released and no unattended mode exists.\n'
+          'dev workspace release requires an interactive TTY for its confirmation; nothing was released and no unattended mode exists.\n'
         )
         process.exitCode = 2
       })
@@ -1195,7 +1199,7 @@ const run = Effect.fnUntraced(function* (
     dataHome,
     defaultProfile: catalog.defaultProfile,
     explicit: options.profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve profile selection')))
+  }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_PROFILE_SELECTION)))
   if (options.saveProfile !== undefined) {
     yield* catalog
       .load(options.saveProfile)
@@ -1221,7 +1225,7 @@ const run = Effect.fnUntraced(function* (
   const guard = createSessionGuard(lease)
   const { api, packageInfo } = yield* loadPi
   const sessionsPath = yield* sessionDir(dataHome).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
+    Effect.mapError(error => toLauncherError(error, CANNOT_PREPARE_SESSION_DIRECTORY))
   )
   let pausedWork: ResumeCandidate | undefined
   if (options.task !== undefined) {

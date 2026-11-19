@@ -76,6 +76,14 @@ const files: Record<string, string> = {
     'export const same = (kind: string) => kind === KIND',
     "export const shown = 'dev/work-outcome'",
     "export const label = 'dev/workspace-switch'",
+    'const SHIFT = `lead`',
+    ['export const turns = (runs: number) => `The $', '{SHIFT} took $', '{runs} runs`'].join(''),
+    "export const versioned = 'dev/work-outcome-2'",
+    "const MODES = { held: 'parked', free: 'open' } as const",
+    "export const open = 'Now ' + MODES.free",
+    'export const backticked = `dev/work-outcome`',
+    "export const quit = 'A workspace release that started did not finish'",
+    "export const usage = 'Usage: workspace release <task-id>'",
     '',
   ].join('\n'),
   'tests/worded.ts': ["export const name = 'the lead waits for the sweep'", ''].join('\n'),
@@ -110,7 +118,9 @@ const files: Record<string, string> = {
 
 const expected: Record<string, string[]> = {
   'tests/flagged.ts': [6, 7, 8, 9, 10, 12, 13, 14].map(line => `no-fixed-sleep:${line}`),
-  'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21].map(line => `no-internal-terms:${line}`),
+  'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21, 23, 25, 28, 29].map(
+    line => `no-internal-terms:${line}`
+  ),
   'tests/disabled-line.ts': ['no-source-comments:1'],
   'tests/disabled-file.ts': ['no-source-comments:1'],
   'tests/disabled-later.ts': ['no-source-comments:1'],

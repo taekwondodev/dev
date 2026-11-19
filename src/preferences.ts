@@ -77,10 +77,14 @@ const runGit = (cwd: string, args: readonly string[]): Effect.Effect<string, unk
     })
   })
 
+export const CANNOT_RESOLVE_DATA_HOME = 'Cannot resolve dev data home'
+export const CANNOT_RESOLVE_PROFILE_SELECTION = 'Cannot resolve profile selection'
+export const CANNOT_PREPARE_SESSION_DIRECTORY = 'Cannot prepare session directory'
+
 export const defaultDataHome: Effect.Effect<string, PreferencesError> = Effect.gen(function* () {
   const configured = yield* Config.String('DEV_DATA_HOME').pipe(
     Config.withDefault(defaultPath),
-    Effect.mapError(error => toPreferencesError(error, 'Cannot resolve dev data home'))
+    Effect.mapError(error => toPreferencesError(error, CANNOT_RESOLVE_DATA_HOME))
   )
   return resolve(configured)
 })
@@ -145,7 +149,7 @@ export const resolveSelection: (
       source,
     }
   },
-  Effect.mapError(error => toPreferencesError(error, 'Cannot resolve profile selection'))
+  Effect.mapError(error => toPreferencesError(error, CANNOT_RESOLVE_PROFILE_SELECTION))
 )
 
 const withPreferencePublication = <A, E, R>(
@@ -252,5 +256,5 @@ export const sessionDir: (
     yield* fs.makeDirectory(path, { recursive: true, mode: 0o700 })
     return path
   },
-  Effect.mapError(error => toPreferencesError(error, 'Cannot prepare session directory'))
+  Effect.mapError(error => toPreferencesError(error, CANNOT_PREPARE_SESSION_DIRECTORY))
 )

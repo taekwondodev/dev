@@ -16,14 +16,9 @@ const DIRECTIVE = /^\s*(?:oxlint|eslint)-(?:disable|enable)/
 const QUERY_LANGUAGE =
   /^\s*(?:SELECT\b[\s\S]*\bFROM\b|INSERT\s+(?:OR\s+\w+\s+)?INTO\b|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(?:TABLE|INDEX|UNIQUE\s+INDEX)\b|PRAGMA\s+\w+|(?:BEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE))?|COMMIT|ROLLBACK)\s*$|query\()/
 const PROSE = /\S\s+\S/
-const MESSAGE_LABEL = /^dev\/[a-z-]+$/
+const MESSAGE_LABEL = /^dev\/[a-z0-9-]+$/
 const WORDS = /[A-Za-z]{2}/
-const CONSTANT_SHAPES = new Set([
-  'ObjectExpression',
-  'ArrayExpression',
-  'TSAsExpression',
-  'TSSatisfiesExpression',
-])
+const CONSTANT_SHAPES = new Set(['ObjectExpression', 'TSAsExpression', 'TSSatisfiesExpression'])
 const FILE_START = { start: { line: 1, column: 0 }, end: { line: 1, column: 0 } }
 
 const importedName = (specifier: Import['specifiers'][number]): string | undefined => {
@@ -130,7 +125,20 @@ const sentenceAround = (node: Node): boolean => {
   return joins(outer) && writtenWords(outer, node)
 }
 
-const constantHolding = (node: Node): NodeOf<'VariableDeclarator'> | undefined => {
+type Key = string | undefined
+
+const staticKey = (key: Node, computed: boolean): Key => {
+  if (!computed && key.type === 'Identifier') return key.name
+  return key.type === 'Literal' ? String(key.value) : undefined
+}
+
+interface HeldValue {
+  readonly constant: NodeOf<'VariableDeclarator'>
+  readonly keys: readonly Key[]
+}
+
+const constantHolding = (node: Node): HeldValue | undefined => {
+  const keys: Key[] = []
   let value = node
   for (;;) {
     const holder = parentOf(value)
@@ -140,23 +148,33 @@ const constantHolding = (node: Node): NodeOf<'VariableDeclarator'> | undefined =
       return holder.init === value &&
         declaration?.type === 'VariableDeclaration' &&
         declaration.kind === 'const'
-        ? holder
+        ? { constant: holder, keys }
         : undefined
     }
-    if (holder.type === 'Property' ? holder.value !== value : !CONSTANT_SHAPES.has(holder.type))
-      return undefined
+    if (holder.type === 'Property') {
+      if (holder.value !== value) return undefined
+      keys.unshift(staticKey(holder.key, holder.computed))
+    } else if (holder.type === 'ArrayExpression') {
+      const elements: readonly unknown[] = holder.elements
+      keys.unshift(String(elements.indexOf(value)))
+    } else if (!CONSTANT_SHAPES.has(holder.type)) return undefined
     value = holder
   }
 }
 
-const readFrom = (reference: Node): Node => {
+const readFrom = (reference: Node): { readonly read: Node; readonly keys: readonly Key[] } => {
+  const keys: Key[] = []
   let read = reference
   for (;;) {
     const member = parentOf(read)
-    if (member?.type !== 'MemberExpression' || member.object !== read) return read
+    if (member?.type !== 'MemberExpression' || member.object !== read) return { read, keys }
+    keys.push(staticKey(member.property, member.computed))
     read = member
   }
 }
+
+const mayRead = (read: readonly Key[], held: readonly Key[]): boolean =>
+  read.every((key, depth) => key === undefined || held[depth] === undefined || key === held[depth])
 
 const plugin = {
   meta: { name: 'dev' },
@@ -199,27 +217,33 @@ const plugin = {
           const term = INTERNAL.exec(text)?.[0]
           if (term !== undefined) context.report({ node, messageId: 'internal', data: { term } })
         }
+        const checkWritten = (
+          node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>,
+          text: string
+        ) => {
+          if (QUERY_LANGUAGE.test(text)) return
+          if (MESSAGE_LABEL.test(text) || PROSE.test(text) || sentenceAround(node))
+            return report(node, text)
+          const held = constantHolding(node)
+          if (
+            held !== undefined &&
+            context.sourceCode.getDeclaredVariables(held.constant).some(variable =>
+              variable.references.some(reference => {
+                const { read, keys } = readFrom(reference.identifier)
+                return mayRead(keys, held.keys) && sentenceAround(read)
+              })
+            )
+          )
+            report(node, text)
+        }
         return {
           Literal(node) {
-            if (typeof node.value !== 'string' || QUERY_LANGUAGE.test(node.value)) return
-            if (MESSAGE_LABEL.test(node.value) || PROSE.test(node.value) || sentenceAround(node))
-              return report(node, node.value)
-            const constant = constantHolding(node)
-            if (
-              constant !== undefined &&
-              context.sourceCode
-                .getDeclaredVariables(constant)
-                .some(variable =>
-                  variable.references.some(reference =>
-                    sentenceAround(readFrom(reference.identifier))
-                  )
-                )
-            )
-              report(node, node.value)
+            if (typeof node.value === 'string') checkWritten(node, node.value)
           },
           TemplateLiteral(node) {
             const text = written(node)
-            if (PROSE.test(text) && !QUERY_LANGUAGE.test(text)) report(node, text)
+            if (node.expressions.length === 0) checkWritten(node, text)
+            else if (PROSE.test(text) && !QUERY_LANGUAGE.test(text)) report(node, text)
           },
         }
       },

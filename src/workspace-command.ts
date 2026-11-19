@@ -321,11 +321,11 @@ export const joinedTaskNotice = (task: PausedTask): string =>
 
 export const joinedTaskNote = (task: PausedTask): string => {
   const { changedFiles } = task
-  const earlier =
+  const remaining =
     changedFiles === undefined || changedFiles === 0
-      ? 'Earlier messages are not here.'
-      : `${changedFiles} changed file${changedFiles === 1 ? ' remains' : 's remain'} from earlier work. Earlier messages are not here.`
-  return `${joinedTaskNotice(task)} The user chose to continue it here. ${earlier}`
+      ? ''
+      : `${changedFiles} changed file${changedFiles === 1 ? ' remains' : 's remain'} from earlier work. `
+  return `${joinedTaskNotice(task)} The user chose to continue it here. ${remaining}Earlier messages are not here.`
 }
 
 const sortedAssessments = (assessments: readonly WorkspaceAssessment[]) =>

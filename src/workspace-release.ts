@@ -19,6 +19,7 @@ import {
   decideCompletion,
   integrationUnknown,
   CLEAR,
+  DO_NOT_RETRY,
   needsIntegration,
   RETAINED,
   roleOf,
@@ -387,6 +388,9 @@ interface Staged {
 }
 const isStaged = (value: Assessed | Staged): value is Staged => 'integrate' in value
 
+const transitionName = (operation: { readonly kind: string }): string =>
+  operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'
+
 const stageWorkspace = (
   authority: WorkspaceAuthority,
   db: DatabaseSync,
@@ -410,7 +414,7 @@ const stageWorkspace = (
       .filter(operation => operation.kind !== 'release' && operation.phase === 'intent')
       .map(
         operation =>
-          `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} never started. Cleanup will not run it.`
+          `${transitionName(operation)} ${operation.id} never started. Cleanup will not run it.`
       ),
     ...unfinishedReleases.map(
       operation =>
@@ -481,9 +485,9 @@ const stageWorkspace = (
   })
   const unfinished = unresolvedTransitions.map(
     operation =>
-      `${operation.kind === 'allocation' ? 'Worktree creation' : 'Checkout switch'} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
+      `${transitionName(operation)} ${operation.id} may be unfinished${operation.result === undefined ? '' : `: ${operation.result}`}`
   )
-  const doNotRetry = unfinished.length > 0 ? ['Do not retry it.'] : []
+  const doNotRetry = unfinished.length > 0 ? [DO_NOT_RETRY] : []
   if (identity.kind === 'unverifiable')
     return shape({
       reasons: [identity.reason, ...unfinished, ...uses.reasons],

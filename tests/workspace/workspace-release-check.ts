@@ -2261,7 +2261,7 @@ try {
         JSON.parse(recorded.text),
         {
           recorded: 'publication',
-          root: 'workspace',
+          root: 'checkout',
           path: 'report.txt',
           byteLength: Buffer.byteLength('published report\n'),
           readBack: 'text-in-body',

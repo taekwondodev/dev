@@ -78,6 +78,8 @@ const activeRelease = Effect.gen(function* () {
   return { install, release: join(install, 'releases', version), version }
 })
 
+export const CANNOT_RESOLVE_PI_RELEASE = 'Cannot resolve the installed Pi release'
+
 export const resolvePiPackage = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const requested = yield* Config.option(Config.String('DEV_PI_RELEASE'))
@@ -109,7 +111,7 @@ export const resolvePiPackage = Effect.gen(function* () {
   }
 }).pipe(
   Effect.mapError(cause =>
-    cause instanceof PiError ? cause : piFailure('Cannot resolve the installed Pi release')(cause)
+    cause instanceof PiError ? cause : piFailure(CANNOT_RESOLVE_PI_RELEASE)(cause)
   )
 )
 

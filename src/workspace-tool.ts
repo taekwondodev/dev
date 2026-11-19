@@ -479,7 +479,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       value: { recorded: 'publication', reference },
       model: {
         recorded: 'publication',
-        root,
+        root: root === 'workspace' ? 'checkout' : root,
         path: relativePath,
         byteLength: bytes.byteLength,
         readBack,

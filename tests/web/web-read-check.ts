@@ -359,7 +359,12 @@ const documentOf = (outcome: ReadOutcome) => {
 }
 const renderedOf = (outcome: ReadOutcome) => {
   const slice = documentOf(outcome)
-  assert.equal(slice.document.method, 'browser', slice.document.limitations.join('\n'))
+  const { method, status, contentType, limitations } = slice.document
+  assert.equal(
+    method,
+    'browser',
+    `Chrome did not render this read: method ${method}, HTTP ${String(status)}, ${String(contentType)}. ${limitations.join(' ') || 'No limitation was reported.'}`
+  )
   return slice
 }
 const continuationOf = (outcome: ReadOutcome): string | undefined =>
@@ -973,7 +978,7 @@ try {
       'rendered pages cannot open WebSocket connections to refused destinations: the handshake never reaches the server',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/ws.html` }))
+        const slice = renderedOf(await read(reader, { url: `${origin}/ws.html` }))
         assert.match(slice.text, /websocket refused/)
         assert.ok(!seen.some(item => item.url === '/ws'), 'no WebSocket upgrade reached the server')
       }
@@ -995,7 +1000,7 @@ try {
       'worker subrequests are intercepted by the same policy, workers and pages cannot open WebSocket or WebTransport connections, and rendered pages cannot create shared workers, service workers or WebRTC peers',
       async () => {
         seen.length = 0
-        const slice = documentOf(await read(reader, { url: `${origin}/workers.html` }))
+        const slice = renderedOf(await read(reader, { url: `${origin}/workers.html` }))
         assert.match(slice.text, /worker fetch refused: TypeError/)
         assert.match(slice.text, /worker websocket refused/)
         assert.match(slice.text, /nested websocket refused/)
