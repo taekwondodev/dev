@@ -150,24 +150,35 @@ const schemeStart = (text: string, separator: number): number => {
   return at
 }
 
-const urlEnd = (text: string, start: number): number => {
-  let parentheses = 0
-  let brackets = 0
+const QUOTE_CLOSERS: Readonly<Record<string, string>> = { '<': '>', '"': '"', '`': '`' }
+
+const quotedUrlEnd = (text: string, start: number, closer: string): number => {
+  let at = start
+  while (at < text.length && !/\s/.test(text[at] ?? '') && text[at] !== closer) at += 1
+  return at
+}
+
+const unquotedUrlEnd = (text: string, start: number, closers: string): number => {
+  const open = { ')': 0, ']': 0 }
   let at = start
   for (; at < text.length; at += 1) {
     const char = text[at] ?? ''
-    if (/[\s<>"`]/.test(char)) break
-    if (char === '(') parentheses += 1
-    else if (char === '[') brackets += 1
-    else if (char === ')') {
-      if (parentheses === 0) break
-      parentheses -= 1
-    } else if (char === ']') {
-      if (brackets === 0) break
-      brackets -= 1
+    if (/\s/.test(char) || (char === '<' && closers.includes(char))) break
+    if (char === '(') open[')'] += 1
+    else if (char === '[') open[']'] += 1
+    else if (char === ')' || char === ']') {
+      if (open[char] === 0 && closers.includes(char)) break
+      open[char] = Math.max(0, open[char] - 1)
     }
   }
   return at
+}
+
+const urlEnd = (text: string, start: number): number => {
+  const opener = text[start - 1] ?? ''
+  const quoteCloser = QUOTE_CLOSERS[opener]
+  if (quoteCloser !== undefined) return quotedUrlEnd(text, start, quoteCloser)
+  return unquotedUrlEnd(text, start, opener === '(' ? ')' : '<)]')
 }
 
 const outerUrlSpans = (text: string): readonly UrlSpan[] => {

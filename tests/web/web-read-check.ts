@@ -672,6 +672,13 @@ try {
               { text: 'other', url: `https://other.fixture.invalid/?next=(${guide})` },
             ])
           ),
+          guideQuotedInsideAnotherDestination: ['`', '"', '<'].map(opener => {
+            const closer = opener === '<' ? '>' : opener
+            const other = `https://other.fixture.invalid/?next=${opener}${guide}${closer}`
+            return listsGuide(
+              render(`${relative} plus [other](${other})`, [docs, { text: 'other', url: other }])
+            )
+          }),
           guideInsideParenthesesOfAnotherUrlWithApostrophe: listsGuide(
             render(
               `${relative} plus [other](https://other.fixture.invalid/o'clock?next=(${guide}))`,
@@ -693,6 +700,8 @@ try {
             `[https://one.fixture.invalid/](${guide})`,
             `[one](http://[::1]/)[other](${guide})`,
             `${'x'.repeat(4096)}<${guide}>`,
+            `["https://one.fixture.invalid/","${guide}"]`,
+            `\`https://one.fixture.invalid/\`\`${guide}\``,
             `[other](${guide})`,
             `[other](${guide} "Title")`,
             `<${guide}>`,
@@ -722,8 +731,21 @@ try {
           guideBeforeSemicolonAndTitle: true,
           guideInsideAnotherUrl: true,
           guideInsideParenthesesOfAnotherUrl: true,
+          guideQuotedInsideAnotherDestination: [true, true, true],
           guideInsideParenthesesOfAnotherUrlWithApostrophe: true,
-          guideShownInDestinations: [false, false, false, false, false, false, false, false, false],
+          guideShownInDestinations: [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+          ],
           guideAtHardCut: true,
           guideBeforePunctuationAtHardCut: true,
           guideBeforeWhitespaceAtHardCut: false,
