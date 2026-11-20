@@ -76,6 +76,12 @@ const ERROR_TEXTS: readonly ErrorText[] = [
     tools: SEARCH,
   },
   { outcome: 'invocation', pattern: /^[A-Za-z]+ is required$/, tools: ['work'] },
+  {
+    outcome: 'blocked',
+    pattern:
+      /^The working directory is outside this conversation's checkout: [\s\S]*\. Nothing ran\. /,
+    tools: ['work'],
+  },
   { outcome: 'invocation', pattern: /^Tool \S+ not found$/ },
   { outcome: 'invocation', pattern: /^Validation failed for tool "/ },
   {

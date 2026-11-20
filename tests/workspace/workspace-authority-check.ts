@@ -32,6 +32,7 @@ import { canonicalGitWorkspace } from '../../src/workspace-git.ts'
 import { authorityPaths } from '../../src/workspace-authority-root.ts'
 import { conversationRecord } from '../../src/workspace-attachment.ts'
 import { acquireConversationPresence } from '../../src/workspace-gates.ts'
+import { classifyError } from '../../scripts/usage-facts.ts'
 import { deferred, equalWith, makeClaims } from './workspace-check-support.ts'
 import {
   faultInjector,
@@ -1332,6 +1333,22 @@ try {
         delegated.authorize({ kind: 'foreign-write', cwd: delegated.binding.cwd }),
         'invalid'
       )
+      const outside = await delegated
+        .authorize({
+          kind: 'write',
+          cwd: foreignRepo,
+          scoped: { kind: 'opaque', execution: processExecution('outside-cwd') },
+        })
+        .then(
+          () => assert.fail('a command with a cwd in another checkout was admitted'),
+          (error: unknown) => error
+        )
+      assert.ok(outside instanceof WorkspaceError && outside.outcome === 'invalid', String(outside))
+      assert.equal(
+        outside.message,
+        `The working directory is outside this conversation's checkout: ${realpathSync(foreignRepo)}. Nothing ran. If this call named the directory, name one inside the checkout; a shell command can change directory itself. Otherwise ask the user to quit and reopen this conversation.`
+      )
+      assert.equal(classifyError('work', outside.message), 'blocked', 'the usage profiler reads it')
     }
   )
 

@@ -704,7 +704,9 @@ const authorizeForeign = (
     operation.kind === 'write' ||
     (operation.kind === 'read' && operation.execution === undefined)
   )
-    invalid(`Operation cwd is outside the selected checkout: ${cwd}`)
+    invalid(
+      `The working directory is outside this conversation's checkout: ${cwd}. Nothing ran. If this call named the directory, name one inside the checkout; a shell command can change directory itself. Otherwise ask the user to quit and reopen this conversation.`
+    )
   if (isWithin(authority.root, cwd))
     invalid(`Cannot delegate into dev private storage: ${cwd}. Choose a checkout outside it`)
   const source = foreignSource(authority, cwd)

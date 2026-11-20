@@ -949,6 +949,15 @@ const DEV_TEXTS = [
     'work',
     'blocked',
   ],
+  [
+    'src/workspace-admission.ts',
+    [
+      "`The working directory is outside this conversation's checkout: ",
+      '. Nothing ran. If this call named the directory, name one inside the checkout; a shell command can change directory itself. Otherwise ask the user to quit and reopen this conversation.`',
+    ],
+    'work',
+    'blocked',
+  ],
   ['src/work-controller.ts', ['`', ' is required`'], 'work', 'invocation'],
   ['src/work-controller.ts', ["'prompt is required'"], 'work', 'invocation'],
   [

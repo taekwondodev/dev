@@ -52,7 +52,7 @@ A delegated writer receives a distinct managed worktree from the source checkout
 
 For `delegate`, `cwd` can select another Git checkout. The child uses that repository's [guidance and trusted resources](../SECURITY.md#trusted-base) and delivery policy; a read-only child reads the selected checkout directly. The lead stays bound to its original repository and can read and inspect the result; its own native writes follow the [native destination policy](workspace.md#native-writes). See [workspace selection](workspace.md#delegation-into-another-checkout) for admission and task identity.
 
-`process` commands keep `cwd` inside the bound workspace. Leaves cannot select a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there.
+`process` commands keep `cwd` inside the bound workspace; one with a `cwd` outside it is refused before it starts, and a command that must run elsewhere changes directory itself. Leaves cannot select a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there.
 
 ### Coordinators and leaves
 
