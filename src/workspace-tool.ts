@@ -36,11 +36,20 @@ import { isWithin } from './workspace-paths.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
 
+const isRelativeFile = Schema.is(RelativeFilePath)
+const isAbsolutePath = Schema.is(AbsolutePath)
+
 const InputFields = {
   taskId: WorkspaceId,
   workspaceId: WorkspaceId,
   target: TaskTargetSchema,
-  path: Schema.Union([RelativeFilePath, AbsolutePath]),
+  path: Schema.String.check(
+    Schema.makeFilter(value =>
+      isRelativeFile(value) || isAbsolutePath(value)
+        ? undefined
+        : 'must be a normalized relative path inside the checkout or an absolute path'
+    )
+  ),
   destination: Schema.Struct({
     repository: GitHubRepositorySchema,
     number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
