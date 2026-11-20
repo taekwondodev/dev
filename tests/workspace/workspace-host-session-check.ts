@@ -745,8 +745,20 @@ try {
         cwd: paused.checkout,
         ui: interactive(() => undefined).ui,
       })
+      const keptByTask = async () =>
+        (await lifecycle.inspect({ taskId: paused.taskId })).map(view => ({
+          checkout: view.workspaceId,
+          path: view.path,
+          reservation: view.reservationId,
+        }))
       try {
         assert.equal(opened.host.attachment.binding.taskId, undefined)
+        const before = await keptByTask()
+        assert.deepEqual(
+          before.map(kept => [kept.path, kept.reservation !== undefined]),
+          [[paused.checkout, true]],
+          'the task keeps its one checkout before the command'
+        )
         trapped = true
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         assert.equal(trapped, false, 'the selection recorded the mismatch')
@@ -764,14 +776,12 @@ try {
           async () => ((await pendingOfTask()).length === 0 ? true : undefined),
           IN_MEMORY_POLL
         )
-        assert.deepEqual(
-          (await lifecycle.inspect({ taskId: paused.taskId })).map(view => [
-            view.workspaceId,
-            view.reservationId !== undefined,
-          ]),
-          [[selected?.checkout, true]],
-          'the task still keeps the selected checkout'
+        assert.equal(
+          selected?.checkout,
+          before[0]?.checkout,
+          'the selection targeted the checkout the task already kept'
         )
+        assert.deepEqual(await keptByTask(), before, 'the task keeps the same checkout')
       } finally {
         await opened.close()
       }
