@@ -187,7 +187,10 @@ export const makeNativeWrites = (options: {
       }),
     settle: Effect.gen(function* () {
       closing = true
-      const drained = yield* Effect.forEach([...inFlight], Deferred.await, { discard: true }).pipe(
+      const drained = yield* Effect.forEach([...inFlight], Deferred.await, {
+        discard: true,
+        concurrency: 1,
+      }).pipe(
         Effect.as(true),
         Effect.timeoutOrElse({ duration: SETTLE_WAIT, orElse: () => Effect.succeed(false) })
       )

@@ -367,7 +367,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     live: () => live.size,
     stop: Effect.gen(function* () {
       stopping = true
-      yield* Effect.forEach([...launches], Deferred.await, { discard: true }).pipe(
+      yield* Effect.forEach([...launches], Deferred.await, { discard: true, concurrency: 1 }).pipe(
         Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void })
       )
       const shells = [...live.values()]
@@ -377,6 +377,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
       })
       yield* Effect.forEach(shells, shell => Deferred.await(shell.settled), {
         discard: true,
+        concurrency: 1,
       }).pipe(Effect.timeoutOrElse({ duration: STOP_WAIT, orElse: () => Effect.void }))
     }).pipe(
       Effect.ensuring(
