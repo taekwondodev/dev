@@ -77,21 +77,24 @@ export const streamed = Effect.fnUntraced(function* (
     .spawn(ChildProcess.make(file, args, { cwd, env, extendEnv: true, stdin: 'ignore' }))
     .pipe(
       Effect.flatMap(handle =>
-        Effect.all([
-          handle.all.pipe(
-            Stream.tap(chunk =>
-              Effect.sync(() => {
-                if (label === undefined) process.stderr.write(chunk)
-              })
+        Effect.all(
+          [
+            handle.all.pipe(
+              Stream.tap(chunk =>
+                Effect.sync(() => {
+                  if (label === undefined) process.stderr.write(chunk)
+                })
+              ),
+              Stream.decodeText(),
+              Stream.runFold(
+                () => '',
+                (kept: string, chunk: string) => (kept + chunk).slice(-keptOutputLength)
+              )
             ),
-            Stream.decodeText(),
-            Stream.runFold(
-              () => '',
-              (kept: string, chunk: string) => (kept + chunk).slice(-keptOutputLength)
-            )
-          ),
-          handle.exitCode,
-        ])
+            handle.exitCode,
+          ],
+          { concurrency: 1 }
+        )
       ),
       Effect.scoped,
       Effect.mapError(cannotRun(file, args))

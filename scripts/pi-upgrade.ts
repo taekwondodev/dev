@@ -464,23 +464,27 @@ const compareDocs = Effect.fnUntraced(function* (
   candidate: PiInstallation
 ) {
   const fs = yield* FileSystem.FileSystem
-  const changes = yield* Effect.forEach(pages, page =>
-    Effect.gen(function* () {
-      const before = join(baseline.root, page)
-      const after = join(candidate.root, page)
-      const inBaseline = yield* fs.exists(before)
-      const inCandidate = yield* fs.exists(after)
-      if (!inBaseline && !inCandidate) return Option.some({ page, change: 'Missing from both.' })
-      if (!inCandidate) return Option.some({ page, change: 'Removed from the candidate.' })
-      if (!inBaseline) return Option.some({ page, change: 'Added in the candidate.' })
-      const stdout = yield* diffNoIndex(before, after, ['--no-color'])
-      if (stdout === '') return Option.none<DocChange>()
-      const hunks = stdout.indexOf('\n@@')
-      return Option.some({
-        page,
-        change: hunks === -1 ? 'Changed outside its text.' : fence('diff', stdout.slice(hunks + 1)),
-      })
-    })
+  const changes = yield* Effect.forEach(
+    pages,
+    page =>
+      Effect.gen(function* () {
+        const before = join(baseline.root, page)
+        const after = join(candidate.root, page)
+        const inBaseline = yield* fs.exists(before)
+        const inCandidate = yield* fs.exists(after)
+        if (!inBaseline && !inCandidate) return Option.some({ page, change: 'Missing from both.' })
+        if (!inCandidate) return Option.some({ page, change: 'Removed from the candidate.' })
+        if (!inBaseline) return Option.some({ page, change: 'Added in the candidate.' })
+        const stdout = yield* diffNoIndex(before, after, ['--no-color'])
+        if (stdout === '') return Option.none<DocChange>()
+        const hunks = stdout.indexOf('\n@@')
+        return Option.some({
+          page,
+          change:
+            hunks === -1 ? 'Changed outside its text.' : fence('diff', stdout.slice(hunks + 1)),
+        })
+      }),
+    { concurrency: 8 }
   )
   return Arr.getSomes(changes)
 })

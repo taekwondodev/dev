@@ -503,11 +503,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   )
 
   const logSize = (id: AttemptId): Effect.Effect<number> =>
-    Effect.forEach(['stdout', 'stderr'] as const, stream =>
-      fs.stat(store.logPath(id, stream)).pipe(
-        Effect.map(info => Number(info.size)),
-        Effect.orElseSucceed(() => 0)
-      )
+    Effect.forEach(
+      ['stdout', 'stderr'] as const,
+      stream =>
+        fs.stat(store.logPath(id, stream)).pipe(
+          Effect.map(info => Number(info.size)),
+          Effect.orElseSucceed(() => 0)
+        ),
+      { concurrency: 'unbounded' }
     ).pipe(Effect.map(([stdout = 0, stderr = 0]) => stdout + stderr))
 
   const watchJobQuiet = (job: Job): Effect.Effect<void> => {
@@ -590,14 +593,17 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     const staleArtifact = changedArtifact(record.artifactAtCompletion, current)
     const streams: readonly LogRequest['stream'][] =
       record.kind === 'agent' ? ['result', 'stderr'] : ['stdout', 'stderr']
-    const logs = yield* Effect.forEach(streams, stream =>
-      store.readLog(id, stream, undefined, 6000).pipe(
-        Effect.map(log => ({
-          ...log,
-          stream,
-          text: log.text === undefined ? undefined : compactText(log.text),
-        }))
-      )
+    const logs = yield* Effect.forEach(
+      streams,
+      stream =>
+        store.readLog(id, stream, undefined, 6000).pipe(
+          Effect.map(log => ({
+            ...log,
+            stream,
+            text: log.text === undefined ? undefined : compactText(log.text),
+          }))
+        ),
+      { concurrency: 'unbounded' }
     )
     return {
       ...viewOf(record),
@@ -1192,10 +1198,13 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         scopeOf(record),
         request.kind,
         record.id,
-        Effect.all([
-          openLog(() => store.logPath(record.id, 'stdout')),
-          openLog(() => store.logPath(record.id, 'stderr')),
-        ])
+        Effect.all(
+          [
+            openLog(() => store.logPath(record.id, 'stdout')),
+            openLog(() => store.logPath(record.id, 'stderr')),
+          ],
+          { concurrency: 1 }
+        )
       )
       const child = yield* withPreparedPermit(
         token.sessionId,
