@@ -254,6 +254,7 @@ export const openHostRuntime = async (input: {
   readonly cwd: string
   readonly repositoryRoot: (cwd: string) => Effect.Effect<string | undefined>
   readonly offline?: Pick<Awaited<ReturnType<typeof makeOfflineModel>>, 'model' | 'modelRuntime'>
+  readonly restoreModel?: true
   readonly extensions?: RuntimeParts['extensions']
   readonly webReader?: WebReader
   readonly ending?: SessionEnd
@@ -319,7 +320,7 @@ export const openHostRuntime = async (input: {
             ? {}
             : {
                 modelRuntime: Effect.succeed(input.offline.modelRuntime),
-                model: input.offline.model,
+                ...(input.restoreModel ? {} : { model: input.offline.model }),
               }),
         })
       }).pipe(Effect.provide(nodeServicesWithCurrentEnvironment()))

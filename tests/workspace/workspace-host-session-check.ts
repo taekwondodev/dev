@@ -47,6 +47,7 @@ import { classifyError, sessionFacts } from '../../scripts/usage-facts.ts'
 import { readSessions } from '../../scripts/usage-sessions.ts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { switchNotRequested } from '../../src/workspace-model-text.ts'
+import { interactiveStartup } from '../../src/launcher-runtime.ts'
 import { openLifecycle } from './workspace-test-lifecycle.ts'
 
 const { pi, packageInfo, importFromPi } = await loadInstalledPi()
@@ -182,6 +183,7 @@ const openLeadHost = (input: {
   readonly attachment: WorkspaceAttachment
   readonly manager: Pi.SessionManager
   readonly offline: OfflineModel
+  readonly restoreModel?: true
   readonly lifecycle?: WorkspaceLifecycle
   readonly dataHome?: string
   readonly cwd?: string
@@ -201,6 +203,7 @@ const openLeadHost = (input: {
     attachment: input.attachment,
     manager: input.manager,
     offline: input.offline,
+    ...(input.restoreModel === undefined ? {} : { restoreModel: input.restoreModel }),
     lifecycle: input.lifecycle ?? lifecycle.effect,
     dataHome: input.dataHome ?? dataHome,
     ...(input.ui === undefined ? {} : { ui: input.ui }),
@@ -402,6 +405,52 @@ try {
         }
       }
       assert.ok(!existsSync(target), 'the refused write wrote nothing')
+    }
+  )
+  await claim(
+    'a conversation whose model is gone continues on another one with a warning; the interactive start takes that warning, so resuming another such conversation reports the switch without repeating it',
+    async () => {
+      const { offline } = await offlineScript('restore-fallback', [])
+      const withGoneModel = (manager: Pi.SessionManager) => {
+        manager.appendMessage({
+          ...offline.assistantMessage([{ type: 'text', text: 'stored' }], 'stop'),
+          provider: 'gone-provider',
+          model: 'gone-model',
+        })
+        return manager
+      }
+      const { manager, attached } = await attachLeadConversation()
+      const opened = await openLeadHost({
+        attachment: attached.effect,
+        manager: withGoneModel(manager),
+        offline,
+        restoreModel: true,
+      })
+      try {
+        const warning = {
+          type: 'warning',
+          message: `Could not restore model gone-provider/gone-model. Using ${offline.model.provider}/${offline.model.id}`,
+        }
+        assert.equal(opened.runtime.session.model?.id, offline.model.id)
+        const startup = interactiveStartup(opened.runtime)
+        assert.deepEqual(startup.startupDiagnostics, [warning])
+        assert.equal('modelFallbackMessage' in startup, false, 'the warning is not shown twice')
+        const other = withGoneModel(pi.SessionManager.create(lead, sessionDir)).getSessionFile()
+        if (other === undefined) throw new Error('Pi did not persist the other conversation')
+        assert.deepEqual(await opened.runtime.switchSession(other), { cancelled: false })
+        assert.deepEqual(
+          opened.runtime.diagnostics,
+          [warning],
+          'the resumed conversation switched too'
+        )
+        assert.deepEqual(
+          opened.runtime.takeUnreportedDiagnostics(),
+          [],
+          'Pi, which takes the diagnostics after a resume, does not repeat what the start showed'
+        )
+      } finally {
+        await opened.close()
+      }
     }
   )
   await claim(
