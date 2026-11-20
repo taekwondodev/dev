@@ -70,13 +70,18 @@ const gitInspectParameters = obj({
   operation: StringEnum(REVIEW_OPERATIONS, { description: 'Read-only Git operation to perform' }),
   path: opt(str({ description: 'Optional repository-relative path without parent traversal' })),
   ref: opt(
-    str({ description: 'Git ref for show or optional diff base, such as HEAD or a commit hash' })
+    str({
+      description:
+        'Git ref for show, or optional diff base or log start, such as HEAD or a commit hash',
+    })
   ),
   limit: opt(int({ minimum: 1, maximum: 50, description: 'Maximum number of log entries' })),
 })
 const gitInspectInput = compile(gitInspectParameters)
 
 const MAX_GIT_OUTPUT = 64 * 1024
+const FILES_INSTEAD_OF_PATCH = `The patch is larger than ${MAX_GIT_OUTPUT / 1024} KB. Its changed files follow as added lines, removed lines and path. Pass path to read one file's patch.`
+const CHANGED_FILE = /^(?:\d+|-)\t(?:\d+|-)\t/
 const PROGRESS_INTERVAL_MS = 1000
 const SAFE_GIT_OPTIONS = [
   '--no-pager',
@@ -197,6 +202,11 @@ interface GitCapture {
   readonly chunks: Buffer[]
   bytes: number
   truncated: boolean
+}
+
+interface GitRequest {
+  readonly args: readonly string[]
+  readonly changedFiles?: readonly string[]
 }
 
 interface GitResult {
@@ -473,7 +483,9 @@ function validateGitRef(ref: string | undefined): string {
   return ref
 }
 
-function gitArguments(params: unknown): readonly string[] {
+const CHANGED_FILES = ['--numstat', '-z', '--no-renames'] as const
+
+function gitRequest(params: unknown): GitRequest {
   if (!gitInspectInput.check(params))
     fail(
       `git_inspect parameters are invalid: ${gitInspectInput
@@ -482,26 +494,46 @@ function gitArguments(params: unknown): readonly string[] {
         .join('; ')}`
     )
   const path = validateRelativePath(params.path)
+  const paths = ['--', ...(path ? [path] : [])]
+  const from = () => (params.ref === undefined ? [] : [validateGitRef(params.ref)])
   switch (params.operation) {
     case 'status':
-      return ['status', '--short', '--branch']
-    case 'diff':
-      return [
-        'diff',
-        '--no-ext-diff',
-        '--no-textconv',
-        ...(params.ref === undefined ? [] : [validateGitRef(params.ref)]),
-        '--',
-        ...(path ? [path] : []),
-      ]
-    case 'staged-diff':
-      return ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--', ...(path ? [path] : [])]
+      return { args: ['status', '--short', '--branch'] }
+    case 'diff': {
+      const diff = ['diff', '--no-ext-diff', '--no-textconv']
+      const selection = [...from(), ...paths]
+      return {
+        args: [...diff, ...selection],
+        changedFiles: [...diff, ...CHANGED_FILES, ...selection],
+      }
+    }
+    case 'staged-diff': {
+      const diff = ['diff', '--cached', '--no-ext-diff', '--no-textconv']
+      return { args: [...diff, ...paths], changedFiles: [...diff, ...CHANGED_FILES, ...paths] }
+    }
     case 'log':
-      return ['log', '--oneline', '--decorate', `--max-count=${params.limit ?? 20}`]
-    case 'show':
-      return ['show', '--no-ext-diff', '--no-textconv', '--oneline', validateGitRef(params.ref)]
+      return {
+        args: [
+          'log',
+          '--oneline',
+          '--decorate',
+          `--max-count=${params.limit ?? 20}`,
+          ...from(),
+          ...paths,
+        ],
+      }
+    case 'show': {
+      const show = ['show', '--no-ext-diff', '--no-textconv', '--oneline']
+      const selection = [validateGitRef(params.ref), ...paths]
+      return {
+        args: [...show, ...selection],
+        ...(params.ref?.includes(':') === true
+          ? {}
+          : { changedFiles: [...show, ...CHANGED_FILES, ...selection] }),
+      }
+    }
     case 'files':
-      return ['ls-files', '--', ...(path ? [path] : [])]
+      return { args: ['ls-files', ...paths] }
   }
 }
 
@@ -517,14 +549,37 @@ export function createReviewGitTool(cwd: string): Pi.ToolDefinition {
     name: 'git_inspect',
     label: 'git_inspect',
     description:
-      'Read Git status, diffs, history, refs or tracked files. Output past 64 KB is cut; the agent that started you can read it in full.',
+      'Read Git status, diffs, history, refs or tracked files. Output past 64 KB is cut, or replaced by the changed files when a patch covers several; the agent that started you can read it in full.',
     promptSnippet: 'Read Git state',
     parameters: gitInspectParameters,
     async execute(_toolCallId, params, signal) {
       const result = await Effect.runPromise(
         Effect.gen(function* () {
-          const args = yield* Effect.try({ try: () => gitArguments(params), catch: toChildError })
-          const gitResult = yield* runGit(cwd, args, signal).pipe(Effect.mapError(toChildError))
+          const request = yield* Effect.try({ try: () => gitRequest(params), catch: toChildError })
+          const gitResult = yield* runGit(cwd, request.args, signal).pipe(
+            Effect.mapError(toChildError)
+          )
+          if (
+            gitResult.error === undefined &&
+            gitResult.truncated &&
+            request.changedFiles !== undefined
+          ) {
+            const listed = yield* runGit(cwd, request.changedFiles, signal)
+            if (signal?.aborted === true)
+              return yield* new ChildError({ message: 'git_inspect was cancelled' })
+            const records = listed.stdout.split('\0').map(record => record.trimStart())
+            const whole = listed.truncated ? records.slice(0, -1) : records
+            if (
+              listed.error === undefined &&
+              whole.filter(record => CHANGED_FILE.test(record)).length > 1
+            )
+              return toolResult(
+                truncateGitOutput(
+                  [FILES_INSTEAD_OF_PATCH, ...whole.filter(record => record !== '')].join('\n'),
+                  listed.truncated
+                )
+              )
+          }
           const output =
             [
               gitResult.stdout,

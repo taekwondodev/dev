@@ -590,6 +590,24 @@ for (const [name, first, second] of [
   writeSession(gitIdentityHome, 'sessions', name, lines)
 }
 
+const gitListHome = join(root, 'git-list')
+{
+  const lead = conversation('2026-09-29T10:00:00Z')
+  const lines: Line[] = [lead.header()]
+  for (const index of [0, 1]) {
+    const git = call(`g${index}`, 'git_inspect', { operation: 'diff', ref: 'main' })
+    lines.push(
+      lead.assistant(`a${index}`, index === 0 ? null : `r${index - 1}`, index * 2 + 1, {
+        calls: [git],
+      }),
+      lead.result(`r${index}`, `a${index}`, index * 2 + 2, git, {
+        text: "The patch is larger than 64 KB. Its changed files follow as added lines, removed lines and path. Pass path to read one file's patch.\n3\t3\ta.ts\n1\t0\tb.ts",
+      })
+    )
+  }
+  writeSession(gitListHome, 'sessions', 'lists', lines)
+}
+
 const periodsHome = join(root, 'periods')
 {
   const lead = conversation('2026-09-29T23:59:00Z')
@@ -944,6 +962,7 @@ const DEV_ANCHORS = [
   ['src/workspace-model-text.ts', ["export const HANDOFF_MESSAGE = 'dev/workspace-switch'"]],
   ['src/workspace-host.ts', ['text: `[dev workspace] ', '`']],
   ['src/pi-child.ts', [String.raw`\n\n[git output truncated at `, ' bytes]']],
+  ['src/pi-child.ts', ['`The patch is larger than ', ' KB. ']],
   [
     'src/pi-child.ts',
     [
@@ -1348,6 +1367,16 @@ try {
           `sessions/${name}.jsonl`,
           [`sessions/${name}.jsonl#r0`, `sessions/${name}.jsonl#r2`],
         ])
+      )
+      assert.equal((await profile(gitListHome))._tag, 'Success')
+      const [lists] = report(gitListHome).periods
+      assert.deepEqual(
+        { truncated: lists.git.truncated, repeats: lists.git.repeats },
+        {
+          truncated: 2,
+          repeats: { requests: 1, identicalResults: 0, changedResults: 0, unknownResults: 1 },
+        },
+        'two equal file lists do not show that the patches were equal'
       )
     }
   )

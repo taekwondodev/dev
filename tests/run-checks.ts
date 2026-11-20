@@ -79,6 +79,7 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
     'tests/work/work-quiet-check.ts',
     'tests/work/work-model-text-check.ts',
     'tests/work/work-child-activity-check.ts',
+    'tests/work/git-inspect-check.ts',
     'tests/work/work-store-check.ts',
     'tests/work/work-skill-check.ts',
     'tests/work/work-nested-check.ts',
