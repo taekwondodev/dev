@@ -10,6 +10,7 @@ import {
   realpathSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs'
 import { createServer } from 'node:http'
 import { createConnection, createServer as createSocketServer, type Socket } from 'node:net'
@@ -660,9 +661,14 @@ try {
           if (stopped === undefined) return
           const table = Effect.runSync(Effect.exit(processTable))
           if (Exit.isFailure(table)) {
-            process.stderr.write(
-              `The process table was unreadable; stopped Chrome helper ${stopped.pid} was left running.\n`
-            )
+            try {
+              writeSync(
+                2,
+                `The process table was unreadable; stopped Chrome helper ${stopped.pid} was left running.\n`
+              )
+            } catch {
+              return
+            }
             return
           }
           helper = undefined
@@ -724,10 +730,13 @@ try {
           assert.ok(helperOnCopy(), 'dev left the surviving helper running')
           assert.equal((await Effect.runPromise(blindAdmin.status)).profile.inUse, true)
         } finally {
-          process.off('SIGINT', interrupted)
-          process.off('SIGTERM', interrupted)
-          endHelper()
-          rmSync(flag, { force: true })
+          try {
+            endHelper()
+          } finally {
+            process.off('SIGINT', interrupted)
+            process.off('SIGTERM', interrupted)
+            rmSync(flag, { force: true })
+          }
         }
         const removed = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
         assert.equal(removed.kind, 'removed', 'settlement observed later allows removal')
