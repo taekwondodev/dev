@@ -106,7 +106,9 @@ Promise.all([fetch("/page-fetch?m=${marker}").then(r => r.text()), workerDone]).
       return reply('text/plain', `${url.pathname} ${marker}`)
   }
 })
-await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
+await new Promise<void>(resolve => {
+  server.listen(0, '127.0.0.1', () => resolve())
+})
 const address = server.address()
 if (address === null || typeof address === 'string') throw new Error('fixture server has no port')
 const { port } = address
@@ -214,7 +216,9 @@ try {
         socket.on('data', () => {})
         socket.once('close', () => sockets.delete(socket))
       })
-      await new Promise<void>(resolve => silent.listen(socketPath, resolve))
+      await new Promise<void>(resolve => {
+        silent.listen(socketPath, resolve)
+      })
       writeFileSync(
         join(root, 'owner.json'),
         JSON.stringify({
@@ -244,7 +248,9 @@ try {
         assert.equal(readFileSync(sentinel, 'utf8'), 'not settled')
       } finally {
         for (const socket of sockets) socket.destroy()
-        await new Promise<void>(resolve => silent.close(() => resolve()))
+        await new Promise<void>(resolve => {
+          silent.close(() => resolve())
+        })
       }
     }
   )
@@ -868,9 +874,9 @@ try {
               resolve(message)
           })
         })
-        const exited = new Promise<number | null>(resolve =>
+        const exited = new Promise<number | null>(resolve => {
           helper.once('exit', code => resolve(code))
-        )
+        })
         helper.send({ type: 'prepare', dataHome: home })
         await prepared
         assert.ok(!ownerPublished(home), 'nothing is published before commit')
@@ -903,9 +909,9 @@ try {
           () => Effect.runPromise(racedAdmin.status),
           status => !status.profile.enabled
         )
-        const enable = Effect.runPromise(racedAdmin.enable).then(() => {
-          order.push('enable')
-        })
+        const enable = Effect.runPromise(
+          racedAdmin.enable.pipe(Effect.andThen(Effect.sync(() => order.push('enable'))))
+        )
         const [kept] = await Promise.all([revoke, enable])
         assert.equal(kept.kind, 'kept-live')
         assert.deepEqual(order, ['revoke:kept-live', 'enable'], 'enable waited for the revocation')

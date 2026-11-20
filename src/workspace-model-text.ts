@@ -6,13 +6,13 @@ import {
   verdictLabel,
   type WorkspaceReport,
 } from './workspace-command.ts'
-import {
-  type PausedTask,
-  type SweepReceipt,
-  type SweepRow,
-  type WorkspaceAssessment,
-  type WorkspaceId,
-  type WorkspaceView,
+import type {
+  PausedTask,
+  SweepReceipt,
+  SweepRow,
+  WorkspaceAssessment,
+  WorkspaceId,
+  WorkspaceView,
 } from './workspace-domain.ts'
 
 export const WORKSPACE_MESSAGE = 'dev/workspace'

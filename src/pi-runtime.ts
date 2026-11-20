@@ -13,6 +13,9 @@ import { errorText } from './error-text.ts'
 
 export type PiApi = typeof Pi
 
+export const importPiModule = <Module>(path: string): Promise<Module> =>
+  import(pathToFileURL(path).href) as Promise<Module>
+
 export class PiError extends Schema.TaggedError<PiError, { readonly brand: unique symbol }>()(
   'PiError',
   {
@@ -117,8 +120,8 @@ export const resolvePiPackage = Effect.gen(function* () {
 
 export const loadPi = Effect.gen(function* () {
   const packageInfo = yield* resolvePiPackage
-  const api: PiApi = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(packageInfo.entry).href),
+  const api = yield* Effect.tryPromise({
+    try: () => importPiModule<PiApi>(packageInfo.entry),
     catch: piFailure(`Cannot load Pi from ${packageInfo.entry}`),
   })
   for (const name of [
@@ -139,8 +142,8 @@ export const findRecentSession = Effect.fnUntraced(function* (
   cwd: string,
   sessionsPath: string
 ) {
-  const sessions: typeof PiSessions = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(join(packageRoot, 'dist/core/session-manager.js')).href),
+  const sessions = yield* Effect.tryPromise({
+    try: () => importPiModule<typeof PiSessions>(join(packageRoot, 'dist/core/session-manager.js')),
     catch: piFailure('Cannot load Pi recent-session discovery'),
   })
   if (typeof sessions.findMostRecentSession !== 'function')
@@ -154,8 +157,8 @@ export const findRecentSession = Effect.fnUntraced(function* (
 })
 
 export const loadPiPathResolver = Effect.fnUntraced(function* (packageRoot: string) {
-  const paths: typeof PiPaths = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(join(packageRoot, 'dist/utils/paths.js')).href),
+  const paths = yield* Effect.tryPromise({
+    try: () => importPiModule<typeof PiPaths>(join(packageRoot, 'dist/utils/paths.js')),
     catch: piFailure('Cannot load Pi path resolution'),
   })
   if (typeof paths.resolvePath !== 'function')

@@ -73,6 +73,10 @@ const decodeModelAttempt = Schema.decodeUnknownSync(
   strict
 )
 const decodeStructured = Schema.decodeUnknownSync(WorkResultSchema, strict)
+const decodeShown = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown))
+)
+const decodeShownRecords = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))
 const decodeDelivered = Schema.decodeUnknownSync(
   Schema.Struct({ attempts: Schema.Array(Schema.String) })
 )
@@ -450,13 +454,14 @@ try {
             inspection,
             page,
             snapshot,
-          ].map(result => JSON.parse(result === undefined ? '{}' : workResultText(result)))
+          ].map(result => decodeShown(result === undefined ? '{}' : workResultText(result)))
           assert.deepEqual(Object.keys(shownDispatch), ['default', 'rules'])
           assert.deepEqual(shownPage, { text: '', nextOffset: null })
           assert.equal(shownCancel.id, slow.id)
           assert.equal(shownCancel.status, 'cancelled')
           assert.deepEqual(Object.keys(shownList), ['records', 'nextOffset'])
-          for (const record of shownList.records) decodeModelAttempt(JSON.stringify(record))
+          for (const record of decodeShownRecords(shownList.records))
+            decodeModelAttempt(JSON.stringify(record))
           assert.equal(shownInspection.workflowTaskId, inspection?.inspection?.run.workflowTaskId)
           assert.equal(shownInspection.cwd, inspection?.inspection?.run.cwd)
           for (const hidden of ['record', 'logs', 'completedAt', 'usage'])

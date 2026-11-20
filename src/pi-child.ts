@@ -26,7 +26,7 @@ import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
 import { createBackgroundCompaction, fenceRuntimeDisposal } from './background-compaction.ts'
-import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
+import type { ChildMessage, ChildResultMessage } from './work-protocol.ts'
 import { composeResources, loadCatalog } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
@@ -1220,7 +1220,7 @@ export function serveChild(options: ChildServeOptions = {}): void {
       signal: controller.signal,
     }).pipe(Effect.provide(NodeServices.layer))
     void Effect.runPromise(program)
-      .catch(error => {
+      .catch((error: unknown) => {
         console.error(errorMessage(error))
         return 1
       })

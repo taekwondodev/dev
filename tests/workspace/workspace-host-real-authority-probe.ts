@@ -217,7 +217,7 @@ const recordHostNotices =
             return (
               event: string,
               handler: (payload: unknown, context: ExtensionContext) => unknown
-            ) =>
+            ): unknown =>
               Reflect.apply(target.on, target, [
                 event,
                 (payload: unknown, context: ExtensionContext) =>
@@ -230,7 +230,7 @@ const recordHostNotices =
                 string,
                 unknown
               >
-            ) =>
+            ): unknown =>
               Reflect.apply(target.registerCommand, target, [
                 name,
                 {

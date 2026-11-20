@@ -45,7 +45,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 
 | Check                      | Evidence                                                                                                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run lint`             | Type checking, strict Effect diagnostics, type-aware Promise checks and Oxlint with warnings as errors                                                                                                           |
+| `npm run lint`             | Type checking, strict Effect diagnostics, type-aware Promise and type-safety checks and Oxlint with warnings as errors                                                                                           |
 | `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                                                                                        |
 | `npm run smoke`            | Launcher diagnostics and upgrade cleanup on disposable storage, and dev-internal terms in tool declarations, without a model response                                                                            |
 | `npm run cleanup:check`    | Conversation quotas, preference publication exclusion, fenced deletion, conversation lock removal and detached cleanup survival on disposable storage                                                            |
@@ -65,7 +65,9 @@ Use the actual TUI for interactive behavior. The Python pseudo-terminal driver e
 
 The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. The same file rejects fixed delays in checks and, in `src/`, sentences that use a [dev-internal term](../AGENTS.md#text-the-model-reads); neither rule has an allowlist. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
 
-The separate Promise-check configuration avoids activating the general preset's dormant type-aware style rules. Explicit `void` remains an opt-out for intentional Promise detachment, not proof that rejection is handled.
+The separate type-aware configuration lists its rules explicitly, so the general preset's dormant type-aware style rules stay inactive. It rejects unhandled Promises, values typed `any` crossing a typed boundary, non-`Error` throws and non-exhaustive switches; decode parsed JSON with `Schema` instead of reading it as `any`. Explicit `void` remains an opt-out for intentional Promise detachment, not proof that rejection is handled.
+
+The general configuration keeps `prefer-const` with `ignoreReadBeforeAssign`, because a closure that reads a variable before its single assignment cannot use `const`, and `promise/always-return` with `ignoreLastCallback`, because the last callback of a chain has no consumer for its value.
 
 When addressing lint diagnostics, preserve the [Effect boundary decisions](adr/0005-scoped-runtime-coordination.md#effect-boundary). A lint-driven runtime rewrite needs a demonstrated correctness need or measured benefit, not stylistic preference alone.
 

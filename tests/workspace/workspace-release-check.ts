@@ -2012,7 +2012,7 @@ try {
           `the tool refuses ${JSON.stringify(path)} as a path`
         )
       const tool = { name: 'workspace', description: '', parameters } as unknown as Tool
-      const validate = (input: JsonObject) =>
+      const validate = (input: JsonObject): unknown =>
         validateToolArguments(tool, {
           type: 'toolCall',
           id: 'v',

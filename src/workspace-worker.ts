@@ -117,16 +117,16 @@ const readersUntil = (deadline: number): EvidenceReaders => ({
 })
 
 const repositoryOf = (authority: WorkspaceAuthority, workspaceId: WorkspaceId): WorkspaceId => {
-  const failures: unknown[] = []
+  let failure: Error | undefined
   for (const repository of authority.listRepositories()) {
     try {
       if (inDb(authority, repository.id, db => getWorkspace(db, workspaceId) !== undefined))
         return repository.id
     } catch (cause) {
-      failures.push(cause)
+      failure ??= cause instanceof Error ? cause : new Error(errorText(cause))
     }
   }
-  if (failures[0] !== undefined) throw failures[0]
+  if (failure !== undefined) throw failure
   return invalid(`Dev has no saved checkout ${workspaceId}`)
 }
 

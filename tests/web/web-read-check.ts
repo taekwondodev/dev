@@ -262,7 +262,9 @@ const anchor = document.createElement("a"); anchor.href = "/attachment"; anchor.
       return reply(404, 'text/plain', 'not found')
   }
 })
-await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
+await new Promise<void>(resolve => {
+  server.listen(0, '127.0.0.1', () => resolve())
+})
 const address = server.address()
 if (address === null || typeof address === 'string') throw new Error('fixture server has no port')
 const { port } = address

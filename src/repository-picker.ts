@@ -1,5 +1,4 @@
 import { join, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -10,6 +9,7 @@ import type * as PiTheme from '../node_modules/@earendil-works/pi-coding-agent/d
 import type * as PiTui from '../node_modules/@earendil-works/pi-tui/dist/index.js'
 import { ago, displayPath, dropControls, printable, withoutControls } from './display-text.ts'
 import { errorText } from './error-text.ts'
+import { importPiModule } from './pi-runtime.ts'
 import { globalPiAgentDir } from './preferences.ts'
 
 export class RepositoryPickerError extends Schema.TaggedError<
@@ -145,9 +145,9 @@ const loadModules = (packageRoot: string): Effect.Effect<PickerModules, Reposito
   Effect.tryPromise({
     try: async (): Promise<PickerModules> => {
       const [tui, theme, settings] = await Promise.all([
-        import(pathToFileURL(join(packageRoot, '../pi-tui/dist/index.js')).href),
-        import(pathToFileURL(join(packageRoot, 'dist/modes/interactive/theme/theme.js')).href),
-        import(pathToFileURL(join(packageRoot, 'dist/core/settings-manager.js')).href),
+        importPiModule<typeof PiTui>(join(packageRoot, '../pi-tui/dist/index.js')),
+        importPiModule<typeof PiTheme>(join(packageRoot, 'dist/modes/interactive/theme/theme.js')),
+        importPiModule<typeof PiSettings>(join(packageRoot, 'dist/core/settings-manager.js')),
       ])
       return { tui, theme, settings }
     },

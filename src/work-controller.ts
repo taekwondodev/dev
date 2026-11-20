@@ -568,7 +568,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   }, Effect.mapError(toFailure))
 
   const cancel = Effect.fnUntraced(
-    function* (id: AttemptId, reason = 'cancelled'): Effect.fn.Return<AttemptView, WorkFailure> {
+    function* (id: AttemptId, reason?: string): Effect.fn.Return<AttemptView, WorkFailure> {
       const job = active.get(id)
       if (!job)
         return yield* new WorkError({
@@ -576,7 +576,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         })
       yield* Deferred.await(job.prepared)
       if (job.lifecycle.isTerminal()) return yield* Deferred.await(job.settled)
-      return yield* cancelJob(job, reason)
+      return yield* cancelJob(job, reason ?? 'cancelled')
     },
     Effect.uninterruptible,
     Effect.mapError(toFailure)
@@ -647,7 +647,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   }, Effect.mapError(toFailure))
 
   const interrupt = Effect.fnUntraced(function* (
-    reason = 'interrupted'
+    reason?: string
   ): Effect.fn.Return<void, WorkFailure> {
     const previous = yield* admissionLock.withPermit(
       Effect.sync(() => {
@@ -655,7 +655,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         return [...active.keys()]
       })
     )
-    yield* cancelMany(previous, reason)
+    yield* cancelMany(previous, reason ?? 'interrupted')
   }, Effect.mapError(toFailure))
 
   const exhaust: WorkOwnerService['exhaust'] = Effect.fnUntraced(function* (
@@ -686,16 +686,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       })
     )
 
-  const close = Effect.fnUntraced(function* (
-    reason = 'session ended'
-  ): Effect.fn.Return<void, WorkFailure> {
+  const close = Effect.fnUntraced(function* (reason?: string): Effect.fn.Return<void, WorkFailure> {
     yield* admissionLock.withPermit(
       Effect.sync(() => {
         state.closed = true
         state.generation = asGenerationId(randomUUID())
       })
     )
-    yield* cancelMany([...active.keys()], reason)
+    yield* cancelMany([...active.keys()], reason ?? 'session ended')
   }, Effect.mapError(toFailure))
 
   const cancelMany = Effect.fnUntraced(function* (
@@ -1352,7 +1350,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       )
       onChange()
     },
-    (effect, job) => Effect.catch(effect, error => failLaunch(job, error)),
+    (effect, job) => effect.pipe(Effect.catch(error => failLaunch(job, error))),
     Effect.scoped
   )
 
@@ -1539,18 +1537,20 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       }
     },
     (effect, job) =>
-      Effect.catch(effect, error =>
-        Effect.gen(function* () {
-          const { token } = job.lifecycle
-          const message = errorText(error)
-          const outcome = yield* commitCurrentBestEffort(job, token, () =>
-            error instanceof WorkProtocolError
-              ? job.lifecycle.transition.rejectedMessage(token, message)
-              : job.lifecycle.transition.persistenceError(token, message)
-          )
-          if (outcome !== undefined)
-            yield* Effect.forkIn(scope)(Effect.ignore(cancelJob(job, 'invalid agent message')))
-        })
+      effect.pipe(
+        Effect.catch(error =>
+          Effect.gen(function* () {
+            const { token } = job.lifecycle
+            const message = errorText(error)
+            const outcome = yield* commitCurrentBestEffort(job, token, () =>
+              error instanceof WorkProtocolError
+                ? job.lifecycle.transition.rejectedMessage(token, message)
+                : job.lifecycle.transition.persistenceError(token, message)
+            )
+            if (outcome !== undefined)
+              yield* Effect.forkIn(scope)(Effect.ignore(cancelJob(job, 'invalid agent message')))
+          })
+        )
       )
   )
 

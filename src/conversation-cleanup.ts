@@ -100,8 +100,8 @@ const inventory = (directory: string): readonly Candidate[] => {
 
 export const cleanConversations = Effect.fnUntraced(function* (
   dataHome: string,
-  authorityRoot = defaultAuthorityRoot(),
-  retained = RETAINED_CONVERSATIONS
+  authorityRoot: string = defaultAuthorityRoot(),
+  retained: number = RETAINED_CONVERSATIONS
 ) {
   const store = yield* WorkStore
   const protectedData = yield* store.maintain

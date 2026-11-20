@@ -144,7 +144,9 @@ const documents = createServer((request, response) => {
   response.writeHead(404, { 'content-type': 'text/plain' })
   response.end('not found')
 })
-await new Promise<void>(resolve => documents.listen(0, '127.0.0.1', () => resolve()))
+await new Promise<void>(resolve => {
+  documents.listen(0, '127.0.0.1', () => resolve())
+})
 const documentsAddress = documents.address()
 if (documentsAddress === null || typeof documentsAddress === 'string')
   throw new Error('fixture document server has no port')

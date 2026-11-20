@@ -264,11 +264,10 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
       )
         return rejected()
       const transitionResult = changed(() => {
-        let didChange = applyProgress(facts)
+        applyProgress(facts)
         state.resultReceived = true
-        didChange = true
-        if (facts.error !== undefined) didChange = put('error', facts.error) || didChange
-        return didChange
+        if (facts.error !== undefined) put('error', facts.error)
+        return true
       })
       return {
         ...transitionResult,

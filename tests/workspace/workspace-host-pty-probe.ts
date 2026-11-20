@@ -874,7 +874,7 @@ const wrapUserBash =
 
 const observeUi = <C extends ExtensionContext>(context: C): C => {
   const ui = new Proxy(context.ui, {
-    get(target, key) {
+    get(target, key): unknown {
       if (key === 'notify')
         return (...args: Parameters<typeof target.notify>) => {
           timeline.push({ kind: 'notify', message: args[0], level: args[1] ?? 'info' })
@@ -890,7 +890,7 @@ const observeUi = <C extends ExtensionContext>(context: C): C => {
     },
   })
   return new Proxy(context, {
-    get(target, key) {
+    get(target, key): unknown {
       if (key === 'ui') return ui
       const value: unknown = Reflect.get(target, key)
       return typeof value === 'function' ? value.bind(target) : value
@@ -927,7 +927,7 @@ const instrumentHost =
   rawApi =>
     factory(
       new Proxy(rawApi, {
-        get(target, property) {
+        get(target, property): unknown {
           if (property === 'sendMessage')
             return (...args: Parameters<ExtensionAPI['sendMessage']>) => {
               const [message] = args
@@ -942,7 +942,7 @@ const instrumentHost =
               return target.sendMessage(...args)
             }
           if (property === 'on')
-            return (event: string, handler: never) => {
+            return (event: string, handler: never): unknown => {
               if (event === 'tool_call') return target.on(event, wrapToolCall(handler))
               if (event === 'user_bash') return target.on(event, wrapUserBash(handler))
               if (event === 'tool_execution_end')
