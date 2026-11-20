@@ -205,10 +205,10 @@ try {
         assess({
           identityReason: 'Checkout path or Git identity was replaced: /repo',
           unresolved: true,
-          pending: { id: 'operation-2', stage: 'started' },
+          pending: { id: 'operation-2', stage: 'intent' },
         }).reason,
-        'Checkout path or Git identity was replaced: /repo. Earlier operation operation-2: started; checking does not redo it.',
-        'an identity problem does not hide an unfinished operation'
+        'Checkout path or Git identity was replaced: /repo. Earlier operation operation-2: planned; checking does not redo it.',
+        'an identity problem does not hide an unfinished operation, named by the stage label an agent reads'
       )
       const unresolved = assess({
         unresolved: true,

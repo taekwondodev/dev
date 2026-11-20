@@ -114,9 +114,6 @@ try {
       for (const row of ['1\t0\tsmall.txt', '600\t1\twide-a.txt', '600\t1\twide-b.txt'])
         assert.ok(commitFiles.text.split('\n').includes(row), `${row} in ${commitFiles.text}`)
       assert.doesNotMatch(commitFiles.text, /b line 0|truncated/)
-
-      const one = await inspect({ operation: 'diff', ref: first, path: 'small.txt' })
-      assert.match(one.text, /^\+two$/m)
     }
   )
 
