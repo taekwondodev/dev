@@ -361,10 +361,21 @@ export function childBrief(request: Pick<ChildRequest, 'access' | 'coordinate'>)
   ].join('\n')
 }
 
+const GIT_OUTPUT_CUT = `\n\n[git output truncated at ${MAX_GIT_OUTPUT} bytes]`
+
 function truncateGitOutput(text: string, rawTruncated = false): string {
   const bytes = Buffer.from(text, 'utf8')
   if (!rawTruncated && bytes.length <= MAX_GIT_OUTPUT) return text
-  return `${bytes.subarray(0, MAX_GIT_OUTPUT).toString('utf8')}\n\n[git output truncated at ${MAX_GIT_OUTPUT} bytes]`
+  return `${bytes.subarray(0, MAX_GIT_OUTPUT).toString('utf8')}${GIT_OUTPUT_CUT}`
+}
+
+function wholeLines(lines: readonly string[], cut: boolean): string {
+  let bytes = -1
+  const kept = lines.filter(line => {
+    bytes += Buffer.byteLength(line) + 1
+    return bytes <= MAX_GIT_OUTPUT
+  })
+  return `${kept.join('\n')}${cut || kept.length < lines.length ? GIT_OUTPUT_CUT : ''}`
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
@@ -568,17 +579,16 @@ export function createReviewGitTool(cwd: string): Pi.ToolDefinition {
             if (signal?.aborted === true)
               return yield* new ChildError({ message: 'git_inspect was cancelled' })
             const records = listed.stdout.split('\0').map(record => record.trimStart())
-            const whole = listed.truncated ? records.slice(0, -1) : records
-            if (
-              listed.error === undefined &&
-              whole.filter(record => CHANGED_FILE.test(record)).length > 1
+            const whole = (listed.truncated ? records.slice(0, -1) : records).filter(
+              record => record !== ''
             )
-              return toolResult(
-                truncateGitOutput(
-                  [FILES_INSTEAD_OF_PATCH, ...whole.filter(record => record !== '')].join('\n'),
-                  listed.truncated
-                )
+            const files = new Set(
+              whole.flatMap(record =>
+                CHANGED_FILE.test(record) ? [record.replace(CHANGED_FILE, '')] : []
               )
+            )
+            if (listed.error === undefined && files.size > 1)
+              return toolResult(wholeLines([FILES_INSTEAD_OF_PATCH, ...whole], listed.truncated))
           }
           const output =
             [

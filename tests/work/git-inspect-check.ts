@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createReviewGitTool } from '../../src/pi-child.ts'
@@ -131,7 +131,40 @@ try {
       'a file read at a commit is not a list of changed files'
     )
     assert.match(table.text, /\n\n\[git output truncated at 65536 bytes\]$/)
+
+    git('switch', '--quiet', '-c', 'twice', first)
+    commit('once', { 'same.txt': lines('s', 600) })
+    commit('again', { 'same.txt': lines('u', 600) })
+    const range = await inspect({ operation: 'show', ref: `${first}..twice` })
+    assert.match(range.text, /^diff --git a\/same\.txt /m, 'two commits on one file are one file')
+    assert.match(range.text, /\n\n\[git output truncated at 65536 bytes\]$/)
   })
+
+  await claim(
+    'a list of changed files over 64 KB ends on a whole row and says it was cut',
+    async () => {
+      git('switch', '--quiet', '-c', 'many', first)
+      mkdirSync(join(root, 'many'))
+      const many = commit(
+        'many',
+        Object.fromEntries(
+          Array.from({ length: 4000 }, (_, index) => [
+            `many/f${String(index).padStart(4, '0')}.txt`,
+            `${'y'.repeat(20)}\n`,
+          ])
+        )
+      )
+      const listed = await inspect({ operation: 'show', ref: many })
+      const [rows, marker] = listed.text.split('\n\n')
+      assert.equal(marker, '[git output truncated at 65536 bytes]')
+      const shown = rows?.split('\n') ?? []
+      assert.match(shown[0] ?? '', /^The patch is larger than 64 KB\. /)
+      assert.match(shown[1] ?? '', / many$/)
+      assert.ok(shown.length > 3000, `${shown.length} lines`)
+      for (const row of shown.slice(2)) assert.match(row, /^1\t0\tmany\/f\d{4}\.txt$/)
+      assert.ok(Buffer.byteLength(rows ?? '') <= 65_536)
+    }
+  )
 } finally {
   rmSync(root, { recursive: true, force: true })
 }
