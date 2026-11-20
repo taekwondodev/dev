@@ -69,7 +69,7 @@ const readHeader = (fd: number): string | undefined => {
 const inventory = (directory: string): readonly Candidate[] => {
   const info = lstatSync(directory)
   if (!info.isDirectory() || info.uid !== process.getuid?.())
-    throw new Error(`Cleanup requires an owned directory: ${directory}`)
+    throw new Error(`Cleanup requires a directory of the current user: ${directory}`)
   return readdirSync(directory).flatMap(name => {
     if (!name.endsWith('.jsonl')) return []
     const path = join(directory, name)
@@ -100,8 +100,8 @@ const inventory = (directory: string): readonly Candidate[] => {
 
 export const cleanConversations = Effect.fnUntraced(function* (
   dataHome: string,
-  authorityRoot = defaultAuthorityRoot(),
-  retained = RETAINED_CONVERSATIONS
+  authorityRoot: string = defaultAuthorityRoot(),
+  retained: number = RETAINED_CONVERSATIONS
 ) {
   const store = yield* WorkStore
   const protectedData = yield* store.maintain
@@ -120,7 +120,7 @@ export const cleanConversations = Effect.fnUntraced(function* (
     try: () => {
       const home = realpathSync(dataHome)
       if (!lstatSync(dataHome).isDirectory() || lstatSync(home).uid !== process.getuid?.())
-        throw new Error('Cleanup requires an owned data home without a symlink')
+        throw new Error('Cleanup requires a data home of the current user, without a symlink')
       authority.initialize()
       const facts = retentionFacts(authority)
       const identify = (candidate: Candidate): ConversationIdentity | undefined => {

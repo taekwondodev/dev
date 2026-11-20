@@ -1,20 +1,69 @@
 {
   "extends": ["./node_modules/oxc-standard/.oxlintrc.json"],
-  "jsPlugins": [{ "name": "dev", "specifier": "./scripts/code-policy.ts" }],
-  "rules": { "dev/no-source-comments": "error" },
+  "plugins": ["unicorn", "typescript", "oxc", "react", "react_perf", "import", "promise"],
+  "jsPlugins": [
+    {
+      "name": "dev",
+      "specifier": "./scripts/code-policy.ts"
+    }
+  ],
+  "rules": {
+    "dev/no-source-comments": "error",
+    "eslint/no-case-declarations": "error",
+    "eslint/no-fallthrough": "error",
+    "eslint/no-promise-executor-return": "error",
+    "eslint/no-prototype-builtins": "error",
+    "eslint/no-useless-assignment": "error",
+    "eslint/prefer-const": [
+      "error",
+      {
+        "ignoreReadBeforeAssign": true
+      }
+    ],
+    "eslint/prefer-object-has-own": "error",
+    "eslint/prefer-promise-reject-errors": "error",
+    "promise/always-return": [
+      "error",
+      {
+        "ignoreLastCallback": true
+      }
+    ],
+    "promise/no-multiple-resolved": "error",
+    "promise/no-return-in-finally": "error",
+    "typescript/no-import-type-side-effects": "error",
+    "unicorn/prefer-array-some": "error"
+  },
   "overrides": [
     {
       "files": ["**/*.ts"],
       "rules": {
         "eslint/new-cap": "off",
         "unicorn/throw-new-error": "off",
-        "eslint/no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
-        "import/no-unassigned-import": ["warn", { "allow": ["**/compile-cache-adoption.ts"] }]
+        "eslint/no-underscore-dangle": [
+          "warn",
+          {
+            "allow": ["_tag"]
+          }
+        ],
+        "import/no-unassigned-import": [
+          "warn",
+          {
+            "allow": ["**/compile-cache-adoption.ts"]
+          }
+        ]
       }
     },
     {
       "files": ["tests/**"],
-      "rules": { "dev/no-fixed-sleep": "error" }
+      "rules": {
+        "dev/no-fixed-sleep": "error"
+      }
+    },
+    {
+      "files": ["src/**"],
+      "rules": {
+        "dev/no-internal-terms": "error"
+      }
     }
   ]
 }

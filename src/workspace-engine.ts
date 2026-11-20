@@ -3,7 +3,7 @@ import {
   conversationRecord,
   settleClosingState,
 } from './workspace-attachment.ts'
-import { WorkspaceAuthority } from './workspace-authority.ts'
+import { WorkspaceAuthority, CHECKOUT_SERVICE_CLOSED } from './workspace-authority.ts'
 import type { AttachmentHandle, ConversationState } from './workspace-conversation.ts'
 import {
   attachmentClosed,
@@ -49,7 +49,7 @@ const asWorkspaceError = (cause: unknown): WorkspaceError =>
     ? cause
     : new WorkspaceError({
         outcome: 'unavailable',
-        message: `Dev workspace operation failed: ${errorText(cause)}`,
+        message: `Dev checkout operation failed: ${errorText(cause)}`,
       })
 
 const attempt = <A>(work: () => A | Promise<A>): Promise<A> => {
@@ -86,7 +86,7 @@ export class WorkspaceEngine {
 
   run<A>(work: (authority: WorkspaceAuthority) => A | Promise<A>): Promise<A> {
     return attempt(() => {
-      if (this.closed) blocked('Workspace lifecycle is closed')
+      if (this.closed) blocked(CHECKOUT_SERVICE_CLOSED)
       return this.authority.withHandles(() => work(this.authority))
     })
   }

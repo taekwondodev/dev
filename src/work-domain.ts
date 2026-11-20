@@ -84,7 +84,6 @@ export type DispatchConfig = typeof DispatchConfigSchema.Type
 
 export interface DispatchInput {
   readonly skill?: string
-  readonly harness?: string
   readonly model?: string
   readonly effort?: string
 }
@@ -311,6 +310,9 @@ export interface AttemptLifecycleToken {
   readonly generation: GenerationId
 }
 
+export const inProgress = (status: WorkStatus): status is ActiveAttemptState['status'] =>
+  status === 'running' || status === 'waiting'
+
 export const activeAttemptState = (status: ActiveAttemptState['status']): ActiveAttemptState => ({
   _tag: 'active',
   status,
@@ -369,7 +371,7 @@ export const AttemptSummarySchema = Schema.Struct({
     AttemptId.annotate({ description: 'ID of the run that started this one.' })
   ),
   coordinate: Schema.optionalKey(Schema.Boolean.annotate({ description: 'Can delegate.' })),
-  workflowTaskId: optionalText('taskId for workspace resume.'),
+  workflowTaskId: optionalText('taskId for `workspace` resume.'),
   workspaceId: OptionalText,
   cwd: Schema.String,
   kind: WorkKindSchema,
@@ -444,7 +446,9 @@ export const AttemptOutcomeSchema = Schema.Struct({
 export type AttemptOutcome = typeof AttemptOutcomeSchema.Type
 
 export const AttemptInspectionSchema = Schema.Struct({
-  ...AttemptOutcomeSchema.fields,
+  run: AttemptSummarySchema,
+  staleArtifact: Schema.optionalKey(AttemptOutcomeSchema.fields.staleArtifact),
+  logs: AttemptOutcomeSchema.fields.logs,
   record: Schema.JsonObject.annotate({ description: 'Full saved run record.' }),
 })
 export type AttemptInspection = typeof AttemptInspectionSchema.Type
@@ -480,9 +484,26 @@ export const WorkResultSchema = WorkResultFields.check(
 )
 export type WorkResult = typeof WorkResultSchema.Type
 
-export const workResultOutputSchema = Schema.toJsonSchemaDocument(WorkResultSchema, {
-  onExcessProperty: 'error',
-}).schema
+export const workResultOutputSchema = Schema.toJsonSchemaDocument(
+  Schema.Struct({
+    ...WorkResultFields.fields,
+    runs: Schema.optionalKey(
+      Schema.Struct({
+        ...WorkSnapshotViewSchema.fields,
+        records: Schema.Array(Schema.JsonObject).annotate({
+          description: 'Each has the same fields as the top-level run.',
+        }),
+      })
+    ),
+    inspection: Schema.optionalKey(
+      Schema.Struct({
+        ...AttemptInspectionSchema.fields,
+        run: Schema.JsonObject.annotate({ description: 'Same fields as the top-level run.' }),
+      })
+    ),
+  }),
+  { onExcessProperty: 'error' }
+).schema
 
 export interface ProcessStartRequest {
   readonly taskId: string
@@ -497,7 +518,6 @@ export interface AgentStartRequest {
   readonly coordinate?: boolean
   readonly cwd?: string
   readonly skill?: string
-  readonly harness?: string
   readonly model?: string
   readonly effort?: string
 }

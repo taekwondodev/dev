@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
@@ -16,10 +15,11 @@ import type {
   ProjectedSessionEntry,
   SessionEntry,
 } from '@earendil-works/pi-coding-agent'
+import type { Api, Model as PiModel } from '@earendil-works/pi-ai'
 import type * as Native from '../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js'
 import type * as VirtualModels from '../node_modules/@earendil-works/pi-coding-agent/dist/core/virtual-models.js'
 import type * as Keys from '../node_modules/@earendil-works/pi-tui/dist/keys.js'
-import { PiError, type PiApi } from './pi-runtime.ts'
+import { PiError, importPiModule, type PiApi } from './pi-runtime.ts'
 import {
   BACKGROUND_COMPACTION_USAGE,
   COMPACTION_OBSERVATION,
@@ -40,7 +40,7 @@ const FileLists = Schema.Struct({
 })
 const decodeFileLists = Schema.decodeUnknownOption(FileLists)
 type Stream = AgentSession['agent']['streamFunction']
-type Model = NonNullable<AgentSession['model']>
+type Model = PiModel<Api>
 type RequestUpdate = Exclude<
   Awaited<ReturnType<NonNullable<AgentSession['agent']['prepareRequest']>>>,
   void
@@ -132,16 +132,18 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
   api: PiApi,
   packageRoot: string
 ) {
-  const native: typeof Native = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(join(packageRoot, 'dist/core/compaction/compaction.js')).href),
+  const native = yield* Effect.tryPromise({
+    try: () =>
+      importPiModule<typeof Native>(join(packageRoot, 'dist/core/compaction/compaction.js')),
     catch: cause => new PiError({ message: 'Cannot load native Pi compaction', cause }),
   })
-  const virtual: typeof VirtualModels = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(join(packageRoot, 'dist/core/virtual-models.js')).href),
+  const virtual = yield* Effect.tryPromise({
+    try: () =>
+      importPiModule<typeof VirtualModels>(join(packageRoot, 'dist/core/virtual-models.js')),
     catch: cause => new PiError({ message: 'Cannot load native Pi model routing', cause }),
   })
-  const keys: typeof Keys = yield* Effect.tryPromise({
-    try: () => import(pathToFileURL(join(packageRoot, '../pi-tui/dist/keys.js')).href),
+  const keys = yield* Effect.tryPromise({
+    try: () => importPiModule<typeof Keys>(join(packageRoot, '../pi-tui/dist/keys.js')),
     catch: cause => new PiError({ message: 'Cannot load Pi terminal key parsing', cause }),
   })
   const services = yield* Effect.context<never>()
@@ -562,7 +564,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
   }
 
   const bindSession = (active: AgentSession) => {
-    if (session) throw new Error('Background compaction is bound to one AgentSession')
+    if (session) throw new Error('Background compaction serves only one AgentSession')
     session = active
     record(active, { runId, kind: 'attached' })
     fenceBoundary(active)

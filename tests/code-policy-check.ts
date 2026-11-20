@@ -53,6 +53,47 @@ const files: Record<string, string> = {
   ].join('\n'),
   'tests/wait.ts': [timers, 'export const pause = () => sleep(100)', ''].join('\n'),
   'src/runtime.ts': [timers, 'export const backoff = () => sleep(100)', ''].join('\n'),
+  'src/worded.ts': [
+    "export const refusal = 'The lead must wait for the sweep'",
+    ['export const counted = (runs: number) => `$', '{runs} attempts`'].join(''),
+    "export const role = 'lead'",
+    "export const query = 'SELECT id FROM reservations WHERE id = ?'",
+    "export const plain = 'Dev must switch checkouts first'",
+    "export const refused = 'Cannot UPDATE during the sweep'",
+    'declare const count: (value: number, noun: string) => string',
+    ['export const freed = (n: number) => `✓ $', "{count(n, 'reservation')} released`"].join(''),
+    ['export const scope = (parent?: string) => `$', "{parent ?? 'lead'}:`"].join(''),
+    "export const first = 'DELETE cannot run during the sweep.'",
+    "export const state = (name: string) => name + ' is ' + 'parked'",
+    "export const file = (directory: string) => directory + '/' + 'attempts'",
+    "export const noun = 'The task keeps this workspace'",
+    "export const named = 'Run dev workspace release 1, /workspace resume or [dev workspace]'",
+    "const ROLE = 'lead'",
+    ['export const waits = (runs: number) => `The $', '{ROLE} has $', '{runs} runs`'].join(''),
+    "const STATES = { held: 'parked', free: 'open' } as const",
+    "export const seen = (state: 'held' | 'free') => 'Now ' + STATES[state]",
+    "const KIND = 'child'",
+    'export const same = (kind: string) => kind === KIND',
+    "export const shown = 'dev/work-outcome'",
+    "export const label = 'dev/workspace-switch'",
+    'const SHIFT = `lead`',
+    ['export const turns = (runs: number) => `The $', '{SHIFT} took $', '{runs} runs`'].join(''),
+    "export const versioned = 'dev/work-outcome-2'",
+    "const MODES = { held: 'parked', free: 'open' } as const",
+    "export const open = 'Now ' + MODES.free",
+    'export const backticked = `dev/work-outcome`',
+    "export const quit = 'A workspace release that started did not finish'",
+    "export const usage = 'Usage: workspace release <task-id>'",
+    "export const wait = 'Wait for the workspace release.'",
+    "export const listed = 'Run `dev workspace` to list tasks'",
+    "const SPREAD = [...['open', 'idle'], 'parked'] as const",
+    "export const shifted = 'Now ' + SPREAD[2]",
+    "const { labels } = { labels: { held: 'parked' } }",
+    "export const kept = 'Now ' + labels.held",
+    "export const ours = 'This is the dev workspace'",
+    '',
+  ].join('\n'),
+  'tests/worded.ts': ["export const name = 'the lead waits for the sweep'", ''].join('\n'),
   'tests/disabled-line.ts': [
     timers,
     'export const f = async () => {',
@@ -84,6 +125,9 @@ const files: Record<string, string> = {
 
 const expected: Record<string, string[]> = {
   'tests/flagged.ts': [6, 7, 8, 9, 10, 12, 13, 14].map(line => `no-fixed-sleep:${line}`),
+  'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21, 23, 25, 28, 29, 31, 33, 35, 37].map(
+    line => `no-internal-terms:${line}`
+  ),
   'tests/disabled-line.ts': ['no-source-comments:1'],
   'tests/disabled-file.ts': ['no-source-comments:1'],
   'tests/disabled-later.ts': ['no-source-comments:1'],
@@ -130,7 +174,7 @@ try {
   for (const lines of Object.values(expected)) lines.sort((a, b) => a.localeCompare(b))
   assert.deepEqual(reported, expected)
   console.log(
-    'code policy: fixed delays in tests, line, file and later disable directives, and nested lint configurations passed'
+    'code policy: fixed delays in tests, internal terms in src text, line, file and later disable directives, and nested lint configurations passed'
   )
 } finally {
   rmSync(fixture, { recursive: true, force: true })

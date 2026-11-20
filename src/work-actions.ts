@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import {
+  inProgress,
   asAttemptId,
   isAttemptId,
   skillInvocation,
@@ -134,8 +135,13 @@ export const outwardRecord = (record: object): AttemptInspection['record'] =>
   decodeRecord(JSON.stringify(outwardKeys(record)))
 
 const inspectionView = (description: AttemptDescription): AttemptInspection => {
-  const { staleArtifact: _stale, logs: _logs, worktree: _worktree, ...record } = description
-  return { ...outcomeView(description), record: outwardRecord(record) }
+  const { staleArtifact, logs, worktree: _worktree, ...record } = description
+  return {
+    run: summarize(description),
+    ...(inProgress(description.status) ? {} : { staleArtifact }),
+    logs: logs.map(log => logView(log, log.stream)),
+    record: outwardRecord(record),
+  }
 }
 
 const PAGE = 20
@@ -206,7 +212,6 @@ const startAgent = (
     access: input.access ?? 'read-only',
     ...(input.coordinate === undefined ? {} : { coordinate: input.coordinate }),
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-    ...(input.harness === undefined ? {} : { harness: input.harness }),
     ...(input.model === undefined ? {} : { model: input.model }),
     ...(input.effort === undefined ? {} : { effort: input.effort }),
   }

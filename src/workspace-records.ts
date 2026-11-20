@@ -40,7 +40,7 @@ import {
   type SqlRow,
 } from './workspace-sqlite.ts'
 import { errorText } from './error-text.ts'
-import { releaseOnceStopped } from './workspace-labels.ts'
+import { checkoutUseStage, pendingStage, releaseOnceStopped } from './workspace-labels.ts'
 import { newId, now, hash } from './workspace-platform.ts'
 
 const TaskSchema = Schema.Struct({
@@ -122,7 +122,7 @@ export const UseSchema = Schema.Struct({
   createdAt: Schema.Finite,
   updatedAt: Schema.Finite,
 })
-const OperationPhase = Schema.Literals([
+export const OperationPhase = Schema.Literals([
   'intent',
   'started',
   'confirmed',
@@ -229,7 +229,7 @@ export const getWorkspace = (db: DatabaseSync, id: string): WorkspaceRecord | un
     id
   )
   if (row === undefined) return undefined
-  const value = parseRecord(WorkspaceSchema, row.payload, `workspace ${id}`)
+  const value = parseRecord(WorkspaceSchema, row.payload, `checkout ${id}`)
   if (
     value.id !== textField(row, 'id') ||
     value.path !== textField(row, 'path') ||
@@ -269,7 +269,11 @@ export const getReservation = (
     workspaceIdValue
   )
   if (row === undefined) return undefined
-  const value = parseRecord(ReservationSchema, row.payload, `reservation ${textField(row, 'id')}`)
+  const value = parseRecord(
+    ReservationSchema,
+    row.payload,
+    `kept-checkout record ${textField(row, 'id')}`
+  )
   if (
     value.id !== textField(row, 'id') ||
     value.workspaceId !== textField(row, 'workspace_id') ||
@@ -355,7 +359,7 @@ export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void =>
     value.revision - 1
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace record changed concurrently: ${value.id}`)
+    requireReview(`Checkout record changed concurrently: ${value.id}`)
 }
 export const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   statement(
@@ -375,7 +379,7 @@ export const updateReservation = (db: DatabaseSync, value: ReservationRecord): v
 const BINDING_ROW = 'SELECT conversation_key,workspace_id,task_id,revision,payload FROM bindings'
 const recordedBinding = (row: SqlRow): BindingRecord => {
   const key = textField(row, 'conversation_key')
-  const value = parseRecord(BindingSchema, row.payload, `binding ${key}`)
+  const value = parseRecord(BindingSchema, row.payload, `checkout record of conversation ${key}`)
   if (
     value.key !== key ||
     value.workspaceId !== textField(row, 'workspace_id') ||
@@ -407,7 +411,7 @@ const USE_ROW =
   'SELECT id,workspace_id,task_id,reservation_id,acquisition_id,access,stage,within_use_id,revision,payload FROM uses'
 const recordedUse = (row: SqlRow): UseRecord => {
   const id = textField(row, 'id')
-  const value = parseRecord(UseSchema, row.payload, `workspace use ${id}`)
+  const value = parseRecord(UseSchema, row.payload, `checkout use ${id}`)
   if (
     value.id !== id ||
     value.workspaceId !== textField(row, 'workspace_id') ||
@@ -520,7 +524,7 @@ export const saveOperation = (db: DatabaseSync, value: OperationRecord): void =>
     value.id
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Workspace operation disappeared: ${value.id}`)
+    requireReview(`Checkout operation disappeared: ${value.id}`)
 }
 const operationsWhere = (
   db: DatabaseSync,
@@ -559,7 +563,7 @@ export const assertNoUnresolvedRelease = (db: DatabaseSync, workspaceIdValue: st
   const unresolved = unresolvedReleases(db, workspaceIdValue)
   if (unresolved.length > 0)
     requireReview(
-      `Release ${unresolved.map(operation => `${operation.id} (${operation.phase})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. ${[...new Set(unresolved.map(operation => operation.taskId))].map(taskId => releaseOnceStopped(taskId)).join(' ')} That retries the release; check its result.`
+      `Release ${unresolved.map(operation => `${operation.id} (${pendingStage(operation.phase)})`).join(', ')} did not finish on checkout ${workspaceIdValue}. Do not retry this call. ${[...new Set(unresolved.map(operation => operation.taskId))].map(taskId => releaseOnceStopped(taskId)).join(' ')} That retries the release; check its result.`
     )
 }
 export const unresolvedReleases = (
@@ -614,7 +618,7 @@ const assertNoActiveDependentUseInDb = (
   if (dependents.length > 0)
     blocked(
       `${action} while related operations may still be running: ${dependents
-        .map(use => `${use.id} (${use.effect ?? 'ordinary'}/${use.stage})`)
+        .map(use => `${use.id} (${use.effect ?? 'ordinary'}/${checkoutUseStage(use.stage)})`)
         .join(', ')}`
     )
 }
@@ -657,24 +661,26 @@ export const matchesGitWorkspace = (record: WorkspaceRecord, git: GitWorkspace):
   record.commonPath === git.commonPath &&
   sameIdentity(record.common, git.commonIdentity) &&
   record.objectFormat === git.objectFormat
+export const unfinishedWorktreeCreationText = (path: string): string =>
+  `Worktree creation may be unfinished: ${path}`
+
 export const validateWorkspacePath = (
   record: WorkspaceRecord,
   observed?: GitWorkspace
 ): GitWorkspace => {
   if (record.status === 'removed')
     return requireReview(
-      `Workspace was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
+      `Checkout was removed${record.removalOperationId === undefined ? '' : ` by release ${record.removalOperationId}`} and is not recreated: ${record.path}`
     )
-  if (record.status !== 'ready')
-    return requireReview(`Worktree creation may be unfinished: ${record.path}`)
+  if (record.status !== 'ready') return requireReview(unfinishedWorktreeCreationText(record.path))
   let actual: GitWorkspace
   try {
     actual = observed ?? canonicalGitWorkspace(record.path)
   } catch (cause) {
-    return requireReview(`Cannot verify workspace ${record.path}: ${errorText(cause)}`)
+    return requireReview(`Cannot verify checkout ${record.path}: ${errorText(cause)}`)
   }
   if (!matchesGitWorkspace(record, actual))
-    return requireReview(`Workspace path or Git identity was replaced: ${record.path}`)
+    return requireReview(`Checkout path or Git identity was replaced: ${record.path}`)
   return actual
 }
 

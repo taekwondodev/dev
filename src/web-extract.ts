@@ -1,12 +1,12 @@
 import type * as ReadabilityModule from '@mozilla/readability'
 import * as Effect from 'effect/Effect'
 import type * as Linkedom from 'linkedom'
-import type { DocumentLink } from './web-documents.ts'
+import type { PageLink } from './web-documents.ts'
 
 export interface Extracted {
   readonly title: string | undefined
   readonly text: string
-  readonly links: readonly DocumentLink[]
+  readonly links: readonly PageLink[]
 }
 
 const COLLECTED_LINKS = 500
@@ -49,35 +49,107 @@ const absolute = (href: string, base: string): string | undefined => {
   }
 }
 
+const MARKDOWN_LINK = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g
+const BARE_URL = /https?:\/\/[^\s<>()"']+/g
+const URL_START = /https?:\/\//g
+const SENTENCE_PUNCTUATION = /[.,;:!?]+$/
+const CLOSERS_AND_PUNCTUATION = /[)\].,;:!?]+$/
+
+const runEnd = (text: string, start: number): number => {
+  const space = text.slice(start).search(/\s/)
+  return space === -1 ? text.length : start + space
+}
+
+const destinationEnd = (text: string, start: number, end: number): number => {
+  let open = 0
+  for (let at = start; at < end; at += 1) {
+    if (text[at] === '(') open += 1
+    else if (text[at] === ')') {
+      if (open === 0) return at
+      open -= 1
+    }
+  }
+  return end
+}
+
+const startsRun = (text: string, at: number): boolean => at === 0 || /\s/.test(text[at - 1] ?? '')
+
+interface WrittenUrl {
+  readonly candidates: readonly string[]
+  readonly end: number
+  readonly boundary: number
+}
+
+const writtenUrl = (text: string, start: number, run: number): WrittenUrl => {
+  if (text.startsWith('](', start - 2)) {
+    const end = destinationEnd(text, start, run)
+    return { candidates: [text.slice(start, end)], end, boundary: end }
+  }
+  const written = text.slice(start, run)
+  const opener = startsRun(text, start) ? '' : text[start - 1]
+  if (opener === '<' && startsRun(text, start - 1) && written.includes('>')) {
+    const close = written.indexOf('>')
+    return { candidates: [written.slice(0, close)], end: start + close, boundary: start + close }
+  }
+  if (opener === '' || (opener === '(' && startsRun(text, start - 1)))
+    return {
+      candidates: [
+        written,
+        written.replace(SENTENCE_PUNCTUATION, ''),
+        written.replace(CLOSERS_AND_PUNCTUATION, ''),
+      ],
+      end: run,
+      boundary: run,
+    }
+  return { candidates: [], end: run, boundary: run }
+}
+
+interface CollectedLink {
+  readonly text: string
+  readonly url: string
+  shown: PageLink['shown']
+}
+
 class LinkCollector {
-  readonly links: DocumentLink[] = []
-  private readonly seen = new Set<string>()
+  private readonly collected = new Map<string, CollectedLink>()
   add(text: string, href: string, base: string): string | undefined {
     const url = absolute(href, base)
     if (url === undefined) return undefined
-    if (!this.seen.has(url) && this.links.length < COLLECTED_LINKS) {
-      this.seen.add(url)
-      this.links.push({ text: text.replace(/\s+/g, ' ').trim(), url })
-    }
+    if (!this.collected.has(url) && this.collected.size < COLLECTED_LINKS)
+      this.collected.set(url, { text: text.replace(/\s+/g, ' ').trim(), url, shown: undefined })
     return url
+  }
+  shownIn(text: string): readonly PageLink[] {
+    let covered = 0
+    let run = 0
+    for (const { index } of text.matchAll(URL_START)) {
+      if (index < covered) continue
+      if (index >= run) run = runEnd(text, index)
+      const { candidates, end, boundary } = writtenUrl(text, index, run)
+      covered = end
+      for (const url of candidates) {
+        const link = this.collected.get(url)
+        if (link !== undefined) link.shown ??= [index, boundary + 1]
+      }
+    }
+    return [...this.collected.values()]
   }
 }
 
-const MARKDOWN_LINK = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g
-const BARE_URL = /https?:\/\/[^\s<>()"']+/g
-
-export const extractMarkdown = (text: string, base: string): Extracted => {
+export const extractMarkdown = (source: string, base: string): Extracted => {
+  const text = source.trim()
   const collector = new LinkCollector()
   for (const match of text.matchAll(MARKDOWN_LINK))
     collector.add(match[1] ?? '', match[2] ?? '', base)
-  const heading = text.match(/^\s*#\s+(.+)$/m)?.[1]?.trim()
-  return { title: heading, text: text.trim(), links: collector.links }
+  const heading = source.match(/^\s*#\s+(.+)$/m)?.[1]?.trim()
+  return { title: heading, text, links: collector.shownIn(text) }
 }
 
-export const extractText = (text: string, base: string): Extracted => {
+export const extractText = (source: string, base: string): Extracted => {
+  const text = source.trim()
   const collector = new LinkCollector()
   for (const match of text.matchAll(BARE_URL)) collector.add('', match[0], base)
-  return { title: undefined, text: text.trim(), links: collector.links }
+  return { title: undefined, text, links: collector.shownIn(text) }
 }
 
 interface DomNode {
@@ -413,7 +485,7 @@ export const extractHtml = (dom: Dom, html: string, base: string): Extracted => 
   const semantic = document.querySelector('main, [role="main"], article') ?? undefined
   if (semantic !== undefined && (semantic.textContent ?? '').trim().length >= MIN_SEMANTIC_CHARS) {
     const text = new MarkdownWriter(base, collector, DROPPED_TAGS).render(asDomNode(semantic))
-    if (text.length >= MIN_SEMANTIC_CHARS) return { title, text, links: collector.links }
+    if (text.length >= MIN_SEMANTIC_CHARS) return { title, text, links: collector.shownIn(text) }
   }
   if (dom.isProbablyReaderable(document, { minContentLength: 60, minScore: 10 })) {
     const article = new dom.Readability<DomNode>(document.cloneNode(true) as typeof document, {
@@ -427,13 +499,17 @@ export const extractHtml = (dom: Dom, html: string, base: string): Extracted => 
         new Set(['script', 'style', 'noscript', 'template', 'svg'])
       ).render(article.content)
       if (text.length > 0)
-        return { title: article.title?.trim() || title, text, links: collector.links }
+        return {
+          title: article.title?.trim() || title,
+          text,
+          links: collector.shownIn(text),
+        }
     }
   }
   const body = document.body ?? document.documentElement
   const text =
     body === null ? '' : new MarkdownWriter(base, collector, DROPPED_TAGS).render(asDomNode(body))
-  return { title, text, links: collector.links }
+  return { title, text, links: collector.shownIn(text) }
 }
 
 const THIN_TEXT_CHARS = 200

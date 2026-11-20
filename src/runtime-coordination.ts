@@ -138,7 +138,7 @@ const native = <A>(operation: () => A): Effect.Effect<A, CoordinationError> =>
 const privateDirectory = (path: string): void => {
   mkdirSync(path, { recursive: true, mode: 0o700 })
   if (!lstatSync(path).isDirectory())
-    throw new Error(`Coordination directory must not be a symlink: ${path}`)
+    throw new Error(`Lock directory must not be a symlink: ${path}`)
   chmodSync(path, 0o700)
 }
 
@@ -182,7 +182,7 @@ const lockDatabase = (
   waitMs = 0
 ): (() => void) => {
   if (create) publishLockDatabase(path)
-  if (!lstatSync(path).isFile()) throw new Error(`Invalid coordination file: ${path}`)
+  if (!lstatSync(path).isFile()) throw new Error(`Invalid lock file: ${path}`)
   chmodSync(path, 0o600)
   let database: DatabaseSync | undefined
   try {
@@ -193,10 +193,10 @@ const lockDatabase = (
       database.prepare("SELECT sql FROM sqlite_schema WHERE name = 'guard'").get()?.sql !==
       markerSql
     )
-      throw new Error(`Unknown coordination format: ${path}`)
+      throw new Error(`Unknown lock file format: ${path}`)
     database.exec(shared ? 'BEGIN' : 'BEGIN EXCLUSIVE')
     if (database.prepare('SELECT id FROM guard WHERE id = 1').get() === undefined)
-      throw new Error(`Invalid coordination marker: ${path}`)
+      throw new Error(`Invalid lock file marker: ${path}`)
     const acquired = database
     let closed = false
     return () => {
@@ -222,7 +222,7 @@ export const holdExistingInstallationForRemoval = (checkout: string): GateReleas
     try {
       const info = lstatSync(directory)
       if (!info.isDirectory())
-        throw new CoordinationError({ message: `Invalid coordination directory: ${directory}` })
+        throw new CoordinationError({ message: `Invalid lock directory: ${directory}` })
     } catch (cause) {
       if (Predicate.isObject(cause) && cause.code === 'ENOENT') return () => {}
       throw cause

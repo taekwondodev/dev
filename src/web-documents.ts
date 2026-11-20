@@ -10,12 +10,16 @@ export const DocumentLink = Schema.Struct({
 })
 export type DocumentLink = typeof DocumentLink.Type
 
+export interface PageLink extends DocumentLink {
+  readonly shown: readonly [start: number, end: number] | undefined
+}
+
 export interface WebDocument {
   readonly requestedUrl: string
   readonly finalUrl: string
   readonly title: string | undefined
   readonly text: string
-  readonly links: readonly DocumentLink[]
+  readonly links: readonly PageLink[]
   readonly method: RetrievalMethod
   readonly contentType: string | undefined
   readonly status: number | undefined
@@ -89,6 +93,15 @@ export const sliceDocument = (
   }
 }
 
+export const showsLink = (
+  { offset, end, document }: DocumentSlice,
+  { shown }: PageLink
+): boolean => {
+  if (shown === undefined || shown[0] < offset) return false
+  const endsText = end === document.text.length && !document.bodyTruncated
+  return shown[1] <= (endsText ? end + 1 : end)
+}
+
 export type ContinuationLookup =
   | {
       readonly kind: 'available'
@@ -142,7 +155,12 @@ export const makeDocumentSnapshots = (
         }
       documents.delete(parsed.documentId)
       documents.set(parsed.documentId, document)
-      return { kind: 'available', documentId: parsed.documentId, document, offset: parsed.offset }
+      return {
+        kind: 'available',
+        documentId: parsed.documentId,
+        document,
+        offset: parsed.offset,
+      }
     },
     clear(reason) {
       documents.clear()

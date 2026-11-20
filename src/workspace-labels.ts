@@ -1,6 +1,10 @@
 import type { WorkspaceExecution } from './workspace-domain.ts'
 import type { UseRecord } from './workspace-records.ts'
 
+export const CHECKOUT_CONTENTS_UNREADABLE = 'The checkout contents could not be read.'
+
+export const missingCheckoutText = (checkoutId: string): string => `Checkout missing: ${checkoutId}`
+
 const USE_STAGE_LABELS: Record<UseRecord['stage'], string> = {
   authorized: 'permitted',
   'operation-started': 'running',
@@ -18,6 +22,8 @@ const isUseStage = (stage: string): stage is UseRecord['stage'] =>
 export const checkoutUseStage = (stage: string): string =>
   isUseStage(stage) ? USE_STAGE_LABELS[stage] : stage
 
+export const pendingStage = (stage: string): string => (stage === 'intent' ? 'planned' : stage)
+
 export const isConversationShell = (execution: WorkspaceExecution): boolean =>
   execution.taskKey === 'lead-shell' && execution.generation === 'lead'
 
@@ -28,7 +34,7 @@ export const taskRelease = (taskId: string): string =>
   `dev workspace release ${taskId}, which deletes all of that task's managed worktrees and artifacts`
 
 const PRE_EXISTING_RELEASE =
-  'dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files'
+  'dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its pre-existing checkouts that no task keeps and keeps their files'
 
 export const releaseOnceStopped = (taskId: string | undefined): string =>
   taskId === undefined

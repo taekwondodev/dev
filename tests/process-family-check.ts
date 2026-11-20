@@ -50,7 +50,8 @@ try {
       ['-e', String.raw`$| = 1; $p = fork; exit 0 unless $p; print "$p\n"; sleep 30`],
       true
     )
-    const [chunk] = await once(parent.stdout!, 'data')
+    const chunks: unknown[] = await once(parent.stdout!, 'data')
+    const [chunk] = chunks
     const zombie = Number(String(chunk).trim())
     await waitUntil(
       'the forked child to become a zombie',

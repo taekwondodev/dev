@@ -524,7 +524,7 @@ try {
       assert.equal(outsideGit.stdout, '', 'nothing is listed for a directory outside Git')
       assert.equal(
         outsideGit.stderr,
-        'Workspace list requires a Git repository; run dev from a Git checkout or pass --cwd PATH.\n'
+        'dev workspace list requires a Git repository; run dev from a Git checkout or pass --cwd PATH.\n'
       )
     }
   )
@@ -536,15 +536,12 @@ try {
       assert.equal(emptyList.code, 0, emptyList.stderr)
       assert.equal(
         emptyList.stdout,
-        `Workspace list for repository ${repo}:\nNo workspace records were found.\n`
+        `Checkout list for repository ${repo}:\nNo checkout records were found.\n`
       )
       const absentTask = randomUUID()
       const emptyInspect = await readOnly(absentRoot, ['workspace', 'inspect', absentTask])
       assert.equal(emptyInspect.code, 0, emptyInspect.stderr)
-      assert.equal(
-        emptyInspect.stdout,
-        `No workspace records exist for exact task ${absentTask}.\n`
-      )
+      assert.equal(emptyInspect.stdout, `No checkout records exist for exact task ${absentTask}.\n`)
       assert.ok(
         !existsSync(absentParent),
         'reading an authority that does not exist provisions nothing'
@@ -558,7 +555,7 @@ try {
     const lines = found.stdout.split('\n')
     assert.equal(
       lines[0],
-      `Workspace records for exact task ${grant.taskId}: task ${grant.taskId} — workspace ${grant.workspaceId}`
+      `Checkout records for exact task ${grant.taskId}: task ${grant.taskId} — checkout ${grant.workspaceId}`
     )
     assert.deepEqual(
       lines.filter(line => line.startsWith('  repository: ')),
@@ -578,7 +575,7 @@ try {
       const nearMiss = `${secondGrant.taskId.slice(0, -1)}${secondGrant.taskId.endsWith('0') ? '1' : '0'}`
       const missed = await readOnly(inspectRoot, ['workspace', 'inspect', nearMiss])
       assert.equal(missed.code, 0, missed.stderr)
-      assert.equal(missed.stdout, `No workspace records exist for exact task ${nearMiss}.\n`)
+      assert.equal(missed.stdout, `No checkout records exist for exact task ${nearMiss}.\n`)
     }
   )
   await claim(
@@ -589,7 +586,7 @@ try {
       })
       assert.equal(malformed.code, 2, malformed.stderr)
       assert.ok(!malformed.stderr.includes('authority opened'), malformed.stderr)
-      assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace/)
+      assert.match(malformed.stderr, /Task must be an exact ID as listed by dev workspace list/)
       assert.ok(malformed.stderr.includes('not-a-task-id'), malformed.stderr)
     }
   )
@@ -636,7 +633,7 @@ try {
   )
 
   await claim(
-    'dev workspace check <task-id> returns the role, target and sweep verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
+    'dev workspace check <task-id> returns the role, destination branch and cleanup verdict with exit 0 even though it names blockers, a malformed task ID is a usage error, no unattended release flag exists and resume is no terminal command',
     async () => {
       const checked = await readOnly(inspectRoot, [
         '--cwd',
@@ -720,7 +717,7 @@ try {
         assert.ok(checked !== undefined)
         assert.equal(checked.code, 0, checked.stderr)
         for (const expected of [
-          `Cannot verify workspace ${target}`,
+          `Cannot verify checkout ${target}`,
           `Checkout switch ${handoff.operationId} may be unfinished`,
           'Do not retry it.',
           'verdict: retained (identity-unverifiable)',

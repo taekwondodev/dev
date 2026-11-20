@@ -12,6 +12,7 @@ import type {
   WorkspaceReleaseResult,
   WorkspaceView,
 } from './workspace-domain.ts'
+import { CHECKOUT_CONTENTS_UNREADABLE } from './workspace-labels.ts'
 
 export interface TerminalStyle {
   readonly live: boolean
@@ -59,7 +60,7 @@ const spin = Effect.fnUntraced(function* (
     const progress = frame % PROGRESS_KEEPALIVE_FRAMES === 0 ? PROGRESS_ACTIVE : ''
     yield* Effect.sync(() => {
       out.write(
-        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Sweeping workspaces… ${paint(style, 'dim', seconds(now - started))}`
+        `${progress}${CLEAR_LINE}${paint(style, 'warn', SPINNER[frame % SPINNER.length] ?? '')} Cleaning up checkouts… ${paint(style, 'dim', seconds(now - started))}`
       )
     })
     yield* Effect.sleep(FRAME_MS)
@@ -83,14 +84,14 @@ export const sweepIndicator = Effect.fnUntraced(function* (
 ): Effect.fn.Return<SweepIndicator, never, Scope.Scope> {
   if (!style.live) {
     yield* Effect.sync(() => {
-      out.write('Sweeping workspaces...\n')
+      out.write('Cleaning up checkouts...\n')
     })
     return idle
   }
   const started = yield* Clock.currentTimeMillis
   if (stripFits(graphics, SCAN_SHAPE, LABEL_COLUMNS)) {
     const strip = yield* sweepStrip(out, graphics, INDICATOR_DELAY_MS, elapsed =>
-      paint(style, 'dim', `Sweeping workspaces… ${seconds(elapsed)}`)
+      paint(style, 'dim', `Cleaning up checkouts… ${seconds(elapsed)}`)
     )
     return { sweepDone: Effect.void, settle: strip.settle }
   }
@@ -138,44 +139,46 @@ type WorkspaceRow = Extract<SweepRow, { readonly kind: 'workspace' }>
 type ReleaseOffer = 'together' | 'alone' | 'never'
 const OFFER_RANK: Record<ReleaseOffer, number> = { together: 0, alone: 1, never: 2 }
 
+const EARLIER_REMOVAL_UNFINISHED = 'An earlier removal did not finish.'
+
 const RETAINED_DISPLAY: Record<
   RetainedReason,
   { readonly offer: ReleaseOffer; readonly status: string }
 > = {
   'identity-unverifiable': {
     offer: 'together',
-    status: 'The workspace identity could not be verified.',
+    status: 'The checkout identity could not be verified.',
   },
   'transition-unresolved': {
     offer: 'together',
-    status: 'A workspace transition has not finished.',
+    status: 'A checkout transition has not finished.',
   },
-  'release-review': { offer: 'together', status: 'An earlier removal did not finish.' },
+  'release-review': { offer: 'together', status: EARLIER_REMOVAL_UNFINISHED },
   excluded: {
     offer: 'never',
-    status: 'The conversation allocating a worktree is working in the workspace.',
+    status: 'The conversation allocating a worktree is working in the checkout.',
   },
-  'use-unknown': { offer: 'alone', status: 'A workspace use is unresolved.' },
+  'use-unknown': { offer: 'alone', status: 'A checkout use is unresolved.' },
   'use-abandoned': {
     offer: 'alone',
-    status: 'A previous session ended without settling its workspace use.',
+    status: 'A previous session ended without settling its checkout use.',
   },
-  'use-live': { offer: 'never', status: 'A session or process is still using the workspace.' },
+  'use-live': { offer: 'never', status: 'A session or process is still using the checkout.' },
   'directory-missing': {
     offer: 'together',
-    status: 'The worktree directory is missing, but its reservation remains.',
+    status: 'The worktree directory is missing, but the task still keeps it.',
   },
-  'residue-unreadable': { offer: 'together', status: 'The workspace contents could not be read.' },
+  'residue-unreadable': { offer: 'together', status: CHECKOUT_CONTENTS_UNREADABLE },
   'checkout-modified': { offer: 'together', status: 'The checkout has uncommitted changes.' },
-  skipped: { offer: 'never', status: 'The workspace was excluded from this sweep.' },
-  'no-commits': { offer: 'together', status: 'The workspace has no commits proving delivery.' },
+  skipped: { offer: 'never', status: 'The checkout was excluded from this cleanup.' },
+  'no-commits': { offer: 'together', status: 'The checkout has no commits proving delivery.' },
   'integration-unknown': {
     offer: 'together',
     status: 'Integration could not be assessed with the available evidence.',
   },
   'not-integrated': {
     offer: 'together',
-    status: 'Delivery to the integration target could not be verified.',
+    status: 'Delivery to the destination branch could not be verified.',
   },
 }
 
@@ -231,7 +234,7 @@ export const tasksToConfirm = (receipt: SweepReceipt): readonly WorkspaceId[] =>
 const statusOf = (row: WorkspaceRow): string => {
   if (row.verdict.kind === 'retained') return RETAINED_DISPLAY[row.verdict.retained].status
   return row.outcome === 'review-required'
-    ? 'An earlier removal did not finish.'
+    ? EARLIER_REMOVAL_UNFINISHED
     : 'A cleanup guard blocked removal after completion was verified.'
 }
 
@@ -252,7 +255,7 @@ const successes = (
   ).length
   return [
     ...(removed === 0 ? [] : [paint(style, 'ok', `✓ ${count(removed, 'worktree')} removed`)]),
-    ...(released === 0 ? [] : [paint(style, 'ok', `✓ ${count(released, 'reservation')} released`)]),
+    ...(released === 0 ? [] : [paint(style, 'ok', `✓ ${count(released, 'checkout')} released`)]),
     ...(artifacts === 0
       ? []
       : [paint(style, 'ok', `✓ ${count(artifacts, 'task artifact directory')} removed`)]),
@@ -266,7 +269,7 @@ export const formatQuitSummary = (
 ): string => {
   const summary =
     successes(receipt.rows, style) ||
-    (receipt.rows.length === 0 ? 'No reserved workspaces' : 'No workspaces removed')
+    (receipt.rows.length === 0 ? 'No checkouts kept for a task' : 'No checkouts removed')
   return `${summary}${paint(style, 'dim', ` · ${seconds(elapsedMs)}`)}`
 }
 
@@ -294,7 +297,7 @@ export const formatQuitReceipt = (
           commandStatus(
             style,
             `dev workspace check ${row.taskId}`,
-            'The workspace assessment failed.'
+            'The checkout assessment failed.'
           ),
         ]
       case 'task-deferred':
@@ -302,7 +305,7 @@ export const formatQuitReceipt = (
           commandStatus(
             style,
             `dev workspace check ${row.taskId}`,
-            'The sweep ran out of time before assessing this task.'
+            'Automatic cleanup ran out of time before assessing this task.'
           ),
         ]
       case 'sweep-failure':
@@ -310,7 +313,7 @@ export const formatQuitReceipt = (
           commandStatus(
             style,
             'dev workspace list',
-            'The sweep failed before every task could be assessed.'
+            'Automatic cleanup failed before every task could be assessed.'
           ),
         ]
       case 'task-artifacts':
@@ -335,8 +338,8 @@ export const taskReleaseExclusion = (
 ): string | undefined => {
   const assessed = new Set(workspaceRows(receipt).map(row => row.workspaceId))
   if (views.some(view => !assessed.has(view.workspaceId)))
-    return 'The task has workspaces that this sweep did not assess.'
-  if (views.length === 0) return 'The task no longer has any workspace reservations.'
+    return 'The task has checkouts that this cleanup did not assess.'
+  if (views.length === 0) return 'The task no longer keeps any checkout.'
   return undefined
 }
 
@@ -345,7 +348,7 @@ export const quitReleaseExclusion = (
   views: readonly WorkspaceView[]
 ): string | undefined => {
   if (views.some(view => view.uses.some(use => use.stage !== 'quiescent')))
-    return 'The task has an active or unresolved workspace use.'
+    return 'The task has an active or unresolved checkout use.'
   return taskReleaseExclusion(receipt, views)
 }
 
@@ -366,7 +369,7 @@ const releaseConsequences = (
   const existing = views.length - managed
   const scope = [
     ...(managed === 0 ? [] : [count(managed, 'managed worktree')]),
-    ...(existing === 0 ? [] : [count(existing, 'checkout reservation')]),
+    ...(existing === 0 ? [] : [count(existing, 'pre-existing checkout')]),
     ...(artifacts === 0 ? [] : [count(artifacts, 'task artifact directory')]),
   ].join(', ')
   return [
@@ -383,7 +386,7 @@ const releaseConsequences = (
         ]),
     ...(existing === 0
       ? []
-      : ['Pre-existing checkouts keep their files and commits; only their reservations end.']),
+      : ['Pre-existing checkouts keep their files and commits; the task only stops keeping them.']),
     ...(artifacts === 0
       ? []
       : [paint(style, 'fail', 'Task artifact directories are deleted with everything in them.')]),
@@ -430,7 +433,7 @@ export const formatQuitSweepFailure = (style: TerminalStyle): string =>
   commandStatus(
     style,
     'dev workspace list',
-    'The sweep did not report back; its outcome is unknown.'
+    'Automatic cleanup did not report back; its result is unknown.'
   )
 
 export const formatQuitReleaseFailure = (
@@ -442,8 +445,8 @@ export const formatQuitReleaseFailure = (
     style,
     `dev workspace release ${taskId}`,
     outcome === 'failed'
-      ? 'The release failed; its recorded outcome needs review.'
-      : 'The release did not report back; its outcome is unknown.'
+      ? 'The release failed; its recorded result needs review.'
+      : 'The release did not report back; its result is unknown.'
   )
 
 export const formatQuitReleaseSummary = (

@@ -138,8 +138,10 @@ const sameIdentity = (left: ProcessObservation, right: ProcessObservation): bool
   right.birth !== undefined &&
   left.birth === right.birth
 
+export const RUN_REVISION_LIMIT_REACHED = 'Run revision limit reached'
+
 const nextRevision = (revision: number): number => {
-  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error('Run revision limit reached')
+  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error(RUN_REVISION_LIMIT_REACHED)
   return revision + 1
 }
 
@@ -262,11 +264,10 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
       )
         return rejected()
       const transitionResult = changed(() => {
-        let didChange = applyProgress(facts)
+        applyProgress(facts)
         state.resultReceived = true
-        didChange = true
-        if (facts.error !== undefined) didChange = put('error', facts.error) || didChange
-        return didChange
+        if (facts.error !== undefined) put('error', facts.error)
+        return true
       })
       return {
         ...transitionResult,

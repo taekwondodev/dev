@@ -39,6 +39,8 @@ const LOG_FILES = { stdout: 'stdout.log', stderr: 'stderr.log', result: 'result.
 const LOG_FILE_NAMES = new Set<string>(Object.values(LOG_FILES))
 const RPC_TIMEOUT_MS = 12000
 const STARTUP_TIMEOUT_MS = 12000
+const DEFAULT_LOG_READ_BYTES = 12000
+const MAX_LOG_READ_BYTES = 64000
 const EXIT_TIMEOUT_MS = 1000
 
 type LogStream = keyof typeof LOG_FILES
@@ -468,6 +470,8 @@ interface LogRead {
   readonly text?: string
 }
 
+const CHOOSE_VALID_RUN_AND_STREAM = 'Choose a valid run and stream'
+
 export class WorkStore extends Context.Service<
   WorkStore,
   {
@@ -669,12 +673,12 @@ export class WorkStore extends Context.Service<
 
         const plannedLogPath = (id: AttemptId, stream: LogStream): string => {
           if (!isAttemptId(id) || !Object.hasOwn(LOG_FILES, stream))
-            throw new Error('Choose a valid run and stream')
+            throw new Error(CHOOSE_VALID_RUN_AND_STREAM)
           return join(root, id, LOG_FILES[stream])
         }
 
         const logPath = (id: AttemptId, stream: LogStream): string => {
-          if (!authorized.has(id)) throw new Error('Choose a valid run and stream')
+          if (!authorized.has(id)) throw new Error(CHOOSE_VALID_RUN_AND_STREAM)
           return plannedLogPath(id, stream)
         }
 
@@ -693,12 +697,17 @@ export class WorkStore extends Context.Service<
         })
 
         const readLog = Effect.fnUntraced(
-          function* (id: AttemptId, stream: LogStream = 'stdout', offset?: number, limit = 12000) {
+          function* (
+            id: AttemptId,
+            stream: LogStream = 'stdout',
+            offset?: number,
+            limit: number = DEFAULT_LOG_READ_BYTES
+          ) {
             if (
               (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) ||
               !Number.isSafeInteger(limit) ||
               limit < 1 ||
-              limit > 64000
+              limit > MAX_LOG_READ_BYTES
             )
               return yield* persistenceError(new WorkerRpcError({ code: 'invalid-record' }))
             yield* read(id)

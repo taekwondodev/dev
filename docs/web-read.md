@@ -8,7 +8,7 @@ In codemode, call `tools.read_url({ url })`. Use `describeTool('read_url')` for 
 
 Results identify the source, method and limitations. `outcome` is `document` for the last part if nothing was cut, `partial` if there is more saved text or the page hit a size limit, and `failed` if nothing was read. Indexes such as `llms.txt` are suggestions, not substitutes.
 
-The text avoids repeating the page: it omits the title when the part's complete first line already shows it, reports an HTTP status only as a limitation, and lists on the first part only those of the first 40 collected links whose absolute URL the part does not show on its own. [`src/web-extension.ts`](../src/web-extension.ts) owns what counts as shown. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
+The text avoids repeating the page: it omits the title when the part's complete first line already shows it, reports an HTTP status only as a limitation, and lists on the first part only those of the first 40 collected links whose absolute URL the part does not show whole. [`src/web-extract.ts`](../src/web-extract.ts) owns what counts as shown. The structured result keeps `title`, `status` and the first 200 of up to 500 collected links.
 
 From a terminal:
 
@@ -38,7 +38,7 @@ Dev runs one browser service per data home. Reads from different conversations c
 
 Chrome closes after three idle minutes and reopens on demand. When the last reader disconnects, the service closes Chrome and exits. Dev refreshes the copy before each launch. If Chrome locks its cookie database or a refresh fails, dev reports the error rather than opening an incomplete copy.
 
-If dev cannot verify that Chrome stopped, it keeps the profile locked and reports why in `dev browser status`. A later Chrome read or revoke retries shutdown. If the service dies, the OS frees the locks, but Chrome may still be running. The leftover record blocks a restart, refresh or deletion. Follow the recovery steps below.
+If dev cannot verify that Chrome stopped, it keeps the profile locked and reports why in `dev browser status`. A later Chrome read or revoke retries shutdown. If dev missed the main process's identity at launch, it waits for Chrome's process group to empty without force-stopping its helpers. If the service dies, the OS frees the locks, but Chrome may still be running. The leftover record blocks a restart, refresh or deletion. Follow the recovery steps below.
 
 ## Revocation
 

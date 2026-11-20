@@ -32,7 +32,7 @@ export const canonicalPathSlot = (path: string): string => {
   const absolute = resolve(path)
   const info = lstatIfExists(absolute)
   if (info !== undefined && (info.isSymbolicLink() || !info.isDirectory()))
-    requireReview(`Workspace path is not a physical directory: ${absolute}`)
+    requireReview(`Checkout path is not a physical directory: ${absolute}`)
   return canonicalSlot(absolute, info)
 }
 
@@ -105,19 +105,24 @@ const refuseSameRepository = (checkout: string, foreignRoot: string, path: strin
   const existing = lstatIfExists(equivalent)
   return existing !== undefined && existing.isFile()
     ? invalid(
-        `Write destination is in another worktree of this repository; write the same file in the current workspace instead: ${equivalent}`
+        `Write destination is in another worktree of this repository; write the same file in the current checkout instead: ${equivalent}`
       )
     : invalid(
-        `Write destination is in another worktree of this repository, and ${relativePath} does not exist in the current workspace; to create it there, write ${equivalent}`
+        `Write destination is in another worktree of this repository, and ${relativePath} does not exist in the current checkout; to create it there, write ${equivalent}`
       )
 }
 
+const WRITE_DESTINATION_TARGETS_GIT_ADMIN_PATHS =
+  'Write destination targets Git administrative paths; select a project file instead'
+
+const DEV_PRIVATE_STORAGE_NOT_WRITABLE =
+  'Dev private storage is not writable. Choose a project file'
+
 export const assertNonAdministrativePath = (path: string): void => {
   const parts = path.split(sep).map(part => part.toLowerCase())
-  if (parts.includes('.git'))
-    invalid('Write destination targets Git administrative paths; select a project file instead')
+  if (parts.includes('.git')) invalid(WRITE_DESTINATION_TARGETS_GIT_ADMIN_PATHS)
   if (parts.some((part, index) => part === '.dev' && parts[index + 1] === 'coordination'))
-    invalid('Dev private storage is not writable. Choose a project file')
+    invalid(DEV_PRIVATE_STORAGE_NOT_WRITABLE)
 }
 
 export const classifyWriteDestination = (
@@ -150,7 +155,7 @@ export const classifyWriteDestination = (
   ) {
     if (isWithin(authority.worktrees, path))
       invalid('Ask the conversation using this checkout to make the change')
-    invalid('Dev private storage is not writable. Choose a project file')
+    invalid(DEV_PRIVATE_STORAGE_NOT_WRITABLE)
   }
   const device = workspace ? lstatSync(checkout).dev : undefined
   for (
@@ -167,8 +172,7 @@ export const classifyWriteDestination = (
     ) {
       const git = gitResult(directory, ['rev-parse', '--is-inside-git-dir'])
       if (git.status !== 0) invalid(`Cannot inspect Git administrative identity: ${directory}`)
-      if (git.stdout.trim() === 'true')
-        invalid('Write destination targets Git administrative paths; select a project file instead')
+      if (git.stdout.trim() === 'true') invalid(WRITE_DESTINATION_TARGETS_GIT_ADMIN_PATHS)
     }
     if (directory === checkout) break
     if (lstatIfExists(join(directory, '.git')) !== undefined) {

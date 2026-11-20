@@ -10,6 +10,7 @@ import {
   realpathSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs'
 import { createServer } from 'node:http'
 import { createConnection, createServer as createSocketServer, type Socket } from 'node:net'
@@ -24,10 +25,12 @@ import * as Fiber from 'effect/Fiber'
 import * as Scope from 'effect/Scope'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 import { holdsFor, waitFor, waitUntil, within } from '../wait.ts'
+import { processTable } from '../../src/process-family.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
 import {
   assertCopyReleased,
+  chromeProcessesOn,
   chromeRunningOn,
   makeChromeSource,
   openRenderer,
@@ -103,7 +106,9 @@ Promise.all([fetch("/page-fetch?m=${marker}").then(r => r.text()), workerDone]).
       return reply('text/plain', `${url.pathname} ${marker}`)
   }
 })
-await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
+await new Promise<void>(resolve => {
+  server.listen(0, '127.0.0.1', () => resolve())
+})
 const address = server.address()
 if (address === null || typeof address === 'string') throw new Error('fixture server has no port')
 const { port } = address
@@ -211,7 +216,9 @@ try {
         socket.on('data', () => {})
         socket.once('close', () => sockets.delete(socket))
       })
-      await new Promise<void>(resolve => silent.listen(socketPath, resolve))
+      await new Promise<void>(resolve => {
+        silent.listen(socketPath, resolve)
+      })
       writeFileSync(
         join(root, 'owner.json'),
         JSON.stringify({
@@ -241,7 +248,9 @@ try {
         assert.equal(readFileSync(sentinel, 'utf8'), 'not settled')
       } finally {
         for (const socket of sockets) socket.destroy()
-        await new Promise<void>(resolve => silent.close(() => resolve()))
+        await new Promise<void>(resolve => {
+          silent.close(() => resolve())
+        })
       }
     }
   )
@@ -643,16 +652,60 @@ try {
       async () => {
         const home = join(fixture, 'unobserved')
         mkdirSync(home, { mode: 0o700 })
+        const userDataDir = join(home, 'browser', 'user-data')
         const flag = join(fixture, 'observation-blocked')
         writeFileSync(flag, 'blocked\n')
         selectOwnerFixture({ ...baseFixture, processObservationBlock: flag })
         const blindAdmin = makeBrowserAdmin({ ...profileOptions, dataHome: home })
+        let helper: { readonly pid: number; readonly group: number } | undefined
+        const helperOnCopy = () =>
+          chromeProcessesOn(userDataDir).some(
+            line => Number.parseInt(line.trimStart(), 10) === helper?.pid
+          )
+        const endHelper = () => {
+          const stopped = helper
+          if (stopped === undefined) return
+          const table = Effect.runSync(Effect.exit(processTable))
+          if (Exit.isFailure(table)) {
+            try {
+              writeSync(
+                2,
+                `The process table was unreadable; stopped Chrome helper ${stopped.pid} was left running.\n`
+              )
+            } catch {
+              return
+            }
+            return
+          }
+          helper = undefined
+          if (table.value.find(item => item.pid === stopped.pid)?.group !== stopped.group) return
+          try {
+            process.kill(stopped.pid, 'SIGKILL')
+          } catch {
+            return
+          }
+        }
+        const interrupted = () => {
+          endHelper()
+          process.exit(1)
+        }
+        process.once('SIGINT', interrupted)
+        process.once('SIGTERM', interrupted)
         try {
           const renderer = await openRenderer(home, newScope(), failures)
           const page = await Effect.runPromise(
             renderer.render(`${origin}/page.html?m=BLIND`, MAX_HTML)
           )
           assert.match(text(page.html), /MARKER BLIND/)
+          const utility = chromeProcessesOn(userDataDir).find(line =>
+            line.includes('--utility-sub-type=network.mojom.NetworkService')
+          )
+          assert.ok(utility, 'Chrome started a network helper on the fixture copy')
+          const utilityPid = Number.parseInt(utility.trimStart(), 10)
+          const root = Number(processGroup(utilityPid))
+          assert.ok(root > 0 && root !== utilityPid, 'the helper is not the group leader')
+          process.kill(utilityPid, 'SIGSTOP')
+          helper = { pid: utilityPid, group: root }
           const kept = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(5)))
           assert.equal(kept.kind, 'kept-live')
           assert.ok(existsSync(join(home, 'browser', 'user-data')), 'the uncertain copy was kept')
@@ -673,9 +726,23 @@ try {
             true,
             'enabling did not erase the unsettled ownership'
           )
-          assert.ok(existsSync(join(home, 'browser', 'user-data')), 'enabling deleted nothing')
+          assert.ok(existsSync(userDataDir), 'enabling deleted nothing')
+          assert.equal(alive(root), false, 'the Chrome root has exited')
+          assert.ok(helperOnCopy(), 'the stopped Chrome helper outlived the root')
+          rmSync(flag)
+          const stillKept = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
+          assert.equal(stillKept.kind, 'kept-live', 'the surviving helper prevents deletion')
+          assert.ok(existsSync(userDataDir), 'the copy was kept after observation recovered')
+          assert.ok(helperOnCopy(), 'dev left the surviving helper running')
+          assert.equal((await Effect.runPromise(blindAdmin.status)).profile.inUse, true)
         } finally {
-          rmSync(flag, { force: true })
+          try {
+            endHelper()
+          } finally {
+            process.off('SIGINT', interrupted)
+            process.off('SIGTERM', interrupted)
+            rmSync(flag, { force: true })
+          }
         }
         const removed = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
         assert.equal(removed.kind, 'removed', 'settlement observed later allows removal')
@@ -807,9 +874,9 @@ try {
               resolve(message)
           })
         })
-        const exited = new Promise<number | null>(resolve =>
+        const exited = new Promise<number | null>(resolve => {
           helper.once('exit', code => resolve(code))
-        )
+        })
         helper.send({ type: 'prepare', dataHome: home })
         await prepared
         assert.ok(!ownerPublished(home), 'nothing is published before commit')
@@ -842,9 +909,9 @@ try {
           () => Effect.runPromise(racedAdmin.status),
           status => !status.profile.enabled
         )
-        const enable = Effect.runPromise(racedAdmin.enable).then(() => {
-          order.push('enable')
-        })
+        const enable = Effect.runPromise(
+          racedAdmin.enable.pipe(Effect.andThen(Effect.sync(() => order.push('enable'))))
+        )
         const [kept] = await Promise.all([revoke, enable])
         assert.equal(kept.kind, 'kept-live')
         assert.deepEqual(order, ['revoke:kept-live', 'enable'], 'enable waited for the revocation')

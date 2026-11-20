@@ -163,7 +163,7 @@ const describeCheckout = (cwd: string): { readonly lines: string[]; readonly hea
 }
 
 export const canonicalGitWorkspace = (cwd: string): GitWorkspace => {
-  if (!isAbsolute(cwd)) throw gitBlocked(`Workspace cwd must be absolute: ${cwd}`)
+  if (!isAbsolute(cwd)) throw gitBlocked(`Checkout cwd must be absolute: ${cwd}`)
   const { lines: described, head } = describeCheckout(cwd)
   const [toplevel, commonValue, adminValue, objectFormat] = described
   if (

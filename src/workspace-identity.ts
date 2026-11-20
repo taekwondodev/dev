@@ -58,13 +58,15 @@ const nativeObservation = (path: string): NativeObservation => {
   }
 }
 
+const noncanonicalIdentityPathText = (path: string): string =>
+  `Filesystem identity path is no longer canonical: ${path}`
+
 export const observePhysicalIdentities = (
   paths: readonly string[]
 ): readonly PhysicalObservation[] =>
   paths.map(path => {
     const before = directoryStat(path)
-    if (resolvedPath(path) !== path)
-      requireReview(`Filesystem identity path is no longer canonical: ${path}`)
+    if (resolvedPath(path) !== path) requireReview(noncanonicalIdentityPathText(path))
     const observed = nativeObservation(path)
     const after = directoryStat(path)
     if (
@@ -84,8 +86,7 @@ export const observePhysicalIdentities = (
 
 export const observeDevice = (path: string): string => {
   const stat = directoryStat(path)
-  if (resolvedPath(path) !== path)
-    requireReview(`Filesystem identity path is no longer canonical: ${path}`)
+  if (resolvedPath(path) !== path) requireReview(noncanonicalIdentityPathText(path))
   return String(stat.dev)
 }
 

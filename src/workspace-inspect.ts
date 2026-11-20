@@ -24,7 +24,7 @@ import {
   type WorkspaceRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
-import { releaseOnceStopped, taskRelease } from './workspace-labels.ts'
+import { pendingStage, releaseOnceStopped, taskRelease } from './workspace-labels.ts'
 import { rows, textField } from './workspace-sqlite.ts'
 import { effectiveUid, hasErrorCode, lstatIfExists } from './workspace-platform.ts'
 
@@ -79,7 +79,7 @@ export const assessWorkspace = (input: {
   const operation =
     input.pending === undefined
       ? undefined
-      : `Earlier operation ${input.pending.id}: ${input.pending.stage}; checking does not redo it.`
+      : `Earlier operation ${input.pending.id}: ${pendingStage(input.pending.stage)}; checking does not redo it.`
   const taskId = input.reserved ? (input.taskId ?? '<taskId>') : undefined
   const abandoned = input.abandoned()
   const blockers = [
@@ -358,7 +358,7 @@ export const inspectWorkspaces = (
           path: operation.targetPath,
           origin: 'managed',
           outcome: 'review-required',
-          reason: `No usable checkout after operation ${operation.id} (${operation.phase}).`,
+          reason: `No usable checkout after operation ${operation.id} (${pendingStage(operation.phase)}).`,
           nextAction:
             operation.kind === 'allocation'
               ? `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run ${taskRelease(operation.taskId)}, including what Git created of this one.`

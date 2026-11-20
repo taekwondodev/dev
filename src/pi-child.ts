@@ -26,7 +26,7 @@ import { gitRoot, globalPiAgentDir, globalPiAuthPath } from './preferences.ts'
 import { loadPi } from './pi-runtime.ts'
 import { acquireRuntime } from './runtime-coordination.ts'
 import { createBackgroundCompaction, fenceRuntimeDisposal } from './background-compaction.ts'
-import { type ChildMessage, type ChildResultMessage } from './work-protocol.ts'
+import type { ChildMessage, ChildResultMessage } from './work-protocol.ts'
 import { composeResources, loadCatalog } from './profiles.ts'
 import { AbsolutePath, WorkspaceGrantSchema } from './workspace-domain.ts'
 import { checkChildWorkspace, childWorkspaceExtension } from './work-child-workspace.ts'
@@ -51,6 +51,7 @@ import {
   createCoordinatorWorkTool,
   type CoordinatorLink,
 } from './work-child-coordination.ts'
+import { RUN_CANCELLED } from './work-model-text.ts'
 
 export class ChildError extends Schema.TaggedError<ChildError, { readonly brand: unique symbol }>()(
   'ChildError',
@@ -69,13 +70,18 @@ const gitInspectParameters = obj({
   operation: StringEnum(REVIEW_OPERATIONS, { description: 'Read-only Git operation to perform' }),
   path: opt(str({ description: 'Optional repository-relative path without parent traversal' })),
   ref: opt(
-    str({ description: 'Git ref for show or optional diff base, such as HEAD or a commit hash' })
+    str({
+      description:
+        'Git ref for show, or optional diff base or log start, such as HEAD or a commit hash',
+    })
   ),
   limit: opt(int({ minimum: 1, maximum: 50, description: 'Maximum number of log entries' })),
 })
 const gitInspectInput = compile(gitInspectParameters)
 
 const MAX_GIT_OUTPUT = 64 * 1024
+const FILES_INSTEAD_OF_PATCH = `The patch is larger than ${MAX_GIT_OUTPUT / 1024} KB. Its changed files follow as added lines, removed lines and path. Pass path to read one file's patch.`
+const CHANGED_FILE = /^(?:\d+|-)\t(?:\d+|-)\t/
 const PROGRESS_INTERVAL_MS = 1000
 const SAFE_GIT_OPTIONS = [
   '--no-pager',
@@ -198,6 +204,11 @@ interface GitCapture {
   truncated: boolean
 }
 
+interface GitRequest {
+  readonly args: readonly string[]
+  readonly changedFiles?: readonly string[]
+}
+
 interface GitResult {
   readonly error?: unknown
   readonly stdout: string
@@ -224,6 +235,9 @@ function fail(message: string): never {
   throw new ChildError({ message })
 }
 
+const requestCwdNotDirectoryText = (cwd: string): string =>
+  `request.cwd must be an existing directory: ${cwd}`
+
 const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
   const request = yield* Schema.decodeUnknownEffect(ChildRequestEnvelope)(raw).pipe(
     Effect.mapError(
@@ -247,12 +261,12 @@ const validateRequest = Effect.fn('validateRequest')(function* (raw: unknown) {
   yield* checkChildWorkspace(request.workspace, 'read').pipe(Effect.mapError(toChildError))
   if (!cwdExists)
     return yield* new ChildError({
-      message: `request.cwd must be an existing directory: ${request.cwd}`,
+      message: requestCwdNotDirectoryText(request.cwd),
     })
   const cwdInfo = yield* fs.stat(request.cwd).pipe(Effect.mapError(toChildError))
   if (cwdInfo.type !== 'Directory')
     return yield* new ChildError({
-      message: `request.cwd must be an existing directory: ${request.cwd}`,
+      message: requestCwdNotDirectoryText(request.cwd),
     })
   yield* fs
     .makeDirectory(request.dataHome, { recursive: true, mode: 0o700 })
@@ -347,10 +361,21 @@ export function childBrief(request: Pick<ChildRequest, 'access' | 'coordinate'>)
   ].join('\n')
 }
 
+const GIT_OUTPUT_CUT = `\n\n[git output truncated at ${MAX_GIT_OUTPUT} bytes]`
+
 function truncateGitOutput(text: string, rawTruncated = false): string {
   const bytes = Buffer.from(text, 'utf8')
   if (!rawTruncated && bytes.length <= MAX_GIT_OUTPUT) return text
-  return `${bytes.subarray(0, MAX_GIT_OUTPUT).toString('utf8')}\n\n[git output truncated at ${MAX_GIT_OUTPUT} bytes]`
+  return `${bytes.subarray(0, MAX_GIT_OUTPUT).toString('utf8')}${GIT_OUTPUT_CUT}`
+}
+
+function wholeLines(lines: readonly string[], cut: boolean): string {
+  let bytes = -1
+  const kept = lines.filter(line => {
+    bytes += Buffer.byteLength(line) + 1
+    return bytes <= MAX_GIT_OUTPUT
+  })
+  return `${kept.join('\n')}${cut || kept.length < lines.length ? GIT_OUTPUT_CUT : ''}`
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
@@ -469,7 +494,9 @@ function validateGitRef(ref: string | undefined): string {
   return ref
 }
 
-function gitArguments(params: unknown): readonly string[] {
+const CHANGED_FILES = ['--numstat', '-z', '--no-renames'] as const
+
+function gitRequest(params: unknown): GitRequest {
   if (!gitInspectInput.check(params))
     fail(
       `git_inspect parameters are invalid: ${gitInspectInput
@@ -478,26 +505,46 @@ function gitArguments(params: unknown): readonly string[] {
         .join('; ')}`
     )
   const path = validateRelativePath(params.path)
+  const paths = ['--', ...(path ? [path] : [])]
+  const from = () => (params.ref === undefined ? [] : [validateGitRef(params.ref)])
   switch (params.operation) {
     case 'status':
-      return ['status', '--short', '--branch']
-    case 'diff':
-      return [
-        'diff',
-        '--no-ext-diff',
-        '--no-textconv',
-        ...(params.ref === undefined ? [] : [validateGitRef(params.ref)]),
-        '--',
-        ...(path ? [path] : []),
-      ]
-    case 'staged-diff':
-      return ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--', ...(path ? [path] : [])]
+      return { args: ['status', '--short', '--branch'] }
+    case 'diff': {
+      const diff = ['diff', '--no-ext-diff', '--no-textconv']
+      const selection = [...from(), ...paths]
+      return {
+        args: [...diff, ...selection],
+        changedFiles: [...diff, ...CHANGED_FILES, ...selection],
+      }
+    }
+    case 'staged-diff': {
+      const diff = ['diff', '--cached', '--no-ext-diff', '--no-textconv']
+      return { args: [...diff, ...paths], changedFiles: [...diff, ...CHANGED_FILES, ...paths] }
+    }
     case 'log':
-      return ['log', '--oneline', '--decorate', `--max-count=${params.limit ?? 20}`]
-    case 'show':
-      return ['show', '--no-ext-diff', '--no-textconv', '--oneline', validateGitRef(params.ref)]
+      return {
+        args: [
+          'log',
+          '--oneline',
+          '--decorate',
+          `--max-count=${params.limit ?? 20}`,
+          ...from(),
+          ...paths,
+        ],
+      }
+    case 'show': {
+      const show = ['show', '--no-ext-diff', '--no-textconv', '--oneline']
+      const selection = [validateGitRef(params.ref), ...paths]
+      return {
+        args: [...show, ...selection],
+        ...(params.ref?.includes(':') === true
+          ? {}
+          : { changedFiles: [...show, ...CHANGED_FILES, ...selection] }),
+      }
+    }
     case 'files':
-      return ['ls-files', '--', ...(path ? [path] : [])]
+      return { args: ['ls-files', ...paths] }
   }
 }
 
@@ -513,14 +560,36 @@ export function createReviewGitTool(cwd: string): Pi.ToolDefinition {
     name: 'git_inspect',
     label: 'git_inspect',
     description:
-      'Read Git status, diffs, history, refs or tracked files. Output past 64 KB is cut; the agent that started you can read it in full.',
+      'Read Git status, diffs, history, refs or tracked files. Output past 64 KB is cut, or replaced by the changed files when a patch covers several; the agent that started you can read it in full.',
     promptSnippet: 'Read Git state',
     parameters: gitInspectParameters,
     async execute(_toolCallId, params, signal) {
       const result = await Effect.runPromise(
         Effect.gen(function* () {
-          const args = yield* Effect.try({ try: () => gitArguments(params), catch: toChildError })
-          const gitResult = yield* runGit(cwd, args, signal).pipe(Effect.mapError(toChildError))
+          const request = yield* Effect.try({ try: () => gitRequest(params), catch: toChildError })
+          const gitResult = yield* runGit(cwd, request.args, signal).pipe(
+            Effect.mapError(toChildError)
+          )
+          if (
+            gitResult.error === undefined &&
+            gitResult.truncated &&
+            request.changedFiles !== undefined
+          ) {
+            const listed = yield* runGit(cwd, request.changedFiles, signal)
+            if (signal?.aborted === true)
+              return yield* new ChildError({ message: 'git_inspect was cancelled' })
+            const records = listed.stdout.split('\0').map(record => record.trimStart())
+            const whole = (listed.truncated ? records.slice(0, -1) : records).filter(
+              record => record !== ''
+            )
+            const files = new Set(
+              whole.flatMap(record =>
+                CHANGED_FILE.test(record) ? [record.replace(CHANGED_FILE, '')] : []
+              )
+            )
+            if (listed.error === undefined && files.size > 1)
+              return toolResult(wholeLines([FILES_INSTEAD_OF_PATCH, ...whole], listed.truncated))
+          }
           const output =
             [
               gitResult.stdout,
@@ -1010,7 +1079,7 @@ const runSession = Effect.fnUntraced(
         }),
       catch: toChildError,
     })
-    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled' })
+    if (signal?.aborted) return yield* new ChildError({ message: RUN_CANCELLED })
     if (initialPrompt.skill !== undefined && !skillExpanded(resource.session, initialPrompt.skill))
       return yield* new ChildError({
         message: `Pi did not expand the invocation of skill "${initialPrompt.skill.name}"`,
@@ -1021,7 +1090,7 @@ const runSession = Effect.fnUntraced(
         link,
         () => signal?.aborted === true || turnFailed(resource.session)
       ).pipe(Effect.mapError(toChildError))
-    if (signal?.aborted) return yield* new ChildError({ message: 'Run cancelled' })
+    if (signal?.aborted) return yield* new ChildError({ message: RUN_CANCELLED })
     const outcome = finalAssistantOutcome(resource.session)
     const current = telemetry(resource.session)
     state.telemetry = current
@@ -1069,13 +1138,13 @@ const runPiChild = Effect.fn('runPiChild')(function* (
   let exitCode = 1
   if (attempt._tag === 'Failure') {
     const cancelled = options.signal?.aborted === true
-    result = childResult(state, '', cancelled ? 'Run cancelled' : errorMessage(attempt.failure))
+    result = childResult(state, '', cancelled ? RUN_CANCELLED : errorMessage(attempt.failure))
   } else if (attempt.success._tag === 'Failure') {
     const cancelled = options.signal?.aborted === true
     result = childResult(
       state,
       '',
-      cancelled ? 'Run cancelled' : errorMessage(attempt.success.failure)
+      cancelled ? RUN_CANCELLED : errorMessage(attempt.success.failure)
     )
   } else {
     const outcome = attempt.success.success
@@ -1119,7 +1188,7 @@ const decodeIpcMessage = Schema.decodeUnknownOption(IpcMessage)
 
 export function serveChild(options: ChildServeOptions = {}): void {
   if (typeof process.send !== 'function') {
-    console.error('src/pi-child.ts must be launched with child_process.fork and IPC')
+    console.error('The agent process must be forked with an IPC channel')
     process.exitCode = 2
     return
   }
@@ -1151,7 +1220,7 @@ export function serveChild(options: ChildServeOptions = {}): void {
       signal: controller.signal,
     }).pipe(Effect.provide(NodeServices.layer))
     void Effect.runPromise(program)
-      .catch(error => {
+      .catch((error: unknown) => {
         console.error(errorMessage(error))
         return 1
       })

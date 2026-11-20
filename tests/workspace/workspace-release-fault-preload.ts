@@ -7,6 +7,7 @@ const RELEASE_FAULTS = [
   'after-git-remove',
   'clock-after-git-remove',
   'after-git-add',
+  'before-allocation-start',
 ] as const
 export type ReleaseFault = (typeof RELEASE_FAULTS)[number]
 
@@ -31,6 +32,9 @@ const removesWorktree = (args: readonly string[] | undefined): boolean =>
 const addsWorktree = (args: readonly string[] | undefined): boolean =>
   args !== undefined && args.includes('worktree') && args.includes('add')
 
+const checksAllocationSource = (args: readonly string[] | undefined): boolean =>
+  args !== undefined && args.includes('check-attr') && args.some(arg => arg.startsWith('--source='))
+
 const arm = (fault: ReleaseFault): void => {
   const spawn = childProcess.spawnSync
   if (fault === 'after-git-add') {
@@ -39,6 +43,13 @@ const arm = (fault: ReleaseFault): void => {
       if (addsWorktree(args)) crash()
       return result
     }) as typeof childProcess.spawnSync
+    return
+  }
+  if (fault === 'before-allocation-start') {
+    childProcess.spawnSync = ((command: string, args?: readonly string[], options?: object) =>
+      checksAllocationSource(args)
+        ? crash()
+        : spawn(command, args, options)) as typeof childProcess.spawnSync
     return
   }
   if (fault === 'clock-after-git-remove') {

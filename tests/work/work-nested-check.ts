@@ -81,7 +81,7 @@ const outcomesReceivedBy = (view: AttemptView) => {
     .split('\n')
     .filter(Boolean)
     .map(line => decodeEntry(line))
-    .filter(entry => entry.customType === 'dev/work-outcome')
+    .filter(entry => entry.customType === 'dev/work-result')
   return {
     outcomes: entries.flatMap(entry => entry.details?.outcomes ?? []),
     children: entries.flatMap(entry => entry.details?.children ?? []),
@@ -144,7 +144,9 @@ const documents = createServer((request, response) => {
   response.writeHead(404, { 'content-type': 'text/plain' })
   response.end('not found')
 })
-await new Promise<void>(resolve => documents.listen(0, '127.0.0.1', () => resolve()))
+await new Promise<void>(resolve => {
+  documents.listen(0, '127.0.0.1', () => resolve())
+})
 const documentsAddress = documents.address()
 if (documentsAddress === null || typeof documentsAddress === 'string')
   throw new Error('fixture document server has no port')
@@ -162,7 +164,7 @@ try {
       const first = asAttemptId('00000000-0000-0000-0000-000000000001')
       const second = asAttemptId('00000000-0000-0000-0000-000000000002')
       const root = session.appendMessage({ role: 'user', content: 'assignment', timestamp: 0 })
-      const firstReceipt = session.appendCustomMessageEntry('dev/work-outcome', 'first', true, {
+      const firstReceipt = session.appendCustomMessageEntry('dev/work-result', 'first', true, {
         attempts: [first],
       })
       let reads = 0
@@ -178,7 +180,7 @@ try {
       assert.deepEqual([...receipts()], [first])
       assert.equal(reads, 0, 'an unchanged branch must not be traversed again')
       session.appendMessage({ role: 'user', content: 'next turn', timestamp: 1 })
-      const secondReceipt = session.appendCustomMessageEntry('dev/work-outcome', 'second', true, {
+      const secondReceipt = session.appendCustomMessageEntry('dev/work-result', 'second', true, {
         attempts: [second],
       })
       assert.deepEqual([...receipts()].toSorted(), [first, second])
@@ -197,7 +199,7 @@ try {
       session.branch(firstReceipt)
       assert.deepEqual([...receipts()], [first])
       session.branch(root)
-      session.appendCustomMessageEntry('dev/work-outcome', 'alternate', true, {
+      session.appendCustomMessageEntry('dev/work-result', 'alternate', true, {
         attempts: [second],
       })
       assert.deepEqual([...receipts()], [second])

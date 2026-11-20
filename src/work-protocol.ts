@@ -111,6 +111,8 @@ const ActivityMessageSchema = strictMessage(
 
 const text = (description: string) => Schema.optionalKey(Schema.String.annotate({ description }))
 
+const ONLY_WHEN_USER_REQUESTED = 'Only when the user asked for it.'
+
 const sharedWorkInput = {
   taskId: text('Label you choose for process or delegate.'),
   prompt: text('Focused, self-contained assignment, never a transcript.'),
@@ -123,9 +125,8 @@ const sharedWorkInput = {
       description: `read-only (default) or write. ${READ_ONLY_CHILD_CAPABILITIES} Writers get a separate worktree without local changes.`,
     })
   ),
-  harness: text('Leave unset.'),
-  model: text('Only when the user asked for it.'),
-  effort: text('Only when the user asked for it.'),
+  model: text(ONLY_WHEN_USER_REQUESTED),
+  effort: text(ONLY_WHEN_USER_REQUESTED),
   stream: Schema.optionalKey(
     Schema.Literals(['stdout', 'stderr', 'result']).annotate({
       description: "For inspect; result is the agent's answer.",
@@ -254,7 +255,7 @@ export const ControllerWorkMessageSchema = Schema.Union([
 ])
 export type ControllerWorkMessage = typeof ControllerWorkMessageSchema.Type
 
-const OUTCOME_MESSAGE = 'dev/work-outcome'
+const OUTCOME_MESSAGE = 'dev/work-result'
 
 const decodeDeliveryDetails = Schema.decodeUnknownResult(
   Schema.Struct({ attempts: Schema.Array(AttemptId) })

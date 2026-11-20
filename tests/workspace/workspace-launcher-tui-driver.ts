@@ -36,7 +36,7 @@ const interruptedAfterQuit = Effect.gen(function* () {
         Effect.map(
           attachment =>
             new Proxy(attachment, {
-              get: (target, key) =>
+              get: (target, key): unknown =>
                 key === 'close'
                   ? signalOnce.pipe(Effect.andThen(target.close))
                   : Reflect.get(target, key),
