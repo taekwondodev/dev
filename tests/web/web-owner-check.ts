@@ -24,6 +24,7 @@ import * as Fiber from 'effect/Fiber'
 import * as Scope from 'effect/Scope'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 import { holdsFor, waitFor, waitUntil, within } from '../wait.ts'
+import { processTable } from '../../src/process-family.ts'
 import { CHROME_EXECUTABLES, findChrome, makeBrowserProfileOwner } from '../../src/web-profile.ts'
 import { makeBrowserAdmin, makeSessionRenderer } from '../../src/web-browser-owner.ts'
 import {
@@ -649,11 +650,35 @@ try {
         writeFileSync(flag, 'blocked\n')
         selectOwnerFixture({ ...baseFixture, processObservationBlock: flag })
         const blindAdmin = makeBrowserAdmin({ ...profileOptions, dataHome: home })
-        let helper: number | undefined
+        let helper: { readonly pid: number; readonly group: number } | undefined
         const helperOnCopy = () =>
           chromeProcessesOn(userDataDir).some(
-            line => Number.parseInt(line.trimStart(), 10) === helper
+            line => Number.parseInt(line.trimStart(), 10) === helper?.pid
           )
+        const endHelper = () => {
+          const stopped = helper
+          if (stopped === undefined) return
+          const table = Effect.runSync(Effect.exit(processTable))
+          if (Exit.isFailure(table)) {
+            process.stderr.write(
+              `The process table was unreadable; stopped Chrome helper ${stopped.pid} was left running.\n`
+            )
+            return
+          }
+          helper = undefined
+          if (table.value.find(item => item.pid === stopped.pid)?.group !== stopped.group) return
+          try {
+            process.kill(stopped.pid, 'SIGKILL')
+          } catch {
+            return
+          }
+        }
+        const interrupted = () => {
+          endHelper()
+          process.exit(1)
+        }
+        process.once('SIGINT', interrupted)
+        process.once('SIGTERM', interrupted)
         try {
           const renderer = await openRenderer(home, newScope(), failures)
           const page = await Effect.runPromise(
@@ -668,7 +693,7 @@ try {
           const root = Number(processGroup(utilityPid))
           assert.ok(root > 0 && root !== utilityPid, 'the helper is not the group leader')
           process.kill(utilityPid, 'SIGSTOP')
-          helper = utilityPid
+          helper = { pid: utilityPid, group: root }
           const kept = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(5)))
           assert.equal(kept.kind, 'kept-live')
           assert.ok(existsSync(join(home, 'browser', 'user-data')), 'the uncertain copy was kept')
@@ -696,10 +721,13 @@ try {
           const stillKept = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
           assert.equal(stillKept.kind, 'kept-live', 'the surviving helper prevents deletion')
           assert.ok(existsSync(userDataDir), 'the copy was kept after observation recovered')
+          assert.ok(helperOnCopy(), 'dev left the surviving helper running')
           assert.equal((await Effect.runPromise(blindAdmin.status)).profile.inUse, true)
         } finally {
+          process.off('SIGINT', interrupted)
+          process.off('SIGTERM', interrupted)
+          endHelper()
           rmSync(flag, { force: true })
-          if (helper !== undefined && helperOnCopy()) process.kill(helper, 'SIGKILL')
         }
         const removed = await Effect.runPromise(blindAdmin.revoke(Duration.seconds(15)))
         assert.equal(removed.kind, 'removed', 'settlement observed later allows removal')
