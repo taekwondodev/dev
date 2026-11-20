@@ -1511,6 +1511,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         yield* cancelLeaves(job, 'delegating agent ended')
         yield* Effect.forEach([...job.leaves], leaf => Deferred.await(leaf.settled), {
           discard: true,
+          concurrency: 1,
         })
         if (job.provisioning !== undefined) yield* Fiber.interrupt(job.provisioning)
         const orb = job.childOrb

@@ -303,7 +303,10 @@ const recoverRequested = Effect.fnUntraced(function* (
   records: readonly OrbRecordHandle[]
 ): Effect.fn.Return<void> {
   const { orbit, print } = options
-  const keep = Effect.forEach(records, record => record.release, { discard: true })
+  const keep = Effect.forEach(records, record => record.release, {
+    discard: true,
+    concurrency: 1,
+  })
   for (const record of records) yield* settlePresence(options, record.current())
   const unnamed = (text: string) =>
     Effect.sync(() =>
@@ -327,6 +330,7 @@ const recoverRequested = Effect.fnUntraced(function* (
   const candidates = unregisteredOrbs(listed.value, registered.value, since ?? '')
   const removeAll = Effect.forEach(records, record => Effect.ignore(record.remove), {
     discard: true,
+    concurrency: 1,
   })
   if (candidates.length === 0) {
     print(

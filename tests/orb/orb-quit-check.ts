@@ -316,7 +316,7 @@ const play = (view: OrbQuitView, steps: readonly Step[]) =>
       const pause = steps[index - 1]
       return typeof pause === 'number' ? shown.pipe(Effect.delay(pause)) : shown
     },
-    { discard: true }
+    { discard: true, concurrency: 1 }
   )
 
 const runView = (steps: readonly Step[], terminal?: Parameters<typeof viewRun>[1]) =>
