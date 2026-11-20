@@ -376,7 +376,10 @@ const reclaimWorktree = Effect.gen(function* () {
   if ((yield* inWorktree(['rev-parse', '--show-toplevel'])) !== (yield* fs.realPath(worktree)))
     return yield* refuse('it is not a Git worktree; remove the directory first')
   const leftovers = (yield* worktreePaths(['--ignored'])).filter(
-    path => !path.startsWith('node_modules/') && basename(path) !== '.DS_Store'
+    path =>
+      !path.startsWith('node_modules/') &&
+      !path.startsWith('.dev/native/') &&
+      basename(path) !== '.DS_Store'
   )
   const branch = yield* inWorktree(['branch', '--show-current'])
   const unmerged = yield* inWorktree(['rev-list', 'HEAD', '--not', 'origin/main'])
