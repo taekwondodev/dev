@@ -486,6 +486,8 @@ const declaration = String(await describeTool('work'))
 return JSON.stringify({
   typed: declaration.includes('Promise<{') && declaration.includes('kind: "run" | "runs"'),
   typedDispatch: declaration.includes('dispatch?: { configured: true; default: {') && declaration.includes('rules: { [key: string]: {'),
+  runFields: declaration.split('workflowTaskId?:').length - 1,
+  runReferences: declaration.split('ame fields as the top-level run.').length - 1,
   launched: results.map(result => result.status === 'fulfilled'
     ? { kind: result.value.kind, id: result.value.run?.id, status: result.value.run?.status, shape: typeof result.value }
     : { error: String(result.reason) }),
@@ -497,11 +499,13 @@ return JSON.stringify({
         assert.ok(scripted?.includes('Script completed'), scripted ?? 'no script result')
         const output = /\{"typed".*\}\]\}/s.exec(scripted ?? '')?.[0]
         assert.ok(output !== undefined, scripted ?? 'no script result')
-        const { typed, typedDispatch, launched } = Schema.decodeSync(
+        const { typed, typedDispatch, runFields, runReferences, launched } = Schema.decodeSync(
           Schema.fromJsonString(
             Schema.Struct({
               typed: Schema.Boolean,
               typedDispatch: Schema.Boolean,
+              runFields: Schema.Int,
+              runReferences: Schema.Int,
               launched: Schema.Array(
                 Schema.Struct({
                   kind: Schema.String,
@@ -515,6 +519,11 @@ return JSON.stringify({
         )(output)
         assert.equal(typed, true, 'describeTool shows the typed result')
         assert.equal(typedDispatch, true, 'describeTool shows the dispatch configuration fields')
+        assert.deepEqual(
+          { runFields, runReferences },
+          { runFields: 1, runReferences: 2 },
+          'describeTool spells the run fields once and points the inspection and the list at them'
+        )
         assert.equal(launched.length, 2)
         for (const item of launched) {
           assert.equal(item.kind, 'run')

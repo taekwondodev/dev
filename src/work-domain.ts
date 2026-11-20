@@ -484,9 +484,26 @@ export const WorkResultSchema = WorkResultFields.check(
 )
 export type WorkResult = typeof WorkResultSchema.Type
 
-export const workResultOutputSchema = Schema.toJsonSchemaDocument(WorkResultSchema, {
-  onExcessProperty: 'error',
-}).schema
+export const workResultOutputSchema = Schema.toJsonSchemaDocument(
+  Schema.Struct({
+    ...WorkResultFields.fields,
+    runs: Schema.optionalKey(
+      Schema.Struct({
+        ...WorkSnapshotViewSchema.fields,
+        records: Schema.Array(Schema.JsonObject).annotate({
+          description: 'Each has the same fields as the top-level run.',
+        }),
+      })
+    ),
+    inspection: Schema.optionalKey(
+      Schema.Struct({
+        ...AttemptInspectionSchema.fields,
+        run: Schema.JsonObject.annotate({ description: 'Same fields as the top-level run.' }),
+      })
+    ),
+  }),
+  { onExcessProperty: 'error' }
+).schema
 
 export interface ProcessStartRequest {
   readonly taskId: string
