@@ -6,17 +6,17 @@ import {
   verdictLabel,
   type WorkspaceReport,
 } from './workspace-command.ts'
-import {
-  type PausedTask,
-  type SweepReceipt,
-  type SweepRow,
-  type WorkspaceAssessment,
-  type WorkspaceId,
-  type WorkspaceView,
+import type {
+  PausedTask,
+  SweepReceipt,
+  SweepRow,
+  WorkspaceAssessment,
+  WorkspaceId,
+  WorkspaceView,
 } from './workspace-domain.ts'
 
 export const WORKSPACE_MESSAGE = 'dev/workspace'
-export const HANDOFF_MESSAGE = 'dev/workspace-handoff'
+export const HANDOFF_MESSAGE = 'dev/workspace-switch'
 export const RECEIPT_ENTRY = 'dev/workspace-receipt'
 export const REFUSAL_ENTRY = 'dev/workspace-refusal'
 
@@ -29,20 +29,79 @@ export type SwitchRequest =
   | 'busy'
   | 'orb'
 
-const SWITCH_NOT_REQUESTED: Record<Exclude<SwitchRequest, 'requested'>, string> = {
-  closing: 'this conversation is closing',
-  mismatch:
-    "this conversation's permission no longer matches it, so checkout access stays blocked; ask the user to quit and reopen this conversation",
-  unresolved:
-    'dev cannot confirm an earlier session change, so checkout access stays blocked; ask the user to quit and reopen this conversation',
-  changed:
-    'this conversation changed sessions or checkouts meanwhile; check where it works now before retrying',
-  busy: 'another checkout switch or session change is in progress; retry after it ends',
-  orb: 'under dev --orb this conversation keeps its orb and checkout until quit; ask the user to quit and relaunch',
+export type BlockedConversation = Exclude<SwitchRequest, 'requested'> | 'switch' | 'replacing'
+
+interface BlockedConversationText {
+  readonly fact: string
+  readonly staysBlocked?: true
+  readonly next?: string
+  readonly userNext?: string
 }
 
-export const switchNotRequested = (request: Exclude<SwitchRequest, 'requested'>): string =>
-  `No checkout switch was requested: ${SWITCH_NOT_REQUESTED[request]}.`
+const QUIT_AND_REOPEN = 'ask the user to quit and reopen this conversation'
+const TRY_AGAIN = 'Try again once it finishes.'
+const QUIT = 'Quit and reopen this conversation.'
+
+const BLOCKED_CONVERSATION: Record<BlockedConversation, BlockedConversationText> = {
+  switch: {
+    fact: 'this conversation is switching checkouts',
+    next: 'retry after dev reports where it works',
+    userNext: TRY_AGAIN,
+  },
+  replacing: {
+    fact: 'this conversation is changing sessions',
+    next: 'retry once that finishes',
+    userNext: TRY_AGAIN,
+  },
+  busy: {
+    fact: 'another checkout switch or session change is in progress',
+    next: 'retry after it ends',
+    userNext: TRY_AGAIN,
+  },
+  mismatch: {
+    fact: "this conversation's permission no longer matches it",
+    staysBlocked: true,
+    next: QUIT_AND_REOPEN,
+    userNext: QUIT,
+  },
+  unresolved: {
+    fact: 'dev cannot confirm an earlier checkout switch or session change',
+    staysBlocked: true,
+    next: QUIT_AND_REOPEN,
+    userNext: QUIT,
+  },
+  closing: { fact: 'this conversation is closing' },
+  changed: {
+    fact: 'this conversation changed sessions or checkouts meanwhile',
+    next: 'check where it works now before retrying',
+    userNext: 'Run /workspace resume again to choose from where it is now.',
+  },
+  orb: {
+    fact: 'under dev --orb this conversation keeps its orb and checkout until quit',
+    next: 'ask the user to quit and relaunch',
+    userNext: 'Quit and relaunch instead.',
+  },
+}
+
+const sentence = (text: string): string => `${text.charAt(0).toUpperCase()}${text.slice(1)}.`
+
+export const blockedAccess = (state: BlockedConversation, didNotRun: string): string => {
+  const { fact, next } = BLOCKED_CONVERSATION[state]
+  return `Checkout access is blocked because ${fact}; ${didNotRun}.${next === undefined ? '' : ` ${sentence(next)}`}`
+}
+
+export const blockedByMismatch = (cause: string): string =>
+  `${cause}. The call did not run, and checkout access stays blocked. ${sentence(QUIT_AND_REOPEN)}`
+
+export const switchNotRequested = (request: Exclude<SwitchRequest, 'requested'>): string => {
+  const { fact, staysBlocked, next } = BLOCKED_CONVERSATION[request]
+  return `No checkout switch was requested: ${fact}${staysBlocked === true ? ', so checkout access stays blocked' : ''}${next === undefined ? '' : `; ${next}`}.`
+}
+
+export const notDoneWhileBlocked = (state: BlockedConversation, notDone: string): string => {
+  const { fact, staysBlocked, userNext } = BLOCKED_CONVERSATION[state]
+  return `${sentence(`${fact}, so ${staysBlocked === true ? 'its tools stay blocked and ' : ''}${notDone}`)}${userNext === undefined ? '' : ` ${userNext}`}`
+}
 
 export const SWITCH_REQUESTED =
   'Dev requested a checkout switch and reports where this conversation works if it completes.'

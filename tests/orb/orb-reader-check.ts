@@ -55,7 +55,7 @@ const childOrbs: ChildOrbs = {
       yield* children.provisioning
       if (children.capacity)
         return yield* orbFailure(
-          'orbit capacity exhausted: 2 active orbs in the project; wait for a child to finish'
+          'orbit capacity exhausted: 2 active orbs in the project; wait for a delegated agent to finish'
         )
       const orb: ChildOrb = {
         handle: { ...reader, label: 'orb 4567cdef (orb.invalid)', record: 'child-record' },
@@ -183,7 +183,7 @@ try {
       assertStatus(view, 'failed')
       assert.match(
         view.error ?? '',
-        /orbit capacity exhausted: 2 active orbs in the project; wait for a child to finish/
+        /orbit capacity exhausted: 2 active orbs in the project; wait for a delegated agent to finish/
       )
       assert.equal(view.model, undefined, 'the child never started a session')
       assert.equal(children.ended.length, 1, 'no orb was ended for the refused child')

@@ -42,6 +42,7 @@ import {
 import { transaction } from './workspace-sqlite.ts'
 import { now, hash, lstatIfExists } from './workspace-platform.ts'
 import { resolveSelection } from './workspace-transitions.ts'
+import { missingCheckoutText } from './workspace-labels.ts'
 
 export const conversationRecord = (
   input: WorkspaceConversation
@@ -68,6 +69,8 @@ export const conversationRecord = (
     identity: conversationIdentity(conversation),
   }
 }
+
+const CHECKOUT_CHANGED_DURING_RECOVERY = 'The checkout changed during recovery'
 
 export const attachConversation = (
   authority: WorkspaceAuthority,
@@ -160,7 +163,7 @@ export const attachConversation = (
           transaction(db, () => {
             const current = getBinding(db, normalized.key)
             if (current === undefined || current.revision !== previous.binding.revision)
-              requireReview('The checkout changed during recovery')
+              requireReview(CHECKOUT_CHANGED_DURING_RECOVERY)
             putBinding(db, binding)
           })
         )
@@ -169,7 +172,7 @@ export const attachConversation = (
           transaction(db, () => {
             const current = getBinding(db, normalized.key)
             if (current === undefined || current.revision !== previous.binding.revision)
-              requireReview('The checkout changed during recovery')
+              requireReview(CHECKOUT_CHANGED_DURING_RECOVERY)
             putBinding(db, {
               ...current,
               superseded: true,
@@ -198,7 +201,7 @@ export const attachConversation = (
     } else {
       ;({ repo: repoId, binding } = previous)
       const workspace = inDb(authority, repoId, db => getWorkspace(db, binding.workspaceId))
-      if (workspace === undefined) requireReview(`Checkout missing: ${binding.workspaceId}`)
+      if (workspace === undefined) requireReview(missingCheckoutText(binding.workspaceId))
       if (workspace.status === 'removed')
         requireReview(
           `This conversation's checkout was removed and will not be recreated: ${workspace.path}`

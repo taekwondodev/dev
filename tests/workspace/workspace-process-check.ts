@@ -161,7 +161,7 @@ try {
           const message = String((error as Error).message)
           return (
             /another worktree of this repository/.test(message) &&
-            message.includes('new/file.txt does not exist in the current workspace') &&
+            message.includes('new/file.txt does not exist in the current checkout') &&
             message.includes(`write ${join(cwd, 'new', 'file.txt')}`)
           )
         })

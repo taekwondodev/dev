@@ -170,7 +170,7 @@ export const setupOrb = Effect.fnUntraced(function* (
     config === undefined ? yield* (options.sourceAddress ?? routeSourceAddress)(authUrl) : undefined
   const cidr = yield* ask(
     options,
-    'Network the orbs admit SSH from',
+    'Network the orbs accept SSH from',
     config?.sshAllowedCidr ?? (routed === undefined ? undefined : `${routed}/32`),
     answer => (isCidr(answer) ? undefined : 'Enter an address with a prefix, such as 192.0.2.1/32.')
   )

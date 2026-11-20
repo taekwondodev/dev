@@ -47,7 +47,7 @@ export const recordPublication = (
         const workspace = getWorkspace(db, reference.workspaceId)
         if (workspace === undefined)
           return invalid(
-            `Publication names workspace ${reference.workspaceId}, which does not belong to the task's repository`
+            `Publication names checkout ${reference.workspaceId}, which does not belong to the task's repository`
           )
       }
       putPublication(db, reference)

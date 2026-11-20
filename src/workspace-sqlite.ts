@@ -135,7 +135,7 @@ export const GATE_SQL = `
 
 export const encode = (value: unknown): string => {
   const result = JSON.stringify(value)
-  if (typeof result !== 'string') return invalid('Workspace record cannot be encoded')
+  if (typeof result !== 'string') return invalid('Checkout record cannot be encoded')
   return result
 }
 const decodeJsonText = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -235,15 +235,17 @@ export const first = (
   sql: string,
   ...params: SqlParameter[]
 ): SqlRow | undefined => statement(db, sql).get(...params) as SqlRow | undefined
+const corruptDatabaseFieldText = (key: string): string => `Corrupt dev database field: ${key}`
+
 export const textField = (row: SqlRow | undefined, key: string): string => {
   const value = row?.[key]
-  if (typeof value !== 'string') return requireReview(`Corrupt dev database field: ${key}`)
+  if (typeof value !== 'string') return requireReview(corruptDatabaseFieldText(key))
   return value
 }
 export const numberField = (row: SqlRow | undefined, key: string): number => {
   const value = row?.[key]
   if (typeof value !== 'number' || !Number.isFinite(value))
-    return requireReview(`Corrupt dev database field: ${key}`)
+    return requireReview(corruptDatabaseFieldText(key))
   return value
 }
 const normalizeSql = (sql: string): string => sql.replace(/\s+/g, ' ').trim()
@@ -329,7 +331,7 @@ export const createPublishedDatabase = (
     fsyncParent(path)
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    unavailable(`Cannot save the dev workspace database ${path}: ${errorText(cause)}`)
+    unavailable(`Cannot save the dev checkout database ${path}: ${errorText(cause)}`)
   } finally {
     try {
       db?.close()
@@ -378,7 +380,7 @@ const configureRecordDb = (db: DatabaseSync, path: string, kind: 'catalog' | 'sh
   if (!validatedFiles.has(identity)) {
     if (schemaCatalog(db) !== expectedCatalog(schemaFor(kind)))
       unavailable(
-        `Dev workspace database has the wrong schema: ${path}. Quit all dev sessions and ask the user to check the saved checkout data.`
+        `Dev checkout database has the wrong schema: ${path}. Quit all dev sessions and ask the user to check the saved checkout data.`
       )
     if (textField(first(db, 'PRAGMA integrity_check'), 'integrity_check') !== 'ok')
       requireReview(`Dev's checkout database is corrupt: ${path}`)
@@ -391,6 +393,9 @@ export interface RecordConnection {
   readonly db: DatabaseSync
   readonly identity: string | undefined
 }
+export const cannotEnableWalText = (path: string): string =>
+  `Cannot enable WAL for dev's new checkout database: ${path}`
+
 export const openRecordConnection = (
   path: string,
   kind: 'catalog' | 'shard',
@@ -399,7 +404,7 @@ export const openRecordConnection = (
   try {
     const existed = lstatIfExists(path) !== undefined
     if (!existed) {
-      if (initialize === undefined) unavailable(`Dev workspace database is missing: ${path}`)
+      if (initialize === undefined) unavailable(`Dev checkout database is missing: ${path}`)
       createPublishedDatabase(path, kind, initialize)
     }
     databaseFile(path)
@@ -412,8 +417,7 @@ export const openRecordConnection = (
     try {
       if (!existed) {
         const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
-        if (mode.toLowerCase() !== 'wal')
-          unavailable(`Cannot enable WAL for dev's new checkout database: ${path}`)
+        if (mode.toLowerCase() !== 'wal') unavailable(cannotEnableWalText(path))
       }
       const identity = configureRecordDb(db, path, kind)
       return { db, identity: identity === opening ? identity : undefined }
@@ -423,8 +427,8 @@ export const openRecordConnection = (
     }
   } catch (cause) {
     if (cause instanceof WorkspaceError) throw cause
-    if (sqliteBusy(cause)) blocked(`Dev workspace database is busy: ${path}`)
-    unavailable(`Cannot open the dev workspace database ${path}: ${errorText(cause)}`)
+    if (sqliteBusy(cause)) blocked(`Dev checkout database is busy: ${path}`)
+    unavailable(`Cannot open the dev checkout database ${path}: ${errorText(cause)}`)
   }
 }
 export const recordConnectionCurrent = (connection: RecordConnection, path: string): boolean => {

@@ -130,10 +130,10 @@ const recordHandle = (
 }
 
 const takeLock = (directory: string, id: string) =>
-  sync('Cannot take the orb owner lock', () =>
+  sync('Cannot take the orb record lock', () =>
     acquireExclusiveLock(
       join(directory, 'owner.sqlite'),
-      `Orb record ${id} is owned by another process`
+      `Orb record ${id} is held by another process`
     )
   )
 

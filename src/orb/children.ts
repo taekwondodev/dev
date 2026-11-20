@@ -64,7 +64,7 @@ const failureText = (cause: Cause.Cause<unknown>): string => errorText(Cause.squ
 
 const divergenceText = (reason: string): string =>
   reason === 'history-rewritten'
-    ? "the child's orb rewrote its start commit (an amend or a rebase)"
+    ? "the delegated agent's orb rewrote its start commit (an amend or a rebase)"
     : `its return diverged (${reason})`
 
 export const capacityExhausted = (
@@ -79,7 +79,7 @@ export const capacityExhausted = (
     Effect.flatMap(count =>
       Effect.fail(
         orbFailure(
-          `orbit capacity exhausted: ${count}; wait for a child to finish`,
+          `orbit capacity exhausted: ${count}; wait for a delegated agent to finish`,
           refusal,
           refusal.status
         )
@@ -288,7 +288,7 @@ export const makeChildOrbs = (
         targets.set(orb, {
           ssh: started.ssh,
           root: checkout.root,
-          label: `the orb of its coordinator, ${shortId(started.orbId)}`,
+          label: `the orb of the agent that delegated it, ${shortId(started.orbId)}`,
         })
         return orb
       })

@@ -445,8 +445,8 @@ const messagePayload = (value: unknown, at: number): Payload | undefined => {
 const customMessagePayload = (value: unknown): Payload | undefined =>
   Option.getOrUndefined(
     Option.map(decodeCustomMessage(value), (entry): Payload => {
-      if (entry.customType === 'dev/workspace-handoff') return { kind: 'handoff' }
-      if (entry.customType === 'dev/work-outcome')
+      if (entry.customType === 'dev/workspace-switch') return { kind: 'handoff' }
+      if (entry.customType === 'dev/work-result')
         return { kind: 'outcome', attempts: outcomeAttempts(entry.details) }
       return { kind: 'other' }
     })

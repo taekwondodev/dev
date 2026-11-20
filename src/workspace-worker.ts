@@ -69,12 +69,12 @@ interface CallbackWaiter {
 const outcomeOf = (cause: unknown): WorkspaceError['outcome'] =>
   cause instanceof WorkspaceError ? cause.outcome : 'unavailable'
 const send = (message: WorkspaceWorkerMessage): void => {
-  if (port === null) throw new Error('Workspace worker has no parent port')
+  if (port === null) throw new Error('The dev checkout service thread has no parent port')
   const encoded = JSON.stringify(message)
   if (Buffer.byteLength(encoded, 'utf8') > MAX_MESSAGE_BYTES)
     throw new WorkspaceError({
       outcome: 'unavailable',
-      message: 'Workspace response exceeded the size limit',
+      message: 'Checkout response exceeded the size limit',
     })
   port.postMessage(message)
 }
@@ -90,7 +90,7 @@ const startEngine = (): WorkspaceEngine | undefined => {
     } catch {
       throw new WorkspaceError({
         outcome: 'invalid',
-        message: 'Dev could not start workspace support: invalid settings',
+        message: 'Dev could not start checkout support: invalid settings',
       })
     }
     const started = new WorkspaceEngine(data.root ?? defaultAuthorityRoot())
@@ -120,16 +120,16 @@ const readersUntil = (deadline: number): EvidenceReaders => ({
 })
 
 const repositoryOf = (authority: WorkspaceAuthority, workspaceId: WorkspaceId): WorkspaceId => {
-  const failures: unknown[] = []
+  let failure: Error | undefined
   for (const repository of authority.listRepositories()) {
     try {
       if (inDb(authority, repository.id, db => getWorkspace(db, workspaceId) !== undefined))
         return repository.id
     } catch (cause) {
-      failures.push(cause)
+      failure ??= cause instanceof Error ? cause : new Error(errorText(cause))
     }
   }
-  if (failures[0] !== undefined) throw failures[0]
+  if (failure !== undefined) throw failure
   return invalid(`Dev has no saved checkout ${workspaceId}`)
 }
 
@@ -432,7 +432,7 @@ if (port !== null && engine !== undefined) {
         const exhaustive: never = request
         throw new WorkspaceError({
           outcome: 'invalid',
-          message: `Unsupported workspace RPC: ${exhaustive}`,
+          message: `Unsupported checkout RPC: ${exhaustive}`,
         })
       }
     }
@@ -449,7 +449,7 @@ if (port !== null && engine !== undefined) {
       if (closing && request.op !== 'close')
         throw new WorkspaceError({
           outcome: 'unavailable',
-          message: 'Dev workspace service is closing',
+          message: 'Dev checkout service is closing',
         })
       if (request.op === 'close') currentCloseId = id
       const reply = await execute(request, sentAt)
@@ -492,7 +492,7 @@ if (port !== null && engine !== undefined) {
       if (activeRequests.has(message.id)) {
         failResponse(
           message.id,
-          new WorkspaceError({ outcome: 'invalid', message: 'Duplicate workspace RPC ID' })
+          new WorkspaceError({ outcome: 'invalid', message: 'Duplicate checkout RPC ID' })
         )
         return
       }
@@ -500,7 +500,7 @@ if (port !== null && engine !== undefined) {
       if (Option.isNone(request)) {
         failResponse(
           message.id,
-          new WorkspaceError({ outcome: 'invalid', message: 'Invalid workspace request' })
+          new WorkspaceError({ outcome: 'invalid', message: 'Invalid checkout request' })
         )
         return
       }
@@ -512,7 +512,7 @@ if (port !== null && engine !== undefined) {
         send({
           type: 'startup-failure',
           outcome: 'unavailable',
-          message: 'Dev received an invalid workspace request',
+          message: 'Dev received an invalid checkout request',
         })
       } finally {
         port.close()

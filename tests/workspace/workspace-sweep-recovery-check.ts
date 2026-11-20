@@ -410,13 +410,13 @@ try {
     (await lifecycle.inspect({ cwd: repo })).filter(view =>
       view.pending.some(operation => operation.kind === 'allocation')
     )
-  const crashedAllocation = async (name: string) => {
+  const crashedAllocation = async (name: string, fault: ReleaseFault = 'after-git-add') => {
     const checkout = userCheckout(name)
     const owner = await reserve(checkout)
     await owner.owner.close()
     const faulty = await openLifecycle({
       root,
-      startWorker: faultyWorker('after-git-add', checkout),
+      startWorker: faultyWorker(fault, checkout),
     })
     const contender = await faulty.attach({ conversation: conversation(), cwd: checkout })
     await assert.rejects(
@@ -478,6 +478,26 @@ try {
       )
       assert.equal(existsSync(unfinished.path), false)
       assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
+      assert.deepEqual(await pendingAllocations(), [])
+    }
+  )
+
+  await claim(
+    'a worktree allocation interrupted before it started Git is listed with the stage label an agent reads, creates nothing, and dev workspace release closes it',
+    async () => {
+      const { unfinished } = await crashedAllocation(
+        'allocation-planned',
+        'before-allocation-start'
+      )
+      const [operation] = unfinished.pending
+      assert.deepEqual([operation?.kind, operation?.stage], ['allocation', 'intent'])
+      assert.equal(
+        unfinished.reason,
+        `No usable checkout after operation ${operation?.id} (planned).`
+      )
+      assert.equal(existsSync(unfinished.path), false, 'Git created nothing')
+      assert.ok(!git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
+      await lifecycle.release(unfinished.taskId)
       assert.deepEqual(await pendingAllocations(), [])
     }
   )

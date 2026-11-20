@@ -10,6 +10,8 @@ import type {
 } from './work-domain.ts'
 import { redactSecrets } from './error-text.ts'
 
+export const RUN_CANCELLED = 'Run cancelled'
+
 export const OUTPUT_PREVIEW = 512
 export const TRUNCATED_RESULT =
   'Too long to show; read it with work inspect, this id, stream "result", offset 0'
@@ -74,19 +76,19 @@ const outcomeObject = (outcome: AttemptOutcome): ModelObject => {
   }
 }
 
-const inspectionObject = (inspection: AttemptInspection): ModelObject => {
-  const streams = inspection.logs.filter(log => log.available && log.text).map(log => log.stream)
+const inspectionObject = ({ run, logs, staleArtifact: stale }: AttemptInspection): ModelObject => {
+  const streams = logs.filter(log => log.available && log.text).map(log => log.stream)
   return {
-    ...attemptObject(inspection),
+    ...attemptObject(run),
     ...present([
-      ['staleArtifact', staleArtifact(inspection.staleArtifact)],
-      ['workflowTaskId', inspection.workflowTaskId],
-      ['workspaceId', inspection.workspaceId],
-      ['access', inspection.access],
-      ['invokedSkill', inspection.invokedSkill],
-      ['cwd', inspection.cwd === inspection.worktree?.path ? undefined : inspection.cwd],
-      ['streams', streams],
-      ['unavailable', unavailableStreams(inspection.logs)],
+      ['staleArtifact', stale === undefined ? undefined : staleArtifact(stale)],
+      ['workflowTaskId', run.workflowTaskId],
+      ['workspaceId', run.workspaceId],
+      ['access', run.access],
+      ['invokedSkill', run.invokedSkill],
+      ['cwd', run.cwd === run.worktree?.path ? undefined : run.cwd],
+      ['streams', streams.length === 0 ? undefined : streams],
+      ['unavailable', unavailableStreams(logs)],
     ]),
   }
 }

@@ -124,6 +124,8 @@ const exitOf = (child: ChildProcess): Deferred.Deferred<ShellExit, ShellCommandE
   return exited
 }
 
+const SHELL_DID_NOT_START = 'the shell did not start'
+
 export const makeWorkspaceShell = Effect.fnUntraced(function* (
   admit: (
     cwd: string,
@@ -237,9 +239,9 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
     if (pid === undefined) {
       const outcome = yield* Effect.exit(Deferred.await(exited))
       return yield* notLaunched(
-        'the shell did not start',
+        SHELL_DID_NOT_START,
         Exit.isFailure(outcome)
-          ? failure('the shell did not start')
+          ? failure(SHELL_DID_NOT_START)
           : failure('The shell exited before dev could identify it')
       )
     }

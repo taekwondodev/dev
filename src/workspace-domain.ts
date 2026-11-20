@@ -383,7 +383,7 @@ export const RelativeFilePath = Schema.NonEmptyString.check(
     !value.includes('\0') &&
     !value.split('/').some(part => part === '' || part === '.' || part === '..')
       ? undefined
-      : 'must be a normalized relative path inside the workspace'
+      : 'must be a normalized relative path inside the checkout'
   )
 )
 

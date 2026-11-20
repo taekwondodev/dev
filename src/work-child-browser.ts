@@ -4,7 +4,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 import { BrowserOwnerError } from './web-browser-owner.ts'
-import { awaitReply, type ReplyChannel } from './work-child-ipc.ts'
+import { awaitReply, type ReplyChannel, LOST_CONNECTION_TO_DEV } from './work-child-ipc.ts'
 import type { ChildMessage } from './work-protocol.ts'
 
 const Reply = Schema.Struct({
@@ -38,7 +38,7 @@ export const requestBrowserOwner = (
       resume(result)
     }
     const cleanup = awaitReply(channel, requestId, {
-      disconnected: () => settle(Effect.fail(unavailable('Lost connection to dev'))),
+      disconnected: () => settle(Effect.fail(unavailable(LOST_CONNECTION_TO_DEV))),
       reply: raw => {
         const reply = decodeReply(raw)
         if (Option.isNone(reply) || reply.value.requestId !== requestId) return

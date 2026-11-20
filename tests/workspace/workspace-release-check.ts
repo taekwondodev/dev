@@ -61,6 +61,7 @@ import { acquireMaintenance, acquireRuntime } from '../../src/runtime-coordinati
 import { authorityPaths } from '../../src/workspace-authority-root.ts'
 import { acquirePathGates, releaseGates } from '../../src/workspace-gates.ts'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import * as Schema from 'effect/Schema'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -366,7 +367,7 @@ try {
         }),
         'review-required',
         [
-          m1.workspaceId,
+          `(review-required) did not finish on checkout ${m1.workspaceId}.`,
           `Do not retry this call. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${taskB}, which deletes all of that task's managed worktrees and artifacts. That retries the release; check its result.`,
         ]
       )
@@ -763,7 +764,7 @@ try {
           selection: { taskId, workspaceId: managed.workspaceId },
         }),
         'review-required',
-        [managed.workspaceId]
+        [`(started) did not finish on checkout ${managed.workspaceId}.`]
       )
       const results = await lifecycle.release(taskId)
       assert.equal(resultOf(results, managed.workspaceId).outcome, 'removed')
@@ -1994,8 +1995,24 @@ try {
             String(properties[field]?.description).includes(variant.action),
             `${field} says it is used by ${variant.action}`
           )
+      assert.deepEqual(
+        { type: properties.path?.type, anyOf: properties.path?.anyOf },
+        { type: 'string', anyOf: undefined },
+        'path is declared once, as a string'
+      )
+      const decodeInput = Schema.decodeUnknownExit(WorkspaceToolInputSchema)
+      for (const path of ['', 'a/../b', './a'])
+        assert.equal(
+          decodeInput({
+            action: 'record-publication',
+            path,
+            destination: { repository: 'owner/repo', number: 1 },
+          })._tag,
+          'Failure',
+          `the tool refuses ${JSON.stringify(path)} as a path`
+        )
       const tool = { name: 'workspace', description: '', parameters } as unknown as Tool
-      const validate = (input: JsonObject) =>
+      const validate = (input: JsonObject): unknown =>
         validateToolArguments(tool, {
           type: 'toolCall',
           id: 'v',
@@ -2019,6 +2036,11 @@ try {
           action: 'record-publication',
           path: 'report.txt',
           destination: { repository: 'owner/repo', number: 1, commentId: 2 },
+        },
+        {
+          action: 'record-publication',
+          path: '/task-folder/report.txt',
+          destination: { repository: 'owner/repo', number: 1 },
         },
       ]
       for (const input of accepted) assert.deepEqual(validate(input), input)
@@ -2261,7 +2283,7 @@ try {
         JSON.parse(recorded.text),
         {
           recorded: 'publication',
-          root: 'workspace',
+          root: 'checkout',
           path: 'report.txt',
           byteLength: Buffer.byteLength('published report\n'),
           readBack: 'text-in-body',

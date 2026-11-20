@@ -67,11 +67,13 @@ export const resolveSelection = (
       : matches.filter(item => item.workspace.id === selection.workspaceId)
   if (selected.length === 0) invalid(`No saved checkout matches task ${selection.taskId}`)
   if (selected.length > 1)
-    ambiguous(`Task ${selection.taskId} has multiple workspaces; provide an exact workspace ID`)
+    ambiguous(`Task ${selection.taskId} has multiple checkouts; provide an exact checkout ID`)
   const [result] = selected
   if (result === undefined) return invalid('Selected checkout is unavailable')
   return result
 }
+
+const CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING = 'The current checkout changed before switching'
 
 export const selectWorkspace = (
   authority: WorkspaceAuthority,
@@ -189,7 +191,7 @@ export const selectWorkspace = (
         if (source.repo === target.repo) {
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('The current checkout changed before switching')
+            requireReview(CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING)
           putBinding(db, { ...current, pendingOperationId: operationId })
         }
       })
@@ -199,7 +201,7 @@ export const selectWorkspace = (
         transaction(db, () => {
           const current = getBinding(db, state.key)
           if (current === undefined || current.revision !== state.binding.revision)
-            requireReview('The current checkout changed before switching')
+            requireReview(CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING)
           putBinding(db, { ...current, pendingOperationId: operationId })
         })
       )

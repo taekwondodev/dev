@@ -309,7 +309,7 @@ try {
       const before = displayed().length
       await runtime.session.prompt('/workspace release pre-existing')
       assert.deepEqual(displayed().slice(before), [
-        "Release runs only from a terminal. Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its unreserved pre-existing checkouts and keeps their files.",
+        "Release runs only from a terminal. Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its pre-existing checkouts that no task keeps and keeps their files.",
       ])
     }
   )

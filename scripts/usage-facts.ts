@@ -88,7 +88,7 @@ const ERROR_TEXTS: readonly ErrorText[] = [
   {
     outcome: 'blocked',
     pattern:
-      /^(?:Checkout access is blocked (?:while|because) [^;]+|This conversation (?:is closing|changed sessions or checkouts meanwhile)); (?:the (?:tool|call) did not run|no background work started)\./,
+      /^Checkout access is blocked because [^;]+; (?:the (?:tool|call) did not run|no background work started)\./,
   },
   {
     outcome: 'blocked',
@@ -781,7 +781,8 @@ const CHANGE_DIRECTORY = /^cd(?:\s|$)/
 const SHELL_CONTROL = /[|;&<>`$()\n]/
 const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/
 const COMMENT_START = /[\s;&|()]/
-const GIT_TRUNCATED = /\n\n\[git output truncated at \d+ bytes\]$/
+const GIT_TRUNCATED =
+  /\n\n\[git output truncated at \d+ bytes\]$|^The patch is larger than \d+ KB\. /
 
 interface Heredoc {
   readonly delimiter: string
