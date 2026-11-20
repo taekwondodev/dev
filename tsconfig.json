@@ -22,7 +22,14 @@
           "unsafeEffectTypeAssertion": "error",
           "missingReturnYieldStar": "error",
           "missingStarInYieldEffectGen": "error",
-          "preferNamespaceImport": "error"
+          "preferNamespaceImport": "error",
+          "missingConcurrencyOption": "error",
+          "promiseAllInEffect": "error",
+          "promiseRaceInEffect": "error",
+          "onExitFailureToOnError": "error",
+          "flatMapMapToZipWith": "error",
+          "flatMapProvideServiceToProvideServiceEffect": "error",
+          "forLoopPushToForEach": "error"
         },
         "namespaceImportPackages": ["effect", "@effect/platform-node"],
         "allowedUnstableApis": [

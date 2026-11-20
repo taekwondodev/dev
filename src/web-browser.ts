@@ -470,7 +470,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
         ),
         autoAttach(sessionId),
       ],
-      { discard: true }
+      { discard: true, concurrency: 1 }
     )
   const enableWorker = (sessionId: string) =>
     cdp
@@ -592,7 +592,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
       return Effect.forEach(
         pending,
         ([requestId, sessionId]) => Effect.ignore(refuse(requestId, sessionId)),
-        { discard: true }
+        { discard: true, concurrency: 'unbounded' }
       ).pipe(
         Effect.andThen(
           Effect.forEach(
@@ -601,7 +601,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
               Effect.ignore(
                 cdp.send('Emulation.setScriptExecutionDisabled', { value: true }, sessionId)
               ),
-            { discard: true }
+            { discard: true, concurrency: 'unbounded' }
           )
         ),
         Effect.andThen(

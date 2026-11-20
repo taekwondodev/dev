@@ -356,12 +356,17 @@ export const createWorkExtension = ({
     view.publishing = true
     Effect.runFork(
       ownedBy(owner, work =>
-        Effect.all({
-          snapshot:
-            refresh || view.snapshot === undefined ? work.snapshot : Effect.succeed(view.snapshot),
-          live: work.live,
-          quiet: work.quiet,
-        })
+        Effect.all(
+          {
+            snapshot:
+              refresh || view.snapshot === undefined
+                ? work.snapshot
+                : Effect.succeed(view.snapshot),
+            live: work.live,
+            quiet: work.quiet,
+          },
+          { concurrency: 1 }
+        )
       ).pipe(
         Effect.flatMap(({ snapshot, live, quiet }) =>
           Effect.sync(() => {
@@ -733,33 +738,36 @@ export const createWorkExtension = ({
     notices: readonly (readonly [AttemptId, QuietNotice])[]
   ): Effect.Effect<readonly DescribedQuiet[]> => {
     const at = now()
-    return Effect.forEach(notices, ([id, notice]) =>
-      ownedBy(owner, work => work.inspect(id)).pipe(
-        Effect.map((description): DescribedQuiet => {
-          if (description.status !== 'running' && description.status !== 'waiting')
-            return { id, notice, failed: false }
-          return {
-            id,
-            notice,
-            failed: false,
-            item: {
+    return Effect.forEach(
+      notices,
+      ([id, notice]) =>
+        ownedBy(owner, work => work.inspect(id)).pipe(
+          Effect.map((description): DescribedQuiet => {
+            if (description.status !== 'running' && description.status !== 'waiting')
+              return { id, notice, failed: false }
+            return {
               id,
               notice,
-              quiet: {
-                outcome: outcomeView(description),
-                since: notice.since,
-                quietSeconds: Math.max(0, Math.round((at - notice.since) / 1000)),
-                runningSeconds: Math.max(0, Math.round((at - description.startedAt) / 1000)),
+              failed: false,
+              item: {
+                id,
+                notice,
+                quiet: {
+                  outcome: outcomeView(description),
+                  since: notice.since,
+                  quietSeconds: Math.max(0, Math.round((at - notice.since) / 1000)),
+                  runningSeconds: Math.max(0, Math.round((at - description.startedAt) / 1000)),
+                },
               },
-            },
-          }
-        }),
-        Effect.catchCause(cause =>
-          (isFailure(cause) ? reportFailure(cause) : Effect.void).pipe(
-            Effect.as<DescribedQuiet>({ id, notice, failed: true })
+            }
+          }),
+          Effect.catchCause(cause =>
+            (isFailure(cause) ? reportFailure(cause) : Effect.void).pipe(
+              Effect.as<DescribedQuiet>({ id, notice, failed: true })
+            )
           )
-        )
-      )
+        ),
+      { concurrency: 4 }
     )
   }
 

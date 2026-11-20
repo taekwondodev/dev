@@ -613,25 +613,28 @@ export const readSessions = Effect.fn('readSessions')(function* <A>(
   const path = join(dataHome, directory)
   if (!(yield* fs.exists(path))) return []
   const names = (yield* fs.readDirectory(path)).filter(name => name.endsWith('.jsonl')).toSorted()
-  return yield* Effect.forEach(names, name =>
-    fs.stream(join(path, name)).pipe(
-      Stream.decodeText(),
-      Stream.splitLines,
-      Stream.runFold(noLines, decodeLine),
-      Effect.map(({ entries, undecodable }) => [
-        project({
-          ref: `${directory}/${name}`,
-          name,
-          scope,
-          entries,
-          byId: new Map(entries.map(entry => [entry.id, entry])),
-          undecodable,
-        }),
-      ]),
-      Effect.catchIf(
-        error => error.reason._tag === 'NotFound',
-        () => Effect.succeed([])
-      )
-    )
+  return yield* Effect.forEach(
+    names,
+    name =>
+      fs.stream(join(path, name)).pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.runFold(noLines, decodeLine),
+        Effect.map(({ entries, undecodable }) => [
+          project({
+            ref: `${directory}/${name}`,
+            name,
+            scope,
+            entries,
+            byId: new Map(entries.map(entry => [entry.id, entry])),
+            undecodable,
+          }),
+        ]),
+        Effect.catchIf(
+          error => error.reason._tag === 'NotFound',
+          () => Effect.succeed([])
+        )
+      ),
+    { concurrency: 1 }
   ).pipe(Effect.map(results => results.flat()))
 })

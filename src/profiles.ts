@@ -122,8 +122,11 @@ const missingResources = (
   fs: FileSystem.FileSystem,
   required: readonly RequiredResource[]
 ): Effect.Effect<readonly RequiredResource[], unknown> =>
-  Effect.forEach(required, resource =>
-    fs.exists(resource.path).pipe(Effect.map(exists => (exists ? undefined : resource)))
+  Effect.forEach(
+    required,
+    resource =>
+      fs.exists(resource.path).pipe(Effect.map(exists => (exists ? undefined : resource))),
+    { concurrency: 'unbounded' }
   ).pipe(
     Effect.map(resources =>
       resources.filter((resource): resource is RequiredResource => resource !== undefined)
@@ -216,8 +219,10 @@ const existingPaths = (
   fs: FileSystem.FileSystem,
   paths: readonly string[]
 ): Effect.Effect<readonly string[], unknown> =>
-  Effect.forEach(paths, path =>
-    fs.exists(path).pipe(Effect.map(exists => (exists ? path : undefined)))
+  Effect.forEach(
+    paths,
+    path => fs.exists(path).pipe(Effect.map(exists => (exists ? path : undefined))),
+    { concurrency: 'unbounded' }
   ).pipe(Effect.map(values => values.filter((path): path is string => path !== undefined)))
 
 export const CANNOT_COMPOSE_PROFILE_RESOURCES = 'Cannot compose profile resources'
@@ -230,8 +235,10 @@ export const composeResources: (
     const projectCandidates = projectSkillPathCandidates(options.cwd, options.gitRoot)
     const projectPaths = yield* existingPaths(fs, projectCandidates)
     const candidates = [...projectPaths, ...options.profile.skillPaths]
-    const canonical = yield* Effect.forEach(candidates, path =>
-      fs.realPath(path).pipe(Effect.map(resolved => ({ path, resolved })))
+    const canonical = yield* Effect.forEach(
+      candidates,
+      path => fs.realPath(path).pipe(Effect.map(resolved => ({ path, resolved }))),
+      { concurrency: 'unbounded' }
     )
     const seen = new Set<string>()
     const paths = canonical.flatMap(({ path, resolved }) => {
