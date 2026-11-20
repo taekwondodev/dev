@@ -1,5 +1,4 @@
 import { join } from 'node:path'
-import { decodeNestedCalls } from './usage-codemode.ts'
 import {
   BACKGROUND_COMPACTION_USAGE,
   COMPACTION_OBSERVATION,
@@ -215,6 +214,22 @@ export interface ToolCall {
   readonly input: ToolInput
 }
 
+interface NestedCall {
+  readonly name: string
+  readonly status: 'ok' | 'error' | 'unfinished'
+  readonly durationMs: number | undefined
+  readonly input: ToolInput
+}
+
+type NestedCalls =
+  | 'missing'
+  | 'malformed'
+  | {
+      readonly complete: boolean
+      readonly malformedCalls: number
+      readonly calls: readonly NestedCall[]
+    }
+
 export type Block = { readonly type: 'text'; readonly text: string } | { readonly type: 'other' }
 
 type CwdRecord =
@@ -238,7 +253,7 @@ type Payload =
       readonly tool: string
       readonly isError: boolean
       readonly blocks: readonly Block[]
-      readonly nestedCalls: ReturnType<typeof decodeNestedCalls>
+      readonly nestedCalls: NestedCalls
       readonly truncation: TruncationDetails | 'malformed' | undefined
       readonly attempt: AttemptRecord | undefined
       readonly usage: Usage | undefined
@@ -352,6 +367,46 @@ const inputOf = (name: string, args: unknown): ToolInput => {
       })
     default:
       return OTHER_INPUT
+  }
+}
+
+const decodeNestedEnvelope = Schema.decodeUnknownOption(
+  Schema.Struct({
+    calls: Schema.Array(Schema.Unknown),
+    complete: Schema.Boolean,
+  })
+)
+const decodeNestedCall = Schema.decodeUnknownOption(
+  Schema.Struct({
+    id: Schema.NonEmptyString,
+    name: Schema.NonEmptyString,
+    status: Schema.Literals(['ok', 'error', 'unfinished']),
+    durationMs: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+    arguments: Schema.optional(Schema.Unknown),
+  })
+)
+
+const decodeNestedCalls = (value: unknown): NestedCalls => {
+  if (value === undefined) return 'missing'
+  const envelope = decodeNestedEnvelope(value)
+  if (Option.isNone(envelope)) return 'malformed'
+  const calls = envelope.value.calls.flatMap(call =>
+    Option.match(decodeNestedCall(call), {
+      onNone: () => [],
+      onSome: (decoded): NestedCall[] => [
+        {
+          name: decoded.name,
+          status: decoded.status,
+          durationMs: decoded.durationMs,
+          input: inputOf(decoded.name, decoded.arguments),
+        },
+      ],
+    })
+  )
+  return {
+    complete: envelope.value.complete,
+    malformedCalls: envelope.value.calls.length - calls.length,
+    calls,
   }
 }
 
