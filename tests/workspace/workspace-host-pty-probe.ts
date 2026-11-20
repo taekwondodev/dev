@@ -1470,10 +1470,10 @@ const toolResults = new Map(
     )
 )
 for (const toolCallId of ['stale-custom-lead', 'stale-shadow-read-lead'])
-  assert.equal(
-    toolResults.has(toolCallId),
-    false,
-    `${toolCallId} has no persisted result: Pi answers it synthetically on the next request`
+  assert.deepEqual(
+    toolResults.get(toolCallId),
+    { isError: true, text: 'Operation aborted' },
+    `${toolCallId} never started, so Pi persisted an aborted result for it`
   )
 for (const [toolCallId, reason] of [
   ['stale-native-lead', HANDOFF_REFUSAL],

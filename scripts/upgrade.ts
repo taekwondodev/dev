@@ -226,12 +226,14 @@ const target = Effect.fnUntraced(function* (name: string, spec: string) {
     : spec
 })
 
+const NPM_LOOKUPS = 8
+
 const upgradedVersions = Effect.fnUntraced(function* (versions: Versions | undefined) {
   if (versions === undefined) return undefined
   const entries = yield* Effect.forEach(
     Object.entries(versions),
     ([name, spec]) => target(name, spec).pipe(Effect.map(to => [name, to] as const)),
-    { concurrency: 8 }
+    { concurrency: NPM_LOOKUPS }
   )
   return Object.fromEntries(entries)
 })
@@ -271,17 +273,20 @@ const upgradedManifest = Effect.fnUntraced(function* (
   { document, manifest }: ManifestFile,
   pi: PiVersion
 ) {
-  const [dependencies, devDependencies] = yield* Effect.all([
-    upgradedVersions(manifest.dependencies),
-    upgradedVersions(manifest.devDependencies),
-  ])
+  const [dependencies, devDependencies] = yield* Effect.all(
+    [upgradedVersions(manifest.dependencies), upgradedVersions(manifest.devDependencies)],
+    { concurrency: 'unbounded' }
+  )
   const pinned: Versions = { ...dependencies, ...devDependencies }
   const overrides =
     manifest.overrides === undefined
       ? undefined
       : Object.fromEntries(
-          yield* Effect.forEach(Object.entries(manifest.overrides), ([name, value]) =>
-            overrideTarget(name, value, pinned).pipe(Effect.map(to => [name, to] as const))
+          yield* Effect.forEach(
+            Object.entries(manifest.overrides),
+            ([name, value]) =>
+              overrideTarget(name, value, pinned).pipe(Effect.map(to => [name, to] as const)),
+            { concurrency: NPM_LOOKUPS }
           )
         )
   const upgraded: Record<string, unknown> = { ...document }
@@ -376,7 +381,10 @@ const reclaimWorktree = Effect.gen(function* () {
   if ((yield* inWorktree(['rev-parse', '--show-toplevel'])) !== (yield* fs.realPath(worktree)))
     return yield* refuse('it is not a Git worktree; remove the directory first')
   const leftovers = (yield* worktreePaths(['--ignored'])).filter(
-    path => !path.startsWith('node_modules/') && basename(path) !== '.DS_Store'
+    path =>
+      !path.startsWith('node_modules/') &&
+      !path.startsWith('.dev/native/') &&
+      basename(path) !== '.DS_Store'
   )
   const branch = yield* inWorktree(['branch', '--show-current'])
   const unmerged = yield* inWorktree(['rev-list', 'HEAD', '--not', 'origin/main'])

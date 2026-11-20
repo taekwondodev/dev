@@ -429,9 +429,9 @@ const createRuntime = Effect.fnUntraced(function* (
       : noUiTrustContext(cwd)
   const modelRuntime = yield* (
     parts.modelRuntime ??
-      fromPromise('Cannot create Pi model runtime', () =>
-        api.ModelRuntime.create({ authPath: globalPiAuthPath() })
-      )
+    fromPromise('Cannot create Pi model runtime', () =>
+      api.ModelRuntime.create({ authPath: globalPiAuthPath() })
+    )
   )
   const compaction = yield* createBackgroundCompaction(api, packageRoot).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
@@ -508,8 +508,22 @@ const createRuntime = Effect.fnUntraced(function* (
     work.bindSession(result.session)
     parts.programStatus.observe(work.restingState)
   })
-  return { ...result, services, diagnostics: services.diagnostics }
+  const { modelFallbackMessage } = result
+  const switchedModelWarning =
+    modelFallbackMessage !== undefined && result.session.model !== undefined
+      ? [{ type: 'warning' as const, message: modelFallbackMessage }]
+      : []
+  return { ...result, services, diagnostics: [...services.diagnostics, ...switchedModelWarning] }
 })
+
+export const interactiveStartup = (runtime: AgentRuntime) => {
+  const { modelFallbackMessage } = runtime
+  const loginGuidance =
+    runtime.session.model === undefined && modelFallbackMessage !== undefined
+      ? { modelFallbackMessage }
+      : {}
+  return { startupDiagnostics: runtime.takeUnreportedDiagnostics(), ...loginGuidance }
+}
 
 export const makeRuntimeFactory = (
   parts: RuntimeParts,
@@ -546,7 +560,7 @@ const runInteractive = Effect.fnUntraced(function* (
   terminal: InteractiveTerminal | undefined
 ): Effect.fn.Return<void, LauncherError> {
   const mode = new api.InteractiveMode(runtime, {
-    startupDiagnostics: [...runtime.diagnostics],
+    ...interactiveStartup(runtime),
     ...(terminal === undefined ? {} : { terminal }),
   })
   silenceToolExpansionStatus(mode)

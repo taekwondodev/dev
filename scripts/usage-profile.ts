@@ -190,6 +190,7 @@ export const profileUsage = Effect.fn('profileUsage')(function* ({
   if (selection.kind === 'export') yield* fs.makeDirectory(selection.directory, { recursive: true })
   yield* Effect.forEach(exported, ([path, content]) => fs.writeFileString(path, content), {
     discard: true,
+    concurrency: 'unbounded',
   })
   return formatReport(report, [privateReport, ...exported.map(([path]) => path)])
 })

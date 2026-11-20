@@ -237,7 +237,7 @@ const profile = Effect.fnUntraced(
     const dataHome = Option.isSome(requestedDataHome)
       ? resolve(requestedDataHome.value)
       : yield* defaultDataHome
-    const parsed = yield* Effect.forEach(options('--period'), parsePeriod)
+    const parsed = yield* Effect.forEach(options('--period'), parsePeriod, { concurrency: 1 })
     const periods = Arr.isReadonlyArrayNonEmpty(parsed) ? parsed : Arr.of(ALL_TIME)
     const [period, ...more] = periods
     if (Option.isSome(exportTo) && more.length > 0)

@@ -244,9 +244,8 @@ export const makeChildOrbs = (
           yield* record.update({ phase: 'active', uploadedHead: checkout.head })
           return { ssh, orbId: created.id, label, host }
         }).pipe(
-          Effect.onExit(exit => {
-            if (Exit.isSuccess(exit)) return Effect.void
-            return Effect.gen(function* () {
+          Effect.onError(() =>
+            Effect.gen(function* () {
               yield* Scope.close(scope, Exit.void)
               const { orbId } = record.current()
               if (orbId === undefined) {
@@ -257,7 +256,7 @@ export const makeChildOrbs = (
               cleanup = ` ${removed.text}`
               yield* state({ id: orbId, status: removed.status, report: removed.text })
             })
-          }),
+          ),
           Effect.mapError(error => orbFailure(`${error.message}${cleanup}`, error, error.status))
         )
         const started = yield* restore(steps)

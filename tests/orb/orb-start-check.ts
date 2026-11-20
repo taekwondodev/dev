@@ -336,7 +336,7 @@ const play = (view: OrbStartView, steps: readonly Step[]) =>
       const pause = steps[index - 1]
       return typeof pause === 'number' ? shown.pipe(Effect.delay(pause)) : shown
     },
-    { discard: true }
+    { discard: true, concurrency: 1 }
   )
 
 const ORB = 'abcd1234-full-id'
