@@ -217,7 +217,7 @@ const recordHostNotices =
             return (
               event: string,
               handler: (payload: unknown, context: ExtensionContext) => unknown
-            ) =>
+            ): unknown =>
               Reflect.apply(target.on, target, [
                 event,
                 (payload: unknown, context: ExtensionContext) =>
@@ -230,7 +230,7 @@ const recordHostNotices =
                 string,
                 unknown
               >
-            ) =>
+            ): unknown =>
               Reflect.apply(target.registerCommand, target, [
                 name,
                 {
@@ -302,13 +302,13 @@ await claim(
     const inspectResult = await readOnly(['inspect', squatterTaskId])
     assert.equal(listResult.exitCode, 0, listResult.text)
     assert.equal(inspectResult.exitCode, 0, inspectResult.text)
-    const squatterRow = `task ${squatterTaskId} — workspace ${squatterAdmission.grant.workspaceId}`
+    const squatterRow = `task ${squatterTaskId} — checkout ${squatterAdmission.grant.workspaceId}`
     assert.deepEqual(
       listResult.text.split('\n').filter(line => !line.startsWith(' ')),
-      [`Workspace list for repository ${lead}:`, squatterRow]
+      [`Checkout list for repository ${lead}:`, squatterRow]
     )
     const inspected = inspectResult.text.split('\n')
-    assert.equal(inspected[0], `Workspace records for exact task ${squatterTaskId}: ${squatterRow}`)
+    assert.equal(inspected[0], `Checkout records for exact task ${squatterTaskId}: ${squatterRow}`)
     assert.ok(
       inspected.some(line => line.startsWith(`  use ${squatterAdmission.grant.useId}: write, `)),
       inspectResult.text
@@ -695,7 +695,7 @@ await claim(
   }
 )
 await claim(
-  'a quit sweep that never reports back exits 1 saying its outcome is unknown and pointing to the list command, not that nothing was released',
+  'a quit sweep that never reports back exits 1 saying its result is unknown and pointing to the list command, not that nothing was released',
   async () => {
     process.exitCode = undefined
     const printed: string[] = []
@@ -731,7 +731,7 @@ await claim(
     }
     const text = printed.join('')
     assert.equal(process.exitCode, 1)
-    assert.ok(text.includes('its outcome is unknown'), text)
+    assert.ok(text.includes('its result is unknown'), text)
     assert.ok(text.includes('dev workspace list'), text)
     assert.ok(!text.includes('nothing was released'), text)
     assert.ok(existsSync(managed), 'the stubbed sweep touched nothing')

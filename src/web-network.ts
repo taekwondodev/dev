@@ -83,7 +83,7 @@ export const validateUrl = (input: string): Effect.Effect<URL, WebNetworkError> 
     const literal = isIP(host) !== 0
     if (literal && !isPublicAddress(host))
       return Effect.fail(
-        refuse('destination', `Private or reserved address refused before connecting: ${host}`)
+        refuse('destination', `Non-public address refused before connecting: ${host}`)
       )
     const last = host.split('.').at(-1) ?? ''
     if (
@@ -100,6 +100,8 @@ const DNS_TIMEOUT = Duration.seconds(10)
 
 export type LookupAll = (hostname: string) => Promise<readonly { readonly address: string }[]>
 
+const hostHasNoAddressText = (host: string): string => `${host} has no address`
+
 export const makeAddressResolver =
   (lookupAll: LookupAll) =>
   (hostname: string): Effect.Effect<string, WebNetworkError> =>
@@ -108,7 +110,7 @@ export const makeAddressResolver =
       if (isIP(host) !== 0)
         return isPublicAddress(host)
           ? Effect.succeed(host)
-          : Effect.fail(refuse('destination', `Private or reserved address refused: ${host}`))
+          : Effect.fail(refuse('destination', `Non-public address refused: ${host}`))
       return Effect.tryPromise({
         try: () => lookupAll(host),
         catch: cause => refuse('dns', `${host} could not be resolved: ${errorText(cause)}`),
@@ -118,18 +120,18 @@ export const makeAddressResolver =
           orElse: () => Effect.fail(refuse('dns', `${host} did not resolve within 10 seconds`)),
         }),
         Effect.flatMap(answers => {
-          if (answers.length === 0) return Effect.fail(refuse('dns', `${host} has no address`))
+          if (answers.length === 0) return Effect.fail(refuse('dns', hostHasNoAddressText(host)))
           const blocked = answers.filter(answer => !isPublicAddress(answer.address))
           if (blocked.length > 0)
             return Effect.fail(
               refuse(
                 'destination',
-                `${host} resolves to a private or reserved address (${blocked.map(answer => answer.address).join(', ')}); refused before connecting`
+                `${host} resolves to a non-public address (${blocked.map(answer => answer.address).join(', ')}); refused before connecting`
               )
             )
           const [first] = answers
           return first === undefined
-            ? Effect.fail(refuse('dns', `${host} has no address`))
+            ? Effect.fail(refuse('dns', hostHasNoAddressText(host)))
             : Effect.succeed(first.address)
         })
       )

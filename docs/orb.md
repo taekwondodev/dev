@@ -134,7 +134,7 @@ The child's `bash`, `read`, `write`, `edit`, `grep`, `find` and `ls` run on its 
 
 Then dev copies the worktree, uncommitted changes included, to the same absolute path on the lead's orb, together with any branch it wrote, so the lead reads the result at the attempt's `worktree.path`; a writing leaf's result goes to its coordinator's orb instead. The copy disappears with that orb. Last, dev deletes the child's orb. The attempt's `orb` field records the orb's state, `DELETED` or `kept`, and where the work went. If the work cannot be saved, dev keeps the orb and its record, and the report names its id and delete command; the next `dev --orb` [recovers](#recovery) it like a crashed session's orb. A failed copy is reported and does not keep the orb, whose work is on the Mac.
 
-dev sets no limit on child orbs. orbit's `409` fails the attempt with `orbit capacity exhausted: <n> active orbs in the project; wait for a child to finish`, and running children are unaffected. An orb that reaches `ERROR`, or whose SSH cannot be reached after `ACTIVE`, is deleted and the attempt fails with the fault. Stopping a child during provisioning deletes its orb. A writing coordinator's orb outlives its leaves: dev ends it only after they settle.
+dev sets no limit on child orbs. orbit's `409` fails the attempt with `orbit capacity exhausted: <n> active orbs in the project; wait for a delegated agent to finish`, and running children are unaffected. An orb that reaches `ERROR`, or whose SSH cannot be reached after `ACTIVE`, is deleted and the attempt fails with the fault. Stopping a child during provisioning deletes its orb. A writing coordinator's orb outlives its leaves: dev ends it only after they settle.
 
 ### Return
 

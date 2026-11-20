@@ -2,7 +2,13 @@ import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-age
 import * as Effect from 'effect/Effect'
 import type * as JsonSchema from 'effect/JsonSchema'
 import * as Schema from 'effect/Schema'
-import { DocumentLink, RetrievalMethod, type DocumentSlice } from './web-documents.ts'
+import {
+  DocumentLink,
+  RetrievalMethod,
+  showsLink,
+  type DocumentSlice,
+  type PageLink,
+} from './web-documents.ts'
 import { READ_URL_TOOL } from './integrated-tools.ts'
 import type { ReadOutcome, WebReader } from './web-reader.ts'
 
@@ -64,7 +70,9 @@ export const ReadUrlResultSchema = Schema.Struct({
 })
 export type ReadUrlResult = typeof ReadUrlResultSchema.Type
 
-const resultDescriptions: { readonly [Field in keyof ReadUrlResult]-?: string } = {
+const resultDescriptions: {
+  readonly [Field in keyof ReadUrlResult]-?: string
+} = {
   outcome:
     'document: final part, no text cut; partial: more text via continuation or the page hit a size limit; failed: no text read.',
   requestedUrl: 'URL requested.',
@@ -122,7 +130,7 @@ export const toResult = (outcome: ReadOutcome): ReadUrlResult => {
     totalChars: document.text.length,
     complete,
     ...(slice.continuation === undefined ? {} : { continuation: slice.continuation }),
-    links: document.links.slice(0, RETURNED_LINKS),
+    links: document.links.slice(0, RETURNED_LINKS).map(({ text, url }) => ({ text, url })),
     suggestions: document.suggestions,
     limitations: document.limitations,
   }
@@ -140,96 +148,6 @@ const opensWith = ({ text, complete }: DocumentSlice, title: string): boolean =>
   return firstLine.replace(/^#+\s+/, '').trim() === title.trim()
 }
 
-const URL_CLOSERS: Readonly<Record<string, string>> = { '(': ')', '<': '>', '"': '"', "'": "'" }
-
-type UrlSpan = readonly [start: number, end: number]
-
-const schemeStart = (text: string, separator: number): number => {
-  let at = separator
-  while (at > 0 && /[A-Za-z0-9+.-]/.test(text[at - 1] ?? '')) at -= 1
-  return at
-}
-
-const QUOTE_CLOSERS: Readonly<Record<string, string>> = { '<': '>', '"': '"', '`': '`' }
-
-const quotedUrlEnd = (text: string, start: number, closer: string): number => {
-  let at = start
-  while (at < text.length && !/\s/.test(text[at] ?? '') && text[at] !== closer) at += 1
-  return at
-}
-
-const unquotedUrlEnd = (text: string, start: number, closers: string): number => {
-  const open = { ')': 0, ']': 0 }
-  let at = start
-  for (; at < text.length; at += 1) {
-    const char = text[at] ?? ''
-    if (/\s/.test(char) || (char === '<' && closers.includes(char))) break
-    if (char === '(') open[')'] += 1
-    else if (char === '[') open[']'] += 1
-    else if (char === ')' || char === ']') {
-      if (open[char] === 0 && closers.includes(char)) break
-      open[char] = Math.max(0, open[char] - 1)
-    }
-  }
-  return at
-}
-
-const urlEnd = (text: string, start: number): number => {
-  const opener = text[start - 1] ?? ''
-  const quoteCloser = QUOTE_CLOSERS[opener]
-  if (quoteCloser !== undefined) return quotedUrlEnd(text, start, quoteCloser)
-  return unquotedUrlEnd(text, start, opener === '(' ? ')' : '<)]')
-}
-
-const outerUrlSpans = (text: string): readonly UrlSpan[] => {
-  const spans: UrlSpan[] = []
-  let covered = 0
-  for (let separator = text.indexOf('://'); separator !== -1;) {
-    const start = schemeStart(text, separator)
-    if (start < separator && start >= covered) {
-      covered = urlEnd(text, start)
-      spans.push([start, covered])
-    }
-    separator = text.indexOf('://', separator + 3)
-  }
-  return spans
-}
-
-const insideUrl = (spans: readonly UrlSpan[], start: number): boolean => {
-  let low = 0
-  let high = spans.length
-  while (low < high) {
-    const middle = (low + high) >>> 1
-    if ((spans[middle]?.[0] ?? start) < start) low = middle + 1
-    else high = middle
-  }
-  return start < (spans[low - 1]?.[1] ?? 0)
-}
-
-const startsUrl = (text: string, spans: readonly UrlSpan[], start: number): boolean =>
-  start === 0 || (/[\s(<"'[`>]/.test(text[start - 1] ?? '') && !insideUrl(spans, start))
-
-const endsUrl = (text: string, start: number, end: number, atDocumentEnd: boolean): boolean => {
-  const next = text[end]
-  if (next === undefined) return atDocumentEnd
-  const closer = URL_CLOSERS[text[start - 1] ?? '']
-  if (closer !== undefined) return next === closer || (closer === ')' && /\s/.test(next))
-  if (/[\s)>\]"<`]/.test(next)) return true
-  if (!/[.,;:!?]/.test(next)) return false
-  const afterPunctuation = text[end + 1]
-  return afterPunctuation === undefined ? atDocumentEnd : /\s/.test(afterPunctuation)
-}
-
-const showsUrl = (
-  { text, complete }: DocumentSlice,
-  spans: readonly UrlSpan[],
-  url: string
-): boolean => {
-  for (let at = text.indexOf(url); at !== -1; at = text.indexOf(url, at + 1))
-    if (startsUrl(text, spans, at) && endsUrl(text, at, at + url.length, complete)) return true
-  return false
-}
-
 const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   const { document } = slice
   const { title } = document
@@ -243,12 +161,8 @@ const header = (slice: DocumentSlice, result: ReadUrlResult): string => {
   return lines.join('\n')
 }
 
-const linksTextOmits = (slice: DocumentSlice): readonly DocumentLink[] => {
-  const spans = outerUrlSpans(slice.text)
-  return slice.document.links
-    .slice(0, LINKS_IN_TEXT)
-    .filter(link => !showsUrl(slice, spans, link.url))
-}
+const linksTextOmits = (slice: DocumentSlice): readonly PageLink[] =>
+  slice.document.links.slice(0, LINKS_IN_TEXT).filter(link => !showsLink(slice, link))
 
 export const toText = (outcome: ReadOutcome, result: ReadUrlResult): string => {
   if (outcome.kind === 'failed')
@@ -292,7 +206,11 @@ const makeReadUrlTool = (reader: WebReader): ToolDefinition => ({
       decodeInput(input, { onExcessProperty: 'error' }).pipe(
         Effect.flatMap(decoded => reader.read(decoded, signal)),
         Effect.catch(error =>
-          Effect.succeed<ReadOutcome>({ kind: 'failed', error: error.message, limitations: [] })
+          Effect.succeed<ReadOutcome>({
+            kind: 'failed',
+            error: error.message,
+            limitations: [],
+          })
         )
       )
     )

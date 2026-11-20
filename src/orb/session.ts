@@ -239,7 +239,7 @@ const startOrbSession = Effect.fnUntraced(function* (
     Effect.catch(error =>
       Effect.sync(() =>
         print(
-          `The launch still reserves ${checkout.root}: ${error.message}\nClear it with: ${writer.taskId === undefined ? 'dev workspace release pre-existing' : `dev workspace release ${writer.taskId}`}`
+          `The launch still keeps ${checkout.root}: ${error.message}\nClear it with: ${writer.taskId === undefined ? 'dev workspace release pre-existing' : `dev workspace release ${writer.taskId}`}`
         )
       )
     )
@@ -572,7 +572,7 @@ export const withReturnAdmission = <A, E, R>(
         Effect.catch(error =>
           Effect.sync(() =>
             print(
-              `The return's workspace use could not be closed: ${error.message}. Inspect it with dev workspace.`
+              `The return's checkout use could not be closed: ${error.message}. Inspect it with dev workspace list.`
             )
           )
         )

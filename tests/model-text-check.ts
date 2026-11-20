@@ -8,11 +8,33 @@ import {
 import * as Effect from 'effect/Effect'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { createCoordinatorWorkTool, LEAF_OUTCOME_GUIDANCE } from '../src/work-child-coordination.ts'
-import { asAttemptId, ATTEMPT_RECORD_KEYS, workResultOutputSchema } from '../src/work-domain.ts'
+import {
+  asAttemptId,
+  ATTEMPT_RECORD_KEYS,
+  WorkKindSchema,
+  workResultOutputSchema,
+  WorkStatusSchema,
+} from '../src/work-domain.ts'
 import { outwardRecord } from '../src/work-actions.ts'
 import { TRUNCATED_RESULT, workResultText } from '../src/work-model-text.ts'
+import { pendingOperationText, SWEEP_MOMENT_TEXT, verdictLabel } from '../src/workspace-command.ts'
 import { CLEAR, RETAINED } from '../src/workspace-completion.ts'
+import {
+  EvidenceVerdictSchema,
+  FinishedRuleSchema,
+  RetainedReasonSchema,
+  SweepOutcomeSchema,
+  WorkspaceAccessSchema,
+  WorkspaceEffectSchema,
+  type WorkspaceId,
+  WorkspaceReleaseResultSchema,
+  WorkspaceRoleSchema,
+  WorkspaceOriginSchema,
+  WorkspaceViewSchema,
+} from '../src/workspace-domain.ts'
 import { assessWorkspace } from '../src/workspace-inspect.ts'
+import { checkoutUseStage } from '../src/workspace-labels.ts'
+import { OperationPhase, type OperationRecord, UseSchema } from '../src/workspace-records.ts'
 import {
   LEAD_OUTCOME_GUIDANCE,
   LEAD_TOOL_DESCRIPTION,
@@ -21,7 +43,7 @@ import {
 } from '../src/work-extension.ts'
 import { WORKSPACE_TOOL_DESCRIPTION, workspaceToolParameters } from '../src/workspace-tool.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
-import { INTERNAL, keyWords } from './model-text-terms.ts'
+import { INTERNAL, keyWords } from '../scripts/model-text-terms.ts'
 
 const { claim, passed } = makeClaims()
 
@@ -101,6 +123,37 @@ const recordKeys = (value: unknown, keys: string[] = []): string[] => {
   return keys
 }
 
+const OPERATION_ID = '00000000-0000-4000-8000-000000000001' as WorkspaceId
+const OPERATION_KINDS: Record<OperationRecord['kind'], true> = {
+  allocation: true,
+  handoff: true,
+  release: true,
+}
+
+const storedValues: readonly string[] = [
+  ...FinishedRuleSchema.literals.map(rule =>
+    verdictLabel({ kind: 'finished', role: 'branch', rule, reason: 'reason' })
+  ),
+  ...RetainedReasonSchema.literals.map(retained =>
+    verdictLabel({ kind: 'retained', role: 'branch', retained, reason: 'reason' })
+  ),
+  ...Object.keys(OPERATION_KINDS).flatMap(kind =>
+    OperationPhase.literals.map(stage => pendingOperationText({ id: OPERATION_ID, kind, stage }))
+  ),
+  ...UseSchema.fields.stage.literals.map(checkoutUseStage),
+  ...Object.values(SWEEP_MOMENT_TEXT),
+  ...WorkspaceViewSchema.fields.outcome.literals,
+  ...WorkspaceReleaseResultSchema.members.flatMap(member => member.fields.outcome.literals),
+  ...SweepOutcomeSchema.literals,
+  ...WorkspaceRoleSchema.literals,
+  ...WorkspaceOriginSchema.literals,
+  ...WorkspaceAccessSchema.literals,
+  ...WorkspaceEffectSchema.literals,
+  ...EvidenceVerdictSchema.literals,
+  ...WorkStatusSchema.literals,
+  ...WorkKindSchema.literals,
+]
+
 const surfaces: Record<string, readonly string[]> = {
   'work tool': [LEAD_TOOL_DESCRIPTION, ...descriptions(leadWorkParameters)],
   'delegated work tool': toolTexts(coordinatorTool),
@@ -130,6 +183,7 @@ const surfaces: Record<string, readonly string[]> = {
     ...Object.values(RETAINED).flatMap(retained => retained.actions),
     ...checkoutStates,
   ],
+  'stored values interpolated into sentences': storedValues,
   'inspected run record keys': recordKeys(
     outwardRecord(
       Object.fromEntries(
@@ -145,7 +199,7 @@ const surfaces: Record<string, readonly string[]> = {
 }
 
 await claim(
-  'tool declarations, result guidance and sampled results use no dev-internal terms',
+  'tool declarations, result guidance, stored values that sentences interpolate and sampled results use no dev-internal terms',
   () => {
     assert.notEqual(
       coordinatorTool.promptSnippet,

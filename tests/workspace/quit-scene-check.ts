@@ -372,12 +372,12 @@ const found: SceneShape = { dots: 1, branches: 1 }
 
 await claim('without graphics the sweep output is the text spinner as before', async () => {
   const plain = await runSweep(terminalStyle({ isTTY: false }, {}), graphics, found)
-  assert.equal(plain, 'Sweeping workspaces...\n')
+  assert.equal(plain, 'Cleaning up checkouts...\n')
   for (const unavailable of [undefined, { ...graphics, columns: 40 }]) {
     const text = await runSweep(live, unavailable, found)
     assert.ok(!text.includes('\x1b_G'), text)
     assert.ok(
-      text.startsWith('\x1b]9;4;3\x07\r\x1b[2K\x1b[33m⠋\x1b[0m Sweeping workspaces… \x1b[2m0.'),
+      text.startsWith('\x1b]9;4;3\x07\r\x1b[2K\x1b[33m⠋\x1b[0m Cleaning up checkouts… \x1b[2m0.'),
       text
     )
     assert.ok(text.endsWith('\r\x1b[2K'), JSON.stringify(text))
@@ -389,7 +389,7 @@ await claim('the graphical sweep animates in place and always restores the termi
   const text = await runSweep(live, graphics, found)
   assert.ok(text.startsWith(`\n\n\x1b[${ROWS}A\x1b[?25l\x1b7`), JSON.stringify(text.slice(0, 40)))
   assert.ok(text.includes('\x1b_Ga=T,f=32,o=z'))
-  assert.ok(text.includes('\x1b[2mSweeping workspaces… 0.'))
+  assert.ok(text.includes('\x1b[2mCleaning up checkouts… 0.'))
   assertNothingLeft(text)
   const frames = text.split('\x1b[?2026h').length - 1
   assert.ok(frames >= 5, String(frames))
@@ -464,7 +464,7 @@ await claim(
     const whileSettled = named.slice(settled.length)
     assert.equal(kittyCommandsSent(whileSettled, 'a=T,'), 0, 'no image while settled')
     assert.equal(kittyCommandsSent(whileSettled, 'a=f,'), 0, 'no frame while settled')
-    assert.ok(whileSettled.includes('\x1b[2mSweeping workspaces… '), 'the time still runs')
+    assert.ok(whileSettled.includes('\x1b[2mCleaning up checkouts… '), 'the time still runs')
     assertNothingLeft(out.text())
   }
 )
@@ -478,7 +478,7 @@ await claim(
     const scan = stripColumns(graphics, SCAN_SHAPE)
     const settled = Math.max(scan, stripColumns(graphics, found))
     const text = await runSweep(live, graphics, found)
-    assert.ok(text.includes(`${beside(scan)}\x1b[2mSweeping workspaces… 0.`))
+    assert.ok(text.includes(`${beside(scan)}\x1b[2mCleaning up checkouts… 0.`))
     assert.ok(lastFrame(text).includes(`${beside(settled)}${SUMMARY}\x1b8`))
     const nothing = await runSweep(live, graphics, empty)
     assert.ok(lastFrame(nothing).includes(`${beside(scan)}${SUMMARY}\x1b8`))
@@ -488,7 +488,7 @@ await claim(
 await claim('a label that does not fit beside the strip is left out', async () => {
   const wide = 'w'.repeat(graphics.columns)
   const text = await runSweep(live, graphics, found, 400, wide)
-  assert.ok(text.includes('\x1b[2mSweeping workspaces… 0.'))
+  assert.ok(text.includes('\x1b[2mCleaning up checkouts… 0.'))
   assert.ok(!text.includes(wide))
   assert.ok(lastFrame(text).includes(`\x1b8\x1b[${ROWS - 1}B\x1b[K\x1b8`))
   assertNothingLeft(text)
@@ -553,14 +553,14 @@ await claim('a sweep finishing within the indicator delay shows no progress', as
     summary.startsWith(`\n\n\x1b[${ROWS}A\x1b[?25l\x1b7`),
     JSON.stringify(summary.slice(0, 40))
   )
-  assert.ok(!summary.includes('Sweeping workspaces'))
+  assert.ok(!summary.includes('Cleaning up checkouts'))
   assertNothingLeft(summary)
 })
 
 await claim('a slow sweep with nothing to show deletes its strip and keeps no rows', async () => {
   for (const shape of [empty, { dots: 40, branches: 40 }]) {
     const text = await runSweep(live, graphics, shape)
-    assert.ok(text.includes('\x1b[2mSweeping workspaces… 0.'))
+    assert.ok(text.includes('\x1b[2mCleaning up checkouts… 0.'))
     assert.ok(placedIds(text).length >= 5)
     assertNothingLeft(text)
   }

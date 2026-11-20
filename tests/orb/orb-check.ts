@@ -240,7 +240,7 @@ await claim(
       })
     )
     const recordPath = join(record.directory, 'record.json')
-    const stored = JSON.parse(readFileSync(recordPath, 'utf8'))
+    const stored = JSON.parse(readFileSync(recordPath, 'utf8')) as { spare: { image: string } }
     stored.spare.image = 'obsolete'
     const obsolete = JSON.stringify(stored)
     writeFileSync(recordPath, obsolete)
@@ -282,7 +282,9 @@ await claim(
         )
       })
     })
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>(resolve => {
+      server.listen(0, '127.0.0.1', resolve)
+    })
     try {
       const address = server.address()
       assert.ok(address && typeof address !== 'string')
@@ -323,9 +325,9 @@ await claim(
         ]
       )
     } finally {
-      await new Promise<void>((resolve, reject) =>
+      await new Promise<void>((resolve, reject) => {
         server.close(error => (error ? reject(error) : resolve()))
-      )
+      })
     }
   }
 )
@@ -735,10 +737,13 @@ await claim(
     const { mac } = newCheckout('branch-rules')
     const head = git(mac, 'rev-parse', 'HEAD')
     const name = 'dev/orb-return/dddd0000-0000-4000-8000-000000000004'
-    await assert.rejects(writeBranch({ cwd: mac, name: 'main', commit: head }), /Not a dev-owned/)
+    await assert.rejects(
+      writeBranch({ cwd: mac, name: 'main', commit: head }),
+      /Not a branch name dev creates/
+    )
     await assert.rejects(
       writeBranch({ cwd: mac, name: 'dev/orb-recovery/dddd0000', commit: head }),
-      /Not a dev-owned/
+      /Not a branch name dev creates/
     )
     await assert.rejects(
       writeBranch({ cwd: mac, name, commit: head, replacing: { name: 'main', commit: head } }),
@@ -762,7 +767,7 @@ await claim(
     )
     await assert.rejects(
       writeBranch({ cwd: mac, name: `${name}-2`, commit: head }),
-      /Not a dev-owned/,
+      /Not a branch name dev creates/,
       'a suffix is not a request name'
     )
     await assert.rejects(writeBranch({ cwd: mac, name, commit: 'HEAD' }), /Not a full commit id/)
@@ -1449,7 +1454,11 @@ await claim(
         Effect.suspend(() => {
           const [id] = readdirSync(join(dataHome, 'orbs'))
           const directory = join(dataHome, 'orbs', id ?? '')
-          const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'))
+          const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8')) as {
+            phase: unknown
+            orbId: unknown
+            presenceUseId: unknown
+          }
           observed = {
             phase: record.phase,
             orbId: record.orbId,
@@ -1473,7 +1482,7 @@ await claim(
     process.env = new Proxy(
       Object.fromEntries(Object.entries(environment).filter(([name]) => !name.startsWith('OS_'))),
       {
-        get: (target, key, receiver) => {
+        get: (target, key, receiver): unknown => {
           watch(key)
           return Reflect.get(target, key, receiver)
         },
@@ -1548,7 +1557,9 @@ const recordFields = (checkout: string, presenceUseId?: string) => ({
 })
 
 const exited = (child: ChildProcess): Promise<NodeJS.Signals | null> =>
-  new Promise(resolveExit => child.once('exit', (_code, signal) => resolveExit(signal)))
+  new Promise(resolveExit => {
+    child.once('exit', (_code, signal) => resolveExit(signal))
+  })
 
 await claim(
   "a record lock held by a live dev --orb process blocks recovery, and the lock of an owner that died is taken with the record's fields intact",
@@ -1690,7 +1701,7 @@ await claim(
 
     lines.length = 0
     await settle('active', mac, dead.useId)
-    assert.match(lines.join('\n'), /reservation .* was released; files and commits are unchanged/)
+    assert.match(lines.join('\n'), /no longer keeps checkout .*; files and commits are unchanged/)
     const [settled] = await settling.inspect({ cwd: mac })
     assert.deepEqual(settled?.uses, [])
     assert.equal(settled.reservationId, undefined)
@@ -1740,7 +1751,7 @@ await claim(
     assert.equal(continued.taskId, before.grant.taskId, 'the continued conversation keeps its task')
     lines.length = 0
     await settle('active', resumed, continued.useId)
-    assert.doesNotMatch(lines.join('\n'), /was released/)
+    assert.doesNotMatch(lines.join('\n'), /no longer keeps checkout/)
     const [retained] = await settling.inspect({ cwd: resumed })
     assert.deepEqual(
       retained?.uses.map(use => [use.id, use.stage]),
@@ -1786,7 +1797,7 @@ await claim(
     const withdrawn = await run(failed.effect.withdrawOrbPresence(presence))
     assert.match(
       withdrawn.reason,
-      /of the failed dev --orb start were deleted and reservation .* was released/
+      /of the failed dev --orb start were deleted and task .* no longer keeps checkout/
     )
     await failed.close()
     const [free] = await withdrawing.inspect({ cwd: mac })
@@ -1797,7 +1808,7 @@ await claim(
       'nor a writer use'
     )
     const [receipt] = await withdrawing.inspect({ taskId: presence.taskId })
-    assert.match(receipt?.reason ?? '', /^By the failed dev --orb start that reserved it: /)
+    assert.match(receipt?.reason ?? '', /^By the failed dev --orb start that kept it: /)
     const next = await withdrawing.attach({ conversation: conversation(), cwd: mac })
     const relaunched = await admitted(next, 'write', mac)
     assert.equal(relaunched.checkout, mac, 'the next launch is not isolated')
@@ -1824,7 +1835,7 @@ await claim(
     assert.equal(again.taskId, before.taskId, 'the continued conversation keeps its task')
     assert.doesNotMatch(
       (await run(continued.effect.withdrawOrbPresence(again))).reason,
-      /was released/
+      /no longer keeps checkout/
     )
     await continued.close()
     const [retained] = await withdrawing.inspect({ cwd: resumed })
@@ -2201,7 +2212,10 @@ await claim(
       'the orb holds no work, so the checkout is freed'
     )
     const [directory = ''] = kept.records
-    const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'))
+    const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8')) as {
+      phase: unknown
+      orbId: unknown
+    }
     assert.deepEqual([record.phase, record.orbId], ['deleting', 'orb-started'])
     assert.match(kept.text, /the wait for DELETED was interrupted while orb orb-star read DELETING/)
     assert.match(kept.text, /next dev --orb deletes the orb/)
@@ -2329,7 +2343,7 @@ await claim(
     )
     assert.equal(
       full.error,
-      'orbit capacity exhausted: 2 active orbs in the project; wait for a child to finish'
+      'orbit capacity exhausted: 2 active orbs in the project; wait for a delegated agent to finish'
     )
     assert.deepEqual(
       full.reports.map(report => report.status),
@@ -2731,7 +2745,10 @@ const setupCloud = (accepted: boolean) => {
 
 const fileState = (path: string) =>
   existsSync(path)
-    ? { mode: lstatSync(path).mode & 0o777, json: JSON.parse(readFileSync(path, 'utf8')) }
+    ? {
+        mode: lstatSync(path).mode & 0o777,
+        json: JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>,
+      }
     : undefined
 
 await claim(
@@ -2818,7 +2835,7 @@ await claim(
       'CA certificate file [none]: ',
       'hidden Password: ',
       'hidden Password: ',
-      'Network the orbs admit SSH from [192.0.2.50/32]: ',
+      'Network the orbs accept SSH from [192.0.2.50/32]: ',
       'Orb vCPUs [2]: ',
       'Orb vCPUs [2]: ',
       'Orb memory in MB [2048]: ',
@@ -2855,7 +2872,7 @@ await claim(
       'Region [RegionOne, - clears]: ',
       'CA certificate file [none]: ',
       'hidden Password [Enter keeps the stored one]: ',
-      'Network the orbs admit SSH from [192.0.2.50/32]: ',
+      'Network the orbs accept SSH from [192.0.2.50/32]: ',
     ])
     assert.deepEqual(readdirSync(dataHome).toSorted(), ['openstack.json', 'orb.json'])
   }

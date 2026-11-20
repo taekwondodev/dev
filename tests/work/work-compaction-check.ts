@@ -149,7 +149,7 @@ try {
       assert.ok(entries(leaf.sessionFile).some(entry => entry.type === 'compaction'))
       assert.notEqual(observedRun(result.view.sessionFile), observedRun(leaf.sessionFile))
       const outcomes = entries(result.view.sessionFile).filter(
-        entry => entry.type === 'custom_message' && entry.customType === 'dev/work-outcome'
+        entry => entry.type === 'custom_message' && entry.customType === 'dev/work-result'
       )
       assert.equal(outcomes.length, 1)
       assert.equal(result.text.split('Delegated results:').length - 1, 1)

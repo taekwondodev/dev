@@ -85,7 +85,7 @@ type PrivatePeriod = PeriodSummary & {
   readonly drilldowns: Drilldowns
 }
 
-interface Report {
+export interface Report {
   readonly selection: readonly string[]
   readonly sources: {
     readonly leadFiles: number

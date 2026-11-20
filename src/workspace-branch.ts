@@ -39,7 +39,7 @@ export const writeDevBranch = (
   authority: WorkspaceAuthority,
   request: DevBranchRequest
 ): { readonly name: string } => {
-  if (!DEV_BRANCH.test(request.name)) invalid(`Not a dev-owned branch name: ${request.name}`)
+  if (!DEV_BRANCH.test(request.name)) invalid(`Not a branch name dev creates: ${request.name}`)
   const { replacing } = request
   if (
     replacing !== undefined &&

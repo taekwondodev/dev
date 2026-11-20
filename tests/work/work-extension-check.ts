@@ -39,7 +39,7 @@ import {
 } from './work-child-model.ts'
 import { openLead, type Lead, type LeadRequest } from './work-extension-support.ts'
 
-const OUTCOME = 'dev/work-outcome'
+const OUTCOME = 'dev/work-result'
 const keysOf = (value: unknown, keys: string[] = []): string[] => {
   if (typeof value !== 'object' || value === null) return keys
   for (const [key, item] of Object.entries(value)) {
@@ -73,6 +73,10 @@ const decodeModelAttempt = Schema.decodeUnknownSync(
   strict
 )
 const decodeStructured = Schema.decodeUnknownSync(WorkResultSchema, strict)
+const decodeShown = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown))
+)
+const decodeShownRecords = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))
 const decodeDelivered = Schema.decodeUnknownSync(
   Schema.Struct({ attempts: Schema.Array(Schema.String) })
 )
@@ -413,8 +417,8 @@ try {
             snapshot?.runs?.records.map(record => record.id).toSorted(),
             [slow.id, quick.id].toSorted()
           )
-          assert.equal(inspection?.inspection?.status, 'completed')
-          assert.equal(inspection?.inspection?.exitCode, 0)
+          assert.equal(inspection?.inspection?.run.status, 'completed')
+          assert.equal(inspection?.inspection?.run.exitCode, 0)
           assert.equal(typeof decodeRecordPid(inspection?.inspection?.record).pid, 'number')
           const recordKeys = keysOf(inspection?.inspection?.record)
           assert.ok(
@@ -450,15 +454,16 @@ try {
             inspection,
             page,
             snapshot,
-          ].map(result => JSON.parse(result === undefined ? '{}' : workResultText(result)))
+          ].map(result => decodeShown(result === undefined ? '{}' : workResultText(result)))
           assert.deepEqual(Object.keys(shownDispatch), ['default', 'rules'])
           assert.deepEqual(shownPage, { text: '', nextOffset: null })
           assert.equal(shownCancel.id, slow.id)
           assert.equal(shownCancel.status, 'cancelled')
           assert.deepEqual(Object.keys(shownList), ['records', 'nextOffset'])
-          for (const record of shownList.records) decodeModelAttempt(JSON.stringify(record))
-          assert.equal(shownInspection.workflowTaskId, inspection?.inspection?.workflowTaskId)
-          assert.equal(shownInspection.cwd, inspection?.inspection?.cwd)
+          for (const record of decodeShownRecords(shownList.records))
+            decodeModelAttempt(JSON.stringify(record))
+          assert.equal(shownInspection.workflowTaskId, inspection?.inspection?.run.workflowTaskId)
+          assert.equal(shownInspection.cwd, inspection?.inspection?.run.cwd)
           for (const hidden of ['record', 'logs', 'completedAt', 'usage'])
             assert.equal(hidden in shownInspection, false, hidden)
           after.reply(text('inspected'))
@@ -486,6 +491,8 @@ const declaration = String(await describeTool('work'))
 return JSON.stringify({
   typed: declaration.includes('Promise<{') && declaration.includes('kind: "run" | "runs"'),
   typedDispatch: declaration.includes('dispatch?: { configured: true; default: {') && declaration.includes('rules: { [key: string]: {'),
+  runFields: declaration.split('workflowTaskId?:').length - 1,
+  runReferences: declaration.split('ame fields as the top-level run.').length - 1,
   launched: results.map(result => result.status === 'fulfilled'
     ? { kind: result.value.kind, id: result.value.run?.id, status: result.value.run?.status, shape: typeof result.value }
     : { error: String(result.reason) }),
@@ -497,11 +504,13 @@ return JSON.stringify({
         assert.ok(scripted?.includes('Script completed'), scripted ?? 'no script result')
         const output = /\{"typed".*\}\]\}/s.exec(scripted ?? '')?.[0]
         assert.ok(output !== undefined, scripted ?? 'no script result')
-        const { typed, typedDispatch, launched } = Schema.decodeSync(
+        const { typed, typedDispatch, runFields, runReferences, launched } = Schema.decodeSync(
           Schema.fromJsonString(
             Schema.Struct({
               typed: Schema.Boolean,
               typedDispatch: Schema.Boolean,
+              runFields: Schema.Int,
+              runReferences: Schema.Int,
               launched: Schema.Array(
                 Schema.Struct({
                   kind: Schema.String,
@@ -515,6 +524,11 @@ return JSON.stringify({
         )(output)
         assert.equal(typed, true, 'describeTool shows the typed result')
         assert.equal(typedDispatch, true, 'describeTool shows the dispatch configuration fields')
+        assert.deepEqual(
+          { runFields, runReferences },
+          { runFields: 1, runReferences: 2 },
+          'describeTool spells the run fields once and points the inspection and the list at them'
+        )
         assert.equal(launched.length, 2)
         for (const item of launched) {
           assert.equal(item.kind, 'run')
@@ -1468,6 +1482,13 @@ return JSON.stringify({
         await run
         await lead.idle()
         const [onePid, otherPid] = [await pidOf(lead, one.id), await pidOf(lead, other.id)]
+        const { inspection: held1 } = await displayed(lead, `/work inspect ${one.id}`)
+        assert.equal(held1?.run.status, 'running')
+        assert.equal(
+          held1 !== undefined && 'staleArtifact' in held1,
+          false,
+          'a run in progress reports no file comparison'
+        )
         await lead.session.prompt(`/work stop ${one.id}`)
         const reported = await lead.request(2)
         assert.ok(seen(reported).includes(one.id) && seen(reported).includes('cancelled'))

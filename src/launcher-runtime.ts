@@ -5,7 +5,6 @@ import { homedir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
-import { pathToFileURL } from 'node:url'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as DateTime from 'effect/DateTime'
@@ -22,6 +21,9 @@ import type * as FileSystem from 'effect/FileSystem'
 import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import type { AgentSessionServices, InlineExtension } from '@earendil-works/pi-coding-agent'
 import {
+  CANNOT_PREPARE_SESSION_DIRECTORY,
+  CANNOT_RESOLVE_DATA_HOME,
+  CANNOT_RESOLVE_PROFILE_SELECTION,
   defaultDataHome,
   globalPiAgentDir,
   globalPiAuthPath,
@@ -39,10 +41,13 @@ import {
   resourceSummary,
   type ComposedResources,
   type Profile,
+  CANNOT_COMPOSE_PROFILE_RESOURCES,
 } from './profiles.ts'
 import { errorText } from './error-text.ts'
 import {
+  CANNOT_RESOLVE_PI_RELEASE,
   findRecentSession,
+  importPiModule,
   loadPi,
   loadPiPathResolver,
   resolvePiPackage,
@@ -282,7 +287,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
 const printHelp = (manifest: string): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list workspaces for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, target and sweep verdict of every workspace of the task\n  workspace release <task-id>  confirm interactively, then clear every workspace of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in unreserved checkouts at --cwd\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev sweeps the repository: finished workspaces are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list checkouts for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, destination branch and cleanup verdict of every checkout of the task\n  workspace release <task-id>  confirm interactively, then clear every checkout of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in checkouts at --cwd that no task keeps\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev cleans up the repository: finished checkouts are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -368,7 +373,10 @@ const createRuntime = Effect.fnUntraced(function* (
     .prepareRuntime({ sessionManager: runtimeOptions.sessionManager, cwd: runtimeOptions.cwd })
     .pipe(
       Effect.mapError(error =>
-        toLauncherError(error, 'Cannot resolve workspace binding before Pi startup')
+        toLauncherError(
+          error,
+          'Cannot resolve the checkout for this conversation before Pi startup'
+        )
       )
     )
   yield* guard
@@ -384,9 +392,8 @@ const createRuntime = Effect.fnUntraced(function* (
         }).pipe(
           Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources'))
         )
-  const trustResolver: typeof PiProjectTrust = yield* fromPromise(
-    'Cannot load Pi project-trust resolver',
-    () => import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href)
+  const trustResolver = yield* fromPromise('Cannot load Pi project-trust resolver', () =>
+    importPiModule<typeof PiProjectTrust>(resolve(packageRoot, 'dist/core/project-trust.js'))
   )
   const settingsManager = yield* fromSync('Cannot create trust-gated Pi settings', () =>
     api.SettingsManager.create(cwd, runtimeOptions.agentDir, { projectTrusted: false })
@@ -492,7 +499,9 @@ const createRuntime = Effect.fnUntraced(function* (
   yield* workspaceHost
     .commitRuntime(attachment)
     .pipe(
-      Effect.mapError(error => toLauncherError(error, 'Cannot commit workspace runtime binding'))
+      Effect.mapError(error =>
+        toLauncherError(error, 'Cannot record the checkout this conversation uses')
+      )
     )
   yield* Effect.sync(() => {
     compaction.bindSession(result.session)
@@ -558,19 +567,19 @@ const exitText = (code: ReleaseExitCode): string => {
     case 0:
       return 'done'
     case 1:
-      return 'at least one attempted workspace did not reach a terminal outcome'
+      return 'at least one checkout release that started did not reach a final result'
     case 130:
-      return 'interrupted; no workspace was attempted after the signal'
+      return 'interrupted; no checkout was attempted after the signal'
   }
 }
 
 const tuiClosedNotice = (detached: boolean): string =>
-  `\nThe TUI is closed and its session disposed; ${detached ? 'its workspace attachment is closed' : 'closing its workspace attachment was not confirmed, so the sweep rechecks every use'}.`
+  `\nThe TUI is closed and its session disposed; ${detached ? 'its checkout access is closed' : 'closing its checkout access was not confirmed, so automatic cleanup rechecks every use'}.`
 
 const quitFailureNotice = (detached: boolean, cause: Cause.Cause<unknown>): string =>
   Cause.hasInterruptsOnly(cause)
-    ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before the sweep started; nothing was released.\nExit 130: ${exitText(130)}.`
-    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its workspace uses may still be recorded; nothing was swept or released.\nExit 1.`
+    ? `${tuiClosedNotice(detached)}\nQuitting was interrupted before automatic cleanup started; nothing was released.\nExit 130: ${exitText(130)}.`
+    : `\nClosing the session failed (${errorText(Cause.squash(cause))}), so its checkout uses may still be recorded; nothing was cleaned up or released.\nExit 1.`
 
 interface QuitExit {
   readonly code: ReleaseExitCode
@@ -699,7 +708,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
     text:
       released.size === 0 && !failed
         ? 'release cancelled; nothing was released'
-        : 'release cancelled; each confirmed release reached its recorded outcome and no other was started',
+        : 'release cancelled; each confirmed release reached its recorded result and no other was started',
   })
   const confirmations: (readonly [string, readonly WorkspaceId[]])[] = [
     ...(plans.length === 0
@@ -719,7 +728,7 @@ const releaseAtQuit = Effect.fnUntraced(function* (
   if (!proceed())
     return {
       code: 130,
-      text: 'interrupted; each started release reached its recorded outcome and no other was started',
+      text: 'interrupted; each started release reached its recorded result and no other was started',
     }
   if (failed) return { code: 1, text: 'at least one release at quit failed or did not report back' }
   return sweepExit({
@@ -727,6 +736,8 @@ const releaseAtQuit = Effect.fnUntraced(function* (
     rows: receipt.rows.filter(row => row.kind !== 'workspace' || !released.has(row.taskId)),
   })
 })
+
+const INTERRUPTED_AFTER_AUTOMATIC_CLEANUP = 'interrupted after automatic cleanup'
 
 export const sweepAtQuit = Effect.fnUntraced(function* (
   lifecycle: WorkspaceLifecycle,
@@ -755,7 +766,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
   yield* write(
     input.detached
       ? ''
-      : '\nClosing the workspace attachment was not confirmed, so the sweep rechecks every use.'
+      : '\nClosing checkout access was not confirmed, so automatic cleanup rechecks every use.'
   )
   const started = yield* Clock.currentTimeMillis
   yield* Effect.scoped(
@@ -806,11 +817,13 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
           settle
         )
         if (!input.proceed() && exit.code !== 130)
-          exit = { code: 130, text: 'interrupted after the sweep' }
+          exit = { code: 130, text: INTERRUPTED_AFTER_AUTOMATIC_CLEANUP }
       } else {
         yield* settle(0)
         yield* write(formatQuitReceipt(receipt, elapsed, style))
-        exit = input.proceed() ? sweptExit : { code: 130, text: 'interrupted after the sweep' }
+        exit = input.proceed()
+          ? sweptExit
+          : { code: 130, text: INTERRUPTED_AFTER_AUTOMATIC_CLEANUP }
       }
       yield* write(
         `${progressDone(style, exit.code !== 0)}${formatExitLine(style, exit.code, exit.text)}`
@@ -821,7 +834,7 @@ export const sweepAtQuit = Effect.fnUntraced(function* (
 }, Effect.uninterruptible)
 
 const SWEEP_INTERRUPT_NOTICE =
-  'Interrupt received: the sweep, or a confirmed release, runs on and observes each attempt to its recorded outcome; dev exits 130 after the receipt.'
+  'Interrupt received: automatic cleanup, or a confirmed release, runs on until each release already started reaches its recorded result; dev exits 130 after the receipt.'
 
 const reported = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchCause(effect, cause =>
@@ -946,6 +959,9 @@ const confirmRelease = Effect.fnUntraced(function* (
   return releaseExitCode(released.value)
 })
 
+const releaseInspectionFailedText = (detail: string): string =>
+  `Checkout inspection failed; nothing was released: ${detail}`
+
 const terminalRelease = Effect.fnUntraced(function* (
   dependencies: LauncherDependencies,
   taskId: WorkspaceId
@@ -953,18 +969,12 @@ const terminalRelease = Effect.fnUntraced(function* (
   const lifecycle = yield* dependencies.workspaceLifecycle
   const listed = yield* Effect.exit(lifecycle.inspect({ taskId }))
   if (Exit.isFailure(listed)) {
-    yield* write(
-      `Workspace inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
-      process.stderr
-    )
+    yield* write(releaseInspectionFailedText(errorText(Cause.squash(listed.cause))), process.stderr)
     return 1
   }
   const views = reservedViews(listed.value)
   if (views.length === 0) {
-    yield* write(
-      `Task ${taskId} holds no workspace reservation; nothing to release.`,
-      process.stderr
-    )
+    yield* write(`Task ${taskId} keeps no checkout; nothing to release.`, process.stderr)
     return 1
   }
   return yield* confirmRelease(
@@ -989,17 +999,14 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
   const lifecycle = yield* dependencies.workspaceLifecycle
   const listed = yield* Effect.exit(lifecycle.inspect({ cwd: repositoryRoot }))
   if (Exit.isFailure(listed)) {
-    yield* write(
-      `Workspace inspection failed; nothing was released: ${errorText(Cause.squash(listed.cause))}`,
-      process.stderr
-    )
+    yield* write(releaseInspectionFailedText(errorText(Cause.squash(listed.cause))), process.stderr)
     return 1
   }
   const views = unreservedCheckoutViews(listed.value)
   const [first] = views
   if (first === undefined) {
     yield* write(
-      `No unreserved pre-existing checkout of ${repositoryRoot} records a use or is missing; nothing to release.`,
+      `No pre-existing checkout of ${repositoryRoot} that no task keeps records a use or is missing; nothing to release.`,
       process.stderr
     )
     return 1
@@ -1007,7 +1014,7 @@ const terminalPreExistingRelease = Effect.fnUntraced(function* (
   return yield* confirmRelease(
     preExistingReleasePlan(views),
     `the pre-existing checkouts of ${repositoryRoot}`,
-    `dev --cwd ${repositoryRoot} workspace`,
+    `dev --cwd ${repositoryRoot} workspace list`,
     lifecycle.releasePreExisting({
       repositoryId: first.repositoryId,
       workspaceIds: views.map(view => view.workspaceId),
@@ -1140,7 +1147,7 @@ const launchDirectory = Effect.fnUntraced(function* (
     return options.cwd
   const dataHome = yield* (
     options.dataHome === undefined ? defaultDataHome : Effect.succeed(options.dataHome)
-  ).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve dev data home')))
+  ).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_DATA_HOME)))
   const repositories = yield* findRepositories(options.cwd, join(dataHome, 'sessions'))
   const initializable =
     !options.orb &&
@@ -1153,7 +1160,7 @@ const launchDirectory = Effect.fnUntraced(function* (
       message: `${displayPath(options.cwd)} is not a Git repository and contains none. Run dev inside a repository or pass --cwd PATH.`,
     })
   const { root } = yield* resolvePiPackage.pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot resolve the installed Pi release'))
+    Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_PI_RELEASE))
   )
   if (repositories.length > 0)
     return yield* chooseRepository(root, options.cwd, repositories).pipe(
@@ -1189,12 +1196,12 @@ const taskUsageRefusal = (options: LaunchOptions): string | undefined => {
     options.browserArgs !== undefined ||
     options.orbArgs !== undefined
   )
-    return '--task opens a new conversation in paused work; it cannot be combined with --resume, --continue, --diagnostics, --probe-runtime, --save-profile, --orb or a workspace, browser or orb command.'
+    return '--task opens a new conversation in paused work; it cannot be combined with --resume, --continue, --diagnostics, --probe-runtime, --save-profile, --orb, a workspace command, a browser command or an orb command.'
   if (
     options.task?.id === undefined &&
     (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
   )
-    return '--task without a task ID lists paused work and needs an interactive terminal; name the task instead: dev --task <task-id> (dev workspace lists them).'
+    return '--task without a task ID lists paused work and needs an interactive terminal; name the task instead: dev --task <task-id> (dev workspace list shows them).'
   return undefined
 }
 
@@ -1211,7 +1218,7 @@ const chooseTask = Effect.fnUntraced(function* (
 ): Effect.fn.Return<TaskChoice, LauncherError> {
   const views = yield* lifecycle
     .inspect({ cwd: repositoryRoot })
-    .pipe(Effect.mapError(error => toLauncherError(error, 'Workspace inspection failed')))
+    .pipe(Effect.mapError(error => toLauncherError(error, 'Checkout inspection failed')))
   const resumable = resumableWorkspaces(views)
   const candidates =
     taskId === undefined
@@ -1233,7 +1240,7 @@ const chooseTask = Effect.fnUntraced(function* (
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
     return {
       kind: 'refused',
-      reason: `Task ${taskId} retains several workspaces of ${repositoryRoot}; choosing one needs an interactive terminal.`,
+      reason: `Task ${taskId} retains several checkouts of ${repositoryRoot}; choosing one needs an interactive terminal.`,
     }
   const index = yield* chooseWorkspace(
     packageRoot,
@@ -1248,6 +1255,8 @@ const chooseTask = Effect.fnUntraced(function* (
   const candidate = index === undefined ? undefined : candidates[index]
   return candidate === undefined ? { kind: 'cancelled' } : { kind: 'chosen', candidate }
 })
+
+const CANNOT_LOAD_SELECTED_PROFILE = 'Cannot load selected profile'
 
 const run = Effect.fnUntraced(function* (
   argv: readonly string[],
@@ -1290,7 +1299,7 @@ const run = Effect.fnUntraced(function* (
     if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
       yield* Effect.sync(() => {
         process.stderr.write(
-          'Workspace release requires an interactive TTY for its confirmation; nothing was released and no unattended mode exists.\n'
+          'dev workspace release requires an interactive TTY for its confirmation; nothing was released and no unattended mode exists.\n'
         )
         process.exitCode = 2
       })
@@ -1363,7 +1372,7 @@ const run = Effect.fnUntraced(function* (
     dataHome,
     defaultProfile: catalog.defaultProfile,
     explicit: options.profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot resolve profile selection')))
+  }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_PROFILE_SELECTION)))
   if (options.saveProfile !== undefined) {
     yield* catalog
       .load(options.saveProfile)
@@ -1389,7 +1398,7 @@ const run = Effect.fnUntraced(function* (
   const guard = createSessionGuard(lease)
   const { api, packageInfo } = yield* loadPi
   const sessionsPath = yield* sessionDir(dataHome).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot prepare session directory'))
+    Effect.mapError(error => toLauncherError(error, CANNOT_PREPARE_SESSION_DIRECTORY))
   )
   let pausedWork: ResumeCandidate | undefined
   if (options.task !== undefined) {
@@ -1443,12 +1452,12 @@ const run = Effect.fnUntraced(function* (
   if (options.diagnostics) {
     const diagnosticProfile = yield* catalog
       .load(recorded ?? selection.profile)
-      .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
+      .pipe(Effect.mapError(error => toLauncherError(error, CANNOT_LOAD_SELECTED_PROFILE)))
     const diagnosticResources = yield* composeResources({
       cwd: launchCwd,
       gitRoot: yield* gitRoot(launchCwd),
       profile: diagnosticProfile,
-    }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
+    }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_COMPOSE_PROFILE_RESOURCES)))
     const dispatch = yield* readDispatch.pipe(
       Effect.mapError(error => toLauncherError(error, 'Cannot read dispatch configuration'))
     )
@@ -1467,7 +1476,7 @@ const run = Effect.fnUntraced(function* (
   const sessionFile = sessions.getSessionFile()
   if (!sessionFile)
     return yield* new LauncherError({
-      message: 'Workspace-bound conversations require a persisted session file',
+      message: 'A conversation that uses a checkout needs a saved session file',
     })
   const sessionId = sessions.getSessionId()
   const attachment = yield* workspaceLifecycle
@@ -1480,14 +1489,14 @@ const run = Effect.fnUntraced(function* (
       Effect.mapError(
         error =>
           new LauncherError({
-            message: `Cannot attach this conversation to a workspace: ${error.message}\n${keptConversationGuidance(sessionFile)}`,
+            message: `Cannot attach this conversation to a checkout: ${error.message}\n${keptConversationGuidance(sessionFile)}`,
             cause: error,
           })
       )
     )
   const effectiveCwd = attachment.binding.cwd
   if (resolve(sessions.getCwd()) !== resolve(effectiveCwd)) {
-    sessions = yield* fromSync('Cannot reopen Pi session at its authorized workspace cwd', () =>
+    sessions = yield* fromSync('Cannot reopen Pi session at its authorized checkout cwd', () =>
       api.SessionManager.open(sessionFile, sessionsPath, effectiveCwd)
     )
     if (
@@ -1528,13 +1537,13 @@ const run = Effect.fnUntraced(function* (
   const selectedName = recorded ?? effectiveSelection.profile
   const profile = yield* catalog
     .load(selectedName)
-    .pipe(Effect.mapError(error => toLauncherError(error, 'Cannot load selected profile')))
+    .pipe(Effect.mapError(error => toLauncherError(error, CANNOT_LOAD_SELECTED_PROFILE)))
   const effectiveRoot = yield* rootOf(effectiveCwd)
   const resources = yield* composeResources({
     cwd: effectiveCwd,
     gitRoot: effectiveRoot,
     profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, 'Cannot compose profile resources')))
+  }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_COMPOSE_PROFILE_RESOURCES)))
   if (recorded === undefined)
     yield* Effect.sync(() => {
       sessions.appendCustomEntry('dev/profile', {
@@ -1550,7 +1559,7 @@ const run = Effect.fnUntraced(function* (
         ensureOwner: makeOwnerBootstrap({
           dataHome,
           onFailure: message => {
-            process.stderr.write(`The dev browser owner could not start: ${message}\n`)
+            process.stderr.write(`The shared dev browser could not start: ${message}\n`)
           },
         }).ensure,
       }),

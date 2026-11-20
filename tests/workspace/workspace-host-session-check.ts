@@ -17,6 +17,7 @@ import { mock } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import {
   WorkspaceError,
   type WorkspaceAttachment,
@@ -41,7 +42,7 @@ import {
   type WaitTiming,
   within,
 } from '../wait.ts'
-import { INTERNAL } from '../model-text-terms.ts'
+import { INTERNAL } from '../../scripts/model-text-terms.ts'
 import { classifyError, sessionFacts } from '../../scripts/usage-facts.ts'
 import { readSessions } from '../../scripts/usage-sessions.ts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -117,13 +118,16 @@ const storedConversation = (offline: OfflineModel, cwd: string, directory = sess
   if (file === undefined) throw new Error('Pi did not persist the stored conversation')
   return { manager, file }
 }
+const decodeHeader = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown))
+)
 const rewriteHeader = (
   file: string,
   edit: (header: Record<string, unknown>) => Record<string, unknown>,
   target = file
 ) => {
   const [header = '', ...rest] = readFileSync(file, 'utf8').split('\n')
-  writeFileSync(target, [JSON.stringify(edit(JSON.parse(header))), ...rest].join('\n'))
+  writeFileSync(target, [JSON.stringify(edit(decodeHeader(header))), ...rest].join('\n'))
 }
 
 const orphanFork = (file: string) =>
@@ -149,12 +153,12 @@ const toolResults = (runtime: Pi.AgentSessionRuntime) => (toolCallId: string) =>
   resultsIn(runtime.session.sessionManager)(toolCallId)
 
 const handoffText = (entry: Pi.SessionEntry): string | undefined => {
-  if (entry.type === 'custom_message' && entry.customType === 'dev/workspace-handoff')
+  if (entry.type === 'custom_message' && entry.customType === 'dev/workspace-switch')
     return String(entry.content)
   if (
     entry.type === 'message' &&
     entry.message.role === 'custom' &&
-    entry.message.customType === 'dev/workspace-handoff'
+    entry.message.customType === 'dev/workspace-switch'
   )
     return String(entry.message.content)
   return undefined
@@ -228,9 +232,11 @@ const pendingAtLead = async () =>
 const CONTINUE_HERE = 'Continue that task here'
 const RESUME_LIST = 'Resume paused work in:'
 const UNRESOLVED_NOTICE =
-  'Dev cannot confirm an earlier checkout switch or session change, so the session was not replaced. Quit to leave it unchanged.'
-const MISMATCH_NOTICE =
-  "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged."
+  'Dev cannot confirm an earlier checkout switch or session change, so its tools stay blocked and the session was not replaced. Quit and reopen this conversation.'
+const UNRESOLVED_RESUME =
+  'Dev cannot confirm an earlier checkout switch or session change, so its tools stay blocked and the conversation was not switched. Quit and reopen this conversation.'
+const MISMATCH_RESUME =
+  "This conversation's permission no longer matches it, so its tools stay blocked and the conversation was not switched. Quit and reopen this conversation."
 const pausedCheckout = async (name: string) => {
   const checkout = join(fixture, name)
   mkdirSync(checkout)
@@ -360,10 +366,21 @@ try {
             String(later?.reason),
             /^Checkout access is blocked because this conversation's permission no longer matches it; the tool did not run\. Ask the user to quit and reopen this conversation\.$/
           )
+          const typed = await opened.runtime.session.extensionRunner.emitUserBash({
+            type: 'user_bash',
+            command: 'true',
+            excludeFromContext: false,
+            cwd: lead,
+          })
+          assert.equal(
+            typed?.result?.output,
+            "This conversation's permission no longer matches it, so its tools stay blocked and the command did not run. Quit and reopen this conversation.",
+            'a command the user types is refused in words for the user'
+          )
           await opened.runtime.session.prompt('/workspace resume')
           assert.equal(
             shown(opened.runtime).at(-1),
-            "This conversation's permission no longer matches it, so its tools stay blocked and the session was not replaced. Quit to leave it unchanged.",
+            MISMATCH_RESUME,
             'with no switch pending, resume names the mismatch instead of a switch to wait for'
           )
           assert.equal(opened.host.isParked(), true, 'resume does not clear the mismatch')
@@ -493,10 +510,10 @@ try {
         assert.equal(opened.host.isParked(), true, 'access stays blocked')
         assert.match(
           opened.host.blockedAccess('nothing ran'),
-          /^Checkout access is blocked because dev cannot confirm an earlier session change; nothing ran\. Ask the user to quit and reopen this conversation\.$/
+          /^Checkout access is blocked because dev cannot confirm an earlier checkout switch or session change; nothing ran\. Ask the user to quit and reopen this conversation\.$/
         )
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
-        assert.equal(shown(opened.runtime).at(-1), UNRESOLVED_NOTICE)
+        assert.equal(shown(opened.runtime).at(-1), UNRESOLVED_RESUME)
         assert.deepEqual(await opened.runtime.newSession(), { cancelled: true })
         assert.equal(dialog.notices.at(-1), UNRESOLVED_NOTICE)
         assert.equal(opened.host.isParked(), true, 'the refused /new leaves the block')
@@ -599,7 +616,7 @@ try {
         assert.equal(opened.host.isParked(), true, 'access stays blocked')
         assert.match(
           opened.host.blockedAccess('nothing ran'),
-          /^Checkout access is blocked because dev cannot confirm an earlier session change/
+          /^Checkout access is blocked because dev cannot confirm an earlier checkout switch or session change/
         )
         refuseAttach = false
         const output = mock.method(process.stderr, 'write')
@@ -667,11 +684,110 @@ try {
         trapped = true
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         assert.equal(trapped, false, 'the lookup recorded the mismatch')
-        assert.equal(shown(opened.runtime).at(-1), MISMATCH_NOTICE)
+        assert.equal(shown(opened.runtime).at(-1), MISMATCH_RESUME)
         assert.equal(opened.host.isParked(), true)
       } finally {
         await opened.close()
         await bound.close()
+      }
+    }
+  )
+  await claim(
+    'a permission mismatch recorded while /workspace resume selects the checkout is reported, the selection is withdrawn and the conversation stays where it was',
+    async () => {
+      const paused = await pausedCheckout('ask-select')
+      const other = '00000000-0000-4000-8000-0000000000fc' as WorkspaceId
+      const { offline: model } = await offlineScript('ask-select', [])
+      let wrong = false
+      let trapped = false
+      const authorize: WorkspaceAttachment['authorize'] = operation =>
+        Effect.map(
+          paused.attached.effect.authorize(operation),
+          (admitted): WorkspaceAuthorization =>
+            wrong && admitted.kind === 'ready'
+              ? { kind: 'ready', grant: { ...admitted.grant, workspaceId: other } }
+              : admitted
+        )
+      let opened: Awaited<ReturnType<typeof openLeadHost>> | undefined
+      const recordMismatch = Effect.promise(async () => {
+        trapped = false
+        wrong = true
+        await opened?.runtime.session.extensionRunner.emitToolCall({
+          type: 'tool_call',
+          toolName: 'read',
+          toolCallId: 'mismatch-read',
+          input: { path: join(paused.checkout, 'AGENTS.md') },
+        })
+        wrong = false
+      })
+      const pendingOfTask = async () =>
+        (await lifecycle.inspect({ taskId: paused.taskId })).flatMap(view =>
+          view.pending.map(operation => operation.id)
+        )
+      let selected:
+        | { readonly operation: string; readonly checkout: string; readonly pending: string[] }
+        | undefined
+      const select: WorkspaceAttachment['select'] = selection =>
+        trapped
+          ? recordMismatch.pipe(
+              Effect.andThen(paused.attached.effect.select(selection)),
+              Effect.tap(handoff =>
+                Effect.promise(async () => {
+                  selected = {
+                    operation: handoff.operationId,
+                    checkout: handoff.target.workspaceId,
+                    pending: await pendingOfTask(),
+                  }
+                })
+              )
+            )
+          : paused.attached.effect.select(selection)
+      opened = await openLeadHost({
+        attachment: overriding(paused.attached.effect, { authorize, select }),
+        manager: paused.manager,
+        offline: model,
+        cwd: paused.checkout,
+        ui: interactive(() => undefined).ui,
+      })
+      const keptByTask = async () =>
+        (await lifecycle.inspect({ taskId: paused.taskId })).map(view => ({
+          checkout: view.workspaceId,
+          path: view.path,
+          reservation: view.reservationId,
+        }))
+      try {
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        const before = await keptByTask()
+        assert.deepEqual(
+          before.map(kept => [kept.path, kept.reservation !== undefined]),
+          [[paused.checkout, true]],
+          'the task keeps its one checkout before the command'
+        )
+        trapped = true
+        await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
+        assert.equal(trapped, false, 'the selection recorded the mismatch')
+        assert.equal(shown(opened.runtime).at(-1), MISMATCH_RESUME)
+        assert.equal(opened.host.isParked(), true)
+        assert.equal(opened.host.attachment.binding.taskId, undefined)
+        assert.equal(handoffTexts(opened.runtime).length, 0, 'no switch was announced')
+        assert.deepEqual(
+          selected?.pending,
+          [selected?.operation],
+          'the selection recorded its switch as the one pending operation'
+        )
+        await waitFor(
+          'the selection to be withdrawn',
+          async () => ((await pendingOfTask()).length === 0 ? true : undefined),
+          IN_MEMORY_POLL
+        )
+        assert.equal(
+          selected?.checkout,
+          before[0]?.checkout,
+          'the selection targeted the checkout the task already kept'
+        )
+        assert.deepEqual(await keptByTask(), before, 'the task keeps the same checkout')
+      } finally {
+        await opened.close()
       }
     }
   )
@@ -1369,7 +1485,7 @@ try {
         assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
         const saved = readFileSync(sessionFile, 'utf8')
         assert.ok(saved.includes('Answer in place.') && saved.includes('answered in place'), saved)
-        assert.equal(JSON.parse(saved.split('\n')[0] ?? '{}').id, sessionId)
+        assert.equal(decodeHeader(saved.split('\n')[0] ?? '{}').id, sessionId)
 
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         await waitFor(
@@ -1530,7 +1646,7 @@ try {
         assert.equal(opened.host.isParked(), true)
         assert.match(
           opened.host.blockedAccess('nothing ran'),
-          /^Checkout access is blocked because dev cannot confirm an earlier session change/,
+          /^Checkout access is blocked because dev cannot confirm an earlier checkout switch or session change/,
           'the failed switch is unconfirmed, not one to wait for'
         )
       } finally {

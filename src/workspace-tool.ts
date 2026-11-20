@@ -15,7 +15,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { commandRunner, type RunCommand } from './command.ts'
 import { errorText } from './error-text.ts'
-import { resumeCandidates } from './workspace-command.ts'
+import { resumeCandidates, checkoutInspectionFailedText } from './workspace-command.ts'
 import { authorityPaths, taskArtifactsPath } from './workspace-authority-root.ts'
 import {
   AbsolutePath,
@@ -36,11 +36,20 @@ import { isWithin } from './workspace-paths.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
 
+const isRelativeFile = Schema.is(RelativeFilePath)
+const isAbsolutePath = Schema.is(AbsolutePath)
+
 const InputFields = {
   taskId: WorkspaceId,
   workspaceId: WorkspaceId,
   target: TaskTargetSchema,
-  path: Schema.Union([RelativeFilePath, AbsolutePath]),
+  path: Schema.String.check(
+    Schema.makeFilter(value =>
+      isRelativeFile(value) || isAbsolutePath(value)
+        ? undefined
+        : 'must be a normalized relative path inside the checkout or an absolute path'
+    )
+  ),
   destination: Schema.Struct({
     repository: GitHubRepositorySchema,
     number: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
@@ -258,6 +267,9 @@ interface ToolReply {
 export const WORKSPACE_TOOL_DESCRIPTION =
   "Manage this conversation's checkout and task. artifacts returns a folder outside Git for PR text, reports, logs or notes. Dev first checks permission to write, and deletes the folder when the last checkout kept for the task is freed or removed. resume asks dev to switch to a paused checkout at turn end; dev reports where this conversation works once the switch completes. set-target sets the destination branch instead of inferring it from origin. record-publication verifies a file already posted to a GitHub issue or PR (complete text or an exact uploaded file), and saves the proof. Nothing is uploaded or released. Dev checks for automatic cleanup at quit or before creating a worktree."
 
+const selectedArtifactUnreadableText = (path: string, cause: unknown): string =>
+  `Selected artifact is unreadable: ${path} (${errorText(cause)})`
+
 export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition => {
   const boundWorkspace = Effect.fnUntraced(function* (requestedTaskId: WorkspaceId | undefined) {
     const { binding } = options.attachment()
@@ -268,7 +280,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       )
     const views = yield* options.lifecycle
       .inspect({ taskId })
-      .pipe(Effect.mapError(error => refuse(`Checkout inspection failed: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(checkoutInspectionFailedText(error.message))))
     const view = views.find(item => item.workspaceId === binding.workspaceId)
     return { taskId, binding, view, views }
   })
@@ -280,7 +292,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     const attachment = options.attachment()
     const views = yield* options.lifecycle
       .inspect({ taskId: input.taskId })
-      .pipe(Effect.mapError(error => refuse(`Checkout inspection failed: ${error.message}`)))
+      .pipe(Effect.mapError(error => refuse(checkoutInspectionFailedText(error.message))))
     const declined = options.declinedSwitch(attachment)
     if (declined !== undefined) return yield* refuse(switchNotRequested(declined))
     const candidates = resumeCandidates(views, input.taskId)
@@ -401,8 +413,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
         )
       const canonical = yield* Effect.try({
         try: () => realpathSync.native(absolute),
-        catch: cause =>
-          refuse(`Selected artifact is unreadable: ${input.path} (${errorText(cause)})`),
+        catch: cause => refuse(selectedArtifactUnreadableText(input.path, cause)),
       })
       if (canonical !== absolute)
         return yield* refuse(
@@ -413,8 +424,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
     const info = yield* Effect.try({
       try: () => lstatSync(absolute),
-      catch: cause =>
-        refuse(`Selected artifact is unreadable: ${input.path} (${errorText(cause)})`),
+      catch: cause => refuse(selectedArtifactUnreadableText(input.path, cause)),
     })
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
       return yield* refuse(`Selected artifact must be a regular file without links: ${input.path}`)
@@ -448,7 +458,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
     }
     if (readBack === undefined)
       return yield* refuse(
-        `${destination.url} lacks the complete text or exact attachment for ${input.path} (${bytes.byteLength} bytes, SHA-256 ${digest.slice(0, 12)}). Publish the file there first; dev uploads nothing.`
+        `${destination.url} lacks the complete text or exact uploaded file for ${input.path} (${bytes.byteLength} bytes, SHA-256 ${digest.slice(0, 12)}). Publish the file there first; dev uploads nothing.`
       )
     const head = yield* readHead(view.path)
     const reference: PublicationReference = {
@@ -478,7 +488,7 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
       value: { recorded: 'publication', reference },
       model: {
         recorded: 'publication',
-        root,
+        root: root === 'workspace' ? 'checkout' : root,
         path: relativePath,
         byteLength: bytes.byteLength,
         readBack,

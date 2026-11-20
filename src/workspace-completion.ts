@@ -8,6 +8,7 @@ import type {
   WorkspaceOrigin,
   WorkspaceRole,
 } from './workspace-domain.ts'
+import { CHECKOUT_CONTENTS_UNREADABLE } from './workspace-labels.ts'
 
 export type Proof =
   | { readonly kind: 'yes'; readonly reason: string }
@@ -30,6 +31,8 @@ export interface IntegrationFacts {
   readonly unknown: readonly string[]
 }
 
+export const DO_NOT_RETRY = 'Do not retry it.'
+
 export const CLEAR =
   "If the task is no longer needed and nothing still works in its checkouts, the user may run dev workspace release <taskId>, which deletes all of the task's managed worktrees and artifacts."
 const DELIVER = ['Merge the PR or land its commits for cleanup. Only the user can release it.']
@@ -41,7 +44,7 @@ export const RETAINED: Record<
   }
 > = {
   'identity-unverifiable': { sweep: 'retained', actions: [CLEAR] },
-  'transition-unresolved': { sweep: 'retained', actions: ['Do not retry it.', CLEAR] },
+  'transition-unresolved': { sweep: 'retained', actions: [DO_NOT_RETRY, CLEAR] },
   'release-review': { sweep: 'review-required', actions: [CLEAR] },
   excluded: { sweep: 'skipped', actions: [] },
   'use-unknown': { sweep: 'retained', actions: [] },
@@ -61,7 +64,7 @@ export const RETAINED: Record<
   'integration-unknown': {
     sweep: 'retained',
     actions: [
-      'Check the destination branch and Git history. Use workspace set-target if needed. Dev never fetches or uploads.',
+      'Check the destination branch and Git history. Use the `set-target` action of the `workspace` tool if needed. Dev never fetches or uploads.',
       CLEAR,
     ],
   },
@@ -215,7 +218,7 @@ export const decideCompletion = (facts: CompletionFacts): CompletionVerdict => {
 
   if (facts.origin === 'pre-existing') {
     if (facts.residue === undefined)
-      return retain('residue-unreadable', 'The checkout contents could not be read.')
+      return retain('residue-unreadable', CHECKOUT_CONTENTS_UNREADABLE)
     if (!isClean(facts.residue))
       return retain(
         'checkout-modified',

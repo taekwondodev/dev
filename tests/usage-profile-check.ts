@@ -16,8 +16,9 @@ import { join } from 'node:path'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
-import { GIT_INSPECT_OPERATIONS } from '../scripts/usage-export.ts'
-import { ALL_TIME, parsePeriod, profileUsage } from '../scripts/usage-profile.ts'
+import * as Schema from 'effect/Schema'
+import { GIT_INSPECT_OPERATIONS, UsageExport } from '../scripts/usage-export.ts'
+import { ALL_TIME, parsePeriod, profileUsage, type Report } from '../scripts/usage-profile.ts'
 import type { Period } from '../scripts/usage-report.ts'
 import { makeClaims } from './workspace/workspace-check-support.ts'
 
@@ -243,7 +244,7 @@ const pick = (totals: Record<string, unknown>) => ({
   cacheWrite: totals.cacheWrite,
 })
 
-const rows = (list: { key: string; tokens: { entries: number } }[]) =>
+const rows = (list: readonly { key: string; tokens: { entries: number } }[]) =>
   Object.fromEntries(list.map(row => [row.key, row.tokens.entries]))
 
 const profile = (home: string, periods: readonly [Period, ...Period[]] = [ALL_TIME]) =>
@@ -255,8 +256,17 @@ const profile = (home: string, periods: readonly [Period, ...Period[]] = [ALL_TI
 
 const period = (text: string) => Effect.runPromise(parsePeriod(text))
 
+const parseReport = (text: string) => JSON.parse(text) as Report
+
 const report = (home: string, name = 'all') =>
-  JSON.parse(readFileSync(join(home, 'usage', `${name}.json`), 'utf8'))
+  parseReport(readFileSync(join(home, 'usage', `${name}.json`), 'utf8'))
+
+const withoutCodemode = (value: Report) => ({
+  ...value,
+  periods: value.periods.map(summary => ({ ...summary, codemode: undefined })),
+})
+
+const decodeUsageExport = Schema.decodeUnknownSync(Schema.fromJsonString(UsageExport))
 
 const toolsHome = join(root, 'tools')
 {
@@ -415,7 +425,7 @@ const readsHome = join(root, 'reads')
     }),
     lead.assistant('a8', 'res-r10', 80, { calls: [r11] }),
     lead.result('res-r11', 'a8', 81, r11, { text: 'b1\nb2' }),
-    lead.custom('h', 'res-r11', 82, 'dev/workspace-handoff', 'switched'),
+    lead.custom('h', 'res-r11', 82, 'dev/workspace-switch', 'switched'),
     lead.assistant('a9', 'h', 90, { calls: [r12] }),
     lead.result('res-r12', 'a9', 91, r12, { text: 'b1\nb2' }),
   ])
@@ -590,6 +600,24 @@ for (const [name, first, second] of [
   writeSession(gitIdentityHome, 'sessions', name, lines)
 }
 
+const gitListHome = join(root, 'git-list')
+{
+  const lead = conversation('2026-09-29T10:00:00Z')
+  const lines: Line[] = [lead.header()]
+  for (const index of [0, 1]) {
+    const git = call(`g${index}`, 'git_inspect', { operation: 'diff', ref: 'main' })
+    lines.push(
+      lead.assistant(`a${index}`, index === 0 ? null : `r${index - 1}`, index * 2 + 1, {
+        calls: [git],
+      }),
+      lead.result(`r${index}`, `a${index}`, index * 2 + 2, git, {
+        text: "The patch is larger than 64 KB. Its changed files follow as added lines, removed lines and path. Pass path to read one file's patch.\n3\t3\ta.ts\n1\t0\tb.ts",
+      })
+    )
+  }
+  writeSession(gitListHome, 'sessions', 'lists', lines)
+}
+
 const periodsHome = join(root, 'periods')
 {
   const lead = conversation('2026-09-29T23:59:00Z')
@@ -648,7 +676,7 @@ const periodsHome = join(root, 'periods')
         },
       },
     }),
-    lead.custom('oc', 'res-d1', 60, 'dev/work-outcome', `Outcomes\n${JSON.stringify(attempts)}`, {
+    lead.custom('oc', 'res-d1', 60, 'dev/work-result', `Outcomes\n${JSON.stringify(attempts)}`, {
       attempts: ['coord', 'leaf'],
       children,
     }),
@@ -832,7 +860,7 @@ const edgesHome = join(root, 'edges')
     lead.result('res-g5', 'a4', 41, g5, { text: ' M c' }),
     lead.result('res-g6', 'res-g5', 41, g6, { text: '[main 1234] first' }),
     lead.result('res-g8', 'res-g6', 41, g8, { text: ' M a' }),
-    lead.custom('h', 'res-g8', 42, 'dev/workspace-handoff', 'switched'),
+    lead.custom('h', 'res-g8', 42, 'dev/workspace-switch', 'switched'),
     lead.assistant('a5', 'h', 50, { calls: [g7] }),
     lead.result('res-g7', 'a5', 51, g7, { text: ' M c' }),
     lead.assistant('a6', 'res-g7', 52, { calls: [g9] }),
@@ -939,11 +967,12 @@ const DEV_TEXTS = [
 ] as const
 
 const DEV_ANCHORS = [
-  ['src/work-protocol.ts', ["const OUTCOME_MESSAGE = 'dev/work-outcome'"]],
+  ['src/work-protocol.ts', ["const OUTCOME_MESSAGE = 'dev/work-result'"]],
   ['src/work-model-text.ts', ['`', String.raw`\n`, '`']],
-  ['src/workspace-model-text.ts', ["export const HANDOFF_MESSAGE = 'dev/workspace-handoff'"]],
+  ['src/workspace-model-text.ts', ["export const HANDOFF_MESSAGE = 'dev/workspace-switch'"]],
   ['src/workspace-host.ts', ['text: `[dev workspace] ', '`']],
   ['src/pi-child.ts', [String.raw`\n\n[git output truncated at `, ' bytes]']],
+  ['src/pi-child.ts', ['`The patch is larger than ', ' KB. ']],
   [
     'src/pi-child.ts',
     [
@@ -982,7 +1011,7 @@ const digestTree = (directory: string): Record<string, string> =>
       .filter(entry => entry.isFile())
       .map(entry => {
         const path = join(entry.parentPath, entry.name)
-        return [path, createHash('sha256').update(readFileSync(path)).digest('hex')]
+        return [path, createHash('sha256').update(readFileSync(path)).digest('hex')] as const
       })
       .toSorted(([a], [b]) => (a ?? '').localeCompare(b ?? ''))
   )
@@ -1089,8 +1118,7 @@ try {
       )
       await profile(home)
       const withoutNested = report(home)
-      for (const value of [withNested, withoutNested]) delete value.periods[0].codemode
-      assert.deepEqual(withNested, withoutNested)
+      assert.deepEqual(withoutCodemode(withNested), withoutCodemode(withoutNested))
       const exportWithout = join(root, 'nested-export-without')
       assert.equal(maintain('--data-home', home, '--export', exportWithout).status, 0)
       for (const name of ['usage-baseline.json', 'usage.svg', 'tools.svg'])
@@ -1340,14 +1368,22 @@ try {
       })
       assert.deepEqual(
         identity.drilldowns.git
-          .map((group: { session: string; refs: string[] }) => [group.session, group.refs])
-          .toSorted(([left]: [string, string[]], [right]: [string, string[]]) =>
-            left.localeCompare(right)
-          ),
+          .map(group => [group.session, group.refs] as const)
+          .toSorted(([left], [right]) => left.localeCompare(right)),
         ['directory', 'environment', 'escaped-space', 'quoted-space'].map(name => [
           `sessions/${name}.jsonl`,
           [`sessions/${name}.jsonl#r0`, `sessions/${name}.jsonl#r2`],
         ])
+      )
+      assert.equal((await profile(gitListHome))._tag, 'Success')
+      const [lists] = report(gitListHome).periods
+      assert.deepEqual(
+        { truncated: lists.git.truncated, repeats: lists.git.repeats },
+        {
+          truncated: 2,
+          repeats: { requests: 1, identicalResults: 0, changedResults: 0, unknownResults: 1 },
+        },
+        'two equal file lists do not show that the patches were equal'
       )
     }
   )
@@ -1364,6 +1400,7 @@ try {
         copiedEntries: 4,
       })
       const [{ usage, context, lead }] = periods
+      assert.ok(lead !== null)
       assert.deepEqual(pick(usage.bySource.assistant), {
         entries: 4,
         unknown: 1,
@@ -1438,7 +1475,7 @@ try {
     async () => {
       assert.equal((await profile(compactionHome))._tag, 'Success')
       const written = readFileSync(join(compactionHome, 'usage', 'all.json'), 'utf8')
-      const [summary] = JSON.parse(written).periods
+      const [summary] = parseReport(written).periods
       assert.deepEqual(summary.compaction.preparationMs, [100])
       assert.deepEqual(summary.compaction.readyWaitMs, [40])
       assert.deepEqual(summary.compaction.overlapMs, [60, 10])
@@ -1676,8 +1713,11 @@ try {
         writeSession(home, 'sessions', 'case', [session.header(), ...test.entries])
         assert.equal((await profile(home))._tag, 'Success', test.name)
         const actual = report(home).periods[0].compaction
-        for (const [key, value] of Object.entries(test.expected))
-          assert.deepEqual(actual[key], value, `${test.name}: ${key}`)
+        assert.deepEqual(
+          Object.fromEntries(Object.entries(actual).filter(([key]) => key in test.expected)),
+          test.expected,
+          test.name
+        )
       }
       for (const [reason, outcome] of [
         ['manual', 'aborted'],
@@ -1866,6 +1906,7 @@ try {
         childSessions: 2,
         unattributedChildSessions: 0,
       })
+      assert.ok(day.lead !== null && before.sample !== null && before.lead !== null)
       assert.equal(day.lead.sessions, 1)
       assert.deepEqual(
         [before.sample.requests, before.sample.toolCalls, before.usage.requests.first.entries],
@@ -1884,6 +1925,7 @@ try {
       assert.equal(childOnly.usage.byRole.unattributed.entries, 1)
       assert.equal(childOnly.attribution.unattributedChildSessions, 1)
       assert.equal(empty.sample, null)
+      assert.ok(comparison !== null)
       assert.equal(comparison.baseline, '2026-09-30..2026-10-01')
       assert.ok(comparison.limitations.includes('2026-09-01..2026-09-02 has no measurable entries'))
       assert.ok(
@@ -1894,10 +1936,9 @@ try {
         )
       )
       const coordinator = comparison.usage.find(
-        (row: { dimension: string; key: string }) =>
-          row.dimension === 'role' && row.key === 'coordinator'
+        row => row.dimension === 'role' && row.key === 'coordinator'
       )
-      assert.deepEqual(coordinator.periods.slice(1), [null, null, null])
+      assert.deepEqual(coordinator?.periods.slice(1), [null, null, null])
 
       for (const tool of ['read', 'bash', 'unmatched']) {
         const home = join(root, `result-period-${tool}`)
@@ -2035,13 +2076,13 @@ try {
             `${file} contains the ${name}`
           )
       assert.ok(!(files['usage-baseline.json'] ?? '').includes('sessions/'))
-      const aggregate = JSON.parse(files['usage-baseline.json'] ?? '')
+      const aggregate = decodeUsageExport(files['usage-baseline.json'] ?? '')
       assert.deepEqual(
-        aggregate.tools.byTool.map((row: { tool: string }) => row.tool),
+        aggregate.tools.byTool.map(row => row.tool),
         ['read', 'bash', 'other']
       )
       assert.deepEqual(
-        aggregate.lead.toolResults.byTool.map((row: { tool: string }) => row.tool),
+        aggregate.lead?.toolResults.byTool.map(row => row.tool),
         ['read', 'bash', 'other']
       )
       assert.deepEqual(aggregate.usage.byEffort, [
@@ -2096,7 +2137,7 @@ try {
       const written = readFileSync(join(edgesHome, 'usage', 'all.json'), 'utf8')
       for (const copied of ['SECRET-OPERATION', 'zzworktree', 'frobnicate', 'push'])
         assert.ok(!written.includes(copied), `private report contains ${copied}`)
-      const [summary] = JSON.parse(written).periods
+      const [summary] = parseReport(written).periods
       assert.deepEqual(
         [summary.usage.bySource.assistant.entries, summary.usage.bySource.assistant.unknown],
         [10, 1]
@@ -2128,7 +2169,7 @@ try {
         }
       )
       const row = (path: string) =>
-        summary.drilldowns.reads.find((candidate: { path: string }) => candidate.path === path)
+        summary.drilldowns.reads.find(candidate => candidate.path === path)
       const [pages, checkpoint, wide, numeric] = [
         row('src/x.ts'),
         row('src/y.ts'),
@@ -2136,24 +2177,18 @@ try {
         row('/work/c/z.ts'),
       ]
       assert.deepEqual(
-        numeric.calls.map((read: { requested: object; relation: string }) => [
-          read.requested,
-          read.relation,
-        ]),
+        numeric?.calls.map(read => [read.requested, read.relation]),
         [
           [{ start: 1, end: 2 }, 'first'],
           [{ start: 3, end: 3 }, 'pagination'],
         ]
       )
       assert.deepEqual(
-        checkpoint.calls.map((read: { relation: string }) => read.relation),
+        checkpoint?.calls.map(read => read.relation),
         ['first', 'overlap']
       )
       assert.deepEqual(
-        pages.calls.map((read: { relation: string; earlier: string | null }) => [
-          read.relation,
-          read.earlier,
-        ]),
+        pages?.calls.map(read => [read.relation, read.earlier]),
         [
           ['first', null],
           ['pagination', null],
@@ -2161,10 +2196,7 @@ try {
         ]
       )
       assert.deepEqual(
-        wide.calls.map((read: { relation: string; returned: object }) => [
-          read.relation,
-          read.returned,
-        ]),
+        wide?.calls.map(read => [read.relation, read.returned]),
         [
           ['unknown', { start: 1, end: 0 }],
           ['unknown', { start: 1, end: 0 }],

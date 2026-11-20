@@ -283,7 +283,7 @@ export const settlePresence = Effect.fnUntraced(function* (
         ? `dev workspace release ${view.taskId}`
         : 'dev workspace release pre-existing'
     print(
-      `orb: the session of orb record ${shortId(record.id)} ended while returning work into ${record.checkout}, which may be half-written, so its workspace use stays. Check the checkout, then clear the use with: ${release}`
+      `orb: the session of orb record ${shortId(record.id)} ended while returning work into ${record.checkout}, which may be half-written, so its checkout use stays. Check the checkout, then clear the use with: ${release}`
     )
     return
   }
@@ -292,7 +292,7 @@ export const settlePresence = Effect.fnUntraced(function* (
   )
   if (Exit.isFailure(settled))
     print(
-      `orb: the workspace use the ended session left on ${record.checkout} stays: ${failureText(settled.cause)}`
+      `orb: the checkout use the ended session left on ${record.checkout} stays: ${failureText(settled.cause)}`
     )
   else if (settled.value.outcome === 'settled')
     print(`orb: ${record.checkout}: ${settled.value.reason}`)
