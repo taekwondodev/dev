@@ -429,9 +429,9 @@ const createRuntime = Effect.fnUntraced(function* (
       : noUiTrustContext(cwd)
   const modelRuntime = yield* (
     parts.modelRuntime ??
-      fromPromise('Cannot create Pi model runtime', () =>
-        api.ModelRuntime.create({ authPath: globalPiAuthPath() })
-      )
+    fromPromise('Cannot create Pi model runtime', () =>
+      api.ModelRuntime.create({ authPath: globalPiAuthPath() })
+    )
   )
   const compaction = yield* createBackgroundCompaction(api, packageRoot).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
