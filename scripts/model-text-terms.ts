@@ -6,7 +6,7 @@ const AFTER_DEV = String.raw`(?<=(?-i:\bdev (?:\[options\] |--cwd \S+ )?))`
 const WORKSPACE_AS_NAME = [
   String.raw`(?<=\/)workspace`,
   '(?<=`)workspace(?=`)',
-  String.raw`${AFTER_DEV}workspace(?=$|[\]\x60]| \[| ${SUBCOMMAND}\b)`,
+  String.raw`${AFTER_DEV}workspace(?=[\]\x60]| \[| ${SUBCOMMAND}\b)`,
   String.raw`workspace(?= ${SUBCOMMAND}${BEFORE_ARGUMENTS}| commands?\b)`,
 ].join('|')
 
