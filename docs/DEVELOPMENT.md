@@ -15,8 +15,6 @@ npm start
 
 TypeScript sources are strict and erasable, run directly through Node type stripping. No TypeScript build is needed. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
 
-Before `npm install` or `npm uninstall` in a checkout that already ran a check, remove the ignored `node_modules/@earendil-works` link: npm prunes through it and deletes the Pi release's packages from the installation. After `npm ci`, `npm run types:pi` or the next check recreates the link; `npm run pi:update` works in a fresh worktree and is not affected.
-
 ### Native addon
 
 Dev's macOS native addon requires the Xcode Command Line Tools (`xcode-select --install`) and a Node installation that ships `include/node/node_api.h` beside its `bin/` directory. Cached binaries live in the installation's `.dev/native/`, independently of data-home overrides. A missing binary builds on first use. If compilation fails, fix the reported toolchain error and restart dev: the running process retains its first build failure.
@@ -25,7 +23,9 @@ Dev's macOS native addon requires the Xcode Command Line Tools (`xcode-select --
 
 Install Pi with the [pi.dev installer](https://pi.dev). Dev follows `pi` on `PATH` to its managed `install/` directory and resolves the release named in `current-version`; an npm Pi installation is refused.
 
-Checks and setup regenerate an ignored `node_modules/@earendil-works` link to that release's packages. Runtime and types therefore use the same Pi. Only declarations resolve through the link: the lead and every child load Pi from the release by path, so a session starts without it, as after a plain `npm ci`. Run `npm run types:pi` if an editor retains stale declarations after a Pi change. Missing declarations fail checks; do not compensate with ambient types or a private Pi copy. `DEV_PI_RELEASE` selects another managed release directory for both runtime and checking, including a verification candidate.
+Dev and its delegated agents load Pi directly from the managed release. The ignored `node_modules/@earendil-works` link is only for TypeScript declarations from that same release. Checks and setup create it; run `npm run types:pi` to refresh editor declarations without running checks. Restore missing declarations through the link rather than adding ambient types or a private Pi copy. `DEV_PI_RELEASE` selects another managed release for both runtime and checking.
+
+Before `npm install` or `npm uninstall`, remove the link if present. Otherwise npm can prune the packages it points to in the Pi installation. `npm run pi:update` uses a fresh worktree, so it does not need this step.
 
 ### Pi integration limits
 
