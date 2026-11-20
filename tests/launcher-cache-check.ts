@@ -3,6 +3,17 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as Schema from 'effect/Schema'
+
+const decodeInherited = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      parent: Schema.optionalKey(Schema.String),
+      child: Schema.optionalKey(Schema.String),
+      leaked: Schema.Unknown,
+    })
+  )
+)
 
 const inherit = (env: NodeJS.ProcessEnv): { parent?: string; child?: string; leaked: unknown } => {
   const probe = `
@@ -27,7 +38,7 @@ const inherit = (env: NodeJS.ProcessEnv): { parent?: string; child?: string; lea
     timeout: 30_000,
   })
   assert.equal(result.status, 0, result.stderr)
-  return JSON.parse(result.stdout)
+  return decodeInherited(result.stdout)
 }
 
 const sandbox = mkdtempSync(join(tmpdir(), 'dev-launcher-cache-'))

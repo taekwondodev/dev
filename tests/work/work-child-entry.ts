@@ -54,11 +54,14 @@ if (channelSend !== undefined)
   process.send = ((message: unknown, ...rest: readonly unknown[]): boolean => {
     if (assignment.dropAck && Predicate.isObject(message) && message.type === 'work-outcomes-ack') {
       assignment.dropAck = false
-      const callback = rest.findLast(item => typeof item === 'function')
-      if (typeof callback === 'function') callback(null)
+      const callback = rest.findLast(
+        (item): item is (error: Error | null) => void => typeof item === 'function'
+      )
+      callback?.(null)
       return true
     }
-    const sent = Reflect.apply(channelSend, process, [message, ...rest])
+    const forward = channelSend as (...args: readonly unknown[]) => boolean
+    const sent = forward(message, ...rest)
     if (Predicate.isObject(message) && message.type === 'ready')
       sendRaw(directive(assignment.prompt, RAW_AFTER_READY_MARKER))
     return sent

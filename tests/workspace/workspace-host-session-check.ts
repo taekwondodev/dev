@@ -17,6 +17,7 @@ import { mock } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import {
   WorkspaceError,
   type WorkspaceAttachment,
@@ -117,13 +118,16 @@ const storedConversation = (offline: OfflineModel, cwd: string, directory = sess
   if (file === undefined) throw new Error('Pi did not persist the stored conversation')
   return { manager, file }
 }
+const decodeHeader = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown))
+)
 const rewriteHeader = (
   file: string,
   edit: (header: Record<string, unknown>) => Record<string, unknown>,
   target = file
 ) => {
   const [header = '', ...rest] = readFileSync(file, 'utf8').split('\n')
-  writeFileSync(target, [JSON.stringify(edit(JSON.parse(header))), ...rest].join('\n'))
+  writeFileSync(target, [JSON.stringify(edit(decodeHeader(header))), ...rest].join('\n'))
 }
 
 const orphanFork = (file: string) =>
@@ -1481,7 +1485,7 @@ try {
         assert.equal(opened.runtime.session.sessionManager.getSessionId(), sessionId)
         const saved = readFileSync(sessionFile, 'utf8')
         assert.ok(saved.includes('Answer in place.') && saved.includes('answered in place'), saved)
-        assert.equal(JSON.parse(saved.split('\n')[0] ?? '{}').id, sessionId)
+        assert.equal(decodeHeader(saved.split('\n')[0] ?? '{}').id, sessionId)
 
         await opened.runtime.session.prompt(`/workspace resume ${paused.taskId}`)
         await waitFor(

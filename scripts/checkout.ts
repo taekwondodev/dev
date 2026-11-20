@@ -63,7 +63,7 @@ export const streamed = Effect.fnUntraced(function* (
   file: string,
   args: readonly string[],
   env: Record<string, string> = {},
-  cwd = checkout,
+  cwd: string = checkout,
   label?: string
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner

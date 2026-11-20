@@ -1,5 +1,6 @@
 {
   "extends": ["./node_modules/oxc-standard/.oxlintrc.json"],
+  "plugins": ["unicorn", "typescript", "oxc", "react", "react_perf", "import", "promise"],
   "jsPlugins": [
     {
       "name": "dev",
@@ -7,7 +8,30 @@
     }
   ],
   "rules": {
-    "dev/no-source-comments": "error"
+    "dev/no-source-comments": "error",
+    "eslint/no-case-declarations": "error",
+    "eslint/no-fallthrough": "error",
+    "eslint/no-promise-executor-return": "error",
+    "eslint/no-prototype-builtins": "error",
+    "eslint/no-useless-assignment": "error",
+    "eslint/prefer-const": [
+      "error",
+      {
+        "ignoreReadBeforeAssign": true
+      }
+    ],
+    "eslint/prefer-object-has-own": "error",
+    "eslint/prefer-promise-reject-errors": "error",
+    "promise/always-return": [
+      "error",
+      {
+        "ignoreLastCallback": true
+      }
+    ],
+    "promise/no-multiple-resolved": "error",
+    "promise/no-return-in-finally": "error",
+    "typescript/no-import-type-side-effects": "error",
+    "unicorn/prefer-array-some": "error"
   },
   "overrides": [
     {

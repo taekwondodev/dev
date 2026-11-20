@@ -436,7 +436,9 @@ try {
   for (const pid of stoppedCleaners) process.kill(pid, 'SIGKILL')
   const running = launcher
   if (running?.exitCode === null && running.signalCode === null) {
-    const exited = new Promise<void>(resolveExit => running.once('exit', () => resolveExit()))
+    const exited = new Promise<void>(resolveExit => {
+      running.once('exit', () => resolveExit())
+    })
     running.kill('SIGKILL')
     await exited
   }

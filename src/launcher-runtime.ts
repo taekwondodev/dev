@@ -5,7 +5,6 @@ import { homedir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
 import { createInterface } from 'node:readline'
-import { pathToFileURL } from 'node:url'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as DateTime from 'effect/DateTime'
@@ -45,6 +44,7 @@ import { errorText } from './error-text.ts'
 import {
   CANNOT_RESOLVE_PI_RELEASE,
   findRecentSession,
+  importPiModule,
   loadPi,
   loadPiPathResolver,
   resolvePiPackage,
@@ -378,9 +378,8 @@ const createRuntime = Effect.fnUntraced(function* (
       onReactivationChange: parts.programStatus.changed,
     })
   )
-  const trustResolver: typeof PiProjectTrust = yield* fromPromise(
-    'Cannot load Pi project-trust resolver',
-    () => import(pathToFileURL(resolve(packageRoot, 'dist/core/project-trust.js')).href)
+  const trustResolver = yield* fromPromise('Cannot load Pi project-trust resolver', () =>
+    importPiModule<typeof PiProjectTrust>(resolve(packageRoot, 'dist/core/project-trust.js'))
   )
   const settingsManager = yield* fromSync('Cannot create trust-gated Pi settings', () =>
     api.SettingsManager.create(cwd, runtimeOptions.agentDir, { projectTrusted: false })
