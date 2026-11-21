@@ -1242,6 +1242,56 @@ try {
     }
   )
   await claim(
+    "a codemode result counts as cut when Pi recorded its saved full output, for leads and children in the result's period; warning text without that record, another tool's saved output and copied fork history do not count",
+    async () => {
+      const home = join(root, 'nested-cut')
+      const warning =
+        'Warning: truncated output (original token count: 900)\nTotal output lines: 40\n\nshown…800 tokens truncated…shown\n\n[Full output: /tmp/pi-codemode-fixture.txt (read with offset/limit)]'
+      const saved = { fullOutputPath: '/tmp/pi-codemode-fixture.txt' }
+      const lead = conversation('2026-09-29T23:59:50Z')
+      const code = (id: string) => call(id, 'codemode')
+      const entries = [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a1', 'u', 1, { calls: [code('c1'), code('c2'), call('c3', 'bash')] }),
+        lead.result('r1', 'a1', 2, code('c1'), { text: warning, details: saved }),
+        lead.result('r2', 'r1', 3, code('c2'), { text: `Script completed\n${warning}` }),
+        lead.result('r3', 'r2', 4, call('c3', 'bash'), { text: warning, details: saved }),
+        lead.assistant('a2', 'r3', 19, { calls: [code('c4')] }),
+        lead.result('r4', 'a2', 20, code('c4'), { text: warning, details: saved }),
+      ]
+      writeSession(home, 'sessions', 'lead', entries)
+      const child = conversation('2026-09-30T00:00:10Z')
+      writeSession(home, 'child-sessions', 'child', [
+        child.header(),
+        child.user('u', null, 0),
+        child.assistant('a1', 'u', 1, { calls: [code('k1'), code('k2')] }),
+        child.result('r1', 'a1', 2, code('k1'), { text: warning, details: saved }),
+        child.result('r2', 'r1', 3, code('k2'), { details: {} }),
+      ])
+      writeSession(home, 'child-sessions', 'copied', [
+        lead.header({ parentSession: '/source.jsonl', timestamp: '2026-10-01T00:00:00Z' }),
+        ...entries.slice(1),
+      ])
+      const printed = maintain('--data-home', home)
+      assert.equal(printed.status, 0, printed.stderr)
+      assert.match(
+        printed.stdout,
+        /cut output: 2 of 3 results in main conversations and 1 of 2 in delegated agents passed the script's output limit/
+      )
+      assert.deepEqual(report(home).periods[0].codemode.cut, {
+        lead: { results: 3, cut: 2 },
+        child: { results: 2, cut: 1 },
+      })
+      const before = await period('..2026-09-30')
+      await profile(home, [before])
+      assert.deepEqual(report(home, before.label).periods[0].codemode.cut, {
+        lead: { results: 2, cut: 1 },
+        child: { results: 0, cut: 0 },
+      })
+    }
+  )
+  await claim(
     'a failed codemode script is an execution failure and an aborted one a cancellation, also when an image separates the ending from the output; output cut to the limit, or endings that disagree about an abort because a thrown error quotes one, leave the result unclassified; an error shaped exactly like an abort ending cannot be told from an abort; and a codemode error that is not a script failure classifies like any tool error',
     async () => {
       const home = join(root, 'script-failures')

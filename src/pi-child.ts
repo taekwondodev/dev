@@ -34,6 +34,7 @@ import { makeWebReader } from './web-reader.ts'
 import { createWebExtension } from './web-extension.ts'
 import type { AddressResolver } from './web-network.ts'
 import { CODEMODE_TOOL, READ_URL_TOOL } from './integrated-tools.ts'
+import { loadCodemodeOutputLimit } from './codemode-output-limit.ts'
 import { makeNativeWrites } from './workspace-native-write.ts'
 import { errorText, redactSecrets } from './error-text.ts'
 import {
@@ -840,6 +841,9 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const compaction = yield* createBackgroundCompaction(loaded.api, loaded.packageInfo.root).pipe(
     Effect.mapError(toChildError)
   )
+  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(loaded.packageInfo.root).pipe(
+    Effect.mapError(toChildError)
+  )
   const webReader = yield* Effect.flatMap(
     makeSessionRenderer({ dataHome: request.dataHome, ensureOwner: requestBrowserOwner() }),
     renderer =>
@@ -874,6 +878,7 @@ const acquireSession = Effect.fn('acquireSession')(function* (
               name: 'dev:codemode',
               factory: loaded.api.createCodemodeExtension({ mode: 'on', models: false }),
             },
+            { name: 'dev:codemode-output-limit', factory: codemodeOutputLimit },
             ...(link === undefined
               ? []
               : [{ name: 'dev:coordinator-wait-guard', factory: coordinatorWaitGuard(link) }]),

@@ -184,11 +184,14 @@ let rogueOutcome = 'not attempted'
 try { await tools.rogue({}); rogueOutcome = 'ran' } catch (error) { rogueOutcome = String(error) }
 return { read, page, rogueOutcome, models: typeof models }
 `
+const largeOutputScript =
+  "text('HEAD-MARK' + 'a'.repeat(30000) + 'LEAD-MIDDLE' + 'b'.repeat(30000) + 'TAIL-MARK')"
 const script = scripted([
   [toolCall('direct-read', 'read', { path: 'AGENTS.md' })],
   [toolCall('direct', 'read_url', { url })],
   [toolCall('scripted', 'codemode', { code: codemodeScript })],
   [toolCall('rogue-direct', 'rogue', {})],
+  [toolCall('lead-limit', 'codemode', { code: largeOutputScript })],
   [{ type: 'text', text: 'done' }],
   [toolCall('rendered', 'read_url', { url: appUrl })],
   [{ type: 'text', text: 'done' }],
@@ -360,6 +363,26 @@ try {
     assert.match(direct.text, /Dev has not verified what this tool can do to project files/)
     assert.ok(script.calls() >= 5, 'the model was asked again after the refusal')
   })
+  await claim(
+    "a lead script without its own options returns output above Pi's 10,000-token default whole, and the recorded call keeps the script as written",
+    () => {
+      const result = sessionResult('lead-limit')
+      assert.equal(result.isError, false, result.text.slice(0, 400))
+      assert.match(result.text, /HEAD-MARKa+LEAD-MIDDLEb+TAIL-MARK/)
+      assert.doesNotMatch(result.text, /truncated output/)
+      const call = opened.runtime.session.sessionManager
+        .getEntries()
+        .flatMap(entry =>
+          entry.type === 'message' && entry.message.role === 'assistant'
+            ? entry.message.content
+            : []
+        )
+        .find(part => part.type === 'toolCall' && part.id === 'lead-limit')
+      assert.deepEqual(call?.type === 'toolCall' ? call.arguments : undefined, {
+        code: largeOutputScript,
+      })
+    }
+  )
   if (chrome !== undefined) {
     await claim(
       'a page rendered through the host survives as a tool result, and a session reload ends this reader client; the shared browser is ensured again by the next render',
