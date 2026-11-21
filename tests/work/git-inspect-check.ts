@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createReviewGitTool } from '../../src/pi-child.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
@@ -164,6 +175,44 @@ try {
       assert.ok(shown.length > 3000, `${shown.length} lines`)
       for (const row of shown.slice(2)) assert.match(row, /^1\t0\tmany\/f\d{4}\.txt$/)
       assert.ok(Buffer.byteLength(rows ?? '') <= 65_536)
+    }
+  )
+  await claim(
+    'parameters outside the declared schema are refused, naming every invalid field',
+    async () => {
+      for (const [input, named] of [
+        [{ operation: 'push' }, /operation/],
+        [{ operation: 'log', limit: 51 }, /limit/],
+        [{ operation: 'status', force: true }, /force/],
+        [{ operation: 'push', limit: 51 }, /operation[\s\S]*limit/],
+      ] as const)
+        await assert.rejects(
+          inspect(input),
+          (error: unknown) =>
+            error instanceof Error &&
+            error.message.startsWith('git_inspect parameters are invalid: ') &&
+            named.test(error.message),
+          JSON.stringify(input)
+        )
+    }
+  )
+  await claim(
+    "the delegated agent's entry loads where node_modules holds no Pi package, as after a plain npm ci",
+    async () => {
+      const checkout = fileURLToPath(new URL('../..', import.meta.url))
+      const copy = join(root, 'installation')
+      cpSync(join(checkout, 'src'), join(copy, 'src'), { recursive: true })
+      mkdirSync(join(copy, 'node_modules'))
+      for (const name of readdirSync(join(checkout, 'node_modules')))
+        if (name !== '@earendil-works' && !name.startsWith('.'))
+          symlinkSync(join(checkout, 'node_modules', name), join(copy, 'node_modules', name))
+      const entry = pathToFileURL(join(copy, 'src', 'pi-child.ts')).href
+      const loaded = spawnSync(
+        process.execPath,
+        ['--input-type=module', '--eval', `await import(${JSON.stringify(entry)})`],
+        { encoding: 'utf8' }
+      )
+      assert.equal(loaded.status, 0, loaded.stderr)
     }
   )
 } finally {

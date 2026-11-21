@@ -31,7 +31,9 @@ Model, effort, skill and child-role groups come from recorded session history, n
 
 ### Tool outcomes
 
-`returned` means a matched tool call/result has no recorded error, not that the task was correct. Errors include invocation mistakes, execution failures, blocks and cancellations; unrecognized errors remain unclassified. A failed test command is an execution failure. The profiler recognizes only dev's current refusal texts and `work` result shape; when either changes, dev's conversation history in the old shape is deleted, as [discard obsolete state](DEVELOPMENT.md#discard-obsolete-state) requires, so a report does not mix shapes.
+`returned` means a matched tool call/result has no recorded error, not that the task was correct. Errors include invocation mistakes, execution failures, blocks and cancellations; unrecognized errors remain unclassified. A failed test command is an execution failure.
+
+Codemode parse errors, exceptions and timeouts count as execution failures; aborts count as cancellations. The profiler infers the outcome from recorded output that can contain script-supplied text. It leaves results unclassified if the output was truncated or the recorded error endings disagree about whether the script was aborted. A script error that looks exactly like an abort is counted as a cancellation.
 
 Calls without results are unmatched. The chart's success percentage is `returned / matched` across leads and children; unmatched calls and results without calls are excluded. With no matched calls it shows `n/a`. The other chart tiles are lead-only.
 
@@ -39,15 +41,18 @@ Candidate repeated-error or recovery sequences connect a failed result to a late
 
 ### Operations inside codemode
 
-The private report shows codemode's recorded internal operations separately from outer tool calls, using Pi's `nestedCalls` metadata. Internal operations are excluded from public exports and are not added to token totals or outer tool counts.
+The private report counts recorded codemode operations separately from the outer script call. Internal `ok`, `error` and `unfinished` counts describe the operations, even when the script returns without error. Missing or malformed metadata means coverage is unknown; a complete empty list records zero operations. Incomplete metadata can omit calls or arguments, and malformed calls are counted separately from operation totals.
 
-Internal `ok`, `error` and `unfinished` counts describe each operation, even when the outer script returns without error. Missing or malformed metadata is unknown coverage, not zero operations. Incomplete metadata can omit calls or arguments or contain unfinished work; malformed calls are counted separately and excluded from operation totals. A complete empty list records zero operations.
+Operations count in the outer result's UTC period. Durations are per operation, not elapsed script time: operations may overlap and some have no recorded duration.
 
-These observations belong to the outer result's UTC period and exclude copied fork history. Duration samples, nearest-rank medians and maxima describe individual operations, not additive elapsed time: operations may overlap and durations may be absent. Arguments, raw errors and operation results are not included in this report. Internal results are not recorded by Pi, so the report does not infer read overlap, Git result equality or child attribution from these operations, and counts only direct `work` calls as launches.
+Pi does not record internal results, so the report cannot compare internal Git output. Launch figures use only direct `work` calls.
 
 ### Reads and Git requests
 
-Read overlap compares returned line ranges within one branch and session. It distinguishes pagination, identical or changed text, and intervening compaction or edits. Images and incomplete range information have unknown coverage. Repeated reads in separate sessions remain separate observations; overlap is not proven waste or billed tokens.
+The report measures read overlap in two ways. Neither measure establishes waste or billed tokens. Files read or changed through shell commands are outside both measures.
+
+- **Direct `read`:** compares returned line ranges on the same branch. It distinguishes pagination, identical or changed text, and intervening compaction or edits. Images and incomplete range information have unknown coverage.
+- **Codemode `read`:** compares requested ranges with earlier codemode requests on the same branch, including those inherited in copied fork history. It uses paths as recorded, so relative and absolute spellings do not match. Requests count regardless of the result; empty ranges overlap nothing, and unusable arguments count as unknown. An overlap shows what was requested, not what text came back.
 
 Git figures cover `git_inspect` and recognizable shell `git` commands. Wrappers, aliases and dynamic shell code may be missed. Repetition uses recorded command text and working directory, not inferred shell equivalence; compound or truncated output cannot establish identical results. These are diagnostics, not a complete shell audit.
 

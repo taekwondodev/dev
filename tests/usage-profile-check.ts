@@ -209,6 +209,17 @@ const writeSession = (home: string, directory: string, name: string, lines: read
 
 const call = (id: string, name: string, args: Json = {}): Call => ({ id, name, arguments: args })
 
+const nestedRead = (status: string, args: Json) => ({
+  id: 'nested',
+  name: 'read',
+  status,
+  arguments: args,
+})
+
+const nestedResult = (...calls: readonly Json[]) => ({ nestedCalls: { complete: true, calls } })
+
+const textBlock = (text: string) => ({ type: 'text', text })
+
 const cwdSection = (path: string) => ({ cwd: `<cwd>\n${path}\n</cwd>` })
 
 const page = (lines: readonly string[], start: number, total: number) => {
@@ -949,6 +960,15 @@ const DEV_TEXTS = [
     'work',
     'blocked',
   ],
+  [
+    'src/workspace-admission.ts',
+    [
+      "`The working directory is outside this conversation's checkout: ",
+      '. Nothing ran. If this call named the directory, name one inside the checkout; a shell command can change directory itself. Otherwise ask the user to quit and reopen this conversation.`',
+    ],
+    'work',
+    'blocked',
+  ],
   ['src/work-controller.ts', ['`', ' is required`'], 'work', 'invocation'],
   ['src/work-controller.ts', ["'prompt is required'"], 'work', 'invocation'],
   [
@@ -1126,6 +1146,211 @@ try {
           readFileSync(join(exportWith, name), 'utf8'),
           readFileSync(join(exportWithout, name), 'utf8')
         )
+    }
+  )
+  await claim(
+    'internal read requests count by requested range against earlier requests for the same path on their own branch, whatever the read returned or the period of the earlier one and also when it is copied fork history; undecodable and empty requests, another branch and a direct read are not earlier requests, and no path is reported',
+    async () => {
+      const home = join(root, 'nested-reads')
+      const lead = conversation('2026-09-29T23:59:50Z')
+      const direct = call('direct', 'read', { path: 'PRIVATE-R.ts' })
+      writeSession(home, 'sessions', 'reads', [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a0', 'u', 1, { calls: [direct] }),
+        lead.result('r0', 'a0', 2, direct),
+        lead.assistant('a1', 'r0', 3, { calls: [call('c1', 'codemode')] }),
+        lead.result(
+          'r1',
+          'a1',
+          5,
+          call('c1', 'codemode'),
+          nestedResult(
+            nestedRead('ok', { path: 'PRIVATE-P.ts', offset: 1, limit: 100 }),
+            nestedRead('ok', { path: 'PRIVATE-P.ts', offset: 50, limit: 11 }),
+            nestedRead('ok', { path: 'PRIVATE-Q.ts' }),
+            nestedRead('ok', { path: 'PRIVATE-E.ts', offset: 5, limit: 0 }),
+            nestedRead('ok', { path: 'PRIVATE-E.ts', offset: 1e20, limit: 0 }),
+            nestedRead('error', { path: 'PRIVATE-P.ts', offset: 1, limit: 100 }),
+            nestedRead('ok', { offset: 1 }),
+            nestedRead('ok', { path: 'PRIVATE-P.ts', offset: 1.5 })
+          )
+        ),
+        lead.assistant('a2', 'r1', 19, { calls: [call('c2', 'codemode')] }),
+        lead.result(
+          'r2',
+          'a2',
+          20,
+          call('c2', 'codemode'),
+          nestedResult(
+            nestedRead('ok', { path: 'PRIVATE-Q.ts', offset: 500, limit: 10 }),
+            nestedRead('ok', { path: 'PRIVATE-P.ts', offset: 101, limit: 100 }),
+            nestedRead('ok', { path: 'PRIVATE-E.ts', offset: 1, limit: 10 }),
+            nestedRead('ok', { path: 'PRIVATE-E.ts', offset: 1e20, limit: 5 }),
+            nestedRead('ok', { path: 'PRIVATE-P.ts', offset: 60, limit: 0 })
+          )
+        ),
+        lead.assistant('a3', 'r1', 29, { calls: [call('c3', 'codemode')] }),
+        lead.result(
+          'r3',
+          'a3',
+          30,
+          call('c3', 'codemode'),
+          nestedResult(
+            nestedRead('ok', { path: 'PRIVATE-P.ts', offset: 150, limit: 11 }),
+            nestedRead('ok', { path: 'PRIVATE-R.ts' })
+          )
+        ),
+      ])
+      const fork = conversation('2026-09-29T23:59:50Z')
+      writeSession(home, 'child-sessions', 'fork', [
+        fork.header({ parentSession: '/source.jsonl', timestamp: '2026-09-30T00:00:35Z' }),
+        fork.user('u', null, 0),
+        fork.assistant('a1', 'u', 1, { calls: [call('c1', 'codemode')] }),
+        fork.result(
+          'r1',
+          'a1',
+          2,
+          call('c1', 'codemode'),
+          nestedResult(nestedRead('ok', { path: 'PRIVATE-F.ts', offset: 1, limit: 10 }))
+        ),
+        fork.assistant('a2', 'r1', 50, { calls: [call('c2', 'codemode')] }),
+        fork.result(
+          'r2',
+          'a2',
+          51,
+          call('c2', 'codemode'),
+          nestedResult(nestedRead('ok', { path: 'PRIVATE-F.ts', offset: 5, limit: 2 }))
+        ),
+      ])
+      const printed = maintain('--data-home', home)
+      assert.equal(printed.status, 0, printed.stderr)
+      assert.match(
+        printed.stdout,
+        /internal read requests: 14 with a recorded path and range, 4 overlapping an earlier request for the same path on their branch, 2 without usable arguments\./
+      )
+      const whole = report(home)
+      assert.deepEqual(whole.periods[0].codemode.reads, { requests: 14, repeated: 4, unknown: 2 })
+      assert.doesNotMatch(JSON.stringify(whole.periods[0].codemode), /PRIVATE-/)
+      const later = await period('2026-09-30..')
+      await profile(home, [later])
+      assert.deepEqual(report(home, later.label).periods[0].codemode.reads, {
+        requests: 8,
+        repeated: 2,
+        unknown: 0,
+      })
+    }
+  )
+  await claim(
+    'a failed codemode script is an execution failure and an aborted one a cancellation, also when an image separates the ending from the output; output cut to the limit, or endings that disagree about an abort because a thrown error quotes one, leave the result unclassified; an error shaped exactly like an abort ending cannot be told from an abort; and a codemode error that is not a script failure classifies like any tool error',
+    async () => {
+      const home = join(root, 'script-failures')
+      const lead = conversation('2026-09-29T10:00:00Z')
+      const script = (id: string, isError: boolean, ...blocks: readonly Json[]) => ({
+        id,
+        call: call(`c-${id}`, 'codemode'),
+        options: {
+          isError,
+          blocks: [
+            {
+              type: 'text',
+              text: `Script ${isError ? 'failed' : 'completed'}\nWall time 0.1 seconds\nOutput:\n`,
+            },
+            ...blocks,
+          ],
+        },
+      })
+      const ABORTED = 'Script error:\nScript aborted: Execution aborted\n\nNo tool calls were made.'
+      const results = [
+        script(
+          'thrown',
+          true,
+          textBlock(
+            'Script error:\nReferenceError: URL is not defined\n    at <anonymous> (codemode.js:21:22)\n\nNo tool calls were made.'
+          )
+        ),
+        script(
+          'timed-out',
+          true,
+          textBlock(
+            'shown\nScript error:\nScript timed out: Execution timed out after 10 ms\n\nNo tool calls were made.'
+          )
+        ),
+        script('aborted', true, textBlock(`shown\n${ABORTED}`)),
+        script(
+          'aborted-after-image',
+          true,
+          textBlock('[image saved to /tmp/shown.png]'),
+          { type: 'image', data: '', mimeType: 'image/png' },
+          textBlock(ABORTED)
+        ),
+        script(
+          'thrown-ending',
+          true,
+          textBlock(
+            `Script error:\nError: the file holds\n${ABORTED}\n    at <anonymous> (codemode.js:1:1)\n\nNo tool calls were made.`
+          )
+        ),
+        script(
+          'cut-keeping-ending',
+          true,
+          textBlock(
+            `Warning: truncated output (original token count: 900)\nTotal output lines: 40\n\nshown…800 tokens truncated…shown\n${ABORTED}\n\n[Full output: /tmp/pi-codemode-fixture.txt (read with offset/limit)]`
+          )
+        ),
+        script(
+          'shaped-like-abort',
+          true,
+          textBlock(
+            'Script error:\nScript aborted: thrown by the script\n\nNo tool calls were made.'
+          )
+        ),
+        script('completed', false, textBlock(ABORTED)),
+      ]
+      writeSession(home, 'sessions', 'scripts', [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a', 'u', 1, { calls: results.map(result => result.call) }),
+        ...results.map((result, index) =>
+          lead.result(
+            `r-${result.id}`,
+            index === 0 ? 'a' : `r-${results[index - 1]?.id}`,
+            2 + index,
+            result.call,
+            result.options
+          )
+        ),
+        lead.assistant('a2', 'r-completed', 19, { calls: [call('c-other', 'codemode')] }),
+        lead.result('r-other', 'a2', 20, call('c-other', 'codemode'), {
+          isError: true,
+          text: 'Validation failed for tool "codemode":\n  - code: Expected string',
+        }),
+      ])
+      assert.equal((await profile(home))._tag, 'Success')
+      const [summary] = report(home).periods
+      const { outcomes } = summary.drilldowns
+      assert.deepEqual(
+        {
+          invocation: outcomes.invocation.refs,
+          execution: outcomes.execution.refs,
+          cancelled: outcomes.cancelled.refs,
+          unclassified: outcomes.unclassified.refs,
+        },
+        {
+          invocation: ['sessions/scripts.jsonl#r-other'],
+          execution: ['sessions/scripts.jsonl#r-thrown', 'sessions/scripts.jsonl#r-timed-out'],
+          cancelled: [
+            'sessions/scripts.jsonl#r-aborted',
+            'sessions/scripts.jsonl#r-aborted-after-image',
+            'sessions/scripts.jsonl#r-shaped-like-abort',
+          ],
+          unclassified: [
+            'sessions/scripts.jsonl#r-thrown-ending',
+            'sessions/scripts.jsonl#r-cut-keeping-ending',
+          ],
+        }
+      )
+      assert.equal(summary.tools.outcomes.returned, 1)
     }
   )
   await claim(
