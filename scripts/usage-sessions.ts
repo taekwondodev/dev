@@ -480,13 +480,8 @@ const cutByTool = (details: unknown): boolean =>
       flag => Predicate.hasProperty(details, flag) && typeof details[flag] === 'number'
     ))
 
-const urlSummary = (value: string): string => {
-  if (!URL.canParse(value)) return 'unparsable URL'
-  const { protocol } = new URL(value)
-  return protocol === 'http:' || protocol === 'https:'
-    ? (publicUrl(value) ?? 'unparsable URL')
-    : `${protocol} URL`
-}
+const urlSummary = (value: string): string =>
+  publicUrl(value) ?? (URL.canParse(value) ? `${new URL(value).protocol} URL` : 'unparsable URL')
 
 const truncationOf = (details: unknown): TruncationDetails | 'malformed' | undefined =>
   Predicate.hasProperty(details, 'truncation')
