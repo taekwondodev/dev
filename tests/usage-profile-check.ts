@@ -56,6 +56,7 @@ interface Call {
 }
 
 interface AssistantOptions {
+  readonly text?: string
   readonly calls?: readonly Call[]
   readonly usage?: unknown
   readonly latency?: number
@@ -119,7 +120,7 @@ const conversation = (start: string) => {
       message(id, parentId, second, {
         role: 'assistant',
         content: [
-          { type: 'text', text: 'ok' },
+          { type: 'text', text: options.text ?? 'ok' },
           ...(options.calls ?? []).map(call => ({
             type: 'toolCall',
             id: call.id,
@@ -2694,6 +2695,204 @@ try {
         unclassified: 0,
         unmatched: 0,
       })
+    }
+  )
+
+  const conversationsHome = join(root, 'conversations')
+  const LEAD = '2026-10-01T10-00-00-000Z_lead-aaaaaaaaaaaa'
+  const CHILD = '2026-10-01T11-00-00-000Z_child-bbbbbbbbbbbb'
+  const RESULT = 'RESULT-SENTINEL'
+  const IMAGE_DATA = Buffer.alloc(30, 7).toString('base64')
+  {
+    const lead = conversation('2026-10-01T10:00:00Z')
+    const bash = call('bash', 'bash', {
+      command: 'TOKEN=sk-abcdefghijklmnop12 npm test\nsecond line',
+    })
+    const read = call('read', 'read', { path: 'src/missing.ts' })
+    const edit = call('edit', 'edit', { path: 'src/never.ts', oldText: 'x', newText: 'y' })
+    const grep = call('grep', 'grep', { pattern: 'x', path: 'src' })
+    const url = call('url', 'read_url', {
+      url: 'https://user:PASSWORD-SENTINEL@example.com/docs/page?sig=QUERY-SENTINEL#frag',
+    })
+    const image = call('image', 'read', { path: 'assets/logo.png' })
+    const matches = call('matches', 'grep', { pattern: 'y', path: 'lib' })
+    const found = call('found', 'find', { pattern: '*.ts', path: 'src' })
+    const listed = call('listed', 'ls', { path: 'docs' })
+    const data = call('data', 'read_url', {
+      url: 'data:text/plain,https://admin:DATA-SENTINEL@example.com',
+    })
+    const code = call('code', 'codemode', { code: 'CODE-SENTINEL' })
+    const work = call('work', 'work', {
+      action: 'delegate',
+      skill: 'code-review',
+      prompt: 'PROMPT-SENTINEL',
+    })
+    writeSession(conversationsHome, 'sessions', LEAD, [
+      lead.header({ cwd: '/fixture/lead-project' }),
+      lead.user(
+        'u',
+        null,
+        0,
+        '<skill name="implement" location="/skills/implement/SKILL.md">\nSKILL-BODY-SENTINEL\n</skill>\n\n#350 please'
+      ),
+      lead.assistant('a1', 'u', 1, {
+        calls: [bash, read, edit, grep, url, image, matches, found, listed, data],
+      }),
+      lead.result('r1', 'a1', 2, bash, { text: RESULT, details: truncation('lines', 1) }),
+      lead.result('r2', 'r1', 3, read, { text: RESULT, isError: true }),
+      lead.result('rg', 'r2', 3, grep, { text: RESULT, details: { linesTruncated: true } }),
+      lead.result('ru', 'rg', 3, url, { text: RESULT }),
+      lead.result('ri', 'ru', 3, image, {
+        blocks: [
+          { type: 'text', text: RESULT },
+          { type: 'image', data: IMAGE_DATA, mimeType: 'image/png' },
+        ],
+      }),
+      lead.result('rm', 'ri', 3, matches, { text: RESULT, details: { matchLimitReached: 100 } }),
+      lead.result('rf', 'rm', 3, found, { text: RESULT, details: { resultLimitReached: 1000 } }),
+      lead.result('rl', 'rf', 3, listed, { text: RESULT, details: { entryLimitReached: 500 } }),
+      lead.result('rd', 'rl', 3, data, { text: RESULT, isError: true }),
+      lead.assistant('a2', 'rd', 4, { calls: [code] }),
+      lead.result('r3', 'a2', 5, code, {
+        text: RESULT,
+        ...nestedResult(
+          nestedRead('ok', { path: 'a' }),
+          nestedRead('error', { path: 'b' }),
+          {
+            id: 'nested',
+            name: 'bash',
+            status: 'ok',
+            arguments: { command: 'ls' },
+          },
+          {
+            id: 'nested',
+            name: 'token-refresh_session',
+            status: 'error',
+            arguments: {},
+          },
+          {
+            id: 'nested',
+            name: 'token-refresh_session',
+            status: 'ok',
+            arguments: {},
+          }
+        ),
+      }),
+      lead.assistant('a3', 'r3', 6, { calls: [work] }),
+      lead.result('r4', 'a3', 7, work, {
+        text: RESULT,
+        details: { kind: 'run', run: { id: 'run-1', kind: 'agent' } },
+      }),
+      lead.custom('m', 'r4', 8, 'dev/work-result', RESULT, {
+        children: [
+          { id: 'run-1', kind: 'agent', sessionFile: `/data/child-sessions/${CHILD}.jsonl` },
+        ],
+      }),
+      lead.compaction('c', 'm', 9, { tokensBefore: 1234 }),
+      lead.user('u2', 'c', 3, `${'U'.repeat(200)}USER-SUFFIX-SENTINEL`),
+      lead.assistant('a4', 'u2', 10, { text: '', stopReason: 'aborted' }),
+      lead.assistant('a5', 'a4', 11, { text: `\u001B[31m${'A'.repeat(250)}`, stopReason: 'stop' }),
+    ])
+    const child = conversation('2026-10-01T11:00:00Z')
+    writeSession(conversationsHome, 'child-sessions', CHILD, [
+      child.header({ cwd: '/fixture/child\u001B[2Jproject' }),
+      child.user('u', null, 0, 'Review the unit'),
+      child.assistant('a', 'u', 1, { text: 'Reviewed', stopReason: 'stop' }),
+    ])
+  }
+  const conversations = (...args: string[]) => maintain('--data-home', conversationsHome, ...args)
+
+  await claim(
+    '--conversations lists lead and child conversations newest first with their reference, project, counts and first request, and --timeline prints one line per event without result content',
+    () => {
+      const before = digestTree(conversationsHome)
+      const listed = conversations('--conversations')
+      assert.equal(listed.status, 0, listed.stderr)
+      assert.deepEqual(listed.stdout.split('\n').slice(1), [
+        '2026-10-01 11:00Z  delegated  bbbbbbbbbbbb  /fixture/child?[2Jproject  1 user, 0 tool calls  Review the unit',
+        '2026-10-01 10:00Z  main       aaaaaaaaaaaa  /fixture/lead-project  2 user, 12 tool calls  [skill implement] #350 please',
+        '',
+      ])
+
+      const timeline = conversations('--timeline', 'aaaaaaaaaaaa')
+      assert.equal(timeline.status, 0, timeline.stderr)
+      const bytes = `${Buffer.byteLength(RESULT)} B`
+      const [header, file, , ...events] = timeline.stdout.split('\n')
+      assert.equal(
+        header,
+        'Conversation aaaaaaaaaaaa (main), started 2026-10-01 10:00Z in /fixture/lead-project'
+      )
+      assert.equal(file, `File: ${join(conversationsHome, 'sessions', `${LEAD}.jsonl`)}`)
+      assert.deepEqual(events, [
+        '2026-10-01 10:00:00 user: [skill implement] #350 please',
+        `10:00:01 bash returned ${bytes}, cut: TOKEN=[redacted] npm test`,
+        `10:00:01 read error ${bytes}: src/missing.ts`,
+        '10:00:01 edit no result: src/never.ts',
+        `10:00:01 grep returned ${bytes}, cut: src`,
+        `10:00:01 read_url returned ${bytes}: https://example.com/docs/page`,
+        `10:00:01 read returned ${Buffer.byteLength(RESULT) + 30} B: assets/logo.png`,
+        `10:00:01 grep returned ${bytes}, cut: lib`,
+        `10:00:01 find returned ${bytes}, cut: src`,
+        `10:00:01 ls returned ${bytes}, cut: docs`,
+        `10:00:01 read_url error ${bytes}: data: URL`,
+        `10:00:04 codemode returned ${bytes}: read 2 (1 error), bash 1, [redacted] 2 (1 error)`,
+        `10:00:06 work returned ${bytes}: delegate (code-review) → conversation bbbbbbbbbbbb`,
+        '10:00:09 compaction, 1,234 tokens before',
+        `10:00:03 user: ${'U'.repeat(200)}…`,
+        `10:00:11 answer: ?[31m${'A'.repeat(195)}…`,
+        '',
+      ])
+      assert.equal(conversations('--timeline', 'lead-aaaa').stdout, timeline.stdout)
+      assert.match(
+        conversations('--timeline', `/elsewhere/child-sessions/${CHILD}.jsonl`).stdout,
+        /^Conversation bbbbbbbbbbbb \(delegated\)[^\n]*\n[^\n]*\n[^\n]*\n2026-10-01 11:00:00 user: Review the unit\n11:00:01 answer: Reviewed\n$/
+      )
+      assert.deepEqual(digestTree(conversationsHome), before)
+    }
+  )
+
+  await claim(
+    'an ambiguous reference lists its candidates and an unknown one names the list mode; both fail, as does combining the modes with each other, --period or --export, and none of them changes the data home',
+    () => {
+      const before = digestTree(conversationsHome)
+      const ambiguous = conversations('--timeline', '2026-10-01')
+      assert.equal(ambiguous.status, 1)
+      assert.equal(ambiguous.stdout, '')
+      assert.match(
+        ambiguous.stderr,
+        /"2026-10-01" matches 2 saved conversations; nothing was printed/
+      )
+      assert.match(ambiguous.stderr, /\n2026-10-01 11:00Z {2}delegated {2}bbbbbbbbbbbb {2}/)
+      assert.match(ambiguous.stderr, /\n2026-10-01 10:00Z {2}main {7}aaaaaaaaaaaa {2}/)
+
+      const unknown = conversations('--timeline', 'zzzz')
+      assert.equal(unknown.status, 1)
+      assert.equal(unknown.stdout, '')
+      assert.match(
+        unknown.stderr,
+        /No saved conversation in .* matches "zzzz"\. Run npm run profile -- --conversations/
+      )
+      const control = conversations('--timeline', 'zz\u001B]0;title\u0007zz')
+      assert.equal(control.status, 1)
+      assert.match(control.stderr, /matches "zz\?\]0;title\?zz"/)
+      assert.ok(!control.stderr.includes('\u001B'))
+
+      for (const args of [
+        ['--conversations', '--timeline', 'aaaa'],
+        ['--conversations', '--period', '..2026-10-02'],
+        ['--timeline', 'aaaa', '--export', join(root, 'conversations-export')],
+      ]) {
+        const refused = conversations(...args)
+        assert.equal(refused.status, 1, args.join(' '))
+        assert.equal(refused.stdout, '', args.join(' '))
+        assert.match(
+          refused.stderr,
+          /--conversations and --timeline take only --data-home and cannot be combined/
+        )
+      }
+      assert.throws(() => readdirSync(join(root, 'conversations-export')))
+      assert.deepEqual(digestTree(conversationsHome), before)
+      assert.deepEqual(readdirSync(conversationsHome).toSorted(), ['child-sessions', 'sessions'])
     }
   )
 

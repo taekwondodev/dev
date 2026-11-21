@@ -802,7 +802,7 @@ const CHANGE_DIRECTORY = /^cd(?:\s|$)/
 const SHELL_CONTROL = /[|;&<>`$()\n]/
 const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/
 const COMMENT_START = /[\s;&|()]/
-const GIT_TRUNCATED =
+export const GIT_TRUNCATED =
   /\n\n\[git output truncated at \d+ bytes\]$|^The patch is larger than \d+ KB\. /
 
 interface Heredoc {
