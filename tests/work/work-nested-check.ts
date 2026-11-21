@@ -303,7 +303,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      'a child script without its own options returns output between 10,000 and 25,000 tokens whole, and one above 25,000 tokens is cut with the warning, the saved full output and the lines to read from it, while the recorded call keeps the script as written',
+      'a child whose codemode description shows 25000 in its options example returns the output of a script without its own options whole between 10,000 and 25,000 tokens, and one above 25,000 tokens is cut with the warning, the saved full output and the lines to read from it, while the recorded call keeps the script as written',
       async () => {
         const within = scriptOutput(30_000, 'WITHIN-MIDDLE')
         const beyond = scriptOutput(60_000, 'BEYOND-MIDDLE')
@@ -345,6 +345,15 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.ok(shows(savedLines[Number(first) - 2]) && shows(savedLines[Number(last)]))
         assert.ok(recorded.calls.includes(JSON.stringify(within).slice(1, -1)))
         assert.doesNotMatch(recorded.calls, /@options/)
+        const shown = fixture
+          .modelCalls()
+          .filter(call => call.startsWith(`options:${child.view.id}:`))
+        assert.equal(shown.length, 4)
+        for (const call of shown)
+          assert.equal(
+            call,
+            `options:${child.view.id}:// @options: {"max_output_tokens": 25000, "timeout_ms": 60000}`
+          )
       }
     )
     if (childChrome !== undefined)

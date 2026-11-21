@@ -27,6 +27,35 @@ export const withOutputLimit = (parse: ParseCodemodeSource, source: string): str
   return parsed.code === source ? `${line}\n${source}` : `${line}${parsed.code}`
 }
 
+const PI_EXAMPLE = '"max_output_tokens": 10000'
+
+export const withLimitExample = (description: string): string =>
+  description.replace(PI_EXAMPLE, `"max_output_tokens": ${CODEMODE_OUTPUT_TOKENS}`)
+
+export const showingOutputLimit =
+  (codemode: Pi.ExtensionFactory): Pi.ExtensionFactory =>
+  pi =>
+    codemode({
+      ...pi,
+      registerTool: tool =>
+        pi.registerTool({
+          ...tool,
+          prepareLoadout: loadout => {
+            const changes = tool.prepareLoadout?.(loadout)
+            const described = changes?.descriptions?.[CODEMODE_TOOL]
+            return changes === undefined || described === undefined
+              ? changes
+              : {
+                  ...changes,
+                  descriptions: {
+                    ...changes.descriptions,
+                    [CODEMODE_TOOL]: withLimitExample(described),
+                  },
+                }
+          },
+        }),
+    })
+
 const CUT_HEADER =
   /^Warning: truncated output \(original token count: (\d+)\)\nTotal output lines: (\d+)\n\n/
 const OMISSION = /…(\d+) tokens truncated…/g

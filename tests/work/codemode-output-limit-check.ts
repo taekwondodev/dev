@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   CODEMODE_OUTPUT_TOKENS,
   type ParseCodemodeSource,
+  withLimitExample,
   withOutputLimit,
   withRecoveryHint,
 } from '../../src/codemode-output-limit.ts'
@@ -88,6 +89,24 @@ await claim(
       assert.ok(rejected(source), `Pi accepts ${JSON.stringify(source)}`)
       assert.equal(limited(source), source)
     }
+  }
+)
+
+await claim(
+  "Pi's codemode description shows its 10000 example once, and dev's shows 25000 there and is otherwise Pi's text",
+  async () => {
+    const { createCodemodeToolDefinition } = await importFromPi<{
+      createCodemodeToolDefinition: () => { description: string }
+    }>('dist/extensions/codemode/tool.js')
+    const { description } = createCodemodeToolDefinition()
+    const example = '// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}'
+    assert.equal(description.split(example).length, 2)
+    assert.equal(description.split('10000').length, 2)
+    assert.equal(
+      withLimitExample(description),
+      description.replace(example, '// @options: {"max_output_tokens": 25000, "timeout_ms": 60000}')
+    )
+    assert.equal(withLimitExample('no example here'), 'no example here')
   }
 )
 
