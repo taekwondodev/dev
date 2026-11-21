@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import type * as Http from 'node:http'
 import * as Clock from 'effect/Clock'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
@@ -18,7 +17,7 @@ import {
 
 export interface HttpReply {
   readonly status: number
-  readonly headers: IncomingHttpHeaders
+  readonly headers: Http.IncomingHttpHeaders
   readonly body: string
 }
 
@@ -58,7 +57,7 @@ export const httpJson = (
         ...call.headers,
       },
     }
-    const onReply = (reply: IncomingMessage): void => {
+    const onReply = (reply: Http.IncomingMessage): void => {
       const chunks: Buffer[] = []
       reply.on('data', (chunk: Buffer) => chunks.push(chunk))
       reply.on('error', failed)
@@ -74,8 +73,10 @@ export const httpJson = (
     }
     const sent =
       target.protocol === 'https:'
-        ? httpsRequest(target, { ...options, ...(ca === undefined ? {} : { ca }) }, onReply)
-        : httpRequest(target, options, onReply)
+        ? process
+            .getBuiltinModule('node:https')
+            .request(target, { ...options, ...(ca === undefined ? {} : { ca }) }, onReply)
+        : process.getBuiltinModule('node:http').request(target, options, onReply)
     sent.on('timeout', () => sent.destroy(new Error('the request timed out')))
     sent.on('error', failed)
     sent.end(payload)

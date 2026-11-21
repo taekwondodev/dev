@@ -120,8 +120,28 @@ try {
       `${entry} uses the inherited cache and removes it from its environment`
     )
   }
+  const orbPreload = `import assert from 'node:assert/strict';
+    import { registerHooks } from 'node:module';
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        assert.ok(specifier !== 'node:http' && specifier !== 'node:https', 'loading orb mode must not load the HTTP client');
+        return nextResolve(specifier, context);
+      },
+    });`
+  const orb = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      `data:text/javascript,${encodeURIComponent(orbPreload)}`,
+      '--input-type=module',
+      '--eval',
+      `await import('./src/orb/session.ts'); await import('./src/orb/command.ts')`,
+    ],
+    { encoding: 'utf8', env: base, timeout: 30_000 }
+  )
+  assert.equal(orb.status, 0, orb.stderr)
   console.log(
-    'launcher startup: specific module imports, deferred HTML libraries and HTTP client, and compile cache modes passed'
+    'launcher startup: specific module imports, deferred HTML libraries and HTTP client, also in orb mode, and compile cache modes passed'
   )
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
