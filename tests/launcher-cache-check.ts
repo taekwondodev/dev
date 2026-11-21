@@ -53,6 +53,7 @@ try {
           assert.notEqual(specifier, '@effect/platform-node', 'launcher startup must use specific platform modules');
           assert.notEqual(specifier, 'effect', 'launcher startup must use specific Effect modules');
           assert.ok(specifier !== 'linkedom' && specifier !== '@mozilla/readability', 'launcher startup must not load the HTML libraries');
+          assert.ok(specifier !== 'node:http' && specifier !== 'node:https', 'launcher startup must not load the HTTP client');
           if (specifier === './launcher-runtime.ts')
             assert.equal(process.env.DEV_CODING_AGENT, 'true', 'launcher sets its identity before loading the runtime');
           return nextResolve(specifier, context);
@@ -120,7 +121,7 @@ try {
     )
   }
   console.log(
-    'launcher startup: specific module imports, deferred HTML libraries and compile cache modes passed'
+    'launcher startup: specific module imports, deferred HTML libraries and HTTP client, and compile cache modes passed'
   )
 } finally {
   rmSync(sandbox, { recursive: true, force: true })

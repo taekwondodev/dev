@@ -1,6 +1,5 @@
 import { lookup } from 'node:dns/promises'
-import { request as httpRequest, type IncomingMessage } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import type * as Http from 'node:http'
 import { BlockList, isIP } from 'node:net'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
@@ -174,7 +173,7 @@ const requestHeaders = {
 
 interface RawResponse {
   readonly status: number
-  readonly headers: IncomingMessage['headers']
+  readonly headers: Http.IncomingMessage['headers']
   readonly body: Uint8Array
   readonly truncated: boolean
 }
@@ -187,7 +186,10 @@ const singleRequest = (
 ): Effect.Effect<RawResponse, WebNetworkError> =>
   Effect.callback<RawResponse, WebNetworkError>(resume => {
     const family = isIP(address) === 6 ? 6 : 4
-    const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)({
+    const client: Pick<typeof Http, 'request'> = process.getBuiltinModule(
+      url.protocol === 'https:' ? 'node:https' : 'node:http'
+    )
+    const request = client.request({
       protocol: url.protocol,
       host: bracketless(url.hostname),
       port: url.port === '' ? undefined : Number(url.port),
