@@ -49,7 +49,7 @@ Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#na
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 
-For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics and public exports.
+For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics, public exports and finding a saved conversation.
 
 ## Behavior
 

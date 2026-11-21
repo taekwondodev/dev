@@ -41,9 +41,10 @@ const field = (args: unknown, name: string): string | undefined => {
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
-const publicUrl = (value: string | undefined): string | undefined => {
+export const publicUrl = (value: string | undefined): string | undefined => {
   if (value === undefined || !URL.canParse(value)) return undefined
   const url = new URL(value)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
   const path = url.pathname
     .split('/')
     .map(segment => (isOpaqueSegment(segment) ? '[redacted]' : segment))
