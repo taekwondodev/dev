@@ -197,6 +197,33 @@ try {
     }
   )
   await claim(
+    'show without ref says ref is missing, and declares ref:path and ranges',
+    async () => {
+      for (const [input, message] of [
+        [{ operation: 'show' }, 'git_inspect show needs ref'],
+        [{ operation: 'show', ref: 'not a ref' }, 'git_inspect ref is not a safe Git reference'],
+      ] as const)
+        await assert.rejects(
+          inspect(input),
+          (error: unknown) => error instanceof Error && error.message === message,
+          message
+        )
+      const { properties } = tool.parameters as {
+        readonly properties: Readonly<Record<string, { readonly description: string }>>
+      }
+      assert.match(properties.operation?.description ?? '', /ref:path/)
+      assert.match(properties.ref?.description ?? '', /main\.\.HEAD/)
+      const file = await inspect({ operation: 'show', ref: 'main:small.txt' })
+      assert.equal(file.text, 'one\ntwo')
+      const range = await inspect({
+        operation: 'diff',
+        ref: `${first}..${second}`,
+        path: 'small.txt',
+      })
+      assert.match(range.text, /^\+two$/m)
+    }
+  )
+  await claim(
     "the delegated agent's entry loads where node_modules holds no Pi package, as after a plain npm ci",
     async () => {
       const checkout = fileURLToPath(new URL('../..', import.meta.url))

@@ -72,15 +72,16 @@ const optionalText = (description: string) =>
 
 const GitInspectInput = Schema.Struct({
   operation: Schema.Literals(REVIEW_OPERATIONS).annotate({
-    description: 'Read-only Git operation to perform',
+    description:
+      'status; diff: unstaged, or working tree against ref; staged-diff; log; show: commit, or file as ref:path; files: tracked.',
   }),
-  path: optionalText('Optional repository-relative path without parent traversal'),
+  path: optionalText('Limit to this repository-relative path.'),
   ref: optionalText(
-    'Git ref for show, or optional diff base or log start, such as HEAD or a commit hash'
+    'Commit, branch or range like main..HEAD. Required for show; else diff base or log start.'
   ),
   limit: Schema.optionalKey(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
-      description: 'Maximum number of log entries',
+      description: 'Log entries, default 20.',
     })
   ),
 })
@@ -381,7 +382,7 @@ export function childBrief(request: Pick<ChildRequest, 'access' | 'coordinate'>)
       : 'You may edit files. Change only what the assignment requires.'
   const delegation =
     request.coordinate === true
-      ? 'Use work to delegate subtasks. Those agents cannot delegate. Results arrive after your turn.'
+      ? 'Use work to delegate subtasks.'
       : 'Do not delegate or start other agents.'
   return [
     'You are a delegated agent with one assignment.',
@@ -512,9 +513,8 @@ function validateRelativePath(path: string | undefined): string | undefined {
   return path
 }
 
-function validateGitRef(ref: string | undefined): string {
+function validateGitRef(ref: string): string {
   if (
-    ref === undefined ||
     ref.length === 0 ||
     ref.startsWith('-') ||
     ref.includes('\0') ||
@@ -562,11 +562,12 @@ function gitRequest(input: unknown): GitRequest {
         ],
       }
     case 'show': {
+      if (params.ref === undefined) fail('git_inspect show needs ref')
       const show = ['show', '--no-ext-diff', '--no-textconv', '--oneline']
       const selection = [validateGitRef(params.ref), ...paths]
       return {
         args: [...show, ...selection],
-        ...(params.ref?.includes(':') === true
+        ...(params.ref.includes(':')
           ? {}
           : { changedFiles: [...show, ...CHANGED_FILES, ...selection] }),
       }
@@ -588,7 +589,7 @@ export function createReviewGitTool(cwd: string, git: GitRunner): Pi.ToolDefinit
     name: 'git_inspect',
     label: 'git_inspect',
     description:
-      'Read Git status, diffs, history, refs or tracked files. Output past 64 KB is cut, or replaced by the changed files when a patch covers several; the agent that started you can read it in full.',
+      'Read Git state. Output past 64 KB is cut, or replaced by the changed files when a patch covers several; the agent that started you can read it in full.',
     promptSnippet: 'Read Git state',
     parameters: gitInspectParameters,
     async execute(_toolCallId, params, signal) {
