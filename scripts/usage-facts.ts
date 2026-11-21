@@ -76,6 +76,12 @@ const ERROR_TEXTS: readonly ErrorText[] = [
     tools: SEARCH,
   },
   { outcome: 'invocation', pattern: /^[A-Za-z]+ is required$/, tools: ['work'] },
+  {
+    outcome: 'blocked',
+    pattern:
+      /^The working directory is outside this conversation's checkout: [\s\S]*\. Nothing ran\. /,
+    tools: ['work'],
+  },
   { outcome: 'invocation', pattern: /^Tool \S+ not found$/ },
   { outcome: 'invocation', pattern: /^Validation failed for tool "/ },
   {
@@ -139,8 +145,23 @@ export const classifyError = (tool: string, text: string): ResultOutcome =>
     error => (error.tools === undefined || error.tools.includes(tool)) && error.pattern.test(text)
   )?.outcome ?? 'unclassified'
 
+const SCRIPT_ERROR = /^Script error:\n(Script aborted: )?/gm
+const CUT_SCRIPT_OUTPUT =
+  /^Script failed\n[^\n]*\nOutput:\n+Warning: truncated output \(original token count: /
+
+const scriptFailure = (blocks: readonly Block[]): ResultOutcome | undefined => {
+  const text = blocks.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('\n')
+  if (!text.startsWith('Script failed\n')) return undefined
+  if (CUT_SCRIPT_OUTPUT.test(text)) return 'unclassified'
+  const aborted = new Set(Array.from(text.matchAll(SCRIPT_ERROR), match => match[1] !== undefined))
+  if (aborted.size !== 1) return 'unclassified'
+  return aborted.has(true) ? 'cancelled' : 'execution'
+}
+
 const classify = (result: ResultEntry): ResultOutcome => {
   if (!result.isError) return 'returned'
+  const failure = result.tool === 'codemode' ? scriptFailure(result.blocks) : undefined
+  if (failure !== undefined) return failure
   const text = firstText(result.blocks)
   if (text === undefined) return 'unclassified'
   return classifyError(result.tool, text)
@@ -561,7 +582,7 @@ type TextCoverage = Extract<Coverage, { coverage: 'text' }>
 
 const UNKNOWN: Coverage = { coverage: 'unknown' }
 
-const requestedRange = (
+export const requestedRange = (
   range: Extract<ToolCall['input'], { kind: 'read' }>['range']
 ): RequestedRange | undefined => {
   if (range === 'undecodable') return undefined

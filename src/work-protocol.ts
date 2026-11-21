@@ -156,7 +156,7 @@ export const LeadWorkInputSchema = Schema.Struct({
   }),
   command: text('Shell command for process.'),
   cwd: text(
-    'Working directory. With delegate, another Git checkout uses its own instructions and delivery rules. Your write and edit calls cannot change a checkout dev keeps for another task.'
+    'Working directory. With process, omit it or name a directory inside this checkout; the command can cd elsewhere itself. With delegate, another Git checkout uses its own instructions and delivery rules. Your write and edit calls cannot change a checkout dev keeps for another task.'
   ),
   coordinate: Schema.optionalKey(
     Schema.Boolean.annotate({

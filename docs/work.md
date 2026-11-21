@@ -32,7 +32,7 @@ Writing agents show their worktree path as `blocked` if it may still be in use, 
 
 ### Execution and access
 
-A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission. Under `dev --orb` the command runs on the [orb](orb.md#tools) inside the session's directory, and its logs merge standard error into standard output. Delegated agents stay inside the orb's checkout: a writing child runs on [its own orb](orb.md#writing-children), and a read-only agent reads over SSH the orb that holds its workspace.
+A launch returns an attempt ID once the process exists. A local command runs Bash with the user's permissions under the lead checkout's writer admission. For `process`, omit `cwd` or choose a directory inside this conversation's checkout. To run elsewhere, change directory in the command itself. Under `dev --orb` the command runs on the [orb](orb.md#tools) inside the session's directory, and its logs merge standard error into standard output. Delegated agents stay inside the orb's checkout: a writing child runs on [its own orb](orb.md#writing-children), and a read-only agent reads over SSH the orb that holds its workspace.
 
 Every child receives its working project's instructions, Pi's base prompt and profile guidance, not the lead's conversation. Its skill catalog lists only the skill named by `skill` and skills named in the assignment prompt. Name any additional skills the child should see in that catalog; this filter does not restrict file access. Read-only children have inspection tools, `read_url`, `codemode` and `work` for coordinators, but no shell, edit or `gh` tool. Put issue, PR or other external text in the prompt or a workspace file. `git_inspect` cuts Git output past 64 KB; for a diff or commit that is larger and changes several files it can return those files with their added and removed line counts instead, to be read one `path` at a time. The run's `stdout` keeps the whole output, and its `stderr` Git's own messages. An extension tool reusing an inspection tool's name is blocked, so the child loses that tool; under `dev --orb` the orb's own tools are the exception. Writing children follow the lead's [native destination policy](workspace.md#native-writes).
 
@@ -50,7 +50,7 @@ A delegated writer receives a distinct managed worktree from the source checkout
 
 For `delegate`, `cwd` can select another Git checkout. The child uses that repository's [guidance and trusted resources](../SECURITY.md#trusted-base) and delivery policy; a read-only child reads the selected checkout directly. The lead stays bound to its original repository and can read and inspect the result; its own native writes follow the [native destination policy](workspace.md#native-writes). See [workspace selection](workspace.md#delegation-into-another-checkout) for admission and task identity.
 
-`process` commands keep `cwd` inside the bound workspace. Leaves cannot select a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there.
+Leaves cannot select a `cwd`, and a coordinator delegated into another checkout can start only read-only leaves there.
 
 ### Coordinators and leaves
 
