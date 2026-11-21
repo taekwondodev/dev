@@ -33,7 +33,7 @@ type Request =
 export const LEAF_OUTCOME_GUIDANCE =
   'Delegated results: verify against files or test output before reporting your own result.'
 export const COORDINATOR_TOOL_DESCRIPTION =
-  'Start agents for subtasks with delegate. They cannot delegate further. Read-only agents see your checkout, including local changes; writers get separate worktrees without your edits. list, inspect and cancel cover only runs you started; omit id to stop them all. Do independent work or end your turn; results arrive after it ends. Do not sleep, loop or poll for them. Report only after all runs finish and you receive and verify their results.'
+  'Start agents for subtasks with delegate. They cannot delegate further. Read-only agents see your checkout, including local changes. list, inspect and cancel cover only runs you started; omit id to stop them all. Do independent work or end your turn; results arrive after it ends. Do not sleep, loop or poll for them. Report only after all runs finish and you receive and verify their results.'
 
 const decodeControllerMessage = Schema.decodeUnknownOption(ControllerWorkMessageSchema)
 const decodeResult = Schema.decodeUnknownEffect(WorkResultSchema)
