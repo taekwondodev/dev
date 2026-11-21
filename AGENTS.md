@@ -25,32 +25,12 @@ Treat dev as unreleased: dev-owned state has exactly one schema, the final one. 
 Agents read dev's text while working on other repositories, without dev's CONTEXT, docs or source. Write every model-visible string for an agent that knows Git and Pi's tools but not dev. These strings include tool and parameter descriptions, output schemas, messages sent into a conversation, tool results, refusals, errors a tool returns and the prompts given to delegated agents.
 
 - Say what happened, what did not run and what the agent can do next. Put internal detail, such as a record or path, after that and only when it helps the next action.
-- Use this outward vocabulary instead of the CONTEXT terms:
-
-  | Internal term                                  | Model-visible wording                                     |
-  | ---------------------------------------------- | --------------------------------------------------------- |
-  | lead                                           | this conversation                                         |
-  | child, coordinator, leaf                       | delegated agent; one that may or may not delegate further |
-  | attempt                                        | run                                                       |
-  | outcome                                        | result                                                    |
-  | workspace reservation                          | checkout kept for a task                                  |
-  | admission, grant, write acquisition            | permission to write                                       |
-  | binding, attachment, workspace handoff, parked | the checkout this conversation uses; switching checkouts  |
-  | sweep                                          | automatic cleanup                                         |
-  | gate                                           | lock                                                      |
-  | workspace authority, controller, owner, worker | dev                                                       |
-  | dispatch rule                                  | configured model and effort                               |
-  | integration target                             | destination branch                                        |
-  | residue                                        | unfinished work                                           |
-  | workspace                                      | checkout; `workspace` only names the tool and the command |
-
+- Use the outward vocabulary in [`scripts/model-text-terms.ts`](scripts/model-text-terms.ts) instead of the CONTEXT terms; the `dev/no-internal-terms` lint error prints the wording for the term it finds.
 - Never name a skill, workflow or ADR the agent may not have, such as `dev-cycle`.
 - Keep tool names, parameter names and enum values exact; explain them where the agent first reads them. Choose a structured value that an outside agent understands without a definition.
 - Replace jargon with plain wording of about the same length; add words only for a fact the next action depends on.
 
 Text dev prints in the terminal for the user uses the same outward vocabulary, so the user and the agent name things alike.
-
-The `dev/no-internal-terms` lint rule in [`scripts/code-policy.ts`](scripts/code-policy.ts) rejects the internal terms in the sentences and message labels of `src/`; the rule owns what it checks. It follows a `const` only within its file, so a word that reaches a sentence through an import, a function result or a saved value follows the same rules by review. [The model text check](tests/model-text-check.ts) covers structured keys, the values of enumerations that sentences interpolate and a sample of rendered results. Add an enumeration to that check when a sentence starts to interpolate it.
 
 ## Learning more about Effect
 
