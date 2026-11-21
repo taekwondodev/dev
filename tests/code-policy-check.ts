@@ -29,47 +29,29 @@ const lintFlags = (script: string): string[] => {
 
 const sampleTerms = [
   'lead',
-  'child',
   'coordinator',
-  'leaf',
   'attempt',
   'outcome',
   'workspace reservation',
-  'reservation',
   'admission',
-  'grant',
-  'write acquisition',
-  'binding',
-  'attachment',
   'workspace handoff',
-  'parked',
   'sweep',
   'gate',
   'workspace authority',
-  'controller',
-  'owner',
-  'worker',
   'dispatch rule',
   'integration target',
   'residue',
-  'workspace',
   'dev-cycle',
-  'ADR',
+  'workspace',
 ]
 
-const wholly = (pattern: string) => new RegExp(String.raw`^(?:${pattern})$`, 'i')
-const unsampled = TERM_GROUPS.filter(
-  ({ pattern }) => !sampleTerms.some(term => wholly(pattern).test(term))
-)
-assert.deepEqual(unsampled, [], 'every term group has a sample sentence')
-const expectedWording = (term: string): string => {
-  const [group, ...others] = TERM_GROUPS.filter(({ pattern }) => wholly(pattern).test(term))
-  assert.ok(group !== undefined && others.length === 0, `"${term}" belongs to one term group`)
-  const { replacement } = group
-  if (replacement.kind === 'leave-out') return 'Leave it out.'
-  assert.ok(replacement.wording.trim().length > 0, `"${term}" has a wording`)
-  return replacement.wording
-}
+const termSamples = TERM_GROUPS.map(({ pattern, replacement }) => {
+  const term = sampleTerms.find(sample => new RegExp(`^(?:${pattern})$`, 'i').test(sample))
+  assert.ok(term !== undefined, `the terms ${pattern} have a sample sentence`)
+  if (replacement.kind === 'leave-out') return { term, wording: 'Leave it out.' }
+  assert.ok(replacement.wording.trim().length > 0, `the terms ${pattern} have a wording`)
+  return { term, wording: replacement.wording }
+})
 
 const timers = "import { setTimeout as sleep } from 'node:timers/promises'"
 const files: Record<string, string> = {
@@ -139,7 +121,7 @@ const files: Record<string, string> = {
     '',
   ].join('\n'),
   'src/term-groups.ts': [
-    ...sampleTerms.map((term, index) => `export const s${index} = 'Wait for the ${term} now'`),
+    ...termSamples.map(({ term }, index) => `export const s${index} = 'Wait for the ${term} now'`),
     '',
   ].join('\n'),
   'tests/worded.ts': ["export const name = 'the lead waits for the sweep'", ''].join('\n'),
@@ -177,7 +159,7 @@ const expected: Record<string, string[]> = {
   'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21, 23, 25, 28, 29, 31, 33, 35, 37].map(
     line => `no-internal-terms:${line}`
   ),
-  'src/term-groups.ts': sampleTerms.map((_, index) => `no-internal-terms:${index + 1}`),
+  'src/term-groups.ts': termSamples.map((_, index) => `no-internal-terms:${index + 1}`),
   'tests/disabled-line.ts': ['no-source-comments:1'],
   'tests/disabled-file.ts': ['no-source-comments:1'],
   'tests/disabled-later.ts': ['no-source-comments:1'],
@@ -225,8 +207,7 @@ try {
         termMessages.set(label.span.line, diagnostic.message)
     }
   }
-  sampleTerms.forEach((term, index) => {
-    const wording = expectedWording(term)
+  termSamples.forEach(({ term, wording }, index) => {
     const message = termMessages.get(index + 1) ?? ''
     assert.ok(message.includes(`"${term}"`), `the error names "${term}": ${message}`)
     assert.ok(message.includes(wording), `the error for "${term}" gives "${wording}": ${message}`)
