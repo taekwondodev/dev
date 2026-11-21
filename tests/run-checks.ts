@@ -80,6 +80,7 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
     'tests/work/work-model-text-check.ts',
     'tests/work/work-child-activity-check.ts',
     'tests/work/git-inspect-check.ts',
+    'tests/work/codemode-output-limit-check.ts',
     'tests/work/work-store-check.ts',
     'tests/work/work-skill-check.ts',
     'tests/work/work-nested-check.ts',
@@ -251,13 +252,16 @@ const ordered = outcomes.toSorted(
     jobs.findIndex(job => job.label === right.label)
 )
 for (const outcome of ordered) process.stdout.write(outcome.output)
-for (const outcome of ordered) {
+const passing = ordered.filter(outcome => outcome.code === 0)
+const failing = ordered.filter(outcome => outcome.code !== 0)
+for (const outcome of [...passing, ...failing]) {
   const status =
     outcome.code === 0 ? 'passed' : `failed (${outcome.signal ?? `exit ${String(outcome.code)}`})`
   process.stdout.write(
     `${outcome.suite} ${outcome.label}: ${status} [${Math.round(outcome.ms)} ms]\n`
   )
 }
+process.stdout.write(`Checks: ${passing.length} passed, ${failing.length} failed\n`)
 if (options.report !== undefined)
   writeFileSync(
     options.report,
@@ -271,4 +275,4 @@ if (options.report !== undefined)
       }))
     )
   )
-process.exitCode = ordered.every(outcome => outcome.code === 0) ? 0 : 1
+process.exitCode = failing.length === 0 ? 0 : 1

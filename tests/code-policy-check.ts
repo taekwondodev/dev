@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TERM_GROUPS } from '../scripts/model-text-terms.ts'
 
 const checkout = fileURLToPath(new URL('..', import.meta.url))
 const { scripts } = JSON.parse(readFileSync(join(checkout, 'package.json'), 'utf8')) as {
@@ -25,6 +26,32 @@ const lintFlags = (script: string): string[] => {
     .split(/\s+/)
     .filter(flag => flag !== '.')
 }
+
+const sampleTerms = [
+  'lead',
+  'coordinator',
+  'attempt',
+  'outcome',
+  'workspace reservation',
+  'admission',
+  'workspace handoff',
+  'sweep',
+  'gate',
+  'workspace authority',
+  'dispatch rule',
+  'integration target',
+  'residue',
+  'dev-cycle',
+  'workspace',
+]
+
+const termSamples = TERM_GROUPS.map(({ pattern, replacement }) => {
+  const term = sampleTerms.find(sample => new RegExp(`^(?:${pattern})$`, 'i').test(sample))
+  assert.ok(term !== undefined, `the terms ${pattern} have a sample sentence`)
+  if (replacement.kind === 'leave-out') return { term, wording: 'Leave it out.' }
+  assert.ok(replacement.wording.trim().length > 0, `the terms ${pattern} have a wording`)
+  return { term, wording: replacement.wording }
+})
 
 const timers = "import { setTimeout as sleep } from 'node:timers/promises'"
 const files: Record<string, string> = {
@@ -93,6 +120,10 @@ const files: Record<string, string> = {
     "export const ours = 'This is the dev workspace'",
     '',
   ].join('\n'),
+  'src/term-groups.ts': [
+    ...termSamples.map(({ term }, index) => `export const s${index} = 'Wait for the ${term} now'`),
+    '',
+  ].join('\n'),
   'tests/worded.ts': ["export const name = 'the lead waits for the sweep'", ''].join('\n'),
   'tests/disabled-line.ts': [
     timers,
@@ -128,6 +159,7 @@ const expected: Record<string, string[]> = {
   'src/worded.ts': [1, 2, 6, 8, 10, 11, 13, 15, 17, 21, 23, 25, 28, 29, 31, 33, 35, 37].map(
     line => `no-internal-terms:${line}`
   ),
+  'src/term-groups.ts': termSamples.map((_, index) => `no-internal-terms:${index + 1}`),
   'tests/disabled-line.ts': ['no-source-comments:1'],
   'tests/disabled-file.ts': ['no-source-comments:1'],
   'tests/disabled-later.ts': ['no-source-comments:1'],
@@ -137,6 +169,7 @@ const expected: Record<string, string[]> = {
 interface Diagnostic {
   readonly code: string
   readonly filename: string
+  readonly message: string
   readonly labels: readonly { readonly span: { readonly line: number } }[]
 }
 
@@ -164,17 +197,26 @@ try {
   assert.equal(linted.error, undefined)
   const output = linted.stdout
   const reported: Record<string, string[]> = {}
+  const termMessages = new Map<number, string>()
   for (const diagnostic of (JSON.parse(output) as { diagnostics: Diagnostic[] }).diagnostics) {
     const rule = /^dev\((.+)\)$/.exec(diagnostic.code)?.[1]
     if (rule === undefined) continue
-    for (const label of diagnostic.labels)
-      (reported[diagnostic.filename] ??= []).push(`${rule}:${label.span.line}`)
+    for (const label of diagnostic.labels) {
+      ;(reported[diagnostic.filename] ??= []).push(`${rule}:${label.span.line}`)
+      if (diagnostic.filename === 'src/term-groups.ts')
+        termMessages.set(label.span.line, diagnostic.message)
+    }
   }
+  termSamples.forEach(({ term, wording }, index) => {
+    const message = termMessages.get(index + 1) ?? ''
+    assert.ok(message.includes(`"${term}"`), `the error names "${term}": ${message}`)
+    assert.ok(message.includes(wording), `the error for "${term}" gives "${wording}": ${message}`)
+  })
   for (const lines of Object.values(reported)) lines.sort((a, b) => a.localeCompare(b))
   for (const lines of Object.values(expected)) lines.sort((a, b) => a.localeCompare(b))
   assert.deepEqual(reported, expected)
   console.log(
-    'code policy: fixed delays in tests, internal terms in src text, line, file and later disable directives, and nested lint configurations passed'
+    'code policy: fixed delays in tests, internal terms in src text with their wording, line, file and later disable directives, and nested lint configurations passed'
   )
 } finally {
   rmSync(fixture, { recursive: true, force: true })

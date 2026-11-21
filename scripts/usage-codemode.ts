@@ -54,9 +54,39 @@ export const codemodeSession = (session: SessionRecord) => {
       reads.set(entry, readRequests(earlier, entry).reads)
     }
   )
+  const declared = new Map<Entry, number | undefined>()
+  walkBranches(
+    session,
+    HashMap.empty<string, number | undefined>(),
+    (earlier, ancestor) =>
+      ancestor.kind === 'request'
+        ? ancestor.calls.reduce(
+            (issued, call) =>
+              HashMap.set(
+                issued,
+                call.id,
+                call.input.kind === 'script' ? call.input.declaredLimit : undefined
+              ),
+            earlier
+          )
+        : earlier,
+    (earlier, entry) => {
+      if (entry.kind === 'result')
+        declared.set(entry, Option.getOrUndefined(HashMap.get(earlier, entry.callId)))
+    }
+  )
   return session.entries.flatMap(entry =>
     !entry.copied && entry.kind === 'result' && entry.tool === 'codemode'
-      ? [{ at: entry.at, nested: entry.nestedCalls, reads: reads.get(entry) ?? NO_READS }]
+      ? [
+          {
+            at: entry.at,
+            scope: session.scope,
+            cut: entry.fullOutputSaved,
+            declaredLimit: declared.get(entry),
+            nested: entry.nestedCalls,
+            reads: reads.get(entry) ?? NO_READS,
+          },
+        ]
       : []
   )
 }
@@ -77,14 +107,32 @@ export const codemodeReport = (observations: readonly Observation[], period: Per
     { ok: number; error: number; unfinished: number; durations: number[] }
   >()
   const reads = { requests: 0, repeated: 0, unknown: 0 }
+  const scripts = {
+    lead: { results: 0, cut: 0, declared: 0 },
+    child: { results: 0, cut: 0, declared: 0 },
+  }
+  const declaredLimits = new Map<number, number>()
   let operations = 0
-  for (const { at, nested, reads: observed } of observations) {
+  for (const {
+    at,
+    scope,
+    cut: outputCut,
+    declaredLimit,
+    nested,
+    reads: observed,
+  } of observations) {
     if (
       (period.start !== undefined && at < period.start) ||
       (period.end !== undefined && at >= period.end)
     )
       continue
     coverage.results++
+    scripts[scope].results++
+    if (outputCut) scripts[scope].cut++
+    if (declaredLimit !== undefined) {
+      scripts[scope].declared++
+      declaredLimits.set(declaredLimit, (declaredLimits.get(declaredLimit) ?? 0) + 1)
+    }
     if (typeof nested === 'string') {
       coverage[nested]++
       continue
@@ -107,6 +155,10 @@ export const codemodeReport = (observations: readonly Observation[], period: Per
     coverage,
     operations,
     reads,
+    scripts,
+    declaredLimits: [...declaredLimits]
+      .toSorted(([a], [b]) => a - b)
+      .map(([limit, results]) => ({ limit, results })),
     byTool: [...groups]
       .toSorted(([a], [b]) => a.localeCompare(b))
       .map(([tool, group]) => {

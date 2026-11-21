@@ -26,6 +26,7 @@ import {
   makeClaims,
   makeOfflineModel,
   openHostRuntime,
+  declaredDescriptions,
   replay,
   toolCall,
   type ScriptedContent,
@@ -184,22 +185,32 @@ let rogueOutcome = 'not attempted'
 try { await tools.rogue({}); rogueOutcome = 'ran' } catch (error) { rogueOutcome = String(error) }
 return { read, page, rogueOutcome, models: typeof models }
 `
+const largeOutputScript =
+  "text('HEAD-MARK' + 'a'.repeat(30000) + 'LEAD-MIDDLE' + 'b'.repeat(30000) + 'TAIL-MARK')"
 const script = scripted([
   [toolCall('direct-read', 'read', { path: 'AGENTS.md' })],
   [toolCall('direct', 'read_url', { url })],
   [toolCall('scripted', 'codemode', { code: codemodeScript })],
   [toolCall('rogue-direct', 'rogue', {})],
+  [toolCall('lead-limit', 'codemode', { code: largeOutputScript })],
   [{ type: 'text', text: 'done' }],
   [toolCall('rendered', 'read_url', { url: appUrl })],
   [{ type: 'text', text: 'done' }],
   [toolCall('rendered-again', 'read_url', { url: appUrl })],
 ])
+const codemodeDescriptions: string[] = []
 const offline = await makeOfflineModel({
   pi,
   importFromPi,
   fixture,
   id: 'web-host',
-  stream: replay(script.next),
+  stream: parts => {
+    const reply = replay(script.next)(parts)
+    return (model, context, options) => {
+      codemodeDescriptions.push(...declaredDescriptions(context, 'codemode'))
+      return reply(model, context, options)
+    }
+  },
 })
 const { claim, passed } = makeClaims()
 const lifecycle = await openLifecycle({ root: join(fixture, 'authority') })
@@ -360,6 +371,23 @@ try {
     assert.match(direct.text, /Dev has not verified what this tool can do to project files/)
     assert.ok(script.calls() >= 5, 'the model was asked again after the refusal')
   })
+  await claim(
+    "a lead script without its own options returns output above Pi's 10,000-token default whole, and every request shows 25000 in the options example of the codemode description",
+    () => {
+      assert.ok(codemodeDescriptions.length >= 5)
+      for (const description of codemodeDescriptions) {
+        assert.ok(
+          description.includes('// @options: {"max_output_tokens": 25000, "timeout_ms": 60000}'),
+          description.slice(0, 900)
+        )
+        assert.doesNotMatch(description, /max_output_tokens": 10000/)
+      }
+      const result = sessionResult('lead-limit')
+      assert.equal(result.isError, false, result.text.slice(0, 400))
+      assert.match(result.text, /HEAD-MARKa+LEAD-MIDDLEb+TAIL-MARK/)
+      assert.doesNotMatch(result.text, /truncated output/)
+    }
+  )
   if (chrome !== undefined) {
     await claim(
       'a page rendered through the host survives as a tool result, and a session reload ends this reader client; the shared browser is ensured again by the next render',

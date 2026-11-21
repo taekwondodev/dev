@@ -7,6 +7,7 @@ import * as Schema from 'effect/Schema'
 import { errorText } from '../../src/error-text.ts'
 import { ChildError, type ChildServeOptions } from '../../src/pi-child.ts'
 import {
+  declaredDescriptions,
   emitReply,
   makeOfflineModel,
   type ScriptedContent,
@@ -106,6 +107,10 @@ const scriptedStream = (calls: string, attemptId: string) => {
         calls,
         `catalog:${attemptId}:${[...catalog.matchAll(/<name>(.*?)<\/name>/g)].map(match => match[1]).join(',')}\n`
       )
+      const examples = declaredDescriptions(context, 'codemode').flatMap(
+        description => /^- Optional first line: `(.*)`$/m.exec(description)?.[1] ?? []
+      )
+      appendFileSync(calls, `options:${attemptId}:${examples.join('|')}\n`)
       assignment ??= first
       const script = directive(assignment, SCRIPT_MARKER)
       const step = (script === undefined ? [] : decodeScript(script))[turn++]

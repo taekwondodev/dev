@@ -1,6 +1,6 @@
 # Usage profile
 
-Use the profile to inspect recorded consumption, tool errors and repeated work across lead and child sessions. It reads saved Pi conversations offline; it does not call a model, run recorded commands, open files named by tool calls or change transcripts.
+Use the profile to inspect recorded consumption, tool errors and repeated work across lead and child sessions, and to find and follow one saved conversation. It reads saved Pi conversations offline; it does not call a model, run recorded commands, open files named by tool calls or change transcripts.
 
 ## Run a report
 
@@ -20,6 +20,32 @@ The default data home is the launcher's [private storage](launcher.md#state). Re
 Periods use UTC dates, with the start included and the end excluded; either end may be omitted. Multiple periods compare later selections with the first. A selection with nothing measurable fails without changing saved reports.
 
 The report prints to the terminal and is saved to `<data-home>/usage/<selection>.json`, replacing the previous report for that selection. The same unchanged input produces the same report. Private reports use mode `0600`.
+
+## Find and follow a conversation
+
+```bash
+npm run profile -- --conversations
+npm run profile -- --timeline REF
+```
+
+Both read the retained conversations of the data home above; Pi's own `~/.pi/agent/sessions/` does not hold them.
+
+`--conversations` lists them newest first, one line each: start (UTC), `main` for a lead conversation or `delegated` for a child one, reference, project directory, user messages and direct tool calls, and the start of the first request. `--timeline REF` prints one conversation in file order, one line per event:
+
+- a user message, with `[skill NAME]` before the user's own text when it starts with an injected skill;
+- a tool call with its outcome (`returned`, `error` or `no result`), result size (text plus decoded image bytes), `cut` when Pi recorded that it shortened the output or stopped at a match, result or entry limit, and a summary of its arguments: operation, path, an http or https URL without credentials, query or fragment (other schemes print only the scheme), or first command line, and skill or task label;
+- a codemode script as one line with its internal calls counted per tool;
+- a `work` delegation naming the delegated conversation once a recorded result names its file;
+- an answer, the assistant text of a response without tool calls, marked when aborted or failed; a response with no text prints nothing;
+- a compaction.
+
+User and answer text is the first 200 characters on one line. Control characters print as `?`, and text shaped like an API key, token or password is redacted; other secrets in messages or commands are not detected. Tool result content never appears. Branches are not distinguished.
+
+REF is the reference the list prints or any part of a file name that identifies exactly one conversation; a path counts by its file name, so a delegated agent's recorded file works. Several matches list the candidates and fail; no match fails.
+
+Both modes print only to the terminal: they write nothing, not even the private report, and accept only `--data-home`. Combining them with each other, `--period` or `--export` fails.
+
+**The output contains message text and command lines.** When an agent runs either mode, that text enters its conversation and reaches its model provider.
 
 ## Read the results
 
@@ -44,6 +70,8 @@ Candidate repeated-error or recovery sequences connect a failed result to a late
 The private report counts recorded codemode operations separately from the outer script call. Internal `ok`, `error` and `unfinished` counts describe the operations, even when the script returns without error. Missing or malformed metadata means coverage is unknown; a complete empty list records zero operations. Incomplete metadata can omit calls or arguments, and malformed calls are counted separately from operation totals.
 
 Operations count in the outer result's UTC period. Durations are per operation, not elapsed script time: operations may overlap and some have no recorded duration.
+
+The report also counts, for leads and for children, codemode results cut at the script's [output limit](work.md#codemode-output-limit), out of all their codemode results. A result counts as cut when Pi recorded where it saved the full output; text that only looks like Pi's warning does not count, and a cut whose full output Pi could not save is missed. It also counts the results whose script set its own `max_output_tokens` on an options line Pi accepts, and lists each declared value with its count. It reads each script as the conversation recorded it, so the option dev adds does not count, and matches each result to the call on its own branch. The figures are private: the export has no place for them.
 
 Pi does not record internal results, so the report cannot compare internal Git output. Launch figures use only direct `work` calls.
 

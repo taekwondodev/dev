@@ -44,6 +44,12 @@ Pi expands a verified leading skill invocation once in the first user message, i
 
 Every child has independent [background compaction](compaction.md).
 
+### Codemode output limit
+
+Codemode scripts in the lead and in children get an output limit of 25,000 tokens instead of Pi's 10,000 when their `// @options:` line sets no `max_output_tokens` or they have no such line. Dev adds the option when the script runs; the conversation keeps the script as the agent wrote it. A limit the script sets, lower or higher, is kept, and an options line Pi rejects is left for Pi to report. The codemode tool description shows 25000 in its options example, but Pi's own codemode documentation still calls 10000 the default.
+
+Longer output is still cut: Pi keeps its start and end and saves the full text to a file named in the result. Dev adds a line after Pi's warning that names the lines of that file holding the missing text, with the `offset` and `limit` to pass to `read`. The range may end one line after the missing text; when it exceeds one `read`, `read` reports the offset to continue from. If the result is not in the form Pi's cut produces, or Pi's cut marker runs into the same text printed by the script, dev adds no line. The [usage profile](usage-profile.md#operations-inside-codemode) counts cut results and the scripts that set their own limit.
+
 ### Delegation scope
 
 A delegated writer receives a distinct managed worktree from the source checkout's exact current commit, under `dev --orb` from the lead orb's committed `HEAD`. Modified, untracked and ignored files are not copied. `worktree.path` records the allocation, whose reservation outlives the attempt.

@@ -20,7 +20,7 @@ import * as Schema from 'effect/Schema'
 import { GIT_INSPECT_OPERATIONS, UsageExport } from '../scripts/usage-export.ts'
 import { ALL_TIME, parsePeriod, profileUsage, type Report } from '../scripts/usage-profile.ts'
 import type { Period } from '../scripts/usage-report.ts'
-import { makeClaims } from './workspace/workspace-check-support.ts'
+import { loadInstalledPi, makeClaims } from './workspace/workspace-check-support.ts'
 
 const checkout = join(import.meta.dirname, '..')
 const root = mkdtempSync(join(tmpdir(), 'dev-usage-profile-'))
@@ -55,6 +55,7 @@ interface Call {
 }
 
 interface AssistantOptions {
+  readonly text?: string
   readonly calls?: readonly Call[]
   readonly usage?: unknown
   readonly latency?: number
@@ -118,7 +119,7 @@ const conversation = (start: string) => {
       message(id, parentId, second, {
         role: 'assistant',
         content: [
-          { type: 'text', text: 'ok' },
+          { type: 'text', text: options.text ?? 'ok' },
           ...(options.calls ?? []).map(call => ({
             type: 'toolCall',
             id: call.id,
@@ -208,6 +209,9 @@ const writeSession = (home: string, directory: string, name: string, lines: read
 }
 
 const call = (id: string, name: string, args: Json = {}): Call => ({ id, name, arguments: args })
+
+const scriptCall = (id: string, source?: string): Call =>
+  call(id, 'codemode', source === undefined ? {} : { code: source })
 
 const nestedRead = (status: string, args: Json) => ({
   id: 'nested',
@@ -1238,6 +1242,167 @@ try {
         requests: 8,
         repeated: 2,
         unknown: 0,
+      })
+    }
+  )
+  await claim(
+    "a codemode result counts as cut when Pi recorded its saved full output, for leads and children in the result's period; warning text without that record, another tool's saved output and copied fork history do not count",
+    async () => {
+      const home = join(root, 'nested-cut')
+      const warning =
+        'Warning: truncated output (original token count: 900)\nTotal output lines: 40\n\nshown…800 tokens truncated…shown\n\n[Full output: /tmp/pi-codemode-fixture.txt (read with offset/limit)]'
+      const saved = { fullOutputPath: '/tmp/pi-codemode-fixture.txt' }
+      const lead = conversation('2026-09-29T23:59:50Z')
+      const code = (id: string) => call(id, 'codemode')
+      const entries = [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a1', 'u', 1, { calls: [code('c1'), code('c2'), call('c3', 'bash')] }),
+        lead.result('r1', 'a1', 2, code('c1'), { text: warning, details: saved }),
+        lead.result('r2', 'r1', 3, code('c2'), { text: `Script completed\n${warning}` }),
+        lead.result('r3', 'r2', 4, call('c3', 'bash'), { text: warning, details: saved }),
+        lead.assistant('a2', 'r3', 19, { calls: [code('c4')] }),
+        lead.result('r4', 'a2', 20, code('c4'), { text: warning, details: saved }),
+      ]
+      writeSession(home, 'sessions', 'lead', entries)
+      const child = conversation('2026-09-30T00:00:10Z')
+      writeSession(home, 'child-sessions', 'child', [
+        child.header(),
+        child.user('u', null, 0),
+        child.assistant('a1', 'u', 1, { calls: [code('k1'), code('k2')] }),
+        child.result('r1', 'a1', 2, code('k1'), { text: warning, details: saved }),
+        child.result('r2', 'r1', 3, code('k2'), { details: {} }),
+      ])
+      writeSession(home, 'child-sessions', 'copied', [
+        lead.header({ parentSession: '/source.jsonl', timestamp: '2026-10-01T00:00:00Z' }),
+        ...entries.slice(1),
+      ])
+      const printed = maintain('--data-home', home)
+      assert.equal(printed.status, 0, printed.stderr)
+      assert.match(
+        printed.stdout,
+        /cut output: 2 of 3 results in main conversations and 1 of 2 in delegated agents passed the script's output limit/
+      )
+      assert.deepEqual(report(home).periods[0].codemode.scripts, {
+        lead: { results: 3, cut: 2, declared: 0 },
+        child: { results: 2, cut: 1, declared: 0 },
+      })
+      const before = await period('..2026-09-30')
+      await profile(home, [before])
+      assert.deepEqual(report(home, before.label).periods[0].codemode.scripts, {
+        lead: { results: 2, cut: 1, declared: 0 },
+        child: { results: 0, cut: 0, declared: 0 },
+      })
+    }
+  )
+  await claim(
+    "a codemode result counts as declaring its own limit only when Pi's installed parser accepts its script's options line with a max_output_tokens, for leads and children, and the report lists each declared value; a later or sibling call that reuses the ID and copied fork history do not count",
+    async () => {
+      const { importFromPi } = await loadInstalledPi()
+      const { parseCodemodeSource } = await importFromPi<{
+        parseCodemodeSource: (source: string) => { options: { maxOutputTokens?: number } }
+      }>('../pi-codemode/dist/source.js')
+      const pi = (source: string) => {
+        try {
+          return parseCodemodeSource(source).options.maxOutputTokens
+        } catch {
+          return undefined
+        }
+      }
+      const home = join(root, 'declared-limit')
+      const body = '\nreturn 1'
+      const scripts = [
+        `// @options: {"max_output_tokens": 2000}${body}`,
+        `// @options: {"max_output_tokens": 0, "timeout_ms": 1}${body}`,
+        `  // @options:{"timeout_ms":5,"max_output_tokens":10000}\r${body}`,
+        `\u00a0// @options: {"max_output_tokens": 3000}${body}`,
+        `\t// @options: {"max_output_tokens": 4000} ${body}`,
+        `// @options: {"max_output_tokens": 5000, "budget": 1}${body}`,
+        `// @options: {"max_output_tokens": 6000, "timeout_ms": 0}${body}`,
+        `// @options: {"max_output_tokens": 7000, "timeout_ms": 2147483648}${body}`,
+        `// @options: {"max_output_tokens": 8000}`,
+        `// @options: {"max_output_tokens": 8500}\n  \n`,
+        `// @options: {"max_output_tokens": 9000}${body}\n// @options: {"timeout_ms": 5}`,
+        `// @options: {"max_output_tokens": 1.5}${body}`,
+        `// @options: {"max_output_tokens": -1}${body}`,
+        `// @options: {"max_output_tokens": 9007199254740992}${body}`,
+        `// @options: {"max_output_tokens": null}${body}`,
+        `// @options: {"max_output_tokens": "lots"}${body}`,
+        `// @options: [1]${body}`,
+        `// @options:${body}`,
+        `// @options: {"timeout_ms": 5}${body}`,
+        `return 1\n// @options: {"max_output_tokens": 9500}`,
+        body,
+        '',
+      ]
+      assert.deepEqual(
+        scripts.map(source => pi(source)).filter(limit => limit !== undefined),
+        [2000, 0, 10_000, 3000, 4000]
+      )
+      const lead = conversation('2026-09-29T23:59:50Z')
+      const calls = [
+        ...scripts.map((source, index) => scriptCall(`c${index}`, source)),
+        scriptCall('c-none'),
+      ]
+      const entries = [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a1', 'u', 1, { calls }),
+        ...calls.map((issued, index) =>
+          lead.result(`r${index}`, index === 0 ? 'a1' : `r${index - 1}`, 2 + index, issued, {})
+        ),
+      ]
+      writeSession(home, 'sessions', 'lead', entries)
+      const child = conversation('2026-09-30T00:00:10Z')
+      const childCall = scriptCall('k1', `// @options: {"max_output_tokens": 10000}${body}`)
+      writeSession(home, 'child-sessions', 'child', [
+        child.header(),
+        child.user('u', null, 0),
+        child.assistant('a1', 'u', 1, { calls: [childCall] }),
+        child.result('r1', 'a1', 2, childCall, {}),
+      ])
+      writeSession(home, 'child-sessions', 'copied', [
+        lead.header({ parentSession: '/source.jsonl', timestamp: '2026-10-01T00:00:00Z' }),
+        ...entries.slice(1),
+      ])
+      const printed = maintain('--data-home', home)
+      assert.equal(printed.status, 0, printed.stderr)
+      assert.match(
+        printed.stdout,
+        /declared output limits: 5 of 23 results in main conversations and 1 of 1 in delegated agents came from scripts that set their own max_output_tokens \(0 in 1, 2000 in 1, 3000 in 1, 4000 in 1, 10000 in 2\)\./
+      )
+      const [{ codemode }] = report(home).periods
+      assert.deepEqual(codemode.scripts, {
+        lead: { results: 23, cut: 0, declared: 5 },
+        child: { results: 1, cut: 0, declared: 1 },
+      })
+      assert.deepEqual(codemode.declaredLimits, [
+        { limit: 0, results: 1 },
+        { limit: 2000, results: 1 },
+        { limit: 3000, results: 1 },
+        { limit: 4000, results: 1 },
+        { limit: 10000, results: 2 },
+      ])
+      const branched = join(root, 'declared-limit-branches')
+      const forked = conversation('2026-09-29T23:59:50Z')
+      const declaring = scriptCall('same', `// @options: {"max_output_tokens": 2000}${body}`)
+      const plain = scriptCall('same', 'return 1')
+      writeSession(branched, 'sessions', 'lead', [
+        forked.header(),
+        forked.user('u', null, 0),
+        forked.assistant('a1', 'u', 1, { calls: [declaring] }),
+        forked.result('r1', 'a1', 2, declaring, {}),
+        forked.assistant('b1', 'u', 3, { calls: [plain] }),
+        forked.result('s1', 'b1', 4, plain, {}),
+        forked.assistant('a2', 'r1', 5, { calls: [scriptCall('same')] }),
+        forked.result('r2', 'a2', 6, scriptCall('same'), {}),
+      ])
+      const branchedRun = maintain('--data-home', branched)
+      assert.equal(branchedRun.status, 0, branchedRun.stderr)
+      assert.deepEqual(report(branched).periods[0].codemode.scripts.lead, {
+        results: 3,
+        cut: 0,
+        declared: 1,
       })
     }
   )
@@ -2516,6 +2681,204 @@ try {
         unclassified: 0,
         unmatched: 0,
       })
+    }
+  )
+
+  const conversationsHome = join(root, 'conversations')
+  const LEAD = '2026-10-01T10-00-00-000Z_lead-aaaaaaaaaaaa'
+  const CHILD = '2026-10-01T11-00-00-000Z_child-bbbbbbbbbbbb'
+  const RESULT = 'RESULT-SENTINEL'
+  const IMAGE_DATA = Buffer.alloc(30, 7).toString('base64')
+  {
+    const lead = conversation('2026-10-01T10:00:00Z')
+    const bash = call('bash', 'bash', {
+      command: 'TOKEN=sk-abcdefghijklmnop12 npm test\nsecond line',
+    })
+    const read = call('read', 'read', { path: 'src/missing.ts' })
+    const edit = call('edit', 'edit', { path: 'src/never.ts', oldText: 'x', newText: 'y' })
+    const grep = call('grep', 'grep', { pattern: 'x', path: 'src' })
+    const url = call('url', 'read_url', {
+      url: 'https://user:PASSWORD-SENTINEL@example.com/docs/page?sig=QUERY-SENTINEL#frag',
+    })
+    const image = call('image', 'read', { path: 'assets/logo.png' })
+    const matches = call('matches', 'grep', { pattern: 'y', path: 'lib' })
+    const found = call('found', 'find', { pattern: '*.ts', path: 'src' })
+    const listed = call('listed', 'ls', { path: 'docs' })
+    const data = call('data', 'read_url', {
+      url: 'data:text/plain,https://admin:DATA-SENTINEL@example.com',
+    })
+    const code = call('code', 'codemode', { code: 'CODE-SENTINEL' })
+    const work = call('work', 'work', {
+      action: 'delegate',
+      skill: 'code-review',
+      prompt: 'PROMPT-SENTINEL',
+    })
+    writeSession(conversationsHome, 'sessions', LEAD, [
+      lead.header({ cwd: '/fixture/lead-project' }),
+      lead.user(
+        'u',
+        null,
+        0,
+        '<skill name="implement" location="/skills/implement/SKILL.md">\nSKILL-BODY-SENTINEL\n</skill>\n\n#350 please'
+      ),
+      lead.assistant('a1', 'u', 1, {
+        calls: [bash, read, edit, grep, url, image, matches, found, listed, data],
+      }),
+      lead.result('r1', 'a1', 2, bash, { text: RESULT, details: truncation('lines', 1) }),
+      lead.result('r2', 'r1', 3, read, { text: RESULT, isError: true }),
+      lead.result('rg', 'r2', 3, grep, { text: RESULT, details: { linesTruncated: true } }),
+      lead.result('ru', 'rg', 3, url, { text: RESULT }),
+      lead.result('ri', 'ru', 3, image, {
+        blocks: [
+          { type: 'text', text: RESULT },
+          { type: 'image', data: IMAGE_DATA, mimeType: 'image/png' },
+        ],
+      }),
+      lead.result('rm', 'ri', 3, matches, { text: RESULT, details: { matchLimitReached: 100 } }),
+      lead.result('rf', 'rm', 3, found, { text: RESULT, details: { resultLimitReached: 1000 } }),
+      lead.result('rl', 'rf', 3, listed, { text: RESULT, details: { entryLimitReached: 500 } }),
+      lead.result('rd', 'rl', 3, data, { text: RESULT, isError: true }),
+      lead.assistant('a2', 'rd', 4, { calls: [code] }),
+      lead.result('r3', 'a2', 5, code, {
+        text: RESULT,
+        ...nestedResult(
+          nestedRead('ok', { path: 'a' }),
+          nestedRead('error', { path: 'b' }),
+          {
+            id: 'nested',
+            name: 'bash',
+            status: 'ok',
+            arguments: { command: 'ls' },
+          },
+          {
+            id: 'nested',
+            name: 'token-refresh_session',
+            status: 'error',
+            arguments: {},
+          },
+          {
+            id: 'nested',
+            name: 'token-refresh_session',
+            status: 'ok',
+            arguments: {},
+          }
+        ),
+      }),
+      lead.assistant('a3', 'r3', 6, { calls: [work] }),
+      lead.result('r4', 'a3', 7, work, {
+        text: RESULT,
+        details: { kind: 'run', run: { id: 'run-1', kind: 'agent' } },
+      }),
+      lead.custom('m', 'r4', 8, 'dev/work-result', RESULT, {
+        children: [
+          { id: 'run-1', kind: 'agent', sessionFile: `/data/child-sessions/${CHILD}.jsonl` },
+        ],
+      }),
+      lead.compaction('c', 'm', 9, { tokensBefore: 1234 }),
+      lead.user('u2', 'c', 3, `${'U'.repeat(200)}USER-SUFFIX-SENTINEL`),
+      lead.assistant('a4', 'u2', 10, { text: '', stopReason: 'aborted' }),
+      lead.assistant('a5', 'a4', 11, { text: `\u001B[31m${'A'.repeat(250)}`, stopReason: 'stop' }),
+    ])
+    const child = conversation('2026-10-01T11:00:00Z')
+    writeSession(conversationsHome, 'child-sessions', CHILD, [
+      child.header({ cwd: '/fixture/child\u001B[2Jproject' }),
+      child.user('u', null, 0, 'Review the unit'),
+      child.assistant('a', 'u', 1, { text: 'Reviewed', stopReason: 'stop' }),
+    ])
+  }
+  const conversations = (...args: string[]) => maintain('--data-home', conversationsHome, ...args)
+
+  await claim(
+    '--conversations lists lead and child conversations newest first with their reference, project, counts and first request, and --timeline prints one line per event without result content',
+    () => {
+      const before = digestTree(conversationsHome)
+      const listed = conversations('--conversations')
+      assert.equal(listed.status, 0, listed.stderr)
+      assert.deepEqual(listed.stdout.split('\n').slice(1), [
+        '2026-10-01 11:00Z  delegated  bbbbbbbbbbbb  /fixture/child?[2Jproject  1 user, 0 tool calls  Review the unit',
+        '2026-10-01 10:00Z  main       aaaaaaaaaaaa  /fixture/lead-project  2 user, 12 tool calls  [skill implement] #350 please',
+        '',
+      ])
+
+      const timeline = conversations('--timeline', 'aaaaaaaaaaaa')
+      assert.equal(timeline.status, 0, timeline.stderr)
+      const bytes = `${Buffer.byteLength(RESULT)} B`
+      const [header, file, , ...events] = timeline.stdout.split('\n')
+      assert.equal(
+        header,
+        'Conversation aaaaaaaaaaaa (main), started 2026-10-01 10:00Z in /fixture/lead-project'
+      )
+      assert.equal(file, `File: ${join(conversationsHome, 'sessions', `${LEAD}.jsonl`)}`)
+      assert.deepEqual(events, [
+        '2026-10-01 10:00:00 user: [skill implement] #350 please',
+        `10:00:01 bash returned ${bytes}, cut: TOKEN=[redacted] npm test`,
+        `10:00:01 read error ${bytes}: src/missing.ts`,
+        '10:00:01 edit no result: src/never.ts',
+        `10:00:01 grep returned ${bytes}, cut: src`,
+        `10:00:01 read_url returned ${bytes}: https://example.com/docs/page`,
+        `10:00:01 read returned ${Buffer.byteLength(RESULT) + 30} B: assets/logo.png`,
+        `10:00:01 grep returned ${bytes}, cut: lib`,
+        `10:00:01 find returned ${bytes}, cut: src`,
+        `10:00:01 ls returned ${bytes}, cut: docs`,
+        `10:00:01 read_url error ${bytes}: data: URL`,
+        `10:00:04 codemode returned ${bytes}: read 2 (1 error), bash 1, [redacted] 2 (1 error)`,
+        `10:00:06 work returned ${bytes}: delegate (code-review) → conversation bbbbbbbbbbbb`,
+        '10:00:09 compaction, 1,234 tokens before',
+        `10:00:03 user: ${'U'.repeat(200)}…`,
+        `10:00:11 answer: ?[31m${'A'.repeat(195)}…`,
+        '',
+      ])
+      assert.equal(conversations('--timeline', 'lead-aaaa').stdout, timeline.stdout)
+      assert.match(
+        conversations('--timeline', `/elsewhere/child-sessions/${CHILD}.jsonl`).stdout,
+        /^Conversation bbbbbbbbbbbb \(delegated\)[^\n]*\n[^\n]*\n[^\n]*\n2026-10-01 11:00:00 user: Review the unit\n11:00:01 answer: Reviewed\n$/
+      )
+      assert.deepEqual(digestTree(conversationsHome), before)
+    }
+  )
+
+  await claim(
+    'an ambiguous reference lists its candidates and an unknown one names the list mode; both fail, as does combining the modes with each other, --period or --export, and none of them changes the data home',
+    () => {
+      const before = digestTree(conversationsHome)
+      const ambiguous = conversations('--timeline', '2026-10-01')
+      assert.equal(ambiguous.status, 1)
+      assert.equal(ambiguous.stdout, '')
+      assert.match(
+        ambiguous.stderr,
+        /"2026-10-01" matches 2 saved conversations; nothing was printed/
+      )
+      assert.match(ambiguous.stderr, /\n2026-10-01 11:00Z {2}delegated {2}bbbbbbbbbbbb {2}/)
+      assert.match(ambiguous.stderr, /\n2026-10-01 10:00Z {2}main {7}aaaaaaaaaaaa {2}/)
+
+      const unknown = conversations('--timeline', 'zzzz')
+      assert.equal(unknown.status, 1)
+      assert.equal(unknown.stdout, '')
+      assert.match(
+        unknown.stderr,
+        /No saved conversation in .* matches "zzzz"\. Run npm run profile -- --conversations/
+      )
+      const control = conversations('--timeline', 'zz\u001B]0;title\u0007zz')
+      assert.equal(control.status, 1)
+      assert.match(control.stderr, /matches "zz\?\]0;title\?zz"/)
+      assert.ok(!control.stderr.includes('\u001B'))
+
+      for (const args of [
+        ['--conversations', '--timeline', 'aaaa'],
+        ['--conversations', '--period', '..2026-10-02'],
+        ['--timeline', 'aaaa', '--export', join(root, 'conversations-export')],
+      ]) {
+        const refused = conversations(...args)
+        assert.equal(refused.status, 1, args.join(' '))
+        assert.equal(refused.stdout, '', args.join(' '))
+        assert.match(
+          refused.stderr,
+          /--conversations and --timeline take only --data-home and cannot be combined/
+        )
+      }
+      assert.throws(() => readdirSync(join(root, 'conversations-export')))
+      assert.deepEqual(digestTree(conversationsHome), before)
+      assert.deepEqual(readdirSync(conversationsHome).toSorted(), ['child-sessions', 'sessions'])
     }
   )
 
