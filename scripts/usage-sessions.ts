@@ -188,6 +188,9 @@ const TruncationSchema = Schema.Struct({
 })
 export type TruncationDetails = typeof TruncationSchema.Type
 const decodeTruncation = Schema.decodeUnknownOption(TruncationSchema)
+const decodeSavedOutput = Schema.decodeUnknownOption(
+  Schema.Struct({ fullOutputPath: Schema.NonEmptyString })
+)
 
 type ToolInput =
   | {
@@ -255,6 +258,7 @@ type Payload =
       readonly blocks: readonly Block[]
       readonly nestedCalls: NestedCalls
       readonly truncation: TruncationDetails | 'malformed' | undefined
+      readonly fullOutputSaved: boolean
       readonly attempt: AttemptRecord | undefined
       readonly usage: Usage | undefined
     }
@@ -442,6 +446,7 @@ const resultPayload = (value: unknown): Payload | undefined =>
         nestedCalls:
           message.toolName === 'codemode' ? decodeNestedCalls(message.nestedCalls) : 'missing',
         truncation: truncationOf(message.details),
+        fullOutputSaved: Option.isSome(decodeSavedOutput(message.details)),
         attempt: work
           ? Option.getOrUndefined(
               Option.map(decodeAttemptResult(message.details), result => result.run)

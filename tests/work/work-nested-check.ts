@@ -92,6 +92,42 @@ const outcomesReceivedBy = (view: AttemptView) => {
     ),
   }
 }
+const decodeScriptEntry = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      message: Schema.optionalKey(
+        Schema.Struct({
+          role: Schema.String,
+          toolCallId: Schema.optionalKey(Schema.String),
+          content: Schema.Unknown,
+          details: Schema.optionalKey(Schema.Unknown),
+        })
+      ),
+    })
+  )
+)
+const scriptResults = (view: AttemptView) => {
+  assert.ok(view.sessionFile !== undefined)
+  const messages = readFileSync(view.sessionFile, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap(line => {
+      const { message } = decodeScriptEntry(line)
+      return message === undefined ? [] : [message]
+    })
+  return {
+    result: (toolCallId: string) => {
+      const found = messages.find(
+        message => message.role === 'toolResult' && message.toolCallId === toolCallId
+      )
+      assert.ok(found !== undefined, `no result for ${toolCallId}`)
+      return { text: JSON.stringify(found.content), details: JSON.stringify(found.details) }
+    },
+    calls: JSON.stringify(messages.filter(message => message.role === 'assistant')),
+  }
+}
+const scriptOutput = (half: number, middle: string) =>
+  `text('HEAD-MARK' + 'a'.repeat(${half}) + '${middle}' + 'b'.repeat(${half}) + 'TAIL-MARK')`
 const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): ToolInput => ({
   action: 'delegate',
   taskId,
@@ -263,6 +299,35 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           4,
           'each role fetched the fixture once directly and once from its script'
         )
+      }
+    )
+    await claim(
+      'a child script without its own options returns output between 10,000 and 25,000 tokens whole, and one above 25,000 tokens is cut with the warning and the saved full output, while the recorded call keeps the script as written',
+      async () => {
+        const within = scriptOutput(30_000, 'WITHIN-MIDDLE')
+        const beyond = scriptOutput(60_000, 'BEYOND-MIDDLE')
+        const child = await owner.run({
+          taskId: 'child-output-limit',
+          access: 'read-only',
+          prompt: `large script output\n${script([
+            [toolCall('within-limit', 'codemode', { code: within })],
+            [toolCall('beyond-limit', 'codemode', { code: beyond })],
+            say('done'),
+          ])}`,
+        })
+        assertStatus(child.view, 'completed')
+        const recorded = scriptResults(child.view)
+        const whole = recorded.result('within-limit')
+        assert.match(whole.text, /HEAD-MARKa+WITHIN-MIDDLEb+TAIL-MARK/)
+        assert.doesNotMatch(whole.text, /truncated output/)
+        assert.doesNotMatch(whole.details, /fullOutputPath/)
+        const cut = recorded.result('beyond-limit')
+        assert.match(cut.text, /Warning: truncated output \(original token count: 300\d\d\)/)
+        assert.match(cut.text, /HEAD-MARK[\s\S]*TAIL-MARK/)
+        assert.doesNotMatch(cut.text, /BEYOND-MIDDLE/)
+        assert.match(cut.details, /"fullOutputPath":/)
+        assert.ok(recorded.calls.includes(JSON.stringify(within).slice(1, -1)))
+        assert.doesNotMatch(recorded.calls, /@options/)
       }
     )
     if (childChrome !== undefined)

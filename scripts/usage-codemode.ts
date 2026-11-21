@@ -56,7 +56,15 @@ export const codemodeSession = (session: SessionRecord) => {
   )
   return session.entries.flatMap(entry =>
     !entry.copied && entry.kind === 'result' && entry.tool === 'codemode'
-      ? [{ at: entry.at, nested: entry.nestedCalls, reads: reads.get(entry) ?? NO_READS }]
+      ? [
+          {
+            at: entry.at,
+            scope: session.scope,
+            cut: entry.fullOutputSaved,
+            nested: entry.nestedCalls,
+            reads: reads.get(entry) ?? NO_READS,
+          },
+        ]
       : []
   )
 }
@@ -77,14 +85,17 @@ export const codemodeReport = (observations: readonly Observation[], period: Per
     { ok: number; error: number; unfinished: number; durations: number[] }
   >()
   const reads = { requests: 0, repeated: 0, unknown: 0 }
+  const cut = { lead: { results: 0, cut: 0 }, child: { results: 0, cut: 0 } }
   let operations = 0
-  for (const { at, nested, reads: observed } of observations) {
+  for (const { at, scope, cut: outputCut, nested, reads: observed } of observations) {
     if (
       (period.start !== undefined && at < period.start) ||
       (period.end !== undefined && at >= period.end)
     )
       continue
     coverage.results++
+    cut[scope].results++
+    if (outputCut) cut[scope].cut++
     if (typeof nested === 'string') {
       coverage[nested]++
       continue
@@ -107,6 +118,7 @@ export const codemodeReport = (observations: readonly Observation[], period: Per
     coverage,
     operations,
     reads,
+    cut,
     byTool: [...groups]
       .toSorted(([a], [b]) => a.localeCompare(b))
       .map(([tool, group]) => {

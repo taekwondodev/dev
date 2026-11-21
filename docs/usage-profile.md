@@ -45,6 +45,8 @@ The private report counts recorded codemode operations separately from the outer
 
 Operations count in the outer result's UTC period. Durations are per operation, not elapsed script time: operations may overlap and some have no recorded duration.
 
+The report also counts, for leads and for children, codemode results whose output passed the script's [output limit](work.md#execution-and-access), out of all their codemode results. A result counts as cut when Pi recorded where it saved the full output; text that only looks like Pi's warning does not count, and a cut whose full output Pi could not save is missed. The figure is private: the export has no place for it.
+
 Pi does not record internal results, so the report cannot compare internal Git output. Launch figures use only direct `work` calls.
 
 ### Reads and Git requests

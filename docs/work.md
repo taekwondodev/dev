@@ -38,6 +38,8 @@ Every child receives its working project's instructions, Pi's base prompt and pr
 
 Children can [read URLs](web-read.md) directly or through codemode, including authenticated pages. Scripts retain the child's tool permissions and have no model catalog; see [codemode's trust boundary](../SECURITY.md#trusted-base).
 
+A codemode script whose `// @options:` line sets no `max_output_tokens`, or that has no such line, gets an output limit of 25,000 tokens instead of Pi's 10,000, so a batch of reads usually arrives whole. Dev adds the option just before the script runs; the conversation keeps the script as written. A limit the script sets, lower or higher, is kept, and an options line Pi rejects is not repaired. Longer output is still cut: Pi keeps its start and end and saves the full text to a file named in the result. The lead's scripts get the same limit.
+
 The [security model](../SECURITY.md#outside-the-protection) explains why the allowlist does not sandbox trusted extensions or external agent providers.
 
 Pi expands a verified leading skill invocation once in the first user message, including hidden skills. Unknown or unreadable skills and extension-command collisions fail before a model request. Other commands and prompt templates are not expanded. The attempt records the invoked skill, not every skill the child later reads.
