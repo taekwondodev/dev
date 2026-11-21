@@ -35,7 +35,6 @@ npm run update -- --remote origin --branch main         # fast-forward dev and a
 npm run upgrade                                        # alias for update, with the same options
 npm run rollback -- --ref REVISION                      # detach at a revision
 npm run profile [-- --data-home PATH]                   # private usage report
-npm run profile -- --conversations                      # list saved conversations; --timeline REF prints one
 npm run pi:update                                      # upgrade Pi and dependencies; publish one PR
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
@@ -50,7 +49,7 @@ Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#na
 
 Setup records Node, Pi and the shared-skills revision in the data home's `dependency-observation.json`. `DEV_SHARED_SKILLS` selects that checkout when it is not `~/Developer/skills`.
 
-For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics and public exports.
+For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics, public exports and finding a saved conversation.
 
 ## Behavior
 

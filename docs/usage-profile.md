@@ -28,7 +28,7 @@ npm run profile -- --conversations
 npm run profile -- --timeline REF
 ```
 
-Dev saves conversations in the data home, not in Pi's own `~/.pi/agent/sessions/`: lead conversations in `<data-home>/sessions/` and child conversations in `<data-home>/child-sessions/`, one JSONL file each. Automatic cleanup keeps only the newest ones.
+Both read the retained conversations of the data home above; Pi's own `~/.pi/agent/sessions/` does not hold them.
 
 `--conversations` lists them newest first, one line each: start (UTC), `main` for a lead conversation or `delegated` for a child one, reference, project directory, user messages and direct tool calls, and the start of the first request. `--timeline REF` prints one conversation in file order, one line per event:
 
@@ -39,13 +39,13 @@ Dev saves conversations in the data home, not in Pi's own `~/.pi/agent/sessions/
 - an answer, the assistant text of a response without tool calls, marked when aborted or failed; a response with no text prints nothing;
 - a compaction.
 
-User and answer text is the first 200 characters on one line. Control characters print as `?`, and text shaped like an API key, token or password is redacted with the same patterns dev uses for error text; other secrets in messages or commands are not detected. Tool result content never appears. Branches are not distinguished.
+User and answer text is the first 200 characters on one line. Control characters print as `?`, and text shaped like an API key, token or password is redacted; other secrets in messages or commands are not detected. Tool result content never appears. Branches are not distinguished.
 
 REF is the reference the list prints or any part of a file name that identifies exactly one conversation; a path counts by its file name, so a delegated agent's recorded file works. Several matches list the candidates and fail; no match fails.
 
 Both modes print only to the terminal: they write nothing, not even the private report, and accept only `--data-home`. Combining them with each other, `--period` or `--export` fails.
 
-**The output contains message text and command lines.** When an agent runs either mode, that text enters its conversation and reaches its model provider. The saved report and the export stay free of message text.
+**The output contains message text and command lines.** When an agent runs either mode, that text enters its conversation and reaches its model provider.
 
 ## Read the results
 
