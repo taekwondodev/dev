@@ -60,7 +60,7 @@
       }
     },
     {
-      "files": ["src/**"],
+      "files": ["src/**", "scripts/usage-conversations.ts"],
       "rules": {
         "dev/no-internal-terms": "error"
       }

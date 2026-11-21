@@ -13,6 +13,7 @@ import * as Option from 'effect/Option'
 import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
+import { publicUrl } from '../src/work-child-activity.ts'
 
 const TokenCount = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 
@@ -37,6 +38,7 @@ const decodeHeader = Schema.decodeUnknownOption(
   Schema.Struct({
     type: Schema.Literal('session'),
     timestamp: Timestamp,
+    cwd: Schema.optional(Schema.String),
     parentSession: Schema.optional(Schema.String),
   })
 )
@@ -138,6 +140,9 @@ const decodeThinkingLevel = Schema.decodeUnknownOption(
 )
 
 const decodeContextEdit = Schema.decodeUnknownOption(Schema.Struct({ targetId: Schema.String }))
+const decodeImage = Schema.decodeUnknownOption(
+  Schema.Struct({ type: Schema.Literal('image'), data: Schema.String })
+)
 
 const decodeCustomMessage = Schema.decodeUnknownOption(
   Schema.Struct({ customType: Schema.String, details: Schema.optional(Schema.Unknown) })
@@ -154,6 +159,17 @@ const decodeLineRange = Schema.decodeUnknownOption(
 )
 const decodePathInput = Schema.decodeUnknownOption(Schema.Struct({ path: Schema.String }))
 const decodeShellInput = Schema.decodeUnknownOption(Schema.Struct({ command: Schema.String }))
+const decodeSummaryFields = Schema.decodeUnknownOption(
+  Schema.Struct({
+    action: OptionalText,
+    operation: OptionalText,
+    path: OptionalText,
+    url: OptionalText,
+    command: OptionalText,
+    skill: OptionalText,
+    taskId: OptionalText,
+  })
+)
 const decodeGitInspectInput = Schema.decodeUnknownOption(
   Schema.Struct({
     operation: Schema.String,
@@ -212,6 +228,7 @@ export interface ToolCall {
   readonly id: string
   readonly name: string
   readonly input: ToolInput
+  readonly argumentSummary: string
 }
 
 interface NestedCall {
@@ -246,6 +263,7 @@ type Payload =
       readonly stopReason: string | undefined
       readonly latencyMs: number
       readonly calls: readonly ToolCall[]
+      readonly text: string
     }
   | {
       readonly kind: 'result'
@@ -255,10 +273,16 @@ type Payload =
       readonly blocks: readonly Block[]
       readonly nestedCalls: NestedCalls
       readonly truncation: TruncationDetails | 'malformed' | undefined
+      readonly cutByTool: boolean
+      readonly bytes: number
       readonly attempt: AttemptRecord | undefined
       readonly usage: Usage | undefined
     }
-  | { readonly kind: 'user'; readonly skill: string | undefined }
+  | {
+      readonly kind: 'user'
+      readonly skill: string | undefined
+      readonly text: string
+    }
   | { readonly kind: 'system'; readonly cwd: CwdRecord }
   | {
       readonly kind: 'compaction'
@@ -293,6 +317,8 @@ export interface SessionRecord {
   readonly ref: string
   readonly name: string
   readonly scope: 'lead' | 'child'
+  readonly started: number | undefined
+  readonly cwd: string | undefined
   readonly entries: readonly Entry[]
   readonly byId: ReadonlyMap<string, Entry>
   readonly undecodable: number
@@ -304,6 +330,8 @@ const modelName = (provider: string | undefined, model: string | undefined) => {
 }
 
 const SKILL_BLOCK = /^<skill name="([^"]+)" location="/
+const SKILL_MESSAGE =
+  /^<skill name="[^"]+" location="[^"]+">\n[\s\S]*?\n<\/skill>(?:\n\n([\s\S]+))?$/
 const CWD_SECTION = /^<cwd>\n([\s\S]*)\n<\/cwd>$/
 const UNSTATED: CwdRecord = { kind: 'unstated' }
 const NONE: CwdRecord = { kind: 'none' }
@@ -313,6 +341,36 @@ const firstText = (content: typeof MessageContent.Type): string | undefined =>
   typeof content === 'string'
     ? content
     : Option.getOrUndefined(Option.map(decodeText(content[0]), block => block.text))
+
+const textOf = (blocks: readonly unknown[]): string =>
+  blocks.flatMap(block => Option.toArray(decodeText(block)).map(({ text }) => text)).join('\n')
+
+const userPayload = (content: typeof MessageContent.Type): Payload => {
+  const text = typeof content === 'string' ? content : textOf(content)
+  const skill = SKILL_BLOCK.exec(firstText(content) ?? '')?.[1]
+  return {
+    kind: 'user',
+    skill,
+    text: skill === undefined ? text : (SKILL_MESSAGE.exec(text)?.[1] ?? ''),
+  }
+}
+
+const summaryOf = (args: unknown): string =>
+  Option.match(decodeSummaryFields(args), {
+    onNone: () => '',
+    onSome: fields => {
+      const label = fields.skill ?? fields.taskId
+      return [
+        fields.action ?? fields.operation,
+        fields.path ??
+          (fields.url === undefined || fields.url === null ? undefined : urlSummary(fields.url)) ??
+          fields.command?.split('\n', 1)[0],
+        label === undefined || label === null ? undefined : `(${label})`,
+      ]
+        .filter(part => typeof part === 'string' && part !== '')
+        .join(' ')
+    },
+  })
 
 const sectionCwd = (section: string | null | undefined, missing: CwdRecord): CwdRecord => {
   if (section === undefined) return missing
@@ -413,6 +471,23 @@ const decodeNestedCalls = (value: unknown): NestedCalls => {
 const attemptsIn = (values: readonly unknown[]): AttemptRecord[] =>
   values.flatMap(value => Option.toArray(decodeAttempt(value)))
 
+const CUT_FLAGS = ['matchLimitReached', 'resultLimitReached', 'entryLimitReached'] as const
+
+const cutByTool = (details: unknown): boolean =>
+  Predicate.isObject(details) &&
+  ((Predicate.hasProperty(details, 'linesTruncated') && details.linesTruncated === true) ||
+    CUT_FLAGS.some(
+      flag => Predicate.hasProperty(details, flag) && typeof details[flag] === 'number'
+    ))
+
+const urlSummary = (value: string): string => {
+  if (!URL.canParse(value)) return 'unparsable URL'
+  const { protocol } = new URL(value)
+  return protocol === 'http:' || protocol === 'https:'
+    ? (publicUrl(value) ?? 'unparsable URL')
+    : `${protocol} URL`
+}
+
 const truncationOf = (details: unknown): TruncationDetails | 'malformed' | undefined =>
   Predicate.hasProperty(details, 'truncation')
     ? Option.getOrElse(decodeTruncation(details.truncation), () => 'malformed' as const)
@@ -442,6 +517,20 @@ const resultPayload = (value: unknown): Payload | undefined =>
         nestedCalls:
           message.toolName === 'codemode' ? decodeNestedCalls(message.nestedCalls) : 'missing',
         truncation: truncationOf(message.details),
+        cutByTool: cutByTool(message.details),
+        bytes: message.content.reduce<number>(
+          (total, block) =>
+            total +
+            Option.match(decodeText(block), {
+              onNone: () =>
+                Option.match(decodeImage(block), {
+                  onNone: () => 0,
+                  onSome: ({ data }) => Buffer.byteLength(data, 'base64'),
+                }),
+              onSome: ({ text }) => Buffer.byteLength(text, 'utf8'),
+            }),
+          0
+        ),
         attempt: work
           ? Option.getOrUndefined(
               Option.map(decodeAttemptResult(message.details), result => result.run)
@@ -468,20 +557,23 @@ const messagePayload = (value: unknown, at: number): Payload | undefined => {
             Option.match(decodeToolCall(block), {
               onNone: () => [],
               onSome: call => [
-                { id: call.id, name: call.name, input: inputOf(call.name, call.arguments) },
+                {
+                  id: call.id,
+                  name: call.name,
+                  input: inputOf(call.name, call.arguments),
+                  argumentSummary: summaryOf(call.arguments),
+                },
               ],
             })
           ),
+          text: textOf(message.content),
         }))
       )
     case 'toolResult':
       return resultPayload(value)
     case 'user':
       return Option.getOrUndefined(
-        Option.map(decodeUser(value), ({ message }): Payload => ({
-          kind: 'user',
-          skill: SKILL_BLOCK.exec(firstText(message.content) ?? '')?.[1],
-        }))
+        Option.map(decodeUser(value), ({ message }) => userPayload(message.content))
       )
     case 'system':
       return Option.getOrUndefined(
@@ -572,6 +664,8 @@ const payloadOf = (type: string, value: unknown, at: number): Payload | undefine
 
 interface DecodedLines {
   readonly header: boolean
+  readonly started: number | undefined
+  readonly cwd: string | undefined
   readonly forkedAt: number | undefined
   readonly undecodable: number
   readonly entries: Entry[]
@@ -579,6 +673,8 @@ interface DecodedLines {
 
 const noLines = (): DecodedLines => ({
   header: false,
+  started: undefined,
+  cwd: undefined,
   forkedAt: undefined,
   undecodable: 0,
   entries: [],
@@ -590,6 +686,8 @@ const decodeLine = (session: DecodedLines, line: string): DecodedLines => {
     const header = Option.getOrUndefined(Option.flatMap(decodeJson(line), decodeHeader))
     return {
       header: true,
+      started: header === undefined ? undefined : DateTime.toEpochMillis(header.timestamp),
+      cwd: header?.cwd,
       forkedAt:
         header?.parentSession === undefined ? undefined : DateTime.toEpochMillis(header.timestamp),
       undecodable: header === undefined ? 1 : 0,
@@ -658,37 +756,56 @@ export const walkBranches = <S>(
       )
 }
 
+export const sessionNames = Effect.fn('sessionNames')(function* (
+  dataHome: string,
+  directory: string
+) {
+  const fs = yield* FileSystem.FileSystem
+  const path = join(dataHome, directory)
+  if (!(yield* fs.exists(path))) return []
+  return (yield* fs.readDirectory(path)).filter(name => name.endsWith('.jsonl')).toSorted()
+})
+
+export const readSession = Effect.fn('readSession')(function* (
+  dataHome: string,
+  directory: string,
+  scope: SessionRecord['scope'],
+  name: string
+) {
+  const fs = yield* FileSystem.FileSystem
+  return yield* fs.stream(join(dataHome, directory, name)).pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+    Stream.runFold(noLines, decodeLine),
+    Effect.map(({ started, cwd, entries, undecodable }): SessionRecord | undefined => ({
+      ref: `${directory}/${name}`,
+      name,
+      scope,
+      started,
+      cwd,
+      entries,
+      byId: new Map(entries.map(entry => [entry.id, entry])),
+      undecodable,
+    })),
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.undefined
+    )
+  )
+})
+
 export const readSessions = Effect.fn('readSessions')(function* <A>(
   dataHome: string,
   directory: string,
   scope: SessionRecord['scope'],
   project: (session: SessionRecord) => A
 ) {
-  const fs = yield* FileSystem.FileSystem
-  const path = join(dataHome, directory)
-  if (!(yield* fs.exists(path))) return []
-  const names = (yield* fs.readDirectory(path)).filter(name => name.endsWith('.jsonl')).toSorted()
+  const names = yield* sessionNames(dataHome, directory)
   return yield* Effect.forEach(
     names,
     name =>
-      fs.stream(join(path, name)).pipe(
-        Stream.decodeText(),
-        Stream.splitLines,
-        Stream.runFold(noLines, decodeLine),
-        Effect.map(({ entries, undecodable }) => [
-          project({
-            ref: `${directory}/${name}`,
-            name,
-            scope,
-            entries,
-            byId: new Map(entries.map(entry => [entry.id, entry])),
-            undecodable,
-          }),
-        ]),
-        Effect.catchIf(
-          error => error.reason._tag === 'NotFound',
-          () => Effect.succeed([])
-        )
+      readSession(dataHome, directory, scope, name).pipe(
+        Effect.map(session => (session === undefined ? [] : [project(session)]))
       ),
     { concurrency: 1 }
   ).pipe(Effect.map(results => results.flat()))

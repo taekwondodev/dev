@@ -57,7 +57,7 @@ dev
 | Inspect retained work and release worktrees             | [Workspace](docs/workspace.md)         |
 | Read documentation URLs, manage the Chrome profile copy | [Read URL](docs/web-read.md)           |
 | Understand long-session context handling                | [Compaction](docs/compaction.md)       |
-| Interpret private metrics or export charts              | [Usage profile](docs/usage-profile.md) |
+| Read private metrics, export charts or a conversation   | [Usage profile](docs/usage-profile.md) |
 | Upgrade Pi and dev's dependencies                       | [Upgrade](docs/upgrade.md)             |
 | Change dev's code                                       | [Development](docs/DEVELOPMENT.md)     |
 | Find components and decision records                    | [Architecture](docs/ARCHITECTURE.md)   |

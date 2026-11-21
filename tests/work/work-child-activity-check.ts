@@ -164,6 +164,10 @@ await claim(
       'keys/[redacted].txt'
     )
     assert.equal(toolTarget('read_url', { url: 'not a url' }), undefined)
+    assert.equal(
+      toolTarget('read_url', { url: 'data:text/plain,https://admin:pw@example.com' }),
+      undefined
+    )
     assert.equal(toolTarget('bash', { command: 'curl -H "Authorization: secret"' }), undefined)
     assert.equal(toolTarget('codemode', { code: 'const token = "secret"' }), undefined)
     assert.equal(toolTarget('work', { action: 'delegate', prompt: 'private' }), undefined)

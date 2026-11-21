@@ -22,6 +22,7 @@ import { checkout, checkoutIsClean, git, npmInstallFlags, run, streamed } from '
 import { updatePi } from './pi-upgrade.ts'
 import { lastLines } from './report.ts'
 import { runUpgrade } from './upgrade.ts'
+import { conversationTimeline, listConversations } from './usage-conversations.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from './usage-profile.ts'
 
 export class MaintenanceError extends Schema.TaggedError<
@@ -194,31 +195,45 @@ const rollback = Effect.fnUntraced(
   )
 )
 
+interface CommandOptions {
+  readonly flags: readonly string[]
+  readonly switches: readonly string[]
+  readonly usage: string
+}
+
 const commandOptions = {
-  setup: { flags: ['--data-home'], usage: '--data-home PATH' },
-  update: { flags: ['--remote', '--branch'], usage: '--remote NAME or --branch NAME' },
-  rollback: { flags: ['--ref'], usage: '--ref REF' },
-  profile: {
-    flags: ['--data-home', '--period', '--export'],
-    usage: '--data-home PATH, --period START..END (repeatable) or --export DIR',
+  setup: { flags: ['--data-home'], switches: [], usage: '--data-home PATH' },
+  update: {
+    flags: ['--remote', '--branch'],
+    switches: [],
+    usage: '--remote NAME or --branch NAME',
   },
-} as const
+  rollback: { flags: ['--ref'], switches: [], usage: '--ref REF' },
+  profile: {
+    flags: ['--data-home', '--period', '--export', '--timeline'],
+    switches: ['--conversations'],
+    usage:
+      '--data-home PATH, --period START..END (repeatable), --export DIR, --conversations or --timeline REF',
+  },
+} as const satisfies Record<string, CommandOptions>
 
 type OptionCommand = keyof typeof commandOptions
 
 const parseOptions = Effect.fnUntraced(function* (command: OptionCommand, args: readonly string[]) {
-  const { flags, usage } = commandOptions[command]
+  const { flags, switches, usage }: CommandOptions = commandOptions[command]
   const values = new Map<string, string[]>()
-  for (let index = 0; index < args.length; index += 2) {
+  for (let index = 0; index < args.length;) {
     const flag = args[index] ?? ''
-    if (!flags.some(known => known === flag))
+    const isSwitch = switches.includes(flag)
+    if (!isSwitch && !flags.includes(flag))
       return yield* new MaintenanceError({
         message: `Unknown ${command} option "${flag}". Use ${usage}.`,
       })
-    const value = args[index + 1]
+    const value = isSwitch ? '' : args[index + 1]
     if (value === undefined)
       return yield* new MaintenanceError({ message: `${flag} requires a value` })
     values.set(flag, [...(values.get(flag) ?? []), value])
+    index += isSwitch ? 1 : 2
   }
   return (flag: string): readonly string[] => values.get(flag) ?? []
 })
@@ -234,9 +249,24 @@ const profile = Effect.fnUntraced(
     const options = yield* parseOptions('profile', args)
     const requestedDataHome = yield* single('--data-home', options('--data-home'))
     const exportTo = yield* single('--export', options('--export'))
+    const listing = Option.isSome(yield* single('--conversations', options('--conversations')))
+    const timeline = yield* single('--timeline', options('--timeline'))
+    if (
+      (listing || Option.isSome(timeline)) &&
+      ((listing && Option.isSome(timeline)) ||
+        options('--period').length > 0 ||
+        Option.isSome(exportTo))
+    )
+      return yield* new MaintenanceError({
+        message:
+          '--conversations and --timeline take only --data-home and cannot be combined with each other, --period or --export; nothing was printed',
+      })
     const dataHome = Option.isSome(requestedDataHome)
       ? resolve(requestedDataHome.value)
       : yield* defaultDataHome
+    if (listing) return yield* say(yield* listConversations(dataHome))
+    if (Option.isSome(timeline))
+      return yield* say(yield* conversationTimeline(dataHome, timeline.value))
     const parsed = yield* Effect.forEach(options('--period'), parsePeriod, { concurrency: 1 })
     const periods = Arr.isReadonlyArrayNonEmpty(parsed) ? parsed : Arr.of(ALL_TIME)
     const [period, ...more] = periods
