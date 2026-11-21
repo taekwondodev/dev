@@ -174,7 +174,7 @@ try {
     }
   )
   await claim(
-    'parameters outside the declared schema are refused with the field named, before Git runs',
+    'parameters outside the declared schema are refused, naming every invalid field',
     async () => {
       for (const [input, named] of [
         [{ operation: 'push' }, /operation/],

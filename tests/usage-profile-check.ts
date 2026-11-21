@@ -1242,7 +1242,7 @@ try {
     }
   )
   await claim(
-    'a failed codemode script is an execution failure and an aborted one a cancellation, also when an image separates the ending from the output; output cut to the limit, or endings that disagree about an abort because the script printed or threw one, leave the result unclassified, and an error shaped exactly like an abort ending cannot be told from an abort',
+    'a failed codemode script is an execution failure and an aborted one a cancellation, also when an image separates the ending from the output; output cut to the limit, or endings that disagree about an abort because a thrown error quotes one, leave the result unclassified; an error shaped exactly like an abort ending cannot be told from an abort; and a codemode error that is not a script failure classifies like any tool error',
     async () => {
       const home = join(root, 'script-failures')
       const lead = conversation('2026-09-29T10:00:00Z')
@@ -1285,31 +1285,10 @@ try {
           textBlock(ABORTED)
         ),
         script(
-          'printed-ending',
-          true,
-          textBlock(
-            `${ABORTED}\nScript error:\nSyntaxError: expecting ')'\n\nNo tool calls were made.`
-          )
-        ),
-        script(
           'thrown-ending',
           true,
           textBlock(
             `Script error:\nError: the file holds\n${ABORTED}\n    at <anonymous> (codemode.js:1:1)\n\nNo tool calls were made.`
-          )
-        ),
-        script(
-          'cut-ending',
-          true,
-          textBlock(
-            'Warning: truncated output (original token count: 20)\nTotal output lines: 5\n\n…20 tokens truncated…\n\n[Full output: /tmp/pi-codemode-fixture.txt (read with offset/limit)]'
-          )
-        ),
-        script(
-          'cut-after-printed-ending',
-          true,
-          textBlock(
-            `Warning: truncated output (original token count: 900)\nTotal output lines: 40\n\n${ABORTED}\nScript error:\nError: a long mess…800 tokens truncated…at <anonymous> (codemode.js:9:9)\n\nNo tool calls were made.\n\n[Full output: /tmp/pi-codemode-fixture.txt (read with offset/limit)]`
           )
         ),
         script(
@@ -1344,7 +1323,7 @@ try {
         lead.assistant('a2', 'r-completed', 19, { calls: [call('c-other', 'codemode')] }),
         lead.result('r-other', 'a2', 20, call('c-other', 'codemode'), {
           isError: true,
-          text: 'An error this profiler does not know',
+          text: 'Validation failed for tool "codemode":\n  - code: Expected string',
         }),
       ])
       assert.equal((await profile(home))._tag, 'Success')
@@ -1352,11 +1331,13 @@ try {
       const { outcomes } = summary.drilldowns
       assert.deepEqual(
         {
+          invocation: outcomes.invocation.refs,
           execution: outcomes.execution.refs,
           cancelled: outcomes.cancelled.refs,
           unclassified: outcomes.unclassified.refs,
         },
         {
+          invocation: ['sessions/scripts.jsonl#r-other'],
           execution: ['sessions/scripts.jsonl#r-thrown', 'sessions/scripts.jsonl#r-timed-out'],
           cancelled: [
             'sessions/scripts.jsonl#r-aborted',
@@ -1364,12 +1345,8 @@ try {
             'sessions/scripts.jsonl#r-shaped-like-abort',
           ],
           unclassified: [
-            'sessions/scripts.jsonl#r-printed-ending',
             'sessions/scripts.jsonl#r-thrown-ending',
-            'sessions/scripts.jsonl#r-cut-ending',
-            'sessions/scripts.jsonl#r-cut-after-printed-ending',
             'sessions/scripts.jsonl#r-cut-keeping-ending',
-            'sessions/scripts.jsonl#r-other',
           ],
         }
       )
