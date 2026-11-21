@@ -89,7 +89,8 @@ const suites: Record<string, () => readonly Omit<Job, 'suite'>[]> = {
   ),
   'web:check': files(
     'tests/web/web-read-check.ts',
-    'tests/web/web-owner-check.ts',
+    'tests/web/web-owner-rendering-check.ts',
+    'tests/web/web-owner-recovery-check.ts',
     'tests/web/web-host-check.ts'
   ),
   'workspace:github': files('tests/workspace/workspace-github-reader-check.ts'),

@@ -317,7 +317,7 @@ const readLines = (summary: PeriodSummary & { readonly drilldowns: Drilldowns })
   const { reads } = summary
   const { relations, overlap, truncation } = reads
   return [
-    `Reads: ${reads.calls} with a result (${reads.failed} failed, ${reads.unknownCoverage} with unknown coverage), ${size(reads.bytes)} returned text; bytes are not billed tokens or proven waste`,
+    `Reads: ${reads.calls} with a result (${reads.failed} failed, ${reads.unknownCoverage} with unknown coverage), ${size(reads.bytes)} returned text; bytes are not billed tokens or proven waste. Reads inside codemode and files read or changed through shell commands are not included`,
     `  first ${relations.first}, pagination ${relations.pagination}, disjoint ${relations.disjoint}, overlap ${relations.overlap}, unknown ${relations.unknown}`,
     `  overlaps: ${overlap.identical} identical and ${overlap.changed} changed text over ${overlap.lines} lines (${size(overlap.bytes)}); ${overlap.afterCompaction} after compaction, ${overlap.afterContextEdit} after a context edit, ${overlap.afterOwnWrite} after an own write`,
     `  truncated by lines ${truncation.lines}, by bytes ${truncation.bytes}, first line too long ${truncation.firstLine}; stopped by limit ${reads.limited}; ${reads.crossAgent.paths} paths read by several agents (${reads.crossAgent.reads} reads)`,
@@ -471,7 +471,8 @@ const codemodeLines = ({ codemode }: PrivatePeriod): string[] => {
         orUnavailable(row.durations.maxMs, value => value.toFixed(1)),
       ])
     ),
-    '  Result-period observations; durations are per operation, not additive wall time. Internal results are not recorded; read overlap, Git results and child attribution are not inferred.',
+    `  internal read requests: ${codemode.reads.requests} with a recorded path and range, ${codemode.reads.repeated} overlapping an earlier request for the same path on their branch, ${codemode.reads.unknown} without usable arguments. Requested ranges, whatever the read returned: an overlap is not proven waste.`,
+    '  Result-period observations; durations are per operation, not additive wall time. Internal results are not recorded; returned-text overlap, Git results and child attribution are not inferred.',
   ]
 }
 

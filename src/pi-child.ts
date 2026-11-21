@@ -12,8 +12,6 @@ import * as Option from 'effect/Option'
 import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import { StringEnum } from '@earendil-works/pi-ai'
-import { compile, int, obj, opt, str } from '@earendil-works/pi-schema'
 
 import {
   GenerationId,
@@ -66,18 +64,27 @@ type AccessMode = (typeof ACCESS_MODES)[number]
 
 const REVIEW_OPERATIONS = ['status', 'diff', 'staged-diff', 'log', 'show', 'files'] as const
 
-const gitInspectParameters = obj({
-  operation: StringEnum(REVIEW_OPERATIONS, { description: 'Read-only Git operation to perform' }),
-  path: opt(str({ description: 'Optional repository-relative path without parent traversal' })),
-  ref: opt(
-    str({
-      description:
-        'Git ref for show, or optional diff base or log start, such as HEAD or a commit hash',
+const optionalText = (description: string) =>
+  Schema.optionalKey(Schema.String.annotate({ description }))
+
+const GitInspectInput = Schema.Struct({
+  operation: Schema.Literals(REVIEW_OPERATIONS).annotate({
+    description: 'Read-only Git operation to perform',
+  }),
+  path: optionalText('Optional repository-relative path without parent traversal'),
+  ref: optionalText(
+    'Git ref for show, or optional diff base or log start, such as HEAD or a commit hash'
+  ),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
+      description: 'Maximum number of log entries',
     })
   ),
-  limit: opt(int({ minimum: 1, maximum: 50, description: 'Maximum number of log entries' })),
 })
-const gitInspectInput = compile(gitInspectParameters)
+const gitInspectParameters = Schema.toJsonSchemaDocument(GitInspectInput, {
+  onExcessProperty: 'error',
+}).schema
+const decodeGitInspectInput = Schema.decodeUnknownResult(GitInspectInput)
 
 const MAX_GIT_OUTPUT = 64 * 1024
 const FILES_INSTEAD_OF_PATCH = `The patch is larger than ${MAX_GIT_OUTPUT / 1024} KB. Its changed files follow as added lines, removed lines and path. Pass path to read one file's patch.`
@@ -496,14 +503,11 @@ function validateGitRef(ref: string | undefined): string {
 
 const CHANGED_FILES = ['--numstat', '-z', '--no-renames'] as const
 
-function gitRequest(params: unknown): GitRequest {
-  if (!gitInspectInput.check(params))
-    fail(
-      `git_inspect parameters are invalid: ${gitInspectInput
-        .errors(params)
-        .map(error => `${error.path || '/'} ${error.message}`)
-        .join('; ')}`
-    )
+function gitRequest(input: unknown): GitRequest {
+  const decoded = decodeGitInspectInput(input, { onExcessProperty: 'error', errors: 'all' })
+  if (decoded._tag === 'Failure')
+    fail(`git_inspect parameters are invalid: ${decoded.failure.message}`)
+  const params = decoded.success
   const path = validateRelativePath(params.path)
   const paths = ['--', ...(path ? [path] : [])]
   const from = () => (params.ref === undefined ? [] : [validateGitRef(params.ref)])
