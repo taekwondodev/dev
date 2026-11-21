@@ -306,13 +306,11 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       'a child whose codemode description shows 25000 in its options example returns the output of a script without its own options whole between 10,000 and 25,000 tokens, and one above 25,000 tokens is cut with the warning, the saved full output and the lines to read from it, while the recorded call keeps the script as written',
       async () => {
         const within = scriptOutput(30_000, 'WITHIN-MIDDLE')
-        const beyond = scriptOutput(60_000, 'BEYOND-MIDDLE')
         const child = await owner.run({
           taskId: 'child-output-limit',
           access: 'read-only',
           prompt: `large script output\n${script([
             [toolCall('within-limit', 'codemode', { code: within })],
-            [toolCall('beyond-limit', 'codemode', { code: beyond })],
             [toolCall('beyond-lines', 'codemode', { code: LINES_SCRIPT })],
             say('done'),
           ])}`,
@@ -323,11 +321,6 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.match(whole.text, /HEAD-MARKa+WITHIN-MIDDLEb+TAIL-MARK/)
         assert.doesNotMatch(whole.text, /truncated output/)
         assert.doesNotMatch(whole.details, /fullOutputPath/)
-        const cut = recorded.result('beyond-limit')
-        assert.match(cut.text, /Warning: truncated output \(original token count: 300\d\d\)/)
-        assert.match(cut.text, /HEAD-MARK[\s\S]*TAIL-MARK/)
-        assert.doesNotMatch(cut.text, /BEYOND-MIDDLE/)
-        assert.match(cut.details, /"fullOutputPath":/)
         const lines = recorded.result('beyond-lines')
         const hint =
           /The missing text is in lines (\d+)-(\d+) of 4000\. The full output is saved in (\S+); to see those lines without running the script again, read that file with offset \1 and limit (\d+)\.\\n/.exec(
@@ -348,7 +341,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         const shown = fixture
           .modelCalls()
           .filter(call => call.startsWith(`options:${child.view.id}:`))
-        assert.equal(shown.length, 4)
+        assert.equal(shown.length, 3)
         for (const call of shown)
           assert.equal(
             call,

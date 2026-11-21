@@ -173,7 +173,7 @@ const decodeScriptOptions = Schema.decodeUnknownOption(
   { onExcessProperty: 'error' }
 )
 
-export const declaredOutputLimit = (code: string): number | undefined => {
+const declaredOutputLimit = (code: string): number | undefined => {
   const [first = '', ...rest] = code.split('\n')
   const options = first.replace(/\r$/, '').trimStart()
   if (

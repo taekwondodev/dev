@@ -29,7 +29,7 @@ export const withOutputLimit = (parse: ParseCodemodeSource, source: string): str
 
 const PI_EXAMPLE = '"max_output_tokens": 10000'
 
-export const withLimitExample = (description: string): string =>
+const withLimitExample = (description: string): string =>
   description.replace(PI_EXAMPLE, `"max_output_tokens": ${CODEMODE_OUTPUT_TOKENS}`)
 
 export const showingOutputLimit =

@@ -20,7 +20,6 @@ import * as Schema from 'effect/Schema'
 import { GIT_INSPECT_OPERATIONS, UsageExport } from '../scripts/usage-export.ts'
 import { ALL_TIME, parsePeriod, profileUsage, type Report } from '../scripts/usage-profile.ts'
 import type { Period } from '../scripts/usage-report.ts'
-import { declaredOutputLimit } from '../scripts/usage-sessions.ts'
 import { loadInstalledPi, makeClaims } from './workspace/workspace-check-support.ts'
 
 const checkout = join(import.meta.dirname, '..')
@@ -1297,7 +1296,7 @@ try {
     }
   )
   await claim(
-    "the profile reads a script's own max_output_tokens exactly as the installed Pi parser does, so scripts Pi rejects declare nothing",
+    "a codemode result counts as declaring its own limit only when Pi's installed parser accepts its script's options line with a max_output_tokens, for leads and children, and the report lists each declared value; a later or sibling call that reuses the ID and copied fork history do not count",
     async () => {
       const { importFromPi } = await loadInstalledPi()
       const { parseCodemodeSource } = await importFromPi<{
@@ -1310,8 +1309,9 @@ try {
           return undefined
         }
       }
+      const home = join(root, 'declared-limit')
       const body = '\nreturn 1'
-      const sources = [
+      const scripts = [
         `// @options: {"max_output_tokens": 2000}${body}`,
         `// @options: {"max_output_tokens": 0, "timeout_ms": 1}${body}`,
         `  // @options:{"timeout_ms":5,"max_output_tokens":10000}\r${body}`,
@@ -1321,41 +1321,24 @@ try {
         `// @options: {"max_output_tokens": 6000, "timeout_ms": 0}${body}`,
         `// @options: {"max_output_tokens": 7000, "timeout_ms": 2147483648}${body}`,
         `// @options: {"max_output_tokens": 8000}`,
-        `// @options: {"max_output_tokens": 8000}\n  \n`,
+        `// @options: {"max_output_tokens": 8500}\n  \n`,
         `// @options: {"max_output_tokens": 9000}${body}\n// @options: {"timeout_ms": 5}`,
         `// @options: {"max_output_tokens": 1.5}${body}`,
         `// @options: {"max_output_tokens": -1}${body}`,
         `// @options: {"max_output_tokens": 9007199254740992}${body}`,
         `// @options: {"max_output_tokens": null}${body}`,
+        `// @options: {"max_output_tokens": "lots"}${body}`,
         `// @options: [1]${body}`,
         `// @options:${body}`,
         `// @options: {"timeout_ms": 5}${body}`,
-        `return 1\n// @options: {"max_output_tokens": 3000}`,
+        `return 1\n// @options: {"max_output_tokens": 9500}`,
         body,
         '',
       ]
-      for (const source of sources)
-        assert.equal(declaredOutputLimit(source), pi(source), JSON.stringify(source))
       assert.deepEqual(
-        sources.map(source => pi(source)).filter(limit => limit !== undefined),
+        scripts.map(source => pi(source)).filter(limit => limit !== undefined),
         [2000, 0, 10_000, 3000, 4000]
       )
-    }
-  )
-  await claim(
-    'a codemode result counts as declaring its own limit when its script starts with an options line that sets a valid max_output_tokens, for leads and children, and the report lists each declared value; other options, a misplaced or invalid line, a later or sibling call that reuses the ID and copied fork history do not count',
-    async () => {
-      const home = join(root, 'declared-limit')
-      const body = '\nreturn 1'
-      const scripts = [
-        `// @options: {"max_output_tokens": 2000}${body}`,
-        `  // @options:{"timeout_ms":5,"max_output_tokens":10000}\r${body}`,
-        `// @options: {"timeout_ms": 5}${body}`,
-        `return 1\n// @options: {"max_output_tokens": 3000}`,
-        `// @options: {"max_output_tokens": "lots"}${body}`,
-        `// @options: {"max_output_tokens": -1}${body}`,
-        body,
-      ]
       const lead = conversation('2026-09-29T23:59:50Z')
       const calls = [
         ...scripts.map((source, index) => scriptCall(`c${index}`, source)),
@@ -1386,15 +1369,18 @@ try {
       assert.equal(printed.status, 0, printed.stderr)
       assert.match(
         printed.stdout,
-        /declared output limits: 2 of 8 results in main conversations and 1 of 1 in delegated agents came from scripts that set their own max_output_tokens \(2000 in 1, 10000 in 2\)\./
+        /declared output limits: 5 of 23 results in main conversations and 1 of 1 in delegated agents came from scripts that set their own max_output_tokens \(0 in 1, 2000 in 1, 3000 in 1, 4000 in 1, 10000 in 2\)\./
       )
       const [{ codemode }] = report(home).periods
       assert.deepEqual(codemode.scripts, {
-        lead: { results: 8, cut: 0, declared: 2 },
+        lead: { results: 23, cut: 0, declared: 5 },
         child: { results: 1, cut: 0, declared: 1 },
       })
       assert.deepEqual(codemode.declaredLimits, [
+        { limit: 0, results: 1 },
         { limit: 2000, results: 1 },
+        { limit: 3000, results: 1 },
+        { limit: 4000, results: 1 },
         { limit: 10000, results: 2 },
       ])
       const branched = join(root, 'declared-limit-branches')

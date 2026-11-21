@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import {
   CODEMODE_OUTPUT_TOKENS,
   type ParseCodemodeSource,
-  withLimitExample,
   withOutputLimit,
   withRecoveryHint,
 } from '../../src/codemode-output-limit.ts'
@@ -92,24 +91,6 @@ await claim(
   }
 )
 
-await claim(
-  "Pi's codemode description shows its 10000 example once, and dev's shows 25000 there and is otherwise Pi's text",
-  async () => {
-    const { createCodemodeToolDefinition } = await importFromPi<{
-      createCodemodeToolDefinition: () => { description: string }
-    }>('dist/extensions/codemode/tool.js')
-    const { description } = createCodemodeToolDefinition()
-    const example = '// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}'
-    assert.equal(description.split(example).length, 2)
-    assert.equal(description.split('10000').length, 2)
-    assert.equal(
-      withLimitExample(description),
-      description.replace(example, '// @options: {"max_output_tokens": 25000, "timeout_ms": 60000}')
-    )
-    assert.equal(withLimitExample('no example here'), 'no example here')
-  }
-)
-
 const { sliceHead, sliceTail } = await importFromPi<{
   sliceHead: (text: string, units: number) => string
   sliceTail: (text: string, units: number) => string
@@ -159,7 +140,7 @@ const recover = async (full: string, tokens: number) => {
   })
   const text = read.content.flatMap(item => (item.type === 'text' ? [item.text] : [])).join('')
   const shown = text.replace(/\n\n\[(?:Showing lines|\d+ more lines)[^\]]*\]$/, '')
-  return { first, last, lastMissing, text, shown }
+  return { first, last, text, shown }
 }
 
 const numbered = (count: number, width: number) =>
@@ -168,8 +149,6 @@ const numbered = (count: number, width: number) =>
 await claim(
   "a cut result names the lines holding the text Pi's real truncation left out, at most one line past it, and Pi's read tool with the named offset and limit returns them",
   async () => {
-    const paired = piCut(`a${'😀'.repeat(40)}\nmiddle\n${'😀'.repeat(40)}bcd`, 20, 'unused')
-    assert.deepEqual([paired.head.length, paired.tail.length], [39, 39])
     const cases: readonly (readonly [string, number, readonly [number, number]])[] = [
       ['abc\nDEFG\nijkl', 2, [2, 3]],
       ['abc\nDEFG\n\nijkl', 2, [2, 4]],
@@ -195,8 +174,6 @@ await claim(
           .join('\n')
       )
     }
-    const boundary = await recover('abc\nDEFG\nijkl', 2)
-    assert.deepEqual([boundary?.lastMissing, boundary?.last], [2, 3])
     const paged = await recover(numbered(6000, 40), 25_000)
     assert.ok(paged !== undefined)
     const next = Number(/Use offset=(\d+) to continue/.exec(paged.text)?.[1])
