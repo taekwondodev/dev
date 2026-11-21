@@ -1,6 +1,6 @@
 import { relative } from 'node:path'
 import type { RuleTester } from 'oxlint/plugins-dev'
-import { INTERNAL } from './model-text-terms.ts'
+import { internalTerm } from './model-text-terms.ts'
 
 type Rule = Parameters<RuleTester['run']>[1]
 type Visitor = ReturnType<Extract<Rule, { createOnce: unknown }>['createOnce']>
@@ -212,14 +212,25 @@ const plugin = {
         type: 'problem',
         schema: [],
         messages: {
-          internal:
-            'This text uses the dev-internal term "{{term}}". Agents and users read dev\'s text without its glossary: say it with the model-visible wording in AGENTS.md ("Text the model reads"). This rule has no allowlist.',
+          reword:
+            'This text uses the dev-internal term "{{term}}", which agents and users reading dev\'s text do not know. Use this wording instead: {{wording}}. This rule has no allowlist.',
+          leaveOut:
+            'This text names "{{term}}", a skill, workflow or decision record the reader may not have. Leave it out. This rule has no allowlist.',
         },
       },
       createOnce(context) {
         const report = (node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>, text: string) => {
-          const term = INTERNAL.exec(text)?.[0]
-          if (term !== undefined) context.report({ node, messageId: 'internal', data: { term } })
+          const found = internalTerm(text)
+          if (found === undefined) return
+          const { term, replacement } = found
+          if (replacement.kind === 'leave-out')
+            context.report({ node, messageId: 'leaveOut', data: { term } })
+          else
+            context.report({
+              node,
+              messageId: 'reword',
+              data: { term, wording: replacement.wording },
+            })
         }
         const checkWritten = (
           node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>,
