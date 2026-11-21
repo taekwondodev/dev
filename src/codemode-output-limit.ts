@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import * as Predicate from 'effect/Predicate'
@@ -33,13 +33,41 @@ const CUT_HEADER =
 const OMISSION = /…(\d+) tokens truncated…/y
 const CHARS_PER_TOKEN = 4
 const LISTED_LINES = 5
+const NEWLINE = 10
+const MAX_UTF8_BYTES_PER_UNIT = 3
+
+export const SAVED_OUTPUT_MAX_BYTES = 16 * 1024 * 1024
 
 export interface ReadLimits {
   readonly maxLines: number
   readonly maxBytes: number
 }
 
-const lineBreaks = (text: string): number => text.split('\n').length - 1
+const lineBreaks = (text: string, from: number, to: number): number => {
+  let count = 0
+  for (let at = from; at < to; at++) if (text.charCodeAt(at) === NEWLINE) count++
+  return count
+}
+
+const exceedsBytes = (text: string, from: number, to: number, maxBytes: number): boolean => {
+  const units = to - from
+  if (units > maxBytes) return true
+  if (units * MAX_UTF8_BYTES_PER_UNIT <= maxBytes) return false
+  return Buffer.byteLength(text.slice(from, to)) > maxBytes
+}
+
+const linesBetween = (text: string, from: number, to: number, first: number, maxBytes: number) => {
+  const long: number[] = []
+  let line = first
+  let lineStart = from
+  for (let at = from; at <= to; at++) {
+    if (at < to && text.charCodeAt(at) !== NEWLINE) continue
+    if (exceedsBytes(text, lineStart, at, maxBytes)) long.push(line)
+    line++
+    lineStart = at + 1
+  }
+  return { last: line - 1, long }
+}
 
 const SURROGATE_PAIR = /^[\uD800-\uDBFF][\uDC00-\uDFFF]$/
 
@@ -88,13 +116,7 @@ export const withRecoveryHint = (
   read: ReadLimits
 ): string => {
   const cut = CUT_HEADER.exec(text)
-  const total = lineBreaks(full) + 1
-  if (
-    cut === null ||
-    Number(cut[1]) !== Math.ceil(full.length / CHARS_PER_TOKEN) ||
-    Number(cut[2]) !== total
-  )
-    return text
+  if (cut === null || Number(cut[1]) !== Math.ceil(full.length / CHARS_PER_TOKEN)) return text
   const [header] = cut
   const noteAt = text.lastIndexOf(`\n\n[Full output: ${path} (read with offset/limit)]`)
   if (noteAt < header.length) return text
@@ -104,22 +126,19 @@ export const withRecoveryHint = (
     full[span.start] === '\n' && span.start > 0 && full[span.start - 1] !== '\n'
   const start = endsVisibleLine ? span.start + 1 : span.start
   if (start >= span.end) return text
-  const first = lineBreaks(full.slice(0, start)) + 1
-  const last = lineBreaks(full.slice(0, span.end - 1)) + 1
+  const from = start === 0 ? 0 : full.lastIndexOf('\n', start - 1) + 1
   const lineEnd = full.indexOf('\n', span.end - 1)
-  const missing = full.slice(
-    full.lastIndexOf('\n', start - 1) + 1,
-    lineEnd === -1 ? full.length : lineEnd
-  )
+  const to = lineEnd === -1 ? full.length : lineEnd
+  const first = lineBreaks(full, 0, from) + 1
+  const { last, long } = linesBetween(full, from, to, first, read.maxBytes)
+  const total = last + lineBreaks(full, to, full.length)
+  if (Number(cut[2]) !== total) return text
   const count = last - first + 1
   const size = `${read.maxBytes / 1024}KB`
-  const long = missing
-    .split('\n')
-    .flatMap((line, index) => (Buffer.byteLength(line) > read.maxBytes ? [first + index] : []))
   const range =
     count === 1 ? `Line ${first} of ${total} is` : `Lines ${first}-${last} of ${total} are`
   const paging =
-    count > read.maxLines || Buffer.byteLength(missing) > read.maxBytes
+    count > read.maxLines || exceedsBytes(full, from, to, read.maxBytes)
       ? ` One read returns at most ${read.maxLines} lines or ${size}, so continue from the offset it reports until you reach line ${last}.`
       : ''
   const unreadable = (lines: readonly number[]) => {
@@ -130,6 +149,16 @@ export const withRecoveryHint = (
   }
   const hint = `${range} missing or partly missing from this output. The full output is saved in ${path}; to see ${count === 1 ? 'it' : 'them'} without running the script again, read that file with offset ${first} and limit ${count}.${paging}${unreadable(long)}`
   return `${header.slice(0, -1)}${hint}\n\n${text.slice(header.length)}`
+}
+
+export const readSavedOutput = async (path: string): Promise<string | undefined> => {
+  const file = await open(path)
+  try {
+    const { size } = await file.stat()
+    return size > SAVED_OUTPUT_MAX_BYTES ? undefined : await file.readFile('utf8')
+  } finally {
+    await file.close()
+  }
 }
 
 const savedOutputPath = (details: unknown): string | undefined =>
@@ -164,12 +193,8 @@ export const loadCodemodeOutputLimit = Effect.fnUntraced(function* (
       const path = event.toolName === CODEMODE_TOOL ? savedOutputPath(event.details) : undefined
       const tool = pi.getAllTools().find(candidate => candidate.name === event.toolName)
       if (path === undefined || !isIntegratedCodemode(tool)) return undefined
-      let full: string
-      try {
-        full = await readFile(path, 'utf8')
-      } catch {
-        return undefined
-      }
+      const full = await readSavedOutput(path).catch(() => undefined)
+      if (full === undefined) return undefined
       let changed = false
       const content = event.content.map(item => {
         if (item.type !== 'text') return item

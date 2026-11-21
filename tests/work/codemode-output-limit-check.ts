@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   CODEMODE_OUTPUT_TOKENS,
   type ParseCodemodeSource,
+  SAVED_OUTPUT_MAX_BYTES,
+  readSavedOutput,
   withOutputLimit,
   withRecoveryHint,
 } from '../../src/codemode-output-limit.ts'
@@ -234,6 +236,37 @@ await claim(
       / Line 2 is longer than 50KB and read cannot return it; continue from offset 3\.$/
     )
     assert.deepEqual([single.unreadable, single.returned], [[2], ['mid']])
+    const uncut = await recover(['', huge, 'end'].join('\n'), 0)
+    assert.deepEqual([uncut.first, uncut.last], [1, 3])
+    assert.match(
+      uncut.rest,
+      / Line 2 is longer than 50KB and read cannot return it; continue from offset 3\.$/
+    )
+    assert.deepEqual([uncut.unreadable, uncut.returned], [[2], ['', 'end']])
+  }
+)
+
+await claim(
+  'a saved output of 16 MiB of empty lines still gets its lines named, and one a byte larger is not read',
+  async () => {
+    const path = join(directory, 'largest.txt')
+    const full = '\n'.repeat(SAVED_OUTPUT_MAX_BYTES)
+    writeFileSync(path, full)
+    const kept = CODEMODE_OUTPUT_TOKENS * 2
+    const head = sliceHead(full, kept)
+    const tail = sliceTail(full, kept)
+    const text = `Warning: truncated output (original token count: ${full.length / 4})\nTotal output lines: ${full.length + 1}\n\n${head}…${(full.length - kept * 2) / 4} tokens truncated…${tail}\n\n[Full output: ${path} (read with offset/limit)]`
+    assert.equal(await readSavedOutput(path), full)
+    const first = kept + 1
+    const last = full.length - kept
+    assert.equal(
+      withRecoveryHint(text, full, path, READ).split('\n', 3)[2],
+      `Lines ${first}-${last} of ${full.length + 1} are missing or partly missing from this output. The full output is saved in ${path}; to see them without running the script again, read that file with offset ${first} and limit ${last - first + 1}. One read returns at most ${READ.maxLines} lines or 50KB, so continue from the offset it reports until you reach line ${last}.`
+    )
+    appendFileSync(path, '\n')
+    assert.equal(await readSavedOutput(path), undefined)
+    rmSync(path)
+    await assert.rejects(readSavedOutput(path))
   }
 )
 
