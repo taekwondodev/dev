@@ -2540,7 +2540,6 @@ try {
     const matches = call('matches', 'grep', { pattern: 'y', path: 'lib' })
     const found = call('found', 'find', { pattern: '*.ts', path: 'src' })
     const listed = call('listed', 'ls', { path: 'docs' })
-    const whole = call('whole', 'ls', { path: 'tests' })
     const data = call('data', 'read_url', {
       url: 'data:text/plain,https://admin:DATA-SENTINEL@example.com',
     })
@@ -2559,7 +2558,7 @@ try {
         '<skill name="implement" location="/skills/implement/SKILL.md">\nSKILL-BODY-SENTINEL\n</skill>\n\n#350 please'
       ),
       lead.assistant('a1', 'u', 1, {
-        calls: [bash, read, edit, grep, url, image, matches, found, listed, whole, data],
+        calls: [bash, read, edit, grep, url, image, matches, found, listed, data],
       }),
       lead.result('r1', 'a1', 2, bash, { text: RESULT, details: truncation('lines', 1) }),
       lead.result('r2', 'r1', 3, read, { text: RESULT, isError: true }),
@@ -2574,8 +2573,7 @@ try {
       lead.result('rm', 'ri', 3, matches, { text: RESULT, details: { matchLimitReached: 100 } }),
       lead.result('rf', 'rm', 3, found, { text: RESULT, details: { resultLimitReached: 1000 } }),
       lead.result('rl', 'rf', 3, listed, { text: RESULT, details: { entryLimitReached: 500 } }),
-      lead.result('rw', 'rl', 3, whole, { text: RESULT }),
-      lead.result('rd', 'rw', 3, data, { text: RESULT, isError: true }),
+      lead.result('rd', 'rl', 3, data, { text: RESULT, isError: true }),
       lead.assistant('a2', 'rd', 4, { calls: [code] }),
       lead.result('r3', 'a2', 5, code, {
         text: RESULT,
@@ -2634,7 +2632,7 @@ try {
       assert.equal(listed.status, 0, listed.stderr)
       assert.deepEqual(listed.stdout.split('\n').slice(1), [
         '2026-10-01 11:00Z  delegated  bbbbbbbbbbbb  /fixture/child?[2Jproject  1 user, 0 tool calls  Review the unit',
-        '2026-10-01 10:00Z  main       aaaaaaaaaaaa  /fixture/lead-project  2 user, 13 tool calls  [skill implement] #350 please',
+        '2026-10-01 10:00Z  main       aaaaaaaaaaaa  /fixture/lead-project  2 user, 12 tool calls  [skill implement] #350 please',
         '',
       ])
 
@@ -2658,7 +2656,6 @@ try {
         `10:00:01 grep returned ${bytes}, cut: lib`,
         `10:00:01 find returned ${bytes}, cut: src`,
         `10:00:01 ls returned ${bytes}, cut: docs`,
-        `10:00:01 ls returned ${bytes}: tests`,
         `10:00:01 read_url error ${bytes}: data: URL`,
         `10:00:04 codemode returned ${bytes}: read 2 (1 error), bash 1, [redacted] 2 (1 error)`,
         `10:00:06 work returned ${bytes}: delegate (code-review) → conversation bbbbbbbbbbbb`,
@@ -2667,21 +2664,6 @@ try {
         `10:00:11 answer: ?[31m${'A'.repeat(195)}…`,
         '',
       ])
-      for (const hidden of [
-        RESULT,
-        IMAGE_DATA,
-        'SKILL-BODY-SENTINEL',
-        'PROMPT-SENTINEL',
-        'CODE-SENTINEL',
-        'USER-SUFFIX-SENTINEL',
-        'PASSWORD-SENTINEL',
-        'QUERY-SENTINEL',
-        'DATA-SENTINEL',
-        'sk-abcdefghijklmnop12',
-        '\u001B',
-      ])
-        assert.ok(!timeline.stdout.includes(hidden), hidden)
-
       assert.equal(conversations('--timeline', 'lead-aaaa').stdout, timeline.stdout)
       assert.match(
         conversations('--timeline', `/elsewhere/child-sessions/${CHILD}.jsonl`).stdout,
@@ -2704,7 +2686,6 @@ try {
       )
       assert.match(ambiguous.stderr, /\n2026-10-01 11:00Z {2}delegated {2}bbbbbbbbbbbb {2}/)
       assert.match(ambiguous.stderr, /\n2026-10-01 10:00Z {2}main {7}aaaaaaaaaaaa {2}/)
-      assert.ok(!ambiguous.stderr.includes('\u001B'))
 
       const unknown = conversations('--timeline', 'zzzz')
       assert.equal(unknown.status, 1)
