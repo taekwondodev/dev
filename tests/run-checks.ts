@@ -249,6 +249,8 @@ for (const outcome of ordered) {
     `${outcome.suite} ${outcome.label}: ${status} [${Math.round(outcome.ms)} ms]\n`
   )
 }
+const failed = ordered.filter(outcome => outcome.code !== 0).length
+process.stdout.write(`Checks: ${ordered.length - failed} passed, ${failed} failed\n`)
 if (options.report !== undefined)
   writeFileSync(
     options.report,
@@ -262,4 +264,4 @@ if (options.report !== undefined)
       }))
     )
   )
-process.exitCode = ordered.every(outcome => outcome.code === 0) ? 0 : 1
+process.exitCode = failed === 0 ? 0 : 1
