@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { requestCleanup } from './cleanup-launch.ts'
+import { loadCodemodeOutputLimit, showingOutputLimit } from './codemode-output-limit.ts'
 import { createInterface } from 'node:readline'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
@@ -398,13 +399,20 @@ const createRuntime = Effect.fnUntraced(function* (
   const compaction = yield* createBackgroundCompaction(api, packageRoot).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
   )
+  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(packageRoot).pipe(
+    Effect.mapError(error => toLauncherError(error, 'Cannot load the codemode output limit'))
+  )
   const extensions: readonly NamedExtension[] = [
     { name: 'dev:background-compaction', factory: compaction.factory },
     { name: 'dev:session-guard', factory: guard.factory },
     { name: 'dev:work', factory: work.factory },
     { name: 'dev:workspace-host', factory: workspaceHost.extensionFactory },
     { name: 'dev:web', factory: createWebExtension(webReader).factory },
-    { name: 'dev:codemode', factory: api.createCodemodeExtension({ mode: 'on' }) },
+    {
+      name: 'dev:codemode',
+      factory: showingOutputLimit(api.createCodemodeExtension({ mode: 'on' })),
+    },
+    { name: 'dev:codemode-output-limit', factory: codemodeOutputLimit },
     { name: 'dev:terminal-module', factory: parts.terminalModule.askingExtension },
   ]
   const services = yield* fromPromise('Cannot create Pi session services', () =>

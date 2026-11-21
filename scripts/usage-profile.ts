@@ -471,6 +471,8 @@ const codemodeLines = ({ codemode }: PrivatePeriod): string[] => {
         orUnavailable(row.durations.maxMs, value => value.toFixed(1)),
       ])
     ),
+    `  declared output limits: ${codemode.scripts.lead.declared} of ${codemode.scripts.lead.results} results in main conversations and ${codemode.scripts.child.declared} of ${codemode.scripts.child.results} in delegated agents came from scripts that set their own max_output_tokens${codemode.declaredLimits.length === 0 ? '' : ` (${codemode.declaredLimits.map(({ limit, results }) => `${limit} in ${results}`).join(', ')})`}.`,
+    `  cut output: ${codemode.scripts.lead.cut} of ${codemode.scripts.lead.results} results in main conversations and ${codemode.scripts.child.cut} of ${codemode.scripts.child.results} in delegated agents passed the script's output limit; Pi kept the start and end and saved the full text to a file.`,
     `  internal read requests: ${codemode.reads.requests} with a recorded path and range, ${codemode.reads.repeated} overlapping an earlier request for the same path on their branch, ${codemode.reads.unknown} without usable arguments. Requested ranges, whatever the read returned: an overlap is not proven waste.`,
     '  Result-period observations; durations are per operation, not additive wall time. Internal results are not recorded; returned-text overlap, Git results and child attribution are not inferred.',
   ]

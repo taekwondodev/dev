@@ -92,6 +92,43 @@ const outcomesReceivedBy = (view: AttemptView) => {
     ),
   }
 }
+const decodeScriptEntry = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      message: Schema.optionalKey(
+        Schema.Struct({
+          role: Schema.String,
+          toolCallId: Schema.optionalKey(Schema.String),
+          content: Schema.Unknown,
+          details: Schema.optionalKey(Schema.Unknown),
+        })
+      ),
+    })
+  )
+)
+const scriptResults = (view: AttemptView) => {
+  assert.ok(view.sessionFile !== undefined)
+  const messages = readFileSync(view.sessionFile, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap(line => {
+      const { message } = decodeScriptEntry(line)
+      return message === undefined ? [] : [message]
+    })
+  return {
+    result: (toolCallId: string) => {
+      const found = messages.find(
+        message => message.role === 'toolResult' && message.toolCallId === toolCallId
+      )
+      assert.ok(found !== undefined, `no result for ${toolCallId}`)
+      return { text: JSON.stringify(found.content), details: JSON.stringify(found.details) }
+    },
+    calls: JSON.stringify(messages.filter(message => message.role === 'assistant')),
+  }
+}
+const scriptOutput = (half: number, middle: string) =>
+  `text('HEAD-MARK' + 'a'.repeat(${half}) + '${middle}' + 'b'.repeat(${half}) + 'TAIL-MARK')`
+const LINES_SCRIPT = String.raw`text(Array.from({ length: 4000 }, (_, index) => 'line ' + (index + 1) + ' ' + 'x'.repeat(40)).join('\n'))`
 const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): ToolInput => ({
   action: 'delegate',
   taskId,
@@ -263,6 +300,53 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           4,
           'each role fetched the fixture once directly and once from its script'
         )
+      }
+    )
+    await claim(
+      'a child whose codemode description shows 25000 in its options example returns the output of a script without its own options whole between 10,000 and 25,000 tokens, and one above 25,000 tokens is cut with the warning, the saved full output and the lines to read from it, while the recorded call keeps the script as written',
+      async () => {
+        const within = scriptOutput(30_000, 'WITHIN-MIDDLE')
+        const child = await owner.run({
+          taskId: 'child-output-limit',
+          access: 'read-only',
+          prompt: `large script output\n${script([
+            [toolCall('within-limit', 'codemode', { code: within })],
+            [toolCall('beyond-lines', 'codemode', { code: LINES_SCRIPT })],
+            say('done'),
+          ])}`,
+        })
+        assertStatus(child.view, 'completed')
+        const recorded = scriptResults(child.view)
+        const whole = recorded.result('within-limit')
+        assert.match(whole.text, /HEAD-MARKa+WITHIN-MIDDLEb+TAIL-MARK/)
+        assert.doesNotMatch(whole.text, /truncated output/)
+        assert.doesNotMatch(whole.details, /fullOutputPath/)
+        const lines = recorded.result('beyond-lines')
+        const hint =
+          /The missing text is in lines (\d+)-(\d+) of 4000\. The full output is saved in (\S+); to see those lines without running the script again, read that file with offset \1 and limit (\d+)\.\\n/.exec(
+            lines.text
+          )
+        assert.ok(hint !== null, lines.text.slice(0, 400))
+        const [, first = '', last = '', saved = '', limit = ''] = hint
+        assert.equal(Number(limit), Number(last) - Number(first) + 1)
+        const savedLines = readFileSync(saved, 'utf8').split('\n')
+        assert.equal(savedLines.length, 4000)
+        const shows = (line: string | undefined) =>
+          lines.text.includes(`\\n${JSON.stringify(line).slice(1, -1)}\\n`)
+        const missing = savedLines.slice(Number(first) - 1, Number(last))
+        assert.ok(!shows(missing[0]) && !shows(missing.at(-2)))
+        assert.ok(shows(savedLines[Number(first) - 2]) && shows(savedLines[Number(last)]))
+        assert.ok(recorded.calls.includes(JSON.stringify(within).slice(1, -1)))
+        assert.doesNotMatch(recorded.calls, /@options/)
+        const shown = fixture
+          .modelCalls()
+          .filter(call => call.startsWith(`options:${child.view.id}:`))
+        assert.equal(shown.length, 3)
+        for (const call of shown)
+          assert.equal(
+            call,
+            `options:${child.view.id}:// @options: {"max_output_tokens": 25000, "timeout_ms": 60000}`
+          )
       }
     )
     if (childChrome !== undefined)

@@ -169,6 +169,13 @@ export const emitReply = (
   return stream
 }
 
+export const declaredDescriptions = (context: Parameters<StreamSimple>[1], name: string) =>
+  context.messages.flatMap(message =>
+    message.role === 'system'
+      ? (message.toolsAdded ?? []).flatMap(tool => (tool.name === name ? [tool.description] : []))
+      : []
+  )
+
 export const replay =
   (next: () => ScriptedContent, delayMs = 10) =>
   (parts: ScriptedStreamParts): StreamSimple =>
