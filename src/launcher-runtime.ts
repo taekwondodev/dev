@@ -399,7 +399,7 @@ const createRuntime = Effect.fnUntraced(function* (
   const compaction = yield* createBackgroundCompaction(api, packageRoot).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
   )
-  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(packageRoot).pipe(
+  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(api, packageRoot).pipe(
     Effect.mapError(error => toLauncherError(error, 'Cannot load the codemode output limit'))
   )
   const extensions: readonly NamedExtension[] = [

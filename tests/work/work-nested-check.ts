@@ -128,6 +128,7 @@ const scriptResults = (view: AttemptView) => {
 }
 const scriptOutput = (half: number, middle: string) =>
   `text('HEAD-MARK' + 'a'.repeat(${half}) + '${middle}' + 'b'.repeat(${half}) + 'TAIL-MARK')`
+const LINES_SCRIPT = String.raw`text(Array.from({ length: 4000 }, (_, index) => 'line ' + (index + 1) + ' ' + 'x'.repeat(40)).join('\n'))`
 const delegation = (taskId: string, prompt: string, extra: ToolInput = {}): ToolInput => ({
   action: 'delegate',
   taskId,
@@ -302,7 +303,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
       }
     )
     await claim(
-      'a child script without its own options returns output between 10,000 and 25,000 tokens whole, and one above 25,000 tokens is cut with the warning and the saved full output, while the recorded call keeps the script as written',
+      'a child script without its own options returns output between 10,000 and 25,000 tokens whole, and one above 25,000 tokens is cut with the warning, the saved full output and the exact lines to read from it, while the recorded call keeps the script as written',
       async () => {
         const within = scriptOutput(30_000, 'WITHIN-MIDDLE')
         const beyond = scriptOutput(60_000, 'BEYOND-MIDDLE')
@@ -312,6 +313,7 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
           prompt: `large script output\n${script([
             [toolCall('within-limit', 'codemode', { code: within })],
             [toolCall('beyond-limit', 'codemode', { code: beyond })],
+            [toolCall('beyond-lines', 'codemode', { code: LINES_SCRIPT })],
             say('done'),
           ])}`,
         })
@@ -326,6 +328,22 @@ return JSON.stringify({ title: page.title, method: page.method, outcome: page.ou
         assert.match(cut.text, /HEAD-MARK[\s\S]*TAIL-MARK/)
         assert.doesNotMatch(cut.text, /BEYOND-MIDDLE/)
         assert.match(cut.details, /"fullOutputPath":/)
+        const lines = recorded.result('beyond-lines')
+        const hint =
+          /Lines (\d+)-(\d+) of 4000 are missing or partly missing from this output\. The full output is saved in (\S+); to see them without running the script again, read that file with offset \1 and limit (\d+)\. One read returns at most 2000 lines or 50KB, so continue from the offset it reports until you reach line \2\.\\n/.exec(
+            lines.text
+          )
+        assert.ok(hint !== null, lines.text.slice(0, 400))
+        const [, first = '', last = '', saved = '', limit = ''] = hint
+        assert.equal(Number(limit), Number(last) - Number(first) + 1)
+        const savedLines = readFileSync(saved, 'utf8').split('\n')
+        assert.equal(savedLines.length, 4000)
+        const missing = savedLines.slice(Number(first) - 1, Number(last))
+        assert.ok(missing.some(line => line.startsWith('line 2000 ')))
+        for (const line of [savedLines[Number(first) - 2], savedLines[Number(last)]])
+          assert.ok(lines.text.includes(JSON.stringify(line).slice(1, -1)))
+        for (const line of [missing[0], missing.at(-1)])
+          assert.ok(!lines.text.includes(`\\n${JSON.stringify(line).slice(1, -1)}\\n`))
         assert.ok(recorded.calls.includes(JSON.stringify(within).slice(1, -1)))
         assert.doesNotMatch(recorded.calls, /@options/)
       }

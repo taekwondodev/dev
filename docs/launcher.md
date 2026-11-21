@@ -104,7 +104,7 @@ Ctrl+O still expands and collapses tool output, but dev drops Pi's `Tool output:
 
 ### Codemode output limit
 
-The lead's codemode scripts get the same [25,000-token output limit](work.md#execution-and-access) as children's, unless a script sets its own.
+The lead's codemode scripts get the same [25,000-token output limit](work.md#execution-and-access) as children's, unless a script sets its own, and the same line naming the missing lines of a cut result.
 
 ### Program status
 

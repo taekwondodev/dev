@@ -841,9 +841,10 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const compaction = yield* createBackgroundCompaction(loaded.api, loaded.packageInfo.root).pipe(
     Effect.mapError(toChildError)
   )
-  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(loaded.packageInfo.root).pipe(
-    Effect.mapError(toChildError)
-  )
+  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(
+    loaded.api,
+    loaded.packageInfo.root
+  ).pipe(Effect.mapError(toChildError))
   const webReader = yield* Effect.flatMap(
     makeSessionRenderer({ dataHome: request.dataHome, ensureOwner: requestBrowserOwner() }),
     renderer =>
