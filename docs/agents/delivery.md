@@ -4,5 +4,6 @@
 - Integration target and PR base: `taekwondodev/dev`, remote `origin`, branch `main`.
 - PR source: branches on `origin`.
 - Required verification: run the relevant local checks in [Development](../DEVELOPMENT.md#verification).
+- CI: none.
 
 Before selecting the route or preparing a branch, read the shared delivery reference supplied by `implement` (`references/delivery.md`).
