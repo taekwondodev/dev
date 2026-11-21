@@ -20,7 +20,8 @@ import * as Schema from 'effect/Schema'
 import { GIT_INSPECT_OPERATIONS, UsageExport } from '../scripts/usage-export.ts'
 import { ALL_TIME, parsePeriod, profileUsage, type Report } from '../scripts/usage-profile.ts'
 import type { Period } from '../scripts/usage-report.ts'
-import { makeClaims } from './workspace/workspace-check-support.ts'
+import { declaredOutputLimit } from '../scripts/usage-sessions.ts'
+import { loadInstalledPi, makeClaims } from './workspace/workspace-check-support.ts'
 
 const checkout = join(import.meta.dirname, '..')
 const root = mkdtempSync(join(tmpdir(), 'dev-usage-profile-'))
@@ -208,6 +209,9 @@ const writeSession = (home: string, directory: string, name: string, lines: read
 }
 
 const call = (id: string, name: string, args: Json = {}): Call => ({ id, name, arguments: args })
+
+const scriptCall = (id: string, source?: string): Call =>
+  call(id, 'codemode', source === undefined ? {} : { code: source })
 
 const nestedRead = (status: string, args: Json) => ({
   id: 'nested',
@@ -1279,15 +1283,139 @@ try {
         printed.stdout,
         /cut output: 2 of 3 results in main conversations and 1 of 2 in delegated agents passed the script's output limit/
       )
-      assert.deepEqual(report(home).periods[0].codemode.cut, {
-        lead: { results: 3, cut: 2 },
-        child: { results: 2, cut: 1 },
+      assert.deepEqual(report(home).periods[0].codemode.scripts, {
+        lead: { results: 3, cut: 2, declared: 0 },
+        child: { results: 2, cut: 1, declared: 0 },
       })
       const before = await period('..2026-09-30')
       await profile(home, [before])
-      assert.deepEqual(report(home, before.label).periods[0].codemode.cut, {
-        lead: { results: 2, cut: 1 },
-        child: { results: 0, cut: 0 },
+      assert.deepEqual(report(home, before.label).periods[0].codemode.scripts, {
+        lead: { results: 2, cut: 1, declared: 0 },
+        child: { results: 0, cut: 0, declared: 0 },
+      })
+    }
+  )
+  await claim(
+    "the profile reads a script's own max_output_tokens exactly as the installed Pi parser does, so scripts Pi rejects declare nothing",
+    async () => {
+      const { importFromPi } = await loadInstalledPi()
+      const { parseCodemodeSource } = await importFromPi<{
+        parseCodemodeSource: (source: string) => { options: { maxOutputTokens?: number } }
+      }>('../pi-codemode/dist/source.js')
+      const pi = (source: string) => {
+        try {
+          return parseCodemodeSource(source).options.maxOutputTokens
+        } catch {
+          return undefined
+        }
+      }
+      const body = '\nreturn 1'
+      const sources = [
+        `// @options: {"max_output_tokens": 2000}${body}`,
+        `// @options: {"max_output_tokens": 0, "timeout_ms": 1}${body}`,
+        `  // @options:{"timeout_ms":5,"max_output_tokens":10000}\r${body}`,
+        `\u00a0// @options: {"max_output_tokens": 3000}${body}`,
+        `\t// @options: {"max_output_tokens": 4000} ${body}`,
+        `// @options: {"max_output_tokens": 5000, "budget": 1}${body}`,
+        `// @options: {"max_output_tokens": 6000, "timeout_ms": 0}${body}`,
+        `// @options: {"max_output_tokens": 7000, "timeout_ms": 2147483648}${body}`,
+        `// @options: {"max_output_tokens": 8000}`,
+        `// @options: {"max_output_tokens": 8000}\n  \n`,
+        `// @options: {"max_output_tokens": 9000}${body}\n// @options: {"timeout_ms": 5}`,
+        `// @options: {"max_output_tokens": 1.5}${body}`,
+        `// @options: {"max_output_tokens": -1}${body}`,
+        `// @options: {"max_output_tokens": 9007199254740992}${body}`,
+        `// @options: {"max_output_tokens": null}${body}`,
+        `// @options: [1]${body}`,
+        `// @options:${body}`,
+        `// @options: {"timeout_ms": 5}${body}`,
+        `return 1\n// @options: {"max_output_tokens": 3000}`,
+        body,
+        '',
+      ]
+      for (const source of sources)
+        assert.equal(declaredOutputLimit(source), pi(source), JSON.stringify(source))
+      assert.deepEqual(
+        sources.map(source => pi(source)).filter(limit => limit !== undefined),
+        [2000, 0, 10_000, 3000, 4000]
+      )
+    }
+  )
+  await claim(
+    'a codemode result counts as declaring its own limit when its script starts with an options line that sets a valid max_output_tokens, for leads and children, and the report lists each declared value; other options, a misplaced or invalid line, a later or sibling call that reuses the ID and copied fork history do not count',
+    async () => {
+      const home = join(root, 'declared-limit')
+      const body = '\nreturn 1'
+      const scripts = [
+        `// @options: {"max_output_tokens": 2000}${body}`,
+        `  // @options:{"timeout_ms":5,"max_output_tokens":10000}\r${body}`,
+        `// @options: {"timeout_ms": 5}${body}`,
+        `return 1\n// @options: {"max_output_tokens": 3000}`,
+        `// @options: {"max_output_tokens": "lots"}${body}`,
+        `// @options: {"max_output_tokens": -1}${body}`,
+        body,
+      ]
+      const lead = conversation('2026-09-29T23:59:50Z')
+      const calls = [
+        ...scripts.map((source, index) => scriptCall(`c${index}`, source)),
+        scriptCall('c-none'),
+      ]
+      const entries = [
+        lead.header(),
+        lead.user('u', null, 0),
+        lead.assistant('a1', 'u', 1, { calls }),
+        ...calls.map((issued, index) =>
+          lead.result(`r${index}`, index === 0 ? 'a1' : `r${index - 1}`, 2 + index, issued, {})
+        ),
+      ]
+      writeSession(home, 'sessions', 'lead', entries)
+      const child = conversation('2026-09-30T00:00:10Z')
+      const childCall = scriptCall('k1', `// @options: {"max_output_tokens": 10000}${body}`)
+      writeSession(home, 'child-sessions', 'child', [
+        child.header(),
+        child.user('u', null, 0),
+        child.assistant('a1', 'u', 1, { calls: [childCall] }),
+        child.result('r1', 'a1', 2, childCall, {}),
+      ])
+      writeSession(home, 'child-sessions', 'copied', [
+        lead.header({ parentSession: '/source.jsonl', timestamp: '2026-10-01T00:00:00Z' }),
+        ...entries.slice(1),
+      ])
+      const printed = maintain('--data-home', home)
+      assert.equal(printed.status, 0, printed.stderr)
+      assert.match(
+        printed.stdout,
+        /declared output limits: 2 of 8 results in main conversations and 1 of 1 in delegated agents came from scripts that set their own max_output_tokens \(2000 in 1, 10000 in 2\)\./
+      )
+      const [{ codemode }] = report(home).periods
+      assert.deepEqual(codemode.scripts, {
+        lead: { results: 8, cut: 0, declared: 2 },
+        child: { results: 1, cut: 0, declared: 1 },
+      })
+      assert.deepEqual(codemode.declaredLimits, [
+        { limit: 2000, results: 1 },
+        { limit: 10000, results: 2 },
+      ])
+      const branched = join(root, 'declared-limit-branches')
+      const forked = conversation('2026-09-29T23:59:50Z')
+      const declaring = scriptCall('same', `// @options: {"max_output_tokens": 2000}${body}`)
+      const plain = scriptCall('same', 'return 1')
+      writeSession(branched, 'sessions', 'lead', [
+        forked.header(),
+        forked.user('u', null, 0),
+        forked.assistant('a1', 'u', 1, { calls: [declaring] }),
+        forked.result('r1', 'a1', 2, declaring, {}),
+        forked.assistant('b1', 'u', 3, { calls: [plain] }),
+        forked.result('s1', 'b1', 4, plain, {}),
+        forked.assistant('a2', 'r1', 5, { calls: [scriptCall('same')] }),
+        forked.result('r2', 'a2', 6, scriptCall('same'), {}),
+      ])
+      const branchedRun = maintain('--data-home', branched)
+      assert.equal(branchedRun.status, 0, branchedRun.stderr)
+      assert.deepEqual(report(branched).periods[0].codemode.scripts.lead, {
+        results: 3,
+        cut: 0,
+        declared: 1,
       })
     }
   )

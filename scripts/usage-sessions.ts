@@ -154,6 +154,35 @@ const decodeLineRange = Schema.decodeUnknownOption(
 )
 const decodePathInput = Schema.decodeUnknownOption(Schema.Struct({ path: Schema.String }))
 const decodeShellInput = Schema.decodeUnknownOption(Schema.Struct({ command: Schema.String }))
+const decodeScriptInput = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))
+const OPTIONS_PREFIX = '// @options:'
+const decodeScriptOptions = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      max_output_tokens: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      timeout_ms: Schema.optional(
+        Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(2_147_483_647))
+      ),
+    })
+  ),
+  { onExcessProperty: 'error' }
+)
+
+export const declaredOutputLimit = (code: string): number | undefined => {
+  const [first = '', ...rest] = code.split('\n')
+  const options = first.replace(/\r$/, '').trimStart()
+  if (
+    !options.startsWith(OPTIONS_PREFIX) ||
+    rest.join('\n').trim() === '' ||
+    rest.some(line => line.trimStart().startsWith(OPTIONS_PREFIX))
+  )
+    return undefined
+  return Option.getOrUndefined(
+    Option.flatMap(decodeScriptOptions(options.slice(OPTIONS_PREFIX.length).trim()), decoded =>
+      Option.fromUndefinedOr(decoded.max_output_tokens)
+    )
+  )
+}
 const decodeGitInspectInput = Schema.decodeUnknownOption(
   Schema.Struct({
     operation: Schema.String,
@@ -202,6 +231,7 @@ type ToolInput =
     }
   | { readonly kind: 'file-write'; readonly path: string }
   | { readonly kind: 'shell'; readonly command: string }
+  | { readonly kind: 'script'; readonly declaredLimit: number | undefined }
   | {
       readonly kind: 'git-inspect'
       readonly operation: string
@@ -357,6 +387,14 @@ const inputOf = (name: string, args: unknown): ToolInput => {
       return Option.match(decodeShellInput(args), {
         onNone: () => OTHER_INPUT,
         onSome: input => ({ kind: 'shell', command: input.command }),
+      })
+    case 'codemode':
+      return Option.match(decodeScriptInput(args), {
+        onNone: () => OTHER_INPUT,
+        onSome: ({ code }) => ({
+          kind: 'script',
+          declaredLimit: declaredOutputLimit(code),
+        }),
       })
     case 'git_inspect':
       return Option.match(decodeGitInspectInput(args), {
