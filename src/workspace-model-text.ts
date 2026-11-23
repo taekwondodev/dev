@@ -1,4 +1,4 @@
-import { checkoutUseStage } from './workspace-labels.ts'
+import { agentNextText, checkoutUseStage } from './workspace-labels.ts'
 import {
   describedHead,
   pendingOperationText,
@@ -155,7 +155,7 @@ const viewObject = (view: WorkspaceView): ModelObject =>
     ['origin', view.origin],
     ['result', view.outcome],
     ['reason', view.reason],
-    ['next', view.nextAction],
+    ['next', agentNextText(view.nextAction)],
     ['directoryMissing', view.directoryMissing === true ? true : undefined],
     [
       'uses',
@@ -185,7 +185,7 @@ const assessmentObject = ({ completion, ...assessment }: WorkspaceAssessment): M
     ['evidence', assessment.evidence?.verdict],
     ['inventory', assessment.inventory],
     ['remaining', nonEmpty(assessment.residual)],
-    ['next', nonEmpty(assessment.nextActions)],
+    ['next', nonEmpty(assessment.nextActions.map(agentNextText))],
   ])
 
 export const reportText = (report: WorkspaceReport): string => {

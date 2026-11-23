@@ -2761,7 +2761,7 @@ try {
       assert.equal(view?.outcome, 'review-required')
       assert.equal(view.directoryMissing, true)
       assert.equal(view.reason, 'The checkout directory no longer exists.')
-      assert.ok(view.nextAction.includes('dev workspace release pre-existing'), view.nextAction)
+      assert.deepEqual(view.nextAction, { kind: 'release-pre-existing' })
       assert.deepEqual(
         unreservedCheckoutViews(listed).map(entry => entry.workspaceId),
         [read.workspaceId],

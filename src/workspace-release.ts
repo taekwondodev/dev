@@ -1,7 +1,9 @@
 import {
   checkoutUseStage,
   executionLabel,
+  instruction,
   pendingStage,
+  releaseNext,
   releaseOnceStopped,
 } from './workspace-labels.ts'
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
@@ -18,7 +20,7 @@ import {
 import {
   decideCompletion,
   integrationUnknown,
-  CLEAR,
+  clear,
   DO_NOT_RETRY,
   needsIntegration,
   RETAINED,
@@ -34,6 +36,7 @@ import {
   type AllocationReason,
   type CompletionVerdict,
   type ClosingSweepMoment,
+  type NextAction,
   type SweepMoment,
   type SweepOutcome,
   type SweepReceipt,
@@ -220,7 +223,7 @@ interface UseAssessment {
   readonly abandoned: readonly WorkspaceId[]
   readonly inUse: boolean
   readonly reasons: readonly string[]
-  readonly nextActions: readonly string[]
+  readonly nextActions: readonly NextAction[]
 }
 const describeUse = (use: UseRecord): string =>
   `${use.access}/${checkoutUseStage(use.stage)}${use.execution === undefined ? '' : `, ${executionLabel(use.execution)}`}`
@@ -252,7 +255,7 @@ const assessUses = (
   )
   const abandoned = abandonedUseIds(authority, db, uses)
   const reasons: string[] = []
-  const nextActions: string[] = []
+  const nextActions: NextAction[] = []
   if (ownUses.length > 0 || ownBound)
     reasons.push(
       ownUses.length > 0
@@ -270,7 +273,7 @@ const assessUses = (
       `Operations ${abandonedOnly.join(', ')} of closed dev sessions may still be running.`
     )
   if (unknown.length > 0 || abandonedOnly.length > 0)
-    nextActions.push(`Do not retry those operations. ${releaseOnceStopped(taskId)}`)
+    nextActions.push(releaseNext(taskId, 'Do not retry those operations.'))
   else if (live.length > 0 || conversations.length > 0) {
     if (live.length > 0)
       reasons.push(
@@ -284,7 +287,9 @@ const assessUses = (
           .map(binding => binding.conversation.sessionId)
           .join(', ')}`
       )
-    nextActions.push('Finish or stop that work, then close its conversation before cleanup.')
+    nextActions.push(
+      instruction('Finish or stop that work, then close its conversation before cleanup.')
+    )
   }
   return {
     live,
@@ -332,7 +337,7 @@ interface Assessed {
 }
 interface Shaping {
   readonly reasons: readonly string[]
-  readonly nextActions: readonly string[]
+  readonly nextActions: readonly NextAction[]
   readonly completion?: CompletionVerdict
   readonly target?: TargetView
   readonly evidence?: InventoryVerdict
@@ -380,8 +385,8 @@ const ownCommitsOf = (
   return typeof result === 'string' ? result === 'not-ancestor' : undefined
 }
 
-const retainedActions = (verdict: CompletionVerdict): readonly string[] =>
-  verdict.kind === 'finished' ? [] : RETAINED[verdict.retained].actions
+const retainedActions = (verdict: CompletionVerdict, taskId: string): readonly NextAction[] =>
+  verdict.kind === 'finished' ? [] : RETAINED[verdict.retained].actions(taskId)
 
 interface Staged {
   readonly integrate: () => Assessed
@@ -491,17 +496,17 @@ const stageWorkspace = (
   if (identity.kind === 'unverifiable')
     return shape({
       reasons: [identity.reason, ...unfinished, ...uses.reasons],
-      nextActions: [...doNotRetry, CLEAR],
+      nextActions: [...doNotRetry, clear(reservation.taskId)],
     })
   if (unfinished.length > 0)
     return shape({
       reasons: [...unfinished, ...uses.reasons],
-      nextActions: [...doNotRetry, CLEAR],
+      nextActions: [...doNotRetry, clear(reservation.taskId)],
     })
   if (identity.kind === 'absent')
     return shape({
       reasons: [`The managed worktree directory is absent: ${workspace.path}`, ...uses.reasons],
-      nextActions: [CLEAR],
+      nextActions: [clear(reservation.taskId)],
     })
   if (workspace.origin === 'pre-existing') {
     let inventory: Inventory | undefined
@@ -531,8 +536,12 @@ const stageWorkspace = (
       ],
       nextActions:
         completion.kind === 'finished'
-          ? ['At quit, dev frees this checkout for other work; files and commits stay.']
-          : retainedActions(completion),
+          ? [
+              instruction(
+                'At quit, dev frees this checkout for other work; files and commits stay.'
+              ),
+            ]
+          : retainedActions(completion, reservation.taskId),
       residual,
       completion,
     })
@@ -553,7 +562,10 @@ const stageWorkspace = (
   } catch (cause) {
     return shape({
       reasons: [...uses.reasons, `Evidence could not be read: ${errorText(cause)}`],
-      nextActions: ['Fix the reported read failure and check again.', CLEAR],
+      nextActions: [
+        instruction('Fix the reported read failure and check again.'),
+        clear(reservation.taskId),
+      ],
     })
   }
   const residue = residueOf(evidence.inventory, evidence.unpublished)
@@ -617,10 +629,12 @@ const stageWorkspace = (
           ...common,
           reasons: [...uses.reasons, ...evidence.reasons, completion.reason],
           nextActions: [
-            evidence.verdict === 'invalid'
-              ? 'Resolve each blocker (publish the selected artifact again, resolve the conflict or remove the nested repository), then check again.'
-              : 'Fix unreadable or unsupported files, then check again. Dev will not delete what it cannot inspect.',
-            CLEAR,
+            instruction(
+              evidence.verdict === 'invalid'
+                ? 'Resolve each blocker (publish the selected artifact again, resolve the conflict or remove the nested repository), then check again.'
+                : 'Fix unreadable or unsupported files, then check again. Dev will not delete what it cannot inspect.'
+            ),
+            clear(reservation.taskId),
           ],
         },
         evidence.reasons
@@ -633,12 +647,12 @@ const stageWorkspace = (
           completion.reason,
           'Eligible for cleanup; nothing removed. Dev checks again before removal.',
         ],
-        nextActions: ['Dev checks again at quit or before making another worktree.'],
+        nextActions: [instruction('Dev checks again at quit or before making another worktree.')],
       })
     return shape({
       ...common,
       reasons: [...uses.reasons, completion.reason],
-      nextActions: retainedActions(completion),
+      nextActions: retainedActions(completion, reservation.taskId),
     })
   }
   return { integrate: complete }

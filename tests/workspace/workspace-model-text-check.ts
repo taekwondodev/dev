@@ -25,7 +25,7 @@ const view = (fields: Partial<WorkspaceView> = {}): WorkspaceView => ({
   reservationId: fixtureId(10),
   outcome: 'active',
   reason: 'A live dev session uses it.',
-  nextAction: 'Continue in that session.',
+  nextAction: { kind: 'instruction', text: 'Continue in that session.' },
   uses: [],
   pending: [],
   ...fields,

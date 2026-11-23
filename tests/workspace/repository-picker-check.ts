@@ -14,6 +14,7 @@ import {
   resumeCandidates,
 } from '../../src/workspace-command.ts'
 import { assessWorkspace } from '../../src/workspace-inspect.ts'
+import { agentNextText, terminalNextText } from '../../src/workspace-labels.ts'
 import type { WorkspaceView } from '../../src/workspace-domain.ts'
 import { makeClaims } from './workspace-check-support.ts'
 import { fixtureId } from './workspace-host-fixture-shapes.ts'
@@ -46,7 +47,7 @@ const paused = (index: number, fields: Partial<WorkspaceView> = {}): WorkspaceVi
   origin: 'managed',
   outcome: 'paused',
   reason: 'Task reservation is retained for explicit resume.',
-  nextAction: 'Resume only by exact task/workspace selection.',
+  nextAction: { kind: 'instruction', text: 'Resume only by exact task/workspace selection.' },
   uses: [],
   pending: [],
   ...fields,
@@ -177,21 +178,27 @@ try {
   )
 
   await claim(
-    "a missing checkout's advice names the release that fits its origin and task, and a row needing review still names the operations that block it",
+    "a missing checkout's advice is the one release that fits its origin and task: the terminal shows only its command, the agent reads when the user may run it, and a row needing review still names the operations that block it",
     () => {
-      assert.equal(
-        assess({ missing: true }).nextAction,
-        "Restore it at this path. If it was deleted on purpose: Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its pre-existing checkouts that no task keeps and keeps their files. That also forgets this checkout once no running session, pending operation or open conversation refers to it."
+      const forgotten = assess({ missing: true }).nextAction
+      const reserved = assess({ missing: true, reserved: true, taskId: 'task-2' }).nextAction
+      assert.deepEqual(
+        [terminalNextText(forgotten), terminalNextText(reserved)],
+        ['dev workspace release pre-existing', 'dev workspace release task-2']
       )
-      const reservedPreExisting = assess({ missing: true, reserved: true, taskId: 'task-2' })
+      assert.equal(
+        agentNextText(forgotten),
+        "Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run dev workspace release pre-existing in this repository, which clears the records of ended sessions in all its pre-existing checkouts that no task keeps and keeps their files."
+      )
+      assert.equal(
+        agentNextText(reserved),
+        "Once nothing still works in any of the task's checkouts, the user may run dev workspace release task-2, which deletes all of that task's managed worktrees and artifacts."
+      )
+      const blocked = assess({ abandoned: () => ['use-2'] }).nextAction
+      assert.equal(terminalNextText(blocked), 'dev workspace release pre-existing')
       assert.ok(
-        reservedPreExisting.nextAction.includes(
-          'the user may run dev workspace release task-2, '
-        ) &&
-          reservedPreExisting.nextAction.includes(
-            'Then: Once nothing that ended sessions started still works'
-          ),
-        reservedPreExisting.nextAction
+        agentNextText(blocked).startsWith('Do not write here or retry those operations. Once '),
+        agentNextText(blocked)
       )
       assert.equal(
         assess({

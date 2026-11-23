@@ -2,13 +2,14 @@ import type {
   AllocationReason,
   CompletionVerdict,
   FinishedRule,
+  NextAction,
   RetainedReason,
   SweepMoment,
   SweepOutcome,
   WorkspaceOrigin,
   WorkspaceRole,
 } from './workspace-domain.ts'
-import { CHECKOUT_CONTENTS_UNREADABLE } from './workspace-labels.ts'
+import { CHECKOUT_CONTENTS_UNREADABLE, instruction, releaseNext } from './workspace-labels.ts'
 
 export type Proof =
   | { readonly kind: 'yes'; readonly reason: string }
@@ -31,44 +32,55 @@ export interface IntegrationFacts {
   readonly unknown: readonly string[]
 }
 
-export const DO_NOT_RETRY = 'Do not retry it.'
+export const DO_NOT_RETRY = instruction('Do not retry it.')
 
-export const CLEAR =
-  "If the task is no longer needed and nothing still works in its checkouts, the user may run dev workspace release <taskId>, which deletes all of the task's managed worktrees and artifacts."
-const DELIVER = ['Merge the PR or land its commits for cleanup. Only the user can release it.']
+export const clear = (taskId: string): NextAction =>
+  releaseNext(taskId, 'Release it only if the task is no longer needed.')
+const DELIVER = [
+  instruction('Merge the PR or land its commits for cleanup. Only the user can release it.'),
+]
 export const RETAINED: Record<
   RetainedReason,
   {
     readonly sweep: SweepOutcome
-    readonly actions: readonly string[]
+    readonly actions: (taskId: string) => readonly NextAction[]
   }
 > = {
-  'identity-unverifiable': { sweep: 'retained', actions: [CLEAR] },
-  'transition-unresolved': { sweep: 'retained', actions: [DO_NOT_RETRY, CLEAR] },
-  'release-review': { sweep: 'review-required', actions: [CLEAR] },
-  excluded: { sweep: 'skipped', actions: [] },
-  'use-unknown': { sweep: 'retained', actions: [] },
-  'use-abandoned': { sweep: 'retained', actions: [] },
-  'use-live': { sweep: 'retained', actions: [] },
-  'directory-missing': { sweep: 'retained', actions: [CLEAR] },
+  'identity-unverifiable': { sweep: 'retained', actions: taskId => [clear(taskId)] },
+  'transition-unresolved': {
+    sweep: 'retained',
+    actions: taskId => [DO_NOT_RETRY, clear(taskId)],
+  },
+  'release-review': { sweep: 'review-required', actions: taskId => [clear(taskId)] },
+  excluded: { sweep: 'skipped', actions: () => [] },
+  'use-unknown': { sweep: 'retained', actions: () => [] },
+  'use-abandoned': { sweep: 'retained', actions: () => [] },
+  'use-live': { sweep: 'retained', actions: () => [] },
+  'directory-missing': { sweep: 'retained', actions: taskId => [clear(taskId)] },
   'residue-unreadable': {
     sweep: 'retained',
-    actions: ['Fix the read error before cleanup.', CLEAR],
+    actions: taskId => [instruction('Fix the read error before cleanup.'), clear(taskId)],
   },
   'checkout-modified': {
     sweep: 'retained',
-    actions: ['Commit or clean the checkout. At quit, dev frees clean checkouts for other work.'],
-  },
-  skipped: { sweep: 'skipped', actions: [] },
-  'no-commits': { sweep: 'retained', actions: DELIVER },
-  'integration-unknown': {
-    sweep: 'retained',
-    actions: [
-      'Check the destination branch and Git history. Use the `set-target` action of the `workspace` tool if needed. Dev never fetches or uploads.',
-      CLEAR,
+    actions: () => [
+      instruction(
+        'Commit or clean the checkout. At quit, dev frees clean checkouts for other work.'
+      ),
     ],
   },
-  'not-integrated': { sweep: 'retained', actions: DELIVER },
+  skipped: { sweep: 'skipped', actions: () => [] },
+  'no-commits': { sweep: 'retained', actions: () => DELIVER },
+  'integration-unknown': {
+    sweep: 'retained',
+    actions: taskId => [
+      instruction(
+        'Check the destination branch and Git history. Use the `set-target` action of the `workspace` tool if needed. Dev never fetches or uploads.'
+      ),
+      clear(taskId),
+    ],
+  },
+  'not-integrated': { sweep: 'retained', actions: () => DELIVER },
 }
 
 export const integrationUnknown = (reason: string): IntegrationFacts => ({
