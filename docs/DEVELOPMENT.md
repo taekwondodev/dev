@@ -69,6 +69,8 @@ The `dev/no-internal-terms` rule rejects the internal terms in the sentences and
 
 The separate type-aware configuration, `.oxlintrc-type-aware.json`, lists its rules explicitly, so the general preset's dormant type-aware style rules stay inactive. Explicit `void` remains an opt-out for intentional Promise detachment, not proof that rejection is handled.
 
+`.oxlintrc.json` extends `oxc-standard`, and Oxlint merges a config's `plugins` with those of the configs it extends, so `plugins` names only what dev adds to the preset. Listing a preset plugin changes nothing, and leaving one out does not disable it; the preset's React rules stay enabled but find no JSX to check.
+
 In `.oxlintrc.json`, `prefer-const` skips a variable read before its single assignment, because a closure that reads it before the value exists cannot use `const`. `promise/always-return` skips the last callback of a chain, because nothing consumes its value.
 
 When addressing lint diagnostics, preserve the [Effect boundary decisions](adr/0005-scoped-runtime-coordination.md#effect-boundary). A lint-driven runtime rewrite needs a demonstrated correctness need or measured benefit, not stylistic preference alone.

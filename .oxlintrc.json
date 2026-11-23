@@ -1,6 +1,6 @@
 {
   "extends": ["./node_modules/oxc-standard/.oxlintrc.json"],
-  "plugins": ["unicorn", "typescript", "oxc", "react", "react_perf", "import", "promise"],
+  "plugins": ["promise"],
   "jsPlugins": [
     {
       "name": "dev",
