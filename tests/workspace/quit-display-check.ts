@@ -224,7 +224,7 @@ await claim(
       reservationId: id('1002'),
       outcome: 'paused' as const,
       reason: 'kept',
-      nextAction: 'resume',
+      nextAction: { kind: 'instruction' as const, text: 'resume' },
       uses: [],
       pending: [],
     }

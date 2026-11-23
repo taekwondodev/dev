@@ -18,6 +18,8 @@ In a session, `/workspace` also shows the checkout this conversation uses and it
 
 Every listed workspace shows its head: the branch its checkout is on, or the commit and its subject when detached. A workspace whose directory is gone has none.
 
+When the next step is a release, the terminal's `next` shows only its command, such as `dev workspace release pre-existing`; the release's own confirmation states what it clears and when it is safe. The model, which cannot release, reads in `next` when the user may run it and what it deletes.
+
 The lead's `workspace` tool supports these operations:
 
 | Action               | Effect                                                                                                                                                                                                 |

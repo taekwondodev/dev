@@ -77,10 +77,13 @@ export const makeFixtureView = (input: {
     reservationId: input.reservationId,
     outcome: input.outcome,
     reason: input.outcome === 'active' ? 'fixture active use' : 'fixture retained workspace',
-    nextAction:
-      input.outcome === 'active'
-        ? 'wait for the current use'
-        : 'resume with the exact task and workspace ID',
+    nextAction: {
+      kind: 'instruction',
+      text:
+        input.outcome === 'active'
+          ? 'wait for the current use'
+          : 'resume with the exact task and workspace ID',
+    },
     uses: [],
     pending: [],
   } satisfies WorkspaceView)

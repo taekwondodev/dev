@@ -1,4 +1,9 @@
-import { checkoutUseStage, pendingStage, releaseOnceStopped } from './workspace-labels.ts'
+import {
+  checkoutUseStage,
+  pendingStage,
+  releaseOnceStopped,
+  terminalNextText,
+} from './workspace-labels.ts'
 import { existsSync } from 'node:fs'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -208,7 +213,7 @@ const viewText = (view: WorkspaceView, currentWorkspaceId?: string): string[] =>
   `  kept for task: ${view.reservationId === undefined ? 'no' : 'yes'}`,
   `  result: ${view.outcome}`,
   `  reason: ${view.reason}`,
-  `  next: ${view.nextAction}`,
+  `  next: ${terminalNextText(view.nextAction)}`,
   ...usesText(view),
   ...(view.pending.length === 0
     ? ['  pending operations: none recorded']
@@ -291,7 +296,7 @@ export const notResumableText = (
     `Cannot resume a checkout${scope.taskId === undefined ? '' : ` for task ${scope.taskId}`}${within}:`,
     ...sortedViews(reserved).map(
       view =>
-        `- task ${view.taskId} at ${view.path} is ${view.outcome}: ${view.reason} ${view.nextAction}`
+        `- task ${view.taskId} at ${view.path} is ${view.outcome}: ${view.reason} ${view.nextAction.kind === 'instruction' ? '' : 'Next: '}${terminalNextText(view.nextAction)}`
     ),
   ].join('\n')
 }
@@ -363,7 +368,7 @@ const assessmentText = (assessment: WorkspaceAssessment): string[] => [
         `  inventory: ${assessment.inventory.trackedChanges} tracked change(s), ${assessment.inventory.files} untracked or ignored file(s); ${assessment.inventory.published} matched publication(s), ${assessment.inventory.disposable} disposable untracked file(s), ${assessment.inventory.blocking} blocking entry(s)`,
       ]),
   ...assessment.residual.map(item => `  remaining: ${item}`),
-  ...assessment.nextActions.map(action => `  next: ${action}`),
+  ...assessment.nextActions.map(action => `  next: ${terminalNextText(action)}`),
 ]
 
 export const formatAssessments = (

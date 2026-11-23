@@ -24,7 +24,7 @@ import {
   type WorkspaceRecord,
 } from './workspace-records.ts'
 import { errorText } from './error-text.ts'
-import { pendingStage, releaseOnceStopped, taskRelease } from './workspace-labels.ts'
+import { instruction, pendingStage, releaseNext } from './workspace-labels.ts'
 import { rows, textField } from './workspace-sqlite.ts'
 import { effectiveUid, hasErrorCode, lstatIfExists } from './workspace-platform.ts'
 
@@ -57,14 +57,6 @@ const MISSING_REASON = 'The checkout directory no longer exists.'
 
 const sentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`)
 
-const missingAdvice = (taskId: string | undefined): string => {
-  const onPurpose = 'Restore it at this path. If it was deleted on purpose:'
-  const forget = `${releaseOnceStopped(undefined)} That also forgets this checkout once no running session, pending operation or open conversation refers to it.`
-  return taskId === undefined
-    ? `${onPurpose} ${forget}`
-    : `${onPurpose} ${releaseOnceStopped(taskId)} Then: ${forget}`
-}
-
 export const assessWorkspace = (input: {
   readonly identityReason: string | undefined
   readonly missing: boolean
@@ -95,7 +87,7 @@ export const assessWorkspace = (input: {
     return {
       outcome: 'review-required',
       reason: withBlockers(MISSING_REASON),
-      nextAction: missingAdvice(taskId),
+      nextAction: releaseNext(taskId),
     }
   if (input.identityReason !== undefined || input.unresolved)
     return {
@@ -106,30 +98,30 @@ export const assessWorkspace = (input: {
           .map(sentence)
           .join(' ') || 'An earlier operation may not have finished.'
       ),
-      nextAction: 'Check what changed. Do not retry automatically.',
+      nextAction: instruction('Check what changed. Do not retry automatically.'),
     }
   if (blockers.length > 0)
     return {
       outcome: 'blocked',
       reason: [...(operation === undefined ? [] : [operation]), ...blockers].join(' '),
-      nextAction: `Do not write here or retry those operations. ${releaseOnceStopped(taskId)}`,
+      nextAction: releaseNext(taskId, 'Do not write here or retry those operations.'),
     }
   if (input.live)
     return {
       outcome: 'active',
       reason: operation ?? 'A session or process is using this checkout.',
-      nextAction: 'Wait until it is no longer in use.',
+      nextAction: instruction('Wait until it is no longer in use.'),
     }
   if (input.reserved)
     return {
       outcome: 'paused',
       reason: operation ?? 'Checkout kept for this task.',
-      nextAction: 'Select the task and checkout to resume.',
+      nextAction: instruction('Select the task and checkout to resume.'),
     }
   return {
     outcome: 'idle',
     reason: operation ?? 'No task holds this checkout.',
-    nextAction: 'Select or create a task before requesting write access.',
+    nextAction: instruction('Select or create a task before requesting write access.'),
   }
 }
 
@@ -180,9 +172,11 @@ const receiptView = (
     origin: workspace.origin,
     outcome: release.effect === 'remove-worktree' ? 'removed' : 'released',
     reason: `${DECIDER_TEXT[release.decider]}: ${release.result ?? (removed ? 'Removed.' : 'Checkout freed for other work.')}`,
-    nextAction: removed
-      ? 'Do not resume a conversation into this path; start from an existing checkout with dev --cwd PATH.'
-      : 'Select or create a task before writing here.',
+    nextAction: instruction(
+      removed
+        ? 'Do not resume a conversation into this path; start from an existing checkout with dev --cwd PATH.'
+        : 'Select or create a task before writing here.'
+    ),
     uses: [],
     pending: [],
   }
@@ -363,8 +357,13 @@ export const inspectWorkspaces = (
           reason: `No usable checkout after operation ${operation.id} (${pendingStage(operation.phase)}).`,
           nextAction:
             operation.kind === 'allocation'
-              ? `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run ${taskRelease(operation.taskId)}, including what Git created of this one.`
-              : 'Check what Git changed. Do not retry or use the checkout; the user must resolve it.',
+              ? releaseNext(
+                  operation.taskId,
+                  'Do not retry or use it; releasing the task also deletes what Git created of it.'
+                )
+              : instruction(
+                  'Check what Git changed. Do not retry or use the checkout; the user must resolve it.'
+                ),
           uses: [],
           pending: [{ id: operation.id, kind: operation.kind, stage: operation.phase }],
           reservationId: operation.reservationId,
