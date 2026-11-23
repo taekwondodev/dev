@@ -18,7 +18,7 @@ import {
 import { outwardRecord } from '../src/work-actions.ts'
 import { TRUNCATED_RESULT, workResultText } from '../src/work-model-text.ts'
 import { pendingOperationText, SWEEP_MOMENT_TEXT, verdictLabel } from '../src/workspace-command.ts'
-import { CLEAR, RETAINED } from '../src/workspace-completion.ts'
+import { clear, RETAINED } from '../src/workspace-completion.ts'
 import {
   EvidenceVerdictSchema,
   FinishedRuleSchema,
@@ -33,7 +33,7 @@ import {
   WorkspaceViewSchema,
 } from '../src/workspace-domain.ts'
 import { assessWorkspace } from '../src/workspace-inspect.ts'
-import { checkoutUseStage } from '../src/workspace-labels.ts'
+import { agentNextText, checkoutUseStage } from '../src/workspace-labels.ts'
 import { OperationPhase, type OperationRecord, UseSchema } from '../src/workspace-records.ts'
 import {
   LEAD_OUTCOME_GUIDANCE,
@@ -95,7 +95,7 @@ const checkoutStates = [false, true].flatMap(reserved =>
       reserved,
       ...fields,
     })
-    return `${assessed.reason} ${assessed.nextAction}`
+    return `${assessed.reason} ${agentNextText(assessed.nextAction)}`
   })
 )
 
@@ -173,8 +173,10 @@ const surfaces: Record<string, readonly string[]> = {
   'rendered results': [
     workResultText({ kind: 'run', run }),
     TRUNCATED_RESULT,
-    CLEAR,
-    ...Object.values(RETAINED).flatMap(retained => retained.actions),
+    agentNextText(clear('task-1')),
+    ...Object.values(RETAINED)
+      .flatMap(retained => retained.actions('task-1'))
+      .map(agentNextText),
     ...checkoutStates,
   ],
   'stored values interpolated into sentences': storedValues,

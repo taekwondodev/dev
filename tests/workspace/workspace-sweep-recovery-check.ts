@@ -15,6 +15,7 @@ import { authorityPaths, taskArtifactsPath } from '../../src/workspace-authority
 import { formatSweepReceipt, reservedViews, sweepExitCode } from '../../src/workspace-command.ts'
 import { quitReleaseExclusion, tasksToRelease } from '../../src/quit-display.ts'
 import type { StartWorkspaceWorker } from '../../src/workspace-lifecycle.ts'
+import { agentNextText } from '../../src/workspace-labels.ts'
 import { newId } from '../../src/workspace-platform.ts'
 import { classifyWriteDestination } from '../../src/workspace-paths.ts'
 import { verdictName } from './workspace-completion-fixtures.ts'
@@ -438,8 +439,8 @@ try {
       assert.ok(existsSync(unfinished.path), 'Git created the worktree before the crash')
       assert.ok(git(['worktree', 'list', '--porcelain'], repo).includes(unfinished.path))
       assert.equal(
-        unfinished.nextAction,
-        `Do not retry or use it. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${unfinished.taskId}, which deletes all of that task's managed worktrees and artifacts, including what Git created of this one.`
+        agentNextText(unfinished.nextAction),
+        `Do not retry or use it; releasing the task also deletes what Git created of it. Once nothing still works in any of the task's checkouts, the user may run dev workspace release ${unfinished.taskId}, which deletes all of that task's managed worktrees and artifacts.`
       )
       const quit = await sweepAtQuit(owner.write.workspaceId)
       const row = rowOf(quit, unfinished.workspaceId)

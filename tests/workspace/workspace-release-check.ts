@@ -30,6 +30,7 @@ import {
 import { decideCompletion } from '../../src/workspace-completion.ts'
 import { WorkspaceAuthority } from '../../src/workspace-authority.ts'
 import { checkTask } from '../../src/workspace-release.ts'
+import { terminalNextText } from '../../src/workspace-labels.ts'
 import { gitResult } from '../../src/workspace-git.ts'
 import {
   integrationFacts,
@@ -2761,7 +2762,7 @@ try {
       assert.equal(view?.outcome, 'review-required')
       assert.equal(view.directoryMissing, true)
       assert.equal(view.reason, 'The checkout directory no longer exists.')
-      assert.ok(view.nextAction.includes('dev workspace release pre-existing'), view.nextAction)
+      assert.equal(terminalNextText(view.nextAction), 'dev workspace release pre-existing')
       assert.deepEqual(
         unreservedCheckoutViews(listed).map(entry => entry.workspaceId),
         [read.workspaceId],

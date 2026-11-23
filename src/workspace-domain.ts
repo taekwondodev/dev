@@ -293,6 +293,20 @@ export const WorkspaceExecutionReportSchema = Schema.Struct({
 })
 export type WorkspaceExecutionReport = typeof WorkspaceExecutionReportSchema.Type
 
+export const NextActionSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('instruction'), text: Schema.NonEmptyString }),
+  Schema.Struct({
+    kind: Schema.Literal('release-task'),
+    taskId: Schema.NonEmptyString,
+    caution: Schema.optional(Schema.NonEmptyString),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('release-pre-existing'),
+    caution: Schema.optional(Schema.NonEmptyString),
+  }),
+])
+export type NextAction = typeof NextActionSchema.Type
+
 export const WorkspaceViewSchema = Schema.Struct({
   repositoryId: WorkspaceId,
   taskId: Schema.optional(WorkspaceId),
@@ -310,7 +324,7 @@ export const WorkspaceViewSchema = Schema.Struct({
     'removed',
   ]),
   reason: Schema.NonEmptyString,
-  nextAction: Schema.NonEmptyString,
+  nextAction: NextActionSchema,
   directoryMissing: Schema.optional(Schema.Boolean),
   head: Schema.optional(WorkspaceHeadSchema),
   lastUsedAt: Schema.optional(Schema.Finite),
@@ -487,7 +501,7 @@ export const WorkspaceAssessmentSchema = Schema.Struct({
   path: Schema.NonEmptyString,
   origin: WorkspaceOriginSchema,
   reasons: Schema.Array(Schema.NonEmptyString),
-  nextActions: Schema.Array(Schema.NonEmptyString),
+  nextActions: Schema.Array(NextActionSchema),
   evidence: Schema.optional(
     Schema.Struct({ verdict: EvidenceVerdictSchema, reasons: Schema.Array(Schema.String) })
   ),

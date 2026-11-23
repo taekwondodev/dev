@@ -32,6 +32,7 @@ import {
 } from './workspace-domain.ts'
 import { sensitiveName, sha256Hex } from './workspace-evidence.ts'
 import { SWITCH_REQUESTED, switchNotRequested, type SwitchRequest } from './workspace-model-text.ts'
+import { agentNextText } from './workspace-labels.ts'
 import { isWithin } from './workspace-paths.ts'
 import { GIT_TIMEOUT_MS, gitArguments, gitEnvironment } from './workspace-git.ts'
 import { newId } from './workspace-platform.ts'
@@ -218,7 +219,7 @@ const containsWholeLines = (body: string, text: string): boolean => {
 }
 
 const viewText = (view: WorkspaceView): string =>
-  `${view.workspaceId} at ${view.path} is ${view.outcome}: ${view.reason} ${view.nextAction}`
+  `${view.workspaceId} at ${view.path} is ${view.outcome}: ${view.reason} ${agentNextText(view.nextAction)}`
 
 const utf8Text = (bytes: Uint8Array): string | undefined => {
   try {

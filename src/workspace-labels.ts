@@ -1,4 +1,4 @@
-import type { WorkspaceExecution } from './workspace-domain.ts'
+import type { NextAction, WorkspaceExecution } from './workspace-domain.ts'
 import type { UseRecord } from './workspace-records.ts'
 
 export const CHECKOUT_CONTENTS_UNREADABLE = 'The checkout contents could not be read.'
@@ -40,3 +40,27 @@ export const releaseOnceStopped = (taskId: string | undefined): string =>
   taskId === undefined
     ? `Once nothing that ended sessions started still works in this repository's pre-existing checkouts, the user may run ${PRE_EXISTING_RELEASE}.`
     : `Once nothing still works in any of the task's checkouts, the user may run ${taskRelease(taskId)}.`
+
+export const instruction = (text: string): NextAction => ({ kind: 'instruction', text })
+
+export const releaseNext = (taskId: string | undefined, caution?: string): NextAction => ({
+  ...(taskId === undefined
+    ? { kind: 'release-pre-existing' as const }
+    : { kind: 'release-task' as const, taskId }),
+  ...(caution === undefined ? {} : { caution }),
+})
+
+const releaseTaskId = (action: NextAction): string | undefined =>
+  action.kind === 'release-task' ? action.taskId : undefined
+
+export const terminalNextText = (action: NextAction): string =>
+  action.kind === 'instruction'
+    ? action.text
+    : `dev workspace release ${releaseTaskId(action) ?? 'pre-existing'}`
+
+export const agentNextText = (action: NextAction): string =>
+  action.kind === 'instruction'
+    ? action.text
+    : [action.caution, releaseOnceStopped(releaseTaskId(action))]
+        .filter(part => part !== undefined)
+        .join(' ')
