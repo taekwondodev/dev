@@ -1,6 +1,6 @@
 import { relative } from 'node:path'
 import type { RuleTester } from 'oxlint/plugins-dev'
-import { internalTerm } from './model-text-terms.ts'
+import { type InternalTerm, internalTerm } from './model-text-terms.ts'
 
 type Rule = Parameters<RuleTester['run']>[1]
 type Visitor = ReturnType<Extract<Rule, { createOnce: unknown }>['createOnce']>
@@ -219,10 +219,10 @@ const plugin = {
         },
       },
       createOnce(context) {
-        const report = (node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>, text: string) => {
-          const found = internalTerm(text)
-          if (found === undefined) return
-          const { term, replacement } = found
+        const report = (
+          node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>,
+          { term, replacement }: InternalTerm
+        ) => {
           if (replacement.kind === 'leave-out')
             context.report({ node, messageId: 'leaveOut', data: { term } })
           else
@@ -236,9 +236,10 @@ const plugin = {
           node: NodeOf<'Literal'> | NodeOf<'TemplateLiteral'>,
           text: string
         ) => {
-          if (QUERY_LANGUAGE.test(text)) return
+          const found = internalTerm(text)
+          if (found === undefined || QUERY_LANGUAGE.test(text)) return
           if (MESSAGE_LABEL.test(text) || PROSE.test(text) || sentenceAround(node))
-            return report(node, text)
+            return report(node, found)
           const held = constantHolding(node)
           if (
             held !== undefined &&
@@ -249,7 +250,7 @@ const plugin = {
               })
             )
           )
-            report(node, text)
+            report(node, found)
         }
         return {
           Literal(node) {
@@ -258,7 +259,10 @@ const plugin = {
           TemplateLiteral(node) {
             const text = written(node)
             if (node.expressions.length === 0) checkWritten(node, text)
-            else if (PROSE.test(text) && !QUERY_LANGUAGE.test(text)) report(node, text)
+            else if (PROSE.test(text) && !QUERY_LANGUAGE.test(text)) {
+              const found = internalTerm(text)
+              if (found !== undefined) report(node, found)
+            }
           },
         }
       },
