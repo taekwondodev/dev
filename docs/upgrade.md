@@ -51,7 +51,7 @@ For update options and its `upgrade` alias, see [Maintenance](launcher.md#mainte
 
 From this checkout on `main`, update removes the upgrade worktree, its attached local branch, its workspace registration and the Pi candidate, even when dev is already up to date.
 
-Update never compares Pi with the pin. Its last step runs `pi update`, which installs Pi's latest release; that can be newer than the `config.pi` the last upgrade verified.
+Update's last step, `pi update`, installs Pi's latest release, which can be newer than the `config.pi` the last upgrade verified.
 
 After a Pi change, run one normal session, then `npm run profile`. Use [Usage profile](usage-profile.md) to interpret the report and its limitations.
 
