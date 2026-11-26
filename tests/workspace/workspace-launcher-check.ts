@@ -1,5 +1,5 @@
 import { FIXTURE_MANIFEST, writeProfileFixture } from '../profile-fixture.ts'
-import { DEFAULT_MANIFEST, MANIFEST_FILE } from '../../src/profiles.ts'
+import { MANIFEST_FILE } from '../../src/profiles.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -1013,11 +1013,13 @@ try {
     async () => {
       const root = join(sandbox, 'profiles-default')
       mkdirSync(root)
-      assert.equal(DEFAULT_MANIFEST, join(devRoot, 'config', 'default-profiles.json'))
-      assert.deepEqual(JSON.parse(readFileSync(DEFAULT_MANIFEST, 'utf8')), {
-        default: 'general',
-        profiles: { general: { soul: 'default-SOUL.md' } },
-      })
+      assert.deepEqual(
+        JSON.parse(readFileSync(join(devRoot, 'config', 'default-profiles.json'), 'utf8')),
+        {
+          default: 'general',
+          profiles: { general: { soul: 'default-SOUL.md' } },
+        }
+      )
       const soul = join(devRoot, 'config', 'default-SOUL.md')
       assert.match(readFileSync(soul, 'utf8'), /^# Interaction\n/)
       assert.ok(!readFileSync(soul, 'utf8').includes('dev-cycle'), 'no development section')

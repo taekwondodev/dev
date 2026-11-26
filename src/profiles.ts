@@ -51,7 +51,7 @@ export const MANIFEST_FILE = 'manifest.json'
 
 const installationRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
-export const DEFAULT_MANIFEST = join(installationRoot, 'config', 'default-profiles.json')
+const DEFAULT_MANIFEST = join(installationRoot, 'config', 'default-profiles.json')
 
 export const PROFILE_GUIDE = `${join(installationRoot, 'docs', 'launcher.md')}, section "Profiles and resources"`
 

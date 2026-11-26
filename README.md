@@ -12,7 +12,7 @@ I wanted a terminal-first experience. I was a Hermes main, but I wanted to come 
 
 ## What it does
 
-- **`dev`** opens Pi from the project you are working on, with one of the profiles defined in the installation's `profiles/` directory, which selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
+- **`dev`** opens Pi from the project you are working on, with a profile that selects guidance and skills, and keeps private state out of the project and out of Git. [launcher](docs/launcher.md)
 - **`work`** runs commands and delegated Pi children in the background, in separate processes, with version-controlled model dispatch and outcomes delivered back into the conversation. [work](docs/work.md), [dispatch](config/README.md)
 - **`workspace`** lets several sessions and their children write to one repository without overwriting each other, allocating worktrees when needed and releasing them once the work is delivered. [workspace](docs/workspace.md)
 - **`read_url`** gives the lead and children sourced page text, using an authenticated Chrome profile copy when needed. Pi's native codemode can compose reads in scripts. [read URL](docs/web-read.md)

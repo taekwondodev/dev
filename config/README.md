@@ -16,4 +16,4 @@ Edit `config/crew-dispatch.json` in the dev installation. Configuration is not r
 
 ## Default profile
 
-`default-profiles.json` and `default-SOUL.md` are the profile dev uses while the installation has no `profiles/manifest.json`. Customize by writing that manifest, not by editing these files; the [launcher guide](../docs/launcher.md#profiles-and-resources) describes the format.
+`default-profiles.json` and `default-SOUL.md` are dev's default profile. The [launcher guide](../docs/launcher.md#profiles-and-resources) explains when dev uses it and how to replace it.
