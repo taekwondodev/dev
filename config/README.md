@@ -13,3 +13,7 @@ Missing settings, a runner other than Pi, invalid effort or an unknown model cau
 ## Where to edit
 
 Edit `config/crew-dispatch.json` in the dev installation. Configuration is not read from the working project or data home. Changes apply to subsequent delegations.
+
+## Default profile
+
+`default-profiles.json` and `default-SOUL.md` are the profile dev uses while the installation has no `profiles/manifest.json`. Customize by writing that manifest, not by editing these files; the [launcher guide](../docs/launcher.md#profiles-and-resources) describes the format.

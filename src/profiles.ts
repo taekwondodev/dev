@@ -1,4 +1,4 @@
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
@@ -49,9 +49,9 @@ export interface ComposeResourcesOptions {
 
 export const MANIFEST_FILE = 'manifest.json'
 
-export const DEFAULT_MANIFEST_FILE = 'default.json'
-
 const installationRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
+
+export const DEFAULT_MANIFEST = join(installationRoot, 'config', 'default-profiles.json')
 
 export const PROFILE_GUIDE = `${join(installationRoot, 'docs', 'launcher.md')}, section "Profiles and resources"`
 
@@ -78,7 +78,7 @@ export const manifestPaths: Effect.Effect<
   ProfileError
 > = Effect.map(profilesRoot, root => ({
   personal: join(root, MANIFEST_FILE),
-  fallback: join(root, DEFAULT_MANIFEST_FILE),
+  fallback: DEFAULT_MANIFEST,
 }))
 
 const ProfileLocalPath = Schema.NonEmptyString.check(
@@ -120,7 +120,6 @@ const definitionOf = (
 const selectManifest = Effect.fnUntraced(
   function* (fs: FileSystem.FileSystem, root: string) {
     const personal = join(root, MANIFEST_FILE)
-    const fallback = join(root, DEFAULT_MANIFEST_FILE)
     const link = yield* fs.readLink(personal).pipe(Effect.orElseSucceed(() => undefined))
     const present = yield* fs.exists(personal).pipe(
       Effect.catchIf(
@@ -128,15 +127,12 @@ const selectManifest = Effect.fnUntraced(
         () => Effect.succeed(false)
       )
     )
-    if (present) return personal
+    if (present) return { path: personal, root }
     if (link !== undefined)
       return yield* new ProfileError({
         message: `The profile manifest ${personal} is a symbolic link to ${link}, which does not exist. Restore the link target or replace the link with the manifest.`,
       })
-    if (yield* fs.exists(fallback)) return fallback
-    return yield* new ProfileError({
-      message: `No profile manifest at ${personal} and no default manifest at ${fallback}. Write ${personal} (format: ${PROFILE_GUIDE}).`,
-    })
+    return { path: DEFAULT_MANIFEST, root: dirname(DEFAULT_MANIFEST) }
   },
   Effect.mapError(error => toProfileError(error, 'Cannot read the profile manifests'))
 )
@@ -144,9 +140,8 @@ const selectManifest = Effect.fnUntraced(
 export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem.FileSystem> =
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const root = yield* profilesRoot
     const sharedSkills = resolve(yield* homeDirectory, '.agents/skills')
-    const path = yield* selectManifest(fs, root)
+    const { path, root } = yield* selectManifest(fs, yield* profilesRoot)
     const manifest = yield* fs.readFileString(path).pipe(
       Effect.mapError(error => toProfileError(error, `Cannot read the profile manifest ${path}`)),
       Effect.flatMap(text =>

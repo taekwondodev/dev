@@ -4,7 +4,7 @@ These instructions apply to the dev repository, not to projects launched through
 
 ## Boundaries
 
-Credentials, other agent environments, the owner's untracked files in `profiles/` and the Pi installation stay unchanged unless the user explicitly authorizes the change. Tests use disposable profile fixtures, never the real `profiles/`.
+Credentials, other agent environments, the owner's untracked `profiles/` and the Pi installation stay unchanged unless the user explicitly authorizes the change. Tests use disposable profile fixtures, never the real `profiles/`.
 
 Treat dev as unreleased: dev-owned state has exactly one schema, the final one. Change formats in place and delete old-shape dev data in the same change, following [discard obsolete state](docs/DEVELOPMENT.md#discard-obsolete-state); this deletion needs no confirmation. Write no schema versions, compatibility checks, migrations or legacy fields, and remove any you find. Preserve current-schema validation, integrity and ownership checks, live revision and generation fences, and release-decision semantics: they protect current data, not old formats.
 

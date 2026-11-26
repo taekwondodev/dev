@@ -39,7 +39,7 @@ npm run setup
 npm link --ignore-scripts
 ```
 
-dev starts with the tracked default profile in `profiles/default.json`. To customize, write `profiles/manifest.json`, which Git ignores; it names each profile's guidance and skill directories and replaces the default. The format is in the [launcher guide](docs/launcher.md#profiles-and-resources).
+dev starts with its default profile, `config/default-profiles.json`. To customize, write `profiles/manifest.json`, which Git ignores; it names each profile's guidance and skill directories and replaces the default. The format is in the [launcher guide](docs/launcher.md#profiles-and-resources).
 
 Then, from any Git project:
 

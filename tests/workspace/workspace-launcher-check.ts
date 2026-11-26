@@ -1,5 +1,5 @@
 import { FIXTURE_MANIFEST, writeProfileFixture } from '../profile-fixture.ts'
-import { DEFAULT_MANIFEST_FILE, MANIFEST_FILE } from '../../src/profiles.ts'
+import { DEFAULT_MANIFEST, MANIFEST_FILE } from '../../src/profiles.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -973,14 +973,9 @@ try {
   )
   const manifestData = join(sandbox, 'manifest-data')
   await claim(
-    'dev refuses startup naming the manifest when it is missing, malformed or names an undefined default, and an unknown profile name lists the defined ones with that manifest',
+    'dev refuses startup naming the manifest when it is malformed or names an undefined default, and an unknown profile name lists the defined ones with that manifest',
     async () => {
-      const refusals: readonly (readonly [string, string | object | undefined, RegExp])[] = [
-        [
-          'missing',
-          undefined,
-          /^Cannot load profiles: No profile manifest at .+ and no default manifest at .+default\.json\./,
-        ],
+      const refusals: readonly (readonly [string, string | object, RegExp])[] = [
         ['malformed', '{ "default": ', /^Cannot load profiles: Invalid profile manifest /],
         [
           'undefined-default',
@@ -992,7 +987,7 @@ try {
         const root = join(sandbox, `profiles-${name}`)
         mkdirSync(root, { recursive: true })
         if (typeof manifest === 'string') writeFileSync(join(root, MANIFEST_FILE), manifest)
-        else if (manifest !== undefined) writeProfileFixture(root, manifest)
+        else writeProfileFixture(root, manifest)
         const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
           DEV_PROFILES: root,
         })
@@ -1014,17 +1009,16 @@ try {
     }
   )
   await claim(
-    'without a personal manifest the tracked default manifest starts dev with general as the configured default and the default SOUL, also without the shared skill library; a personal manifest wins, one that is a dangling link refuses naming its target instead of falling back, and Git tracks only the default files',
+    'without a personal manifest the default manifest in config/ starts dev with general as the configured default and the default SOUL, also without the shared skill library; a personal manifest wins, one that is a dangling link refuses naming its target instead of falling back, and Git tracks nothing in profiles/',
     async () => {
       const root = join(sandbox, 'profiles-default')
-      mkdirSync(join(root, 'default'), { recursive: true })
-      for (const file of [DEFAULT_MANIFEST_FILE, join('default', 'SOUL.md')])
-        copyFileSync(join(devRoot, 'profiles', file), join(root, file))
-      assert.deepEqual(JSON.parse(readFileSync(join(root, DEFAULT_MANIFEST_FILE), 'utf8')), {
+      mkdirSync(root)
+      assert.equal(DEFAULT_MANIFEST, join(devRoot, 'config', 'default-profiles.json'))
+      assert.deepEqual(JSON.parse(readFileSync(DEFAULT_MANIFEST, 'utf8')), {
         default: 'general',
-        profiles: { general: { soul: 'default/SOUL.md' } },
+        profiles: { general: { soul: 'default-SOUL.md' } },
       })
-      const soul = join(root, 'default', 'SOUL.md')
+      const soul = join(devRoot, 'config', 'default-SOUL.md')
       assert.match(readFileSync(soul, 'utf8'), /^# Interaction\n/)
       assert.ok(!readFileSync(soul, 'utf8').includes('dev-cycle'), 'no development section')
       const bareHome = join(sandbox, 'default-home')
@@ -1063,17 +1057,11 @@ try {
         )
       }
 
-      for (const personalFile of [
-        'profiles/manifest.json',
-        'profiles/personal/SOUL.md',
-        'profiles/default/personal.md',
-      ])
+      for (const personalFile of ['profiles/manifest.json', 'profiles/personal/SOUL.md'])
         assert.equal(ignored(personalFile), 0, personalFile)
-      assert.deepEqual(
-        execFileSync('git', ['ls-files', '--', 'profiles'], { cwd: devRoot, encoding: 'utf8' })
-          .split('\n')
-          .filter(Boolean),
-        ['profiles/default.json', 'profiles/default/SOUL.md']
+      assert.equal(
+        execFileSync('git', ['ls-files', '--', 'profiles'], { cwd: devRoot, encoding: 'utf8' }),
+        ''
       )
     }
   )
