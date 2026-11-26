@@ -35,7 +35,7 @@ fail() {
   printf '\ndev install stopped: %s\n' "$*" >&2
   if [ -n "$completed" ]; then
     printf 'Already done:%s\n' "$completed" >&2
-    printf 'Finish the remaining steps by hand as in https://github.com/taekwondodev/dev#install\n' >&2
+    printf 'Finish the remaining steps by hand, in the order main runs them in https://github.com/taekwondodev/dev/blob/main/scripts/install.sh\n' >&2
   fi
   exit 1
 }
@@ -130,7 +130,7 @@ install_pi() {
   step 'Installing the latest Pi with the pi.dev installer'
   run "Downloading the Pi installer from $pi_installer_url" curl -fsSL "$pi_installer_url" -o "$work/pi-install.sh"
   run 'The Pi installer' run_pi_installer "$work/pi-install.sh"
-  [ -x "$pi_bin/pi" ] || fail "the Pi installer finished, but $pi_bin/pi is missing. Install Pi from https://pi.dev, then follow the remaining steps by hand."
+  [ -x "$pi_bin/pi" ] || fail "the Pi installer finished, but $pi_bin/pi is missing. Install Pi from https://pi.dev, then run the remaining steps by hand, in the order main runs them in https://github.com/taekwondodev/dev/blob/main/scripts/install.sh."
   PATH=$pi_bin:$PATH
   export PATH
   record "Pi installed, run as $pi_bin/pi"
