@@ -32,11 +32,11 @@ Run from the installation checkout:
 ```bash
 npm ci && npm run setup && npm link --ignore-scripts    # install dependencies, initialize state, link dev
 npm run setup -- --data-home PATH                       # initialize an explicit data home
-npm run update -- --remote origin --branch main         # fast-forward dev and activate the pinned Pi
+npm run update -- --remote origin --branch main         # fast-forward dev, then run pi update
 npm run upgrade                                        # alias for update, with the same options
 npm run rollback -- --ref REVISION                      # detach at a revision
 npm run profile [-- --data-home PATH]                   # private usage report
-npm run pi:update                                      # upgrade Pi and dependencies; publish one PR
+npm run pi:update                                      # verify the latest Pi and dependencies; propose one PR
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
@@ -50,7 +50,7 @@ Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#na
 
 Setup records Node and Pi in the data home's `dependency-observation.json`.
 
-For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics, public exports and finding a saved conversation.
+For the upgrade workflow, including the post-merge update, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics, public exports and finding a saved conversation.
 
 ## Behavior
 

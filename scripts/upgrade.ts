@@ -119,7 +119,7 @@ interface Verification {
 }
 
 interface Upgrade {
-  readonly branch: Option.Option<{ readonly name: string; readonly detached: boolean }>
+  readonly branch: { readonly name: string; readonly detached: boolean }
   readonly verified: { readonly commit: string; readonly upgraded: boolean }
   readonly pins: { readonly from: PiVersion; readonly to: PiVersion }
   readonly changes: readonly Change[]
@@ -426,9 +426,9 @@ const headFlags = (head: WorktreeHead, create: 'b' | 'c'): readonly string[] => 
   }
 }
 
-export const placeWorktree = Effect.fnUntraced(function* <E, R>(
+export const placeWorktree = Effect.fnUntraced(function* <H extends WorktreeHead, E, R>(
   start: string,
-  chooseHead: Effect.Effect<WorktreeHead, E, R>
+  chooseHead: Effect.Effect<H, E, R>
 ) {
   const reused = yield* reclaimWorktree
   const head = yield* chooseHead
@@ -587,13 +587,8 @@ const installScriptsRow = (scripts: Option.Option<readonly string[]>): string =>
 const auditCell = (audit: Option.Option<AuditSummary>): string =>
   Option.match(audit, { onNone: () => 'not checked: install failed', onSome: auditRow })
 
-const howToFix = (upgrade: Upgrade): string =>
-  Option.match(upgrade.branch, {
-    onNone: () =>
-      'Fix on a branch from `main` and merge it, then run `npm run pi:update` again to verify the pinned Pi.',
-    onSome: ({ name, detached }) =>
-      `Fix on \`${name}\`, for example in the installation's \`.dev/upgrade/worktree\`, push${detached ? ` with \`git push origin HEAD:${name}\`` : ''}, then run \`npm run pi:update\` again: it re-verifies this pull request and replaces this report.`,
-  })
+const howToFix = ({ branch: { name, detached } }: Upgrade): string =>
+  `Fix on \`${name}\`, for example in the installation's \`.dev/upgrade/worktree\`, push${detached ? ` with \`git push origin HEAD:${name}\`` : ''}, then run \`npm run pi:update\` again: it re-verifies this pull request and replaces this report.`
 
 const beforeMerging = (upgrade: Upgrade, tail: number): readonly string[] => {
   const failed = failures(upgrade.verification)
@@ -744,7 +739,7 @@ const ghCommand = (args: readonly string[]): string => ['gh', ...args].map(shell
 const outcome = (upgrade: Upgrade): string =>
   isGreen(upgrade)
     ? 'green'
-    : `red; fix it on ${Option.match(upgrade.branch, { onNone: () => 'its branch', onSome: ({ name }) => name })}, for example in ${worktree}, push and run npm run pi:update again`
+    : `red; fix it on ${upgrade.branch.name}, for example in ${worktree}, push and run npm run pi:update again`
 
 const openPullRequest = Effect.fnUntraced(function* (upgrade: Upgrade, branch: string) {
   const others = (yield* worktreePaths([])).filter(path => !manifestFiles.includes(path))
@@ -797,34 +792,22 @@ const fresh = Effect.gen(function* () {
   const changes = dependencyChanges(base.manifest, head.manifest)
   const engine = engineChange(base.manifest, head.manifest)
   const changed = changes.length > 0 || engine !== undefined || base.manifest.config.pi !== pi
-  const active = yield* resolvePiPackage
-  if (!changed && active.version === pi)
+  if (!changed)
     return yield* say(
-      `Nothing to upgrade: main pins the latest Pi ${pi}, which is active, and every dependency is at its target.\n`
+      `Nothing to upgrade: main pins the latest Pi ${pi} and every dependency is at its target.\n`
     )
-  const placed = yield* placeWorktree(
-    baseCommit,
-    changed ? freeBranch(date) : Effect.succeed<WorktreeHead>({ kind: 'detached' })
-  )
-  if (changed) yield* fs.writeFileString(join(worktree, 'package.json'), upgradedText)
+  const placed = yield* placeWorktree(baseCommit, freeBranch(date))
+  yield* fs.writeFileString(join(worktree, 'package.json'), upgradedText)
   const upgrade: Upgrade = {
-    branch:
-      placed.kind === 'detached'
-        ? Option.none()
-        : Option.some({ name: placed.branch, detached: false }),
+    branch: { name: placed.branch, detached: false },
     verified: { commit: baseCommit, upgraded: true },
     pins: { from: base.manifest.config.pi, to: pi },
     changes,
     engine,
-    verification: yield* verify(base.manifest, head.manifest, changed),
+    verification: yield* verify(base.manifest, head.manifest, true),
   }
   yield* writeReports(upgrade, date)
-  if (placed.kind !== 'detached') return yield* openPullRequest(upgrade, placed.branch)
-  if (!isGreen(upgrade))
-    return yield* new UpgradeError({
-      message: `main pins Pi ${pi}, but it failed checks against that release; see ${reportPath}.`,
-    })
-  yield* say(`main pins Pi ${pi} and it passed every check. Activate it with npm run update.\n`)
+  yield* openPullRequest(upgrade, placed.branch)
 })
 
 const pinLatestPi = Effect.fnUntraced(function* (pullRequest: PullRequest) {
@@ -880,7 +863,7 @@ const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
     remote
   )
   const upgrade: Upgrade = {
-    branch: Option.some({ name: branch, detached: placed.kind === 'detached' }),
+    branch: { name: branch, detached: placed.kind === 'detached' },
     verified: { commit, upgraded: false },
     pins: { from: base.manifest.config.pi, to: head.manifest.config.pi },
     changes: dependencyChanges(base.manifest, head.manifest),
