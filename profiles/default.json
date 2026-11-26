@@ -1,6 +1,6 @@
 {
   "default": "general",
   "profiles": {
-    "general": { "soul": "general/SOUL.md" }
+    "general": { "soul": "default/SOUL.md" }
   }
 }

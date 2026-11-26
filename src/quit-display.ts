@@ -32,7 +32,7 @@ export const terminalStyle = (
 
 type Tone = 'ok' | 'fail' | 'warn' | 'dim' | 'bold'
 const TONE: Record<Tone, string> = { ok: '32', fail: '31', warn: '33', dim: '2', bold: '1' }
-export const paint = (style: TerminalStyle, tone: Tone, text: string): string =>
+const paint = (style: TerminalStyle, tone: Tone, text: string): string =>
   style.color ? `\x1b[${TONE[tone]}m${text}\x1b[0m` : text
 
 const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'

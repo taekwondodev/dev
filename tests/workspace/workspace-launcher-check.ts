@@ -1,5 +1,5 @@
 import { FIXTURE_MANIFEST, writeProfileFixture } from '../profile-fixture.ts'
-import { createStarterProfile, MANIFEST_FILE } from '../../src/profiles.ts'
+import { DEFAULT_MANIFEST_FILE, MANIFEST_FILE } from '../../src/profiles.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -23,11 +23,8 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 import { acquireRuntime } from '../../src/runtime-coordination.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
@@ -64,20 +61,8 @@ const authorityFiles = (root: string) =>
     })
     .toSorted()
 
-const createStarter = (root: string) =>
-  Effect.runPromise(
-    createStarterProfile.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          NodeServices.layer,
-          ConfigProvider.layer(ConfigProvider.fromEnv({ env: { DEV_PROFILES: root } }))
-        )
-      )
-    )
-  )
-const starterTemplateFile = join(devRoot, 'templates', 'profiles', 'general', 'SOUL.md')
-const starterTemplate = (file: string) =>
-  readFileSync(join(devRoot, 'templates', 'profiles', file), 'utf8')
+const ignored = (path: string) =>
+  spawnSync('git', ['check-ignore', '--quiet', '--no-index', path], { cwd: devRoot }).status
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
 const profiles = writeProfileFixture(join(sandbox, 'profiles'))
@@ -994,7 +979,7 @@ try {
         [
           'missing',
           undefined,
-          /^Cannot load profiles: No profile manifest at .+\. Run `.*npm run setup` in .+ to create a starter profile/,
+          /^Cannot load profiles: No profile manifest at .+ and no default manifest at .+default\.json\./,
         ],
         ['malformed', '{ "default": ', /^Cannot load profiles: Invalid profile manifest /],
         [
@@ -1014,30 +999,7 @@ try {
         assert.equal(refused.code, 1, `${name}: ${refused.stdout}`)
         assert.match(refused.stderr, expected, name)
         assert.ok(refused.stderr.includes(join(root, MANIFEST_FILE)), `${name}: ${refused.stderr}`)
-        if (manifest === undefined)
-          assert.ok(
-            refused.stderr.includes(`\`DEV_PROFILES='${root}' npm run setup\``),
-            refused.stderr
-          )
       }
-      const relativeRoot = join(sandbox, "profiles relative 'override'")
-      const relativeRefusal = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
-        DEV_PROFILES: relative(devRoot, relativeRoot),
-      })
-      assert.equal(relativeRefusal.code, 1, relativeRefusal.stdout)
-      const printed = /Run `DEV_PROFILES=((?:'[^']*'|\\')+) npm run setup`/.exec(
-        relativeRefusal.stderr
-      )?.[1]
-      if (printed === undefined) throw new Error(relativeRefusal.stderr)
-      const followed = execFileSync('/bin/sh', ['-c', `printf %s ${printed}`], {
-        cwd: sandbox,
-        encoding: 'utf8',
-      })
-      assert.ok(followed.startsWith('/'), followed)
-      assert.ok(
-        (await createStarter(followed)).includes(join(relativeRoot, MANIFEST_FILE)),
-        'following the printed setup setting creates the reported manifest'
-      )
       const unknown = await withOptions(
         ['--diagnostics', '--cwd', repo, '--profile', 'absent'],
         manifestData
@@ -1052,21 +1014,20 @@ try {
     }
   )
   await claim(
-    'the starter profile is created only where no manifest or manifest link exists, never replaces a file, and starts dev with general as the configured default without the shared skill library; a dangling manifest link refuses startup naming its target',
+    'without a personal manifest the tracked default manifest starts dev with general as the configured default and the default SOUL, also without the shared skill library; a personal manifest wins, one that is a dangling link refuses naming its target instead of falling back, and Git tracks only the default files',
     async () => {
-      const root = join(sandbox, 'profiles-starter')
-      const soul = join(root, 'general', 'SOUL.md')
-      const manifest = join(root, MANIFEST_FILE)
-      assert.deepEqual(await createStarter(root), [soul, manifest])
-      assert.deepEqual(JSON.parse(readFileSync(manifest, 'utf8')), {
+      const root = join(sandbox, 'profiles-default')
+      mkdirSync(join(root, 'default'), { recursive: true })
+      for (const file of [DEFAULT_MANIFEST_FILE, join('default', 'SOUL.md')])
+        copyFileSync(join(devRoot, 'profiles', file), join(root, file))
+      assert.deepEqual(JSON.parse(readFileSync(join(root, DEFAULT_MANIFEST_FILE), 'utf8')), {
         default: 'general',
-        profiles: { general: { soul: 'general/SOUL.md' } },
+        profiles: { general: { soul: 'default/SOUL.md' } },
       })
-      assert.equal(readFileSync(manifest, 'utf8'), starterTemplate(MANIFEST_FILE))
-      assert.equal(readFileSync(soul, 'utf8'), starterTemplate(join('general', 'SOUL.md')))
+      const soul = join(root, 'default', 'SOUL.md')
       assert.match(readFileSync(soul, 'utf8'), /^# Interaction\n/)
       assert.ok(!readFileSync(soul, 'utf8').includes('dev-cycle'), 'no development section')
-      const bareHome = join(sandbox, 'starter-home')
+      const bareHome = join(sandbox, 'default-home')
       mkdirSync(bareHome)
       const started = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
         DEV_PROFILES: root,
@@ -1079,47 +1040,40 @@ try {
         started.stdout.includes(`general: ${join(bareHome, '.agents', 'skills')}\n`),
         'the missing shared skill library is handed to Pi'
       )
-      assert.deepEqual(await createStarter(root), [])
-      assert.equal(readFileSync(manifest, 'utf8'), starterTemplate(MANIFEST_FILE))
 
-      const ownSoul = join(sandbox, 'profiles-own-soul')
-      mkdirSync(join(ownSoul, 'general'), { recursive: true })
-      writeFileSync(join(ownSoul, 'general', 'SOUL.md'), 'own guidance\n')
-      chmodSync(join(ownSoul, 'general'), 0o555)
-      try {
-        assert.deepEqual(await createStarter(ownSoul), [join(ownSoul, MANIFEST_FILE)])
-      } finally {
-        chmodSync(join(ownSoul, 'general'), 0o755)
-      }
-      assert.equal(readFileSync(join(ownSoul, 'general', 'SOUL.md'), 'utf8'), 'own guidance\n')
-
-      const configured = join(sandbox, 'profiles-configured')
-      const fixture = writeProfileFixture(configured)
-      const before = readFileSync(fixture.manifestPath, 'utf8')
-      assert.deepEqual(await createStarter(configured), [])
-      assert.equal(readFileSync(fixture.manifestPath, 'utf8'), before)
-      assert.ok(!existsSync(join(configured, 'general')), 'no starter SOUL beside a manifest')
-
-      const dangling = join(sandbox, 'profiles-dangling')
-      mkdirSync(dangling)
-      const target = join(sandbox, 'moved-manifest.json')
-      symlinkSync(target, join(dangling, MANIFEST_FILE))
-      assert.deepEqual(await createStarter(dangling), [])
-      assert.deepEqual(readdirSync(dangling), [MANIFEST_FILE])
-      const belowFile = join(sandbox, 'profiles-link-below-file')
-      mkdirSync(belowFile)
-      symlinkSync(join(starterTemplateFile, 'manifest.json'), join(belowFile, MANIFEST_FILE))
-      assert.deepEqual(await createStarter(belowFile), [])
-      assert.deepEqual(readdirSync(belowFile), [MANIFEST_FILE])
-      const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
-        DEV_PROFILES: dangling,
+      writeProfileFixture(root)
+      const personal = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: root,
       })
-      assert.equal(refused.code, 1, refused.stdout)
-      assert.ok(
-        refused.stderr.includes(
-          `The profile manifest ${join(dangling, MANIFEST_FILE)} is a symbolic link to ${target}, which does not exist.`
-        ),
-        refused.stderr
+      assert.equal(personal.code, 0, personal.stderr)
+      assert.match(personal.stdout, /^selection: base \(configured default\)$/m)
+
+      for (const target of [join(sandbox, 'moved-manifest.json'), join(soul, MANIFEST_FILE)]) {
+        rmSync(join(root, MANIFEST_FILE), { force: true })
+        symlinkSync(target, join(root, MANIFEST_FILE))
+        const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+          DEV_PROFILES: root,
+        })
+        assert.equal(refused.code, 1, refused.stdout)
+        assert.ok(
+          refused.stderr.includes(
+            `The profile manifest ${join(root, MANIFEST_FILE)} is a symbolic link to ${target}, which does not exist.`
+          ),
+          refused.stderr
+        )
+      }
+
+      for (const personalFile of [
+        'profiles/manifest.json',
+        'profiles/personal/SOUL.md',
+        'profiles/default/personal.md',
+      ])
+        assert.equal(ignored(personalFile), 0, personalFile)
+      assert.deepEqual(
+        execFileSync('git', ['ls-files', '--', 'profiles'], { cwd: devRoot, encoding: 'utf8' })
+          .split('\n')
+          .filter(Boolean),
+        ['profiles/default.json', 'profiles/default/SOUL.md']
       )
     }
   )

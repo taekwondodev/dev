@@ -1,10 +1,8 @@
-import { randomUUID } from 'node:crypto'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 
@@ -51,15 +49,11 @@ export interface ComposeResourcesOptions {
 
 export const MANIFEST_FILE = 'manifest.json'
 
+export const DEFAULT_MANIFEST_FILE = 'default.json'
+
 const installationRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
 export const PROFILE_GUIDE = `${join(installationRoot, 'docs', 'launcher.md')}, section "Profiles and resources"`
-
-const starterRoot = join(installationRoot, 'templates', 'profiles')
-
-const defaultProfilesRoot = join(installationRoot, 'profiles')
-
-const STARTER_FILES = [join('general', 'SOUL.md'), MANIFEST_FILE] as const
 
 const toProfileError = (error: unknown, operation: string): ProfileError =>
   error instanceof ProfileError
@@ -74,14 +68,18 @@ const homeDirectory = Effect.sync(() => process.env.HOME ?? process.env.USERPROF
 )
 
 export const profilesRoot: Effect.Effect<string, ProfileError> = Config.String('DEV_PROFILES').pipe(
-  Config.withDefault(defaultProfilesRoot),
+  Config.withDefault(join(installationRoot, 'profiles')),
   Effect.map(path => resolve(path)),
   Effect.mapError(error => toProfileError(error, 'Cannot resolve the profiles directory'))
 )
 
-export const manifestPath: Effect.Effect<string, ProfileError> = Effect.map(profilesRoot, root =>
-  join(root, MANIFEST_FILE)
-)
+export const manifestPaths: Effect.Effect<
+  { readonly personal: string; readonly fallback: string },
+  ProfileError
+> = Effect.map(profilesRoot, root => ({
+  personal: join(root, MANIFEST_FILE),
+  fallback: join(root, DEFAULT_MANIFEST_FILE),
+}))
 
 const ProfileLocalPath = Schema.NonEmptyString.check(
   Schema.makeFilter((path: string) =>
@@ -119,27 +117,36 @@ const definitionOf = (
 ): ManifestProfiles[string] | undefined =>
   Object.hasOwn(profiles, name) ? profiles[name] : undefined
 
+const selectManifest = Effect.fnUntraced(
+  function* (fs: FileSystem.FileSystem, root: string) {
+    const personal = join(root, MANIFEST_FILE)
+    const fallback = join(root, DEFAULT_MANIFEST_FILE)
+    const link = yield* fs.readLink(personal).pipe(Effect.orElseSucceed(() => undefined))
+    const present = yield* fs.exists(personal).pipe(
+      Effect.catchIf(
+        error => link !== undefined && error.reason._tag === 'BadResource',
+        () => Effect.succeed(false)
+      )
+    )
+    if (present) return personal
+    if (link !== undefined)
+      return yield* new ProfileError({
+        message: `The profile manifest ${personal} is a symbolic link to ${link}, which does not exist. Restore the link target or replace the link with the manifest.`,
+      })
+    if (yield* fs.exists(fallback)) return fallback
+    return yield* new ProfileError({
+      message: `No profile manifest at ${personal} and no default manifest at ${fallback}. Write ${personal} (format: ${PROFILE_GUIDE}).`,
+    })
+  },
+  Effect.mapError(error => toProfileError(error, 'Cannot read the profile manifests'))
+)
+
 export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem.FileSystem> =
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* profilesRoot
-    const path = join(root, MANIFEST_FILE)
     const sharedSkills = resolve(yield* homeDirectory, '.agents/skills')
-    const exists = yield* fs
-      .exists(path)
-      .pipe(Effect.mapError(error => toProfileError(error, `Cannot read ${path}`)))
-    if (!exists) {
-      const link = yield* linkTarget(fs, path)
-      const override = yield* Config.option(Config.String('DEV_PROFILES')).pipe(
-        Effect.mapError(error => toProfileError(error, 'Cannot read DEV_PROFILES'))
-      )
-      return yield* new ProfileError({
-        message:
-          link === undefined
-            ? `No profile manifest at ${path}. Run \`${Option.isSome(override) ? `DEV_PROFILES=${shellQuoted(root)} ` : ''}npm run setup\` in ${installationRoot} to create a starter profile, or write the manifest yourself (format: ${PROFILE_GUIDE}).`
-            : `The profile manifest ${path} is a symbolic link to ${link}, which does not exist. Restore the link target or replace the link with the manifest.`,
-      })
-    }
+    const path = yield* selectManifest(fs, root)
     const manifest = yield* fs.readFileString(path).pipe(
       Effect.mapError(error => toProfileError(error, `Cannot read the profile manifest ${path}`)),
       Effect.flatMap(text =>
@@ -180,49 +187,6 @@ export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem
     )
     return { manifestPath: path, defaultProfile: manifest.default, names, load }
   })
-
-const linkTarget = (fs: FileSystem.FileSystem, path: string) =>
-  fs.readLink(path).pipe(Effect.orElseSucceed(() => undefined))
-
-const occupied = (fs: FileSystem.FileSystem, path: string) =>
-  Effect.flatMap(linkTarget(fs, path), target =>
-    target === undefined ? fs.exists(path) : Effect.succeed(true)
-  )
-
-const shellQuoted = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
-
-const publishOnce = (fs: FileSystem.FileSystem, target: string, content: string) => {
-  const staged = `${target}.${process.pid}-${randomUUID()}.partial`
-  return fs.writeFileString(staged, content, { flag: 'wx' }).pipe(
-    Effect.andThen(fs.link(staged, target)),
-    Effect.as(true),
-    Effect.catchIf(
-      error => error.reason._tag === 'AlreadyExists',
-      () => Effect.succeed(false)
-    ),
-    Effect.ensuring(fs.remove(staged, { force: true }).pipe(Effect.ignore))
-  )
-}
-
-export const createStarterProfile: Effect.Effect<
-  readonly string[],
-  ProfileError,
-  FileSystem.FileSystem
-> = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const root = yield* profilesRoot
-  const manifest = join(root, MANIFEST_FILE)
-  if (yield* occupied(fs, manifest)) return []
-  const created: string[] = []
-  for (const file of STARTER_FILES) {
-    const target = join(root, file)
-    const content = yield* fs.readFileString(join(starterRoot, file))
-    if (yield* occupied(fs, target)) continue
-    yield* fs.makeDirectory(dirname(target), { recursive: true })
-    if (yield* publishOnce(fs, target, content)) created.push(target)
-  }
-  return created
-}).pipe(Effect.mapError(error => toProfileError(error, 'Cannot create the starter profile')))
 
 const projectSkillPathCandidates = (
   cwd: string,

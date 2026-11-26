@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`dev` opens Pi in the project being worked on, with dev's extensions, shared skills and one profile. One installation serves every repository. The installation checkout holds code, dispatch policy and the owner's untracked profiles; the working project supplies its files and instructions; private state stays out of the project and Git.
+`dev` opens Pi in the project being worked on, with dev's extensions, shared skills and one profile. One installation serves every repository. The installation checkout holds code, dispatch policy, the default profile and the owner's untracked profiles; the working project supplies its files and instructions; private state stays out of the project and Git.
 
 ## Use
 
@@ -11,7 +11,7 @@ From any project:
 ```bash
 dev                               # open here with the saved or default profile
 dev --cwd PATH                    # use PATH as the working project
-dev --profile NAME                # select a profile of profiles/manifest.json for this session
+dev --profile NAME                # select a profile of the active manifest for this session
 dev --save-profile NAME           # save this repository's profile preference
 dev --continue                    # resume the newest session for this launch directory
 dev --task [TASK-ID]              # open a new conversation in paused work of this repository
@@ -47,7 +47,7 @@ Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: thes
 
 Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#native-addon) for toolchain requirements and build recovery.
 
-Setup records Node and Pi in the data home's `dependency-observation.json`, and creates the [starter profile](#profiles-and-resources) when the profiles directory has no manifest.
+Setup records Node and Pi in the data home's `dependency-observation.json`.
 
 For the upgrade workflow, including post-merge update and activation, read [Upgrade](upgrade.md). Use [usage profile](usage-profile.md) for periods, metrics, public exports and finding a saved conversation.
 
@@ -75,7 +75,7 @@ The conversation is new and starts in the workspace's directory with its uncommi
 
 ### Profiles and resources
 
-Profiles are personal configuration. The installation's `profiles/` directory is ignored by Git and holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Dev knows the manifest format, not profile or skill names:
+Profiles are personal configuration. The installation's `profiles/` directory holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Git ignores the directory, except the default profile, `profiles/default.json` and `profiles/default/SOUL.md`, which is tracked with `git add -f`: a negation rule in `.gitignore` would make update and rollback refuse the revision. Dev knows the manifest format, not profile or skill names:
 
 ```json
 {
@@ -90,7 +90,7 @@ Profiles are personal configuration. The installation's `profiles/` directory is
 }
 ```
 
-`npm run setup` creates a starter profile when the profiles directory has no `manifest.json`: a manifest with one `general` profile and its `general/SOUL.md`, copied from the installation's `templates/profiles/`. Setup creates only files that are absent, the SOUL before the manifest, so an interrupted run finishes on the next one and an existing profile is never changed. It prints the files it created, or the manifest it kept, and this guide's path; `dev --help` prints the manifest path and this guide's path too.
+While `profiles/manifest.json` is absent, dev reads the tracked default manifest `profiles/default.json`, whose `general` profile uses `default/SOUL.md`, so a fresh clone starts without configuration. To customize, write `profiles/manifest.json` and your own SOUL files and skill directories beside it; it may still name `default/SOUL.md`. Do not edit the default files: they are tracked, and a changed checkout blocks `npm run update`. `dev --help` prints both manifest paths and this guide's path.
 
 - `default` names the profile of a new conversation when neither `--profile` nor a saved preference selects one. It must be one of `profiles`.
 - Each profile names its `soul`, a Markdown file appended to Pi's system prompt, and optionally its ordered `skills`. Each entry is a skill directory or a directory of skills, which Pi searches for `SKILL.md`; name a profile's skill directory once instead of each skill in it. Paths are relative to `profiles/` and may not use `..`; a symbolic link placed there is followed as the owner's choice, since everything under `profiles/` is trusted personal configuration ([SECURITY](../SECURITY.md#trusted-base)).
@@ -98,7 +98,7 @@ Profiles are personal configuration. The installation's `profiles/` directory is
 - Project `.pi/skills` and `.agents/skills` directories, from the launch directory to the Git root, come first; then the profile's skill directories in manifest order; then the shared skills at `~/.agents/skills`. Duplicate real paths are dropped. Native project-instruction discovery is unchanged: dev's own `AGENTS.md` loads only when dev is the working project.
 - The manifest is read from the installation once per launch and once per child start, whatever the working project, managed worktree or data home. `DEV_PROFILES` selects another profiles directory; dev's checks use it for disposable fixtures.
 
-A missing, unreadable or invalid manifest, a default that is not a defined profile, an unknown profile name, a missing or unreadable SOUL of the selected profile, or a Pi resource/extension error stops startup and names the file or resource; no other profile is substituted. A missing manifest names `npm run setup`. A skill directory that does not exist, of the profile or the shared `~/.agents/skills`, does not stop startup: it keeps its place in the resource order and Pi reports it as a warning. Resources of unselected profiles are neither checked nor loaded. Profiles share private state and sessions; they are guidance selection, not isolation.
+A profiles directory with neither manifest, an unreadable or invalid manifest, a default that is not a defined profile, an unknown profile name, a missing or unreadable SOUL of the selected profile, or a Pi resource/extension error stops startup and names the file or resource; no other profile is substituted. A personal manifest that is a dangling symbolic link stops startup rather than falling back to the default. A skill directory that does not exist, of the profile or the shared `~/.agents/skills`, does not stop startup: it keeps its place in the resource order and Pi reports it as a warning. Resources of unselected profiles are neither checked nor loaded. Profiles share private state and sessions; they are guidance selection, not isolation.
 
 ### Tool output toggle
 
