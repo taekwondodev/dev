@@ -22,18 +22,32 @@ The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECT
 
 ## Use dev
 
-### Prerequisites
-
-- `pi` installed with the [pi.dev installer](https://pi.dev)
-- Optional: the skill library at `~/.agents/skills`
-- Node satisfying `package.json`, with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug)
-
 Read [SECURITY](SECURITY.md) before installing.
 
 ### Install
 
+On a new Mac, one command sets everything up:
+
 ```bash
-cd ~/Developer/dev
+curl -fsSL https://raw.githubusercontent.com/taekwondodev/dev/main/scripts/install.sh | sh
+```
+
+It first checks Node, the Xcode Command Line Tools, `git` and that npm can link the `dev` command without sudo, and stops before changing anything if one is missing. Then it installs the latest Pi with the [pi.dev installer](https://pi.dev), clones dev's `main` into `${XDG_DATA_HOME:-~/.local/share}/dev` (`DEV_DIR` overrides the path), runs the manual steps below in it, and installs [dev-footer](https://github.com/taekwondodev/dev-footer), [dev-header](https://github.com/taekwondodev/dev-header), [dev-hush](https://github.com/taekwondodev/dev-hush) and [terminal-status-title](https://github.com/taekwondodev/terminal-status-title) as global Pi packages. It asks before installing `npm:pi-claude-bridge`. Last, it copies the [skill library](https://github.com/taekwondodev/skills) into `~/.agents/skills`; if a skill name is already there, it copies none and lists the collisions.
+
+Everything comes from `main` and Pi's latest release. Afterwards `npm run update` in the checkout updates dev and Pi, and `pi update --extensions` updates the extensions. The installer does not run over an existing checkout and does not update the copied skills.
+
+### Install by hand
+
+Prerequisites:
+
+- `pi` installed with the [pi.dev installer](https://pi.dev)
+- Optional: the skill library at `~/.agents/skills`
+- Node satisfying `package.json`, with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug)
+- The Xcode Command Line Tools, for the native addon
+
+From a clone of this repository:
+
+```bash
 npm ci
 npm run setup
 npm link --ignore-scripts
