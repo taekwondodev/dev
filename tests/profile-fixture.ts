@@ -10,14 +10,15 @@ export interface ProfileFixture {
   readonly skillProfile: string
   readonly skill: string
   readonly skillPath: string
+  readonly skillsPath: string
   readonly soulPath: (profile: string) => string
 }
 
 export const FIXTURE_MANIFEST = {
   default: 'base',
   profiles: {
-    base: { soul: 'base/SOUL.md', skills: [] },
-    stack: { soul: 'stack/SOUL.md', skills: ['stack/skills/stack-only'] },
+    base: { soul: 'base/SOUL.md' },
+    stack: { soul: 'stack/SOUL.md', skills: ['stack/skills'] },
   },
 } as const
 
@@ -32,7 +33,8 @@ export const writeProfileFixture = (
     mkdirSync(join(root, profile), { recursive: true })
     writeFileSync(join(root, profile, 'SOUL.md'), guidance(profile))
   }
-  const skillPath = join(root, FIXTURE_MANIFEST.profiles.stack.skills[0])
+  const skillsPath = join(root, FIXTURE_MANIFEST.profiles.stack.skills[0])
+  const skillPath = join(skillsPath, 'stack-only')
   mkdirSync(skillPath, { recursive: true })
   writeFileSync(
     join(skillPath, 'SKILL.md'),
@@ -54,6 +56,7 @@ export const writeProfileFixture = (
     skillProfile: 'stack',
     skill: 'stack-only',
     skillPath,
+    skillsPath,
     soulPath: profile => join(root, profile, 'SOUL.md'),
   }
 }

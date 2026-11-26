@@ -3,7 +3,6 @@ import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Arr from 'effect/Array'
 import * as Cause from 'effect/Cause'
-import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
@@ -78,26 +77,11 @@ const setup = Effect.fnUntraced(
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
     yield* buildNative
-    const home = yield* Config.option(
-      Config.String('HOME').pipe(Config.orElse(() => Config.String('USERPROFILE')))
-    )
-    if (Option.isNone(home))
-      return yield* new MaintenanceError({
-        message: 'HOME is required to inspect shared workflow skills',
-      })
-    const shared = yield* Config.String('DEV_SHARED_SKILLS').pipe(
-      Config.withDefault(`${home.value}/Developer/skills`)
-    )
     yield* fs.makeDirectory(dataHome, { recursive: true, mode: 0o700 })
     yield* sessionDir(dataHome)
     const observation = {
       node: process.version,
       pi: { version: pi.version, root: pi.root },
-      sharedWorkflow: {
-        path: shared,
-        revision: yield* git(['-C', shared, 'rev-parse', 'HEAD']),
-        dirty: (yield* git(['-C', shared, 'status', '--porcelain'])) !== '',
-      },
     }
     yield* fs.writeFileString(
       join(dataHome, 'dependency-observation.json'),

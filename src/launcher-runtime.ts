@@ -38,7 +38,8 @@ import {
 import {
   composeResources,
   loadCatalog,
-  manifestPath,
+  manifestPaths,
+  PROFILE_GUIDE,
   resourceSummary,
   type ComposedResources,
   type Profile,
@@ -285,10 +286,13 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
     catch: error => toLauncherError(error, 'Cannot parse launcher arguments'),
   })
 
-const printHelp = (manifest: string): Effect.Effect<void> =>
+const printHelp = (manifests: {
+  readonly personal: string
+  readonly fallback: string
+}): Effect.Effect<void> =>
   Effect.sync(() => {
     process.stdout.write(
-      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in ${manifest}\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list checkouts for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, destination branch and cleanup verdict of every checkout of the task\n  workspace release <task-id>  confirm interactively, then clear every checkout of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in checkouts at --cwd that no task keeps\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nQuitting dev cleans up the repository: finished checkouts are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
+      `dev — Pi development environment\n\nUsage: dev [options]\n       dev [options] workspace [list | inspect <task-id> | check <task-id> | release <task-id> | release pre-existing]\n       dev [options] browser [status | revoke | enable]\n       dev [options] orb [setup | delete <orb-id>]\n\nOptions:\n  --cwd PATH                    launch from PATH\n  --task [TASK-ID]             open a new conversation in paused work of this repository:\n                               the listed choice, or the exact task. Files and task come back,\n                               the earlier conversation does not: see --continue and --resume\n  --profile NAME        temporary profile, one defined in the profile manifest\n  --save-profile NAME   explicitly save a repository/directory preference\n  --resume PATH                resume a Pi JSONL session\n  --continue                    resume the newest session for this launch directory\n  --data-home PATH             dedicated dev data home\n  --diagnostics                resolve dependencies and print composition\n  --probe-runtime              exercise SDK startup without opening the TUI\n  --orb                        run this session's tools on a fresh orbit orb (configure it with dev orb setup)\n  --help                       show this help\n\nWorkspace commands:\n  workspace [list]             list checkouts for the Git repository at --cwd\n  workspace inspect <task-id>  inspect all exact-task records across repositories\n  workspace check <task-id>    read-only role, destination branch and cleanup verdict of every checkout of the task\n  workspace release <task-id>  confirm interactively, then clear every checkout of the task\n  workspace release pre-existing\n                               confirm interactively, then clear uses of ended sessions in checkouts at --cwd that no task keeps\n                               and forget those whose directory no longer exists\n\nBrowser commands:\n  browser [status]             show the authenticated Chrome profile copy used by read_url\n  browser revoke               disable authenticated rendering and delete dev's profile copy\n  browser enable               allow authenticated rendering again\n\nOrb commands:\n  orb setup                    ask for the OpenStack credentials and orb settings, verify them with Keystone and save them in the data home\n  orb delete <orb-id>          delete an orb, wait for orbit to report DELETED and remove its record\n\nProfiles:\n  manifest                     ${manifests.personal}\n  default manifest             ${manifests.fallback}, used while the manifest is absent\n  format                       ${PROFILE_GUIDE}\n\nQuitting dev cleans up the repository: finished checkouts are released automatically, the receipt is printed, and remaining tasks are offered for release, together or one at a time, except those still used by a live session.\n`
     )
   })
 
@@ -1285,7 +1289,7 @@ const run = Effect.fnUntraced(function* (
   dependencies: LauncherDependencies
 ) {
   const options = yield* parseArgs(argv)
-  if (options.help) return yield* printHelp(yield* manifestPath)
+  if (options.help) return yield* printHelp(yield* manifestPaths)
   const taskRefusal = options.task === undefined ? undefined : taskUsageRefusal(options)
   if (taskRefusal !== undefined) return yield* usageError(taskRefusal)
   const requestedTaskId =
