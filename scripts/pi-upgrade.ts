@@ -11,10 +11,9 @@ import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import { errorText } from '../src/error-text.ts'
 import { resolvePiPackage } from '../src/pi-runtime.ts'
-import { acquireMaintenance } from '../src/runtime-coordination.ts'
 import { checkout, run, streamed, upgradeHome } from './checkout.ts'
 import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
-import { PiVersion, readPiPin } from './pi-pin.ts'
+import { PiVersion } from './pi-pin.ts'
 import { cell, collapsed, counted, fence, lastLines, listed } from './report.ts'
 
 export class PiUpgradeError extends Schema.TaggedError<
@@ -333,10 +332,6 @@ export const piSections = (
 const failure = (what: string) => (cause: unknown) =>
   new PiUpgradeError({ message: `${what}: ${errorText(cause)}`, cause })
 
-const pinnedPi = readPiPin.pipe(
-  Effect.mapError(error => new PiUpgradeError({ message: error.message, cause: error.cause }))
-)
-
 const decodeVersion = (version: string) =>
   Schema.decodeEffect(PiVersion)(version).pipe(
     Effect.mapError(
@@ -567,88 +562,9 @@ export const comparePi = Effect.fnUntraced(function* (pin: PiVersion, version: P
   } satisfies PiComparison
 })
 
-const lockfile = Effect.fnUntraced(function* (release: string) {
-  const fs = yield* FileSystem.FileSystem
-  return yield* fs.readFileString(join(release, 'package-lock.json'))
-})
-
 export const refuseSelectedRelease = Effect.fnUntraced(function* (command: string) {
   if (Option.isSome(yield* Config.option(Config.String('DEV_PI_RELEASE'))))
     return yield* new PiUpgradeError({
       message: `Refusing ${command}: DEV_PI_RELEASE selects another Pi release. Unset it first.`,
     })
 })
-
-const updateUnderGate = Effect.gen(function* () {
-  yield* acquireMaintenance()
-  const version = yield* pinnedPi
-  yield* refuseSelectedRelease('update')
-  const previous = yield* resolvePiPackage
-  if (previous.version === version) {
-    yield* Effect.sync(() => {
-      process.stdout.write(`Pi ${version} is already active.\n`)
-    })
-    return
-  }
-  const verified = yield* Effect.option(resolveCandidate)
-  if (Option.isNone(verified) || verified.value.version !== version)
-    return yield* new PiUpgradeError({
-      message: `Refusing update: no verified candidate for Pi ${version} in ${candidateRelease}. Merge an upgrade pull request that verified it, or run npm run pi:update.`,
-    })
-  const latest = yield* latestVersion
-  if (latest !== version)
-    return yield* new PiUpgradeError({
-      message: `Refusing update: pi update would install Pi ${latest}, not the pinned ${version}. Run npm run pi:update and merge its pull request first.`,
-    })
-  const update = yield* streamed('pi', ['update'])
-  if (!update.passed)
-    return yield* new PiUpgradeError({
-      message: `pi update failed; Pi ${previous.version} stays active:\n${lastLines(update.output, failureTailLines)}`,
-    })
-  const installed = yield* resolvePiPackage
-  const failed = (reason: string) =>
-    new PiUpgradeError({
-      message:
-        installed.install === undefined || previous.version === installed.version
-          ? reason
-          : `${reason}\nPi ${previous.version} is still installed; reactivate it with: echo ${previous.version} > ${join(installed.install, 'current-version')}`,
-    })
-  if (installed.version !== version)
-    return yield* failed(
-      `pi update activated Pi ${installed.version}, not the verified ${version}.`
-    )
-  if ((yield* lockfile(installed.release)) !== (yield* lockfile(verified.value.release)))
-    return yield* failed(
-      `pi update activated Pi ${version} from a lockfile that differs from the verified candidate's.`
-    )
-  const smoke = yield* streamed('npm', ['run', 'smoke'])
-  if (!smoke.passed)
-    return yield* failed(
-      `Pi ${version} is the verified candidate, but smoke failed:\n${lastLines(smoke.output, failureTailLines)}`
-    )
-  const fs = yield* FileSystem.FileSystem
-  yield* fs.remove(candidateRelease, { recursive: true })
-  return version
-}).pipe(Effect.scoped)
-
-export const updatePi = Effect.gen(function* () {
-  const version = yield* updateUnderGate
-  if (version === undefined) return
-  const diagnostics = yield* run('dev', ['--diagnostics']).pipe(
-    Effect.mapError(
-      error =>
-        new PiUpgradeError({
-          message: `Updated Pi to the verified ${version}, but dev --diagnostics failed: ${error.message}`,
-          cause: error,
-        })
-    )
-  )
-  yield* Effect.sync(() => {
-    process.stdout.write(`${diagnostics.stdout}\nUpdated Pi to the verified ${version}.\n`)
-  })
-}).pipe(
-  Effect.mapError(error =>
-    error._tag === 'PiUpgradeError' ? error : failure('Pi update failed')(error)
-  ),
-  Effect.withSpan('updatePi')
-)

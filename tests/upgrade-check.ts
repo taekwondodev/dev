@@ -31,12 +31,18 @@ const root = join(home, 'Library', 'Application Support', 'dev', 'workspace-auth
 const authority = new WorkspaceAuthority(root)
 const worktree = join(checkout, '.dev', 'upgrade', 'worktree')
 const branch = 'chore/upgrade-2026-10-15'
+const piCalls = join(sandbox, 'pi-calls')
+const piFailure = join(sandbox, 'pi-fails')
 const git = (args: readonly string[], cwd = checkout): string => {
   const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' })
   assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`)
   return result.stdout.trim()
 }
-const update = (command = 'update', args: readonly string[] = []) => {
+const update = (
+  command = 'update',
+  args: readonly string[] = [],
+  env: Readonly<Record<string, string>> = {}
+) => {
   const result = spawnSync('npm', ['run', command, '--', ...args], {
     cwd: checkout,
     encoding: 'utf8',
@@ -45,6 +51,7 @@ const update = (command = 'update', args: readonly string[] = []) => {
       DEV_PI_RELEASE: undefined,
       NODE_OPTIONS: `--import=${join(sandbox, 'preload.mjs')}`,
       PATH: `${join(sandbox, 'pi', 'bin')}:${process.env.PATH}`,
+      ...env,
     },
   })
   assert.equal(result.status, 0, result.stderr)
@@ -66,7 +73,11 @@ try {
   )
   mkdirSync(piPackage, { recursive: true })
   mkdirSync(join(sandbox, 'pi', 'bin'))
-  writeFileSync(join(sandbox, 'pi', 'bin', 'pi'), '#!/bin/sh\nexit 97\n', { mode: 0o755 })
+  writeFileSync(
+    join(sandbox, 'pi', 'bin', 'pi'),
+    `#!/bin/sh\necho "$*" >> '${piCalls}'\n[ -e '${piFailure}' ] && exit 97\nexit 0\n`,
+    { mode: 0o755 }
+  )
   writeFileSync(
     join(installation, 'managed-install.json'),
     JSON.stringify({ kind: 'pi-managed-install', schemaVersion: 1, layout: 'releases-v1' })
@@ -145,6 +156,7 @@ registerHooks({
   git(['push', '--quiet', 'origin', 'other'])
   update()
   assert.ok(existsSync(worktree))
+  assert.ok(existsSync(join(candidate, 'keep')), 'an update off main keeps the Pi candidate')
   git(['switch', '--quiet', 'main'])
   update()
   assert.notEqual(git(['rev-parse', 'HEAD']), initial)
@@ -154,14 +166,20 @@ registerHooks({
     inspectWorkspaces(authority, { cwd: checkout }).some(view => view.path === worktree),
     false
   )
-  assert.ok(existsSync(join(candidate, 'keep')))
+  assert.equal(existsSync(candidate), false, 'a main update removes the pi:update candidate')
   assert.ok(existsSync(unrelated))
   assert.notEqual(git(['branch', '--list', 'chore/upgrade-2026-10-14']), '')
   assert.match(
     update('upgrade', ['--remote', 'origin', '--branch', 'main']),
-    /Pi 1\.0\.0 is already active\./
+    /updated dev checkout from origin\/main/
   )
   assert.throws(() => update('pi:update', ['x']), /pi:update takes no arguments, got: x/)
+  const beforeRefusal = git(['rev-parse', 'HEAD'])
+  assert.throws(
+    () => update('update', [], { DEV_PI_RELEASE: join(sandbox, 'selected-pi') }),
+    /Refusing update: DEV_PI_RELEASE selects another Pi release/
+  )
+  assert.equal(git(['rev-parse', 'HEAD']), beforeRefusal)
 
   git(['worktree', 'add', '--quiet', '-b', branch, worktree])
   registerWorkspace(authority, repository, canonicalGitWorkspace(worktree))
@@ -236,11 +254,22 @@ registerHooks({
   git(['push', '--quiet', 'origin', 'main'])
   const updated = git(['rev-parse', 'HEAD'])
   git(['reset', '--quiet', '--hard', `${updated}^`])
-  assert.throws(update, /no verified candidate for Pi 2\.0\.0.*npm run pi:update/)
-  assert.equal(git(['rev-parse', 'HEAD']), updated, 'activation reads the pin after updating dev')
-  assert.equal(readFileSync(join(installation, 'current-version'), 'utf8'), '1.0.0\n')
+  writeFileSync(piFailure, '')
+  assert.throws(update, /Updated dev, but pi update failed; Pi was not updated\. Rerun pi update/)
+  assert.equal(git(['rev-parse', 'HEAD']), updated, 'dev is updated before Pi')
+  rmSync(piFailure)
+  git(['reset', '--quiet', '--hard', `${updated}^`])
+  writeFileSync(piCalls, '')
+  update()
+  assert.equal(git(['rev-parse', 'HEAD']), updated)
+  assert.equal(readFileSync(piCalls, 'utf8'), 'update\n', 'update runs pi update once, last')
+  assert.equal(
+    readFileSync(join(installation, 'current-version'), 'utf8'),
+    '1.0.0\n',
+    'dev itself never switches the active Pi'
+  )
   console.log(
-    'upgrade cleanup and maintenance: update alias, Pi preparation rename, current Pi no-op, post-update activation refusal, main cleanup, squash, scope, lock, repeat, path reuse and in-place worktree reuse passed'
+    'upgrade cleanup and maintenance: update alias, Pi preparation rename, pi update after dev update and its failure, candidate cleanup, main cleanup, squash, scope, lock, repeat, path reuse and in-place worktree reuse passed'
   )
 } finally {
   authority.close()

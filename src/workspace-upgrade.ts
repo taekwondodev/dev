@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { inDb, type WorkspaceAuthority } from './workspace-authority.ts'
 import { blocked, requireReview } from './workspace-domain.ts'
@@ -34,9 +34,16 @@ const git = (checkout: string, args: readonly string[]): string => {
   return result.stdout.trimEnd()
 }
 
+const removeCandidate = (candidate: string): string => {
+  if (lstatIfExists(candidate) === undefined) return ''
+  rmSync(candidate, { recursive: true, force: true })
+  return 'Removed the Pi release prepared by npm run pi:update.\n'
+}
+
 export const cleanupUpgradeWorkspace = (
   authority: WorkspaceAuthority,
-  installation: string
+  installation: string,
+  piCandidate: string
 ): string => {
   const source = canonicalGitWorkspace(installation)
   if (
@@ -114,9 +121,11 @@ export const cleanupUpgradeWorkspace = (
         )
       )
     if (branch !== undefined) git(source.path, ['branch', '--delete', '--force', '--', branch])
-    return entry === undefined && workspace === undefined
-      ? ''
-      : `Removed upgrade worktree${branch === undefined ? '' : ` and local branch ${branch}`}; checkout inventory reconciled.\n`
+    const worktreeRemoval =
+      entry === undefined && workspace === undefined
+        ? ''
+        : `Removed upgrade worktree${branch === undefined ? '' : ` and local branch ${branch}`}; checkout inventory reconciled.\n`
+    return worktreeRemoval + removeCandidate(piCandidate)
   } finally {
     if (gates !== undefined) releaseGates(gates)
     structure()

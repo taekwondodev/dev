@@ -18,7 +18,7 @@ import { defaultAuthorityRoot } from '../src/workspace-authority-root.ts'
 import { cleanupUpgradeWorkspace } from '../src/workspace-upgrade.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 import { checkout, checkoutIsClean, git, npmInstallFlags, run, streamed } from './checkout.ts'
-import { updatePi } from './pi-upgrade.ts'
+import { candidateRelease, refuseSelectedRelease } from './pi-upgrade.ts'
 import { lastLines } from './report.ts'
 import { runUpgrade } from './upgrade.ts'
 import { conversationTimeline, listConversations } from './usage-conversations.ts'
@@ -100,6 +100,7 @@ const update = Effect.fnUntraced(
   function* (options: { readonly remote: string; readonly branch: Option.Option<string> }) {
     const { remote } = options
     yield* acquireMaintenance()
+    yield* Effect.mapError(refuseSelectedRelease('update'), reported)
     if (!(yield* checkoutIsClean))
       return yield* new MaintenanceError({
         message:
@@ -134,7 +135,7 @@ const update = Effect.fnUntraced(
       try: () => {
         const authority = new WorkspaceAuthority(defaultAuthorityRoot())
         try {
-          return cleanupUpgradeWorkspace(authority, checkout)
+          return cleanupUpgradeWorkspace(authority, checkout, candidateRelease)
         } finally {
           authority.close()
         }
@@ -142,6 +143,11 @@ const update = Effect.fnUntraced(
       catch: cause => failed('Dev updated, but upgrade cleanup failed', cause),
     })
     yield* say(cleanup)
+    const pi = yield* streamed('pi', ['update'])
+    if (!pi.passed)
+      return yield* new MaintenanceError({
+        message: `Updated dev, but pi update failed; Pi was not updated. Rerun pi update:\n${lastLines(pi.output, 40)}`,
+      })
   },
   Effect.scoped,
   Effect.mapError(error =>
@@ -287,11 +293,10 @@ const dispatch = Effect.fnUntraced(function* (command: string, args: readonly st
     case 'update': {
       const options = yield* parseOptions('update', args)
       const remote = yield* single('--remote', options('--remote'))
-      yield* update({
+      return yield* update({
         remote: Option.getOrElse(remote, () => 'origin'),
         branch: yield* single('--branch', options('--branch')),
       })
-      return yield* Effect.mapError(updatePi, reported)
     }
     case 'rollback': {
       const options = yield* parseOptions('rollback', args)
