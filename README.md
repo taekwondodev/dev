@@ -22,21 +22,12 @@ The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECT
 
 ## Use dev
 
-### Prerequisites
-
-- `pi` installed with the [pi.dev installer](https://pi.dev)
-- Optional: the skill library at `~/.agents/skills`
-- Node satisfying `package.json`, with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug)
-
 Read [SECURITY](SECURITY.md) before installing.
 
 ### Install
 
 ```bash
-cd ~/Developer/dev
-npm ci
-npm run setup
-npm link --ignore-scripts
+curl -fsSL https://raw.githubusercontent.com/taekwondodev/dev/main/scripts/install.sh | sh
 ```
 
 dev starts with its default profile, `config/default-profiles.json`. To customize, write `profiles/manifest.json`, which Git ignores; it names each profile's guidance and skill directories and replaces the default. The format is in the [launcher guide](docs/launcher.md#profiles-and-resources).
