@@ -5,6 +5,7 @@ This guide is for changing dev itself. Daily operation starts in the [README](..
 ## Setup
 
 ```bash
+brew install shellcheck
 cd ~/Developer/dev
 npm ci
 npm run lint
@@ -45,7 +46,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 
 | Check                      | Evidence                                                                                                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run lint`             | Type checking, strict Effect diagnostics and the type-aware and general Oxlint passes, with warnings as errors                                                                                                   |
+| `npm run lint`             | ShellCheck on `scripts/*.sh` as POSIX `sh`, type checking, strict Effect diagnostics and the type-aware and general Oxlint passes with warnings as errors                                                        |
 | `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                                                                                        |
 | `npm run smoke`            | Launcher diagnostics, upgrade cleanup and the one-line installer on disposable storage with stubbed downloads, and dev-internal terms in tool declarations, without a model response                             |
 | `npm run cleanup:check`    | Conversation quotas, preference publication exclusion, fenced deletion, conversation lock removal and detached cleanup survival on disposable storage                                                            |
