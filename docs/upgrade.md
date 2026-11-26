@@ -1,6 +1,6 @@
 # Upgrade dev
 
-One command moves dev to the latest Pi release and the latest release of every npm dependency, verifies the result and publishes it as a single pull request. A second command updates dev and activates the merged Pi. Both change the shared installation, not just the current project.
+One command verifies dev against the latest Pi release and the latest release of every npm dependency and proposes the result as a single pull request. A second command updates dev, then runs Pi's own `pi update`. Both commands change the shared installation, not just the current project.
 
 ## Before starting
 
@@ -20,7 +20,7 @@ Installs use `--ignore-scripts`. The command verifies the candidate Pi and depen
 
 Check output appears when the whole queue has finished, so the run stays quiet for a few minutes. Only the tail of command output is retained. The pull request body is the report; the full copy is saved in `.dev/upgrade/report.md`.
 
-When nothing differs from `main` and the pinned Pi is active, the command says so and publishes nothing. When `main` already pins the latest Pi but another Pi is active, it verifies that release without opening a pull request, so `npm run update` can activate it; a failed check there exits with an error.
+When `main` already pins the latest Pi and every dependency is at its target, the command says so and publishes nothing, whichever Pi is active.
 
 ## 2. Review and resolve failures
 
@@ -32,13 +32,13 @@ For failed checks, follow the report's **Before merging** instructions:
 2. Commit and push.
 3. Run `npm run pi:update` again to verify the pushed revision and refresh the existing pull request. If the branch moves during verification, rerun against its new head.
 
-When Pi has released again since the pull request was opened, that run first pushes a commit pinning the new release to the upgrade branch, then verifies it: `npm run update` activates only the latest release.
+When Pi has released again since the pull request was opened, that run first pushes a commit pinning the new release to the upgrade branch, then verifies it.
 
 Before merging, confirm the refreshed report covers the revision being merged and all reported failures are resolved.
 
 If the command refuses to reuse the upgrade worktree, preserve local work as directed by the error before retrying. Keep only one upgrade pull request open at a time.
 
-## 3. Merge, update and activate
+## 3. Merge and update
 
 After merging the upgrade PR, run from dev's main installation checkout:
 
@@ -49,17 +49,16 @@ npm run update
 
 For update options and its `upgrade` alias, see [Maintenance](launcher.md#maintenance).
 
-From this checkout on `main`, update removes the upgrade worktree, its attached local branch and its workspace registration, even when dev is already up to date. The Pi candidate remains available until activation succeeds.
+From this checkout on `main`, update removes the upgrade worktree, its attached local branch, its workspace registration and the Pi candidate, even when dev is already up to date.
 
-Activation requires a verified candidate matching the pin and Pi's latest release. It checks the installed version and lockfile against the candidate, runs smoke and prints diagnostics before removing the candidate. If the pinned Pi is already active, activation is skipped and any candidate remains. For a missing or outdated candidate, use the recovery instructions below.
+Update never compares Pi with the pin. Its last step runs `pi update`, which installs Pi's latest release; that can be newer than the `config.pi` the last upgrade verified.
 
 After a Pi change, run one normal session, then `npm run profile`. Use [Usage profile](usage-profile.md) to interpret the report and its limitations.
 
 ## If something fails
 
 - **The command stopped before publishing:** its error states what was committed or pushed and the exact command to finish.
-- **Candidate no longer matches the pin or latest release:** run `npm run pi:update` again.
-- **Activation failed after switching Pi:** follow the error's `current-version` restoration instruction. Pi retains the previous release in its managed `releases/` directory.
-- **`npm ci` failed during update:** the checkout is already updated, so rerunning update does not reinstall; run `npm ci --ignore-scripts && npm run types:pi`, then `npm run update` to finish activation.
+- **`pi update` failed during update:** dev is already updated; rerun `pi update`.
+- **`npm ci` failed during update:** the checkout is already updated, so rerunning update does not reinstall; run `npm ci --ignore-scripts && npm run types:pi`, then `npm run update` to finish the update.
 
 For implementation and integration verification, see [Development](DEVELOPMENT.md#upgrades).
