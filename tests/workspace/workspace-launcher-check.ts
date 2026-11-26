@@ -61,6 +61,9 @@ const authorityFiles = (root: string) =>
     })
     .toSorted()
 
+const ignored = (path: string) =>
+  spawnSync('git', ['check-ignore', '--quiet', '--no-index', path], { cwd: devRoot }).status
+
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
 const profiles = writeProfileFixture(join(sandbox, 'profiles'))
 const { claim, passed } = makeClaims()
@@ -970,10 +973,9 @@ try {
   )
   const manifestData = join(sandbox, 'manifest-data')
   await claim(
-    'dev refuses startup naming the manifest when it is missing, malformed or names an undefined default, and an unknown profile name lists the defined ones with that manifest',
+    'dev refuses startup naming the manifest when it is malformed or names an undefined default, and an unknown profile name lists the defined ones with that manifest',
     async () => {
-      const refusals: readonly (readonly [string, string | object | undefined, RegExp])[] = [
-        ['missing', undefined, /^Cannot load profiles: No profile manifest at /],
+      const refusals: readonly (readonly [string, string | object, RegExp])[] = [
         ['malformed', '{ "default": ', /^Cannot load profiles: Invalid profile manifest /],
         [
           'undefined-default',
@@ -985,7 +987,7 @@ try {
         const root = join(sandbox, `profiles-${name}`)
         mkdirSync(root, { recursive: true })
         if (typeof manifest === 'string') writeFileSync(join(root, MANIFEST_FILE), manifest)
-        else if (manifest !== undefined) writeProfileFixture(root, manifest)
+        else writeProfileFixture(root, manifest)
         const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
           DEV_PROFILES: root,
         })
@@ -1007,29 +1009,94 @@ try {
     }
   )
   await claim(
-    'a selected profile whose required skill directory is missing, or whose SOUL cannot be read, refuses startup naming the resource and the manifest without suggesting another profile, while a profile of the same manifest that does not need it starts',
+    'without a personal manifest the default manifest in config/ starts dev with general as the configured default and the default SOUL, also without the shared skill library; a personal manifest wins, one that is a dangling link refuses naming its target instead of falling back, and Git tracks nothing in profiles/',
+    async () => {
+      const root = join(sandbox, 'profiles-default')
+      mkdirSync(root)
+      assert.deepEqual(
+        JSON.parse(readFileSync(join(devRoot, 'config', 'default-profiles.json'), 'utf8')),
+        {
+          default: 'general',
+          profiles: { general: { soul: 'default-SOUL.md' } },
+        }
+      )
+      const soul = join(devRoot, 'config', 'default-SOUL.md')
+      assert.match(readFileSync(soul, 'utf8'), /^# Interaction\n/)
+      assert.ok(!readFileSync(soul, 'utf8').includes('dev-cycle'), 'no development section')
+      const bareHome = join(sandbox, 'default-home')
+      mkdirSync(bareHome)
+      const started = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: root,
+        HOME: bareHome,
+      })
+      assert.equal(started.code, 0, started.stderr)
+      assert.match(started.stdout, /^selection: general \(configured default\)$/m)
+      assert.ok(started.stdout.includes(`SOUL.md: ${soul}\n`), started.stdout)
+      assert.ok(
+        started.stdout.includes(`general: ${join(bareHome, '.agents', 'skills')}\n`),
+        'the missing shared skill library is handed to Pi'
+      )
+
+      writeProfileFixture(root)
+      const personal = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: root,
+      })
+      assert.equal(personal.code, 0, personal.stderr)
+      assert.match(personal.stdout, /^selection: base \(configured default\)$/m)
+
+      for (const target of [join(sandbox, 'moved-manifest.json'), join(soul, MANIFEST_FILE)]) {
+        rmSync(join(root, MANIFEST_FILE), { force: true })
+        symlinkSync(target, join(root, MANIFEST_FILE))
+        const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+          DEV_PROFILES: root,
+        })
+        assert.equal(refused.code, 1, refused.stdout)
+        assert.ok(
+          refused.stderr.includes(
+            `The profile manifest ${join(root, MANIFEST_FILE)} is a symbolic link to ${target}, which does not exist.`
+          ),
+          refused.stderr
+        )
+      }
+
+      for (const personalFile of ['profiles/manifest.json', 'profiles/personal/SOUL.md'])
+        assert.equal(ignored(personalFile), 0, personalFile)
+      assert.equal(
+        execFileSync('git', ['ls-files', '--', 'profiles'], { cwd: devRoot, encoding: 'utf8' }),
+        ''
+      )
+    }
+  )
+  await claim(
+    'a selected profile whose skill directories are missing, repeated or below a file starts and hands every such path to Pi in manifest order, while a SOUL that cannot be read refuses startup naming the file without suggesting another profile',
     async () => {
       const root = join(sandbox, 'profiles-missing-skill')
       writeProfileFixture(root, {
         ...FIXTURE_MANIFEST,
         profiles: {
           ...FIXTURE_MANIFEST.profiles,
-          stack: { soul: 'stack/SOUL.md', skills: ['stack/skills/absent'] },
+          stack: {
+            soul: 'stack/SOUL.md',
+            skills: ['stack/skills/absent', 'base/SOUL.md/nested', 'stack/skills/absent'],
+          },
         },
       })
-      const refused = await withOptions(
+      const missingSkill = await withOptions(
         ['--diagnostics', '--cwd', repo, '--profile', profiles.skillProfile],
         manifestData,
         { DEV_PROFILES: root }
       )
-      assert.equal(refused.code, 1, refused.stdout)
-      assert.ok(
-        refused.stderr.includes(
-          `Profile "stack" is unavailable; missing skill stack/skills/absent at ${join(root, 'stack', 'skills', 'absent')}. Restore the resource or change its entry in ${join(root, MANIFEST_FILE)}.`
-        ),
-        refused.stderr
+      assert.equal(missingSkill.code, 0, missingSkill.stderr)
+      const absent = join(root, 'stack', 'skills', 'absent')
+      assert.equal(
+        missingSkill.stdout.split('resource paths:\n')[1]?.trim(),
+        [
+          `stack: ${absent}`,
+          `stack: ${join(root, 'base', 'SOUL.md', 'nested')}`,
+          `stack: ${absent}`,
+          `stack: ${join(optionHome, '.agents', 'skills')}`,
+        ].join('\n')
       )
-      assert.ok(!refused.stderr.includes('--profile'), 'no other profile is suggested')
       const started = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
         DEV_PROFILES: root,
       })
@@ -1048,6 +1115,7 @@ try {
           ),
           unreadable.stderr
         )
+        assert.ok(!unreadable.stderr.includes('--profile'), 'no other profile is suggested')
       } finally {
         chmodSync(unreadableSoul, 0o600)
       }
@@ -1068,13 +1136,13 @@ try {
       const shared = join(optionHome, '.agents', 'skills')
       assert.equal(
         composed.stdout.split('resource paths:\n')[1]?.trim(),
-        [`stack: ${profiles.skillPath}`, `stack: ${shared}`].join('\n')
+        [`stack: ${profiles.skillsPath}`, `stack: ${shared}`].join('\n')
       )
       const resourceRepo = join(sandbox, 'resource-repo')
       mkdirSync(resourceRepo)
       initRepository(resourceRepo)
       mkdirSync(join(resourceRepo, '.pi'))
-      symlinkSync(profiles.skillPath, join(resourceRepo, '.pi', 'skills'))
+      symlinkSync(profiles.skillsPath, join(resourceRepo, '.pi', 'skills'))
       mkdirSync(join(resourceRepo, '.agents', 'skills'), { recursive: true })
       const deduplicated = await withOptions(
         ['--diagnostics', '--cwd', resourceRepo, '--profile', profiles.skillProfile],

@@ -84,7 +84,10 @@ try {
   git(['init', '--quiet', '-b', 'main'])
   git(['config', 'user.name', 'Upgrade Check'])
   git(['config', 'user.email', 'upgrade@example.invalid'])
-  writeFileSync(join(checkout, '.gitignore'), '/.dev/\n/node_modules\n/src/\n/scripts/\n')
+  writeFileSync(
+    join(checkout, '.gitignore'),
+    `${readFileSync(join(source, '.gitignore'), 'utf8')}/node_modules\n/src/\n/scripts/\n`
+  )
   writeFileSync(join(checkout, 'tracked.txt'), 'initial\n')
   git(['add', '.'])
   git(['commit', '--quiet', '-m', 'installation'])
