@@ -25,7 +25,7 @@ The component map and decision-record index are in [ARCHITECTURE](docs/ARCHITECT
 ### Prerequisites
 
 - `pi` installed with the [pi.dev installer](https://pi.dev)
-- The skill library at `~/.agents/skills`
+- Optional: the skill library at `~/.agents/skills`
 - Node satisfying `package.json`, with SQLite's [WAL-reset fix](https://www.sqlite.org/wal.html#the_wal_reset_bug)
 
 Read [SECURITY](SECURITY.md) before installing.
@@ -39,7 +39,7 @@ npm run setup
 npm link --ignore-scripts
 ```
 
-Profiles are personal and stay out of Git: `profiles/manifest.json` names each profile's guidance and skill directories, and dev refuses to start without it. The format is in the [launcher guide](docs/launcher.md#profiles-and-resources).
+Profiles are personal and stay out of Git: `profiles/manifest.json` names each profile's guidance and skill directories. When it is missing, `npm run setup` creates a starter profile to edit. The format is in the [launcher guide](docs/launcher.md#profiles-and-resources).
 
 Then, from any Git project:
 

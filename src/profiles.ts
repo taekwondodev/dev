@@ -1,8 +1,10 @@
-import { isAbsolute, join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { errorText } from './error-text.ts'
 
@@ -14,14 +16,8 @@ export class ProfileError extends Schema.TaggedError<
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export interface RequiredResource {
-  readonly label: string
-  readonly path: string
-}
-
 export interface Profile {
   readonly name: string
-  readonly required: readonly RequiredResource[]
   readonly skillPaths: readonly string[]
   readonly soulPath: string
   readonly guidance: string
@@ -55,10 +51,15 @@ export interface ComposeResourcesOptions {
 
 export const MANIFEST_FILE = 'manifest.json'
 
-const MANIFEST_EXAMPLE =
-  '{ "default": "general", "profiles": { "general": { "soul": "general/SOUL.md", "skills": [] } } }'
-
 const installationRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
+
+export const PROFILE_GUIDE = `${join(installationRoot, 'docs', 'launcher.md')}, section "Profiles and resources"`
+
+const starterRoot = join(installationRoot, 'templates', 'profiles')
+
+const defaultProfilesRoot = join(installationRoot, 'profiles')
+
+const STARTER_FILES = [join('general', 'SOUL.md'), MANIFEST_FILE] as const
 
 const toProfileError = (error: unknown, operation: string): ProfileError =>
   error instanceof ProfileError
@@ -73,7 +74,7 @@ const homeDirectory = Effect.sync(() => process.env.HOME ?? process.env.USERPROF
 )
 
 export const profilesRoot: Effect.Effect<string, ProfileError> = Config.String('DEV_PROFILES').pipe(
-  Config.withDefault(join(installationRoot, 'profiles')),
+  Config.withDefault(defaultProfilesRoot),
   Effect.map(path => resolve(path)),
   Effect.mapError(error => toProfileError(error, 'Cannot resolve the profiles directory'))
 )
@@ -92,7 +93,7 @@ const ProfileLocalPath = Schema.NonEmptyString.check(
 
 const ProfileDefinition = Schema.Struct({
   soul: ProfileLocalPath,
-  skills: Schema.Array(ProfileLocalPath),
+  skills: Schema.optional(Schema.Array(ProfileLocalPath)),
 })
 
 const Manifest = Schema.fromJsonString(
@@ -118,21 +119,6 @@ const definitionOf = (
 ): ManifestProfiles[string] | undefined =>
   Object.hasOwn(profiles, name) ? profiles[name] : undefined
 
-const missingResources = (
-  fs: FileSystem.FileSystem,
-  required: readonly RequiredResource[]
-): Effect.Effect<readonly RequiredResource[], unknown> =>
-  Effect.forEach(
-    required,
-    resource =>
-      fs.exists(resource.path).pipe(Effect.map(exists => (exists ? undefined : resource))),
-    { concurrency: 'unbounded' }
-  ).pipe(
-    Effect.map(resources =>
-      resources.filter((resource): resource is RequiredResource => resource !== undefined)
-    )
-  )
-
 export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem.FileSystem> =
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -142,10 +128,18 @@ export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem
     const exists = yield* fs
       .exists(path)
       .pipe(Effect.mapError(error => toProfileError(error, `Cannot read ${path}`)))
-    if (!exists)
+    if (!exists) {
+      const link = yield* linkTarget(fs, path)
+      const override = yield* Config.option(Config.String('DEV_PROFILES')).pipe(
+        Effect.mapError(error => toProfileError(error, 'Cannot read DEV_PROFILES'))
+      )
       return yield* new ProfileError({
-        message: `No profile manifest at ${path}. Create it with your profiles, for example: ${MANIFEST_EXAMPLE}`,
+        message:
+          link === undefined
+            ? `No profile manifest at ${path}. Run \`${Option.isSome(override) ? `DEV_PROFILES=${shellQuoted(root)} ` : ''}npm run setup\` in ${installationRoot} to create a starter profile, or write the manifest yourself (format: ${PROFILE_GUIDE}).`
+            : `The profile manifest ${path} is a symbolic link to ${link}, which does not exist. Restore the link target or replace the link with the manifest.`,
       })
+    }
     const manifest = yield* fs.readFileString(path).pipe(
       Effect.mapError(error => toProfileError(error, `Cannot read the profile manifest ${path}`)),
       Effect.flatMap(text =>
@@ -163,19 +157,9 @@ export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem
             message: `Unknown profile "${name}". Choose one of: ${names.join(', ')} (defined in ${path}).`,
           })
         const soulPath = join(root, definition.soul)
-        const skills = definition.skills.map(skill => ({
-          label: `skill ${skill}`,
-          path: join(root, skill),
-        }))
-        const required: readonly RequiredResource[] = [
-          { label: 'shared workflow skills', path: sharedSkills },
-          { label: `SOUL of profile "${name}"`, path: soulPath },
-          ...skills,
-        ]
-        const missing = yield* missingResources(fs, required)
-        if (missing.length > 0)
+        if (!(yield* fs.exists(soulPath)))
           return yield* new ProfileError({
-            message: `Profile "${name}" is unavailable; missing ${missing.map(({ label, path: resource }) => `${label} at ${resource}`).join(', ')}. Restore the resource or change its entry in ${path}.`,
+            message: `Profile "${name}" is unavailable: its SOUL ${soulPath} is missing. Restore the file or change its entry in ${path}.`,
           })
         const guidance = yield* fs
           .readFileString(soulPath)
@@ -186,8 +170,7 @@ export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem
           )
         return {
           name,
-          required,
-          skillPaths: [...skills.map(({ path: skill }) => skill), sharedSkills],
+          skillPaths: [...(definition.skills ?? []).map(skill => join(root, skill)), sharedSkills],
           soulPath,
           guidance,
         } satisfies Profile
@@ -197,6 +180,49 @@ export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem
     )
     return { manifestPath: path, defaultProfile: manifest.default, names, load }
   })
+
+const linkTarget = (fs: FileSystem.FileSystem, path: string) =>
+  fs.readLink(path).pipe(Effect.orElseSucceed(() => undefined))
+
+const occupied = (fs: FileSystem.FileSystem, path: string) =>
+  Effect.flatMap(linkTarget(fs, path), target =>
+    target === undefined ? fs.exists(path) : Effect.succeed(true)
+  )
+
+const shellQuoted = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
+
+const publishOnce = (fs: FileSystem.FileSystem, target: string, content: string) => {
+  const staged = `${target}.${process.pid}-${randomUUID()}.partial`
+  return fs.writeFileString(staged, content, { flag: 'wx' }).pipe(
+    Effect.andThen(fs.link(staged, target)),
+    Effect.as(true),
+    Effect.catchIf(
+      error => error.reason._tag === 'AlreadyExists',
+      () => Effect.succeed(false)
+    ),
+    Effect.ensuring(fs.remove(staged, { force: true }).pipe(Effect.ignore))
+  )
+}
+
+export const createStarterProfile: Effect.Effect<
+  readonly string[],
+  ProfileError,
+  FileSystem.FileSystem
+> = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const root = yield* profilesRoot
+  const manifest = join(root, MANIFEST_FILE)
+  if (yield* occupied(fs, manifest)) return []
+  const created: string[] = []
+  for (const file of STARTER_FILES) {
+    const target = join(root, file)
+    const content = yield* fs.readFileString(join(starterRoot, file))
+    if (yield* occupied(fs, target)) continue
+    yield* fs.makeDirectory(dirname(target), { recursive: true })
+    if (yield* publishOnce(fs, target, content)) created.push(target)
+  }
+  return created
+}).pipe(Effect.mapError(error => toProfileError(error, 'Cannot create the starter profile')))
 
 const projectSkillPathCandidates = (
   cwd: string,
@@ -237,11 +263,16 @@ export const composeResources: (
     const candidates = [...projectPaths, ...options.profile.skillPaths]
     const canonical = yield* Effect.forEach(
       candidates,
-      path => fs.realPath(path).pipe(Effect.map(resolved => ({ path, resolved }))),
+      path =>
+        fs.realPath(path).pipe(
+          Effect.map(resolved => ({ path, resolved })),
+          Effect.orElseSucceed(() => ({ path, resolved: undefined }))
+        ),
       { concurrency: 'unbounded' }
     )
     const seen = new Set<string>()
     const paths = canonical.flatMap(({ path, resolved }) => {
+      if (resolved === undefined) return [path]
       if (seen.has(resolved)) return []
       seen.add(resolved)
       return [path]

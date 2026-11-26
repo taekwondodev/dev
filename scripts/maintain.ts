@@ -3,7 +3,6 @@ import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Arr from 'effect/Array'
 import * as Cause from 'effect/Cause'
-import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
@@ -18,6 +17,8 @@ import { WorkspaceAuthority } from '../src/workspace-authority.ts'
 import { defaultAuthorityRoot } from '../src/workspace-authority-root.ts'
 import { cleanupUpgradeWorkspace } from '../src/workspace-upgrade.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
+import { createStarterProfile, manifestPath, PROFILE_GUIDE } from '../src/profiles.ts'
+import { paint, terminalStyle } from '../src/quit-display.ts'
 import { checkout, checkoutIsClean, git, npmInstallFlags, run, streamed } from './checkout.ts'
 import { updatePi } from './pi-upgrade.ts'
 import { lastLines } from './report.ts'
@@ -68,6 +69,17 @@ const buildNative = Effect.try({
   catch: cause => failed('Cannot build the native addon', cause),
 }).pipe(Effect.flatMap(artifact => say(`native addon ready at ${artifact}\n`)))
 
+const reportProfiles = Effect.fnUntraced(function* (created: readonly string[]) {
+  const manifest = yield* manifestPath
+  const style = terminalStyle(process.stdout, process.env)
+  const guide = `${paint(style, 'dim', 'format:')} ${PROFILE_GUIDE}\n`
+  if (created.length === 0)
+    return yield* say(`${paint(style, 'bold', 'profiles:')} kept ${manifest}\n${guide}`)
+  yield* say(
+    `${paint(style, 'ok', 'created starter profile:')}\n${created.map(path => `  ${paint(style, 'bold', path)}\n`).join('')}Edit the SOUL to change the guidance; add profiles and skills in the manifest.\n${guide}`
+  )
+})
+
 const setup = Effect.fnUntraced(
   function* (requestedDataHome: Option.Option<string>) {
     const fs = yield* FileSystem.FileSystem
@@ -78,26 +90,11 @@ const setup = Effect.fnUntraced(
     const pi = yield* resolvePiPackage
     yield* linkPiDeclarations
     yield* buildNative
-    const home = yield* Config.option(
-      Config.String('HOME').pipe(Config.orElse(() => Config.String('USERPROFILE')))
-    )
-    if (Option.isNone(home))
-      return yield* new MaintenanceError({
-        message: 'HOME is required to inspect shared workflow skills',
-      })
-    const shared = yield* Config.String('DEV_SHARED_SKILLS').pipe(
-      Config.withDefault(`${home.value}/Developer/skills`)
-    )
     yield* fs.makeDirectory(dataHome, { recursive: true, mode: 0o700 })
     yield* sessionDir(dataHome)
     const observation = {
       node: process.version,
       pi: { version: pi.version, root: pi.root },
-      sharedWorkflow: {
-        path: shared,
-        revision: yield* git(['-C', shared, 'rev-parse', 'HEAD']),
-        dirty: (yield* git(['-C', shared, 'status', '--porcelain'])) !== '',
-      },
     }
     yield* fs.writeFileString(
       join(dataHome, 'dependency-observation.json'),
@@ -105,6 +102,7 @@ const setup = Effect.fnUntraced(
       { mode: 0o600 }
     )
     yield* say(`setup recorded dependencies in ${dataHome}\n`)
+    yield* reportProfiles(yield* createStarterProfile)
   },
   Effect.scoped,
   Effect.mapError(error =>

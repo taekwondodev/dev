@@ -288,7 +288,7 @@ try {
         assert.deepEqual(
           own.view.resources?.resources.map(({ source, path }) => [source, path]),
           [
-            [fixture.profiles.skillProfile, fixture.profiles.skillPath],
+            [fixture.profiles.skillProfile, fixture.profiles.skillsPath],
             [fixture.profiles.skillProfile, fixture.skills],
           ]
         )

@@ -1,5 +1,5 @@
 import { FIXTURE_MANIFEST, writeProfileFixture } from '../profile-fixture.ts'
-import { MANIFEST_FILE } from '../../src/profiles.ts'
+import { createStarterProfile, MANIFEST_FILE } from '../../src/profiles.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -23,8 +23,11 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type * as Pi from '@earendil-works/pi-coding-agent'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 import { acquireRuntime } from '../../src/runtime-coordination.ts'
 import { loadInstalledPi, makeClaims } from './workspace-check-support.ts'
@@ -60,6 +63,21 @@ const authorityFiles = (root: string) =>
       return `${relative(root, path)} ${createHash('sha256').update(readFileSync(path)).digest('hex')}`
     })
     .toSorted()
+
+const createStarter = (root: string) =>
+  Effect.runPromise(
+    createStarterProfile.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          ConfigProvider.layer(ConfigProvider.fromEnv({ env: { DEV_PROFILES: root } }))
+        )
+      )
+    )
+  )
+const starterTemplateFile = join(devRoot, 'templates', 'profiles', 'general', 'SOUL.md')
+const starterTemplate = (file: string) =>
+  readFileSync(join(devRoot, 'templates', 'profiles', file), 'utf8')
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'dev-workspace-launcher-check-')))
 const profiles = writeProfileFixture(join(sandbox, 'profiles'))
@@ -973,7 +991,11 @@ try {
     'dev refuses startup naming the manifest when it is missing, malformed or names an undefined default, and an unknown profile name lists the defined ones with that manifest',
     async () => {
       const refusals: readonly (readonly [string, string | object | undefined, RegExp])[] = [
-        ['missing', undefined, /^Cannot load profiles: No profile manifest at /],
+        [
+          'missing',
+          undefined,
+          /^Cannot load profiles: No profile manifest at .+\. Run `.*npm run setup` in .+ to create a starter profile/,
+        ],
         ['malformed', '{ "default": ', /^Cannot load profiles: Invalid profile manifest /],
         [
           'undefined-default',
@@ -992,7 +1014,30 @@ try {
         assert.equal(refused.code, 1, `${name}: ${refused.stdout}`)
         assert.match(refused.stderr, expected, name)
         assert.ok(refused.stderr.includes(join(root, MANIFEST_FILE)), `${name}: ${refused.stderr}`)
+        if (manifest === undefined)
+          assert.ok(
+            refused.stderr.includes(`\`DEV_PROFILES='${root}' npm run setup\``),
+            refused.stderr
+          )
       }
+      const relativeRoot = join(sandbox, "profiles relative 'override'")
+      const relativeRefusal = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: relative(devRoot, relativeRoot),
+      })
+      assert.equal(relativeRefusal.code, 1, relativeRefusal.stdout)
+      const printed = /Run `DEV_PROFILES=((?:'[^']*'|\\')+) npm run setup`/.exec(
+        relativeRefusal.stderr
+      )?.[1]
+      if (printed === undefined) throw new Error(relativeRefusal.stderr)
+      const followed = execFileSync('/bin/sh', ['-c', `printf %s ${printed}`], {
+        cwd: sandbox,
+        encoding: 'utf8',
+      })
+      assert.ok(followed.startsWith('/'), followed)
+      assert.ok(
+        (await createStarter(followed)).includes(join(relativeRoot, MANIFEST_FILE)),
+        'following the printed setup setting creates the reported manifest'
+      )
       const unknown = await withOptions(
         ['--diagnostics', '--cwd', repo, '--profile', 'absent'],
         manifestData
@@ -1007,29 +1052,107 @@ try {
     }
   )
   await claim(
-    'a selected profile whose required skill directory is missing, or whose SOUL cannot be read, refuses startup naming the resource and the manifest without suggesting another profile, while a profile of the same manifest that does not need it starts',
+    'the starter profile is created only where no manifest or manifest link exists, never replaces a file, and starts dev with general as the configured default without the shared skill library; a dangling manifest link refuses startup naming its target',
+    async () => {
+      const root = join(sandbox, 'profiles-starter')
+      const soul = join(root, 'general', 'SOUL.md')
+      const manifest = join(root, MANIFEST_FILE)
+      assert.deepEqual(await createStarter(root), [soul, manifest])
+      assert.deepEqual(JSON.parse(readFileSync(manifest, 'utf8')), {
+        default: 'general',
+        profiles: { general: { soul: 'general/SOUL.md' } },
+      })
+      assert.equal(readFileSync(manifest, 'utf8'), starterTemplate(MANIFEST_FILE))
+      assert.equal(readFileSync(soul, 'utf8'), starterTemplate(join('general', 'SOUL.md')))
+      assert.match(readFileSync(soul, 'utf8'), /^# Interaction\n/)
+      assert.ok(!readFileSync(soul, 'utf8').includes('dev-cycle'), 'no development section')
+      const bareHome = join(sandbox, 'starter-home')
+      mkdirSync(bareHome)
+      const started = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: root,
+        HOME: bareHome,
+      })
+      assert.equal(started.code, 0, started.stderr)
+      assert.match(started.stdout, /^selection: general \(configured default\)$/m)
+      assert.ok(started.stdout.includes(`SOUL.md: ${soul}\n`), started.stdout)
+      assert.ok(
+        started.stdout.includes(`general: ${join(bareHome, '.agents', 'skills')}\n`),
+        'the missing shared skill library is handed to Pi'
+      )
+      assert.deepEqual(await createStarter(root), [])
+      assert.equal(readFileSync(manifest, 'utf8'), starterTemplate(MANIFEST_FILE))
+
+      const ownSoul = join(sandbox, 'profiles-own-soul')
+      mkdirSync(join(ownSoul, 'general'), { recursive: true })
+      writeFileSync(join(ownSoul, 'general', 'SOUL.md'), 'own guidance\n')
+      chmodSync(join(ownSoul, 'general'), 0o555)
+      try {
+        assert.deepEqual(await createStarter(ownSoul), [join(ownSoul, MANIFEST_FILE)])
+      } finally {
+        chmodSync(join(ownSoul, 'general'), 0o755)
+      }
+      assert.equal(readFileSync(join(ownSoul, 'general', 'SOUL.md'), 'utf8'), 'own guidance\n')
+
+      const configured = join(sandbox, 'profiles-configured')
+      const fixture = writeProfileFixture(configured)
+      const before = readFileSync(fixture.manifestPath, 'utf8')
+      assert.deepEqual(await createStarter(configured), [])
+      assert.equal(readFileSync(fixture.manifestPath, 'utf8'), before)
+      assert.ok(!existsSync(join(configured, 'general')), 'no starter SOUL beside a manifest')
+
+      const dangling = join(sandbox, 'profiles-dangling')
+      mkdirSync(dangling)
+      const target = join(sandbox, 'moved-manifest.json')
+      symlinkSync(target, join(dangling, MANIFEST_FILE))
+      assert.deepEqual(await createStarter(dangling), [])
+      assert.deepEqual(readdirSync(dangling), [MANIFEST_FILE])
+      const belowFile = join(sandbox, 'profiles-link-below-file')
+      mkdirSync(belowFile)
+      symlinkSync(join(starterTemplateFile, 'manifest.json'), join(belowFile, MANIFEST_FILE))
+      assert.deepEqual(await createStarter(belowFile), [])
+      assert.deepEqual(readdirSync(belowFile), [MANIFEST_FILE])
+      const refused = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
+        DEV_PROFILES: dangling,
+      })
+      assert.equal(refused.code, 1, refused.stdout)
+      assert.ok(
+        refused.stderr.includes(
+          `The profile manifest ${join(dangling, MANIFEST_FILE)} is a symbolic link to ${target}, which does not exist.`
+        ),
+        refused.stderr
+      )
+    }
+  )
+  await claim(
+    'a selected profile whose skill directories are missing, repeated or below a file starts and hands every such path to Pi in manifest order, while a SOUL that cannot be read refuses startup naming the file without suggesting another profile',
     async () => {
       const root = join(sandbox, 'profiles-missing-skill')
       writeProfileFixture(root, {
         ...FIXTURE_MANIFEST,
         profiles: {
           ...FIXTURE_MANIFEST.profiles,
-          stack: { soul: 'stack/SOUL.md', skills: ['stack/skills/absent'] },
+          stack: {
+            soul: 'stack/SOUL.md',
+            skills: ['stack/skills/absent', 'base/SOUL.md/nested', 'stack/skills/absent'],
+          },
         },
       })
-      const refused = await withOptions(
+      const missingSkill = await withOptions(
         ['--diagnostics', '--cwd', repo, '--profile', profiles.skillProfile],
         manifestData,
         { DEV_PROFILES: root }
       )
-      assert.equal(refused.code, 1, refused.stdout)
-      assert.ok(
-        refused.stderr.includes(
-          `Profile "stack" is unavailable; missing skill stack/skills/absent at ${join(root, 'stack', 'skills', 'absent')}. Restore the resource or change its entry in ${join(root, MANIFEST_FILE)}.`
-        ),
-        refused.stderr
+      assert.equal(missingSkill.code, 0, missingSkill.stderr)
+      const absent = join(root, 'stack', 'skills', 'absent')
+      assert.equal(
+        missingSkill.stdout.split('resource paths:\n')[1]?.trim(),
+        [
+          `stack: ${absent}`,
+          `stack: ${join(root, 'base', 'SOUL.md', 'nested')}`,
+          `stack: ${absent}`,
+          `stack: ${join(optionHome, '.agents', 'skills')}`,
+        ].join('\n')
       )
-      assert.ok(!refused.stderr.includes('--profile'), 'no other profile is suggested')
       const started = await withOptions(['--diagnostics', '--cwd', repo], manifestData, {
         DEV_PROFILES: root,
       })
@@ -1048,6 +1171,7 @@ try {
           ),
           unreadable.stderr
         )
+        assert.ok(!unreadable.stderr.includes('--profile'), 'no other profile is suggested')
       } finally {
         chmodSync(unreadableSoul, 0o600)
       }
@@ -1068,13 +1192,13 @@ try {
       const shared = join(optionHome, '.agents', 'skills')
       assert.equal(
         composed.stdout.split('resource paths:\n')[1]?.trim(),
-        [`stack: ${profiles.skillPath}`, `stack: ${shared}`].join('\n')
+        [`stack: ${profiles.skillsPath}`, `stack: ${shared}`].join('\n')
       )
       const resourceRepo = join(sandbox, 'resource-repo')
       mkdirSync(resourceRepo)
       initRepository(resourceRepo)
       mkdirSync(join(resourceRepo, '.pi'))
-      symlinkSync(profiles.skillPath, join(resourceRepo, '.pi', 'skills'))
+      symlinkSync(profiles.skillsPath, join(resourceRepo, '.pi', 'skills'))
       mkdirSync(join(resourceRepo, '.agents', 'skills'), { recursive: true })
       const deduplicated = await withOptions(
         ['--diagnostics', '--cwd', resourceRepo, '--profile', profiles.skillProfile],
