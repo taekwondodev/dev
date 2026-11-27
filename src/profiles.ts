@@ -53,7 +53,7 @@ const installationRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
 const DEFAULT_MANIFEST = join(installationRoot, 'config', 'default-profiles.json')
 
-export const PROFILE_GUIDE = `${join(installationRoot, 'docs', 'launcher.md')}, section "Profiles and resources"`
+export const PROFILE_GUIDE = join(installationRoot, 'docs', 'launcher-profiles.md')
 
 const toProfileError = (error: unknown, operation: string): ProfileError =>
   error instanceof ProfileError

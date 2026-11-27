@@ -6,7 +6,7 @@ Issues, specs and implementation tickets live in `taekwondodev/dev` on GitHub. U
 
 Complete an existing capture by updating its body in place, preserving its number and comments. Use [triage-labels.md](triage-labels.md) for exact category, readiness and activity names; quick captures remain incomplete until a full spec exists.
 
-Specs and implementation tickets are GitHub issues. A ticket names the affected [components](../ARCHITECTURE.md#components) and the behavior to build. Use the shared `to-spec`, `to-tickets` and `implement` procedures for their content and phase gates.
+A ticket names the affected [components](../ARCHITECTURE.md#components) and the behavior to build. Use the shared `to-spec`, `to-tickets` and `implement` procedures for their content and phase gates.
 
 ## Relationships
 

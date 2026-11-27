@@ -1,6 +1,6 @@
 # Read URL
 
-`read_url` returns a documentation page's text with sources. It works in this conversation and for delegated agents, directly or through codemode. If a normal fetch is not enough, dev uses a separate copy of your signed-in Chrome profile under the [browser security boundary](../SECURITY.md#browser-profile-copy).
+`read_url` returns a documentation page's text with sources. It works in this conversation and for delegated agents, directly or through codemode. If a normal fetch is not enough, dev uses a separate copy of your signed-in Chrome profile under the [browser security boundary](web-read-security.md#browser-profile-copy).
 
 ## Use
 
@@ -20,13 +20,13 @@ dev browser enable     # allow authenticated rendering again
 
 ## Retrieval
 
-Static retrieval prefers origin Markdown, accepts plain text and otherwise extracts readable HTML into text with headings, code blocks, lists, tables and absolute links. Usable static content never launches a browser.
+Static retrieval prefers origin Markdown, accepts plain text and otherwise extracts readable HTML into text with headings, code blocks, lists, tables and absolute links.
 
-Chrome is used when extracted text is thin on a script-dependent page or the origin answers 401, 403, 429 or 503. A browser result says that Chrome used a separate copy of your signed-in profile. When Chrome is missing, disabled or unavailable, the static result is returned with that limitation.
+Only an HTML response can launch Chrome: when its extracted text is thin on a script-dependent page, or when the origin answers 401, 403, 429 or 503. A redirect to an invalid location also goes to Chrome, with no static result to fall back on. A browser result says that Chrome used a separate copy of your signed-in profile. When Chrome or the profile copy cannot render, for example because Chrome is missing or disabled, the static result is returned with that limitation. When the browser service itself fails or times out, the read fails.
 
 Reads have body, time and concurrency limits; a cut body is reported as `partial`, and exhausted capacity or time is reported explicitly. Aborting cancels the static read, browser wait or render and closes only that render's pages; a Chrome launch already in progress completes first. A page posting a body of tens of megabytes can stall its render until timeout; the next read relaunches Chrome if needed.
 
-Destinations must satisfy the [network policy](../SECURITY.md#network-policy). Fetched content is untrusted text, including when the page was read through your account.
+Destinations must satisfy the [network policy](web-read-security.md#network-policy), which also covers how to treat fetched content.
 
 ## Documents and continuation
 
@@ -66,4 +66,4 @@ Keep `owner.sqlite` and `profile.sqlite` in place: unlinking a lock database whi
 | `<data-home>/browser/owner.sqlite`    | Browser-owner lock database                     |
 | `<data-home>/browser/owner.json`      | Published browser-owner connection and identity |
 
-The copy contains authentication data and is as sensitive as your Chrome profile. [SECURITY](../SECURITY.md#browser-profile-copy) owns what is copied, account sharing and protection limits; [Architecture](ARCHITECTURE.md#components) locates the implementation.
+The copy contains authentication data and is as sensitive as your Chrome profile. [Read URL security](web-read-security.md#browser-profile-copy) owns what is copied, account sharing and protection limits; [Architecture](ARCHITECTURE.md#components) locates the implementation.

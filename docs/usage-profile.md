@@ -13,9 +13,9 @@ npm run profile -- --period 2026-09-01..2026-10-01
 npm run profile -- --period ..2026-09-01 --period 2026-09-01..
 ```
 
-The default data home is the launcher's [private storage](launcher.md#state). Reports include retained lead and child sessions, abandoned branches and interrupted work. Copied fork history is not counted again.
+The default data home is the launcher's [private storage](launcher-state.md#state). Reports include retained lead and child sessions, abandoned branches and interrupted work. Copied fork history is not counted again.
 
-[Automatic cleanup](launcher.md#automatic-history-cleanup) reduces historical coverage: deleted conversations do not contribute to regenerated reports. Files that disappear before they can be opened are skipped.
+[Automatic cleanup](launcher-state.md#automatic-history-cleanup) reduces historical coverage: deleted conversations do not contribute to regenerated reports. Files that disappear before they can be opened are skipped.
 
 Periods use UTC dates, with the start included and the end excluded; either end may be omitted. Multiple periods compare later selections with the first. A selection with nothing measurable fails without changing saved reports.
 
