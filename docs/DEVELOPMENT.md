@@ -1,6 +1,6 @@
 # Develop dev
 
-This guide is for changing dev itself. Daily operation starts in the [README](../README.md) and [launcher](launcher.md). Dev source and npm dependencies belong in the installation checkout, not in projects where dev runs.
+This guide is for changing dev itself. Daily operation starts in the [README](../README.md) and [launcher](launcher.md). Dev source and npm dependencies belong in the installation checkout, not in projects where dev runs. [Documentation](documentation.md) assigns each meaning its owner; [private state maintenance](private-state.md) covers relocating and discarding dev's data.
 
 ## Setup
 
@@ -12,9 +12,9 @@ npm run lint
 npm start
 ```
 
-`npm start` and `npm run dev` work on this checkout; use `--cwd` to work elsewhere. `npm link --ignore-scripts` links the `dev` command to the checkout, so edits take effect on the next launch.
+`npm start` and `npm run dev` work on this checkout; use `--cwd` to work elsewhere. [Linking](launcher.md#maintenance) points the `dev` command at the checkout.
 
-TypeScript sources are strict and erasable, run directly through Node type stripping. No TypeScript build is needed. `package.json` owns the Node minimum and pinned Effect and Pi versions. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
+TypeScript sources are strict and erasable, run directly through Node type stripping. No TypeScript build is needed. `package.json` owns the Node minimum and the pinned Effect version. Follow the [Effect reading rule](../AGENTS.md#learning-more-about-effect) before writing Effect code.
 
 ### Native addon
 
@@ -26,7 +26,7 @@ Install Pi with the [pi.dev installer](https://pi.dev). Dev follows `pi` on `PAT
 
 Dev and its delegated agents load Pi directly from the managed release. The ignored `node_modules/@earendil-works` link is only for TypeScript declarations from that same release. Checks and setup create it; run `npm run types:pi` to refresh editor declarations without running checks. Restore missing declarations through the link rather than adding ambient types or a private Pi copy. `DEV_PI_RELEASE` selects another managed release for both runtime and checking.
 
-Before `npm install` or `npm uninstall`, remove the link if present. Otherwise npm can prune the packages it points to in the Pi installation. `npm run pi:update` uses a fresh worktree, so it does not need this step.
+Before `npm install` or `npm uninstall`, remove the link if present. Otherwise npm can prune the packages it points to in the Pi installation. `npm run pi:update` removes its worktree's `node_modules` before installing, so it does not need this step.
 
 ### Pi integration limits
 
@@ -34,29 +34,29 @@ Forking before the first user message can fail after a workspace handoff. [Issue
 
 ## Find the owner
 
-[Architecture](ARCHITECTURE.md#components) maps source areas to their behavior guides. [AGENTS.md](../AGENTS.md#read-for-the-change) supplies mandatory reading triggers. Use the [documentation ownership table](#documentation-ownership) when the change affects more than code.
+[Architecture](ARCHITECTURE.md#components) maps source areas to their behavior guides. [AGENTS.md](../AGENTS.md#read-for-the-change) supplies mandatory reading triggers. Use the [documentation ownership table](documentation.md#documentation-ownership) when the change affects more than code.
 
 ## Verification
 
 Choose checks for the affected boundary. Suite composition is in [the check runner](../tests/run-checks.ts); these are their purposes and non-obvious limits.
 
-The runner links the Pi declarations once, then runs every selected check file, lint pass and pseudo-terminal probe as one job queue, as many at once as the machine has cores, longest first by the previous run's durations. On macOS every job's `TMPDIR` is a RAM disk the runner mounts for the run and ejects afterwards, also on interruption, and a later run ejects one left by a killed runner: authority and gate databases publish with `F_FULLFSYNC`, which on the real disk dominated the slowest checks and made concurrent ones contend. Checks therefore prove behavior, not on-disk durability. One invocation beats sequential ones: `npm run check` runs every suite below except `workspace:github`, `node tests/run-checks.ts <suite>...` runs several named suites together and `--all` runs every suite. `--report=<path>` also writes each job's suite, rerun command, result, time and output as JSON. Output is printed per job after all finish, then one status line per job with failed jobs last, then the pass and fail totals as the final line, so the end of the output alone shows the result and which jobs failed.
+The runner links the Pi declarations once, then runs every selected check file, lint pass and pseudo-terminal probe as one job queue, as many at once as the machine has cores, longest first by the previous run's durations. On macOS the runner sets every job's `TMPDIR` to a RAM disk it mounts for the run, and leaves `TMPDIR` unchanged when mounting fails. The runner ejects the disk afterwards, also on interruption, and a later run ejects one left by a killed runner: authority and gate databases publish with `F_FULLFSYNC`, which on the real disk dominated the slowest checks and made concurrent ones contend. Checks therefore prove behavior, not on-disk durability. One invocation beats sequential ones: `npm run check` runs every suite below except `workspace:github`, `node tests/run-checks.ts <suite>...` runs several named suites together and `--all` runs every suite. `--report=<path>` also writes each job's suite, rerun command, result, time and output as JSON. Output is printed per job after all finish, then one status line per job with failed jobs last, then the pass and fail totals as the final line, so the end of the output alone shows the result and which jobs failed.
 
 Tests follow integration boundaries and use disposable storage. Profile fixtures come from `tests/profile-fixture.ts` through `DEV_PROFILES`, so checks also run in worktrees without personal profiles. Keep scripted models, injected resolvers and fault controls in test composition roots; production must not load test entries or test-selection variables.
 
-| Check                      | Evidence                                                                                                                                                                                                         |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run lint`             | ShellCheck on `scripts/*.sh` as POSIX `sh`, type checking, strict Effect diagnostics and the type-aware and general Oxlint passes with warnings as errors                                                        |
-| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                                                                                        |
-| `npm run smoke`            | Launcher diagnostics, upgrade cleanup and the one-line installer on disposable storage with stubbed downloads, and dev-internal terms in tool declarations, without a model response                             |
-| `npm run cleanup:check`    | Conversation quotas, preference publication exclusion, fenced deletion, conversation lock removal and detached cleanup survival on disposable storage                                                            |
-| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                                                                                                |
-| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                                                                                                            |
-| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                                                                                                    |
-| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                                                                                                 |
-| `npm run work:check`       | Native-session compaction, native addon build and process observation, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery                                  |
-| `npm run web:check`        | URL policy, pinned retrieval, extraction, continuation, the installed Chrome on a fixture profile copy, the shared browser owner with concurrent independent clients, and direct/codemode reads through the host |
-| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                                                                                               |
+| Check                      | Evidence                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `npm run lint`             | ShellCheck on `scripts/*.sh` as POSIX `sh`, type checking, strict Effect diagnostics and the type-aware and general Oxlint passes with warnings as errors                            |
+| `npm run format:check`     | Formatting without writes; `format` and `lint:fix` are explicit mutations                                                                                                            |
+| `npm run smoke`            | Launcher diagnostics, upgrade cleanup and the one-line installer on disposable storage with stubbed downloads, and dev-internal terms in tool declarations, without a model response |
+| `npm run cleanup:check`    | Conversation quotas, preference publication exclusion, fenced deletion, conversation lock removal and detached cleanup survival on disposable storage                                |
+| `npm run profile:check`    | Usage reports, interpretation and private/export boundaries on fixture data homes                                                                                                    |
+| `npm run workspace:check`  | Completion decisions, authority, release, sweeps, process adapters and headless Pi host/session flows                                                                                |
+| `npm run workspace:tui`    | Real Pi TUI under a pseudo-terminal, including compaction, lifecycle, quit and release probes                                                                                        |
+| `npm run workspace:github` | Real read-only GitHub evidence reader against a public merged PR                                                                                                                     |
+| `npm run work:check`       | Native-session compaction, native addon build and process observation, dispatch, attempt persistence, real children on an offline scripted model and lead-side outcome delivery      |
+| `npm run web:check`        | URL policy, pinned retrieval, extraction, continuation, Chrome rendering, the shared browser owner with concurrent independent clients, and direct/codemode reads through the host   |
+| `npm run dev:probe`        | SDK runtime creation without a TUI                                                                                                                                                   |
 
 `workspace:github` is the only check that contacts an external service. It is outside the recurring workspace suite; run it when the GitHub reader or its adapter facts change, because fakes cannot establish that integration. An upgrade runs it with every other suite.
 
@@ -64,7 +64,7 @@ Tests follow integration boundaries and use disposable storage. Profile fixtures
 
 Use the actual TUI for interactive behavior. The Python pseudo-terminal driver exists because Node has no built-in pty; it drives TypeScript fixtures. To run one probe, use `python3 tests/workspace/run-workspace-pty-probes.py <name>`; `--list` prints the supported names. Match proof to the change rather than adding a test or benchmark campaign by default.
 
-The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. The same file rejects fixed delays in checks and, in `src/`, sentences that use a dev-internal term; neither rule has an allowlist. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
+The source-comment policy in `scripts/code-policy.ts` allows shebangs and comment-like literal text, but rejects source comments without fixing files. The same file rejects fixed delays in checks, with no allowlist, and holds the `dev/no-internal-terms` rule described below. Express intent through names and structure; put non-obvious architectural rationale in its owning ADR. Effect execution and unsafe channel-narrowing checks are terminal errors, not merely editor diagnostics. `lint:effect` keeps `--strict` to reject warnings too; it does not enable disabled rules or reject suggestions.
 
 The `dev/no-internal-terms` rule rejects the internal terms in the sentences and message labels of `src/`; the rule owns what it checks. [`scripts/model-text-terms.ts`](../scripts/model-text-terms.ts) owns the vocabulary: each group of internal terms with its model-visible wording, or the instruction to leave it out. The rule's pattern and its error derive from that list, so a new term gets its wording there. The rule follows a `const` only within its file, so a word that reaches a sentence through an import, a function result or a saved value follows the same vocabulary by review. [The model text check](../tests/model-text-check.ts) covers structured keys, the values of enumerations that sentences interpolate and a sample of rendered results. Add an enumeration to that check when a sentence starts to interpolate it.
 
@@ -74,7 +74,7 @@ The separate type-aware configuration, `.oxlintrc-type-aware.json`, lists its ru
 
 In `.oxlintrc.json`, `prefer-const` skips a variable read before its single assignment, because a closure that reads it before the value exists cannot use `const`. `promise/always-return` skips the last callback of a chain, because nothing consumes its value.
 
-When addressing lint diagnostics, preserve the [Effect boundary decisions](adr/0005-scoped-runtime-coordination.md#effect-boundary). A lint-driven runtime rewrite needs a demonstrated correctness need or measured benefit, not stylistic preference alone.
+When addressing lint diagnostics, preserve the [Effect boundary decisions](adr/0009-effect-boundary.md). A lint-driven runtime rewrite needs a demonstrated correctness need or measured benefit, not stylistic preference alone.
 
 ## Upgrades
 
@@ -88,7 +88,7 @@ Keep API dependencies in their adapters and regression tests, not a second API i
 
 ### Pi contract pages
 
-`scripts/pi-upgrade.ts` reads the following links directly from this file and compares their shipped copies. Keep this list here. Online `main` pages are discovery references; the installed package is authoritative for the pinned release.
+`scripts/pi-upgrade.ts` reads the following links directly from this file and compares their shipped copies. Keep this list here. Online `main` pages are discovery references; the installed package is authoritative for the release in use.
 
 - [README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)
 - [Skills](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md)
@@ -100,49 +100,3 @@ Keep API dependencies in their adapters and regression tests, not a second API i
 - [Compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
 - [Codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)
 - [Security](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/security.md)
-
-## Documentation ownership
-
-Update the owner of each meaning; link to it from other artifacts. Issues and PRs retain the scope and evidence of a change. Maintained documentation describes the current system, with links to those records where the history matters.
-
-| Artifact                      | Owns                                                                                           |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| GitHub issue                  | Problem, scope, requirements, acceptance criteria and unresolved decisions for a piece of work |
-| Pull request                  | Implementation scope, review discussion and verification evidence for that change              |
-| `docs/adr/`                   | Accepted architectural choices, alternatives and enduring rationale                            |
-| `CONTEXT.md`                  | Domain terms and distinctions                                                                  |
-| `scripts/model-text-terms.ts` | Internal terms kept out of model-visible text and the wording that replaces each               |
-| `AGENTS.md`                   | Repository-wide agent guardrails and conditional reading triggers                              |
-| `docs/agents/`                | Repository-specific tracker, label, delivery and domain conventions                            |
-| `docs/ARCHITECTURE.md`        | Current component responsibilities and a decision-record index                                 |
-| `README.md`                   | Project introduction, installation entry point and documentation navigation                    |
-| Feature guide                 | Use, observable behavior, limits and recovery for one capability                               |
-| `SECURITY.md`                 | Trusted base, extension review requirements and protection limits                              |
-| `docs/DEVELOPMENT.md`         | Contributor setup, verification and maintenance conventions                                    |
-| Code, tests and configuration | Exact APIs, algorithms, schemas and executable defaults                                        |
-| Shared workflow library       | Portable development procedures and skill contracts                                            |
-
-When adding a tool, link its guide from the component map and add a conditional reading trigger in `AGENTS.md`. Choose headings for the user's task; a feature guide is not an implementation walkthrough or test plan. Refer to tool declarations and configuration for field inventories and exact defaults. Native Pi commands need documentation here only where dev changes them.
-
-Use the shared `domain-modeling` necessity gate and format for ADRs. New ADRs take the next number, link the accepted decision and appear in the architecture index.
-
-## Private-state relocation
-
-Stop dev runtimes and inventory dev-owned metadata before moving private state. Preserve permissions, update operational pointers into the moved data home and leave historical conversation text unchanged. Credentials, profiles and the Pi installation remain outside the operation under [AGENTS.md](../AGENTS.md#boundaries). Keep `.dev/` untracked and protect explicit data-home overrides independently. Revision changes must also satisfy [maintenance admission](launcher.md#maintenance).
-
-## Discard obsolete state
-
-Dev has one current schema. Follow [AGENTS.md](../AGENTS.md#boundaries) when changing a dev-owned format: replace it in place and delete old-shape data in the same change. Startup validates current layout and identity, refuses damaged or non-canonical storage, and never migrates or resets it.
-
-Stop affected runtimes and maintenance operations before deleting state, then restart on the current code. In particular, unlinking a lock database held by a running process splits ownership across inodes. Leave coordination databases on disk during normal operation.
-
-| Changed format                                   | Delete                                                                                                                            |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace authority, including managed worktrees | `~/Library/Application Support/dev/workspace-authority/`, then `git worktree prune` in each repository that had managed worktrees |
-| Attempt state                                    | `<data-home>/work/attempts.sqlite` and its `-wal`, `-shm`, `-journal` sidecars, plus `<data-home>/work/attempts/`                 |
-| Dev metadata in conversations                    | `<data-home>/sessions/` and `<data-home>/child-sessions/`                                                                         |
-| Profile preferences                              | `<data-home>/preferences/`                                                                                                        |
-| Usage reports                                    | `<data-home>/usage/`                                                                                                              |
-| Installation and conversation locks              | `<installation>/.dev/coordination/`, independent of data-home overrides                                                           |
-
-Cover the default `.dev/` data home and every explicit `--data-home` or `DEV_DATA_HOME` override in use. A conversation file opened with `--resume PATH` can live outside those directories: delete each such file dev wrote in the old format, or keep it as Pi history and do not resume it in dev. Leave unrelated Pi history alone. Current identity, ownership, revision and release-decision fences remain required; they are not historical-format compatibility.

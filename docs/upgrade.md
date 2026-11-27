@@ -16,9 +16,9 @@ The command prepares the upgrade in `.dev/upgrade/worktree` and the Pi candidate
 
 Pi and dependencies target their latest releases, including dependency major updates. The Node requirement can rise to the major running the command. Review these changes in the generated report.
 
-Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. It runs every suite of [the check runner](../tests/run-checks.ts) as one concurrent queue, including those outside `npm run check`; a failed check does not cancel the others.
+Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. After a successful install, it runs every suite of [the check runner](../tests/run-checks.ts) as one concurrent queue, including those outside `npm run check`; a failed check does not cancel the others.
 
-Check output appears when the whole queue has finished, so the run stays quiet for a few minutes. Only the tail of command output is retained. The pull request body is the report; the full copy is saved in `.dev/upgrade/report.md`.
+Check output appears when the whole queue has finished, so the run stays quiet for a few minutes. The report shows the last lines of each failed check's output; a check queue that completes writes every check's full output to `.dev/upgrade/checks.json`, and a run that stops before checks start can leave an older file there. The pull request body is the report, shortened to fit GitHub's limit; the full report is saved in `.dev/upgrade/report.md`.
 
 When `main` already pins the latest Pi and every dependency is at its target, the command says so and publishes nothing, whichever Pi is active.
 
