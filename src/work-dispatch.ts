@@ -14,7 +14,7 @@ import {
 import { errorText } from './error-text.ts'
 import { profilesRoot, selectPersonalFile } from './profiles.ts'
 
-export const DISPATCH_FILE = 'crew-dispatch.json'
+const DISPATCH_FILE = 'crew-dispatch.json'
 
 const DEFAULT_DISPATCH = fileURLToPath(
   new URL('../config/default-crew-dispatch.json', import.meta.url)
