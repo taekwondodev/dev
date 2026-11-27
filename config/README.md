@@ -1,12 +1,12 @@
 # Models and effort for delegated work
 
-The model settings file sets the model and reasoning effort for delegated agents. Read it or use `/work dispatch` to see current settings; documentation keeps no second list.
+`profiles/crew-dispatch.json` sets the model and reasoning effort for delegated agents. Use `/work dispatch` to see the settings in use; documentation keeps no second list.
 
 ## Where to edit
 
-Write your own settings in `profiles/crew-dispatch.json` in the dev installation. Git ignores `profiles/`, so the file survives `npm run update`. While it is absent, dev reads `default-crew-dispatch.json` here, which names no model: delegated agents then use the default model of your Pi installation. Your file replaces the default as a whole; nothing is merged.
+Write your own settings in `profiles/crew-dispatch.json` in the dev installation. Git ignores `profiles/`, so the file survives updates; editing dev's default instead changes the checkout, which [update refuses](../docs/launcher.md#maintenance). While your file is absent, dev reads `default-crew-dispatch.json` here, which names no model. Your file replaces the default as a whole; nothing is merged.
 
-The default belongs to dev: editing it changes the checkout and blocks `npm run update`. `DEV_PROFILES` moves the personal file together with the profiles directory. `dev --help` prints both paths and `dev --diagnostics` prints the one in use.
+`DEV_PROFILES` moves the personal file together with the profiles directory. `dev --help` prints both paths and `dev --diagnostics` prints the one in use.
 
 Configuration is not read from the working project or data home. Changes apply to subsequent delegations.
 
