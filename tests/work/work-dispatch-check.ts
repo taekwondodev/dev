@@ -1,11 +1,24 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import { resolveDispatch } from '../../src/work-dispatch.ts'
+import {
+  DISPATCH_FILE,
+  dispatchPaths,
+  readDispatch,
+  resolveDispatch,
+} from '../../src/work-dispatch.ts'
 import type { DispatchInput, DispatchProfile } from '../../src/work-domain.ts'
 import { makeClaims } from '../workspace/workspace-check-support.ts'
 
 const { claim, passed } = makeClaims()
+
+const profilesRoot = mkdtempSync(join(tmpdir(), 'dev-dispatch-'))
+process.env.DEV_PROFILES = profilesRoot
+process.on('exit', () => rmSync(profilesRoot, { recursive: true, force: true }))
 
 const contents = (value: unknown) =>
   FileSystem.layerNoop({
@@ -89,6 +102,76 @@ await claim(
     assert.match(malformed, /Cannot read model settings/)
     assert.doesNotMatch(malformed, /\bat \[/, 'a JSON failure names no field')
   }
+)
+
+const withProfiles = async <A>(
+  setup: (root: string) => void,
+  body: (personal: string, fallback: string) => Promise<A>
+): Promise<A> => {
+  const { personal, fallback } = await Effect.runPromise(dispatchPaths)
+  assert.equal(personal, join(profilesRoot, DISPATCH_FILE))
+  try {
+    setup(profilesRoot)
+    return await body(personal, fallback)
+  } finally {
+    rmSync(personal, { force: true })
+  }
+}
+const readSettings = () =>
+  Effect.runPromise(readDispatch.pipe(Effect.provide(NodeFileSystem.layer)))
+const readRefusal = () =>
+  Effect.runPromise(
+    readDispatch.pipe(
+      Effect.flip,
+      Effect.map(error => error.message),
+      Effect.provide(NodeFileSystem.layer)
+    )
+  )
+
+await claim('without personal settings the shipped default applies and names no model', () =>
+  withProfiles(
+    () => {},
+    async (_, fallback) => {
+      const config = await readSettings()
+      assert.equal(config.path, fallback)
+      assert.deepEqual(config.default, { harness: 'pi' })
+      assert.deepEqual(config.rules, {})
+    }
+  )
+)
+await claim('personal settings in the profiles directory replace the default', () =>
+  withProfiles(
+    root => writeFileSync(join(root, DISPATCH_FILE), JSON.stringify(configured)),
+    async personal => {
+      const config = await readSettings()
+      assert.equal(config.path, personal)
+      assert.deepEqual(config.rules, configured.rules)
+      assert.deepEqual(config.default, configured.default)
+    }
+  )
+)
+await claim('invalid personal settings fail naming that file instead of using the default', () =>
+  withProfiles(
+    root => writeFileSync(join(root, DISPATCH_FILE), '{not json'),
+    async personal => {
+      const message = await readRefusal()
+      assert.ok(message.startsWith(`Cannot read model settings at ${personal}:`), message)
+    }
+  )
+)
+await claim('a dangling personal settings link fails instead of using the default', () =>
+  withProfiles(
+    root => symlinkSync(join(root, 'missing.json'), join(root, DISPATCH_FILE)),
+    async personal => {
+      const message = await readRefusal()
+      assert.ok(
+        message.includes(
+          `The model settings file ${personal} is a symbolic link to ${join(profilesRoot, 'missing.json')}, which does not exist`
+        ),
+        message
+      )
+    }
+  )
 )
 
 console.log(JSON.stringify({ result: 'passed', checks: passed }, null, 2))

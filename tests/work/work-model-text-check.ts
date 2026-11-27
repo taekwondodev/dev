@@ -290,7 +290,7 @@ await claim('dispatch shows model and effort per rule, without path, flag or har
   const text = workResultText({
     kind: 'dispatch',
     dispatch: {
-      path: '/repo/config/crew-dispatch.json',
+      path: '/repo/profiles/crew-dispatch.json',
       configured: true,
       default: { harness: 'pi', model: 'anthropic/claude-sonnet-5-5' },
       rules: { 'code-review': { harness: 'pi', model: 'openai/gpt-6', effort: 'high' } },

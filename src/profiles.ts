@@ -117,22 +117,35 @@ const definitionOf = (
 ): ManifestProfiles[string] | undefined =>
   Object.hasOwn(profiles, name) ? profiles[name] : undefined
 
+export const selectPersonalFile = Effect.fnUntraced(function* (
+  fs: FileSystem.FileSystem,
+  paths: { readonly personal: string; readonly fallback: string },
+  name: string
+) {
+  const { personal, fallback } = paths
+  const link = yield* fs.readLink(personal).pipe(Effect.orElseSucceed(() => undefined))
+  const present = yield* fs.exists(personal).pipe(
+    Effect.catchIf(
+      error => link !== undefined && error.reason._tag === 'BadResource',
+      () => Effect.succeed(false)
+    )
+  )
+  if (present) return personal
+  if (link !== undefined)
+    return yield* new ProfileError({
+      message: `The ${name} ${personal} is a symbolic link to ${link}, which does not exist. Restore the link target or replace the link with the ${name}.`,
+    })
+  return fallback
+})
+
 const selectManifest = Effect.fnUntraced(
   function* (fs: FileSystem.FileSystem, root: string) {
-    const personal = join(root, MANIFEST_FILE)
-    const link = yield* fs.readLink(personal).pipe(Effect.orElseSucceed(() => undefined))
-    const present = yield* fs.exists(personal).pipe(
-      Effect.catchIf(
-        error => link !== undefined && error.reason._tag === 'BadResource',
-        () => Effect.succeed(false)
-      )
+    const path = yield* selectPersonalFile(
+      fs,
+      { personal: join(root, MANIFEST_FILE), fallback: DEFAULT_MANIFEST },
+      'profile manifest'
     )
-    if (present) return { path: personal, root }
-    if (link !== undefined)
-      return yield* new ProfileError({
-        message: `The profile manifest ${personal} is a symbolic link to ${link}, which does not exist. Restore the link target or replace the link with the manifest.`,
-      })
-    return { path: DEFAULT_MANIFEST, root: dirname(DEFAULT_MANIFEST) }
+    return { path, root: path === DEFAULT_MANIFEST ? dirname(DEFAULT_MANIFEST) : root }
   },
   Effect.mapError(error => toProfileError(error, 'Cannot read the profile manifests'))
 )
