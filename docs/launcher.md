@@ -130,7 +130,7 @@ The same pass applies [attempt retention](work.md#state) and removes recognized 
 
 | Location                                                 | Content                                                                                                                       |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Installation checkout                                    | Code, version-controlled defaults in `config/` and the ignored personal `profiles/` directory with its model settings         |
+| Installation checkout                                    | Code, version-controlled defaults in `config/` and the ignored personal `profiles/` directory                                 |
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
