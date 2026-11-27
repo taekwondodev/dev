@@ -1,0 +1,4 @@
+{
+  "rules": {},
+  "default": { "harness": "pi" }
+}

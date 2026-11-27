@@ -41,7 +41,7 @@ Only rendering crosses from a URL reader to the shared browser owner. The owner 
 | `scripts/maintain.ts`, `scripts/upgrade.ts`, `scripts/pi-upgrade.ts`                                                                                         | Installation maintenance and upgrades        | [Launcher](launcher.md#maintenance), [Upgrade](upgrade.md)                      |
 | `scripts/install.sh`                                                                                                                                         | First installation on a new Mac              | [README](../README.md#install)                                                  |
 | `scripts/usage-*.ts`                                                                                                                                         | Offline reports, exports and timelines       | [Usage profile](usage-profile.md)                                               |
-| `profiles/` (personal, untracked), `config/default-profiles.json`, `config/default-SOUL.md`, `config/crew-dispatch.json`                                     | Guidance selection and dispatch policy       | [Launcher](launcher.md#profiles-and-resources), [dispatch](../config/README.md) |
+| `profiles/` (personal, untracked), `config/default-profiles.json`, `config/default-SOUL.md`, `config/default-crew-dispatch.json`                             | Guidance selection and dispatch policy       | [Launcher](launcher.md#profiles-and-resources), [dispatch](../config/README.md) |
 
 Contributor setup and checks are in [Development](DEVELOPMENT.md). The trust boundary is in [SECURITY](../SECURITY.md).
 

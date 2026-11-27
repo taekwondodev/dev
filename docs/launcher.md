@@ -91,7 +91,7 @@ Profiles are personal configuration. The installation's `profiles/` directory ho
 }
 ```
 
-While `profiles/manifest.json` is absent, dev reads the installation's default manifest `config/default-profiles.json`, whose `general` profile uses `config/default-SOUL.md`, so a fresh clone starts without configuration. To customize, write `profiles/manifest.json` with your own SOUL files and skill directories beside it; dev then ignores the default. The default belongs to dev: editing it changes the checkout and blocks `npm run update`. `dev --help` prints both manifest paths and this guide's path.
+While `profiles/manifest.json` is absent, dev reads the installation's default manifest `config/default-profiles.json`, whose `general` profile uses `config/default-SOUL.md`, so a fresh clone starts without configuration. To customize, write `profiles/manifest.json` with your own SOUL files and skill directories beside it; dev then ignores the default. The default belongs to dev: editing it changes the checkout and blocks `npm run update`. `dev --help` prints both manifest paths and this guide's path. The same directory holds the optional personal model settings `crew-dispatch.json`, which replace dev's default the same way ([model settings](../config/README.md)).
 
 - `default` names the profile of a new conversation when neither `--profile` nor a saved preference selects one. It must be one of `profiles`.
 - Each profile names its `soul`, a Markdown file appended to Pi's system prompt, and optionally its ordered `skills`. Each entry is a skill directory or a directory of skills, which Pi searches for `SKILL.md`; name a profile's skill directory once instead of each skill in it. Paths are relative to the manifest's directory and may not use `..`; a symbolic link placed there is followed as the owner's choice, since everything under `profiles/` is trusted personal configuration ([SECURITY](../SECURITY.md#trusted-base)).
@@ -131,7 +131,7 @@ The same pass applies [attempt retention](work.md#state) and removes recognized 
 
 | Location                                                 | Content                                                                                                                       |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Installation checkout                                    | Code, version-controlled `config/crew-dispatch.json` and the ignored personal `profiles/` directory                           |
+| Installation checkout                                    | Code, version-controlled defaults in `config/` and the ignored personal `profiles/` directory                                 |
 | Working project                                          | Project files and native project instructions                                                                                 |
 | `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
 | `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
