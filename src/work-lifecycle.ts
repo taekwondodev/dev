@@ -405,7 +405,12 @@ const makeLifecycle = (initial: AttemptRecord): AttemptLifecycle => {
         (state.record.kind === 'process' || (exitCode === 0 && state.resultReceived))
       )
         terminalStatus = 'completed'
-      if (state.record.cancelRequestedAt !== undefined && state.record.protocolError === undefined)
+      if (
+        state.record.cancelRequestedAt !== undefined &&
+        state.record.protocolError === undefined &&
+        state.record.persistenceError === undefined &&
+        state.record.cancelReason !== 'launch failed'
+      )
         terminalStatus = 'cancelled'
       return changed(() => {
         let didChange = put('artifactAtCompletion', facts.artifactAtCompletion)

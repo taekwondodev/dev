@@ -1,6 +1,6 @@
 const SEPARATOR = /\s*(?:;|&&|\|\||\n)\s*/
 const SLEEP = /^sleep(?:\s+\S+)+$/
-const FILLER = /^(?:echo|printf)(?:\s.*)?$|^(?:true|:)$/
+const FILLER = /^(?:(?:echo|printf)(?:\s[^|><`$]*)?|true|:)$/
 const DURATION = /^(\d+(?:\.\d+)?)([smhd]?)$/
 
 export const LONG_SLEEP_SECONDS = 30

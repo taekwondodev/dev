@@ -517,7 +517,17 @@ const stageWorkspace = (
       reasons: [`The managed worktree directory is absent: ${workspace.path}`, ...uses.reasons],
       nextActions: [clear(reservation.taskId)],
     })
+  if (factsBase.excluded)
+    return shape({
+      reasons: [...uses.reasons, 'Excluded from this automatic cleanup.'],
+      nextActions: uses.inUse ? uses.nextActions : [clear(reservation.taskId)],
+    })
   if (workspace.origin === 'pre-existing') {
+    if (uses.inUse)
+      return shape({
+        reasons: uses.reasons,
+        nextActions: uses.nextActions,
+      })
     let inventory: Inventory | undefined
     const reasons = [...uses.reasons]
     try {
@@ -530,13 +540,6 @@ const stageWorkspace = (
       ...(inventory === undefined ? {} : { residue: residueOf(inventory) }),
     })
     const residual = residualOf(inventory, head)
-    if (uses.inUse)
-      return shape({
-        reasons,
-        nextActions: uses.nextActions,
-        residual,
-        completion,
-      })
     return shape({
       reasons: [
         ...reasons,
@@ -1156,12 +1159,18 @@ const releaseResult = (
 
 export const removeTaskArtifacts = (
   authority: WorkspaceAuthority,
-  taskId: WorkspaceId
+  taskId: WorkspaceId,
+  reservedTasks?: ReadonlySet<string>
 ): TaskArtifactsResult | undefined => {
   const path = taskArtifactsPath(authority.paths, taskId)
   const info = lstatIfExists(path)
   if (info === undefined) return undefined
-  if (taskWorkspaces(authority, taskId).length > 0) return undefined
+  if (
+    reservedTasks === undefined
+      ? taskWorkspaces(authority, taskId).length > 0
+      : reservedTasks.has(taskId)
+  )
+    return undefined
   const row = (outcome: TaskArtifactsResult['outcome'], reason: string): TaskArtifactsResult => ({
     kind: 'task-artifacts',
     taskId,
@@ -1194,10 +1203,11 @@ export const removeTaskArtifacts = (
 
 const reportTaskArtifacts = (
   authority: WorkspaceAuthority,
-  taskId: WorkspaceId
+  taskId: WorkspaceId,
+  reservedTasks?: ReadonlySet<string>
 ): TaskArtifactsResult | undefined => {
   try {
-    return removeTaskArtifacts(authority, taskId)
+    return removeTaskArtifacts(authority, taskId, reservedTasks)
   } catch (cause) {
     return {
       kind: 'task-artifacts',
@@ -1211,6 +1221,17 @@ const reportTaskArtifacts = (
 
 const decodeTaskId = Schema.decodeUnknownOption(WorkspaceId)
 
+const reservedTaskIds = (authority: WorkspaceAuthority): ReadonlySet<string> => {
+  const ids = new Set<string>()
+  for (const repository of authority.listRepositories()) {
+    inDb(authority, repository.id, db => {
+      for (const row of rows(db, 'SELECT DISTINCT task_id FROM reservations'))
+        ids.add(textField(row, 'task_id'))
+    })
+  }
+  return ids
+}
+
 const removeOrphanArtifacts = (
   authority: WorkspaceAuthority,
   expired: () => boolean = () => false
@@ -1222,12 +1243,14 @@ const removeOrphanArtifacts = (
     if (hasErrorCode(cause, 'ENOENT')) return []
     throw cause
   }
+  if (entries.length === 0) return []
+  const reserved = reservedTaskIds(authority)
   const results: TaskArtifactsResult[] = []
   for (const entry of entries.toSorted()) {
     if (expired()) break
     const taskId = decodeTaskId(entry)
     if (Option.isNone(taskId)) continue
-    const result = reportTaskArtifacts(authority, taskId.value)
+    const result = reportTaskArtifacts(authority, taskId.value, reserved)
     if (result !== undefined) results.push(result)
   }
   return results
@@ -1438,7 +1461,6 @@ export const releaseTask = (
       clearUnfinishedAllocation(authority, repo, operation)
     ),
   ]
-  if (results.length === 0) return results
   const artifacts = reportTaskArtifacts(authority, taskId)
   return artifacts === undefined ? results : [...results, artifacts]
 }

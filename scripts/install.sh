@@ -144,7 +144,7 @@ install_dev() {
   cd "$destination"
 
   step 'Installing dev'
-  run 'npm ci' npm ci
+  run 'npm ci --ignore-scripts' npm ci --ignore-scripts
   run 'npm run setup' npm run setup
   run 'npm link --ignore-scripts' npm link --ignore-scripts
   record 'dev set up and the dev command linked'
@@ -183,6 +183,7 @@ install_skills() {
   library=$work/skills/skills
   collisions=
   for entry in "$library"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
     name=${entry##*/}
     if [ -e "$skills_dir/$name" ] || [ -L "$skills_dir/$name" ]; then
       collisions="$collisions $name"
@@ -196,26 +197,34 @@ install_skills() {
   mkdir -p "$skills_dir"
   staging=$(mktemp -d "$skills_dir/.dev-install.XXXXXX")
   for entry in "$library"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
     cp -R "$entry" "$staging/" || fail "copying the skill library into $skills_dir failed. No skill was installed and your entries are unchanged."
   done
-  published=
+  published=$work/published
+  : >"$published"
   for entry in "$staging"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
     name=${entry##*/}
     if ! mv "$entry" "$skills_dir/"; then
-      for name in $published; do
-        rm -rf "${skills_dir:?}/$name"
-      done
+      while IFS= read -r installed; do
+        [ -n "$installed" ] && rm -rf "${skills_dir:?}/$installed"
+      done <"$published"
       fail "moving the skill library into $skills_dir failed. No skill was installed and your entries are unchanged."
     fi
-    published="$published $name"
+    printf '%s\n' "$name" >>"$published"
   done
   rmdir "$staging"
   staging=
   record "skill library copied into $skills_dir"
 }
 
+cleanup() {
+  if [ -n "$work" ]; then rm -rf "$work"; fi
+  if [ -n "$staging" ]; then rm -rf "$staging"; fi
+}
+
 main() {
-  trap 'rm -rf ${work:+"$work"} ${staging:+"$staging"}' EXIT
+  trap cleanup EXIT
   work=$(mktemp -d "${TMPDIR:-/tmp}/dev-install.XXXXXX")
   check_prerequisites
   install_pi

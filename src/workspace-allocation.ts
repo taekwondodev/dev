@@ -29,7 +29,6 @@ import {
 import {
   addDetachedWorktree,
   assertManagedCheckoutSupported,
-  canonicalGitWorkspace,
   currentCommit,
   pinnedCommit,
 } from './workspace-git.ts'
@@ -317,7 +316,7 @@ const allocateWorktree = (
     fsyncParent(createdGit.path)
     fsyncPath(createdGit.gitAdminPath, true)
     fsyncParent(createdGit.gitAdminPath)
-    const actual = canonicalGitWorkspace(destination)
+    const actual = createdGit
     if (
       actual.head !== commit ||
       actual.commonPath !== source.git.commonPath ||
@@ -382,6 +381,8 @@ const allocateWorktree = (
       state.parked = false
     } catch {
       state.parked = true
+      state.review ??=
+        'Dev could not restore checkout locks after worktree creation failed; review the checkout before continuing'
     }
     throw cause
   } finally {
@@ -420,14 +421,6 @@ export const allocateDelegatedWorkspace = (
       )
       const kind: LeaseKind =
         execution === undefined ? { kind: 'ordinary' } : { kind: 'execution', execution }
-      state.leases.set(use.id, {
-        ...kind,
-        grant,
-        repositoryId: source.repo,
-        useId: use.id,
-        gates: allocation.gates,
-        released: false,
-      })
       inDb(authority, source.repo, db =>
         transaction(db, () => {
           putWorkspace(db, allocation.workspace)
@@ -436,6 +429,14 @@ export const allocateDelegatedWorkspace = (
           saveOperation(db, allocation.confirmed)
         })
       )
+      state.leases.set(use.id, {
+        ...kind,
+        grant,
+        repositoryId: source.repo,
+        useId: use.id,
+        gates: allocation.gates,
+        released: false,
+      })
       state.parked = false
       return { kind: 'ready', grant }
     }
@@ -497,8 +498,6 @@ export const isolateContendedWriter = (
         kind: 'ordinary',
         released: false,
       }
-      state.leases.set(use.id, targetLease)
-      state.writeGrant = grant
       inDb(authority, source.repo, db =>
         transaction(db, () => {
           putWorkspace(db, allocation.workspace)
@@ -512,6 +511,8 @@ export const isolateContendedWriter = (
           putBinding(db, { ...current, pendingOperationId: handoffOperation.id })
         })
       )
+      state.leases.set(use.id, targetLease)
+      state.writeGrant = grant
       state.pending = {
         handoff,
         sourceRepositoryId: source.repo,

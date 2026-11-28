@@ -139,7 +139,12 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
   let stopping = false
 
   const observe = Effect.fnUntraced(
-    function* (report: Report, child: ChildProcess, shell: LiveShell) {
+    function* (
+      report: Report,
+      child: ChildProcess,
+      shell: LiveShell,
+      exited: Deferred.Deferred<ShellExit, ShellCommandError>
+    ) {
       let family: TrackedFamily = {
         pid: shell.root.pid,
         root: shell.root,
@@ -147,8 +152,9 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         reported: undefined,
       }
       for (;;) {
+        const rootExited = child.exitCode !== null || child.signalCode !== null
         family = yield* observeFamily(family, {
-          rootExited: child.exitCode !== null || child.signalCode !== null,
+          rootExited,
           report: processes => report({ kind: 'observed', processes }),
         })
         shell.known = family.known
@@ -159,7 +165,14 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
           }).pipe(Effect.retry(transientRetry))
           return
         }
-        yield* Effect.sleep(OBSERVATION_INTERVAL)
+        yield* rootExited
+          ? Effect.sleep(OBSERVATION_INTERVAL)
+          : Effect.ignore(Deferred.await(exited)).pipe(
+              Effect.timeoutOrElse({
+                duration: OBSERVATION_INTERVAL,
+                orElse: () => Effect.void,
+              })
+            )
       }
     },
     (effect, report) =>
@@ -175,11 +188,16 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
       )
   )
 
-  const track = (report: Report, child: ChildProcess, root: ObservedProcess): LiveShell => {
+  const track = (
+    report: Report,
+    child: ChildProcess,
+    root: ObservedProcess,
+    exited: Deferred.Deferred<ShellExit, ShellCommandError>
+  ): LiveShell => {
     const shell: LiveShell = { root, known: [root], settled: Deferred.makeUnsafe<void>() }
     live.set(root.pid, shell)
     runInBackground(
-      observe(report, child, shell).pipe(
+      observe(report, child, shell, exited).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             live.delete(root.pid)
@@ -273,7 +291,7 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
           killGated()
 
           yield* report({ kind: 'launch-failed', reason: cause.message }).pipe(
-            Effect.catch(() => Effect.sync(() => track(report, child, identity)))
+            Effect.catch(() => Effect.sync(() => track(report, child, identity, exited)))
           )
           return yield* cause
         })
@@ -298,13 +316,13 @@ export const makeWorkspaceShell = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           detach()
           killGated()
-          track(report, child, identity)
+          track(report, child, identity, exited)
           yield* Effect.ignore(Deferred.await(exited))
           return yield* cause
         })
       )
     )
-    shell = track(report, child, identity)
+    shell = track(report, child, identity, exited)
     return { child, exited, shell, detach, aborted: () => aborted }
   })
 

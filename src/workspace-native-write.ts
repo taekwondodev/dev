@@ -199,6 +199,10 @@ export const makeNativeWrites = (options: {
           concurrency: 'unbounded',
           discard: true,
         })
+      else
+        yield* Effect.sync(() => {
+          writes.clear()
+        })
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {

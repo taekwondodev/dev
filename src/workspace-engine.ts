@@ -44,13 +44,23 @@ export class EngineAttachment implements AttachmentHandle {
   }
 }
 
-const asWorkspaceError = (cause: unknown): WorkspaceError =>
-  cause instanceof WorkspaceError
-    ? cause
-    : new WorkspaceError({
-        outcome: 'unavailable',
-        message: `Dev checkout operation failed: ${errorText(cause)}`,
-      })
+const sqliteBusy = (cause: unknown): boolean =>
+  cause instanceof Error &&
+  (('errcode' in cause && (cause.errcode === 5 || cause.errcode === 6)) ||
+    /database is locked|database table is locked|SQLITE_BUSY/i.test(cause.message))
+
+const asWorkspaceError = (cause: unknown): WorkspaceError => {
+  if (cause instanceof WorkspaceError) return cause
+  if (sqliteBusy(cause))
+    return new WorkspaceError({
+      outcome: 'blocked',
+      message: `Dev checkout database is busy: ${errorText(cause)}`,
+    })
+  return new WorkspaceError({
+    outcome: 'unavailable',
+    message: `Dev checkout operation failed: ${errorText(cause)}`,
+  })
+}
 
 const attempt = <A>(work: () => A | Promise<A>): Promise<A> => {
   try {

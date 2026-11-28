@@ -469,12 +469,11 @@ const initializeDatabase = async (
     if (!integrityIsGood(db)) fail('corrupt-database')
     validateExistingSchema(db)
     await enableWal(db)
-    db.exec('PRAGMA synchronous = NORMAL; PRAGMA fullfsync = ON; PRAGMA wal_autocheckpoint = 1000;')
+    db.exec('PRAGMA synchronous = NORMAL; PRAGMA wal_autocheckpoint = 1000;')
     if (fieldText(db.prepare('PRAGMA journal_mode').get(), 'journal_mode') !== 'wal')
       fail('unsafe-sqlite')
     const synchronous = numberField(db.prepare('PRAGMA synchronous').get() ?? {}, 'synchronous')
     if (synchronous !== 1) fail('unsafe-sqlite')
-    if (!integrityIsGood(db)) fail('corrupt-database')
     chmodRegularFile(data.databasePath)
     for (const sidecar of [
       `${data.databasePath}-wal`,
@@ -603,23 +602,30 @@ const cleanupIds = (): AttemptId[] => {
   return ids
 }
 
-const list = (request: Extract<RpcRequest, { readonly op: 'list' }>): ListValue =>
-  transaction(() => {
-    prune(request.now)
-    const records: AttemptRecord[] = []
-    const unavailable: { id: AttemptId; error: string }[] = []
-    const rows = attemptRows(statements().listBySession.all(request.sessionId))
-    for (const row of rows) {
-      try {
-        records.push(decodePayload(row))
-      } catch (cause) {
-        if (!(cause instanceof StoreFault) || cause.code !== 'corrupt-record') throw cause
-        if (!safelyAttributable(row, request.sessionId)) fail('corrupt-database')
-        unavailable.push({ id: asAttemptId(row.id), error: 'Saved run data is unreadable' })
-      }
+const needsPrune = (now: number): boolean => {
+  const stats = statements().retentionStats.get()
+  const count = numberField(stats ?? {}, 'count')
+  const oldestValue = stats?.oldest
+  const oldest = oldestValue === null ? null : numberField(stats ?? {}, 'oldest')
+  return count > RETENTION_COUNT || (oldest !== null && oldest < now - RETENTION_MS)
+}
+
+const list = (request: Extract<RpcRequest, { readonly op: 'list' }>): ListValue => {
+  if (needsPrune(request.now)) transaction(() => prune(request.now))
+  const records: AttemptRecord[] = []
+  const unavailable: { id: AttemptId; error: string }[] = []
+  const rows = attemptRows(statements().listBySession.all(request.sessionId))
+  for (const row of rows) {
+    try {
+      records.push(decodePayload(row))
+    } catch (cause) {
+      if (!(cause instanceof StoreFault) || cause.code !== 'corrupt-record') throw cause
+      if (!safelyAttributable(row, request.sessionId)) fail('corrupt-database')
+      unavailable.push({ id: asAttemptId(row.id), error: 'Saved run data is unreadable' })
     }
-    return { records, unavailable }
-  })
+  }
+  return { records, unavailable }
+}
 
 const maintain = (request: Extract<RpcRequest, { readonly op: 'maintain' }>) =>
   transaction(() => {
@@ -634,18 +640,17 @@ const maintain = (request: Extract<RpcRequest, { readonly op: 'maintain' }>) =>
     return { sessionIds: [...sessionIds], files: [...files] }
   })
 
-const read = (request: Extract<RpcRequest, { readonly op: 'read' }>): AttemptRecord =>
-  transaction(() => {
-    prune(request.now)
-    const row = selectById(request.attemptId)
-    if (row === undefined || row.sessionId !== request.sessionId) return fail('record-unavailable')
-    const ownedRow = row
-    try {
-      return decodePayload(ownedRow)
-    } catch {
-      return fail('record-unavailable')
-    }
-  })
+const read = (request: Extract<RpcRequest, { readonly op: 'read' }>): AttemptRecord => {
+  if (needsPrune(request.now)) transaction(() => prune(request.now))
+  const row = selectById(request.attemptId)
+  if (row === undefined || row.sessionId !== request.sessionId) return fail('record-unavailable')
+  const ownedRow = row
+  try {
+    return decodePayload(ownedRow)
+  } catch {
+    return fail('record-unavailable')
+  }
+}
 
 const create = (request: Extract<RpcRequest, { readonly op: 'create' }>): null =>
   transaction(() => {

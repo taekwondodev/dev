@@ -155,11 +155,12 @@ export const childWorkspaceExtension =
                 { kind: 'foreign-write', checkout: destination.checkout },
                 channel
               )
+            const validate = yield* Effect.cached(checkChildWorkspace(grant, 'write', channel))
             yield* nativeWrites.admit({
               toolCallId: event.toolCallId,
               scope,
               destination,
-              lifecycle: { kind: 'local', validate: checkChildWorkspace(grant, 'write', channel) },
+              lifecycle: { kind: 'local', validate },
             })
           }
           return undefined

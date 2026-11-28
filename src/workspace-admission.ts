@@ -438,8 +438,9 @@ const admitFrom = <Reply>(
     existing.taskId === source.binding.taskId
   ) {
     const lease = validateGrant(authority, state, existing, source.git)
+    const grant = lease.grant.cwd === cwd ? lease.grant : { ...lease.grant, cwd }
     return operation.execution === undefined
-      ? { kind: 'ready', grant: lease.grant }
+      ? { kind: 'ready', grant }
       : executionUse(authority, state, lease, operation.execution)
   }
   const reservation = inDb(authority, source.repo, db => getReservation(db, source.workspace.id))
@@ -537,17 +538,26 @@ const admitFrom = <Reply>(
       kind: 'ordinary',
       released: false,
     }
+    const previousWriteGrant = state.writeGrant
+    const previousBinding = state.binding
     state.leases.set(useId, lease)
     state.writeGrant = grant
     state.binding = updatedBinding
-    if (operation.execution !== undefined)
-      return executionUse(
-        authority,
-        state,
-        validateGrant(authority, state, grant),
-        operation.execution
-      )
-    return { kind: 'ready', grant }
+    try {
+      if (operation.execution !== undefined)
+        return executionUse(
+          authority,
+          state,
+          validateGrant(authority, state, grant, source.git),
+          operation.execution
+        )
+      return { kind: 'ready', grant }
+    } catch (cause) {
+      state.leases.delete(useId)
+      state.writeGrant = previousWriteGrant
+      state.binding = previousBinding
+      throw cause
+    }
   } catch (cause) {
     releaseGates(gates)
     throw cause
@@ -628,8 +638,10 @@ const reserveForeignWriter = (
       lease.kind === 'ordinary' &&
       lease.grant.access === 'write' &&
       lease.grant.workspaceId === workspace.id
-    )
-      return { kind: 'ready', grant: validateGrant(authority, state, lease.grant).grant }
+    ) {
+      const validated = validateGrant(authority, state, lease.grant, source.git).grant
+      return { kind: 'ready', grant: validated.cwd === cwd ? validated : { ...validated, cwd } }
+    }
   }
   const remedy = `delegate the change with work delegate and a cwd in that checkout, or wait for that task`
   const taskId = state.foreignTasks.get(workspace.id) ?? newId()
@@ -845,7 +857,7 @@ const authorizeRead = (
       lease.grant.workspaceId === workspace.id &&
       lease.grant.revision === bindingRevision
     )
-      return ready(lease.grant)
+      return ready(lease.grant.cwd === cwd ? lease.grant : { ...lease.grant, cwd })
   }
   const gates = acquirePathGates(authority.paths, workspace.path, 'reader')
   try {
@@ -1155,99 +1167,109 @@ const recordExecutionFact = (
   }
   if (fact.kind === 'operation-started' || fact.kind === 'operation-completed')
     invalid('This start or stop report cannot describe a process')
-  const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
-  if (
-    current === undefined ||
-    current.execution === undefined ||
-    !sameExecution(current.execution, lease.execution)
-  )
-    requireReview('Execution no longer matches the permission dev issued')
-  if (current.stage === 'quiescent') requireReview('Execution already ended')
-  const update = (value: UseRecord): void =>
-    inDb(authority, lease.repositoryId, db => transaction(db, () => saveUse(db, value)))
   const updatedAt = now()
-  switch (fact.kind) {
-    case 'launch-intent': {
-      if (!sameExecution(fact.execution, lease.execution))
-        invalid('Launch does not match the permitted operation')
-      if (current.stage !== 'authorized')
-        requireReview(`Cannot record a planned launch after ${checkoutUseStage(current.stage)}`)
-      update({ ...current, stage: 'launch-intent', revision: current.revision + 1, updatedAt })
-      return {}
-    }
-    case 'spawned': {
-      if (current.stage !== 'launch-intent')
-        requireReview(`Cannot record process identity after ${checkoutUseStage(current.stage)}`)
-      update({
-        ...current,
-        stage: 'spawned',
-        processes: [fact.process],
-        revision: current.revision + 1,
-        updatedAt,
-      })
-      return {}
-    }
-    case 'started': {
-      if (current.stage !== 'spawned')
-        requireReview(`Dev must verify the process before letting code run`)
-      update({ ...current, stage: 'started', revision: current.revision + 1, updatedAt })
-      return {}
-    }
-    case 'observed': {
-      if (!['spawned', 'started', 'observed'].includes(current.stage))
-        requireReview(
-          `Cannot record a process observation after ${checkoutUseStage(current.stage)}`
-        )
-      update({
-        ...current,
-        stage: 'observed',
-        processes: fact.processes,
-        revision: current.revision + 1,
-        updatedAt,
-      })
-      return {}
-    }
-    case 'unknown': {
-      update({
-        ...current,
-        stage: 'unknown',
-        reason: fact.reason,
-        revision: current.revision + 1,
-        updatedAt,
-      })
-      return {}
-    }
-    case 'launch-failed': {
-      if (current.stage !== 'authorized' && current.stage !== 'launch-intent')
-        requireReview(`A launch cannot be reported failed after ${checkoutUseStage(current.stage)}`)
-      update({
-        ...current,
-        stage: 'quiescent',
-        reason: `launch-failed: ${fact.reason}`,
-        revision: current.revision + 1,
-        updatedAt,
-      })
-      lease.released = true
-      return settled(settleWorkspaceGates(authority, state, grant))
-    }
-    case 'quiescent': {
-      if (current.stage !== 'observed' || current.processes.length > 0)
-        requireReview(`Dev must confirm the process and its descendants stopped`)
-      update({
-        ...current,
-        stage: 'quiescent',
-        reason: fact.reason,
-        revision: current.revision + 1,
-        updatedAt,
-      })
-      lease.released = true
-      return settled(settleWorkspaceGates(authority, state, grant))
-    }
-    default: {
-      const exhaustive: never = fact
-      return exhaustive
-    }
-  }
+  const finished = inDb(authority, lease.repositoryId, db =>
+    transaction(db, () => {
+      const current = getUse(db, lease.useId)
+      if (
+        current === undefined ||
+        current.execution === undefined ||
+        !sameExecution(current.execution, lease.execution)
+      )
+        requireReview('Execution no longer matches the permission dev issued')
+      if (current.stage === 'quiescent') requireReview('Execution already ended')
+      switch (fact.kind) {
+        case 'launch-intent': {
+          if (!sameExecution(fact.execution, lease.execution))
+            invalid('Launch does not match the permitted operation')
+          if (current.stage !== 'authorized')
+            requireReview(`Cannot record a planned launch after ${checkoutUseStage(current.stage)}`)
+          saveUse(db, {
+            ...current,
+            stage: 'launch-intent',
+            revision: current.revision + 1,
+            updatedAt,
+          })
+          return false
+        }
+        case 'spawned': {
+          if (current.stage !== 'launch-intent')
+            requireReview(`Cannot record process identity after ${checkoutUseStage(current.stage)}`)
+          saveUse(db, {
+            ...current,
+            stage: 'spawned',
+            processes: [fact.process],
+            revision: current.revision + 1,
+            updatedAt,
+          })
+          return false
+        }
+        case 'started': {
+          if (current.stage !== 'spawned')
+            requireReview(`Dev must verify the process before letting code run`)
+          saveUse(db, { ...current, stage: 'started', revision: current.revision + 1, updatedAt })
+          return false
+        }
+        case 'observed': {
+          if (!['spawned', 'started', 'observed'].includes(current.stage))
+            requireReview(
+              `Cannot record a process observation after ${checkoutUseStage(current.stage)}`
+            )
+          saveUse(db, {
+            ...current,
+            stage: 'observed',
+            processes: fact.processes,
+            revision: current.revision + 1,
+            updatedAt,
+          })
+          return false
+        }
+        case 'unknown': {
+          saveUse(db, {
+            ...current,
+            stage: 'unknown',
+            reason: fact.reason,
+            revision: current.revision + 1,
+            updatedAt,
+          })
+          return false
+        }
+        case 'launch-failed': {
+          if (current.stage !== 'authorized' && current.stage !== 'launch-intent')
+            requireReview(
+              `A launch cannot be reported failed after ${checkoutUseStage(current.stage)}`
+            )
+          saveUse(db, {
+            ...current,
+            stage: 'quiescent',
+            reason: `launch-failed: ${fact.reason}`,
+            revision: current.revision + 1,
+            updatedAt,
+          })
+          return true
+        }
+        case 'quiescent': {
+          if (current.stage !== 'observed' || current.processes.length > 0)
+            requireReview(`Dev must confirm the process and its descendants stopped`)
+          saveUse(db, {
+            ...current,
+            stage: 'quiescent',
+            reason: fact.reason,
+            revision: current.revision + 1,
+            updatedAt,
+          })
+          return true
+        }
+        default: {
+          const exhaustive: never = fact
+          return exhaustive
+        }
+      }
+    })
+  )
+  if (!finished) return {}
+  lease.released = true
+  return settled(settleWorkspaceGates(authority, state, grant))
 }
 
 const reportScopedOperation = (
@@ -1261,9 +1283,25 @@ const reportScopedOperation = (
     fact.kind !== 'unknown'
   )
     invalid('Dev needs a start or stop report for this file operation')
-  const current = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
-  if (current === undefined || current.effect !== lease.kind)
-    requireReview('Dev lost the record of this operation')
+  const precheck = inDb(authority, lease.repositoryId, db => {
+    const use = getUse(db, lease.useId)
+    if (use === undefined || use.effect !== lease.kind)
+      requireReview('Dev lost the record of this operation')
+    const workspace =
+      fact.kind === 'operation-started' && use.operationPath !== undefined
+        ? getWorkspace(db, use.workspaceId)
+        : undefined
+    return { current: use, workspace }
+  })
+  const { current, workspace: targetWorkspace } = precheck
+  if (fact.kind === 'operation-started' && current.operationPath !== undefined) {
+    if (targetWorkspace === undefined)
+      requireReview(`The checkout for the operation disappeared: ${current.workspaceId}`)
+    assertDestinationUnchanged(
+      { checkout: targetWorkspace.path, authorityRoot: authority.root },
+      { kind: 'workspace', operand: current.operationPath, path: current.operationPath }
+    )
+  }
   const next = inDb(authority, lease.repositoryId, db =>
     transaction(db, () => {
       const latest = getUse(db, lease.useId)
@@ -1278,15 +1316,6 @@ const reportScopedOperation = (
         if (latest.stage !== 'authorized')
           requireReview(`Cannot start operation after ${checkoutUseStage(latest.stage)}`)
         assertWithinLiveInDb(db, latest)
-        if (latest.operationPath !== undefined) {
-          const workspace = getWorkspace(db, latest.workspaceId)
-          if (workspace === undefined)
-            requireReview(`The checkout for the operation disappeared: ${latest.workspaceId}`)
-          assertDestinationUnchanged(
-            { checkout: workspace.path, authorityRoot: authority.root },
-            { kind: 'workspace', operand: latest.operationPath, path: latest.operationPath }
-          )
-        }
         const started: UseRecord = {
           ...latest,
           stage: 'operation-started',

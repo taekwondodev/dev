@@ -141,7 +141,7 @@ const ejectRamDisk = (mountPoint: string): void => {
     process.stderr.write(`Cannot eject the check RAM disk ${mountPoint}: ${String(cause)}\n`)
   }
 }
-const mountRamDisk = (): string | undefined => {
+const mountRamDisk = (onDevice: (device: string | undefined) => void): string | undefined => {
   if (process.platform !== 'darwin') return undefined
   const name = `${ramDiskPrefix}${process.pid}`
   try {
@@ -152,12 +152,15 @@ const mountRamDisk = (): string | undefined => {
     const device = diskutil('image', 'attach', '--noMount', `ram://${ramDiskSectors}`)
       .trim()
       .split(/\s+/)[0]!
+    onDevice(device)
     try {
       diskutil('erasevolume', 'APFS', name, device)
     } catch (cause) {
       diskutil('eject', device)
+      onDevice(undefined)
       throw cause
     }
+    onDevice(undefined)
     return join('/Volumes', name)
   } catch (cause) {
     process.stderr.write(
@@ -173,7 +176,12 @@ const run = (job: Job, env: NodeJS.ProcessEnv): Promise<Outcome> =>
     const startedAt = performance.now()
     const chunks: Buffer[] = []
     const [file, ...args] = job.argv
-    const child = spawn(file, args, { cwd: checkout, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(file, args, {
+      cwd: checkout,
+      detached: true,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     running.add(child)
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk))
@@ -214,14 +222,30 @@ const longestFirst = jobs
     (left, right) => (durations[right.label] ?? unmeasured) - (durations[left.label] ?? unmeasured)
   )
   .values()
-const ramDisk = mountRamDisk()
+let attachedDevice: string | undefined
+let ramDisk: string | undefined
+const terminateChild = (child: ChildProcess): void => {
+  if (child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+      return
+    } catch {}
+  }
+  child.kill('SIGTERM')
+}
 const stopOnSignal = (exitCode: number) => () => {
-  for (const child of running) child.kill('SIGTERM')
+  for (const child of running) terminateChild(child)
   if (ramDisk !== undefined) ejectRamDisk(ramDisk)
+  else if (attachedDevice !== undefined) ejectRamDisk(attachedDevice)
   process.exit(exitCode)
 }
 process.once('SIGINT', stopOnSignal(130))
 process.once('SIGTERM', stopOnSignal(143))
+const needsRamDisk = (suite: string): boolean => suite !== 'lint' && suite !== 'format:check'
+if (chosen.some(needsRamDisk))
+  ramDisk = mountRamDisk(device => {
+    attachedDevice = device
+  })
 const env = {
   ...process.env,
   NODE_COMPILE_CACHE: `${cacheDirectory}/compile`,

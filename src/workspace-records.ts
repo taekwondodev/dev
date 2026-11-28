@@ -364,17 +364,18 @@ export const saveWorkspace = (db: DatabaseSync, value: WorkspaceRecord): void =>
 export const updateReservation = (db: DatabaseSync, value: ReservationRecord): void => {
   statement(
     db,
-    'UPDATE reservations SET task_id=?,acquisition_id=?,revision=?,payload=? WHERE id=? AND workspace_id=?'
+    'UPDATE reservations SET task_id=?,acquisition_id=?,revision=?,payload=? WHERE id=? AND workspace_id=? AND revision=?'
   ).run(
     value.taskId,
     value.acquisitionId ?? null,
     value.revision,
     encode(value),
     value.id,
-    value.workspaceId
+    value.workspaceId,
+    value.revision - 1
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
-    requireReview(`Checkout hold disappeared: ${value.id}`)
+    requireReview(`Checkout hold changed concurrently or disappeared: ${value.id}`)
 }
 const BINDING_ROW = 'SELECT conversation_key,workspace_id,task_id,revision,payload FROM bindings'
 const recordedBinding = (row: SqlRow): BindingRecord => {
@@ -459,7 +460,7 @@ export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
     )
   statement(
     db,
-    'UPDATE uses SET workspace_id=?,task_id=?,reservation_id=?,acquisition_id=?,access=?,stage=?,within_use_id=?,revision=?,payload=? WHERE id=?'
+    'UPDATE uses SET workspace_id=?,task_id=?,reservation_id=?,acquisition_id=?,access=?,stage=?,within_use_id=?,revision=?,payload=? WHERE id=? AND revision=?'
   ).run(
     value.workspaceId,
     value.taskId ?? null,
@@ -470,7 +471,8 @@ export const saveUse = (db: DatabaseSync, value: UseRecord): void => {
     value.withinUseId ?? null,
     value.revision,
     encode(value),
-    value.id
+    value.id,
+    value.revision - 1
   )
   if (numberField(first(db, 'SELECT changes() AS count'), 'count') !== 1)
     requireReview(`Dev lost track of checkout access: ${value.id}`)

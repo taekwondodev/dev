@@ -139,8 +139,10 @@ class LinkCollector {
 export const extractMarkdown = (source: string, base: string): Extracted => {
   const text = source.trim()
   const collector = new LinkCollector()
-  for (const match of text.matchAll(MARKDOWN_LINK))
+  for (const match of text.matchAll(MARKDOWN_LINK)) {
+    if (match.index > 0 && text[match.index - 1] === '!') continue
     collector.add(match[1] ?? '', match[2] ?? '', base)
+  }
   const heading = source.match(/^\s*#\s+(.+)$/m)?.[1]?.trim()
   return { title: heading, text, links: collector.shownIn(text) }
 }
@@ -482,10 +484,15 @@ export const extractHtml = (dom: Dom, html: string, base: string): Extracted => 
   }
   const title = titleOf(document)
   const collector = new LinkCollector()
-  const semantic = document.querySelector('main, [role="main"], article') ?? undefined
-  if (semantic !== undefined && (semantic.textContent ?? '').trim().length >= MIN_SEMANTIC_CHARS) {
-    const text = new MarkdownWriter(base, collector, DROPPED_TAGS).render(asDomNode(semantic))
-    if (text.length >= MIN_SEMANTIC_CHARS) return { title, text, links: collector.shownIn(text) }
+  for (const selector of ['main', '[role="main"]', 'article']) {
+    const semantic = document.querySelector(selector) ?? undefined
+    if (
+      semantic !== undefined &&
+      (semantic.textContent ?? '').trim().length >= MIN_SEMANTIC_CHARS
+    ) {
+      const text = new MarkdownWriter(base, collector, DROPPED_TAGS).render(asDomNode(semantic))
+      if (text.length >= MIN_SEMANTIC_CHARS) return { title, text, links: collector.shownIn(text) }
+    }
   }
   if (dom.isProbablyReaderable(document, { minContentLength: 60, minScore: 10 })) {
     const article = new dom.Readability<DomNode>(document.cloneNode(true) as typeof document, {

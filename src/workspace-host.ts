@@ -284,7 +284,7 @@ const headerCwd = (line: string): string | undefined => {
   const entry = decodeSessionLine(line)
   if (Option.isNone(entry) || !entry.value) return undefined
   const header = decodeSessionHeader(entry.value)
-  return Option.isSome(header) ? (header.value.cwd ?? process.cwd()) : process.cwd()
+  return Option.isSome(header) ? (header.value.cwd ?? process.cwd()) : undefined
 }
 const sessionFileCwd = (file: string): string => {
   const fd = openSync(file, 'r')
@@ -1028,7 +1028,18 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
     }
     const declined = declinedSwitch(source)
     if (declined !== undefined) {
-      withdrawals.set(source, runDeferred(withdrawOrReport(source, handoff)))
+      const previous = withdrawals.get(source)
+      const next = runDeferred(
+        (previous === undefined ? Effect.void : Fiber.await(previous)).pipe(
+          Effect.andThen(withdrawOrReport(source, handoff)),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (withdrawals.get(source) === next) withdrawals.delete(source)
+            })
+          )
+        )
+      )
+      withdrawals.set(source, next)
       return declined
     }
     const transition = makeTransition(handoff, origin, context, 'requested')
@@ -1363,12 +1374,22 @@ export const makeWorkspaceHost = Effect.fnUntraced(function* (
       return undefined
     },
     (effect, event) =>
-      Effect.catchCause(effect, cause =>
-        Effect.succeed<ToolCallEventResult | undefined>({
+      Effect.catchCause(effect, cause => {
+        const error = Cause.squash(cause)
+        const endsTurn = error instanceof WorkspaceError && error.outcome === 'review-required'
+        if (endsTurn) {
+          armedReviewEnd = {
+            kind: 'refusal',
+            reason: errorText(error),
+            endedTurn: true,
+            next: '/workspace shows the state and its next action.',
+          }
+        }
+        return Effect.succeed<ToolCallEventResult | undefined>({
           block: true,
-          reason: `${event.toolName} did not run: ${errorText(Cause.squash(cause))}`,
+          reason: `${event.toolName} did not run: ${errorText(error)}`,
         })
-      )
+      })
   )
 
   const safeToolCall = (

@@ -822,7 +822,6 @@ const maskLine = (line: string, state: ShellState): string => {
   let position = 0
   while (position < line.length) {
     const character = line.charAt(position)
-    const rest = line.slice(position)
     let width = 1
     if (state.escaped) {
       state.escaped = false
@@ -846,11 +845,14 @@ const maskLine = (line: string, state: ShellState): string => {
       (position === 0 || COMMENT_START.test(line.charAt(position - 1)))
     ) {
       return masked + '_'.repeat(line.length - position)
-    } else if (rest.startsWith('<<<')) {
+    } else if (character === '<' && line.startsWith('<<<', position)) {
       masked += '<<<'
       width = 3
     } else {
-      const heredoc = rest.startsWith('<<') ? HEREDOC.exec(rest) : null
+      const heredoc =
+        character === '<' && line.startsWith('<<', position)
+          ? HEREDOC.exec(line.slice(position))
+          : null
       if (heredoc === null) masked += character
       else {
         state.pending.push({
@@ -1146,7 +1148,7 @@ const timeFacts = (index: SessionIndex): TimeFact[] => {
       entry.kind === 'observation-invalid'
     )
       return []
-    const gap = previous === undefined ? 0 : entry.at - previous
+    const gap = previous === undefined ? 0 : Math.max(0, entry.at - previous)
     previous = entry.at
     const located = index.located(entry)
     if (entry.kind === 'request') return [{ ...located, category: 'model', ms: entry.latencyMs }]

@@ -42,7 +42,9 @@ const git = (checkout: string, args: readonly string[]): string => {
 }
 
 const removeCandidate = (candidate: string): string => {
-  if (lstatIfExists(candidate) === undefined) return ''
+  const info = lstatIfExists(candidate)
+  if (info === undefined) return ''
+  if (info.isSymbolicLink()) requireReview(`Prepared Pi path is a symbolic link: ${candidate}`)
   rmSync(candidate, { recursive: true, force: true })
   return 'Removed the Pi release prepared by npm run pi:update.\n'
 }
@@ -150,7 +152,18 @@ const removeUpgradeWorktree = (
     const entry = git(source.path, ['worktree', 'list', '--porcelain', '-z'])
       .split('\0\0')
       .map(value => value.split('\0'))
-      .find(fields => fields.includes(`worktree ${path}`))
+      .find(fields =>
+        fields.some(field => {
+          if (!field.startsWith('worktree ')) return false
+          const listed = field.slice('worktree '.length)
+          if (listed === path) return true
+          try {
+            return realpathSync(listed) === path
+          } catch {
+            return false
+          }
+        })
+      )
     const branch = entry
       ?.find(field => field.startsWith('branch refs/heads/'))
       ?.slice('branch refs/heads/'.length)

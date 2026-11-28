@@ -196,6 +196,9 @@ export const loadCatalog: Effect.Effect<ProfileCatalog, ProfileError, FileSystem
     return { manifestPath: path, defaultProfile: manifest.default, names, load }
   })
 
+const canonicalOrResolve = (fs: FileSystem.FileSystem, path: string): Effect.Effect<string> =>
+  fs.realPath(path).pipe(Effect.orElseSucceed(() => resolve(path)))
+
 const projectSkillPathCandidates = (
   cwd: string,
   gitRoot: string | undefined
@@ -230,28 +233,37 @@ export const composeResources: (
 ) => Effect.Effect<ComposedResources, ProfileError, FileSystem.FileSystem> = Effect.fnUntraced(
   function* (options) {
     const fs = yield* FileSystem.FileSystem
-    const projectCandidates = projectSkillPathCandidates(options.cwd, options.gitRoot)
+    const canonicalCwd = yield* canonicalOrResolve(fs, options.cwd)
+    const canonicalRoot =
+      options.gitRoot === undefined ? undefined : yield* canonicalOrResolve(fs, options.gitRoot)
+    const projectCandidates = projectSkillPathCandidates(canonicalCwd, canonicalRoot)
     const projectPaths = yield* existingPaths(fs, projectCandidates)
-    const candidates = [...projectPaths, ...options.profile.skillPaths]
+    const taggedCandidates = [
+      ...projectPaths.map(path => ({ path, source: 'project' })),
+      ...options.profile.skillPaths.map(path => ({ path, source: options.profile.name })),
+    ]
     const canonical = yield* Effect.forEach(
-      candidates,
-      path =>
-        fs.realPath(path).pipe(
-          Effect.map(resolved => ({ path, resolved })),
-          Effect.orElseSucceed(() => ({ path, resolved: undefined }))
+      taggedCandidates,
+      entry =>
+        fs.realPath(entry.path).pipe(
+          Effect.map(resolved => ({ ...entry, resolved })),
+          Effect.orElseSucceed(() => ({ ...entry, resolved: undefined }))
         ),
       { concurrency: 'unbounded' }
     )
     const seen = new Set<string>()
-    const paths = canonical.flatMap(({ path, resolved }) => {
-      if (resolved === undefined) return [path]
-      if (seen.has(resolved)) return []
-      seen.add(resolved)
-      return [path]
-    })
-    const provenance = paths.map((path, index) => ({
+    const deduped: { readonly path: string; readonly source: string }[] = []
+    for (const entry of canonical) {
+      if (entry.resolved !== undefined) {
+        if (seen.has(entry.resolved)) continue
+        seen.add(entry.resolved)
+      }
+      deduped.push({ path: entry.path, source: entry.source })
+    }
+    const paths = deduped.map(({ path }) => path)
+    const provenance = deduped.map(({ path, source }, index) => ({
       path,
-      source: index < projectPaths.length ? 'project' : options.profile.name,
+      source,
       precedence: index,
     }))
     return {

@@ -3,6 +3,7 @@ import {
   closeSync,
   constants,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -167,8 +168,8 @@ const syncNewFile = (path: string): void => {
   let fd: number | undefined
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
-    const info = lstatSync(path)
-    if (!info.isFile() || info.isSymbolicLink() || info.uid !== effectiveUid())
+    const info = fstatSync(fd)
+    if (!info.isFile() || info.uid !== effectiveUid())
       unavailable(`Unsafe new dev database: ${path}`)
     fchmodSync(fd, 0o600)
     fsyncSync(fd)
@@ -415,7 +416,8 @@ export const openRecordConnection = (
       enableForeignKeyConstraints: true,
     })
     try {
-      if (!existed) {
+      const currentMode = textField(first(db, 'PRAGMA journal_mode'), 'journal_mode').toLowerCase()
+      if (!existed || currentMode === 'delete') {
         const mode = textField(first(db, 'PRAGMA journal_mode = WAL'), 'journal_mode')
         if (mode.toLowerCase() !== 'wal') unavailable(cannotEnableWalText(path))
       }

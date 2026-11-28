@@ -309,6 +309,11 @@ export const createWorkExtension = ({
                     onReactivationChange()
                   },
                   onLive: () => scheduleView(false),
+                  onExhaust: () => {
+                    retryBeforeExhaustion ??= session?.settingsManager.getRetryEnabled()
+                    session?.settingsManager.applyOverrides({ retry: { enabled: false } })
+                    scheduleView(true)
+                  },
                   onOutcome: attempt => {
                     if (
                       context?.sessionManager.getSessionId() !== sessionId ||
@@ -530,25 +535,39 @@ export const createWorkExtension = ({
     const candidates = publications().filter(
       item => item.publication.state === 'ready' || item.publication.state === 'failed'
     )
+    const healthy: PublicationReservation[] = []
     yield* Effect.forEach(
       candidates,
       reservation =>
         ownedBy(scope.owner, owner => owner.inspect(reservation.item.attempt.id)).pipe(
           Effect.flatMap(attempt =>
             Effect.sync(() => {
-              if (isReserved(scope, reservation)) reservation.item.attempt = attempt
+              if (isReserved(scope, reservation)) {
+                reservation.item.attempt = attempt
+                healthy.push(reservation)
+              }
             })
+          ),
+          Effect.catchCauseIf(
+            cause => !Cause.hasInterruptsOnly(cause),
+            cause =>
+              deliveryFailure(scope, [reservation], Cause.squash(cause)).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    const failure = Cause.squash(cause)
+                    if (
+                      failure instanceof WorkPersistenceError &&
+                      failure.code === 'record-unavailable'
+                    )
+                      pending.delete(reservation.item.attempt.id)
+                  })
+                )
+              )
           )
         ),
       { concurrency: 'unbounded', discard: true }
-    ).pipe(
-      Effect.tapCause(cause =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.void
-          : deliveryFailure(scope, candidates, Cause.squash(cause))
-      )
     )
-    return candidates
+    return healthy
   })
 
   const selectBatch = (
@@ -671,7 +690,7 @@ export const createWorkExtension = ({
     const candidates = yield* inspectPending(scope)
     const quietNow =
       event.outcome === 'completed'
-        ? yield* Effect.promise(() => collectQuiet(quietLedger.takeForBoundary()))
+        ? yield* collectQuietEffect(quietLedger.takeForBoundary())
         : undefined
     const { items, canReactivate } = selectBatch(scope, candidates, event.entries)
     if (items.length === 0 && quietNow === undefined) return undefined
@@ -841,15 +860,15 @@ export const createWorkExtension = ({
     return collectQuiet(taken)
   }
 
-  const collectQuiet = async (
+  const collectQuietEffect = Effect.fnUntraced(function* (
     taken: readonly (readonly [AttemptId, QuietNotice])[]
-  ): Promise<Pi.BeforeAgentStartEventResult['message']> => {
+  ): Effect.fn.Return<Pi.BeforeAgentStartEventResult['message']> {
     const owner = sessionOwner
     if (owner?._tag !== 'active' || taken.length === 0) {
       for (const [id, notice] of taken) quietLedger.release(id, notice)
       return undefined
     }
-    const described = await Effect.runPromise(describeQuiet(owner, taken))
+    const described = yield* describeQuiet(owner, taken)
     const items: QuietItem[] = []
     for (const { id, notice, failed, item } of described) {
       if (failed) quietLedger.restore(id, notice)
@@ -858,7 +877,12 @@ export const createWorkExtension = ({
     }
     onReactivationChange()
     return items.length === 0 ? undefined : quietMessage(items)
-  }
+  })
+
+  const collectQuiet = (
+    taken: readonly (readonly [AttemptId, QuietNotice])[]
+  ): Promise<Pi.BeforeAgentStartEventResult['message']> =>
+    Effect.runPromise(collectQuietEffect(taken))
 
   const close = (reason = 'session ended'): Promise<void> => {
     if (sessionOwner?._tag === 'closed') return sessionOwner.shutdown
@@ -1151,8 +1175,12 @@ export const createWorkExtension = ({
         },
       ]),
       handler: async (args, ctx) => {
-        const [action, id, stream, offset] = args.trim().split(/\s+/)
+        const [action, second, third, fourth] = args.trim().split(/\s+/)
         const operation = action === 'stop' ? 'cancel' : action || 'list'
+        const id = operation === 'list' ? undefined : second
+        const stream = operation === 'list' ? undefined : third
+        const rawOffset = operation === 'list' ? second : fourth
+        const offset = rawOffset === undefined ? undefined : Number(rawOffset)
         try {
           const result = await run(
             ctx,
@@ -1160,7 +1188,7 @@ export const createWorkExtension = ({
               action: operation,
               ...(id === undefined ? {} : { id }),
               ...(stream === undefined ? {} : { stream }),
-              ...(offset === undefined ? {} : { offset: Number(offset) }),
+              ...(offset === undefined ? {} : { offset }),
             }).pipe(Effect.flatMap(execute))
           )
           pi.sendMessage(

@@ -237,11 +237,14 @@ export const makeWebReader = Effect.fnUntraced(function* (
       )
     const { document, renderable } = yield* staticDocument(fetched.response)
     if (!renderable) return document
-    return yield* browserDocument(
-      url,
-      [`Too little text without Chrome (HTTP ${document.status}); Chrome loaded the page instead.`],
-      signal
-    ).pipe(
+    const escalation =
+      document.status === 401 ||
+      document.status === 403 ||
+      document.status === 429 ||
+      document.status === 503
+        ? `HTTP ${document.status} without Chrome; Chrome loaded the page instead.`
+        : `Too little text without Chrome (HTTP ${document.status}); Chrome loaded the page instead.`
+    return yield* browserDocument(url, [escalation], signal).pipe(
       Effect.catchTag(['BrowserError', 'BrowserProfileError'], error =>
         Effect.succeed({
           ...document,
