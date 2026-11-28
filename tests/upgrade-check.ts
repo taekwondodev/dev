@@ -23,6 +23,7 @@ import * as Scope from 'effect/Scope'
 import type * as Upgrade from '../scripts/upgrade.ts'
 import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { WorkspaceAuthority, registerWorkspace } from '../src/workspace-authority.ts'
+import { acquireStructureGate } from '../src/workspace-gates.ts'
 import { canonicalGitWorkspace } from '../src/workspace-git.ts'
 import { inspectWorkspaces } from '../src/workspace-inspect.ts'
 import { openLifecycle } from './workspace/workspace-test-lifecycle.ts'
@@ -45,10 +46,11 @@ const git = (args: readonly string[], cwd = checkout): string => {
 const update = (
   command = 'update',
   args: readonly string[] = [],
-  env: Readonly<Record<string, string>> = {}
+  env: Readonly<Record<string, string>> = {},
+  cwd = checkout
 ) => {
   const result = spawnSync('npm', ['run', command, '--', ...args], {
-    cwd: checkout,
+    cwd,
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -255,22 +257,29 @@ registerHooks({
   } finally {
     await occupant.close()
   }
+  const structure = acquireStructureGate(
+    authority.paths,
+    canonicalGitWorkspace(checkout),
+    repository
+  )
+  try {
+    await assert.rejects(
+      place('origin/main', { kind: 'reset', branch: pushed }),
+      /Another dev operation is creating or removing a worktree/,
+      'a held structure gate refuses the worktree change instead of waiting'
+    )
+  } finally {
+    structure()
+  }
   cpSync(join(checkout, 'src'), join(worktree, 'src'), { recursive: true })
   cpSync(join(checkout, 'scripts'), join(worktree, 'scripts'), { recursive: true })
   symlinkSync(join(source, 'node_modules'), join(worktree, 'node_modules'))
-  const nested = spawnSync('npm', ['run', 'pi:update'], {
-    cwd: worktree,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      DEV_PI_RELEASE: undefined,
-      NODE_OPTIONS: `--import=${join(sandbox, 'preload.mjs')}`,
-    },
-  })
-  assert.notEqual(nested.status, 0)
-  assert.match(
-    nested.stderr,
-    /is a linked worktree\. Run npm run pi:update from the repository's main checkout/
+  assert.throws(
+    () => update('pi:update', [], {}, worktree),
+    (error: Error) =>
+      error.message.includes(
+        `is a linked worktree. Run npm run pi:update from the repository's main checkout, ${checkout}.`
+      )
   )
   assert.equal(existsSync(join(worktree, '.dev', 'upgrade')), false, 'no nested upgrade state')
   for (const copied of ['src', 'scripts', 'node_modules'])
@@ -281,11 +290,12 @@ registerHooks({
   git(['push', '--quiet', 'origin', 'main'])
   const released = git(['rev-parse', 'HEAD'])
   git(['reset', '--quiet', '--hard', `${released}^`])
+  const beforeClaim = git(['rev-parse', 'HEAD'])
   const claimed = Scope.makeUnsafe()
   try {
     await Effect.runPromise(Scope.provide(claimed)(claimUpgrade(root)))
     assert.throws(update, /Refusing update: The upgrade worktree .* is in use/)
-    assert.equal(git(['rev-parse', 'HEAD']), `${git(['rev-parse', `${released}^`])}`)
+    assert.equal(git(['rev-parse', 'HEAD']), beforeClaim, 'update refuses before merging')
   } finally {
     await Effect.runPromise(Scope.close(claimed, Exit.void))
   }
