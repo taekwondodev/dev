@@ -371,17 +371,29 @@ const UNSTATED: CwdRecord = { kind: 'unstated' }
 const NONE: CwdRecord = { kind: 'none' }
 const OTHER_INPUT: ToolInput = { kind: 'other' }
 
-const firstText = (content: typeof MessageContent.Type): string | undefined =>
-  typeof content === 'string'
-    ? content
-    : Option.getOrUndefined(Option.map(decodeText(content[0]), block => block.text))
-
 const textOf = (blocks: readonly unknown[]): string =>
   blocks.flatMap(block => Option.toArray(decodeText(block)).map(({ text }) => text)).join('\n')
 
 const userPayload = (content: typeof MessageContent.Type): Payload => {
-  const text = typeof content === 'string' ? content : textOf(content)
-  const skill = SKILL_BLOCK.exec(firstText(content) ?? '')?.[1]
+  if (typeof content === 'string') {
+    const skill = SKILL_BLOCK.exec(content)?.[1]
+    return {
+      kind: 'user',
+      skill,
+      text: skill === undefined ? content : (SKILL_MESSAGE.exec(content)?.[1] ?? ''),
+    }
+  }
+  let first: string | undefined
+  const texts: string[] = []
+  for (let index = 0; index < content.length; index++) {
+    const decoded = decodeText(content[index])
+    if (Option.isSome(decoded)) {
+      if (index === 0) first = decoded.value.text
+      texts.push(decoded.value.text)
+    }
+  }
+  const text = texts.join('\n')
+  const skill = SKILL_BLOCK.exec(first ?? '')?.[1]
   return {
     kind: 'user',
     skill,
@@ -845,6 +857,6 @@ export const readSessions = Effect.fn('readSessions')(function* <A>(
       readSession(dataHome, directory, scope, name).pipe(
         Effect.map(session => (session === undefined ? [] : [project(session)]))
       ),
-    { concurrency: 1 }
+    { concurrency: 16 }
   ).pipe(Effect.map(results => results.flat()))
 })

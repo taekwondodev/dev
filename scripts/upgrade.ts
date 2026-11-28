@@ -382,9 +382,25 @@ const openUpgrades = run('gh', [
 )
 
 const worktreePaths = Effect.fnUntraced(function* (flags: readonly string[]) {
-  return lines(yield* inWorktree(['status', '--porcelain', '--untracked-files=all', ...flags])).map(
-    line => line.slice(3)
-  )
+  const { stdout } = yield* run('git', [
+    '-C',
+    worktree,
+    'status',
+    '--porcelain',
+    '-z',
+    '--untracked-files=all',
+    ...flags,
+  ])
+  const entries = stdout.split('\0')
+  const paths: string[] = []
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]
+    if (entry === undefined || entry === '') continue
+    const status = entry.slice(0, 2)
+    paths.push(entry.slice(3))
+    if (status.includes('R') || status.includes('C')) index++
+  }
+  return paths
 })
 
 const MergedPullRequests = Schema.fromJsonString(
@@ -510,29 +526,14 @@ const freeBranch = Effect.fnUntraced(function* (date: string) {
 })
 
 const install = Effect.fnUntraced(function* (refresh: boolean) {
-  const commands = refresh ? [['install'], ['update']] : [['ci']]
-  let output = ''
-  let ms = 0
-  for (const command of commands) {
-    const args = [...command, ...npmInstallFlags]
-    const result = yield* streamed('npm', args, {}, worktree)
-    output += result.output
-    ms += result.ms
-    if (!result.passed)
-      return {
-        step: 'install',
-        command: `npm ${command[0]} --ignore-scripts`,
-        passed: false,
-        ms,
-        output,
-      } satisfies StepResult
-  }
+  const subcommand = refresh ? 'update' : 'ci'
+  const result = yield* streamed('npm', [subcommand, ...npmInstallFlags], {}, worktree)
   return {
     step: 'install',
-    command: refresh ? 'npm install --ignore-scripts' : 'npm ci --ignore-scripts',
-    passed: true,
-    ms,
-    output,
+    command: `npm ${subcommand} --ignore-scripts`,
+    passed: result.passed,
+    ms: result.ms,
+    output: result.output,
   } satisfies StepResult
 })
 
@@ -548,11 +549,16 @@ const installScripts = Effect.gen(function* () {
 
 const verify = Effect.fnUntraced(function* (base: Manifest, head: Manifest, refresh: boolean) {
   const active = yield* resolvePiPackage
-  const pi =
-    head.config.pi === active.version
-      ? Option.none<PiComparison>()
-      : Option.some(yield* comparePi(base.config.pi, head.config.pi))
-  const installed = yield* install(refresh)
+  const skipPiComparison = head.config.pi === base.config.pi && head.config.pi === active.version
+  const [pi, installed] = yield* Effect.all(
+    [
+      skipPiComparison
+        ? Effect.succeed(Option.none<PiComparison>())
+        : comparePi(base.config.pi, head.config.pi).pipe(Effect.asSome),
+      install(refresh),
+    ],
+    { concurrency: 2 }
+  )
   const env: Record<string, string> = Option.isSome(pi) ? { DEV_PI_RELEASE: candidateRelease } : {}
   if (!installed.passed)
     return {
@@ -562,12 +568,16 @@ const verify = Effect.fnUntraced(function* (base: Manifest, head: Manifest, refr
       audit: Option.none(),
       installScripts: Option.none(),
     } satisfies Verification
+  const [checks, audit, scripts] = yield* Effect.all(
+    [runUpgradeChecks(worktree, env, checkReportPath), auditAt(worktree, 'all'), installScripts],
+    { concurrency: 'unbounded' }
+  )
   return {
     install: installed,
-    checks: Option.some(yield* runUpgradeChecks(worktree, env, checkReportPath)),
+    checks: Option.some(checks),
     pi,
-    audit: Option.some(yield* auditAt(worktree, 'all')),
-    installScripts: Option.some(yield* installScripts),
+    audit: Option.some(audit),
+    installScripts: Option.some(scripts),
   } satisfies Verification
 })
 

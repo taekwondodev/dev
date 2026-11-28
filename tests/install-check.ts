@@ -357,7 +357,7 @@ try {
   assert.ok(calls.includes('pi-installer stdout=pipe'))
   assert.deepEqual(
     calls.filter(line => line.startsWith('npm ')),
-    ['ci', 'run setup', 'link --ignore-scripts'].map(
+    ['ci --ignore-scripts', 'run setup', 'link --ignore-scripts'].map(
       args => `npm ${fresh.destination} ${args} pi=${piBin}`
     )
   )

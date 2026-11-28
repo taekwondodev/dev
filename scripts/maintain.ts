@@ -48,10 +48,14 @@ const assertPrivateDataProtected = Effect.fnUntraced(
     if (!(yield* fs.exists(join(checkout, '.dev')))) return
     const ignore = (yield* git(['show', `${ref}:.gitignore`])).split(/\r?\n/)
     const tracked = yield* git(['ls-tree', '-r', '--name-only', ref, '--', '.dev'])
-    if (!ignore.includes('/.dev/') || ignore.some(line => line.startsWith('!')) || tracked)
+    if (
+      !ignore.includes('/.dev/') ||
+      ignore.some(line => /^!\/?\.dev(?:\/|$)/.test(line)) ||
+      tracked
+    )
       return yield* new MaintenanceError({
         message:
-          'Refusing checkout: private .dev data requires an explicit /.dev/ ignore rule, no negation rules, and no tracked contents. Relocate that data explicitly before using this revision.',
+          'Refusing checkout: private .dev data requires an explicit /.dev/ ignore rule, no .dev negation rules, and no tracked contents. Relocate that data explicitly before using this revision.',
       })
   },
   Effect.mapError(error =>
@@ -112,6 +116,11 @@ const update = Effect.fnUntraced(
     const branch = Option.isSome(options.branch)
       ? options.branch.value
       : yield* git(['branch', '--show-current'])
+    if (branch === '')
+      return yield* new MaintenanceError({
+        message:
+          'Refusing update: dev checkout is on a detached HEAD. Pass --branch NAME or switch to a branch first.',
+      })
     yield* git(['fetch', remote, branch])
     yield* assertPrivateDataProtected(`${remote}/${branch}`)
     const previous = yield* git(['rev-parse', 'HEAD'])
@@ -139,11 +148,18 @@ const update = Effect.fnUntraced(
       catch: cause => failed('Dev updated, but upgrade cleanup failed', cause),
     })
     yield* say(cleanup)
+    const piBefore = yield* Effect.option(resolvePiPackage)
     const pi = yield* streamed('pi', ['update'])
     if (!pi.passed)
       return yield* new MaintenanceError({
         message: `Updated dev, but pi update failed; Pi was not updated. Rerun pi update:\n${lastLines(pi.output, 40)}`,
       })
+    const piAfter = yield* Effect.option(resolvePiPackage)
+    if (
+      Option.isSome(piAfter) &&
+      (!Option.isSome(piBefore) || piBefore.value.root !== piAfter.value.root)
+    )
+      yield* linkPiDeclarations
   },
   Effect.scoped,
   Effect.mapError(error =>
@@ -170,7 +186,25 @@ const rollback = Effect.fnUntraced(
         message:
           'Refusing rollback: dev checkout has local changes. Preserve them explicitly before rolling back.',
       })
+    const previous = yield* git(['rev-parse', 'HEAD'])
     yield* git(['checkout', '--detach', revision])
+    const lockfile = yield* run(
+      'git',
+      ['diff', '--quiet', previous, 'HEAD', '--', 'package-lock.json'],
+      {
+        exitCodes: [0, 1],
+      }
+    )
+    if (lockfile.exitCode !== 0) {
+      const install = yield* streamed('npm', ['ci', ...npmInstallFlags])
+      if (!install.passed)
+        return yield* new MaintenanceError({
+          message: `Rolled back the checkout, but npm ci failed; rerun npm ci --ignore-scripts && npm run types:pi:\n${lastLines(install.output, 40)}`,
+        })
+      yield* say('reinstalled dependencies from the rolled-back package-lock.json\n')
+    }
+    yield* linkPiDeclarations
+    yield* buildNative
     yield* say(
       `rolled dev checkout back to ${ref.value}; external Pi, workflow, credentials and sessions were not changed\n`
     )
