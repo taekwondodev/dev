@@ -300,11 +300,7 @@ export const sweepStrip = Effect.fnUntraced(function* (
   })
   const settle = Effect.fnUntraced(function* (requested: SceneShape, label: string) {
     yield* Fiber.interrupt(scan)
-    if (
-      origin === undefined ||
-      requested.dots + requested.branches === 0 ||
-      !fitsStrip(graphics, requested, 0)
-    ) {
+    if (requested.dots + requested.branches === 0 || !fitsStrip(graphics, requested, 0)) {
       const at = origin === undefined ? 0 : (yield* Clock.currentTimeMillis) - origin
       yield* strip.leave(
         scanColumns,

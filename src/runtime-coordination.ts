@@ -228,17 +228,12 @@ export const holdExistingInstallationForRemoval = (checkout: string): GateReleas
       throw cause
     }
   }
-  try {
-    return lockDatabase(
-      join(directory, 'installation.sqlite'),
-      false,
-      `Target installation is still in use: ${checkout}`,
-      false
-    )
-  } catch (cause) {
-    if (Predicate.isObject(cause) && cause.code === 'ENOENT') return () => {}
-    throw cause
-  }
+  return lockDatabase(
+    join(directory, 'installation.sqlite'),
+    false,
+    `Target installation is still in use: ${checkout}`,
+    false
+  )
 }
 
 const prepareCoordination = (options: CoordinationOptions): string => {
