@@ -28,11 +28,9 @@ Review the report's breaking versions, Pi changelog, changed contracts, audit fi
 
 For failed checks, follow the report's **Before merging** instructions:
 
-1. Fix the upgrade branch in any worktree of the installation checkout and rerun the commands supplied by the report: each names the failed check file, lint pass or probe, and finds the Pi candidate from any such worktree. A separate worktree first detaches at `origin/<branch>` and runs `npm ci --ignore-scripts` and the report's `npm run types:pi`; `.dev/upgrade/worktree` is already prepared. Do not rerun them while `pi:update` runs, because it rebuilds the Pi candidate.
-2. Commit and push with `git push origin HEAD:<branch>`.
-3. Run `npm run pi:update` again from the installation checkout to verify the pushed revision and refresh the existing pull request. Quit any dev session open in `.dev/upgrade/worktree` first. If the branch moves during verification, rerun against its new head.
-
-An agent can run this loop from a dev session in the installation checkout, with the user's authorization to push and publish: it runs `npm run pi:update` in the background, reads `.dev/upgrade/report.md`, delegates the fix to a writing agent, which receives its own worktree, and runs `npm run pi:update` again once the fix is pushed. A session opened in `.dev/upgrade/worktree` can fix and push, but cannot rerun the command, because it occupies that worktree.
+1. Fix the upgrade branch in any worktree of the installation checkout. The report supplies the commands that prepare a separate worktree and rerun each failed check file, lint pass or probe against the Pi candidate. Do not rerun them while `pi:update` runs, because it rebuilds the Pi candidate.
+2. Commit and push to the upgrade branch.
+3. Run `npm run pi:update` again to verify the pushed revision and refresh the existing pull request. If the branch moves during verification, rerun against its new head.
 
 When Pi has released again since the pull request was opened, that run first pushes a commit pinning the new release to the upgrade branch, then verifies it.
 
