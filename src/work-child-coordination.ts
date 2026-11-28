@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
+import * as Predicate from 'effect/Predicate'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import type * as Pi from '@earendil-works/pi-coding-agent'
@@ -108,6 +109,7 @@ export const acquireCoordinatorLink = Effect.fnUntraced(function* (
     Queue.failCauseUnsafe(wakes, Cause.fail(unavailable(message)))
   }
   const onMessage = (raw: unknown): void => {
+    if (!Predicate.isObject(raw) || raw.type !== 'work-wake') return
     const message = decodeControllerMessage(raw)
     if (Option.isSome(message) && message.value.type === 'work-wake')
       Queue.offerUnsafe(wakes, undefined)

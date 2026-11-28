@@ -899,7 +899,10 @@ const runBrowserOwner = Effect.fnUntraced(function* (
   const openChrome: Effect.Effect<LiveChrome, BrowserError | BrowserProfileError> =
     Effect.uninterruptible(
       Effect.gen(function* () {
-        if (live !== undefined) return live
+        if (live !== undefined) {
+          if (!Deferred.isDoneUnsafe(live.browser.cdp.closed)) return live
+          yield* closeChrome()
+        }
         const previous = yield* retryChromeShutdown(paths.userDataDir)
         if (previous.kind === 'unobserved')
           return yield* new BrowserError({
@@ -967,15 +970,18 @@ const runBrowserOwner = Effect.fnUntraced(function* (
         message: CHROME_READS_DISABLED,
       })
     const current = yield* chromeLock.withPermits(1)(openChrome)
-    return yield* current.host
-      .render(url, { timeout: RENDER_BUDGET, maxHtmlChars })
-      .pipe(
-        Effect.ensuring(
-          chromeLock.withPermits(1)(
-            Effect.suspend(() => (live === current ? scheduleIdleClose(current) : Effect.void))
-          )
+    return yield* current.host.render(url, { timeout: RENDER_BUDGET, maxHtmlChars }).pipe(
+      Effect.ensuring(
+        chromeLock.withPermits(1)(
+          Effect.suspend(() => {
+            if (live !== current) return Effect.void
+            if (Deferred.isDoneUnsafe(current.browser.cdp.closed))
+              return Effect.asVoid(closeChrome())
+            return scheduleIdleClose(current)
+          })
         )
       )
+    )
   })
 
   const admitRender = (
@@ -992,7 +998,6 @@ const runBrowserOwner = Effect.fnUntraced(function* (
             `At limit of ${MAX_RENDER_CLIENTS} browser readers. Retry later.`
           ),
         })
-      client.rendering = true
       if (state.queued >= MAX_QUEUED_RENDERS)
         return Effect.succeed<OwnerReply>({
           type: 'failed',
@@ -1002,6 +1007,7 @@ const runBrowserOwner = Effect.fnUntraced(function* (
             `Already ${MAX_QUEUED_RENDERS} browser reads waiting. Retry later.`
           ),
         })
+      client.rendering = true
       state.queued += 1
       let waiting = true
       const leaveQueue = Effect.sync(() => {
@@ -1115,20 +1121,27 @@ const runBrowserOwner = Effect.fnUntraced(function* (
       return
     }
     if (request.type === 'status') {
-      const current = yield* Effect.orElseSucceed(profile.status, () => undefined)
-      if (current === undefined) return
+      const current = yield* Effect.exit(profile.status)
       yield* Effect.sync(() =>
         client.channel.write(
-          encodeReply({
-            type: 'status',
-            requestId: request.requestId,
-            profile: {
-              ...current,
-              ...(current.chrome === undefined ? {} : { chrome: current.chrome }),
-              ...(current.copy === undefined ? {} : { copy: current.copy }),
-            },
-            activity: activity(),
-          })
+          encodeReply(
+            Exit.isSuccess(current)
+              ? {
+                  type: 'status',
+                  requestId: request.requestId,
+                  profile: {
+                    ...current.value,
+                    ...(current.value.chrome === undefined ? {} : { chrome: current.value.chrome }),
+                    ...(current.value.copy === undefined ? {} : { copy: current.value.copy }),
+                  },
+                  activity: activity(),
+                }
+              : {
+                  type: 'failed',
+                  requestId: request.requestId,
+                  error: wireFailure(current.cause),
+                }
+          )
         )
       )
       return
@@ -1293,11 +1306,13 @@ const runBrowserOwner = Effect.fnUntraced(function* (
         )
       )
     )
+  ).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        state.draining = true
+      }).pipe(Effect.andThen(chromeLock.withPermits(1)(Effect.asVoid(closeChrome()))))
+    )
   )
-  yield* Effect.sync(() => {
-    state.draining = true
-  })
-  yield* chromeLock.withPermits(1)(Effect.asVoid(closeChrome()))
 }, Effect.scoped)
 
 const sendToParent = (message: unknown): void => {

@@ -33,6 +33,8 @@ export const canonicalPathSlot = (path: string): string => {
   const info = lstatIfExists(absolute)
   if (info !== undefined && (info.isSymbolicLink() || !info.isDirectory()))
     requireReview(`Checkout path is not a physical directory: ${absolute}`)
+  if (info === undefined && lstatIfExists(dirname(absolute)) === undefined)
+    return canonicalPath(absolute).path
   return canonicalSlot(absolute, info)
 }
 
@@ -157,6 +159,7 @@ export const classifyWriteDestination = (
       invalid('Ask the conversation using this checkout to make the change')
     invalid(DEV_PRIVATE_STORAGE_NOT_WRITABLE)
   }
+  if (artifact) return { kind: 'artifact', operand: absolute, path }
   const device = workspace ? lstatSync(checkout).dev : undefined
   for (
     let directory = missing.length > 0 ? ancestor : dirname(path);

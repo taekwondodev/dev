@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
-import { basename, dirname, join, resolve } from 'node:path'
+import { accessSync, constants, statSync } from 'node:fs'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
@@ -47,19 +47,21 @@ const ReleaseVersion = Schema.String.check(
   Schema.isPattern(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/)
 )
 
-const whichPi = Effect.callback<string, PiError>(resume => {
-  const child = execFile('which', ['pi'], { encoding: 'utf8' }, (cause, stdout) => {
-    resume(
-      cause
-        ? Effect.fail(
-            new PiError({ message: `No pi on PATH. Install Pi with: ${piInstaller}`, cause })
-          )
-        : Effect.succeed(stdout.trim())
-    )
-  })
-  return Effect.sync(() => {
-    child.kill()
-  })
+const whichPi = Effect.try({
+  try: () => {
+    for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+      if (directory === '') continue
+      const candidate = join(directory, 'pi')
+      try {
+        accessSync(candidate, constants.X_OK)
+        if (statSync(candidate).isFile()) return candidate
+      } catch {
+        continue
+      }
+    }
+    throw new Error('pi not found on PATH')
+  },
+  catch: cause => new PiError({ message: `No pi on PATH. Install Pi with: ${piInstaller}`, cause }),
 })
 
 const activeRelease = Effect.gen(function* () {

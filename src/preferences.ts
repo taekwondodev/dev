@@ -163,7 +163,8 @@ const withPreferencePublication = <A, E, R>(
           throw new Error(`Preference directory must not be a symlink: ${directory}`)
         return acquireExclusiveLock(
           join(directory, '.publication.sqlite'),
-          'Preference publication is in progress'
+          'Preference publication is in progress',
+          2000
         )
       },
       catch: cause => toPreferencesError(cause, 'Cannot acquire preference publication'),

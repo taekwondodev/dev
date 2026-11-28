@@ -76,7 +76,10 @@ export const resolveDispatch = Effect.fnUntraced(function* (
   }).pipe(Effect.mapError(cause => failure(cause.message, cause)))
 })
 
-export const quotaExhausted = (message: string | undefined): boolean =>
-  /insufficient_quota|quota.{0,40}(exceed|exhaust)|usage.limit|usage_limit|credit.balance|billing.hard.limit|subscription.{0,40}(limit|exhaust)/i.test(
-    message ?? ''
+export const quotaExhausted = (message: string | undefined): boolean => {
+  const text = message ?? ''
+  if (/\b(?:edquot|disk|filesystem|inode|memory|heap)\b/i.test(text)) return false
+  return /insufficient_quota|quota.{0,40}(exceed|exhaust)|usage.limit|usage_limit|credit.balance|billing.hard.limit|subscription.{0,40}(limit|exhaust)/i.test(
+    text
   )
+}

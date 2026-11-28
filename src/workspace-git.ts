@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
+import { accessSync, constants, existsSync, realpathSync, statSync } from 'node:fs'
 import { execFile, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { basename, delimiter, isAbsolute, join, resolve } from 'node:path'
 import * as Option from 'effect/Option'
@@ -36,11 +36,7 @@ const GIT_ISOLATION_ARGUMENTS = [
   '-c',
   'core.hooksPath=/dev/null',
   '-c',
-  'core.fsmonitor=false',
-  '-c',
   'submodule.recurse=false',
-  '-c',
-  'core.untrackedCache=false',
   '-c',
   'advice.graftFileDeprecated=false',
 ] as const
@@ -93,10 +89,15 @@ const completed = (cwd: string, result: SpawnSyncReturns<string>): GitResult => 
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
 
-export const gitResult = (cwd: string, args: readonly string[], input?: string): GitResult =>
-  completed(cwd, runGit(PATH_GIT, cwd, args, input))
-
 let identityGit = PATH_GIT
+
+export const gitResult = (cwd: string, args: readonly string[], input?: string): GitResult => {
+  if (identityGit === PATH_GIT) return completed(cwd, runGit(PATH_GIT, cwd, args, input))
+  const result = runGit(identityGit, cwd, args, input)
+  if (result.error === undefined || existsSync(identityGit)) return completed(cwd, result)
+  identityGit = PATH_GIT
+  return completed(cwd, runGit(PATH_GIT, cwd, args, input))
+}
 
 const selectedInEveryDirectory = (name: string): string | undefined => {
   for (const directory of (process.env.PATH ?? '').split(delimiter)) {
@@ -104,7 +105,7 @@ const selectedInEveryDirectory = (name: string): string | undefined => {
     const candidate = join(directory, name)
     try {
       accessSync(candidate, constants.X_OK)
-      return candidate
+      if (statSync(candidate).isFile()) return candidate
     } catch {}
   }
   return undefined
@@ -123,13 +124,7 @@ export const resolveIdentityGit = (launcher: GitLauncher = XCRUN_LAUNCHER): void
   )
 }
 
-const identityResult = (cwd: string, args: readonly string[]): GitResult => {
-  if (identityGit === PATH_GIT) return gitResult(cwd, args)
-  const result = runGit(identityGit, cwd, args)
-  if (result.error === undefined || existsSync(identityGit)) return completed(cwd, result)
-  identityGit = PATH_GIT
-  return gitResult(cwd, args)
-}
+const identityResult = (cwd: string, args: readonly string[]): GitResult => gitResult(cwd, args)
 
 const succeeded = (args: readonly string[], result: GitResult): string => {
   if (result.status !== 0)

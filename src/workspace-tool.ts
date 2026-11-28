@@ -127,8 +127,13 @@ export class WorkspaceToolError extends Schema.TaggedError<
 >()('WorkspaceToolError', { message: Schema.String }) {}
 const refuse = (message: string) => new WorkspaceToolError({ message })
 
-const BodyPayload = Schema.Struct({ body: Schema.NullOr(Schema.String), html_url: Schema.String })
+const BodyPayload = Schema.Struct({
+  body: Schema.NullOr(Schema.String),
+  html_url: Schema.String,
+  issue_url: Schema.optional(Schema.String),
+})
 const decodeBody = Schema.decodeUnknownResult(Schema.fromJsonString(BodyPayload))
+const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 
 export interface PublicationDestinationReader {
   body(
@@ -166,9 +171,18 @@ const readDestinationBody = (
     ),
     Effect.flatMap(({ stdout }) => {
       const payload = decodeBody(stdout)
-      return Result.isSuccess(payload)
-        ? Effect.succeed({ body: payload.success.body ?? '', url: payload.success.html_url })
-        : Effect.fail(refuse(`Unexpected GitHub response: ${errorText(payload.failure)}`))
+      if (!Result.isSuccess(payload))
+        return Effect.fail(refuse(`Unexpected GitHub response: ${errorText(payload.failure)}`))
+      if (
+        commentId !== undefined &&
+        payload.success.issue_url !== undefined &&
+        !payload.success.issue_url.endsWith(`/issues/${number}`) &&
+        !payload.success.issue_url.endsWith(`/pulls/${number}`)
+      )
+        return Effect.fail(
+          refuse(`Comment ${commentId} does not belong to ${repository}#${number}`)
+        )
+      return Effect.succeed({ body: payload.success.body ?? '', url: payload.success.html_url })
     })
   )
 
@@ -180,7 +194,33 @@ const readAttachment = (url: string) =>
         signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`)
-      return new Uint8Array(await response.arrayBuffer())
+      const lengthHeader = response.headers.get('content-length')
+      const expected = lengthHeader === null ? undefined : Number(lengthHeader)
+      if (expected !== undefined && Number.isFinite(expected) && expected > MAX_ATTACHMENT_BYTES)
+        throw new Error(`Image exceeds ${MAX_ATTACHMENT_BYTES} bytes: ${url}`)
+      if (response.body === null) return new Uint8Array(0)
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let total = 0
+      try {
+        for (;;) {
+          const next = await reader.read()
+          if (next.done) break
+          total += next.value.byteLength
+          if (total > MAX_ATTACHMENT_BYTES)
+            throw new Error(`Image exceeds ${MAX_ATTACHMENT_BYTES} bytes: ${url}`)
+          chunks.push(next.value)
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      const combined = new Uint8Array(total)
+      let offset = 0
+      for (const chunk of chunks) {
+        combined.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return combined
     },
     catch: cause => refuse(`Could not download ${url}: ${errorText(cause)}`),
   })
@@ -422,6 +462,19 @@ export const makeWorkspaceTool = (options: WorkspaceToolOptions): ToolDefinition
         )
       root = 'artifacts'
       relativePath = relative(artifactsDirectory, absolute)
+    } else {
+      const canonicalRoot = yield* Effect.try({
+        try: () => realpathSync.native(view.path),
+        catch: cause => refuse(selectedArtifactUnreadableText(input.path, cause)),
+      })
+      const canonical = yield* Effect.try({
+        try: () => realpathSync.native(absolute),
+        catch: cause => refuse(selectedArtifactUnreadableText(input.path, cause)),
+      })
+      if (canonical === canonicalRoot || !isWithin(canonicalRoot, canonical))
+        return yield* refuse(
+          `Selected artifact must be reached without links outside the checkout: ${input.path}`
+        )
     }
     const info = yield* Effect.try({
       try: () => lstatSync(absolute),

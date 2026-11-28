@@ -66,12 +66,13 @@ const readHeader = (fd: number): string | undefined => {
   return read < HEADER_BYTES ? buffer.toString('utf8', 0, read) : undefined
 }
 
-const inventory = (directory: string): readonly Candidate[] => {
+const inventory = (directory: string, retained: number): readonly Candidate[] => {
   const info = lstatSync(directory)
   if (!info.isDirectory() || info.uid !== process.getuid?.())
     throw new Error(`Cleanup requires a directory of the current user: ${directory}`)
-  return readdirSync(directory).flatMap(name => {
-    if (!name.endsWith('.jsonl')) return []
+  const names = readdirSync(directory).filter(name => name.endsWith('.jsonl'))
+  if (names.length <= retained) return []
+  return names.flatMap(name => {
     const path = join(directory, name)
     let fd: number | undefined
     try {
@@ -141,10 +142,11 @@ export const cleanConversations = Effect.fnUntraced(function* (
         const directory = join(home, category)
         let candidates: readonly Candidate[]
         try {
-          candidates = inventory(directory)
+          candidates = inventory(directory, retained)
         } catch {
           continue
         }
+        if (candidates.length <= retained) continue
         const ordered = candidates.toSorted(newestFirst)
         let kept = 0
         for (const candidate of ordered) {

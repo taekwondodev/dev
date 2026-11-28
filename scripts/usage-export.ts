@@ -48,6 +48,8 @@ export const EXPORTED_TOOLS = [
   'work',
   'git_inspect',
   'workspace',
+  'codemode',
+  'read_url',
 ] as const
 
 export const EXPORTED_EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const

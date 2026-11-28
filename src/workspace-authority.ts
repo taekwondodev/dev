@@ -348,42 +348,72 @@ export class WorkspaceAuthority {
     return id
   }
 
+  private holdDepth = 0
+
   withHandles<A>(work: () => A): A {
     return this.holding(work)
   }
 
   private holding<A>(work: (held: HeldHandles) => A): A {
-    if (this.held !== undefined) return work(this.held)
     const held = this.retained
-    this.held = held
-    this.region += 1
-    let completed = false
-    try {
-      const result = work(held)
-      completed = true
-      return result
-    } finally {
-      this.held = undefined
-      this.releaseHandles(held, !completed || this.closed)
+    if (this.holdDepth === 0) {
+      this.held = held
+      this.region += 1
     }
+    this.holdDepth += 1
+    const release = (ok: boolean): void => {
+      this.holdDepth = Math.max(0, this.holdDepth - 1)
+      if (this.holdDepth === 0) {
+        this.held = undefined
+        this.releaseHandles(held, !ok || this.closed)
+      }
+    }
+    let result: A
+    try {
+      result = work(held)
+    } catch (cause) {
+      release(false)
+      throw cause
+    }
+    if (result instanceof Promise) {
+      return result.then(
+        (value: unknown) => {
+          release(true)
+          return value
+        },
+        (cause: unknown) => {
+          release(false)
+          throw cause
+        }
+      ) as A
+    }
+    release(true)
+    return result
   }
 
   private releaseHandles(held: HeldHandles, all: boolean): void {
     for (const [id, shard] of held.shards)
       if (all || shard.db.isTransaction) {
         held.shards.delete(id)
-        shard.db.close()
+        try {
+          shard.db.close()
+        } catch {}
       }
     const leastRecent = [...held.shards]
       .toSorted(([, left], [, right]) => right.region - left.region)
       .slice(RETAINED_SHARDS)
     for (const [id, shard] of leastRecent) {
       held.shards.delete(id)
-      shard.db.close()
+      try {
+        shard.db.close()
+      } catch {}
     }
     if (held.catalog !== undefined && (all || held.catalog.db.isTransaction)) {
-      held.catalog.db.close()
+      const { db } = held.catalog
       held.catalog = undefined
+      try {
+        db.close()
+      } catch {}
     }
   }
 
@@ -718,8 +748,11 @@ export class WorkspaceAuthority {
     const releaseProtocol = this.protocolRelease
     this.protocolRelease = undefined
     this.closed = true
-    if (this.held === undefined) this.releaseHandles(this.retained, true)
-    releaseProtocol?.()
+    try {
+      if (this.held === undefined) this.releaseHandles(this.retained, true)
+    } finally {
+      releaseProtocol?.()
+    }
   }
 }
 

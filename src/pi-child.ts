@@ -1,7 +1,7 @@
 import './compile-cache-adoption.ts'
 import { spawn } from 'node:child_process'
-import { realpathSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -96,10 +96,6 @@ const SAFE_GIT_OPTIONS = [
   '--no-pager',
   '--no-optional-locks',
   '-c',
-  'core.fsmonitor=false',
-  '-c',
-  'core.untrackedCache=false',
-  '-c',
   'core.hooksPath=/dev/null',
   '-c',
   'diff.external=',
@@ -108,6 +104,22 @@ const SAFE_GIT_OPTIONS = [
   '-c',
   'protocol.allow=never',
 ] as const
+
+const sourceRepositoryOf = (checkout: string | undefined): string | undefined => {
+  if (checkout === undefined) return undefined
+  try {
+    const dotGit = join(checkout, '.git')
+    if (!lstatSync(dotGit).isFile()) return undefined
+    const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))?.[1]?.trim()
+    if (pointer === undefined) return undefined
+    const admin = resolvePath(checkout, pointer)
+    const commonPointer = readFileSync(join(admin, 'commondir'), 'utf8').trim()
+    const common = realpathSync(resolvePath(admin, commonPointer))
+    return basename(common) === '.git' ? dirname(common) : undefined
+  } catch {
+    return undefined
+  }
+}
 
 const OwnerAttemptId = Schema.NonEmptyString.pipe(Schema.brand('dev/child/AttemptId'))
 
@@ -802,29 +814,28 @@ const acquireSession = Effect.fn('acquireSession')(function* (
   const catalog = yield* loadCatalog.pipe(Effect.mapError(toChildError))
   const profile = yield* catalog.load(request.profile).pipe(Effect.mapError(toChildError))
   const projectGitRoot = yield* gitRoot(request.cwd).pipe(Effect.mapError(toChildError))
+  const sourceRepoRoot = sourceRepositoryOf(projectGitRoot)
   const resources = yield* composeResources({
     cwd: request.cwd,
     gitRoot: projectGitRoot,
     profile,
   }).pipe(Effect.mapError(toChildError))
   const projectTrusted = yield* Effect.try({
-    try: () =>
-      request.access === 'write' &&
-      (!loaded.api.hasTrustRequiringProjectResources(request.cwd) ||
-        new loaded.api.ProjectTrustStore(request.dataHome).get(request.cwd) === true),
+    try: () => {
+      if (request.access !== 'write') return false
+      if (!loaded.api.hasTrustRequiringProjectResources(request.cwd)) return true
+      const store = new loaded.api.ProjectTrustStore(globalPiAgentDir())
+      const candidates = [request.cwd, projectGitRoot, sourceRepoRoot].filter(
+        (candidate): candidate is string => candidate !== undefined
+      )
+      return candidates.some(candidate => store.get(candidate) === true)
+    },
     catch: toChildError,
   })
   const settingsManager = yield* Effect.try({
     try: () =>
       loaded.api.SettingsManager.create(request.cwd, globalPiAgentDir(), {
         projectTrusted,
-      }),
-    catch: toChildError,
-  })
-  yield* Effect.try({
-    try: () =>
-      settingsManager.applyOverrides({
-        retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
       }),
     catch: toChildError,
   })
@@ -1104,9 +1115,7 @@ const runSession = Effect.fnUntraced(
       ).pipe(Effect.mapError(toChildError))
     if (signal?.aborted) return yield* new ChildError({ message: RUN_CANCELLED })
     const outcome = finalAssistantOutcome(resource.session)
-    const current = telemetry(resource.session)
-    state.telemetry = current
-    yield* send({ type: 'progress', usage: current.usage, context: current.context })
+    state.telemetry = telemetry(resource.session)
     return outcome
   },
   (effect, state) =>
@@ -1166,7 +1175,7 @@ const runPiChild = Effect.fn('runPiChild')(function* (
     } else if (state.shutdownError) {
       result = childResult(
         state,
-        '',
+        outcome.text,
         `Agent did not shut down cleanly: ${errorMessage(state.shutdownError)}`
       )
     } else {

@@ -42,7 +42,13 @@ import {
   type AddressResolver,
 } from '../../src/web-network.ts'
 import { sliceDocument } from '../../src/web-documents.ts'
-import { extractMarkdown, extractText, type Extracted } from '../../src/web-extract.ts'
+import {
+  extractHtml,
+  extractMarkdown,
+  extractText,
+  loadDom,
+  type Extracted,
+} from '../../src/web-extract.ts'
 import { toResult, toText } from '../../src/web-extension.ts'
 
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'dev-web-read-')))
@@ -432,7 +438,10 @@ try {
         ['http://[::1]/', /Non-public address/],
         ['http://169.254.169.254/latest/meta-data', /Non-public address/],
         ['http://localhost/', /Non-public host/],
+        ['http://localhost./', /Non-public host/],
         ['http://intranet.local/', /Non-public host/],
+        ['http://intranet.local./', /Non-public host/],
+        ['http://metadata.google.internal./', /Non-public host/],
         ['http://home.arpa/', /Non-public host/],
         ['http://printer.home.arpa/', /Non-public host/],
         ['http://0x7f000001/', /Non-public address/],
@@ -447,6 +456,22 @@ try {
         'https://example.com/a'
       )
       assert.equal(seen.length, 0)
+      const md = extractMarkdown(
+        '# Title\n\n![logo](https://example.com/logo.png) and [docs](https://example.com/docs)\n',
+        'https://example.com/'
+      )
+      assert.deepEqual(
+        md.links.map(link => link.url),
+        ['https://example.com/docs']
+      )
+      const dom = await Effect.runPromise(loadDom)
+      const extracted = extractHtml(
+        dom,
+        `<!doctype html><html><body><article><p>${'Promo card text. '.repeat(20)}</p></article><main><h1>Real Doc</h1><p>${'Main documentation body. '.repeat(20)}</p></main></body></html>`,
+        'https://example.com/'
+      )
+      assert.match(extracted.text, /Real Doc/)
+      assert.doesNotMatch(extracted.text, /Promo card/)
     }
   )
   await claim(
@@ -455,6 +480,8 @@ try {
       for (const blocked of [
         '::ffff:127.0.0.1',
         '::ffff:10.0.0.1',
+        '::ffff:0:127.0.0.1',
+        '::127.0.0.1',
         '64:ff9b::7f00:1',
         '2002:7f00:1::',
         'fe80::1',
