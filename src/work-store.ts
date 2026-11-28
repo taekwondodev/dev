@@ -251,6 +251,28 @@ const preparePersistence = async (
   return { home, root, databasePath, work }
 }
 
+const repairManagedPath = async (
+  path: string,
+  directory: boolean,
+  optional = false
+): Promise<void> => {
+  const managedPath = await openManagedPath(path, directory, optional)
+  if (managedPath === undefined) return
+  try {
+    await managedPath.handle.chmod(managedPath.mode)
+  } finally {
+    await managedPath.handle.close().catch(() => undefined)
+  }
+}
+
+const utf8SequenceLength = (first: number): number => {
+  if ((first & 128) === 0) return 1
+  if ((first & 224) === 192) return 2
+  if ((first & 240) === 224) return 3
+  if ((first & 248) === 240) return 4
+  return 1
+}
+
 const repairPersistenceModes = async (paths: {
   readonly home: string
   readonly root: string
@@ -258,43 +280,23 @@ const repairPersistenceModes = async (paths: {
   readonly work: string
 }): Promise<void> => {
   await inspectLayout(paths.root, paths.databasePath)
-  const managed: {
-    readonly handle: Awaited<ReturnType<typeof openNative>>
-    readonly mode: number
-  }[] = []
-  const add = async (path: string, directory: boolean, optional = false): Promise<void> => {
-    const managedPath = await openManagedPath(path, directory, optional)
-    if (managedPath !== undefined) managed.push(managedPath)
+  await repairManagedPath(paths.home, true)
+  await repairManagedPath(paths.work, true)
+  await repairManagedPath(paths.root, true)
+  const entries = await readdir(paths.root, { withFileTypes: true })
+  for (const entry of entries) {
+    const directory = join(paths.root, entry.name)
+    await repairManagedPath(directory, true)
+    const children = await readdir(directory, { withFileTypes: true })
+    for (const child of children) await repairManagedPath(join(directory, child.name), false)
   }
-  try {
-    await add(paths.home, true)
-    await add(paths.work, true)
-    await add(paths.root, true)
-    const entries = await readdir(paths.root, { withFileTypes: true })
-    for (const entry of entries) {
-      const directory = join(paths.root, entry.name)
-      await add(directory, true)
-      const children = await readdir(directory, { withFileTypes: true })
-      for (const child of children) await add(join(directory, child.name), false)
-    }
-    await add(paths.databasePath, false, true)
-    for (const sidecar of [
-      `${paths.databasePath}-wal`,
-      `${paths.databasePath}-shm`,
-      `${paths.databasePath}-journal`,
-    ])
-      await add(sidecar, false, true)
-    await inspectLayout(paths.root, paths.databasePath)
-    for (const item of managed) await item.handle.chmod(item.mode)
-  } finally {
-    for (const item of managed) {
-      try {
-        await item.handle.close()
-      } catch {
-        continue
-      }
-    }
-  }
+  await repairManagedPath(paths.databasePath, false, true)
+  for (const sidecar of [
+    `${paths.databasePath}-wal`,
+    `${paths.databasePath}-shm`,
+    `${paths.databasePath}-journal`,
+  ])
+    await repairManagedPath(sidecar, false, true)
 }
 
 const makeRecordDirectory = async (root: string, id: AttemptId): Promise<void> => {
@@ -720,7 +722,6 @@ export class WorkStore extends Context.Service<
               return { available: false, path, reason: 'Log unavailable or expired' }
             if (info.isSymbolicLink() || !info.isFile())
               return yield* persistenceError(new WorkerRpcError({ code: 'unsafe-path' }))
-            yield* fs.chmod(path, 0o600)
             const file = yield* fs.open(path, { flag: 'r' })
             const size = Number(ByteSize.toBigInt((yield* file.stat).size))
             if (!Number.isSafeInteger(size))
@@ -729,15 +730,28 @@ export class WorkStore extends Context.Service<
             yield* file.seek(BigInt(start), 'start')
             const buffer = new Uint8Array(Math.min(limit, Math.max(0, size - start)))
             const bytes = yield* file.read(buffer)
-            const chunk = buffer.subarray(0, bytes)
-            const end = start + chunk.byteLength
+            const raw = buffer.subarray(0, bytes)
+            let trimStart = 0
+            if (start > 0)
+              while (trimStart < raw.byteLength && ((raw[trimStart] ?? 0) & 192) === 128)
+                trimStart += 1
+            let trimEnd = raw.byteLength
+            if (start + raw.byteLength < size && trimEnd > trimStart) {
+              let lead = trimEnd - 1
+              while (lead > trimStart && ((raw[lead] ?? 0) & 192) === 128) lead -= 1
+              const expected = utf8SequenceLength(raw[lead] ?? 0)
+              if (trimEnd - lead < expected) trimEnd = lead
+            }
+            const alignedStart = trimStart < trimEnd ? start + trimStart : start
+            const chunk = trimStart < trimEnd ? raw.subarray(trimStart, trimEnd) : raw
+            const end = alignedStart + chunk.byteLength
             return {
               available: true,
               path,
-              offset: start,
+              offset: alignedStart,
               nextOffset: end < size ? end : null,
               size,
-              truncated: start > 0 || end < size,
+              truncated: alignedStart > 0 || end < size,
               text: Buffer.from(chunk).toString('utf8'),
             }
           },
