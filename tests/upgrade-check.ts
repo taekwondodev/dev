@@ -16,8 +16,12 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import type * as Upgrade from '../scripts/upgrade.ts'
+import { acquireRuntime } from '../src/runtime-coordination.ts'
 import { WorkspaceAuthority, registerWorkspace } from '../src/workspace-authority.ts'
 import { canonicalGitWorkspace } from '../src/workspace-git.ts'
 import { inspectWorkspaces } from '../src/workspace-inspect.ts'
@@ -78,6 +82,9 @@ try {
     `#!/bin/sh\necho "$*" >> '${piCalls}'\n[ -e '${piFailure}' ] && exit 97\nexit 0\n`,
     { mode: 0o755 }
   )
+  writeFileSync(join(sandbox, 'pi', 'bin', 'gh'), '#!/bin/sh\necho gh is offline >&2\nexit 1\n', {
+    mode: 0o755,
+  })
   writeFileSync(
     join(installation, 'managed-install.json'),
     JSON.stringify({ kind: 'pi-managed-install', schemaVersion: 1, layout: 'releases-v1' })
@@ -205,14 +212,85 @@ registerHooks({
     '',
     'an absent worktree does not authorize guessing a branch'
   )
-  const { placeWorktree } = (await import(
+  const { claimUpgrade, placeWorktree, UpgradeWorktree } = (await import(
     pathToFileURL(join(checkout, 'scripts', 'upgrade.ts')).href
   )) as typeof Upgrade
   const place = (start: string, head: Upgrade.WorktreeHead) =>
     Effect.runPromise(
-      placeWorktree(start, Effect.succeed(head)).pipe(Effect.provide(NodeServices.layer))
+      placeWorktree(start, Effect.succeed(head)).pipe(
+        Effect.provide(Layer.merge(UpgradeWorktree.layer(root), NodeServices.layer))
+      )
     )
   const pushed = 'chore/upgrade-2026-10-16'
+  const running = Scope.makeUnsafe()
+  try {
+    await Effect.runPromise(
+      Scope.provide(running)(
+        acquireRuntime(dataHome, { installationPath: checkout, namespacePath: root })
+      )
+    )
+    await place('origin/main', { kind: 'created', branch: pushed })
+    assert.throws(
+      () => update('pi:update'),
+      /Cannot list open upgrade pull requests: .*gh is offline/s,
+      'pi:update proceeds while a session runs from the installation'
+    )
+  } finally {
+    await Effect.runPromise(Scope.close(running, Exit.void))
+  }
+  const occupantFile = join(dataHome, 'occupant.jsonl')
+  writeFileSync(occupantFile, '{}\n')
+  const occupant = await openLifecycle({ root })
+  try {
+    const attachment = await occupant.attach({
+      cwd: worktree,
+      conversation: { sessionId: 'upgrade-occupant', sessionFile: occupantFile, dataHome },
+    })
+    await attachment.authorize({ kind: 'read' })
+    await assert.rejects(
+      place('origin/main', { kind: 'reset', branch: pushed }),
+      /upgrade worktree .* is in use by a dev session/
+    )
+    await attachment.close()
+  } finally {
+    await occupant.close()
+  }
+  cpSync(join(checkout, 'src'), join(worktree, 'src'), { recursive: true })
+  cpSync(join(checkout, 'scripts'), join(worktree, 'scripts'), { recursive: true })
+  symlinkSync(join(source, 'node_modules'), join(worktree, 'node_modules'))
+  const nested = spawnSync('npm', ['run', 'pi:update'], {
+    cwd: worktree,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DEV_PI_RELEASE: undefined,
+      NODE_OPTIONS: `--import=${join(sandbox, 'preload.mjs')}`,
+    },
+  })
+  assert.notEqual(nested.status, 0)
+  assert.match(
+    nested.stderr,
+    /is a linked worktree\. Run npm run pi:update from the repository's main checkout/
+  )
+  assert.equal(existsSync(join(worktree, '.dev', 'upgrade')), false, 'no nested upgrade state')
+  for (const copied of ['src', 'scripts', 'node_modules'])
+    rmSync(join(worktree, copied), { recursive: true, force: true })
+  writeFileSync(join(checkout, 'contention.txt'), 'released while claimed\n')
+  git(['add', 'contention.txt'])
+  git(['commit', '--quiet', '-m', 'released while claimed'])
+  git(['push', '--quiet', 'origin', 'main'])
+  const released = git(['rev-parse', 'HEAD'])
+  git(['reset', '--quiet', '--hard', `${released}^`])
+  const claimed = Scope.makeUnsafe()
+  try {
+    await Effect.runPromise(Scope.provide(claimed)(claimUpgrade(root)))
+    assert.throws(update, /Refusing update: The upgrade worktree .* is in use/)
+    assert.equal(git(['rev-parse', 'HEAD']), `${git(['rev-parse', `${released}^`])}`)
+  } finally {
+    await Effect.runPromise(Scope.close(claimed, Exit.void))
+  }
+  update()
+  assert.equal(git(['rev-parse', 'HEAD']), released, 'update merges once the claim is released')
   await place('origin/main', { kind: 'created', branch: pushed })
   writeFileSync(join(worktree, 'tracked.txt'), 'fixed upgrade\n')
   git(['commit', '--quiet', '-am', 'fixed upgrade'], worktree)
@@ -269,7 +347,7 @@ registerHooks({
     'dev itself never switches the active Pi'
   )
   console.log(
-    'upgrade cleanup and maintenance: update alias, Pi preparation rename, pi update after dev update and its failure, candidate cleanup, main cleanup, squash, scope, lock, repeat, path reuse and in-place worktree reuse passed'
+    'upgrade cleanup and maintenance: update alias, Pi preparation rename, pi update after dev update and its failure, candidate cleanup, main cleanup, squash, scope, lock, repeat, path reuse, in-place worktree reuse beside a running session and the worktree claim passed'
   )
 } finally {
   authority.close()

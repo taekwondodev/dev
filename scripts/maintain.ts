@@ -13,14 +13,13 @@ import { errorText } from '../src/error-text.ts'
 import { ensureNative } from '../src/native.ts'
 import { defaultDataHome, sessionDir } from '../src/preferences.ts'
 import { acquireMaintenance } from '../src/runtime-coordination.ts'
-import { WorkspaceAuthority } from '../src/workspace-authority.ts'
 import { defaultAuthorityRoot } from '../src/workspace-authority-root.ts'
 import { cleanupUpgradeWorkspace } from '../src/workspace-upgrade.ts'
 import { linkPiDeclarations, resolvePiPackage } from '../src/pi-runtime.ts'
 import { checkout, checkoutIsClean, git, npmInstallFlags, run, streamed } from './checkout.ts'
 import { candidateRelease, refuseSelectedRelease } from './pi-upgrade.ts'
 import { lastLines } from './report.ts'
-import { runUpgrade } from './upgrade.ts'
+import { claimUpgrade, runUpgrade } from './upgrade.ts'
 import { conversationTimeline, listConversations } from './usage-conversations.ts'
 import { ALL_TIME, parsePeriod, profileUsage } from './usage-profile.ts'
 
@@ -101,6 +100,10 @@ const update = Effect.fnUntraced(
     const { remote } = options
     yield* acquireMaintenance()
     yield* Effect.mapError(refuseSelectedRelease('update'), reported)
+    const { authority, claim } = yield* Effect.mapError(
+      claimUpgrade(defaultAuthorityRoot()),
+      error => failed('Refusing update', error)
+    )
     if (!(yield* checkoutIsClean))
       return yield* new MaintenanceError({
         message:
@@ -132,14 +135,7 @@ const update = Effect.fnUntraced(
     }
     yield* buildNative
     const cleanup = yield* Effect.try({
-      try: () => {
-        const authority = new WorkspaceAuthority(defaultAuthorityRoot())
-        try {
-          return cleanupUpgradeWorkspace(authority, checkout, candidateRelease)
-        } finally {
-          authority.close()
-        }
-      },
+      try: () => cleanupUpgradeWorkspace(authority, claim, candidateRelease),
       catch: cause => failed('Dev updated, but upgrade cleanup failed', cause),
     })
     yield* say(cleanup)

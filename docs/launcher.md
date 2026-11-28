@@ -45,7 +45,7 @@ Maintenance options that take a value use `--flag value`. An unknown option or a
 
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
-Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout; update (also named `upgrade`) reinstalls dependencies when the merged `package-lock.json` changed, then runs `pi update`; it never compares Pi with the pin. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
+Close every dev TUI before setup, update, rollback or upgrade: these take exclusive installation admission. `pi:update` runs beside open sessions; see [Upgrade](upgrade.md#before-starting). Update and rollback require a clean checkout; update (also named `upgrade`) reinstalls dependencies when the merged `package-lock.json` changed, then runs `pi update`; it never compares Pi with the pin. When `.dev/` exists, update and rollback also refuse revisions that would track it or stop ignoring it.
 
 Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#native-addon) for toolchain requirements and build recovery.
 
