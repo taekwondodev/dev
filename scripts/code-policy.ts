@@ -121,7 +121,10 @@ const sentenceAround = (node: Node): boolean => {
       (joins(outer) && joins(parentOf(outer))))
   )
     outer = parentOf(outer)
-  if (outer?.type === 'TemplateLiteral') return WORDS.test(written(outer))
+  if (outer?.type === 'TemplateLiteral') {
+    const text = written(outer)
+    return WORDS.test(text) || /\S +\S/.test(text)
+  }
   return joins(outer) && writtenWords(outer, node)
 }
 

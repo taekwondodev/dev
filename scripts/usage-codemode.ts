@@ -46,33 +46,32 @@ const readRequests = (
 
 export const codemodeSession = (session: SessionRecord) => {
   const reads = new Map<Entry, ReadRequests>()
-  walkBranches(
-    session,
-    HashMap.empty<string, readonly RequestedRange[]>(),
-    (earlier, ancestor) => readRequests(earlier, ancestor).requested,
-    (earlier, entry) => {
-      reads.set(entry, readRequests(earlier, entry).reads)
-    }
-  )
   const declared = new Map<Entry, number | undefined>()
   walkBranches(
     session,
-    HashMap.empty<string, number | undefined>(),
-    (earlier, ancestor) =>
-      ancestor.kind === 'request'
-        ? ancestor.calls.reduce(
-            (issued, call) =>
-              HashMap.set(
-                issued,
-                call.id,
-                call.input.kind === 'script' ? call.input.declaredLimit : undefined
-              ),
-            earlier
-          )
-        : earlier,
+    {
+      requested: HashMap.empty<string, readonly RequestedRange[]>(),
+      issued: HashMap.empty<string, number | undefined>(),
+    },
+    (earlier, ancestor) => ({
+      requested: readRequests(earlier.requested, ancestor).requested,
+      issued:
+        ancestor.kind === 'request'
+          ? ancestor.calls.reduce(
+              (issued, call) =>
+                HashMap.set(
+                  issued,
+                  call.id,
+                  call.input.kind === 'script' ? call.input.declaredLimit : undefined
+                ),
+              earlier.issued
+            )
+          : earlier.issued,
+    }),
     (earlier, entry) => {
+      reads.set(entry, readRequests(earlier.requested, entry).reads)
       if (entry.kind === 'result')
-        declared.set(entry, Option.getOrUndefined(HashMap.get(earlier, entry.callId)))
+        declared.set(entry, Option.getOrUndefined(HashMap.get(earlier.issued, entry.callId)))
     }
   )
   return session.entries.flatMap(entry =>

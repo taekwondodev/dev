@@ -141,10 +141,14 @@ export const profileUsage = Effect.fn('profileUsage')(function* ({
 }: ProfileOptions) {
   const periods: readonly [Period, ...Period[]] =
     selection.kind === 'report' ? selection.periods : [selection.period]
-  const sessions = [
-    ...(yield* readSessions(dataHome, 'sessions', 'lead', measured)),
-    ...(yield* readSessions(dataHome, 'child-sessions', 'child', measured)),
-  ]
+  const [leadSessions, childSessions] = yield* Effect.all(
+    [
+      readSessions(dataHome, 'sessions', 'lead', measured),
+      readSessions(dataHome, 'child-sessions', 'child', measured),
+    ],
+    { concurrency: 2 }
+  )
+  const sessions = [...leadSessions, ...childSessions]
   const analysis = analyze(sessions.map(session => session.analysis))
   const compactions = sessions.map(session => session.compaction)
   const nested = sessions.flatMap(session => session.codemode)
