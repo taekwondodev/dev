@@ -392,6 +392,9 @@ export const conversationPresent = (paths: AuthorityPaths, identity: string): bo
   })
 }
 export const releaseGates = (gates: PathGates): void => {
-  gates.writer?.()
-  gates.use()
+  try {
+    gates.writer?.()
+  } finally {
+    gates.use()
+  }
 }

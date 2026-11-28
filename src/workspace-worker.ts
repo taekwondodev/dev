@@ -19,7 +19,6 @@ import {
   invalid,
   WorkspaceError,
   type ScopedContinuation,
-  type ScopedOutcome,
   type SweepReceipt,
   type SweepRequest,
   type SweepRow,
@@ -206,11 +205,15 @@ if (port !== null && engine !== undefined) {
       }
     })
 
+  let lastBindings = ''
   const refreshBindings = (): void => {
     const updates = [...attachments].map(([attachmentId, attachment]) => ({
       attachmentId,
       binding: attachment.binding,
     }))
+    const signature = JSON.stringify(updates)
+    if (signature === lastBindings) return
+    lastBindings = signature
     send({ type: 'bindings', updates })
   }
 
@@ -245,25 +248,28 @@ if (port !== null && engine !== undefined) {
       if (receipt.rows.length > 0) send({ type: 'sweep-receipt', attachmentId, receipt })
     }
 
-  const withScoped = async <Authorization extends WriterAdmission>(
+  const attachScoped = <Authorization extends WriterAdmission>(
+    authority: Parameters<typeof authorizeScopedWithin>[0],
     attachment: EngineAttachment,
     { authorization, observed }: AdmittedOperation<Authorization>,
     scoped: ScopedContinuation | undefined
-  ): Promise<Authorization> => {
+  ): Authorization => {
     if (authorization.kind !== 'ready' || scoped === undefined) return authorization
-    const outcome = await engine
-      .run(authority =>
-        authorizeScopedWithin(authority, attachment, authorization.grant, scoped, observed)
+    try {
+      const grant = authorizeScopedWithin(
+        authority,
+        attachment,
+        authorization.grant,
+        scoped,
+        observed
       )
-      .then(
-        (grant): ScopedOutcome => ({ kind: 'ready', grant }),
-        (cause: unknown): ScopedOutcome => ({
-          kind: 'refused',
-          outcome: outcomeOf(cause),
-          message: errorText(cause),
-        })
-      )
-    return { ...authorization, scoped: outcome }
+      return { ...authorization, scoped: { kind: 'ready', grant } }
+    } catch (cause) {
+      return {
+        ...authorization,
+        scoped: { kind: 'refused', outcome: outcomeOf(cause), message: errorText(cause) },
+      }
+    }
   }
 
   const execute = async (request: WorkspaceRpcInput, sentAt: number): Promise<RpcReply> => {
@@ -283,14 +289,16 @@ if (port !== null && engine !== undefined) {
         const attachment = requireAttachment(request.attachmentId)
         const { operation } = request
         const sweep = allocationSweep(request.attachmentId, sentAt)
+        const scoped = operation.kind === 'write' ? operation.scoped : undefined
         return replyTo(
           'authorize',
-          await withScoped(
-            attachment,
-            await engine.run(authority =>
-              authorizeOperation(authority, attachment, operation, sweep)
-            ),
-            operation.kind === 'write' ? operation.scoped : undefined
+          await engine.run(authority =>
+            attachScoped(
+              authority,
+              attachment,
+              authorizeOperation(authority, attachment, operation, sweep),
+              scoped
+            )
           )
         )
       }
@@ -300,12 +308,13 @@ if (port !== null && engine !== undefined) {
         const sweep = allocationSweep(request.attachmentId, sentAt)
         return replyTo(
           'authorize-writer',
-          await withScoped(
-            attachment,
-            await engine.run(authority =>
-              authorizeWriter(authority, attachment, operation, paused, sweep)
-            ),
-            operation.scoped
+          await engine.run(authority =>
+            attachScoped(
+              authority,
+              attachment,
+              authorizeWriter(authority, attachment, operation, paused, sweep),
+              operation.scoped
+            )
           )
         )
       }
