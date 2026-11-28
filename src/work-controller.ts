@@ -137,6 +137,7 @@ interface Job {
   readonly leaves: Set<Job>
   live?: ChildLive
   quietSince?: number
+  closed?: boolean
 }
 
 type CoordinationRequest = Exclude<CoordinationMessage, { readonly type: 'work-outcomes-ack' }>
@@ -183,6 +184,7 @@ interface WorkOwnerOptions {
   readonly onLive?: () => void
   readonly onOutcome?: (attempt: AttemptView) => void
   readonly onQuiet?: (change: QuietChange) => void
+  readonly onExhaust?: () => void
   readonly quietAfterMs?: number
   readonly childEntry?: URL
   readonly browserOwnerEntry?: URL
@@ -292,47 +294,44 @@ const signalOwnedGroup = (job: Job, signal: NodeJS.Signals): Effect.Effect<void,
 
 const git = (run: RunCommand, cwd: string, args: readonly string[]) =>
   Effect.suspend(() =>
-    run(
-      'git',
-      [
-        '--no-pager',
-        '-c',
-        'core.fsmonitor=false',
-        '-c',
-        'core.untrackedCache=false',
-        '-c',
-        'core.hooksPath=/dev/null',
-        '-C',
-        cwd,
-        ...args,
-      ],
-      {
-        maxOutputLength: 8 * 1024 * 1024,
-        timeout: 15000,
-        env: {
-          ...process.env,
-          GIT_OPTIONAL_LOCKS: '0',
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_NO_LAZY_FETCH: '1',
-        },
-      }
-    )
+    run('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-C', cwd, ...args], {
+      maxOutputLength: 8 * 1024 * 1024,
+      timeout: 15000,
+      env: {
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: '0',
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_NO_LAZY_FETCH: '1',
+      },
+    })
   ).pipe(Effect.map(result => result.stdout.trim()))
 
 const readArtifactState = (run: RunCommand, cwd: string): Effect.Effect<ArtifactState> =>
   Effect.all(
     {
       head: git(run, cwd, ['rev-parse', 'HEAD']),
-      diff: git(run, cwd, ['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--']),
       status: git(run, cwd, ['status', '--porcelain=v1', '--untracked-files=normal']),
     },
     { concurrency: 'unbounded' }
   ).pipe(
-    Effect.map(({ head, diff, status }) => ({
-      head,
-      trackedDigest: createHash('sha256').update(diff).digest('hex'),
-      untracked: status.split('\n').some(line => line.startsWith('??')),
-    })),
+    Effect.flatMap(({ head, status }) => {
+      const untracked = status.split('\n').some(line => line.startsWith('??'))
+      if (untracked) return Effect.succeed({ head, trackedDigest: '', untracked: true })
+      return git(run, cwd, [
+        'diff',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--binary',
+        'HEAD',
+        '--',
+      ]).pipe(
+        Effect.map(diff => ({
+          head,
+          trackedDigest: createHash('sha256').update(diff).digest('hex'),
+          untracked: false,
+        }))
+      )
+    }),
     Effect.orElseSucceed(() => ({ unavailable: true as const }))
   )
 
@@ -455,6 +454,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const onLive = options.onLive ?? (() => undefined)
   const onOutcome = options.onOutcome ?? (() => undefined)
   const onQuiet = options.onQuiet ?? (() => undefined)
+  const onExhaust = options.onExhaust ?? (() => undefined)
   const quietAfterMs = options.quietAfterMs ?? QUIET_AFTER_MS
   const childEntry = options.childEntry ?? PI_CHILD_ENTRY
   const browserOwner = makeOwnerBootstrap({
@@ -589,7 +589,12 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     id: AttemptId
   ): Effect.fn.Return<AttemptDescription, WorkFailure> {
     const record = yield* recordFor(id)
-    const current = yield* artifactState(record.cwd)
+    const needsArtifact =
+      record.completedAt !== undefined &&
+      record.artifactAtCompletion !== undefined &&
+      !record.artifactAtCompletion.unavailable &&
+      !record.artifactAtCompletion.untracked
+    const current = needsArtifact ? yield* artifactState(record.cwd) : undefined
     const staleArtifact = changedArtifact(record.artifactAtCompletion, current)
     const streams: readonly LogRequest['stream'][] =
       record.kind === 'agent' ? ['result', 'stderr'] : ['stdout', 'stderr']
@@ -667,19 +672,23 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   const exhaust: WorkOwnerService['exhaust'] = Effect.fnUntraced(function* (
     except?: AttemptId
   ): Effect.fn.Return<void, WorkFailure> {
-    yield* admissionLock.withPermit(
+    const targets = yield* admissionLock.withPermit(
       Effect.sync(() => {
         state.exhausted = true
         state.exhaustions += 1
         if (except !== undefined) quotaReporters.add(except)
+        return [...active.values()]
+          .filter(
+            job =>
+              job.kind === 'agent' &&
+              job.lifecycle.token.attemptId !== except &&
+              !quotaReporters.has(job.lifecycle.token.attemptId)
+          )
+          .map(job => job.lifecycle.token.attemptId)
       })
     )
-    yield* cancelMany(
-      [...active.values()]
-        .filter(job => job.kind === 'agent' && job.lifecycle.token.attemptId !== except)
-        .map(job => job.lifecycle.token.attemptId),
-      'subscription exhausted'
-    )
+    onExhaust()
+    yield* cancelMany(targets, 'subscription exhausted')
   }, Effect.mapError(toFailure))
 
   const exhaustions = Effect.sync(() => state.exhaustions)
@@ -720,6 +729,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     ): Effect.fn.Return<AttemptView, WorkFailure> {
       const reservation = yield* reserve(request.taskId, request.kind, parent)
       let grant: WorkspaceGrant | undefined
+      let createdRecord: AttemptRecord | undefined
       let installed = false
       const result = yield* Effect.gen(function* () {
         const requestedCwd = parent === undefined ? yield* resolveCwd(request.cwd) : undefined
@@ -789,6 +799,7 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
             : {}),
           artifactAtStart,
         })
+        createdRecord = record
         yield* assertPrepared(
           reservation.sessionId,
           reservation.generation,
@@ -844,14 +855,32 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       }).pipe(
         Effect.tapError(() => {
           const selected = grant
-          return !installed && selected !== undefined
-            ? workspace.attachment
-                .reportExecution(selected, {
-                  kind: 'launch-failed',
-                  reason: 'Permission ended before a process started',
-                })
-                .pipe(Effect.mapError(toFailure))
-            : Effect.void
+          const created = createdRecord
+          const settleRecord =
+            !installed && created !== undefined
+              ? Clock.currentTimeMillis.pipe(
+                  Effect.flatMap(completedAt =>
+                    store.save({
+                      ...created,
+                      status: 'failed',
+                      completedAt,
+                      error: 'Permission ended before a process started',
+                      revision: created.revision + 1,
+                    })
+                  ),
+                  Effect.ignore
+                )
+              : Effect.void
+          const reportFailed =
+            !installed && selected !== undefined
+              ? workspace.attachment
+                  .reportExecution(selected, {
+                    kind: 'launch-failed',
+                    reason: 'Permission ended before a process started',
+                  })
+                  .pipe(Effect.mapError(toFailure))
+              : Effect.void
+          return settleRecord.pipe(Effect.andThen(reportFailed))
         }),
         Effect.ensuring(Effect.sync(() => reservations.delete(scopeKey(reservation.task))))
       )
@@ -986,11 +1015,13 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
   ): Effect.Effect<void> =>
     Queue.take(inbox).pipe(
       Effect.flatMap(message =>
-        coordinatorRequest(job, message).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              job.pendingRequests -= 1
-            })
+        Effect.forkIn(scope)(
+          coordinatorRequest(job, message).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                job.pendingRequests -= 1
+              })
+            )
           )
         )
       ),
@@ -1351,7 +1382,6 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         request.kind,
         record.id,
         Effect.gen(function* () {
-          yield* store.save(job.lifecycle.snapshot())
           yield* Effect.forkIn(scope)(waitForOwnedExit(job))
           if (request.kind === 'process') yield* Effect.forkIn(scope)(watchJobQuiet(job))
           if (job.inbox !== undefined) yield* Effect.forkIn(scope)(serveCoordinator(job, job.inbox))
@@ -1473,25 +1503,31 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         const { child } = job
         if (child === undefined)
           return yield* new WorkError({ message: 'Shared Chrome is unavailable' })
-        const ensured = yield* Effect.result(
-          withPreparedPermit(
-            token.sessionId,
-            token.generation,
-            job.task,
-            job.kind,
-            token.attemptId,
-            Effect.flatMap(
-              workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure)),
-              () => browserOwner.ensure.pipe(Effect.mapError(toFailure))
+        yield* Effect.forkIn(scope)(
+          Effect.gen(function* () {
+            const ensured = yield* Effect.result(
+              Effect.gen(function* () {
+                yield* withPreparedPermit(
+                  token.sessionId,
+                  token.generation,
+                  job.task,
+                  job.kind,
+                  token.attemptId,
+                  workspace.lifecycle.validate(job.workspace).pipe(Effect.mapError(toFailure))
+                )
+                yield* browserOwner.ensure.pipe(Effect.mapError(toFailure))
+              })
             )
-          )
+            yield* Effect.ignore(
+              sendIpc(child, {
+                type: 'browser-ready',
+                requestId: message.requestId,
+                ok: Result.isSuccess(ensured),
+                ...(Result.isFailure(ensured) ? { reason: errorText(ensured.failure) } : {}),
+              })
+            )
+          })
         )
-        yield* sendIpc(child, {
-          type: 'browser-ready',
-          requestId: message.requestId,
-          ok: Result.isSuccess(ensured),
-          ...(Result.isFailure(ensured) ? { reason: errorText(ensured.failure) } : {}),
-        })
         return
       }
       if (isCoordinationMessage(message)) {
@@ -1540,8 +1576,10 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
         if (outcome === undefined) return
         if (message.error !== undefined)
           yield* Effect.forkIn(scope)(cancelLeaves(job, 'delegating agent failed'))
-        if (outcome.accepted && (outcome.quotaExhausted || quotaExhausted(message.error)))
-          yield* exhaust(token.attemptId)
+        if (outcome.accepted && (outcome.quotaExhausted || quotaExhausted(message.error))) {
+          quotaReporters.add(token.attemptId)
+          yield* Effect.forkIn(scope)(Effect.ignore(exhaust(token.attemptId)))
+        }
         onChange()
       }
     },
@@ -1580,22 +1618,29 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
               yield* commitBestEffort(job, () =>
                 job.lifecycle.transition.exit(token, event.code, event.signal)
               )
-            else if (event.type === 'close' || job.lifecycle.pid() === undefined)
+            else if (event.type === 'close' || job.lifecycle.pid() === undefined) {
+              if (event.type === 'close') job.closed = true
               yield* commitBestEffort(job, () => job.lifecycle.transition.exit(token, null, null))
+            }
             if (job.lifecycle.hasExited())
               yield* Effect.forkIn(scope)(cancelLeaves(job, 'delegating agent exited'))
             return
           }
-          const pending = yield* Queue.poll(job.events)
+          const pending =
+            job.kind === 'agent' && !job.closed && !job.lifecycle.hasResult()
+              ? yield* Effect.timeoutOption(Queue.take(job.events), Duration.millis(200))
+              : yield* Queue.poll(job.events)
           if (Option.isSome(pending)) {
             const event = pending.value
             if (event.type === 'message') yield* childMessage(job, event.raw)
+            else if (event.type === 'close') job.closed = true
             else if (event.type === 'error')
               yield* commitBestEffort(job, () =>
                 job.lifecycle.transition.processError(token, event.message)
               )
             return
           }
+          if (job.kind === 'agent' && !job.closed && !job.lifecycle.hasResult()) job.closed = true
           yield* settleUnrecordedLaunch(
             job,
             'The launch failed before user code was released'
@@ -1665,11 +1710,14 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
     )
     if (job.lifecycle.isTerminal()) {
       if (cause instanceof WorkPersistenceError) yield* notePersistenceFailure(job, cause)
+      active.delete(token.attemptId)
       yield* Queue.shutdown(job.events).pipe(Effect.ignore)
       yield* settle(job)
       return
     }
     if (job.lifecycle.isUnknown()) {
+      active.delete(token.attemptId)
+      yield* Queue.shutdown(job.events).pipe(Effect.ignore)
       yield* settle(job)
       return
     }
@@ -1679,6 +1727,8 @@ const makeWorkOwner = Effect.fnUntraced(function* (options: WorkOwnerOptions) {
       )
     )
     if (Result.isFailure(outcome)) yield* notePersistenceFailure(job, outcome.failure)
+    active.delete(token.attemptId)
+    yield* Queue.shutdown(job.events).pipe(Effect.ignore)
     yield* settle(job)
   })
 
