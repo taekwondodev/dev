@@ -37,8 +37,9 @@ for (const [address, prefix] of [
 ] as const)
   reserved.addSubnet(address, prefix, 'ipv4')
 for (const [address, prefix] of [
-  ['::', 128],
+  ['::', 96],
   ['::1', 128],
+  ['::ffff:0:0:0', 96],
   ['64:ff9b::', 96],
   ['64:ff9b:1::', 48],
   ['100::', 64],
@@ -63,6 +64,8 @@ export const isPublicAddress = (address: string): boolean => {
 
 const forbiddenHostSuffixes = ['localhost', 'local', 'internal', 'localdomain', 'home.arpa']
 
+const normalizedHost = (host: string): string => bracketless(host).toLowerCase().replace(/\.+$/, '')
+
 export const validateUrl = (input: string): Effect.Effect<URL, WebNetworkError> =>
   Effect.suspend(() => {
     let url: URL
@@ -77,7 +80,7 @@ export const validateUrl = (input: string): Effect.Effect<URL, WebNetworkError> 
       )
     if (url.username !== '' || url.password !== '')
       return Effect.fail(refuse('url', 'URLs carrying credentials are refused'))
-    const host = bracketless(url.hostname).toLowerCase()
+    const host = normalizedHost(url.hostname)
     if (host === '') return Effect.fail(refuse('url', 'The URL names no host'))
     const literal = isIP(host) !== 0
     if (literal && !isPublicAddress(host))
@@ -101,14 +104,14 @@ export type LookupAll = (hostname: string) => Promise<readonly { readonly addres
 
 const hostHasNoAddressText = (host: string): string => `${host} has no address`
 
-export const makeAddressResolver =
+export const makeAddressesResolver =
   (lookupAll: LookupAll) =>
-  (hostname: string): Effect.Effect<string, WebNetworkError> =>
+  (hostname: string): Effect.Effect<readonly string[], WebNetworkError> =>
     Effect.suspend(() => {
-      const host = bracketless(hostname)
+      const host = normalizedHost(hostname)
       if (isIP(host) !== 0)
         return isPublicAddress(host)
-          ? Effect.succeed(host)
+          ? Effect.succeed([host])
           : Effect.fail(refuse('destination', `Non-public address refused: ${host}`))
       return Effect.tryPromise({
         try: () => lookupAll(host),
@@ -128,17 +131,40 @@ export const makeAddressResolver =
                 `${host} resolves to a non-public address (${blocked.map(answer => answer.address).join(', ')}); refused before connecting`
               )
             )
-          const [first] = answers
-          return first === undefined
+          const unique = [...new Set(answers.map(answer => answer.address))]
+          return unique.length === 0
             ? Effect.fail(refuse('dns', hostHasNoAddressText(host)))
-            : Effect.succeed(first.address)
+            : Effect.succeed(unique)
         })
       )
     })
 
-export const resolvePublicAddress = makeAddressResolver(host =>
+export const makeAddressResolver = (lookupAll: LookupAll): AddressResolver => {
+  const resolveAll = makeAddressesResolver(lookupAll)
+  return hostname =>
+    resolveAll(hostname).pipe(
+      Effect.flatMap(addresses => {
+        const [first] = addresses
+        return first === undefined
+          ? Effect.fail(refuse('dns', hostHasNoAddressText(normalizedHost(hostname))))
+          : Effect.succeed(first)
+      })
+    )
+}
+
+export const resolvePublicAddresses = makeAddressesResolver(host =>
   lookup(host, { all: true, verbatim: true })
 )
+
+export const resolvePublicAddress: AddressResolver = hostname =>
+  resolvePublicAddresses(hostname).pipe(
+    Effect.flatMap(addresses => {
+      const [first] = addresses
+      return first === undefined
+        ? Effect.fail(refuse('dns', hostHasNoAddressText(normalizedHost(hostname))))
+        : Effect.succeed(first)
+    })
+  )
 
 export interface FetchLimits {
   readonly maxBytes: number
@@ -220,13 +246,26 @@ const singleRequest = (
       )
     })
     request.on('response', response => {
+      const status = response.statusCode ?? 0
+      if (redirectStatuses.has(status) && singleHeader(response.headers.location) !== undefined) {
+        response.destroy()
+        finish(
+          Effect.succeed({
+            status,
+            headers: response.headers,
+            body: new Uint8Array(),
+            truncated: false,
+          })
+        )
+        return
+      }
       const chunks: Buffer[] = []
       let received = 0
       let truncated = false
       const complete = () =>
         finish(
           Effect.succeed({
-            status: response.statusCode ?? 0,
+            status,
             headers: response.headers,
             body: new Uint8Array(Buffer.concat(chunks)),
             truncated,
@@ -289,11 +328,31 @@ export interface FetchOptions {
   readonly resolve?: AddressResolver
 }
 
+const requestAnyAddress = Effect.fnUntraced(function* (
+  url: URL,
+  addresses: readonly string[],
+  maxBytes: number,
+  signal: AbortSignal | undefined
+): Effect.fn.Return<RawResponse, WebNetworkError> {
+  let lastError: WebNetworkError | undefined
+  for (const address of addresses) {
+    const attempt = yield* Effect.result(singleRequest(url, address, maxBytes, signal))
+    if (attempt._tag === 'Success') return attempt.success
+    lastError = attempt.failure
+    if (signal?.aborted || attempt.failure.reason !== 'connection') return yield* attempt.failure
+  }
+  return yield* lastError ?? refuse('dns', hostHasNoAddressText(normalizedHost(url.hostname)))
+})
+
 export const fetchPublic = Effect.fnUntraced(function* (
   input: string,
   options: FetchOptions = {}
 ): Effect.fn.Return<FetchedResponse, WebNetworkError> {
-  const { limits = defaultFetchLimits, signal, resolve = resolvePublicAddress } = options
+  const { limits = defaultFetchLimits, signal, resolve } = options
+  const resolveAll =
+    resolve === undefined
+      ? resolvePublicAddresses
+      : (hostname: string) => Effect.map(resolve(hostname), address => [address])
   const requested = yield* validateUrl(input)
   let current = requested
   const redirects: string[] = []
@@ -314,8 +373,8 @@ export const fetchPublic = Effect.fnUntraced(function* (
   return yield* deadline(
     Effect.gen(function* () {
       for (;;) {
-        const address = yield* resolve(current.hostname)
-        const response = yield* singleRequest(current, address, limits.maxBytes, signal)
+        const addresses = yield* resolveAll(current.hostname)
+        const response = yield* requestAnyAddress(current, addresses, limits.maxBytes, signal)
         const location = singleHeader(response.headers.location)
         if (redirectStatuses.has(response.status) && location !== undefined) {
           if (redirects.length >= limits.maxRedirects)

@@ -111,7 +111,7 @@ type CopyState = typeof CopyState.Type
 const decodeCopyState = Schema.decodeUnknownOption(Schema.fromJsonString(CopyState))
 const encodeCopyState = Schema.encodeSync(Schema.fromJsonString(CopyState))
 
-const AUTHENTICATION_DATABASES = ['Cookies', 'Network/Cookies'] as const
+const AUTHENTICATION_DATABASES = ['Network/Cookies', 'Cookies'] as const
 const COPIED_PROFILE_FILES = ['Preferences', 'Secure Preferences', 'Network/TransportSecurity']
 const COPIED_PROFILE_DIRECTORIES = ['Local Storage', 'IndexedDB']
 const LEVELDB_LOCK = 'LOCK'
