@@ -37,7 +37,7 @@ Two private, unversioned files in the data home hold the configuration, and `dev
 
 The [configuration schemas](../src/orb/domain.ts) own the accepted fields; [configuration loading](../src/orb/config.ts) owns defaults.
 
-Without either file, or with an excess or missing required field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home. Obsolete configuration and spare records are not migrated or reset at startup; follow [discard obsolete state](DEVELOPMENT.md#discard-obsolete-state) before restarting on a changed format.
+Without either file, or with an excess or missing required field, `dev --orb` refuses to start and names the path and `dev orb setup`. One data home holds one project; another project needs another data home. Obsolete configuration and spare records are not migrated or reset at startup; follow [discard obsolete state](private-state.md#discard-obsolete-state) before restarting on a changed format.
 
 `dev orb setup` proposes the stored value of each field, Enter keeps it and `-` clears an optional one. The password is read without echo, and Enter keeps the stored one. dev authenticates with the answers and writes nothing unless Keystone accepts them. For `ssh_allowed_cidr` it proposes the stored value, otherwise the Mac's own address on its route to the Keystone host, as `<address>/32`. Each file is replaced through a temporary file and a rename, with mode `600`.
 
@@ -107,7 +107,7 @@ Ctrl-C before the TUI cancels the launch. dev lets an in-flight creation request
 
 - Pi's tool output spill files (`pi-<kind>-<hex>.<ext>` directly in the Mac's temporary directory) are read on the Mac; every other temporary path goes to the orb.
 - Skill files outside the checkout are read on the Mac.
-- The [task artifact directory](workspace.md#task-artifacts) is read and written on the Mac.
+- The [task artifact directory](workspace-admission.md#task-artifacts) is read and written on the Mac.
 
 Tool calls are not admitted one by one: none can change the Mac checkout.
 
@@ -123,7 +123,7 @@ Refused in orb mode: `/new`, `/resume`, `/fork`, conversation import, a workspac
 
 `work delegate` with `access: write` returns as in plain dev, once the child process exists. Before that, dev fetches the lead orb's committed `HEAD` into the pinned ref `refs/dev/orb/<lead-record-id>/fork/<attempt>` and allocates the child's [managed worktree](work.md#delegation-scope) from that commit; uncommitted files on the lead's orb are not copied. If the lead's orb cannot be reached, the delegation is refused and no attempt is recorded. A writing leaf also starts from the lead orb's commit.
 
-The lead then creates the child's orb in the background, or takes the session's [spare](#spare-orb), with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, the attempt is `provisioning` and the [live work view](work.md#live-view) carries orbit's phase. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
+The lead then creates the child's orb in the background, or takes the session's [spare](#spare-orb), with its own [orb record](#state), key and owner lock held by the lead's process. Until the orb is ready, the attempt is `provisioning` and the [live work view](work-status.md#live-view) carries orbit's phase. dev uploads the worktree to the same absolute path on the child's orb, on a detached `HEAD` like the worktree, and only then starts the child, giving it the orb's SSH address, the record's key and `known_hosts` paths and the lead's SSH connection to that orb. The child never calls orbit.
 
 The child's `bash`, `read`, `write`, `edit`, `grep`, `find` and `ls` run on its orb, with the Mac-side homes of the [tools](#tools) and its tool calls' workspace check. How it ends decides where its work goes:
 
@@ -166,7 +166,7 @@ Once the work has returned, dev sends `DELETE` and waits a bounded time for orbi
 
 #### Quit display
 
-The orb step precedes the [workspace sweep](workspace.md#quit-and-interruption) and uses its presentation. When Pi reports Kitty graphics support and the terminal has room, a two-row strip shows the orb as a blue node whose branch carries the work toward the checkout's line, with the step and its elapsed time beside it:
+The orb step precedes the [workspace sweep](workspace-cleanup.md#quit-and-interruption) and uses its presentation. When Pi reports Kitty graphics support and the terminal has room, a two-row strip shows the orb as a blue node whose branch carries the work toward the checkout's line, with the step and its elapsed time beside it:
 
 | Outcome                 | Strip                                                                  |
 | ----------------------- | ---------------------------------------------------------------------- |

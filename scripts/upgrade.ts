@@ -1,16 +1,23 @@
-import { basename, join, relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import * as Arr from 'effect/Array'
+import * as Context from 'effect/Context'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import { errorText } from '../src/error-text.ts'
 import { resolvePiPackage } from '../src/pi-runtime.ts'
-import { acquireMaintenance } from '../src/runtime-coordination.ts'
-import { upgradeBranch } from '../src/workspace-upgrade.ts'
-import { git, npmInstallFlags, run, streamed, upgradeHome } from './checkout.ts'
+import { WorkspaceAuthority } from '../src/workspace-authority.ts'
+import { defaultAuthorityRoot } from '../src/workspace-authority-root.ts'
+import {
+  claimUpgradeWorktree,
+  upgradeBranch,
+  type UpgradeWorktreeClaim,
+} from '../src/workspace-upgrade.ts'
+import { checkout, git, npmInstallFlags, run, streamed, upgradeHome } from './checkout.ts'
 import { type AuditSummary, auditAt, auditRow } from './npm-audit.ts'
 import { PiVersion } from './pi-pin.ts'
 import {
@@ -46,7 +53,7 @@ const branchPrefix = 'chore/upgrade-'
 const manifestFiles = ['package.json', 'package-lock.json']
 const pullRequestBodyLimit = 65_536
 const nodeMajor = Number(process.versions.node.split('.')[0])
-const candidateFromWorktree = `DEV_PI_RELEASE="$PWD/${relative(worktree, candidateRelease)}" `
+const candidateFromCheckout = `DEV_PI_RELEASE="$(git rev-parse --path-format=absolute --git-common-dir)/../${relative(checkout, candidateRelease)}" `
 
 const Versions = Schema.Record(Schema.String, Schema.String)
 type Versions = typeof Versions.Type
@@ -142,6 +149,46 @@ const say = (text: string) =>
 
 const today = Effect.gen(function* () {
   return DateTime.formatIsoDate(DateTime.setZone(yield* DateTime.now, DateTime.zoneMakeLocal()))
+})
+
+export const claimUpgrade = (authorityRoot: string) =>
+  Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        const authority = new WorkspaceAuthority(authorityRoot)
+        try {
+          return { authority, claim: claimUpgradeWorktree(authority, checkout) }
+        } catch (cause) {
+          authority.close()
+          throw cause
+        }
+      },
+      catch: cause => new UpgradeError({ message: errorText(cause), cause }),
+    }),
+    ({ authority, claim }) =>
+      Effect.sync(() => {
+        claim.release()
+        authority.close()
+      })
+  )
+
+export class UpgradeWorktree extends Context.Service<UpgradeWorktree, UpgradeWorktreeClaim>()(
+  'dev/scripts/upgrade/UpgradeWorktree'
+) {
+  static readonly layer = (authorityRoot: string) =>
+    Layer.effect(
+      UpgradeWorktree,
+      Effect.map(claimUpgrade(authorityRoot), ({ claim }) => claim)
+    )
+}
+
+const structural = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
+  const claim = yield* UpgradeWorktree
+  return yield* Effect.acquireUseRelease(
+    Effect.try({ try: claim.structure, catch: failure('Cannot change the upgrade worktree') }),
+    () => effect,
+    release => Effect.sync(release)
+  )
 })
 
 const inWorktree = (args: readonly string[]) => git(['-C', worktree, ...args])
@@ -373,7 +420,7 @@ const hasMergedPullRequest = Effect.fnUntraced(function* (branch: string, head: 
 const reclaimWorktree = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   if (!(yield* fs.exists(worktree))) {
-    yield* git(['worktree', 'prune'])
+    yield* structural(git(['worktree', 'prune']))
     return false
   }
   const refuse = (reason: string) =>
@@ -402,10 +449,13 @@ const reclaimWorktree = Effect.gen(function* () {
     )
   if (ownAttempt) {
     yield* inWorktree(['reset', '--quiet', '--hard'])
-    if (branch.startsWith(branchPrefix)) {
-      yield* inWorktree(['switch', '--quiet', '--detach'])
-      yield* git(['branch', '--delete', '--force', branch])
-    }
+    if (branch.startsWith(branchPrefix))
+      yield* structural(
+        Effect.andThen(
+          inWorktree(['switch', '--quiet', '--detach']),
+          git(['branch', '--delete', '--force', branch])
+        )
+      )
   }
   yield* fs.remove(join(worktree, 'node_modules'), { recursive: true, force: true })
   return true
@@ -432,9 +482,11 @@ export const placeWorktree = Effect.fnUntraced(function* <H extends WorktreeHead
 ) {
   const reused = yield* reclaimWorktree
   const head = yield* chooseHead
-  yield* reused
-    ? inWorktree(['switch', '--quiet', ...headFlags(head, 'c'), start])
-    : git(['worktree', 'add', '--quiet', ...headFlags(head, 'b'), worktree, start])
+  yield* structural(
+    reused
+      ? inWorktree(['switch', '--quiet', ...headFlags(head, 'c'), start])
+      : git(['worktree', 'add', '--quiet', ...headFlags(head, 'b'), worktree, start])
+  )
   return head
 })
 
@@ -559,10 +611,11 @@ const pullRequestTitle = (upgrade: Upgrade): string => {
 const markedTitle = (upgrade: Upgrade): string =>
   isGreen(upgrade) ? pullRequestTitle(upgrade) : `[red] ${pullRequestTitle(upgrade)}`
 
+const candidatePrefix = (upgrade: Upgrade): string =>
+  Option.isSome(upgrade.verification.pi) ? candidateFromCheckout : ''
+
 const rerun = (upgrade: Upgrade, result: StepResult): string =>
-  result.step !== 'install' && Option.isSome(upgrade.verification.pi)
-    ? `${candidateFromWorktree}${result.command}`
-    : result.command
+  result.step === 'install' ? result.command : `${candidatePrefix(upgrade)}${result.command}`
 
 const checksRow = (verification: Verification): string => {
   if (!verification.install.passed) return 'install failed; checks not run'
@@ -587,8 +640,10 @@ const installScriptsRow = (scripts: Option.Option<readonly string[]>): string =>
 const auditCell = (audit: Option.Option<AuditSummary>): string =>
   Option.match(audit, { onNone: () => 'not checked: install failed', onSome: auditRow })
 
-const howToFix = ({ branch: { name, detached } }: Upgrade): string =>
-  `Fix on \`${name}\`, for example in the installation's \`.dev/upgrade/worktree\`, push${detached ? ` with \`git push origin HEAD:${name}\`` : ''}, then run \`npm run pi:update\` again: it re-verifies this pull request and replaces this report.`
+const howToFix = (upgrade: Upgrade): string => {
+  const { name } = upgrade.branch
+  return `Fix \`${name}\` in any worktree of the dev checkout that ran \`npm run pi:update\`. In a separate worktree, first run \`git fetch origin ${name}\`, \`git switch --detach origin/${name}\`, \`npm ci --ignore-scripts\` and \`${candidatePrefix(upgrade)}npm run types:pi\`; its \`.dev/upgrade/worktree\` is already prepared.${candidatePrefix(upgrade) === '' ? '' : ' Do not run the commands below while `npm run pi:update` runs: it rebuilds the Pi candidate they use.'} Push with \`git push origin HEAD:${name}\`, then run \`npm run pi:update\` again from that dev checkout: it re-verifies this pull request and replaces this report. It refuses while a dev session is open in \`.dev/upgrade/worktree\`; quit that session first.`
+}
 
 const beforeMerging = (upgrade: Upgrade, tail: number): readonly string[] => {
   const failed = failures(upgrade.verification)
@@ -599,7 +654,7 @@ const beforeMerging = (upgrade: Upgrade, tail: number): readonly string[] => {
     ...failed.map(result =>
       [
         `#### \`${result.step}\` failed`,
-        `Rerun in the worktree: \`${rerun(upgrade, result)}\``,
+        `Rerun in your worktree: \`${rerun(upgrade, result)}\``,
         ...(tail > 0 ? [fence('text', lastLines(result.output, tail))] : []),
       ].join('\n\n')
     ),
@@ -901,9 +956,17 @@ const reverify = Effect.fnUntraced(function* (pullRequest: PullRequest) {
   yield* say(`Re-verified ${pullRequest.url}: ${outcome(upgrade)}.\n`)
 })
 
-export const runUpgrade = Effect.gen(function* () {
-  yield* refuseSelectedRelease('upgrade')
-  yield* acquireMaintenance()
+const refuseLinkedWorktree = Effect.gen(function* () {
+  const [gitDir, commonDir = ''] = lines(
+    yield* git(['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'])
+  )
+  if (gitDir !== commonDir)
+    return yield* new UpgradeError({
+      message: `Refusing upgrade: ${checkout} is a linked worktree. Run npm run pi:update from the repository's main checkout, ${dirname(commonDir)}.`,
+    })
+})
+
+const upgradeOnce = Effect.gen(function* () {
   yield* git(['fetch', '--quiet', 'origin', 'main'])
   const open = yield* openUpgrades
   if (open.length > 1)
@@ -912,8 +975,13 @@ export const runUpgrade = Effect.gen(function* () {
     })
   const [pullRequest] = open
   return yield* pullRequest === undefined ? fresh : reverify(pullRequest)
+})
+
+export const runUpgrade = Effect.gen(function* () {
+  yield* refuseSelectedRelease('upgrade')
+  yield* refuseLinkedWorktree
+  return yield* upgradeOnce.pipe(Effect.provide(UpgradeWorktree.layer(defaultAuthorityRoot())))
 }).pipe(
-  Effect.scoped,
   Effect.mapError(error => {
     switch (error._tag) {
       case 'UpgradeError':

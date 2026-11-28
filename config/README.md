@@ -27,4 +27,4 @@ A runner other than Pi, invalid effort or an unknown model cause an error. An in
 
 ## Default profile
 
-`default-profiles.json` and `default-SOUL.md` are dev's default profile. The [launcher guide](../docs/launcher.md#profiles-and-resources) explains when dev uses it and how to replace it.
+`default-profiles.json` and `default-SOUL.md` are dev's default profile. The [launcher guide](../docs/launcher-profiles.md#profiles-and-resources) explains when dev uses it and how to replace it.

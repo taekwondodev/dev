@@ -1,10 +1,10 @@
 # Upgrade dev
 
-One command verifies dev against the latest Pi release and the latest release of every npm dependency and proposes the result as a single pull request. A second command updates dev, then runs Pi's own `pi update`. Both commands change the shared installation, not just the current project.
+One command verifies dev against the latest Pi release and the latest release of every npm dependency and proposes the result as a single pull request. A second command updates dev, then runs Pi's own `pi update`. Both commands act on dev's installation, not on the current project.
 
 ## Before starting
 
-Close every dev TUI: both commands take exclusive installation admission. `gh` must be authenticated for this repository. Agent-run upgrades also follow the [repository authorization boundary](../AGENTS.md#boundaries).
+`npm run pi:update` runs while dev sessions are open. For its whole run it holds `.dev/upgrade/worktree`: it refuses while a session works in that worktree or another `pi:update` or `npm run update` runs, and a session opened there meanwhile is refused every read, write and shell until it finishes. Run it from the installation checkout: a linked worktree, including `.dev/upgrade/worktree`, is refused. Close every dev TUI before `npm run update`, which takes exclusive installation admission. `gh` must be authenticated for this repository. Agent-run upgrades also follow the [repository authorization boundary](../AGENTS.md#boundaries).
 
 ## 1. Upgrade and verify
 
@@ -16,9 +16,9 @@ The command prepares the upgrade in `.dev/upgrade/worktree` and the Pi candidate
 
 Pi and dependencies target their latest releases, including dependency major updates. The Node requirement can rise to the major running the command. Review these changes in the generated report.
 
-Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. It runs every suite of [the check runner](../tests/run-checks.ts) as one concurrent queue, including those outside `npm run check`; a failed check does not cancel the others.
+Installs use `--ignore-scripts`. The command verifies the candidate Pi and dependencies and publishes an upgrade pull request even when checks fail. After a successful install, it runs every suite of [the check runner](../tests/run-checks.ts) as one concurrent queue, including those outside `npm run check`; a failed check does not cancel the others.
 
-Check output appears when the whole queue has finished, so the run stays quiet for a few minutes. Only the tail of command output is retained. The pull request body is the report; the full copy is saved in `.dev/upgrade/report.md`.
+Check output appears when the whole queue has finished, so the run stays quiet for a few minutes. The report shows the last lines of each failed check's output; a check queue that completes writes every check's full output to `.dev/upgrade/checks.json`, and a run that stops before checks start can leave an older file there. The pull request body is the report, shortened to fit GitHub's limit; the full report is saved in `.dev/upgrade/report.md`.
 
 When `main` already pins the latest Pi and every dependency is at its target, the command says so and publishes nothing, whichever Pi is active.
 
@@ -28,8 +28,8 @@ Review the report's breaking versions, Pi changelog, changed contracts, audit fi
 
 For failed checks, follow the report's **Before merging** instructions:
 
-1. Fix on the upgrade branch and rerun the commands supplied by the report: each names the failed check file, lint pass or probe.
-2. Commit and push.
+1. Fix the upgrade branch in any worktree of the installation checkout. The report supplies the commands that prepare a separate worktree and rerun each failed check file, lint pass or probe against the Pi candidate. Do not rerun them while `pi:update` runs, because it rebuilds the Pi candidate.
+2. Commit and push to the upgrade branch.
 3. Run `npm run pi:update` again to verify the pushed revision and refresh the existing pull request. If the branch moves during verification, rerun against its new head.
 
 When Pi has released again since the pull request was opened, that run first pushes a commit pinning the new release to the upgrade branch, then verifies it.

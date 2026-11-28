@@ -1,6 +1,6 @@
 # ADR 0008: Hold settled animation loops in the terminal as Kitty frames
 
-The strips of the sweep, the quit and the orb start draw every frame from a pure function of a scene and a time. While a scene changes, dev streams one full Kitty image per tick. Once the scene has settled into a loop, dev sends that loop to the terminal once, as animation frames that carry only the pixels that changed, and from then on only names the frame to show. Rex is the terminal this is tuned to. The measurements were taken for [#328](https://github.com/taekwondodev/dev/pull/328) by recording a Rex window and counting, per recorded frame, the positions of the moving dot.
+The strips of the sweep, the quit and the orb start draw every frame from a pure function of a scene and a time. While a scene changes, dev streams one full Kitty image per tick. Once the scene has settled into a loop, dev sends that loop to the terminal once, as animation frames that carry only the rectangle around the pixels that changed, and from then on only names the frame to show. Rex is the terminal this is tuned to. The measurements were taken for [#328](https://github.com/taekwondodev/dev/pull/328) by recording a Rex window and counting, per recorded frame, the positions of the moving dot.
 
 ## Why this shape
 

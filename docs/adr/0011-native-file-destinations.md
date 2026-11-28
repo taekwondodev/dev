@@ -1,0 +1,15 @@
+# ADR 0011: Native file destinations
+
+Classify native writes before writer admission. The [external-write decision](https://github.com/taekwondodev/dev/issues/67) permits ordinary external files without reserving unrelated checkouts; temp-only exceptions would miss configuration edits. One classifier serves lead, authority and child guards, pinning the original operand and canonical destination. Unreadable ancestry is not proof of external access.
+
+Builds on the gates, identity and admission of [ADR 0005](0005-scoped-runtime-coordination.md).
+
+[Foreign delegation](https://github.com/taekwondodev/dev/issues/134) selects another checkout only for a child. A managed worktree lets it receive that repository's guidance and writer scope while the lead keeps its binding. A lead handoff and multiple bindings were rejected: they would put foreign guidance and ownership into the lead's context. Admission and selection limits live in [Workspace](../workspace-admission.md#delegation-into-another-checkout).
+
+The [other-checkout decision](https://github.com/taekwondodev/dev/issues/172) distinguishes repository identity from checkout location. Same-repository destinations require an explicit retry: a silent rewrite would let the model reason about a file it did not change. For another repository, in-place reservation avoids a child and managed worktree for a small edit while preserving per-checkout ownership. This amends the refusal of other checkouts in #67; [Workspace](../workspace-admission.md#native-writes) owns destination routing and refusals.
+
+Workspace writes are scoped operations whose start is reported inside the filesystem adapter and whose completion follows the Pi call or session end. External writes instead use session-local permits with no persistent registry; [native writes](../workspace-admission.md#native-writes) states the resulting limits. Children retain controller admission and liveness checks at the operation boundary. Abrupt child interruption cannot identify the file being written; revisit if that recovery need becomes frequent.
+
+Behind the [path refusals and protected destinations](../workspace-admission.md#native-writes), preserve exact operand matching before re-resolution and boundary revalidation; a changed alias cannot borrow another in-flight permit. Pathname checks retain a race with external link or ancestor changes; stronger descriptor-based integration would be needed to narrow it.
+
+[Issue #175](https://github.com/taekwondodev/dev/issues/175) places task artifact directories in the authority because it owns task reservations and disposal. Checkout-local storage would depend on each project's ignore rules to stay outside commit scope; data-home storage would split task ownership. Ordinary writer admission precedes creation and writes, establishing a reservation so retention needs no separate liveness predicate. Dev exposes directory discovery through the `workspace` tool rather than duplicating it in system prompts, `work` tool fields or automatic child briefs; storage discovery belongs to the owning integration.

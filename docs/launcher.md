@@ -4,6 +4,8 @@
 
 `dev` opens Pi in the project being worked on, with dev's extensions, shared skills and one profile. One installation serves every repository. The installation checkout holds code, dispatch policy, the default profile and the owner's untracked profiles; the working project supplies its files and instructions; private state stays out of the project and Git.
 
+[Launcher profiles](launcher-profiles.md) covers the profile manifest and resource order. [Launcher state and history](launcher-state.md) covers storage locations and automatic history cleanup.
+
 ## Use
 
 From any project:
@@ -40,11 +42,11 @@ npm run pi:update                                      # verify the latest Pi an
 npm unlink --global dev-pi-environment --ignore-scripts # unlink dev; keep checkout and data
 ```
 
-Maintenance commands take options as `--flag value`. An unknown option or a stray argument is refused before the command acts.
+Maintenance options that take a value use `--flag value`. An unknown option or a stray argument is refused before the command acts.
 
 `npm link` exposes the checkout's executable through npm's global prefix. Its `bin` directory must be on `PATH`; relink after moving the checkout. Source edits take effect on the next launch.
 
-Close every dev TUI before setup, update, rollback, upgrade or `pi:update`: these take exclusive installation admission. Update and rollback require a clean checkout. When `.dev/` exists, both also refuse revisions that would track it or stop ignoring it.
+Close every dev TUI before setup, update, rollback or upgrade: these take exclusive installation admission. `pi:update` runs beside open sessions; see [Upgrade](upgrade.md#before-starting). Update and rollback require a clean checkout. When `.dev/` exists, both also refuse revisions that would track it or stop ignoring it.
 
 Setup and update prepare dev's native addon; see [Development](DEVELOPMENT.md#native-addon) for toolchain requirements and build recovery.
 
@@ -66,40 +68,13 @@ Help, diagnostics, save-only and browser commands do not start the workspace wor
 
 ### Outside a Git repository
 
-Dev works in Git repositories. A new conversation launched from a directory outside any repository checks this before loading profiles or Pi, then offers the repositories directly inside it: visible subdirectories holding `.git`, the most recently used in a dev conversation first, then by name. Type to filter, Enter opens dev there as if launched with `--cwd`, Esc exits with status 0. The picker uses Pi's theme from `~/.pi/agent/settings.json` and erases itself before dev starts. A directory with no repository inside offers to initialize one there instead: Enter runs `git init` and opens dev in it, Esc exits with status 0, and typing is ignored. Dev adds no commit, `.gitignore` or branch name, so Git's `init.defaultBranch` applies and admission follows the [rules for a repository with no commits](workspace.md#admission-and-isolation). The home directory, the filesystem root, a launch without a terminal and `dev --orb`, which [needs a first commit](orb.md#startup), are never offered and exit 1 naming the directory. `--resume`, `--continue`, `--diagnostics`, `--probe-runtime` and `--save-profile` keep their own handling.
+Dev works in Git repositories. A new conversation launched from a directory outside any repository checks this before loading profiles or Pi, then offers the repositories directly inside it: visible subdirectories holding `.git`, the most recently used in a dev conversation first, then by name. Type to filter, Enter opens dev there as if launched with `--cwd`, Esc exits with status 0. The picker uses Pi's theme from `~/.pi/agent/settings.json` and erases itself before dev starts. A directory with no repository inside offers to initialize one there instead: Enter runs `git init` and opens dev in it, Esc exits with status 0, and typing is ignored. Dev adds no commit, `.gitignore` or branch name, so Git's `init.defaultBranch` applies and admission follows the [rules for a repository with no commits](workspace-admission.md#admission-and-isolation). The home directory, the filesystem root, a launch without a terminal and `dev --orb`, which [needs a first commit](orb.md#startup), are never offered and exit 1 naming the directory. `--resume`, `--continue`, `--diagnostics`, `--probe-runtime` and `--save-profile` keep their own handling.
 
 ### Resume paused work
 
 `dev --task` lists the [paused work](workspace.md#resume-paused-work) of the repository at the launch directory, each with its [head](workspace.md#use), its last use and its path. Type to filter, Enter opens a new conversation in that workspace's path, bound to its task, and Esc exits with status 0. The list looks and handles typed control characters like the [repository picker](#outside-a-git-repository). `dev --task TASK-ID` selects that task's resumable workspace in the repository without a list, unless the task retains several.
 
-The conversation is new and starts in the workspace's directory with its uncommitted files. When nothing is resumable, or the named task is not, dev exits 1 with each workspace's outcome and next action. `--task` with `--resume`, `--continue`, `--diagnostics`, `--probe-runtime`, `--save-profile`, `--orb` or a `workspace`, `browser` or `orb` command, a malformed ID, and a missing ID without a terminal are usage errors that exit 2. Outside a repository, that picker runs first.
-
-### Profiles and resources
-
-Profiles are personal configuration. The installation's `profiles/` directory holds a declarative manifest, `profiles/manifest.json`, beside the SOUL files and skill directories it names. Git ignores the directory. Dev knows the manifest format, not profile or skill names:
-
-```json
-{
-  "default": "general",
-  "profiles": {
-    "general": { "soul": "general/SOUL.md" },
-    "specialist": {
-      "soul": "specialist/SOUL.md",
-      "skills": ["specialist/skills"]
-    }
-  }
-}
-```
-
-While `profiles/manifest.json` is absent, dev reads the installation's default manifest `config/default-profiles.json`, whose `general` profile uses `config/default-SOUL.md`, so a fresh clone starts without configuration. To customize, write `profiles/manifest.json` with your own SOUL files and skill directories beside it; dev then ignores the default. The default belongs to dev: editing it changes the checkout and blocks `npm run update`. `dev --help` prints both manifest paths and this guide's path. The same directory holds the optional personal model settings `crew-dispatch.json`, which replace dev's default the same way ([model settings](../config/README.md)).
-
-- `default` names the profile of a new conversation when neither `--profile` nor a saved preference selects one. It must be one of `profiles`.
-- Each profile names its `soul`, a Markdown file appended to Pi's system prompt, and optionally its ordered `skills`. Each entry is a skill directory or a directory of skills, which Pi searches for `SKILL.md`; name a profile's skill directory once instead of each skill in it. Paths are relative to the manifest's directory and may not use `..`; a symbolic link placed there is followed as the owner's choice, since everything under `profiles/` is trusted personal configuration ([SECURITY](../SECURITY.md#trusted-base)).
-- For a new conversation, `--profile` wins over the repository preference, which wins over the configured default. A resumed conversation uses its recorded profile; if none was recorded, `--profile` is required.
-- Project `.pi/skills` and `.agents/skills` directories, from the launch directory to the Git root, come first; then the profile's skill directories in manifest order; then the shared skills at `~/.agents/skills`. Duplicate real paths are dropped. Native project-instruction discovery is unchanged: dev's own `AGENTS.md` loads only when dev is the working project.
-- The manifest is read from the installation once per launch and once per child start, whatever the working project, managed worktree or data home. `DEV_PROFILES` selects another profiles directory, with the same default when it holds no manifest; dev's checks use it for disposable fixtures.
-
-An unreadable or invalid manifest, a default that is not a defined profile, an unknown profile name, a missing or unreadable SOUL of the selected profile, or a Pi resource/extension error stops startup and names the file or resource; no other profile is substituted. A personal manifest that is a dangling symbolic link stops startup rather than falling back to the default. A skill directory that does not exist, of the profile or the shared `~/.agents/skills`, does not stop startup: it keeps its place in the resource order and Pi reports it as a warning. Resources of unselected profiles are neither checked nor loaded. Profiles share private state and sessions; they are guidance selection, not isolation.
+The conversation is new and starts in the workspace's directory with its uncommitted files. When nothing is resumable, or the named task is not, dev exits 1 with each workspace's outcome and next action. `--task` with `--resume`, `--continue`, `--diagnostics`, `--probe-runtime`, `--save-profile`, `--orb` or a `workspace`, `browser` or `orb` command, a malformed ID, and a missing ID without a terminal are usage errors that exit 2. Outside a repository, the [repository picker](#outside-a-git-repository) runs before this list.
 
 ### Tool output toggle
 
@@ -107,7 +82,7 @@ Ctrl+O still expands and collapses tool output, but dev drops Pi's `Tool output:
 
 ### Program status
 
-The lead's TUI runs on a terminal the launcher builds from Pi's own terminal module and passes through `InteractiveMode`'s `terminal` option, so that dev can [report `working` instead of `done` while background work will resume the lead](work.md#program-status). If the module does not arrive ([ADR 0002](adr/0002-session-owned-background-work.md#pi-build)), Pi creates its default terminal and reports as plain Pi does.
+The lead's TUI runs on a terminal the launcher builds from Pi's own terminal module and passes through `InteractiveMode`'s `terminal` option, so that dev can [report `working` instead of `done` while background work will resume the lead](work-status.md#program-status). If the module does not arrive ([ADR 0002](adr/0002-session-owned-background-work.md#pi-build)), Pi creates its default terminal and reports as plain Pi does.
 
 ### Resume and quit
 
@@ -115,32 +90,4 @@ The lead's TUI runs on a terminal the launcher builds from Pi's own terminal mod
 
 A refused existing regular session file and its history remain unchanged. An absent path is reported as absent, without inferring whether history existed. Follow the reported reason: a conversation-specific refusal need not block another conversation, but starting fresh cannot bypass repository identity checks. A checkout switch that never reached the host is withdrawn on resume.
 
-Independent repositories can share a data home. See [workspace session commands](workspace.md#session-commands) for replacements and [quit and interruption](workspace.md#quit-and-interruption) for cleanup, the release offer and exit status.
-
-### Automatic history cleanup
-
-Interactive startup and graceful exit request a detached, one-shot cleanup process. Dev does not wait for its readiness or completion, and the process can finish after dev exits. Help, diagnostics, runtime probes and save-only commands do not request cleanup. There is no periodic timer. Concurrent requests or installation maintenance can cause a pass to be skipped; a later lifecycle trigger retries.
-
-Each data home keeps separate count-limited sets of eligible inactive lead and child conversations, newest first. [Conversation retention](../src/conversation-retention.ts) owns the quota and ordering. Live conversations, retained-task recovery, pending switches and unresolved work are protected outside those quotas. Unrecognized files, symbolic or hard links, and files whose deletion safety cannot be established remain untouched. Deleted history cannot be resumed; these are count limits, not byte ceilings.
-
-The same pass applies [attempt retention](work.md#state) and removes recognized abandoned preference-write temporaries. It also removes the lock databases of the installation's conversation claims once no session, child or browser owner of that installation is running; until then a later pass retries. No other data is a cleanup target, including workspaces and their reservations. Errors do not fail startup or exit. Non-blocking cleanup still consumes system resources.
-
-[ADR 0005](adr/0005-scoped-runtime-coordination.md#conversation-retention-admission) explains deletion admission; [usage profile](usage-profile.md#run-a-report) describes the effect on report coverage.
-
-## State
-
-| Location                                                 | Content                                                                                                                       |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Installation checkout                                    | Code, version-controlled defaults in `config/` and the ignored personal `profiles/` directory                                 |
-| Working project                                          | Project files and native project instructions                                                                                 |
-| `<installation>/.dev/`                                   | Default private data home: sessions, child sessions, work records/logs, usage reports, preferences and dependency observation |
-| `<data-home>/browser/`                                   | Browser state and authenticated profile copy; layout in [Read URL](web-read.md#state)                                         |
-| `<data-home>/openstack.json`, `orb.json`, `orbs/`        | OpenStack credentials, orb configuration and orb records of `dev --orb`; see [Orb](orb.md#configuration)                      |
-| `<installation>/.dev/coordination/`                      | Installation admission and conversation claims, regardless of data-home override                                              |
-| `<installation>/.dev/upgrade/`                           | Upgrade `worktree/`, Pi candidate `pi/` and the last `report.md`                                                              |
-| Pi's [credential store](../SECURITY.md#credentials)      | Pi authentication shared by the lead and children                                                                             |
-| `~/Library/Application Support/dev/workspace-authority/` | Account-wide workspace records, gates, managed worktrees and [task artifact directories](workspace.md#task-artifacts)         |
-
-`--data-home` and `DEV_DATA_HOME` move private runtime data only. Dispatch, profiles, authentication, installation coordination and workspace authority keep their own locations. `/login` updates the shared Pi credential store. Never force-add `.dev/`; Git exclusion is not an access-control boundary ([SECURITY](../SECURITY.md#outside-the-protection)).
-
-A conversation retains its selected profile. If stored dev metadata is invalid, startup refuses it rather than resetting it. A stored profile preference that is not a valid preference record stops launch with exit 1 and an error naming the file; delete that file under `<data-home>/preferences/` ([discard obsolete state](DEVELOPMENT.md#discard-obsolete-state)) and save the preference again. Format changes and obsolete-state removal are contributor operations covered in [Development](DEVELOPMENT.md#discard-obsolete-state).
+Independent repositories can share a data home. See [workspace session commands](workspace.md#session-commands) for replacements and [quit and interruption](workspace-cleanup.md#quit-and-interruption) for cleanup, the release offer and exit status.
