@@ -1,16 +1,23 @@
-import { realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, realpathSync, rmSync } from 'node:fs'
+import type { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import { inDb, type WorkspaceAuthority } from './workspace-authority.ts'
-import { blocked, requireReview } from './workspace-domain.ts'
+import { blocked, requireReview, WorkspaceError, type WorkspaceId } from './workspace-domain.ts'
 import {
   acquirePathGates,
   acquireStructureGate,
   conversationIdentity,
   conversationPresent,
-  releaseGates,
+  type GateRelease,
   type PathGates,
+  releaseGates,
 } from './workspace-gates.ts'
-import { canonicalGitWorkspace, gitResult, symbolicBranch } from './workspace-git.ts'
+import {
+  canonicalGitWorkspace,
+  gitResult,
+  symbolicBranch,
+  type GitWorkspace,
+} from './workspace-git.ts'
 import {
   getBindingRows,
   getReservation,
@@ -40,42 +47,101 @@ const removeCandidate = (candidate: string): string => {
   return 'Removed the Pi release prepared by npm run pi:update.\n'
 }
 
+const occupied = (authority: WorkspaceAuthority, db: DatabaseSync, id: WorkspaceId): boolean =>
+  getUseRows(db, id).some(isActiveUse) ||
+  openOperations(db, id).length > 0 ||
+  getBindingRows(db, id).some(
+    binding =>
+      binding.superseded !== true &&
+      conversationPresent(authority.paths, conversationIdentity(binding.conversation))
+  )
+
+export interface UpgradeWorktreeClaim {
+  readonly installation: string
+  readonly source: GitWorkspace
+  readonly repo: WorkspaceId
+  readonly path: string
+  readonly structure: () => GateRelease
+  readonly release: GateRelease
+}
+
+const whenBusy = <A>(acquire: () => A, message: string): A => {
+  try {
+    return acquire()
+  } catch (cause) {
+    if (cause instanceof WorkspaceError && cause.outcome === 'blocked') blocked(message)
+    throw cause
+  }
+}
+
+export const claimUpgradeWorktree = (
+  authority: WorkspaceAuthority,
+  installation: string
+): UpgradeWorktreeClaim => {
+  const root = realpathSync(installation)
+  const path = join(root, '.dev', 'upgrade', 'worktree')
+  mkdirSync(join(root, '.dev', 'upgrade'), { recursive: true, mode: 0o700 })
+  if (canonicalPathSlot(path) !== path)
+    requireReview(`Upgrade worktree path is not canonical: ${path}`)
+  const source = canonicalGitWorkspace(root)
+  const repo = authority.registerRepository(source)
+  const gates: PathGates = whenBusy(
+    () => acquirePathGates(authority.paths, path, 'removal'),
+    `The upgrade worktree ${path} is in use by a dev session, npm run pi:update or npm run update. Quit that session or let the command finish, then retry.`
+  )
+  try {
+    inDb(authority, repo, db => {
+      const record = getWorkspaceByPath(db, path)
+      if (record !== undefined && occupied(authority, db, record.id))
+        blocked(
+          `The upgrade worktree ${path} is kept by an open dev session, a pending operation or work an ended session left unsettled. Run dev --cwd ${root} workspace list to see which and its next step, then retry.`
+        )
+    })
+  } catch (cause) {
+    releaseGates(gates)
+    throw cause
+  }
+  return {
+    installation: root,
+    source,
+    repo,
+    path,
+    structure: () =>
+      whenBusy(
+        () => acquireStructureGate(authority.paths, source, repo),
+        `Another dev operation is creating or removing a worktree of ${source.commonPath}. Retry in a moment.`
+      ),
+    release: () => releaseGates(gates),
+  }
+}
+
 export const cleanupUpgradeWorkspace = (
   authority: WorkspaceAuthority,
-  installation: string,
+  claim: UpgradeWorktreeClaim,
   piCandidate: string
 ): string => {
-  const source = canonicalGitWorkspace(installation)
+  const { source } = claim
   if (
-    source.path !== realpathSync(installation) ||
+    source.path !== claim.installation ||
     source.gitAdminPath !== source.commonPath ||
     symbolicBranch(source.path) !== 'refs/heads/main'
   )
     return 'Upgrade cleanup skipped: run npm run update from the main installation checkout on main.\n'
-  const path = join(source.path, '.dev', 'upgrade', 'worktree')
-  if (lstatIfExists(join(source.path, '.dev', 'upgrade')) === undefined) return ''
-  if (canonicalPathSlot(path) !== path)
-    requireReview(`Upgrade worktree path is not canonical: ${path}`)
-  const repo = authority.registerRepository(source)
-  const structure = acquireStructureGate(authority.paths, source, repo)
-  let gates: PathGates | undefined
+  return removeUpgradeWorktree(authority, claim) + removeCandidate(piCandidate)
+}
+
+const removeUpgradeWorktree = (
+  authority: WorkspaceAuthority,
+  { source, repo, path, structure: acquireStructure }: UpgradeWorktreeClaim
+): string => {
+  const structure = acquireStructure()
   try {
-    gates = acquirePathGates(authority.paths, path, 'removal')
     const workspace = inDb(authority, repo, db => {
       const record = getWorkspaceByPath(db, path)
       if (record === undefined) return undefined
       if (record.origin !== 'pre-existing' || record.status !== 'ready')
         requireReview(`Upgrade checkout is not ready or not pre-existing: ${path}`)
-      if (
-        getReservation(db, record.id) !== undefined ||
-        getUseRows(db, record.id).some(isActiveUse) ||
-        openOperations(db, record.id).length > 0 ||
-        getBindingRows(db, record.id).some(
-          binding =>
-            binding.superseded !== true &&
-            conversationPresent(authority.paths, conversationIdentity(binding.conversation))
-        )
-      )
+      if (getReservation(db, record.id) !== undefined || occupied(authority, db, record.id))
         blocked(
           `Upgrade checkout is still kept for a task, in use or has a pending operation: ${path}`
         )
@@ -121,13 +187,10 @@ export const cleanupUpgradeWorkspace = (
         )
       )
     if (branch !== undefined) git(source.path, ['branch', '--delete', '--force', '--', branch])
-    const worktreeRemoval =
-      entry === undefined && workspace === undefined
-        ? ''
-        : `Removed upgrade worktree${branch === undefined ? '' : ` and local branch ${branch}`}; checkout inventory reconciled.\n`
-    return worktreeRemoval + removeCandidate(piCandidate)
+    return entry === undefined && workspace === undefined
+      ? ''
+      : `Removed upgrade worktree${branch === undefined ? '' : ` and local branch ${branch}`}; checkout inventory reconciled.\n`
   } finally {
-    if (gates !== undefined) releaseGates(gates)
     structure()
   }
 }

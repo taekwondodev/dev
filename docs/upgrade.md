@@ -1,10 +1,10 @@
 # Upgrade dev
 
-One command verifies dev against the latest Pi release and the latest release of every npm dependency and proposes the result as a single pull request. A second command updates dev, then runs Pi's own `pi update`. Both commands change the shared installation, not just the current project.
+One command verifies dev against the latest Pi release and the latest release of every npm dependency and proposes the result as a single pull request. A second command updates dev, then runs Pi's own `pi update`. Both commands act on dev's installation, not on the current project.
 
 ## Before starting
 
-Close every dev TUI: both commands take exclusive installation admission. `gh` must be authenticated for this repository. Agent-run upgrades also follow the [repository authorization boundary](../AGENTS.md#boundaries).
+`npm run pi:update` runs while dev sessions are open. For its whole run it holds `.dev/upgrade/worktree`: it refuses while a session works in that worktree or another `pi:update` or `npm run update` runs, and a session opened there meanwhile is refused every read, write and shell until it finishes. Run it from the installation checkout: a linked worktree, including `.dev/upgrade/worktree`, is refused. Close every dev TUI before `npm run update`, which takes exclusive installation admission. `gh` must be authenticated for this repository. Agent-run upgrades also follow the [repository authorization boundary](../AGENTS.md#boundaries).
 
 ## 1. Upgrade and verify
 
@@ -28,8 +28,8 @@ Review the report's breaking versions, Pi changelog, changed contracts, audit fi
 
 For failed checks, follow the report's **Before merging** instructions:
 
-1. Fix on the upgrade branch and rerun the commands supplied by the report: each names the failed check file, lint pass or probe.
-2. Commit and push.
+1. Fix the upgrade branch in any worktree of the installation checkout. The report supplies the commands that prepare a separate worktree and rerun each failed check file, lint pass or probe against the Pi candidate. Do not rerun them while `pi:update` runs, because it rebuilds the Pi candidate.
+2. Commit and push to the upgrade branch.
 3. Run `npm run pi:update` again to verify the pushed revision and refresh the existing pull request. If the branch moves during verification, rerun against its new head.
 
 When Pi has released again since the pull request was opened, that run first pushes a commit pinning the new release to the upgrade branch, then verifies it.
