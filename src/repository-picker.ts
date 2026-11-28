@@ -1,4 +1,4 @@
-import { join, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -30,7 +30,7 @@ export interface Repository {
 const SessionHeader = Schema.fromJsonString(
   Schema.Struct({ type: Schema.Literal('session'), cwd: Schema.String })
 )
-const HEADER_BYTES = 1024
+const HEADER_BYTES = 64 * 1024
 const SESSION_READS = 16
 const VISIBLE = 8
 const CHROME_ROWS = 6
@@ -52,12 +52,21 @@ const INITIALIZE = 'initialize'
 
 const sessionUse = Effect.fnUntraced(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
-  const head = yield* Effect.scoped(
-    fs.open(path).pipe(Effect.flatMap(file => file.readAlloc(HEADER_BYTES)))
+  const { head, modified } = yield* Effect.scoped(
+    fs.open(path).pipe(
+      Effect.flatMap(file =>
+        Effect.all(
+          {
+            head: file.readAlloc(HEADER_BYTES),
+            modified: Effect.map(file.stat, info => info.mtime),
+          },
+          { concurrency: 'unbounded' }
+        )
+      )
+    )
   )
   const text = new TextDecoder().decode(Option.getOrElse(head, () => new Uint8Array()))
   const header = yield* Schema.decodeEffect(SessionHeader)(text.split('\n', 1)[0] ?? '')
-  const modified = (yield* fs.stat(path)).mtime
   return Option.map(modified, at => ({ cwd: header.cwd, at: at.getTime() }))
 })
 
@@ -72,8 +81,25 @@ const sessionUses = Effect.fnUntraced(function* (sessionsPath: string) {
   return uses.flatMap(use => Option.toArray(use))
 })
 
+const headFileOf = (fs: FileSystem.FileSystem, path: string) => {
+  const dotGit = join(path, '.git')
+  return fs.stat(dotGit).pipe(
+    Effect.flatMap(info => {
+      if (info.type === 'Directory') return Effect.succeed(join(dotGit, 'HEAD'))
+      return fs.readFileString(dotGit).pipe(
+        Effect.map(content => {
+          const pointer = /^gitdir:\s*(.+)$/m.exec(content)?.[1]?.trim()
+          return pointer === undefined ? join(dotGit, 'HEAD') : join(resolve(path, pointer), 'HEAD')
+        })
+      )
+    }),
+    Effect.orElseSucceed(() => join(dotGit, 'HEAD'))
+  )
+}
+
 const branchOf = (fs: FileSystem.FileSystem, path: string) =>
-  fs.readFileString(join(path, '.git', 'HEAD')).pipe(
+  headFileOf(fs, path).pipe(
+    Effect.flatMap(headFile => fs.readFileString(headFile)),
     Effect.map(head => {
       const ref = head.trim()
       if (!ref.startsWith(BRANCH_REF)) return 'detached'
