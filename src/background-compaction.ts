@@ -132,20 +132,25 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
   api: PiApi,
   packageRoot: string
 ) {
-  const native = yield* Effect.tryPromise({
-    try: () =>
-      importPiModule<typeof Native>(join(packageRoot, 'dist/core/compaction/compaction.js')),
-    catch: cause => new PiError({ message: 'Cannot load native Pi compaction', cause }),
-  })
-  const virtual = yield* Effect.tryPromise({
-    try: () =>
-      importPiModule<typeof VirtualModels>(join(packageRoot, 'dist/core/virtual-models.js')),
-    catch: cause => new PiError({ message: 'Cannot load native Pi model routing', cause }),
-  })
-  const keys = yield* Effect.tryPromise({
-    try: () => importPiModule<typeof Keys>(join(packageRoot, '../pi-tui/dist/keys.js')),
-    catch: cause => new PiError({ message: 'Cannot load Pi terminal key parsing', cause }),
-  })
+  const { native, virtual, keys } = yield* Effect.all(
+    {
+      native: Effect.tryPromise({
+        try: () =>
+          importPiModule<typeof Native>(join(packageRoot, 'dist/core/compaction/compaction.js')),
+        catch: cause => new PiError({ message: 'Cannot load native Pi compaction', cause }),
+      }),
+      virtual: Effect.tryPromise({
+        try: () =>
+          importPiModule<typeof VirtualModels>(join(packageRoot, 'dist/core/virtual-models.js')),
+        catch: cause => new PiError({ message: 'Cannot load native Pi model routing', cause }),
+      }),
+      keys: Effect.tryPromise({
+        try: () => importPiModule<typeof Keys>(join(packageRoot, '../pi-tui/dist/keys.js')),
+        catch: cause => new PiError({ message: 'Cannot load Pi terminal key parsing', cause }),
+      }),
+    },
+    { concurrency: 'unbounded' }
+  )
   const services = yield* Effect.context<never>()
   const runFork = Effect.runForkWith(services)
   const runSync = Effect.runSyncWith(services)
@@ -225,6 +230,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
     if (state.phase === 'preparing' || state.phase === 'ready') state.job.controller.abort()
     state = { phase }
     const committed = pendingCommit
+    pendingCommit = undefined
     if (
       job &&
       !(
@@ -439,7 +445,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
       preparation: structuredClone(preparation),
       model: structuredClone(model),
       thinkingLevel: active.thinkingLevel,
-      messages: structuredClone(projection.messages),
+      messages: virtual.isVirtualModel(model) ? structuredClone(projection.messages) : [],
       retry: active.settingsManager.getRetrySettings(),
       stream: active.agent.streamFunction,
       providerOptions: {
@@ -586,7 +592,7 @@ export const createBackgroundCompaction = Effect.fnUntraced(function* (
       invalidate('suspended', 'reload')
       return reload(options)
     }
-    const { prepareRequest } = active.agent
+    const prepareRequest = active.agent.prepareRequest?.bind(active.agent)
     active.agent.prepareRequest = async (request, signal): Promise<RequestUpdate | undefined> => {
       const pending = announcement
       if (pending) await Effect.runPromiseWith(services)(Fiber.await(pending))

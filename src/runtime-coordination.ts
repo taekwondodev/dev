@@ -212,8 +212,8 @@ const lockDatabase = (
   }
 }
 
-export const acquireExclusiveLock = (path: string, conflict: string): GateRelease =>
-  lockDatabase(path, false, conflict)
+export const acquireExclusiveLock = (path: string, conflict: string, waitMs = 0): GateRelease =>
+  lockDatabase(path, false, conflict, true, waitMs)
 
 export const holdExistingInstallationForRemoval = (checkout: string): GateRelease => {
   let directory = checkout
@@ -228,12 +228,17 @@ export const holdExistingInstallationForRemoval = (checkout: string): GateReleas
       throw cause
     }
   }
-  return lockDatabase(
-    join(directory, 'installation.sqlite'),
-    false,
-    `Target installation is still in use: ${checkout}`,
-    false
-  )
+  try {
+    return lockDatabase(
+      join(directory, 'installation.sqlite'),
+      false,
+      `Target installation is still in use: ${checkout}`,
+      false
+    )
+  } catch (cause) {
+    if (Predicate.isObject(cause) && cause.code === 'ENOENT') return () => {}
+    throw cause
+  }
 }
 
 const prepareCoordination = (options: CoordinationOptions): string => {
@@ -305,6 +310,7 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
   let root: string
   let home: string
   let releaseInstallation: GateRelease
+  let fileAuthority: WorkspaceAuthority
   try {
     root = prepareCoordination(options)
     mkdirSync(dataHome, { recursive: true, mode: 0o700 })
@@ -316,11 +322,16 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
       true,
       MOMENTARY_HOLD_WAIT_MS
     )
+    try {
+      fileAuthority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
+    } catch (cause) {
+      releaseInstallation()
+      throw cause
+    }
   } catch (cause) {
     releaseSource()
     throw cause
   }
-  const fileAuthority = new WorkspaceAuthority(options.namespacePath ?? defaultAuthorityRoot())
   const claims = new Map<string, () => void>()
   const navigation = Semaphore.makeUnsafe(1)
   let admitted = true
@@ -399,12 +410,22 @@ const makeRuntimeLease = (dataHome: string, options: CoordinationOptions): Runti
       ),
     release: native(() => {
       if (closed) return
-      releaseExcept(new Set())
-      fileAuthority.close()
-      admitted = false
-      releaseInstallation()
-      releaseSource()
       closed = true
+      admitted = false
+      const failures: unknown[] = []
+      const runStep = (step: () => void): void => {
+        try {
+          step()
+        } catch (cause) {
+          failures.push(cause)
+        }
+      }
+      runStep(() => releaseExcept(new Set()))
+      runStep(() => fileAuthority.close())
+      runStep(releaseInstallation)
+      runStep(releaseSource)
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) throw new AggregateError(failures, 'Cannot release runtime lease')
     }),
   }
 }

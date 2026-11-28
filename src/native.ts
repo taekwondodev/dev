@@ -1,14 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +15,6 @@ export interface DevNative {
 
 const source = fileURLToPath(new URL('./native/dev-native.c', import.meta.url))
 const artifactDirectory = fileURLToPath(new URL('../.dev/native/', import.meta.url))
-const artifactPattern = /^dev-native-[0-9a-f]+\.node$/
 
 const compilerFlags = [
   '-std=c17',
@@ -85,9 +76,6 @@ export const ensureNative = (): string => {
       rmSync(temporary, { force: true })
     }
   }
-  for (const entry of readdirSync(artifactDirectory))
-    if (entry !== name && artifactPattern.test(entry))
-      rmSync(join(artifactDirectory, entry), { force: true })
   return artifact
 }
 

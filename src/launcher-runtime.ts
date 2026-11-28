@@ -228,7 +228,7 @@ const parseArgs = (argv: readonly string[]): Effect.Effect<LaunchOptions, Launch
         browserArgs?: readonly string[]
         task?: { readonly id?: string }
       } = {
-        cwd: process.cwd(),
+        cwd: realpathSync(process.cwd()),
         continueSession: false,
         diagnostics: false,
         probeRuntime: false,
@@ -375,6 +375,13 @@ const createRuntime = Effect.fnUntraced(function* (
         }).pipe(
           Effect.mapError(error => toLauncherError(error, 'Cannot compose runtime resources'))
         )
+  if (profileFromSession(sessionManager) === undefined)
+    yield* Effect.sync(() => {
+      sessionManager.appendCustomEntry('dev/profile', {
+        profile: profile.name,
+        source: 'session',
+      })
+    })
   const work = yield* fromSync('Cannot create background-work extension', () =>
     createWorkExtension({
       dataHome,
@@ -385,9 +392,6 @@ const createRuntime = Effect.fnUntraced(function* (
       onReactivationChange: parts.programStatus.changed,
     })
   )
-  const trustResolver = yield* fromPromise('Cannot load Pi project-trust resolver', () =>
-    importPiModule<typeof PiProjectTrust>(resolve(packageRoot, 'dist/core/project-trust.js'))
-  )
   const settingsManager = yield* fromSync('Cannot create trust-gated Pi settings', () =>
     api.SettingsManager.create(cwd, runtimeOptions.agentDir, { projectTrusted: false })
   )
@@ -396,17 +400,24 @@ const createRuntime = Effect.fnUntraced(function* (
     runtimeOptions.projectTrustContext?.cwd === cwd
       ? runtimeOptions.projectTrustContext
       : noUiTrustContext(cwd)
-  const modelRuntime = yield* (
-    parts.modelRuntime ??
-    fromPromise('Cannot create Pi model runtime', () =>
-      api.ModelRuntime.create({ authPath: globalPiAuthPath() })
-    )
-  )
-  const compaction = yield* createBackgroundCompaction(api, packageRoot).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
-  )
-  const codemodeOutputLimit = yield* loadCodemodeOutputLimit(packageRoot).pipe(
-    Effect.mapError(error => toLauncherError(error, 'Cannot load the codemode output limit'))
+  const { trustResolver, modelRuntime, compaction, codemodeOutputLimit } = yield* Effect.all(
+    {
+      trustResolver: fromPromise('Cannot load Pi project-trust resolver', () =>
+        importPiModule<typeof PiProjectTrust>(resolve(packageRoot, 'dist/core/project-trust.js'))
+      ),
+      modelRuntime:
+        parts.modelRuntime ??
+        fromPromise('Cannot create Pi model runtime', () =>
+          api.ModelRuntime.create({ authPath: globalPiAuthPath() })
+        ),
+      compaction: createBackgroundCompaction(api, packageRoot).pipe(
+        Effect.mapError(error => toLauncherError(error, 'Cannot load background compaction'))
+      ),
+      codemodeOutputLimit: loadCodemodeOutputLimit(packageRoot).pipe(
+        Effect.mapError(error => toLauncherError(error, 'Cannot load the codemode output limit'))
+      ),
+    },
+    { concurrency: 'unbounded' }
   )
   const extensions: readonly NamedExtension[] = [
     { name: 'dev:background-compaction', factory: compaction.factory },
@@ -540,7 +551,8 @@ const runInteractive = Effect.fnUntraced(function* (
     fromPromise('Pi interactive mode failed', () => mode.run()),
     ending.requested
   )
-  if (ending.current().phase === 'quitting')
+  const endedPhase = ending.current().phase
+  if (endedPhase === 'quitting' || endedPhase === 'signalled')
     yield* Effect.sync(() => {
       mode.stop()
     })
@@ -1196,6 +1208,23 @@ const run = Effect.fnUntraced(function* (
   }
 
   if (options.browserArgs !== undefined) {
+    if (
+      options.profile !== undefined ||
+      options.saveProfile !== undefined ||
+      options.resume !== undefined ||
+      options.continueSession ||
+      options.diagnostics ||
+      options.probeRuntime ||
+      options.task !== undefined
+    ) {
+      yield* Effect.sync(() => {
+        process.stderr.write(
+          'browser commands cannot be combined with --profile, --save-profile, --resume, --continue, --task, --diagnostics, or --probe-runtime.\n'
+        )
+        process.exitCode = 2
+      })
+      return
+    }
     process.exitCode = yield* browserCommand(
       options.browserArgs,
       options.dataHome ?? (yield* defaultDataHome)
@@ -1221,12 +1250,6 @@ const run = Effect.fnUntraced(function* (
     Effect.mapError(error => toLauncherError(error, 'Cannot load profiles'))
   )
   const lease = yield* acquireRuntime(dataHome, dependencies.coordination)
-  const selection = yield* resolveSelection({
-    cwd: launchCwd,
-    dataHome,
-    defaultProfile: catalog.defaultProfile,
-    explicit: options.profile,
-  }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_PROFILE_SELECTION)))
   if (options.saveProfile !== undefined) {
     yield* catalog
       .load(options.saveProfile)
@@ -1243,10 +1266,17 @@ const run = Effect.fnUntraced(function* (
       options.profile === undefined &&
       options.resume === undefined &&
       !options.continueSession &&
-      !options.diagnostics
+      !options.diagnostics &&
+      !options.probeRuntime
     )
       return
   }
+  const selection = yield* resolveSelection({
+    cwd: launchCwd,
+    dataHome,
+    defaultProfile: catalog.defaultProfile,
+    explicit: options.profile,
+  }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_RESOLVE_PROFILE_SELECTION)))
   const prepareLifecycle = yield* Effect.cached(dependencies.workspaceLifecycle)
   if (!options.diagnostics) yield* prepareLifecycle
   const guard = createSessionGuard(lease)
@@ -1289,16 +1319,9 @@ const run = Effect.fnUntraced(function* (
     return opened
   })
   let sessions = yield* options.diagnostics ? openSessions : lease.creating(openSessions)
-  const recorded =
-    options.resume !== undefined || options.continueSession
-      ? profileFromSession(sessions)
-      : undefined
+  const recorded = resumedPath === undefined ? undefined : profileFromSession(sessions)
 
-  if (
-    (options.resume !== undefined || options.continueSession) &&
-    recorded === undefined &&
-    options.profile === undefined
-  )
+  if (resumedPath !== undefined && recorded === undefined && options.profile === undefined)
     return yield* new LauncherError({
       message:
         'This conversation has no dev profile metadata. Resume it with an explicit --profile choice.',
@@ -1309,7 +1332,7 @@ const run = Effect.fnUntraced(function* (
       .pipe(Effect.mapError(error => toLauncherError(error, CANNOT_LOAD_SELECTED_PROFILE)))
     const diagnosticResources = yield* composeResources({
       cwd: launchCwd,
-      gitRoot: yield* gitRoot(launchCwd),
+      gitRoot: yield* rootOf(launchCwd),
       profile: diagnosticProfile,
     }).pipe(Effect.mapError(error => toLauncherError(error, CANNOT_COMPOSE_PROFILE_RESOURCES)))
     const dispatch = yield* readDispatch.pipe(

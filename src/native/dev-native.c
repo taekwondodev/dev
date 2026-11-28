@@ -95,12 +95,16 @@ static napi_value observe_directory(napi_env env, napi_callback_info info) {
   request.bitmapcount = ATTR_BIT_MAP_COUNT;
   request.volattr = ATTR_VOL_INFO | ATTR_VOL_UUID;
   VolumeUuidReply reply;
+  memset(&reply, 0, sizeof reply);
   if (fgetattrlist(fd, &request, &reply, sizeof reply, 0) != 0) {
     int code = errno;
     close(fd);
     return fail(env, "fgetattrlist", code);
   }
   close(fd);
+  if (reply.length < sizeof reply) {
+    return fail(env, "fgetattrlist", ENOTSUP);
+  }
   char device[32];
   char inode[32];
   char uuid[37];
@@ -108,10 +112,16 @@ static napi_value observe_directory(napi_env env, napi_callback_info info) {
   snprintf(inode, sizeof inode, "%llu", (unsigned long long)stat.st_ino);
   uuid_unparse_upper(reply.uuid, uuid);
   napi_value result;
+  napi_value device_text = text(env, device);
+  if (device_text == NULL) return NULL;
+  napi_value inode_text = text(env, inode);
+  if (inode_text == NULL) return NULL;
+  napi_value uuid_text = text(env, uuid);
+  if (uuid_text == NULL) return NULL;
   REQUIRE(napi_create_array_with_length(env, 3, &result));
-  REQUIRE(napi_set_element(env, result, 0, text(env, device)));
-  REQUIRE(napi_set_element(env, result, 1, text(env, inode)));
-  REQUIRE(napi_set_element(env, result, 2, text(env, uuid)));
+  REQUIRE(napi_set_element(env, result, 0, device_text));
+  REQUIRE(napi_set_element(env, result, 1, inode_text));
+  REQUIRE(napi_set_element(env, result, 2, uuid_text));
   return result;
 }
 
@@ -123,11 +133,15 @@ static napi_value filesystem(napi_env env, napi_callback_info info) {
   if (statfs(path, &fs) != 0) return fail(env, "statfs", errno);
   napi_value result;
   napi_value local;
+  napi_value fstype_text = text(env, fs.f_fstypename);
+  if (fstype_text == NULL) return NULL;
+  napi_value mount_text = text(env, fs.f_mntonname);
+  if (mount_text == NULL) return NULL;
   REQUIRE(napi_create_array_with_length(env, 3, &result));
   REQUIRE(napi_get_boolean(env, (fs.f_flags & MNT_LOCAL) != 0, &local));
-  REQUIRE(napi_set_element(env, result, 0, text(env, fs.f_fstypename)));
+  REQUIRE(napi_set_element(env, result, 0, fstype_text));
   REQUIRE(napi_set_element(env, result, 1, local));
-  REQUIRE(napi_set_element(env, result, 2, text(env, fs.f_mntonname)));
+  REQUIRE(napi_set_element(env, result, 2, mount_text));
   return result;
 }
 
