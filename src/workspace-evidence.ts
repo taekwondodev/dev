@@ -541,18 +541,21 @@ const inventoryFileOf = (
   checkout: string,
   device: string,
   entry: string,
-  canonicalParents: Map<string, boolean>
+  canonicalParents: Map<string, boolean>,
+  ignored = false
 ): InventoryFile => {
   if (entry.endsWith('/')) return { path: entry.slice(0, -1), kind: 'nested-repository' }
   let stat
   try {
-    const parent = dirname(join(checkout, entry))
-    let canonical = canonicalParents.get(parent)
-    if (canonical === undefined) {
-      canonical = realpathSync(parent) === parent
-      canonicalParents.set(parent, canonical)
+    if (!ignored) {
+      const parent = dirname(join(checkout, entry))
+      let canonical = canonicalParents.get(parent)
+      if (canonical === undefined) {
+        canonical = realpathSync(parent) === parent
+        canonicalParents.set(parent, canonical)
+      }
+      if (!canonical) return { path: entry, kind: 'other', detail: 'has a symbolic-link ancestor' }
     }
-    if (!canonical) return { path: entry, kind: 'other', detail: 'has a symbolic-link ancestor' }
     stat = lstatSync(join(checkout, entry), { bigint: true })
   } catch (cause) {
     return {
@@ -566,7 +569,8 @@ const inventoryFileOf = (
   const size = Number(stat.size)
   if (stat.isSymbolicLink()) return { path: entry, kind: 'symlink', size }
   if (stat.isFile()) {
-    if (Number(stat.nlink) !== 1) return { path: entry, kind: 'other', detail: 'has hard links' }
+    if (!ignored && Number(stat.nlink) !== 1)
+      return { path: entry, kind: 'other', detail: 'has hard links' }
     return { path: entry, kind: 'file', size }
   }
   return { path: entry, kind: 'other', detail: 'is not a regular file' }
@@ -584,9 +588,12 @@ export const readInventory = (checkout: string, head: string | undefined): Inven
     return [file]
   })
   const others = untrackedPaths(checkout)
-  const files = [...others.untracked, ...others.ignored].map(entry =>
-    inventoryFileOf(checkout, device, entry, canonicalParents)
-  )
+  const files = [
+    ...others.untracked.map(entry => inventoryFileOf(checkout, device, entry, canonicalParents)),
+    ...others.ignored.map(entry =>
+      inventoryFileOf(checkout, device, entry, canonicalParents, true)
+    ),
+  ]
   assertUnfilteredIndex(checkout, index)
   return {
     head,
@@ -604,7 +611,7 @@ const no = (reason: string): Proof => ({ kind: 'no', reason })
 const unknownProof = (reason: string): Proof => ({ kind: 'unknown', reason })
 
 const GITHUB_REMOTE =
-  /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/|git:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+  /^(?:git@github\.com:|ssh:\/\/git@github\.com(?::\d+)?\/|https:\/\/(?:[^/@\s]+@)?github\.com\/|git:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
 const githubRepositoryOf = (url: string): string | undefined => GITHUB_REMOTE.exec(url)?.[1]
 
 export type DerivedTarget = (
@@ -1109,13 +1116,17 @@ export const integrationFacts = (
   const pullRequests: PullRequestFact[] = []
   const rejected: string[] = []
   for (const [number, via] of [...found].toSorted(([left], [right]) => left - right)) {
+    const preloaded =
+      bundledEvidence !== undefined && number === target.pullRequest
+        ? { pullRequest: bundledEvidence.pullRequest, lastCommit: bundledEvidence.lastCommit }
+        : undefined
     const bound = bindPullRequest(
       reader,
       checkout,
       target,
       number,
       tip.sha,
-      undefined,
+      preloaded,
       commitPresent
     )
     if (bound.kind === 'rejected') {
@@ -1228,7 +1239,14 @@ export const verifyInventory = (
       continue
     }
     if (references !== undefined && file.kind === 'file') {
-      const digest = regularFileDigest(join(checkout, file.path))
+      let digest: string
+      try {
+        digest = regularFileDigest(join(checkout, file.path))
+      } catch (cause) {
+        blocking += 1
+        unknown.push(`Could not read selected artifact: ${file.path} (${errorText(cause)})`)
+        continue
+      }
       const match = references.find(
         reference => reference.sha256 === digest && reference.byteLength === file.size
       )

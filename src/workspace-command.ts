@@ -495,7 +495,12 @@ const TERMINAL_SWEEP_OUTCOMES: ReadonlySet<WorkspaceRow['outcome']> = new Set([
 ])
 export const sweepExitCode = (receipt: SweepReceipt): 0 | 1 =>
   attemptedRows(receipt).every(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)) &&
-  receipt.rows.every(row => row.kind !== 'task-artifacts' || row.outcome === 'removed')
+  receipt.rows.every(
+    row =>
+      row.kind !== 'sweep-failure' &&
+      row.kind !== 'task-failure' &&
+      (row.kind !== 'task-artifacts' || row.outcome === 'removed')
+  )
     ? 0
     : 1
 
@@ -512,10 +517,14 @@ export const formatSweepReceipt = (receipt: SweepReceipt): string => {
   const terminal = attempted.filter(row => TERMINAL_SWEEP_OUTCOMES.has(row.outcome)).length
   const deferred = receipt.rows.filter(row => row.kind === 'task-deferred').length
   const artifacts = receipt.rows.filter(row => row.kind === 'task-artifacts').length
+  const failures = receipt.rows.filter(
+    row => row.kind === 'sweep-failure' || row.kind === 'task-failure'
+  ).length
+  const retained = receipt.rows.length - attempted.length - deferred - artifacts - failures
   return [
     `Automatic cleanup ${moment}:`,
     ...receipt.rows.flatMap(sweepRowText),
-    `Summary: ${terminal}/${attempted.length} eligible checkout(s) removed or freed; ${receipt.rows.length - attempted.length - deferred - artifacts} retained or skipped${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next cleanup`}${artifacts === 0 ? '' : `; ${artifacts} task artifact director${artifacts === 1 ? 'y' : 'ies'} reported`}.`,
+    `Summary: ${terminal}/${attempted.length} eligible checkout(s) removed or freed; ${retained} retained or skipped${failures === 0 ? '' : `; ${failures} failure(s) needing review`}${deferred === 0 ? '' : `; ${deferred} task(s) deferred to the next cleanup`}${artifacts === 0 ? '' : `; ${artifacts} task artifact director${artifacts === 1 ? 'y' : 'ies'} reported`}.`,
   ].join('\n')
 }
 
