@@ -30,7 +30,7 @@ Read [SECURITY](SECURITY.md) before installing.
 curl -fsSL https://raw.githubusercontent.com/taekwondodev/dev/main/scripts/install.sh | sh
 ```
 
-dev starts with its default profile, `config/default-profiles.json`. To customize, write `profiles/manifest.json`, which Git ignores; it names each profile's guidance and skill directories and replaces the default. The format is in the [launcher guide](docs/launcher-profiles.md#profiles-and-resources).
+dev starts with its default profile, `config/default-profiles.json`. To customize, write `profiles/manifest.json`. The format is in the [launcher guide](docs/launcher-profiles.md#profiles-and-resources).
 
 Delegated agents use your Pi default model. To choose models and effort per skill, write `profiles/crew-dispatch.json`; the [model settings guide](config/README.md) has the format.
 
