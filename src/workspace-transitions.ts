@@ -171,6 +171,7 @@ export const selectWorkspace = (
     kind: 'ordinary',
     released: false,
   }
+  let targetCommitted = false
   try {
     inDb(authority, target.repo, db =>
       transaction(db, () => {
@@ -196,6 +197,7 @@ export const selectWorkspace = (
         }
       })
     )
+    targetCommitted = true
     if (source.repo !== target.repo)
       inDb(authority, source.repo, db =>
         transaction(db, () => {
@@ -206,6 +208,30 @@ export const selectWorkspace = (
         })
       )
   } catch (cause) {
+    if (targetCommitted && source.repo !== target.repo) {
+      try {
+        inDb(authority, target.repo, db =>
+          transaction(db, () => {
+            const committedUse = getUse(db, use.id)
+            if (committedUse !== undefined && committedUse.stage === 'authorized')
+              saveUse(db, {
+                ...committedUse,
+                stage: 'quiescent',
+                reason: 'source-binding-failed',
+                revision: committedUse.revision + 1,
+                updatedAt: now(),
+              })
+            const committedOperation = getOperation(db, operationId)
+            if (committedOperation !== undefined && committedOperation.phase === 'intent')
+              saveOperation(db, {
+                ...committedOperation,
+                phase: 'cancelled',
+                result: CURRENT_CHECKOUT_CHANGED_BEFORE_SWITCHING,
+              })
+          })
+        )
+      } catch {}
+    }
     releaseGates(gates)
     throw cause
   }
@@ -354,20 +380,23 @@ const cancelTransition = (
       }
     })
   )
-  if (pending.sourceRepositoryId !== pending.targetRepositoryId) {
-    inDb(authority, pending.sourceRepositoryId, db =>
-      transaction(db, () => {
-        const binding = getBinding(db, state.key)
-        if (binding === undefined || binding.pendingOperationId !== operationId)
-          requireReview('The original checkout changed while cancelling the switch')
-        putBinding(db, { ...binding, pendingOperationId: undefined })
-      })
-    )
-  }
-  pending.targetLease.released = true
-  if (pending.targetLease.gates !== undefined) {
-    releaseGates(pending.targetLease.gates)
-    pending.targetLease.gates = undefined
+  try {
+    if (pending.sourceRepositoryId !== pending.targetRepositoryId) {
+      inDb(authority, pending.sourceRepositoryId, db =>
+        transaction(db, () => {
+          const binding = getBinding(db, state.key)
+          if (binding === undefined || binding.pendingOperationId !== operationId)
+            requireReview('The original checkout changed while cancelling the switch')
+          putBinding(db, { ...binding, pendingOperationId: undefined })
+        })
+      )
+    }
+  } finally {
+    pending.targetLease.released = true
+    if (pending.targetLease.gates !== undefined) {
+      releaseGates(pending.targetLease.gates)
+      pending.targetLease.gates = undefined
+    }
   }
   state.writeGrant = pending.previousWriteGrant
   state.pending = undefined

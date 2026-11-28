@@ -243,38 +243,47 @@ const retireUnstartedTransition = (
   authority: WorkspaceAuthority,
   operationId: WorkspaceId
 ): boolean => {
-  let withdrawn = false
   for (const repository of authority.listRepositories()) {
-    inDb(authority, repository.id, db =>
-      transaction(db, () => {
-        const operation = getOperation(db, operationId)
-        if (operation?.phase === 'cancelled') withdrawn = true
-        if (operation === undefined || operation.phase !== 'intent' || operation.kind === 'release')
-          return
-        withdrawn = true
-        for (const use of getActiveUseRows(db, operation.workspaceId))
+    const existing = inDb(authority, repository.id, db => getOperation(db, operationId))
+    if (existing === undefined) continue
+    let withdrawn = existing.phase === 'cancelled'
+    if (existing.phase === 'intent' && existing.kind !== 'release') {
+      inDb(authority, repository.id, db =>
+        transaction(db, () => {
+          const operation = getOperation(db, operationId)
+          if (operation?.phase === 'cancelled') withdrawn = true
           if (
-            use.acquisitionId === operation.acquisitionId &&
-            use.execution === undefined &&
-            use.effect === undefined &&
-            use.stage === 'authorized'
+            operation === undefined ||
+            operation.phase !== 'intent' ||
+            operation.kind === 'release'
           )
-            saveUse(db, {
-              ...use,
-              stage: 'quiescent',
-              reason: 'superseded-by-explicit-recovery-before-host-transition',
-              revision: use.revision + 1,
-              updatedAt: now(),
-            })
-        saveOperation(db, {
-          ...operation,
-          phase: 'cancelled',
-          result: 'Superseded by an explicit recovery selection before the host acted.',
+            return
+          withdrawn = true
+          for (const use of getActiveUseRows(db, operation.workspaceId))
+            if (
+              use.acquisitionId === operation.acquisitionId &&
+              use.execution === undefined &&
+              use.effect === undefined &&
+              use.stage === 'authorized'
+            )
+              saveUse(db, {
+                ...use,
+                stage: 'quiescent',
+                reason: 'superseded-by-explicit-recovery-before-host-transition',
+                revision: use.revision + 1,
+                updatedAt: now(),
+              })
+          saveOperation(db, {
+            ...operation,
+            phase: 'cancelled',
+            result: 'Superseded by an explicit recovery selection before the host acted.',
+          })
         })
-      })
-    )
+      )
+    }
+    return withdrawn
   }
-  return withdrawn
+  return false
 }
 
 const ensureNoUnresolvedUse = (
@@ -293,49 +302,51 @@ export const settleClosingState = (
   state: ConversationState
 ): void => {
   state.closing = true
-  const preserved = state.pending?.targetLease.useId
-  const leases = [...state.leases.values()]
-  const closing = leases.flatMap(lease => {
-    if (lease.useId === preserved) return []
-    try {
-      const use = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
-      return use === undefined ? [] : [{ lease, use }]
-    } catch {
-      return []
-    }
-  })
-
-  settleDependentsFirst(
-    authority,
-    closing,
-    use =>
-      use.stage === 'authorized'
-        ? {
-            stage: 'quiescent',
-            reason: 'attachment-closed-before-operation-boundary',
-          }
-        : {
-            stage: 'unknown',
-            reason: 'attachment-closed-without-authoritative-operation-cessation',
-          },
-    'attachment-closed-while-dependent-scoped-operations-were-live',
-    () => {}
-  )
-  for (const lease of leases.toReversed()) {
-    if (lease.gates !== undefined) {
+  try {
+    const preserved = state.pending?.targetLease.useId
+    const leases = [...state.leases.values()]
+    const closing = leases.flatMap(lease => {
+      if (lease.useId === preserved) return []
       try {
-        releaseGates(lease.gates)
-      } finally {
+        const use = inDb(authority, lease.repositoryId, db => getUse(db, lease.useId))
+        return use === undefined ? [] : [{ lease, use }]
+      } catch {
+        return []
+      }
+    })
+
+    settleDependentsFirst(
+      authority,
+      closing,
+      use =>
+        use.stage === 'authorized'
+          ? {
+              stage: 'quiescent',
+              reason: 'attachment-closed-before-operation-boundary',
+            }
+          : {
+              stage: 'unknown',
+              reason: 'attachment-closed-without-authoritative-operation-cessation',
+            },
+      'attachment-closed-while-dependent-scoped-operations-were-live',
+      () => {}
+    )
+    for (const lease of leases.toReversed()) {
+      if (lease.gates !== undefined) {
+        try {
+          releaseGates(lease.gates)
+        } catch {}
         lease.gates = undefined
       }
+      if (lease.useId !== preserved) lease.released = true
     }
-    if (lease.useId !== preserved) lease.released = true
+    for (const held of state.extraGates.splice(0)) {
+      try {
+        releaseGates(held.gates)
+      } catch {}
+    }
+    state.deferredGateReleases.clear()
+  } finally {
+    state.closing = false
   }
-  for (const held of state.extraGates.splice(0)) {
-    try {
-      releaseGates(held.gates)
-    } catch {}
-  }
-  state.deferredGateReleases.clear()
-  state.closing = false
 }
