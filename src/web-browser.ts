@@ -371,6 +371,7 @@ const AttachedEvent = Schema.Struct({
 const FrameAttachedEvent = Schema.Struct({ frameId: Schema.String })
 const ResponseReceived = Schema.Struct({
   type: Schema.String,
+  frameId: Schema.optional(Schema.String),
   response: Schema.Struct({ status: Schema.Finite, url: Schema.String }),
 })
 const NavigateResult = Schema.Struct({ errorText: Schema.optional(Schema.String) })
@@ -470,7 +471,7 @@ export const makeRenderHost = Effect.fnUntraced(function* (
         ),
         autoAttach(sessionId),
       ],
-      { discard: true, concurrency: 1 }
+      { discard: true, concurrency: 'unbounded' }
     )
   const enableWorker = (sessionId: string) =>
     cdp
@@ -543,7 +544,13 @@ export const makeRenderHost = Effect.fnUntraced(function* (
       runEvent(handlePaused(event.sessionId, event.params))
     else if (event.method === 'Target.attachedToTarget')
       runEvent(handleAttached(event.sessionId, event.params))
-    else if (event.sessionId === undefined) return
+    else if (event.method === 'Target.detachedFromTarget') {
+      const decoded = Schema.decodeUnknownResult(DetachedEvent)(event.params)
+      if (decoded._tag !== 'Success') return
+      const owner = sessionOwners.get(decoded.success.sessionId)
+      if (owner?.main?.sessionId === decoded.success.sessionId)
+        Deferred.doneUnsafe(owner.detached, Exit.void)
+    } else if (event.sessionId === undefined) return
     else if (event.method === 'Page.frameAttached') {
       const owner = sessionOwners.get(event.sessionId)
       const decoded = Schema.decodeUnknownResult(FrameAttachedEvent)(event.params)
@@ -553,17 +560,15 @@ export const makeRenderHost = Effect.fnUntraced(function* (
     } else if (event.method === 'Page.loadEventFired') {
       const owner = sessionOwners.get(event.sessionId)
       if (owner?.main?.sessionId === event.sessionId) Deferred.doneUnsafe(owner.loaded, Exit.void)
-    } else if (event.method === 'Target.detachedFromTarget') {
-      const decoded = Schema.decodeUnknownResult(DetachedEvent)(event.params)
-      if (decoded._tag !== 'Success') return
-      const owner = sessionOwners.get(decoded.success.sessionId)
-      if (owner?.main?.sessionId === decoded.success.sessionId)
-        Deferred.doneUnsafe(owner.detached, Exit.void)
     } else if (event.method === 'Network.responseReceived') {
       const owner = sessionOwners.get(event.sessionId)
-      if (owner?.main?.sessionId !== event.sessionId || owner.status !== undefined) return
+      if (owner?.main?.sessionId !== event.sessionId) return
       const decoded = Schema.decodeUnknownResult(ResponseReceived)(event.params)
-      if (decoded._tag === 'Success' && decoded.success.type === 'Document')
+      if (
+        decoded._tag === 'Success' &&
+        decoded.success.type === 'Document' &&
+        (decoded.success.frameId === undefined || decoded.success.frameId === owner.targetId)
+      )
         owner.status = decoded.success.response.status
     }
   })
@@ -662,7 +667,12 @@ export const makeRenderHost = Effect.fnUntraced(function* (
           .pipe(Effect.flatMap(decode(NavigateResult)))
         if (navigated.errorText !== undefined)
           return yield* fail('navigation', `Chrome could not load ${url}: ${navigated.errorText}`)
-        yield* Deferred.await(owner.loaded)
+        yield* Effect.raceFirst(
+          Deferred.await(owner.loaded),
+          Deferred.await(cdp.closed).pipe(
+            Effect.andThen(Effect.fail(fail('protocol', 'Chrome closed while loading the page')))
+          )
+        )
         yield* Effect.sleep(SETTLE_AFTER_LOAD)
         const snapshot = yield* cdp
           .send(
